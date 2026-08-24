@@ -8,6 +8,8 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::alert::Alert;
+use crate::answer::OverlapEscalationPayload;
+use crate::answer::PermissiveOverlapAnswer;
 use crate::config::InitializationState;
 use crate::exit::BerthExit;
 use crate::ids::CoordinationRunId;
@@ -16,12 +18,14 @@ use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
 use crate::ledger::LedgerInitialization;
+use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationConflict;
 use crate::scope::ReservationScopeSet;
+use crate::scope::ScopeKind;
 
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.";
 const PROJECTION_REPAIRED_MESSAGE: &str =
@@ -89,6 +93,8 @@ pub(crate) enum OutputStatus {
     Claimed,
     /// One or more foreign reservations overlap the requested paths.
     BlockedByOverlap,
+    /// A permissive overlap answer needs a matching reviewed proposal.
+    NeedsUserAuthorization,
     /// The caller can correct the request and retry without repairing the ledger.
     InvalidInput,
     /// Another mutation retained the ledger lock through the retry window.
@@ -242,6 +248,12 @@ pub(crate) enum ClaimPayload {
     Blocked {
         /// Every holder whose live scopes intersected the request.
         conflicts: Vec<ReservationConflict>,
+    },
+    /// A permissive answer was proposed but has not supplied the current exact token.
+    NeedsUserAuthorization {
+        /// The conflicts, proposed answer, reason, consequence, and proposal token.
+        #[serde(flatten)]
+        escalation: Box<OverlapEscalationPayload>,
     },
 }
 
@@ -485,6 +497,66 @@ impl OutputEnvelope {
             payload: OutputPayload::from_facts(OutputFacts::Claim(ClaimPayload::Blocked {
                 conflicts,
             })),
+        }
+    }
+
+    /// Build a claim response that requires a second invocation with the current token.
+    pub(crate) fn claim_authorization_required(escalation: OverlapEscalationPayload) -> Self {
+        let blocked_by = escalation
+            .conflicts
+            .iter()
+            .map(|conflict| conflict.reservation_id)
+            .collect();
+        let mut message = format!(
+            "User authorization is required before this overlap can be recorded: {}. Review every holder, shared scope, plan, phase, direction, and reason in the payload, then rerun this claim with --proposal '{}'.",
+            escalation.consequence, escalation.proposal_token
+        );
+        let direction = overlap_direction_description(&escalation.answer);
+        let holder_material = escalation
+            .conflicts
+            .iter()
+            .map(|conflict| {
+                let shared_scopes = conflict
+                    .overlapping_scopes
+                    .as_slice()
+                    .iter()
+                    .map(|scope| {
+                        let kind = match scope.kind {
+                            ScopeKind::File => "file",
+                            ScopeKind::Tree => "tree",
+                        };
+                        format!("{kind}:{}", scope.path)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "Holder {}: {}; shared scopes: {}; direction: {}; reason: {}; consequence: {}.",
+                    conflict.reservation_id,
+                    source_description(&conflict.source),
+                    shared_scopes,
+                    direction,
+                    escalation.authorization_reason,
+                    escalation.consequence,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !holder_material.is_empty() {
+            message.push('\n');
+            message.push_str(&holder_material);
+        }
+        Self {
+            verb: CommandVerb::Claim,
+            status: OutputStatus::NeedsUserAuthorization,
+            exit_code: BerthExit::NeedsUserAuthorization,
+            reservations: Vec::new(),
+            blocked_by,
+            message,
+            payload: OutputPayload::from_facts(OutputFacts::Claim(
+                ClaimPayload::NeedsUserAuthorization {
+                    escalation: Box::new(escalation),
+                },
+            )),
         }
     }
 
@@ -734,6 +806,25 @@ fn purpose_description(reservation_purpose: &ReservationPurpose) -> String {
     match reservation_purpose {
         ReservationPurpose::Explained(explanation) => explanation.to_string(),
         ReservationPurpose::NotProvidedByCaller => "no reason provided by caller".to_owned(),
+    }
+}
+
+fn overlap_direction_description(answer: &PermissiveOverlapAnswer) -> String {
+    match answer {
+        PermissiveOverlapAnswer::Sequence { blocker, direction } => match direction {
+            OrderingDirection::RequesterBeforeHolder => {
+                format!("requester before holder {blocker}")
+            },
+            OrderingDirection::HolderBeforeRequester => {
+                format!("holder {blocker} before requester")
+            },
+        },
+        PermissiveOverlapAnswer::Defer { blocker } => {
+            format!("none declared; deferred with holder {blocker}")
+        },
+        PermissiveOverlapAnswer::Override { blocker } => {
+            format!("none declared; overridden with holder {blocker}")
+        },
     }
 }
 

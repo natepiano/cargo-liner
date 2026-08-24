@@ -15,6 +15,7 @@ use serde::Serialize;
 use super::constants::CURRENT_SCHEMA_VERSION;
 use super::constants::DELETE_CONTROL_BYTE;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
+use crate::answer::ConflictAuthorization;
 use crate::config::InitializationState;
 use crate::ids::CoordinationRunId;
 use crate::ids::EdgeId;
@@ -25,7 +26,6 @@ use crate::ids::ProjectionGeneration;
 use crate::ids::RecordedAt;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
-use crate::ids::ReservationRevision;
 use crate::ids::ReservationScopePath;
 use crate::ids::SchemaVersion;
 use crate::ids::WorkPlanPhase;
@@ -506,7 +506,7 @@ impl fmt::Display for InvalidFullRefName {
 impl std::error::Error for InvalidFullRefName {}
 
 /// The declared file-versus-tree meaning of one reserved repository path.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ScopeKind {
     /// Reserve exactly one path.
@@ -726,50 +726,6 @@ pub(crate) enum WidenCause {
         /// The caller's explanation.
         reason: String,
     },
-}
-
-/// The complete overlap decision recorded within a claim or widen transaction.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ConflictAuthorization {
-    /// No foreign overlap existed when the transaction acquired these scopes.
-    NoConflict,
-    /// An ordering edge authorizes this exact observed overlap set.
-    Sequence {
-        /// The exact overlaps and generations shown to the user.
-        overlaps:  Vec<AuthorizedOverlap>,
-        /// The requested ordering direction.
-        direction: OrderingDirection,
-        /// The edge born with this acquisition.
-        edge_id:   EdgeId,
-        /// The approved reason for selecting an order.
-        reason:    String,
-    },
-    /// Editing can proceed while integration remains held pending an order.
-    Defer {
-        /// The exact overlaps and generations shown to the user.
-        overlaps: Vec<AuthorizedOverlap>,
-        /// The approved reason for delaying the order.
-        reason:   String,
-    },
-    /// Editing can proceed without declaring an ordering relationship.
-    Override {
-        /// The exact overlaps and generations shown to the user.
-        overlaps: Vec<AuthorizedOverlap>,
-        /// The approved reason for accepting the conflict.
-        reason:   String,
-    },
-}
-
-/// One exact holder and reservation generation covered by an authorization.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct AuthorizedOverlap {
-    /// The existing holder named by the authorization.
-    pub(crate) reservation_id:       ReservationId,
-    /// The holder's revision when the authorization was shown.
-    pub(crate) reservation_revision: ReservationRevision,
-    /// The normalized overlap paths that this answer covers.
-    pub(crate) scopes:               Vec<ReservationScopePath>,
 }
 
 /// The ordering direction selected for two conflicting reservations.
@@ -1053,12 +1009,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::AuthorizedOverlap;
     use super::CanonicalWorktreeRoot;
     use super::ClaimHeadCommit;
     use super::ClaimHeadSnapshot;
     use super::ClaimSource;
-    use super::ConflictAuthorization;
     use super::FullRefName;
     use super::Journal;
     use super::JournalActor;
@@ -1075,6 +1029,12 @@ mod tests {
     use super::TrunkCommitAtClaim;
     use super::WorkPlanReference;
     use super::WorktreeAdministrativeLocator;
+    use crate::answer::AuthorizedOverlap;
+    use crate::answer::AuthorizedOverlapScopeSet;
+    use crate::answer::AuthorizedOverlapSet;
+    use crate::answer::ConflictAuthorization;
+    use crate::answer::OverlapAuthorizationReason;
+    use crate::answer::OverlapScopeRevision;
     use crate::ids::CoordinationRunId;
     use crate::ids::EdgeId;
     use crate::ids::EventId;
@@ -1082,11 +1042,12 @@ mod tests {
     use crate::ids::RecordedAt;
     use crate::ids::RepoInstanceId;
     use crate::ids::ReservationId;
-    use crate::ids::ReservationRevision;
     use crate::ids::ReservationScopePath;
     use crate::ids::SchemaVersion;
     use crate::ids::WorkPlanPhase;
     use crate::ids::WorktreeId;
+
+    const HOLDER_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
 
     #[test]
     fn reservation_purpose_rejects_whitespace_and_stores_trimmed_text() {
@@ -1214,9 +1175,15 @@ mod tests {
                     "kind": "sequence",
                     "overlaps": [{
                         "reservation_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20",
-                        "reservation_revision": 3,
-                        "scopes": ["crates/cargo-berth/src", "docs/berth-plan.md"],
+                        "scope_revision": [
+                            {"path": "crates/cargo-berth", "kind": "tree"},
+                        ],
+                        "scopes": [
+                            {"path": "crates/cargo-berth/src", "kind": "tree"},
+                            {"path": "docs/berth-plan.md", "kind": "file"},
+                        ],
                     }],
+                    "blocker": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20",
                     "direction": "requester_before_holder",
                     "edge_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a21",
                     "reason": "The implementation must precede the dependent documentation update.",
@@ -1388,23 +1355,33 @@ mod tests {
                     .parse::<WorktreeAdministrativeLocator>()
                     .expect("worktree administrative locator should parse"),
                 authorization:                   ConflictAuthorization::Sequence {
-                    overlaps:  vec![AuthorizedOverlap {
-                        reservation_id:       "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20"
-                            .parse::<ReservationId>()
-                            .expect("holder reservation identifier should parse"),
-                        reservation_revision: ReservationRevision::from(3),
-                        scopes:               ["crates/cargo-berth/src", "docs/berth-plan.md"]
-                            .into_iter()
-                            .map(parse_scope_path)
-                            .collect(),
-                    }],
+                    overlaps:  AuthorizedOverlapSet::try_from(vec![AuthorizedOverlap {
+                        reservation_id: parse_reservation_id(HOLDER_RESERVATION_ID),
+                        scope_revision: OverlapScopeRevision::from(
+                            &ReservationScopeSet::try_from(vec![reservation_scope(
+                                "crates/cargo-berth",
+                                ScopeKind::Tree,
+                            )])
+                            .expect("holder scopes should be non-empty"),
+                        ),
+                        scopes:         AuthorizedOverlapScopeSet::from(
+                            ReservationScopeSet::try_from(vec![
+                                reservation_scope("crates/cargo-berth/src", ScopeKind::Tree),
+                                reservation_scope("docs/berth-plan.md", ScopeKind::File),
+                            ])
+                            .expect("authorized scopes should be non-empty"),
+                        ),
+                    }])
+                    .expect("authorized holders should be non-empty"),
+                    blocker:   parse_reservation_id(HOLDER_RESERVATION_ID),
                     direction: OrderingDirection::RequesterBeforeHolder,
                     edge_id:   "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a21"
                         .parse::<EdgeId>()
                         .expect("edge identifier should parse"),
                     reason:
                         "The implementation must precede the dependent documentation update."
-                            .to_owned(),
+                            .parse::<OverlapAuthorizationReason>()
+                            .expect("overlap authorization reason should parse"),
                 },
             },
         }
@@ -1413,6 +1390,12 @@ mod tests {
     fn parse_scope_path(path: &str) -> ReservationScopePath {
         path.parse()
             .expect("repository-relative reservation scope path should parse")
+    }
+
+    fn parse_reservation_id(value: &str) -> ReservationId {
+        value
+            .parse()
+            .expect("holder reservation identifier should parse")
     }
 
     fn reservation_scope(path: &str, kind: ScopeKind) -> ReservationScope {

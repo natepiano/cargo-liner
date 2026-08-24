@@ -100,6 +100,11 @@ impl ReservationScope {
     pub(crate) fn overlaps(&self, other: &Self, path_case: PathCase) -> bool {
         antichain::overlaps(self, other, path_case)
     }
+
+    /// Return whether this scope contains all paths represented by another scope.
+    pub(crate) fn contains(&self, other: &Self, path_case: PathCase) -> bool {
+        antichain::contains(self, other, path_case)
+    }
 }
 
 impl ReservationScopeSet {

@@ -25,11 +25,6 @@ use constants::MUTATING_VERB_CONTENTION_TOLERANCE;
 use constants::PROJECTION_FILE_NAME;
 use constants::REPO_INSTANCE_ID_FILE_NAME;
 use constants::WORKTREE_ID_FILE_NAME;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
-pub(crate) use journal::AuthorizedOverlap;
 #[cfg_attr(
     not(test),
     expect(
@@ -42,7 +37,6 @@ pub(crate) use journal::CanonicalWorktreeRoot;
 pub(crate) use journal::ClaimHeadCommit;
 pub(crate) use journal::ClaimHeadSnapshot;
 pub(crate) use journal::ClaimSource;
-pub(crate) use journal::ConflictAuthorization;
 #[expect(
     unused_imports,
     reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
@@ -55,10 +49,6 @@ pub(crate) use journal::JournalEvent;
 pub(crate) use journal::JournalOperation;
 use journal::JournalReplay;
 pub(crate) use journal::NonEmptyReservationPurpose;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::OrderingDirection;
 pub(crate) use journal::ProtectedPhaseStartHead;
 pub(crate) use journal::ReservationPurpose;

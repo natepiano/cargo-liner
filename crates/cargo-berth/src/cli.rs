@@ -16,6 +16,17 @@ use clap::Parser;
 use clap::Subcommand;
 use clap::error::ErrorKind;
 
+use crate::answer::OverlapAuthorizationReason;
+use crate::answer::OverlapAuthorizationRequest;
+use crate::answer::OverlapProposalSubmission;
+use crate::answer::OverlapProposalToken;
+use crate::answer::PermissiveOverlapAnswer;
+use crate::answer::PermissiveOverlapAuthorizationRequest;
+use crate::constants::OVERLAP_WHY_ARGUMENT;
+use crate::constants::OVERLAP_WHY_ARGUMENT_ID;
+use crate::constants::OVERLAP_WHY_VALUE_NAME;
+use crate::constants::PROPOSAL_ARGUMENT;
+use crate::constants::PROPOSAL_VALUE_NAME;
 use crate::exit::BerthExit;
 use crate::git;
 use crate::ids::CoordinationRunId;
@@ -25,6 +36,7 @@ use crate::ledger::ClaimSource;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::NonEmptyReservationPurpose;
+use crate::ledger::OrderingDirection;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::WorkPlanReference;
@@ -97,7 +109,7 @@ pub(crate) struct Cli {
 /// The command line after clap has either parsed it or classified its error.
 pub(crate) enum CliInvocation {
     /// A valid command line.
-    Command(Cli),
+    Command(Box<Cli>),
     /// A command line clap could not parse.
     Usage(clap::Error),
 }
@@ -192,20 +204,50 @@ struct ClaimArguments {
     #[arg(required = true, value_name = PATH_VALUE_NAME)]
     paths:                Vec<std::path::PathBuf>,
     /// Sequence this reservation before the blocking reservation.
-    #[arg(long = CLAIM_BEFORE_ARGUMENT, value_name = BLOCKER_VALUE_NAME)]
+    #[arg(
+        long = CLAIM_BEFORE_ARGUMENT,
+        value_name = BLOCKER_VALUE_NAME,
+        requires = OVERLAP_WHY_ARGUMENT_ID
+    )]
     before:               Option<ReservationId>,
     /// Sequence this reservation after the blocking reservation.
-    #[arg(long = CLAIM_AFTER_ARGUMENT, value_name = BLOCKER_VALUE_NAME)]
+    #[arg(
+        long = CLAIM_AFTER_ARGUMENT,
+        value_name = BLOCKER_VALUE_NAME,
+        requires = OVERLAP_WHY_ARGUMENT_ID
+    )]
     after:                Option<ReservationId>,
     /// Defer an answer about the blocking reservation.
-    #[arg(long = CLAIM_DEFER_ARGUMENT, value_name = BLOCKER_VALUE_NAME)]
+    #[arg(
+        long = CLAIM_DEFER_ARGUMENT,
+        value_name = BLOCKER_VALUE_NAME,
+        requires = OVERLAP_WHY_ARGUMENT_ID
+    )]
     defer:                Option<ReservationId>,
     /// Override the blocking reservation.
-    #[arg(long = CLAIM_OVERRIDE_ARGUMENT, value_name = BLOCKER_VALUE_NAME)]
+    #[arg(
+        long = CLAIM_OVERRIDE_ARGUMENT,
+        value_name = BLOCKER_VALUE_NAME,
+        requires = OVERLAP_WHY_ARGUMENT_ID
+    )]
     override_reservation: Option<ReservationId>,
-    /// Explain why the overlap answer is requested.
+    /// Explain why these paths are being protected.
     #[arg(long = WHY_ARGUMENT, value_name = WHY_VALUE_NAME)]
     why:                  Option<String>,
+    /// Explain why this specific overlap answer is authorized.
+    #[arg(
+        long = OVERLAP_WHY_ARGUMENT,
+        value_name = OVERLAP_WHY_VALUE_NAME,
+        requires = CLAIM_RESOLUTION_GROUP
+    )]
+    overlap_why:          Option<String>,
+    /// Apply the exact overlap proposal returned by the preceding invocation.
+    #[arg(
+        long = PROPOSAL_ARGUMENT,
+        value_name = PROPOSAL_VALUE_NAME,
+        requires = CLAIM_RESOLUTION_GROUP
+    )]
+    proposal:             Option<String>,
     /// Name the external work plan that originated this claim.
     #[arg(
         long = PLAN_ARGUMENT,
@@ -333,7 +375,9 @@ impl Cli {
     /// Read the command line, whether cargo invoked this binary or a shell did.
     pub(crate) fn parse_arguments() -> CliInvocation {
         Self::try_parse_from(without_subcommand_name(env::args_os().collect()))
-            .map_or_else(CliInvocation::Usage, CliInvocation::Command)
+            .map_or_else(CliInvocation::Usage, |cli| {
+                CliInvocation::Command(Box::new(cli))
+            })
     }
 
     /// Execute the parsed command and return its published process exit status.
@@ -350,7 +394,7 @@ impl CliInvocation {
     /// Print a parser error or execute a valid command.
     pub(crate) fn run(self) -> ExitCode {
         match self {
-            Self::Command(cli) => cli.run(),
+            Self::Command(cli) => (*cli).run(),
             Self::Usage(error) => {
                 let berth_exit = exit_for_parser_error(&error);
                 if let Err(print_error) = error.print() {
@@ -452,11 +496,13 @@ impl ClaimArguments {
     fn into_claim_request(self) -> Result<ClaimRequest, String> {
         let Self {
             paths,
-            before: _,
-            after: _,
-            defer: _,
-            override_reservation: _,
+            before,
+            after,
+            defer,
+            override_reservation,
             why,
+            overlap_why,
+            proposal,
             plan,
             phase,
             run,
@@ -483,6 +529,14 @@ impl ClaimArguments {
             PhaseStartSelection::CurrentHead,
             PhaseStartSelection::Protected,
         );
+        let overlap_authorization = overlap_authorization_request(
+            before,
+            after,
+            defer,
+            override_reservation,
+            overlap_why,
+            proposal,
+        )?;
         Ok(ClaimRequest {
             declared_scopes,
             source,
@@ -492,8 +546,59 @@ impl ClaimArguments {
                 ClaimCoordinationRunSelection::Specified,
             ),
             phase_start,
+            overlap_authorization,
         })
     }
+}
+
+fn overlap_authorization_request(
+    before: Option<ReservationId>,
+    after: Option<ReservationId>,
+    defer: Option<ReservationId>,
+    override_reservation: Option<ReservationId>,
+    overlap_why: Option<String>,
+    proposal: Option<String>,
+) -> Result<OverlapAuthorizationRequest, String> {
+    let answer = match (before, after, defer, override_reservation) {
+        (None, None, None, None) => {
+            if overlap_why.is_some() || proposal.is_some() {
+                return Err(
+                    "--overlap-why and --proposal require --before, --after, --defer, or --override"
+                        .to_owned(),
+                );
+            }
+            return Ok(OverlapAuthorizationRequest::Absent);
+        },
+        (Some(blocker), None, None, None) => PermissiveOverlapAnswer::Sequence {
+            blocker,
+            direction: OrderingDirection::RequesterBeforeHolder,
+        },
+        (None, Some(blocker), None, None) => PermissiveOverlapAnswer::Sequence {
+            blocker,
+            direction: OrderingDirection::HolderBeforeRequester,
+        },
+        (None, None, Some(blocker), None) => PermissiveOverlapAnswer::Defer { blocker },
+        (None, None, None, Some(blocker)) => PermissiveOverlapAnswer::Override { blocker },
+        _ => return Err("choose only one overlap answer".to_owned()),
+    };
+    let reason = overlap_why
+        .ok_or_else(|| "a permissive overlap answer requires --overlap-why".to_owned())?
+        .parse::<OverlapAuthorizationReason>()
+        .map_err(|error| error.to_string())?;
+    let proposal_submission = proposal.map_or(Ok(OverlapProposalSubmission::Mint), |token| {
+        token
+            .parse::<OverlapProposalToken>()
+            .map(Box::new)
+            .map(OverlapProposalSubmission::Apply)
+            .map_err(|error| error.to_string())
+    })?;
+    Ok(OverlapAuthorizationRequest::Permissive(Box::new(
+        PermissiveOverlapAuthorizationRequest {
+            answer,
+            reason,
+            proposal_submission,
+        },
+    )))
 }
 
 impl ReservationArguments {
@@ -784,6 +889,60 @@ mod tests {
     }
 
     #[test]
+    fn every_permissive_claim_answer_requires_its_distinct_overlap_reason() {
+        for answer in ["--before", "--after", "--defer", "--override"] {
+            assert!(parsed_verb(&[BINARY_NAME, "claim", "src", answer, RESERVATION_ID]).is_err());
+            assert!(
+                parsed_verb(&[
+                    BINARY_NAME,
+                    "claim",
+                    "src",
+                    answer,
+                    RESERVATION_ID,
+                    "--why",
+                    "protect the implementation",
+                ])
+                .is_err()
+            );
+            assert!(
+                claim_request(&[
+                    BINARY_NAME,
+                    "claim",
+                    "src",
+                    answer,
+                    RESERVATION_ID,
+                    "--why",
+                    "protect the implementation",
+                    "--overlap-why",
+                    "the two changes are coordinated",
+                ])
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn proposal_tokens_are_parsed_at_the_cli_boundary() {
+        assert!(
+            claim_request(&[
+                BINARY_NAME,
+                "claim",
+                "src",
+                "--override",
+                RESERVATION_ID,
+                "--overlap-why",
+                "the overlap is accepted",
+                "--proposal",
+                "not-a-proposal",
+            ])
+            .is_err()
+        );
+        assert!(
+            parsed_verb(&[BINARY_NAME, "claim", "src", "--proposal", "not-a-proposal",]).is_err()
+        );
+    }
+
+    #[test]
     fn parser_errors_have_their_published_exit_statuses() {
         let invalid_command_exit = Cli::try_parse_from([BINARY_NAME, "unknown"])
             .map_or_else(|error| exit_for_parser_error(&error), |_| BerthExit::Clear);
@@ -815,6 +974,17 @@ mod tests {
             arguments.iter().map(OsString::from).collect(),
         ))
         .map(|cli| cli.command.verb())
+    }
+
+    fn claim_request(arguments: &[&str]) -> Result<crate::verb::claim::ClaimRequest, String> {
+        let cli = Cli::try_parse_from(without_subcommand_name(
+            arguments.iter().map(OsString::from).collect(),
+        ))
+        .map_err(|error| error.to_string())?;
+        match cli.command {
+            super::Command::Claim(claim_arguments) => claim_arguments.into_claim_request(),
+            _ => Err("expected claim command".to_owned()),
+        }
     }
 
     fn help_for(verb: &str) -> String {

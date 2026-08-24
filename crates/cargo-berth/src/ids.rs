@@ -130,7 +130,7 @@ macro_rules! uuid_identifier_minter {
 
 uuid_identifier_minter!(ReservationId);
 uuid_identifier_minter!(CoordinationRunId);
-uuid_identifier_minter!(future EdgeId);
+uuid_identifier_minter!(EdgeId);
 uuid_identifier_minter!(EventId);
 uuid_identifier_minter!(RepoInstanceId);
 uuid_identifier_minter!(WorktreeId);

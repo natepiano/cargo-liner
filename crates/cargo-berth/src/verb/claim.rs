@@ -5,6 +5,14 @@ use std::path::Path;
 use std::process::Command;
 use std::process::Output;
 
+use crate::answer::ConflictAuthorization;
+use crate::answer::OverlapAuthorizationRequest;
+use crate::answer::OverlapEscalationPayload;
+use crate::answer::OverlapProposal;
+use crate::answer::OverlapProposalSubmission;
+use crate::answer::OverlapRequester;
+use crate::answer::PermissiveOverlapAuthorizationRequest;
+use crate::answer::RequesterCoordinationIdentity;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::ids::CoordinationRunId;
@@ -15,7 +23,6 @@ use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadCommit;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
-use crate::ledger::ConflictAuthorization;
 use crate::ledger::EditAuthorization;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
@@ -23,9 +30,11 @@ use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ProtectedPhaseStartHead;
+use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::TransactionValidation;
 use crate::ledger::TrunkCommitAtClaim;
+use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
 use crate::ledger::worktree_identity;
 use crate::output::CommandVerb;
@@ -59,6 +68,8 @@ pub(crate) struct ClaimRequest {
     pub(crate) coordination_run_selection: ClaimCoordinationRunSelection,
     /// The phase-start commit selection.
     pub(crate) phase_start:                PhaseStartSelection,
+    /// The semantic overlap answer, its reason, and proposal state.
+    pub(crate) overlap_authorization:      OverlapAuthorizationRequest,
 }
 
 /// How a claim chooses the coordination run that will own its reservation.
@@ -72,8 +83,13 @@ pub(crate) enum ClaimCoordinationRunSelection {
 /// The replay validation required by the source of a resolved claim run.
 #[derive(Clone, Copy)]
 enum ClaimRunValidation {
-    /// An explicit argument, process environment, or new identity does not depend on a marker.
-    Independent(CoordinationRunId),
+    /// An explicit argument or process environment identifies a marker-independent caller.
+    IndependentWithPresentedIdentity(CoordinationRunId),
+    /// A marker-independent caller presented no identity, so only its actor run is minted.
+    IndependentWithoutPresentedIdentity {
+        /// The concrete run stamped on the new reservation and transaction.
+        actor_run_id: CoordinationRunId,
+    },
     /// A marker remains valid only while this worktree and run retain active work.
     ActiveMarkerRequired {
         coordination_run_id: CoordinationRunId,
@@ -93,6 +109,18 @@ struct ClaimRepositoryFacts {
     head_snapshot: ClaimHeadSnapshot,
     current_head:  GitObjectId,
     worktree_root: CanonicalWorktreeRoot,
+}
+
+struct PreparedClaim {
+    reservation_id:                  ReservationId,
+    scopes:                          ReservationScopeSet,
+    source:                          ClaimSource,
+    purpose:                         ReservationPurpose,
+    trunk_at_claim:                  TrunkCommitAtClaim,
+    head_snapshot:                   ClaimHeadSnapshot,
+    phase_start_head:                ProtectedPhaseStartHead,
+    worktree_root:                   CanonicalWorktreeRoot,
+    worktree_administrative_locator: WorktreeAdministrativeLocator,
 }
 
 /// Acquire a reservation or return a typed conflict without appending.
@@ -120,6 +148,9 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
             marker_publication,
         ),
         Ok(ClaimExecution::Blocked(conflicts)) => OutputEnvelope::blocked_claim(conflicts),
+        Ok(ClaimExecution::AuthorizationRequired(escalation)) => {
+            OutputEnvelope::claim_authorization_required(*escalation)
+        },
         Err(ClaimError::Transaction(error)) => match error {
             LedgerTransactionError::CorrectableInput(error) => {
                 OutputEnvelope::invalid_input(CommandVerb::Claim, &error.to_string())
@@ -150,21 +181,27 @@ enum ClaimExecution {
         marker_publication:  CoordinationRunMarkerPublication,
     },
     Blocked(Vec<ReservationConflict>),
+    AuthorizationRequired(Box<OverlapEscalationPayload>),
 }
 
 fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimError> {
+    let ClaimRequest {
+        declared_scopes,
+        source,
+        purpose,
+        coordination_run_selection,
+        phase_start,
+        overlap_authorization,
+    } = claim_request;
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let claim_run_validation = claim_request
-        .coordination_run_selection
-        .resolve(worktree_context.administrative_directory());
-    let coordination_run_id = claim_run_validation.coordination_run_id();
+    let claim_run_validation =
+        coordination_run_selection.resolve(worktree_context.administrative_directory());
+    let actor_run_id = claim_run_validation.actor_run_id();
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
-    let scopes = claim_request
-        .declared_scopes
-        .into_minimal_antichain(path_case);
+    let scopes = declared_scopes.into_minimal_antichain(path_case);
     let claim_repository_facts = ClaimRepositoryFacts::read(&worktree_context)?;
-    let phase_start_head = match claim_request.phase_start {
+    let phase_start_head = match phase_start {
         PhaseStartSelection::CurrentHead => {
             ProtectedPhaseStartHead::from(claim_repository_facts.current_head.clone())
         },
@@ -179,33 +216,33 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
     )?;
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let reservation_id = ReservationId::new();
-    let operation_scopes = scopes.clone();
-    let outcome = ledger.transact(worktree_identity.id, coordination_run_id, |state| {
-        let reservations = match RetainedReservationSet::replay(state.events()) {
-            Ok(reservations) => reservations,
-            Err(error) => return TransactionValidation::Reject(ClaimRejection::Replay(error)),
-        };
-        if let Err(rejection) = claim_run_validation.validate(&reservations) {
-            return TransactionValidation::Reject(rejection);
-        }
-        let conflicts =
-            reservations.conflicts_for_claim(&operation_scopes, coordination_run_id, path_case);
-        if conflicts.is_empty() {
-            TransactionValidation::Append(Box::new(JournalOperation::Claim {
-                reservation_id,
-                scopes: operation_scopes,
-                source: claim_request.source,
-                purpose: claim_request.purpose,
-                trunk_at_claim,
-                head_snapshot: claim_repository_facts.head_snapshot,
-                phase_start_head,
-                worktree_root: claim_repository_facts.worktree_root,
-                worktree_administrative_locator: worktree_context.administrative_locator().clone(),
-                authorization: ConflictAuthorization::NoConflict,
-            }))
-        } else {
-            TransactionValidation::Reject(ClaimRejection::Conflict(conflicts))
-        }
+    let prepared_claim = PreparedClaim {
+        reservation_id,
+        scopes: scopes.clone(),
+        source,
+        purpose,
+        trunk_at_claim,
+        head_snapshot: claim_repository_facts.head_snapshot,
+        phase_start_head,
+        worktree_root: claim_repository_facts.worktree_root,
+        worktree_administrative_locator: worktree_context.administrative_locator().clone(),
+    };
+    let requester = OverlapRequester::new(
+        claim_run_validation.presented_coordination_identity(),
+        worktree_identity.id,
+        prepared_claim.source.clone(),
+        prepared_claim.purpose.clone(),
+    );
+    let outcome = ledger.transact(worktree_identity.id, actor_run_id, |state| {
+        validate_claim_transaction(
+            &state,
+            prepared_claim,
+            claim_run_validation,
+            actor_run_id,
+            path_case,
+            requester,
+            overlap_authorization,
+        )
     })?;
     match outcome {
         LedgerTransactionOutcome::Appended(event) => {
@@ -228,6 +265,9 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
         LedgerTransactionOutcome::Rejected(ClaimRejection::Conflict(conflicts)) => {
             Ok(ClaimExecution::Blocked(conflicts))
         },
+        LedgerTransactionOutcome::Rejected(ClaimRejection::AuthorizationRequired(escalation)) => {
+            Ok(ClaimExecution::AuthorizationRequired(escalation))
+        },
         LedgerTransactionOutcome::Rejected(ClaimRejection::Replay(error)) => {
             Err(ClaimError::ReservationReplay(error))
         },
@@ -237,16 +277,98 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
     }
 }
 
+fn validate_claim_transaction(
+    state: &ReplayedLedgerState<'_>,
+    prepared_claim: PreparedClaim,
+    claim_run_validation: ClaimRunValidation,
+    coordination_run_id: CoordinationRunId,
+    path_case: PathCase,
+    requester: OverlapRequester,
+    overlap_authorization: OverlapAuthorizationRequest,
+) -> TransactionValidation<ClaimRejection> {
+    let reservations = match RetainedReservationSet::replay(state.events()) {
+        Ok(reservations) => reservations,
+        Err(error) => return TransactionValidation::Reject(ClaimRejection::Replay(error)),
+    };
+    if let Err(rejection) = claim_run_validation.validate(&reservations) {
+        return TransactionValidation::Reject(rejection);
+    }
+    let conflicts =
+        reservations.conflicts_for_claim(&prepared_claim.scopes, coordination_run_id, path_case);
+    match overlap_authorization {
+        OverlapAuthorizationRequest::Absent if conflicts.is_empty() => {
+            TransactionValidation::Append(Box::new(
+                prepared_claim.into_operation(ConflictAuthorization::NoConflict),
+            ))
+        },
+        OverlapAuthorizationRequest::Absent => {
+            TransactionValidation::Reject(ClaimRejection::Conflict(conflicts))
+        },
+        OverlapAuthorizationRequest::Permissive(request) => {
+            validate_authorization(*request, conflicts, requester, prepared_claim)
+        },
+    }
+}
+
+fn validate_authorization(
+    request: PermissiveOverlapAuthorizationRequest,
+    conflicts: Vec<ReservationConflict>,
+    requester: OverlapRequester,
+    prepared_claim: PreparedClaim,
+) -> TransactionValidation<ClaimRejection> {
+    let PermissiveOverlapAuthorizationRequest {
+        answer,
+        reason,
+        proposal_submission,
+    } = request;
+    let [conflict] = conflicts.as_slice() else {
+        return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
+    };
+    if conflict.reservation_id != answer.blocker() {
+        return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
+    }
+    let proposal =
+        OverlapProposal::recompute(requester, reason, &prepared_claim.scopes, answer, conflict);
+    match proposal_submission {
+        OverlapProposalSubmission::Apply(proposal_token) if proposal_token.matches(&proposal) => {
+            let authorization = ConflictAuthorization::from_approved_proposal(proposal);
+            TransactionValidation::Append(Box::new(prepared_claim.into_operation(authorization)))
+        },
+        OverlapProposalSubmission::Mint | OverlapProposalSubmission::Apply(_) => {
+            TransactionValidation::Reject(ClaimRejection::AuthorizationRequired(Box::new(
+                proposal.escalation(conflicts),
+            )))
+        },
+    }
+}
+
+impl PreparedClaim {
+    fn into_operation(self, authorization: ConflictAuthorization) -> JournalOperation {
+        JournalOperation::Claim {
+            reservation_id: self.reservation_id,
+            scopes: self.scopes,
+            source: self.source,
+            purpose: self.purpose,
+            trunk_at_claim: self.trunk_at_claim,
+            head_snapshot: self.head_snapshot,
+            phase_start_head: self.phase_start_head,
+            worktree_root: self.worktree_root,
+            worktree_administrative_locator: self.worktree_administrative_locator,
+            authorization,
+        }
+    }
+}
+
 impl ClaimCoordinationRunSelection {
     fn resolve(self, worktree_administrative_directory: &Path) -> ClaimRunValidation {
         match self {
             Self::Specified(coordination_run_id) => {
-                ClaimRunValidation::Independent(coordination_run_id)
+                ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id)
             },
             Self::ContinueOrStart => {
                 match EditAuthorization::resolve(worktree_administrative_directory) {
                     EditAuthorization::Environment(coordination_run_id) => {
-                        ClaimRunValidation::Independent(coordination_run_id)
+                        ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id)
                     },
                     EditAuthorization::Marker {
                         coordination_run_id,
@@ -256,7 +378,9 @@ impl ClaimCoordinationRunSelection {
                         worktree_id,
                     },
                     EditAuthorization::Unidentified => {
-                        ClaimRunValidation::Independent(CoordinationRunId::new())
+                        ClaimRunValidation::IndependentWithoutPresentedIdentity {
+                            actor_run_id: CoordinationRunId::new(),
+                        }
                     },
                 }
             },
@@ -265,13 +389,29 @@ impl ClaimCoordinationRunSelection {
 }
 
 impl ClaimRunValidation {
-    const fn coordination_run_id(self) -> CoordinationRunId {
+    const fn actor_run_id(self) -> CoordinationRunId {
         match self {
-            Self::Independent(coordination_run_id)
+            Self::IndependentWithPresentedIdentity(actor_run_id)
+            | Self::IndependentWithoutPresentedIdentity { actor_run_id }
             | Self::ActiveMarkerRequired {
+                coordination_run_id: actor_run_id,
+                ..
+            } => actor_run_id,
+        }
+    }
+
+    const fn presented_coordination_identity(self) -> RequesterCoordinationIdentity {
+        match self {
+            Self::IndependentWithPresentedIdentity(coordination_run_id) => {
+                RequesterCoordinationIdentity::Presented(coordination_run_id)
+            },
+            Self::IndependentWithoutPresentedIdentity { .. } => {
+                RequesterCoordinationIdentity::NotPresented
+            },
+            Self::ActiveMarkerRequired {
                 coordination_run_id,
                 ..
-            } => coordination_run_id,
+            } => RequesterCoordinationIdentity::Presented(coordination_run_id),
         }
     }
 
@@ -385,6 +525,7 @@ fn git_output(repository_root: &Path, arguments: &[&str]) -> Result<Output, std:
 
 enum ClaimRejection {
     Conflict(Vec<ReservationConflict>),
+    AuthorizationRequired(Box<OverlapEscalationPayload>),
     Replay(ReservationReplayError),
     InactiveMarkerRun(CoordinationRunId),
 }

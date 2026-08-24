@@ -24,6 +24,8 @@ pub(crate) use lifecycle::RewrittenIntegrationTrunkCommit;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::answer::ConflictAuthorization;
+use crate::answer::OverlapScopeRevision;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
@@ -57,6 +59,7 @@ pub(crate) struct Reservation {
     id:                         ReservationId,
     revision:                   ReservationRevision,
     scopes:                     ReservationScopeSet,
+    authorizations:             Vec<ConflictAuthorization>,
     source:                     ClaimSource,
     purpose:                    ReservationPurpose,
     head_snapshot:              ClaimHeadSnapshot,
@@ -100,6 +103,7 @@ struct ReplayedClaim<'event> {
     actor:            &'event JournalActor,
     worktree_root:    &'event CanonicalWorktreeRoot,
     worktree_locator: &'event WorktreeAdministrativeLocator,
+    authorization:    &'event ConflictAuthorization,
 }
 
 /// State-specific evidence exposed without an optional protected commit.
@@ -141,21 +145,32 @@ pub(crate) enum ReservationEvidenceState {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ReservationConflict {
     /// The durable reservation that holds the overlapping paths.
-    pub(crate) reservation_id:       ReservationId,
+    pub(crate) reservation_id:         ReservationId,
     /// The holder revision against which the overlap was evaluated.
-    pub(crate) reservation_revision: ReservationRevision,
+    pub(crate) reservation_revision:   ReservationRevision,
+    /// The holder revision that changes only when its scopes change.
+    pub(crate) overlap_scope_revision: OverlapScopeRevision,
     /// The worktree identity that acquired the reservation.
-    pub(crate) holder_worktree_id:   WorktreeId,
+    pub(crate) holder_worktree_id:     WorktreeId,
     /// The coordination run that acquired the reservation.
-    pub(crate) holder_run_id:        CoordinationRunId,
+    pub(crate) holder_run_id:          CoordinationRunId,
     /// The holder's attached branch or detached commit.
-    pub(crate) head_snapshot:        ClaimHeadSnapshot,
+    pub(crate) head_snapshot:          ClaimHeadSnapshot,
     /// The holder's typed plan provenance.
-    pub(crate) source:               ClaimSource,
+    pub(crate) source:                 ClaimSource,
     /// The holder's typed reason for protecting the paths.
-    pub(crate) purpose:              ReservationPurpose,
+    pub(crate) purpose:                ReservationPurpose,
     /// The holder scopes that intersect the requested scopes.
-    pub(crate) overlapping_scopes:   ReservationScopeSet,
+    pub(crate) overlapping_scopes:     ReservationScopeSet,
+}
+
+/// The run identity permitted to receive its reservation-specific overlap answers.
+#[derive(Clone, Copy)]
+enum AuthorizedEditingRun {
+    /// The process or validated marker identifies this coordination run.
+    Identified(CoordinationRunId),
+    /// No coordination run can be proven for this edit.
+    Unidentified,
 }
 
 impl RetainedReservationSet {
@@ -198,16 +213,38 @@ impl RetainedReservationSet {
             }),
             EditAuthorization::Environment(_) | EditAuthorization::Unidentified => false,
         };
-        self.conflicts(candidate, path_case, |holder| match edit_authorization {
+        let authorized_editing_run = match edit_authorization {
             EditAuthorization::Environment(coordination_run_id) => {
-                holder.actor.run != coordination_run_id
+                AuthorizedEditingRun::Identified(coordination_run_id)
             },
             EditAuthorization::Marker {
                 coordination_run_id,
                 ..
-            } if marker_is_active => holder.actor.run != coordination_run_id,
-            EditAuthorization::Marker { .. } | EditAuthorization::Unidentified => true,
-        })
+            } if marker_is_active => AuthorizedEditingRun::Identified(coordination_run_id),
+            EditAuthorization::Marker { .. } | EditAuthorization::Unidentified => {
+                AuthorizedEditingRun::Unidentified
+            },
+        };
+        let conflicts = self.conflicts_with_holders(candidate, path_case, |holder| {
+            authorized_editing_run.is_foreign(holder)
+        });
+        let mut unanswered_conflicts = Vec::new();
+        for (holder, mut conflict) in conflicts {
+            let unanswered_scopes = conflict
+                .overlapping_scopes
+                .as_slice()
+                .iter()
+                .filter(|overlap_scope| {
+                    !authorized_editing_run.authorizes(self, holder, overlap_scope, path_case)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if let Ok(overlapping_scopes) = ReservationScopeSet::try_from(unanswered_scopes) {
+                conflict.overlapping_scopes = overlapping_scopes;
+                unanswered_conflicts.push(conflict);
+            }
+        }
+        unanswered_conflicts
     }
 
     /// Iterate over every reservation retained for constraints or audit history.
@@ -248,6 +285,7 @@ impl RetainedReservationSet {
                 head_snapshot,
                 worktree_root,
                 worktree_administrative_locator,
+                authorization,
                 ..
             } => self.apply_claim(ReplayedClaim {
                 id: *reservation_id,
@@ -259,12 +297,14 @@ impl RetainedReservationSet {
                 actor: &event.actor,
                 worktree_root,
                 worktree_locator: worktree_administrative_locator,
+                authorization,
             })?,
             JournalOperation::Widen {
                 reservation_id,
                 added_scopes,
+                authorization,
                 ..
-            } => self.apply_widen(*reservation_id, added_scopes)?,
+            } => self.apply_widen(*reservation_id, added_scopes, authorization)?,
             JournalOperation::Checkpoint {
                 reservation_id,
                 protected_tip,
@@ -351,6 +391,7 @@ impl RetainedReservationSet {
             id:                         replayed_claim.id,
             revision:                   ReservationRevision::from(1),
             scopes:                     replayed_claim.scopes.clone(),
+            authorizations:             vec![replayed_claim.authorization.clone()],
             source:                     replayed_claim.source.clone(),
             purpose:                    replayed_claim.purpose.clone(),
             head_snapshot:              replayed_claim.head_snapshot.clone(),
@@ -372,6 +413,7 @@ impl RetainedReservationSet {
         &mut self,
         reservation_id: ReservationId,
         added_scopes: &[crate::ids::ReservationScopePath],
+        authorization: &ConflictAuthorization,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
         let mut scopes = reservation.scopes.as_slice().to_vec();
@@ -381,7 +423,9 @@ impl RetainedReservationSet {
         }));
         reservation.scopes = ReservationScopeSet::try_from(scopes)
             .map_err(|_| ReservationReplayError::EmptyScopeSet(reservation_id))?;
-        reservation.advance_revision()
+        reservation.advance_revision()?;
+        reservation.authorizations.push(authorization.clone());
+        Ok(())
     }
 
     fn apply_checkpoint(
@@ -533,6 +577,18 @@ impl RetainedReservationSet {
         path_case: PathCase,
         holder_is_foreign: impl Fn(&Reservation) -> bool,
     ) -> Vec<ReservationConflict> {
+        self.conflicts_with_holders(candidate, path_case, holder_is_foreign)
+            .into_iter()
+            .map(|(_, conflict)| conflict)
+            .collect()
+    }
+
+    fn conflicts_with_holders(
+        &self,
+        candidate: &ReservationScopeSet,
+        path_case: PathCase,
+        holder_is_foreign: impl Fn(&Reservation) -> bool,
+    ) -> Vec<(&Reservation, ReservationConflict)> {
         self.reservations
             .iter()
             .filter(|holder| holder.edit_blocking_status == EditBlockingStatus::Blocking)
@@ -542,29 +598,100 @@ impl RetainedReservationSet {
                     .scopes
                     .as_slice()
                     .iter()
-                    .filter(|held_scope| {
+                    .flat_map(|held_scope| {
                         candidate
                             .as_slice()
                             .iter()
-                            .any(|candidate_scope| held_scope.overlaps(candidate_scope, path_case))
+                            .filter(|candidate_scope| {
+                                held_scope.overlaps(candidate_scope, path_case)
+                            })
+                            .map(|candidate_scope| {
+                                if held_scope.contains(candidate_scope, path_case) {
+                                    candidate_scope.clone()
+                                } else {
+                                    held_scope.clone()
+                                }
+                            })
                     })
-                    .cloned()
                     .collect::<Vec<_>>();
                 ReservationScopeSet::try_from(overlapping_scopes)
                     .ok()
-                    .map(|overlapping_scopes| ReservationConflict {
-                        reservation_id:       holder.id,
-                        reservation_revision: holder.revision,
-                        holder_worktree_id:   holder.actor.worktree,
-                        holder_run_id:        holder.actor.run,
-                        head_snapshot:        holder.head_snapshot.clone(),
-                        source:               holder.source.clone(),
-                        purpose:              holder.purpose.clone(),
-                        overlapping_scopes:   overlapping_scopes.minimal_antichain(path_case),
+                    .map(|overlapping_scopes| {
+                        (
+                            holder,
+                            ReservationConflict {
+                                reservation_id:         holder.id,
+                                reservation_revision:   holder.revision,
+                                overlap_scope_revision: OverlapScopeRevision::from(&holder.scopes),
+                                holder_worktree_id:     holder.actor.worktree,
+                                holder_run_id:          holder.actor.run,
+                                head_snapshot:          holder.head_snapshot.clone(),
+                                source:                 holder.source.clone(),
+                                purpose:                holder.purpose.clone(),
+                                overlapping_scopes:     overlapping_scopes
+                                    .minimal_antichain(path_case),
+                            },
+                        )
                     })
             })
             .collect()
     }
+}
+
+impl AuthorizedEditingRun {
+    fn is_foreign(self, holder: &Reservation) -> bool {
+        match self {
+            Self::Identified(coordination_run_id) => holder.actor.run != coordination_run_id,
+            Self::Unidentified => true,
+        }
+    }
+
+    fn authorizes(
+        self,
+        reservations: &RetainedReservationSet,
+        holder: &Reservation,
+        overlap_scope: &ReservationScope,
+        path_case: PathCase,
+    ) -> bool {
+        let Self::Identified(coordination_run_id) = self else {
+            return false;
+        };
+        reservations
+            .reservations
+            .iter()
+            .filter(|requester| {
+                requester.actor.run == coordination_run_id
+                    && requester.edit_blocking_status == EditBlockingStatus::Blocking
+                    && requester
+                        .scopes
+                        .as_slice()
+                        .iter()
+                        .any(|scope| scope.overlaps(overlap_scope, path_case))
+            })
+            .any(|requester| {
+                reservations_authorize_scope(requester, holder, overlap_scope, path_case)
+            })
+    }
+}
+
+fn reservations_authorize_scope(
+    requester: &Reservation,
+    holder: &Reservation,
+    overlap_scope: &ReservationScope,
+    path_case: PathCase,
+) -> bool {
+    let holder_scope_revision = OverlapScopeRevision::from(&holder.scopes);
+    let requester_scope_revision = OverlapScopeRevision::from(&requester.scopes);
+    requester.authorizations.iter().any(|authorization| {
+        authorization.covers(holder.id, &holder_scope_revision, overlap_scope, path_case)
+    }) || holder.authorizations.iter().any(|authorization| {
+        authorization.covers(
+            requester.id,
+            &requester_scope_revision,
+            overlap_scope,
+            path_case,
+        )
+    })
 }
 
 impl Reservation {
