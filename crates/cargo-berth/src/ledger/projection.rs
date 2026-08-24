@@ -32,7 +32,7 @@ pub(super) struct Projection {
     generation:          ProjectionGeneration,
     /// A digest that detects journal changes without trusting cache contents.
     journal_fingerprint: JournalFingerprint,
-    /// The replayed facts from which reservation state is derived.
+    /// The replayed facts, including materialized edit-blocking evidence.
     events:              Vec<JournalEvent>,
 }
 

@@ -23,6 +23,7 @@ use crate::ids::ReservationId;
 use crate::ids::WorkPlanPhase;
 use crate::ledger::ClaimSource;
 use crate::ledger::Ledger;
+use crate::ledger::LedgerTransactionError;
 use crate::ledger::NonEmptyReservationPurpose;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
@@ -35,6 +36,7 @@ use crate::verb::check::CheckRequest;
 use crate::verb::claim::ClaimCoordinationRunSelection;
 use crate::verb::claim::ClaimRequest;
 use crate::verb::claim::PhaseStartSelection;
+use crate::verb::release::ReleaseRequest;
 
 const ABANDON_ARGUMENT: &str = "abandon";
 const ABOUT: &str = "Reserve git-worktree paths before they overlap";
@@ -331,7 +333,9 @@ impl Command {
                 Ok(claim_request) => crate::verb::claim::execute(claim_request),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Claim, &error),
             },
-            Self::Release(_) => OutputEnvelope::unimplemented(CommandVerb::Release),
+            Self::Release(reservation_arguments) => {
+                crate::verb::release::execute(reservation_arguments.into_release_request())
+            },
             Self::Sequence(_) => OutputEnvelope::unimplemented(CommandVerb::Sequence),
             Self::Integrate(_) => OutputEnvelope::unimplemented(CommandVerb::Integrate),
             Self::Resolve(_) => OutputEnvelope::unimplemented(CommandVerb::Resolve),
@@ -427,13 +431,30 @@ impl ClaimArguments {
     }
 }
 
+impl ReservationArguments {
+    const fn into_release_request(self) -> ReleaseRequest {
+        ReleaseRequest {
+            reservation_id: self.reservation_id,
+        }
+    }
+}
+
 fn initialize_ledger() -> OutputEnvelope {
     match env::current_dir() {
         Ok(invocation_directory) => match git::repository_root(&invocation_directory) {
             Ok(repository_root) => match Ledger::initialize(&repository_root) {
                 Ok(initialization) => OutputEnvelope::initialized(initialization),
-                Err(error) => {
-                    OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string())
+                Err(error) => match LedgerTransactionError::from(error) {
+                    LedgerTransactionError::LockContention => OutputEnvelope::contention(
+                        CommandVerb::Init,
+                        &LedgerTransactionError::LockContention.to_string(),
+                    ),
+                    LedgerTransactionError::LedgerUnreadable(error) => {
+                        OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string())
+                    },
+                    LedgerTransactionError::CorrectableInput(error) => {
+                        OutputEnvelope::invalid_input(CommandVerb::Init, &error.to_string())
+                    },
                 },
             },
             Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string()),

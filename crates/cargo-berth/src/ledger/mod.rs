@@ -16,6 +16,7 @@ use std::str::FromStr;
 
 use constants::COORDINATION_RUN_ENVIRONMENT;
 use constants::COORDINATION_RUN_MARKER_FILE_NAME;
+use constants::COORDINATION_RUN_MARKER_RETIREMENT_SUFFIX;
 use constants::JOURNAL_FILE_NAME;
 use constants::LEDGER_DIRECTORY_NAME;
 use constants::LOCK_FILE_NAME;
@@ -60,18 +61,9 @@ pub(crate) use journal::NonEmptyReservationPurpose;
 )]
 pub(crate) use journal::OrderingDirection;
 pub(crate) use journal::ProtectedPhaseStartHead;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
-pub(crate) use journal::ReleaseDisposition;
 pub(crate) use journal::ReservationPurpose;
 pub(crate) use journal::ReservationScope;
 pub(crate) use journal::ReservationScopeSet;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::ReservationSnapshot;
 pub(crate) use journal::ScopeKind;
 pub(crate) use journal::TrunkCommitAtClaim;
@@ -122,6 +114,31 @@ enum GitAdministrativeLayout {
     Linked { common_git_directory: PathBuf },
 }
 
+/// A coordination-run marker atomically detached for content-based retirement.
+struct DetachedCoordinationRunMarker {
+    administrative_directory: PathBuf,
+    marker_path:              PathBuf,
+    retirement_path:          PathBuf,
+}
+
+/// Whether a marker was present when retirement atomically detached its pathname.
+enum CoordinationRunMarkerAtRetirement {
+    /// No marker existed at the retirement point.
+    AlreadyAbsent,
+    /// The exact marker present at the retirement point has a private pathname.
+    Detached(DetachedCoordinationRunMarker),
+}
+
+/// The content-based decision for one atomically detached marker.
+enum DetachedCoordinationRunMarkerDisposition {
+    /// The detached marker names the released run.
+    Remove,
+    /// The detached marker names another run.
+    PreserveDifferentRun,
+    /// The detached marker does not contain a UUID-v7 run id.
+    PreserveMalformed,
+}
+
 /// Validated journal truth for a mutation-free edit check.
 pub(crate) struct EditCheckLedgerSnapshot {
     events:           Vec<JournalEvent>,
@@ -144,6 +161,19 @@ pub(crate) enum EditAuthorization {
     Identified(CoordinationRunId),
     /// The caller has no run identity and must not receive a same-worktree exemption.
     Unidentified,
+}
+
+/// The filesystem result of retiring one coordination-run marker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CoordinationRunMarkerRemoval {
+    /// The marker named the released run and was removed.
+    Removed,
+    /// No marker existed when release checked it.
+    AlreadyAbsent,
+    /// The marker named another run and remains untouched.
+    PreservedDifferentRun,
+    /// The marker was not a UUID-v7 run id and remains for reconciliation.
+    PreservedMalformed,
 }
 
 impl EditAuthorization {
@@ -291,6 +321,100 @@ impl WorktreeContext {
         }
         publication.map_err(LedgerError::Io)
     }
+
+    /// Remove the marker only when it still names the released run.
+    pub(crate) fn remove_coordination_run_marker(
+        &self,
+        released_run_id: CoordinationRunId,
+    ) -> Result<CoordinationRunMarkerRemoval, LedgerError> {
+        match self.detach_coordination_run_marker()? {
+            CoordinationRunMarkerAtRetirement::AlreadyAbsent => {
+                Ok(CoordinationRunMarkerRemoval::AlreadyAbsent)
+            },
+            CoordinationRunMarkerAtRetirement::Detached(detached_marker) => {
+                detached_marker.retire(released_run_id)
+            },
+        }
+    }
+
+    fn detach_coordination_run_marker(
+        &self,
+    ) -> Result<CoordinationRunMarkerAtRetirement, LedgerError> {
+        let marker_path = self
+            .worktree_administrative_directory
+            .join(COORDINATION_RUN_MARKER_FILE_NAME);
+        let retirement_path = self.worktree_administrative_directory.join(format!(
+            "{COORDINATION_RUN_MARKER_FILE_NAME}.{}.{COORDINATION_RUN_MARKER_RETIREMENT_SUFFIX}",
+            Uuid::now_v7()
+        ));
+        match fs::rename(&marker_path, &retirement_path) {
+            Ok(()) => Ok(CoordinationRunMarkerAtRetirement::Detached(
+                DetachedCoordinationRunMarker {
+                    administrative_directory: self.worktree_administrative_directory.clone(),
+                    marker_path,
+                    retirement_path,
+                },
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(CoordinationRunMarkerAtRetirement::AlreadyAbsent)
+            },
+            Err(error) => Err(LedgerError::Io(error)),
+        }
+    }
+}
+
+impl DetachedCoordinationRunMarker {
+    fn retire(
+        self,
+        released_run_id: CoordinationRunId,
+    ) -> Result<CoordinationRunMarkerRemoval, LedgerError> {
+        let marker = match fs::read_to_string(&self.retirement_path) {
+            Ok(marker) => marker,
+            Err(error) => {
+                self.restore()?;
+                return Err(LedgerError::Io(error));
+            },
+        };
+        let disposition = marker.trim().parse::<CoordinationRunId>().map_or(
+            DetachedCoordinationRunMarkerDisposition::PreserveMalformed,
+            |marker_run_id| {
+                if marker_run_id == released_run_id {
+                    DetachedCoordinationRunMarkerDisposition::Remove
+                } else {
+                    DetachedCoordinationRunMarkerDisposition::PreserveDifferentRun
+                }
+            },
+        );
+        match disposition {
+            DetachedCoordinationRunMarkerDisposition::Remove => {
+                self.remove()?;
+                Ok(CoordinationRunMarkerRemoval::Removed)
+            },
+            DetachedCoordinationRunMarkerDisposition::PreserveDifferentRun => {
+                self.restore()?;
+                Ok(CoordinationRunMarkerRemoval::PreservedDifferentRun)
+            },
+            DetachedCoordinationRunMarkerDisposition::PreserveMalformed => {
+                self.restore()?;
+                Ok(CoordinationRunMarkerRemoval::PreservedMalformed)
+            },
+        }
+    }
+
+    fn remove(&self) -> Result<(), LedgerError> {
+        fs::remove_file(&self.retirement_path)?;
+        fs::File::open(&self.administrative_directory)?.sync_all()?;
+        Ok(())
+    }
+
+    fn restore(&self) -> Result<(), LedgerError> {
+        match fs::hard_link(&self.retirement_path, &self.marker_path) {
+            Ok(()) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+            Err(error) => return Err(LedgerError::Io(error)),
+        }
+        self.remove()
+    }
 }
 
 impl EditCheckLedgerSnapshot {
@@ -343,11 +467,32 @@ pub(crate) enum TransactionValidation<Rejection> {
     Reject(Rejection),
 }
 
+/// A locked validation result that carries work permitted only after its append commits.
+pub(crate) enum CommittedActionValidation<Rejection, CommittedAction> {
+    /// Append this operation, then execute the action while retaining the mutation lock.
+    Append {
+        /// The journal operation that must commit first.
+        operation: Box<JournalOperation>,
+        /// The side effect authorized by the committed operation.
+        action:    CommittedAction,
+    },
+    /// Return the semantic rejection without changing durable state.
+    Reject(Rejection),
+}
+
 /// The durable result of a validation-controlled ledger transaction.
 pub(crate) enum LedgerTransactionOutcome<Rejection> {
     /// Exactly one approved event was appended and published.
     Appended(Box<JournalEvent>),
     /// Validation rejected the proposal before any append.
+    Rejected(Rejection),
+}
+
+/// The result of a transaction whose appended record authorizes a locked side effect.
+pub(crate) enum LedgerCommittedActionOutcome<Rejection, CommittedActionOutput> {
+    /// The event committed, its action ran under the lock, and the projection published.
+    Appended(CommittedActionOutput),
+    /// Validation rejected the proposal before any append or side effect.
     Rejected(Rejection),
 }
 
@@ -428,6 +573,60 @@ impl Ledger {
                     .publish_if_rebuild_required(&self.paths)
                     .map_err(LedgerTransactionError::LedgerUnreadable)?;
                 Ok(LedgerTransactionOutcome::Rejected(rejection))
+            },
+        }
+    }
+
+    /// Append a validated operation before executing its authorized action under the same lock.
+    pub(crate) fn transact_with_committed_action<
+        Rejection,
+        CommittedAction,
+        CommittedActionOutput,
+        CommittedActionError,
+    >(
+        &self,
+        worktree_id: WorktreeId,
+        coordination_run_id: CoordinationRunId,
+        validate: impl FnOnce(
+            ReplayedLedgerState<'_>,
+        ) -> CommittedActionValidation<Rejection, CommittedAction>,
+        commit_action: impl FnOnce(
+            CommittedAction,
+        ) -> Result<CommittedActionOutput, CommittedActionError>,
+    ) -> Result<
+        LedgerCommittedActionOutcome<Rejection, CommittedActionOutput>,
+        LedgerCommittedActionError<CommittedActionError>,
+    > {
+        let mut transaction = self
+            .begin_mutation()
+            .map_err(LedgerTransactionError::from)
+            .map_err(LedgerCommittedActionError::Transaction)?;
+        let replayed_state = ReplayedLedgerState {
+            events:             &transaction.replay.events,
+            generation:         transaction.replay.generation,
+            journal_end_offset: transaction.replay.end_offset,
+        };
+        match validate(replayed_state) {
+            CommittedActionValidation::Append { operation, action } => {
+                transaction
+                    .append(worktree_id, coordination_run_id, *operation)
+                    .map_err(LedgerCommittedActionError::Transaction)?;
+                let action_output = commit_action(action);
+                transaction
+                    .publish(&self.paths)
+                    .map_err(LedgerTransactionError::LedgerUnreadable)
+                    .map_err(LedgerCommittedActionError::Transaction)?;
+                action_output.map_or_else(
+                    |error| Err(LedgerCommittedActionError::Action(error)),
+                    |output| Ok(LedgerCommittedActionOutcome::Appended(output)),
+                )
+            },
+            CommittedActionValidation::Reject(rejection) => {
+                transaction
+                    .publish_if_rebuild_required(&self.paths)
+                    .map_err(LedgerTransactionError::LedgerUnreadable)
+                    .map_err(LedgerCommittedActionError::Transaction)?;
+                Ok(LedgerCommittedActionOutcome::Rejected(rejection))
             },
         }
     }
@@ -838,6 +1037,10 @@ impl LedgerTransactionError {
     }
 }
 
+impl From<LedgerError> for LedgerTransactionError {
+    fn from(error: LedgerError) -> Self { Self::from_ledger_error(error) }
+}
+
 impl fmt::Display for LedgerTransactionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -851,6 +1054,31 @@ impl fmt::Display for LedgerTransactionError {
 }
 
 impl std::error::Error for LedgerTransactionError {}
+
+/// A failure before or after an append that authorizes one committed side effect.
+#[derive(Debug)]
+pub(crate) enum LedgerCommittedActionError<CommittedActionError> {
+    /// The locked journal transaction itself failed.
+    Transaction(LedgerTransactionError),
+    /// The journal append committed, but its authorized side effect failed.
+    Action(CommittedActionError),
+}
+
+impl<CommittedActionError: fmt::Display> fmt::Display
+    for LedgerCommittedActionError<CommittedActionError>
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transaction(error) => error.fmt(formatter),
+            Self::Action(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<CommittedActionError> std::error::Error for LedgerCommittedActionError<CommittedActionError> where
+    CommittedActionError: std::error::Error + 'static
+{
+}
 
 /// A rejected mutation input that the caller can reduce and submit again.
 #[derive(Debug)]
@@ -894,9 +1122,13 @@ mod tests {
     use tempfile::tempdir;
 
     use super::COORDINATION_RUN_MARKER_FILE_NAME;
+    use super::CommittedActionValidation;
+    use super::CoordinationRunMarkerAtRetirement;
+    use super::CoordinationRunMarkerRemoval;
     use super::CorrectableTransactionInput;
     use super::EditAuthorization;
     use super::Ledger;
+    use super::LedgerCommittedActionOutcome;
     use super::LedgerError;
     use super::LedgerTransactionError;
     use super::LedgerTransactionOutcome;
@@ -1049,6 +1281,94 @@ mod tests {
         )
         .expect("projection should decode");
         assert_eq!(projection["generation"], 1);
+    }
+
+    #[test]
+    fn committed_actions_run_after_append_while_the_mutation_lock_is_held() {
+        let repository = scratch_repository();
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let ledger = Ledger::open(repository.path()).expect("ledger should open");
+        let competing_lock = fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&ledger.paths.lock)
+            .expect("competing lock descriptor should open");
+
+        let outcome = ledger
+            .transact_with_committed_action(
+                WorktreeId::new(),
+                CoordinationRunId::new(),
+                |_| CommittedActionValidation::<(), ()>::Append {
+                    operation: Box::new(renewal_operation()),
+                    action:    (),
+                },
+                |()| {
+                    let contention = competing_lock.try_lock();
+                    assert!(
+                        matches!(contention, Err(std::fs::TryLockError::WouldBlock)),
+                        "the committed action must retain the mutation lock"
+                    );
+                    Ok::<(), std::io::Error>(())
+                },
+            )
+            .expect("committed action transaction should succeed");
+
+        assert!(matches!(
+            outcome,
+            LedgerCommittedActionOutcome::Appended(())
+        ));
+        assert_eq!(
+            fs::read_to_string(&ledger.paths.journal)
+                .expect("journal should read")
+                .lines()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn detached_marker_retirement_preserves_a_concurrent_publication()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let repository = scratch_repository();
+        let worktree_context =
+            WorktreeContext::discover(repository.path()).expect("worktree should be discovered");
+        let released_run_id = CoordinationRunId::new();
+        let replacement_run_id = CoordinationRunId::new();
+        worktree_context
+            .publish_coordination_run_marker(released_run_id)
+            .expect("released run marker should publish");
+        let marker_at_retirement = worktree_context
+            .detach_coordination_run_marker()
+            .expect("marker should detach");
+        let detached_marker = match marker_at_retirement {
+            CoordinationRunMarkerAtRetirement::Detached(detached_marker) => detached_marker,
+            CoordinationRunMarkerAtRetirement::AlreadyAbsent => {
+                return Err(std::io::Error::other(
+                    "published marker must be present for retirement",
+                )
+                .into());
+            },
+        };
+        worktree_context
+            .publish_coordination_run_marker(replacement_run_id)
+            .expect("replacement run marker should publish");
+
+        let removal = detached_marker
+            .retire(released_run_id)
+            .expect("detached marker should retire");
+
+        assert_eq!(removal, CoordinationRunMarkerRemoval::Removed);
+        assert_eq!(
+            fs::read_to_string(
+                worktree_context
+                    .administrative_directory()
+                    .join(COORDINATION_RUN_MARKER_FILE_NAME)
+            )
+            .expect("replacement marker should remain")
+            .trim(),
+            replacement_run_id.to_string()
+        );
+        Ok(())
     }
 
     #[test]

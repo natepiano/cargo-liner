@@ -31,9 +31,9 @@ use crate::ledger::worktree_identity;
 use crate::output::CommandVerb;
 use crate::output::CoordinationRunMarkerPublication;
 use crate::output::OutputEnvelope;
-use crate::reservation::LiveReservationSet;
 use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationReplayError;
+use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
 use crate::scope::PathCaseError;
@@ -151,15 +151,12 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
     let reservation_id = ReservationId::new();
     let operation_scopes = scopes.clone();
     let outcome = ledger.transact(worktree_identity.id, coordination_run_id, |state| {
-        let live_reservations = match LiveReservationSet::replay(state.events()) {
-            Ok(live_reservations) => live_reservations,
+        let reservations = match RetainedReservationSet::replay(state.events()) {
+            Ok(reservations) => reservations,
             Err(error) => return TransactionValidation::Reject(ClaimRejection::Replay(error)),
         };
-        let conflicts = live_reservations.conflicts_for_claim(
-            &operation_scopes,
-            coordination_run_id,
-            path_case,
-        );
+        let conflicts =
+            reservations.conflicts_for_claim(&operation_scopes, coordination_run_id, path_case);
         if conflicts.is_empty() {
             TransactionValidation::Append(Box::new(JournalOperation::Claim {
                 reservation_id,

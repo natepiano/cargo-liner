@@ -30,6 +30,10 @@ use crate::ids::ReservationScopePath;
 use crate::ids::SchemaVersion;
 use crate::ids::WorkPlanPhase;
 use crate::ids::WorktreeId;
+use crate::reservation::EditBlockingStatus;
+use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::ProtectedReservationTip;
+use crate::reservation::ReleaseDisposition;
 
 /// One append-only fact in the shared coordination journal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -124,7 +128,7 @@ pub(crate) enum JournalOperation {
         /// The reservation entering its outstanding state.
         reservation_id: ReservationId,
         /// The completed work's protected commit.
-        result_head:    GitObjectId,
+        protected_tip:  ProtectedReservationTip,
         /// The trunk commit observed at the checkpoint.
         trunk_snapshot: GitObjectId,
     },
@@ -144,10 +148,17 @@ pub(crate) enum JournalOperation {
     Release {
         /// The reservation receiving this disposition.
         reservation_id: ReservationId,
-        /// The user-confirmed outcome of this release.
+        /// The verified or user-confirmed outcome of this release.
         disposition:    ReleaseDisposition,
-        /// The human explanation retained for an irreversible disposition.
-        reason:         String,
+    },
+    /// Materialize a git evidence result for mutation-free edit checks.
+    EvidenceRevalidated {
+        /// The reservation whose evidence was revalidated.
+        reservation_id:       ReservationId,
+        /// The point-in-time result produced by git.
+        status:               IntegrationEvidenceStatus,
+        /// The edit decision produced when this evidence was recorded.
+        edit_blocking_status: EditBlockingStatus,
     },
     /// Convert a previously recorded defer answer into an ordering edge.
     ResolveDefer {
@@ -755,24 +766,10 @@ pub(crate) enum ReservationSnapshot {
     /// Fresh outstanding-work integration evidence.
     Outstanding {
         /// The reservation's current protected commit.
-        protected_tip: GitObjectId,
+        protected_tip: ProtectedReservationTip,
         /// The current trunk comparison point.
         trunk_oid:     GitObjectId,
     },
-}
-
-/// A user-confirmed terminal reservation outcome.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ReleaseDisposition {
-    /// Git proved the protected work reached trunk.
-    Integrated,
-    /// The user supplied alternate evidence after rewritten integration.
-    RewrittenIntegration,
-    /// The user deliberately discarded the reservation's work.
-    Abandoned,
-    /// The user confirmed an orphaned reservation can retire.
-    RetiredOrphan,
 }
 
 /// The operation a bypass deliberately allowed.

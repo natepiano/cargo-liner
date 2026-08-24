@@ -8,6 +8,7 @@
 //! | `3` | [`BerthExit::NeedsUserAuthorization`] | The command needs user authorization. |
 //! | `4` | [`BerthExit::LedgerUnreadable`] | The ledger cannot be read. Edit paths fail open; `integrate` fails closed. |
 //! | `5` | [`BerthExit::UsageError`] | The command line is invalid. |
+//! | `6` | [`BerthExit::BlockedByContention`] | Another mutation holds the ledger lock; retry the command. |
 
 use std::fmt;
 use std::process::ExitCode;
@@ -32,6 +33,8 @@ pub(crate) enum BerthExit {
     LedgerUnreadable       = 4,
     /// The command line is invalid.
     UsageError             = 5,
+    /// Another mutation holds the ledger lock through the bounded wait.
+    BlockedByContention    = 6,
 }
 
 impl BerthExit {
@@ -55,6 +58,7 @@ impl TryFrom<u8> for BerthExit {
             3 => Ok(Self::NeedsUserAuthorization),
             4 => Ok(Self::LedgerUnreadable),
             5 => Ok(Self::UsageError),
+            6 => Ok(Self::BlockedByContention),
             _ => Err(InvalidBerthExitCode(value)),
         }
     }
@@ -87,6 +91,7 @@ mod tests {
         assert_eq!(BerthExit::NeedsUserAuthorization.code(), 3);
         assert_eq!(BerthExit::LedgerUnreadable.code(), 4);
         assert_eq!(BerthExit::UsageError.code(), 5);
+        assert_eq!(BerthExit::BlockedByContention.code(), 6);
     }
 
     #[test]
@@ -98,6 +103,7 @@ mod tests {
                 .as_ref()
                 .is_ok_and(|serialized_exit| serialized_exit == "0")
         );
-        assert!(serde_json::from_str::<BerthExit>("6").is_err());
+        assert!(serde_json::from_str::<BerthExit>("6").is_ok());
+        assert!(serde_json::from_str::<BerthExit>("7").is_err());
     }
 }

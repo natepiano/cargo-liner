@@ -4,7 +4,7 @@ use crate::ledger::EditAuthorization;
 use crate::ledger::Ledger;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
-use crate::reservation::LiveReservationSet;
+use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
 
@@ -37,15 +37,15 @@ pub(crate) fn execute(check_request: CheckRequest) -> OutputEnvelope {
     let scopes = check_request
         .declared_scopes
         .into_minimal_antichain(path_case);
-    let live_reservations = match LiveReservationSet::replay(snapshot.events()) {
-        Ok(live_reservations) => live_reservations,
+    let reservations = match RetainedReservationSet::replay(snapshot.events()) {
+        Ok(reservations) => reservations,
         Err(error) => {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string());
         },
     };
     let edit_authorization =
         EditAuthorization::resolve(snapshot.worktree_context().administrative_directory());
-    let conflicts = live_reservations.conflicts_for_edit(&scopes, edit_authorization, path_case);
+    let conflicts = reservations.conflicts_for_edit(&scopes, edit_authorization, path_case);
     if conflicts.is_empty() {
         OutputEnvelope::clear_check(scopes)
     } else {
