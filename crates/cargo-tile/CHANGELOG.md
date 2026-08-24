@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Close a cell by having the grid come together over it, rather than trading the hole through every cell after it.
 - Draw a cell crossing between columns in the columns as they stand partway through the move, rather than as they were before it.
 - Keep a cell carried by a closing column from travelling up or down as that column is pushed off the edge.
+- Give a heading's reading a tenth of a percent when the plan holds more than a hundred units, where one unit no longer moves the whole number and the reading would otherwise sit still for several units at a time.
 - Rename the `sub` column to `runs`.
 - Put `command` ahead of `compiler` and `runs` in a command's own cell, so the command line starts in the same column it does in the summary.
 - Leave `compiler` and `runs` out of the summary, where a row stands for a whole command rather than for one invocation.

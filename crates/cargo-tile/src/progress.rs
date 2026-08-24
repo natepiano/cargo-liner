@@ -93,6 +93,12 @@ impl Progress {
         // would divide by it.
         self.done.saturating_mul(100) / self.total
     }
+
+    /// The same reading in tenths of a percent, rounded down the same
+    /// way, so only a finished build reaches 1000.
+    pub(crate) const fn percent_tenths(self) -> usize {
+        self.done.saturating_mul(1000) / self.total
+    }
 }
 
 /// Which counter a reading came from, which is the whole of what the

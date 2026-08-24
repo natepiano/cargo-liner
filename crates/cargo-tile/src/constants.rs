@@ -378,6 +378,14 @@ pub(crate) const STATE_BLOCKED: &str = "blocked";
 /// Cells the reading itself takes at the end of a header's rule,
 /// `100%` being the widest it goes.
 pub(crate) const PROGRESS_READING_WIDTH: usize = 4;
+/// Cells a reading carrying a tenth takes instead, `100.0%` being the
+/// widest that one goes.
+pub(crate) const PROGRESS_READING_TENTHS_WIDTH: usize = 6;
+/// Units a plan has to hold before its reading is worth a tenth. Up to
+/// a hundred, one unit is a whole percent or more and the number moves
+/// every time the count does; past it a run climbs several units
+/// between readings, and a tenth is what gives it somewhere to go.
+pub(crate) const PROGRESS_TENTHS_MIN_TOTAL: usize = 100;
 /// Unfilled glyph of the rule running along a working-directory header.
 pub(crate) const PROGRESS_HEADING_EMPTY: char = '\u{254c}';
 /// Filled glyph of the rule running along a working-directory header.

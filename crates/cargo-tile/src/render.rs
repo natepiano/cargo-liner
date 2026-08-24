@@ -73,7 +73,9 @@ use crate::constants::PROGRESS_HEADING_FILLED;
 use crate::constants::PROGRESS_HEADING_MARGINS;
 use crate::constants::PROGRESS_HEADING_MIN_WIDTH;
 use crate::constants::PROGRESS_HEADING_PHASE_MARGIN;
+use crate::constants::PROGRESS_READING_TENTHS_WIDTH;
 use crate::constants::PROGRESS_READING_WIDTH;
+use crate::constants::PROGRESS_TENTHS_MIN_TOTAL;
 use crate::constants::SETTINGS_POPUP_WIDTH;
 use crate::constants::START_COLUMN;
 use crate::constants::STATE_BLOCKED;
@@ -720,7 +722,24 @@ fn state_width(state: Option<RunState>) -> usize {
 
 /// How far along, written to a fixed width so a column of readings
 /// stays in line as the number grows a digit.
+///
+/// A plan of more than a hundred units gets a tenth after the point.
+/// Whole percent is the right resolution for a small plan, where one
+/// unit moves the number by at least one; over a hundred units it
+/// stalls the reading for several units at a time, and a run that is
+/// visibly working has a header that reads as stuck.
 fn percent_reading(progress: Progress) -> String {
+    if progress.total > PROGRESS_TENTHS_MIN_TOTAL {
+        let tenths = progress.percent_tenths();
+        return format!(
+            "{whole:>width$}.{tenth}%",
+            whole = tenths / 10,
+            tenth = tenths % 10,
+            // The point, the tenth and the sign, which are what the
+            // whole number has left of the reading's width.
+            width = PROGRESS_READING_TENTHS_WIDTH.saturating_sub(3)
+        );
+    }
     format!(
         "{:>width$}%",
         progress.percent(),
@@ -1122,6 +1141,39 @@ mod tests {
             gauge_text(testing(12, 24), 60).starts_with(" testing "),
             "{:?}",
             gauge_text(testing(12, 24), 60)
+        );
+    }
+
+    /// A plan of hundreds of units moves a whole percent only every
+    /// few units, so the reading needs a tenth to keep up with a run
+    /// that is plainly getting somewhere.
+    #[test]
+    fn a_reading_of_more_than_a_hundred_units_carries_a_tenth() {
+        assert!(
+            gauge_text(compiling(149, 403), 60).ends_with(" 36.9%"),
+            "{:?}",
+            gauge_text(compiling(149, 403), 60)
+        );
+        assert!(
+            gauge_text(compiling(403, 403), 60).ends_with("100.0%"),
+            "{:?}",
+            gauge_text(compiling(403, 403), 60)
+        );
+    }
+
+    /// Up to a hundred units the count already moves the whole number
+    /// every time, and a tenth would only ever read as nought.
+    #[test]
+    fn a_reading_of_a_hundred_units_or_fewer_stays_a_whole_number() {
+        assert!(
+            gauge_text(testing(12, 24), 60).ends_with(" 50%"),
+            "{:?}",
+            gauge_text(testing(12, 24), 60)
+        );
+        assert!(
+            gauge_text(compiling(99, 100), 60).ends_with(" 99%"),
+            "{:?}",
+            gauge_text(compiling(99, 100), 60)
         );
     }
 
