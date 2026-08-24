@@ -6,6 +6,8 @@ use crate::ledger::EditAuthorization;
 use crate::ledger::Ledger;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
+use crate::reconcile;
+use crate::reservation::ReservationConflict;
 use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
@@ -19,7 +21,7 @@ pub(crate) struct CheckRequest {
 
 struct CheckDecision {
     scopes:    ReservationScopeSet,
-    conflicts: Vec<crate::reservation::ReservationConflict>,
+    conflicts: Vec<ReservationConflict>,
 }
 
 /// Evaluate tier-one overlap and reconcile only after the read-only snapshot blocks.
@@ -38,7 +40,7 @@ pub(crate) fn execute(check_request: CheckRequest) -> OutputEnvelope {
     if first_decision.conflicts.is_empty() {
         return OutputEnvelope::clear_check(first_decision.scopes);
     }
-    let Ok(reconciliation_report) = crate::reconcile::reconcile(&invocation_directory) else {
+    let Ok(reconciliation_report) = reconcile::reconcile(&invocation_directory) else {
         return OutputEnvelope::blocked_check(first_decision.scopes, first_decision.conflicts);
     };
     match decide(&invocation_directory, check_request.declared_scopes) {

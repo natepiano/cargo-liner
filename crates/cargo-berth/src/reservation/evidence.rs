@@ -1,6 +1,8 @@
 //! Protected commit roles and git-backed integration evidence.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -9,7 +11,10 @@ use serde::Serialize;
 
 use super::lifecycle::IntegrationEvidenceStatus;
 use crate::git;
+use crate::git::GitError;
+use crate::git::Reachability;
 use crate::ids::GitObjectId;
+use crate::ids::InvalidGitObjectId;
 use crate::ids::ReservationId;
 
 /// The fixed checkpoint commit used for ordinary integration evidence.
@@ -17,8 +22,8 @@ use crate::ids::ReservationId;
 #[serde(transparent)]
 pub(crate) struct ProtectedReservationTip(GitObjectId);
 
-impl fmt::Display for ProtectedReservationTip {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }
+impl Display for ProtectedReservationTip {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }
 }
 
 impl From<GitObjectId> for ProtectedReservationTip {
@@ -30,7 +35,7 @@ impl AsRef<GitObjectId> for ProtectedReservationTip {
 }
 
 impl FromStr for ProtectedReservationTip {
-    type Err = crate::ids::InvalidGitObjectId;
+    type Err = InvalidGitObjectId;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> { value.parse::<GitObjectId>().map(Self) }
 }
@@ -45,7 +50,7 @@ pub(crate) enum PriorIntegrationStatus {
 }
 
 /// Read the full commit currently named by `HEAD`.
-pub(crate) fn current_head(repository_root: &Path) -> Result<GitObjectId, git::GitError> {
+pub(crate) fn current_head(repository_root: &Path) -> Result<GitObjectId, GitError> {
     git::head_object_id(repository_root)
 }
 
@@ -53,7 +58,7 @@ pub(crate) fn current_head(repository_root: &Path) -> Result<GitObjectId, git::G
 pub(crate) fn current_trunk(
     repository_root: &Path,
     trunk_branch: &str,
-) -> Result<GitObjectId, git::GitError> {
+) -> Result<GitObjectId, GitError> {
     git::branch_object_id(repository_root, trunk_branch)
 }
 
@@ -63,16 +68,16 @@ pub(crate) fn integration_status(
     protected_tip: &ProtectedReservationTip,
     trunk_oid: &GitObjectId,
     prior_integration_status: PriorIntegrationStatus,
-) -> Result<IntegrationEvidenceStatus, git::GitError> {
+) -> Result<IntegrationEvidenceStatus, GitError> {
     match git::reachability(repository_root, protected_tip.as_ref(), trunk_oid)? {
-        git::Reachability::Ancestor => Ok(IntegrationEvidenceStatus::Integrated {
+        Reachability::Ancestor => Ok(IntegrationEvidenceStatus::Integrated {
             trunk_oid: trunk_oid.clone(),
         }),
-        git::Reachability::NotAncestor => match prior_integration_status {
+        Reachability::NotAncestor => match prior_integration_status {
             PriorIntegrationStatus::Unproven => Ok(IntegrationEvidenceStatus::NotIntegrated),
             PriorIntegrationStatus::Proven => Ok(IntegrationEvidenceStatus::TrunkRewritten),
         },
-        git::Reachability::ObjectUnknown => Ok(IntegrationEvidenceStatus::ObjectUnknown),
+        Reachability::ObjectUnknown => Ok(IntegrationEvidenceStatus::ObjectUnknown),
     }
 }
 
@@ -82,7 +87,7 @@ pub(crate) fn outstanding_integration_status(
     protected_tip: &ProtectedReservationTip,
     previous_trunk_oid: &GitObjectId,
     current_trunk_oid: &GitObjectId,
-) -> Result<IntegrationEvidenceStatus, git::GitError> {
+) -> Result<IntegrationEvidenceStatus, GitError> {
     let status = integration_status(
         repository_root,
         protected_tip,
@@ -93,9 +98,9 @@ pub(crate) fn outstanding_integration_status(
         return Ok(status);
     }
     match git::reachability(repository_root, previous_trunk_oid, current_trunk_oid)? {
-        git::Reachability::Ancestor => Ok(IntegrationEvidenceStatus::NotIntegrated),
-        git::Reachability::NotAncestor => Ok(IntegrationEvidenceStatus::TrunkRewritten),
-        git::Reachability::ObjectUnknown => Ok(IntegrationEvidenceStatus::ObjectUnknown),
+        Reachability::Ancestor => Ok(IntegrationEvidenceStatus::NotIntegrated),
+        Reachability::NotAncestor => Ok(IntegrationEvidenceStatus::TrunkRewritten),
+        Reachability::ObjectUnknown => Ok(IntegrationEvidenceStatus::ObjectUnknown),
     }
 }
 
@@ -104,6 +109,6 @@ pub(crate) fn retain_protected_tip(
     repository_root: &Path,
     reservation_id: ReservationId,
     protected_tip: &ProtectedReservationTip,
-) -> Result<(), git::GitError> {
+) -> Result<(), GitError> {
     git::write_reservation_retention_ref(repository_root, reservation_id, protected_tip.as_ref())
 }

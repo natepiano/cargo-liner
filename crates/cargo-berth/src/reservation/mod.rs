@@ -4,6 +4,8 @@ mod evidence;
 mod lifecycle;
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 
 pub(crate) use evidence::PriorIntegrationStatus;
 pub(crate) use evidence::ProtectedReservationTip;
@@ -30,6 +32,7 @@ use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationRevision;
+use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadSnapshot;
@@ -147,15 +150,15 @@ pub(crate) struct ReservationConflict {
     /// The durable reservation that holds the overlapping paths.
     pub(crate) reservation_id:         ReservationId,
     /// The holder revision against which the overlap was evaluated.
-    pub(crate) reservation_revision:   ReservationRevision,
+    reservation_revision:              ReservationRevision,
     /// The holder revision that changes only when its scopes change.
     pub(crate) overlap_scope_revision: OverlapScopeRevision,
     /// The worktree identity that acquired the reservation.
-    pub(crate) holder_worktree_id:     WorktreeId,
+    holder_worktree_id:                WorktreeId,
     /// The coordination run that acquired the reservation.
     pub(crate) holder_run_id:          CoordinationRunId,
     /// The holder's attached branch or detached commit.
-    pub(crate) head_snapshot:          ClaimHeadSnapshot,
+    head_snapshot:                     ClaimHeadSnapshot,
     /// The holder's typed plan provenance.
     pub(crate) source:                 ClaimSource,
     /// The holder's typed reason for protecting the paths.
@@ -367,7 +370,6 @@ impl RetainedReservationSet {
                 reservation.advance_revision()?;
             },
             JournalOperation::ResolveDefer { .. }
-            | JournalOperation::DeclareOrderingEdge { .. }
             | JournalOperation::Incursion { .. }
             | JournalOperation::ForcedIntegrationPermit { .. }
             | JournalOperation::ConsumeForcedIntegrationPermit { .. }
@@ -412,7 +414,7 @@ impl RetainedReservationSet {
     fn apply_widen(
         &mut self,
         reservation_id: ReservationId,
-        added_scopes: &[crate::ids::ReservationScopePath],
+        added_scopes: &[ReservationScopePath],
         authorization: &ConflictAuthorization,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
@@ -794,6 +796,18 @@ impl Reservation {
     }
 }
 
+impl RetainedReservationSet {
+    /// Count reservations that have not received a terminal disposition.
+    pub(crate) fn nonterminal_count(&self) -> usize {
+        self.reservations
+            .iter()
+            .filter(|reservation| {
+                !matches!(reservation.lifecycle, ReservationLifecycle::Released { .. })
+            })
+            .count()
+    }
+}
+
 impl ReservationConflict {
     /// Return a compact display label for the holder's branch state.
     pub(crate) fn holder_branch(&self) -> String {
@@ -837,8 +851,8 @@ pub(crate) enum ReservationReplayError {
     InvalidReplacementDisposition(ReservationId),
 }
 
-impl fmt::Display for ReservationReplayError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ReservationReplayError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateClaim(reservation_id) => {
                 write!(

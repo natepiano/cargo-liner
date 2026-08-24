@@ -5,6 +5,7 @@ mod answer;
 mod cli;
 mod config;
 mod constants;
+mod edge;
 mod exit;
 mod git;
 mod ids;

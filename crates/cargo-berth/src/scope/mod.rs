@@ -2,7 +2,10 @@
 
 mod antichain;
 
+use std::ffi::OsString;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -33,7 +36,7 @@ pub(crate) struct DeclaredReservationScopeSet(ReservationScopeSet);
 
 /// A lexical path and declared file-versus-tree meaning from the command line.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DeclaredReservationScope(ReservationScope);
+struct DeclaredReservationScope(ReservationScope);
 
 impl PathCase {
     /// Read `core.ignoreCase` from the common git configuration without a subprocess.
@@ -123,8 +126,8 @@ pub(crate) enum PathCaseError {
     InvalidValue(String),
 }
 
-impl fmt::Display for PathCaseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for PathCaseError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "could not read git path-case policy: {error}"),
             Self::InvalidValue(value) => {
@@ -144,13 +147,13 @@ impl From<std::io::Error> for PathCaseError {
 #[derive(Debug)]
 pub(crate) enum DeclaredReservationScopeError {
     /// The operating-system path was not UTF-8.
-    NonUtf8(std::ffi::OsString),
+    NonUtf8(OsString),
     /// The UTF-8 spelling was not a lexical repository path.
     InvalidPath(InvalidReservationScopePath),
 }
 
-impl fmt::Display for DeclaredReservationScopeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for DeclaredReservationScopeError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::NonUtf8(path) => write!(
                 formatter,
@@ -176,8 +179,8 @@ pub(crate) enum DeclaredReservationScopeSetError {
     Empty,
 }
 
-impl fmt::Display for DeclaredReservationScopeSetError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for DeclaredReservationScopeSetError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidScope(error) => error.fmt(formatter),
             Self::Empty => formatter.write_str("provide at least one reservation path and retry"),

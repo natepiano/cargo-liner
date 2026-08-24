@@ -6,11 +6,11 @@ use std::path::Path;
 use crate::ids::RepoInstanceId;
 use crate::ids::WorktreeId;
 use crate::ids::WorktreeKind;
+use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::LedgerError;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
-use crate::ledger::read_worktree_identity;
 
 /// The validated location of the same non-recyclable worktree holder.
 pub(super) enum ValidatedWorktreeOwner {
@@ -33,7 +33,8 @@ pub(super) fn validate_same_owner(
     if recorded_repository != ledger_repository
         || candidate.common_git_directory() != common_git_directory
         || candidate.administrative_locator() != recorded_locator
-        || read_worktree_identity(candidate.administrative_directory())? != recorded_worktree_id
+        || ledger::read_worktree_identity(candidate.administrative_directory())?
+            != recorded_worktree_id
         || !backlink_matches(candidate)?
     {
         return Err(LedgerError::WorktreeIdentityMismatch);

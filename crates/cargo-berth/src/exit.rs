@@ -10,7 +10,10 @@
 //! | `5` | [`BerthExit::UsageError`] | The command line is invalid. |
 //! | `6` | [`BerthExit::BlockedByContention`] | Another mutation holds the ledger lock; retry the command. |
 
+use std::error::Error;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::process::ExitCode;
 
 use serde::Deserialize;
@@ -40,7 +43,7 @@ pub(crate) enum BerthExit {
 impl BerthExit {
     /// Return this exit status's published numeric value.
     #[must_use]
-    pub(crate) const fn code(self) -> u8 { self as u8 }
+    const fn code(self) -> u8 { self as u8 }
 }
 
 impl From<BerthExit> for u8 {
@@ -67,13 +70,13 @@ impl TryFrom<u8> for BerthExit {
 #[derive(Debug)]
 pub(crate) struct InvalidBerthExitCode(u8);
 
-impl fmt::Display for InvalidBerthExitCode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidBerthExitCode {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         write!(formatter, "{} is not a cargo-berth exit code", self.0)
     }
 }
 
-impl std::error::Error for InvalidBerthExitCode {}
+impl Error for InvalidBerthExitCode {}
 
 impl From<BerthExit> for ExitCode {
     fn from(berth_exit: BerthExit) -> Self { Self::from(berth_exit.code()) }

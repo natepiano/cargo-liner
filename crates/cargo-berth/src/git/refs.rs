@@ -1,10 +1,12 @@
 //! Reservation retention references.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::path::Path;
 
 use super::GitError;
-use super::command::git_output;
+use super::command;
 use super::constants::GIT_DELETE_REF_ARG;
 use super::constants::GIT_UPDATE_REF_COMMAND;
 use super::constants::RESERVATION_RETENTION_REF_PREFIX;
@@ -27,10 +29,8 @@ pub(super) fn name(reservation_id: ReservationId) -> String {
     ReservationRetentionRef::for_reservation(reservation_id).to_string()
 }
 
-impl fmt::Display for ReservationRetentionRef {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
+impl Display for ReservationRetentionRef {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
 
 /// Create or update the retention ref for a protected tip.
@@ -41,7 +41,7 @@ pub(super) fn write(
 ) -> Result<(), GitError> {
     let retention_ref = name(reservation_id);
     let protected_tip = protected_tip.to_string();
-    let output = git_output(
+    let output = command::git_output(
         repository_root,
         [GIT_UPDATE_REF_COMMAND, &retention_ref, &protected_tip],
     )?;
@@ -61,7 +61,7 @@ pub(super) fn delete(
     reservation_id: ReservationId,
 ) -> Result<(), GitError> {
     let retention_ref = name(reservation_id);
-    let output = git_output(
+    let output = command::git_output(
         repository_root,
         [GIT_UPDATE_REF_COMMAND, GIT_DELETE_REF_ARG, &retention_ref],
     )?;

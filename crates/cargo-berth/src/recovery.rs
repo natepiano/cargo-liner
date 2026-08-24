@@ -1,13 +1,22 @@
 //! User-confirmed orphan recovery, rewritten integration, retirement, and renewal.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::io::Error;
+use std::path::Path;
 
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::edge::EdgeReplayError;
+use crate::edge::OrderingGraph;
 use crate::git;
 use crate::git::GitError;
+use crate::git::Reachability;
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
+use crate::ids::WorktreeId;
+use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::CommittedActionValidation;
 use crate::ledger::EditAuthorization;
@@ -19,20 +28,22 @@ use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::TransactionValidation;
+use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
-use crate::ledger::worktree_identity;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::ResolvePayload;
+use crate::reconcile;
+use crate::reservation;
 use crate::reservation::AbandonmentReason;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::OrphanRetirementReason;
 use crate::reservation::ReleaseDisposition;
+use crate::reservation::Reservation;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
-use crate::reservation::current_trunk;
 
 /// A parsed recovery request whose variant contains exactly its required evidence.
 pub(crate) struct ResolveRequest {
@@ -70,7 +81,7 @@ pub(crate) fn resolve(resolve_request: ResolveRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Resolve, &error.to_string());
         },
     };
-    let mut reconciliation_report = match crate::reconcile::reconcile(&invocation_directory) {
+    let mut reconciliation_report = match reconcile::reconcile(&invocation_directory) {
         Ok(reconciliation_report) => reconciliation_report,
         Err(error) => return error.into_output(CommandVerb::Resolve),
     };
@@ -94,7 +105,7 @@ pub(crate) fn renew(renew_request: RenewRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Renew, &error.to_string());
         },
     };
-    let reconciliation_report = match crate::reconcile::reconcile(&invocation_directory) {
+    let reconciliation_report = match reconcile::reconcile(&invocation_directory) {
         Ok(reconciliation_report) => reconciliation_report,
         Err(error) => return error.into_output(CommandVerb::Renew),
     };
@@ -108,7 +119,7 @@ pub(crate) fn renew(renew_request: RenewRequest) -> OutputEnvelope {
 fn execute_resolution(resolve_request: ResolveRequest) -> Result<ResolvePayload, RecoveryError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let worktree_identity = worktree_identity(
+    let worktree_identity = ledger::worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
@@ -136,6 +147,14 @@ fn execute_resolution(resolve_request: ResolveRequest) -> Result<ResolvePayload,
                         return CommittedActionValidation::Reject(RecoveryRejection::Replay(error));
                     },
                 };
+                let ordering_graph = match OrderingGraph::replay(state.events()) {
+                    Ok(ordering_graph) => ordering_graph,
+                    Err(error) => {
+                        return CommittedActionValidation::Reject(RecoveryRejection::EdgeReplay(
+                            error,
+                        ));
+                    },
+                };
                 let reservation = match reservations.reservation(resolve_request.reservation_id) {
                     Ok(reservation) => reservation,
                     Err(ReservationReplayError::UnknownReservation(_)) => {
@@ -156,11 +175,21 @@ fn execute_resolution(resolve_request: ResolveRequest) -> Result<ResolvePayload,
                     worktree_context.administrative_locator().clone(),
                 ) {
                     Ok((operation, resolve_payload, committed_action)) => {
+                        let retention_deletions = match recovery_retention_deletions(
+                            &operation,
+                            &ordering_graph,
+                            resolve_request.reservation_id,
+                            &reservations,
+                        ) {
+                            Ok(retention_deletions) => retention_deletions,
+                            Err(error) => return CommittedActionValidation::Reject(error),
+                        };
                         CommittedActionValidation::Append {
                             operation: Box::new(operation),
                             action:    RecoveryCommittedAction {
                                 committed_action,
                                 resolve_payload,
+                                retention_deletions,
                             },
                         }
                     },
@@ -184,10 +213,24 @@ fn execute_resolution(resolve_request: ResolveRequest) -> Result<ResolvePayload,
     }
 }
 
+fn recovery_retention_deletions(
+    operation: &JournalOperation,
+    ordering_graph: &OrderingGraph,
+    terminal_successor: ReservationId,
+    reservations: &RetainedReservationSet,
+) -> Result<Vec<ReservationId>, RecoveryRejection> {
+    if !matches!(operation, JournalOperation::Release { .. }) {
+        return Ok(Vec::new());
+    }
+    ordering_graph
+        .retention_refs_retired_by_terminal(terminal_successor, reservations)
+        .map_err(RecoveryRejection::Replay)
+}
+
 fn execute_renewal(renew_request: RenewRequest) -> Result<(), RecoveryError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let worktree_identity = worktree_identity(
+    let worktree_identity = ledger::worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
@@ -229,31 +272,32 @@ fn execute_renewal(renew_request: RenewRequest) -> Result<(), RecoveryError> {
 }
 
 fn validate_recovery_request(
-    repository_root: &std::path::Path,
+    repository_root: &Path,
     trunk_branch: &str,
     recovery_request: RecoveryRequest,
 ) -> Result<RecoveryRequest, RecoveryRejection> {
     let RecoveryRequest::IntegratedAs(trunk_commit) = recovery_request else {
         return Ok(recovery_request);
     };
-    let trunk_oid = current_trunk(repository_root, trunk_branch).map_err(RecoveryRejection::Git)?;
+    let trunk_oid = reservation::current_trunk(repository_root, trunk_branch)
+        .map_err(RecoveryRejection::Git)?;
     match git::reachability(repository_root, trunk_commit.as_ref(), &trunk_oid)
         .map_err(RecoveryRejection::Git)?
     {
-        git::Reachability::Ancestor => Ok(RecoveryRequest::IntegratedAs(trunk_commit)),
-        git::Reachability::NotAncestor | git::Reachability::ObjectUnknown => {
+        Reachability::Ancestor => Ok(RecoveryRequest::IntegratedAs(trunk_commit)),
+        Reachability::NotAncestor | Reachability::ObjectUnknown => {
             Err(RecoveryRejection::UnreachableIntegrationEvidence)
         },
     }
 }
 
 fn recovery_operation(
-    reservation: &crate::reservation::Reservation,
+    reservation: &Reservation,
     reservation_id: ReservationId,
     recovery_request: RecoveryRequest,
-    current_worktree_id: crate::ids::WorktreeId,
+    current_worktree_id: WorktreeId,
     current_worktree_root: CanonicalWorktreeRoot,
-    current_worktree_administrative_locator: crate::ledger::WorktreeAdministrativeLocator,
+    current_worktree_administrative_locator: WorktreeAdministrativeLocator,
 ) -> Result<(JournalOperation, ResolvePayload, RecoveryAction), RecoveryRejection> {
     match recovery_request {
         RecoveryRequest::Recovered => {
@@ -330,7 +374,7 @@ fn recovery_operation(
 }
 
 fn disposition_operation(
-    reservation: &crate::reservation::Reservation,
+    reservation: &Reservation,
     reservation_id: ReservationId,
     disposition: ReleaseDisposition,
 ) -> Result<(JournalOperation, ResolvePayload, RecoveryAction), RecoveryRejection> {
@@ -361,7 +405,7 @@ fn canonical_root(
         .map_err(|_| RecoveryError::InvalidCanonicalWorktreeRoot)
 }
 
-fn mutation_run_id(administrative_directory: &std::path::Path) -> CoordinationRunId {
+fn mutation_run_id(administrative_directory: &Path) -> CoordinationRunId {
     match EditAuthorization::resolve(administrative_directory) {
         EditAuthorization::Environment(coordination_run_id)
         | EditAuthorization::Marker {
@@ -373,8 +417,9 @@ fn mutation_run_id(administrative_directory: &std::path::Path) -> CoordinationRu
 }
 
 struct RecoveryCommittedAction {
-    committed_action: RecoveryAction,
-    resolve_payload:  ResolvePayload,
+    committed_action:    RecoveryAction,
+    resolve_payload:     ResolvePayload,
+    retention_deletions: Vec<ReservationId>,
 }
 
 enum RecoveryAction {
@@ -384,6 +429,12 @@ enum RecoveryAction {
 
 impl RecoveryCommittedAction {
     fn commit(self, worktree_context: &WorktreeContext) -> Result<ResolvePayload, RecoveryError> {
+        for reservation_id in self.retention_deletions {
+            git::delete_reservation_retention_ref(
+                worktree_context.repository_root(),
+                reservation_id,
+            )?;
+        }
         match self.committed_action {
             RecoveryAction::None => {},
             RecoveryAction::PublishMarker(coordination_run_id) => {
@@ -403,11 +454,12 @@ enum RecoveryRejection {
     SameWorktreeRecovery,
     UnreachableIntegrationEvidence,
     Git(GitError),
+    EdgeReplay(EdgeReplayError),
 }
 
 #[derive(Debug)]
 enum RecoveryError {
-    Io(std::io::Error),
+    Io(Error),
     Config(ConfigError),
     Git(GitError),
     Ledger(LedgerError),
@@ -428,6 +480,12 @@ impl RecoveryError {
             },
             Self::Transaction(LedgerTransactionError::CorrectableInput(error)) => {
                 OutputEnvelope::invalid_input(command_verb, &error.to_string())
+            },
+            Self::Rejected(RecoveryRejection::Replay(error)) => {
+                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+            },
+            Self::Rejected(RecoveryRejection::EdgeReplay(error)) => {
+                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
             },
             Self::Rejected(rejection) => {
                 OutputEnvelope::invalid_input(command_verb, &rejection.to_string())
@@ -453,8 +511,8 @@ impl RecoveryError {
     }
 }
 
-impl fmt::Display for RecoveryRejection {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for RecoveryRejection {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownReservation => formatter.write_str("the reservation does not exist"),
             Self::Replay(error) => error.fmt(formatter),
@@ -468,12 +526,13 @@ impl fmt::Display for RecoveryRejection {
                 "the --integrated-as commit must resolve in this repository and be reachable from trunk",
             ),
             Self::Git(error) => error.fmt(formatter),
+            Self::EdgeReplay(error) => error.fmt(formatter),
         }
     }
 }
 
-impl From<std::io::Error> for RecoveryError {
-    fn from(error: std::io::Error) -> Self { Self::Io(error) }
+impl From<Error> for RecoveryError {
+    fn from(error: Error) -> Self { Self::Io(error) }
 }
 
 impl From<ConfigError> for RecoveryError {

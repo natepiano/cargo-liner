@@ -11,6 +11,9 @@ use crate::alert::Alert;
 use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::config::InitializationState;
+use crate::edge::EdgeDeclarationRejection;
+use crate::edge::EdgeReadiness;
+use crate::edge::OrderingEdge;
 use crate::exit::BerthExit;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
@@ -36,19 +39,19 @@ const UNIMPLEMENTED_MESSAGE: &str = "The reservation engine is not implemented."
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct OutputEnvelope {
     /// The verb that produced this response.
-    pub(crate) verb:         CommandVerb,
+    verb:                 CommandVerb,
     /// The response's lifecycle status.
-    pub(crate) status:       OutputStatus,
+    status:               OutputStatus,
     /// The process exit status for this response.
-    pub(crate) exit_code:    BerthExit,
+    pub(crate) exit_code: BerthExit,
     /// Reservations relevant to this response.
-    pub(crate) reservations: Vec<ReservationId>,
+    reservations:         Vec<ReservationId>,
     /// Reservations that block this response.
-    pub(crate) blocked_by:   Vec<ReservationId>,
+    blocked_by:           Vec<ReservationId>,
     /// A human-readable explanation of this response.
-    pub(crate) message:      String,
+    message:              String,
     /// The verb-keyed facts consumers need without parsing prose.
-    pub(crate) payload:      OutputPayload,
+    payload:              OutputPayload,
 }
 
 /// A verb named in a JSON response.
@@ -78,7 +81,7 @@ pub(crate) enum CommandVerb {
 /// The status named in a JSON response.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum OutputStatus {
+enum OutputStatus {
     /// The verb parsed, but no engine stands behind it yet.
     Unimplemented,
     /// Initialization created or verified the durable coordination resources.
@@ -91,6 +94,10 @@ pub(crate) enum OutputStatus {
     Clear,
     /// A new reservation was appended and published.
     Claimed,
+    /// Repository policy permits no additional live reservations.
+    ReservationLimitReached,
+    /// Repository policy permits no additional ordering edges.
+    OrderingEdgeLimitReached,
     /// One or more foreign reservations overlap the requested paths.
     BlockedByOverlap,
     /// A permissive overlap answer needs a matching reviewed proposal.
@@ -99,6 +106,14 @@ pub(crate) enum OutputStatus {
     InvalidInput,
     /// Another mutation retained the ledger lock through the retry window.
     Contention,
+    /// A deferral was converted into one durable ordering edge.
+    Sequenced,
+    /// The requested directed edge already exists.
+    DuplicateOrderingEdge,
+    /// The requested directed edge would make the graph cyclic.
+    OrderingCycle,
+    /// The named reservations have no unresolved deferral to order.
+    MissingDeferral,
     /// The reservation now has a protected checkpoint awaiting integration.
     Outstanding,
     /// Current trunk contains the reservation's integration evidence.
@@ -117,7 +132,7 @@ pub(crate) enum OutputStatus {
 
 /// Structured facts and additive alerts returned inside the typed payload field.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct OutputPayload {
+struct OutputPayload {
     /// The verb-keyed result whose serialized `kind` and `data` layout is stable.
     #[serde(flatten)]
     facts:  OutputFacts,
@@ -144,8 +159,8 @@ enum OutputFacts {
     Claim(ClaimPayload),
     /// Facts returned by `release`.
     Release(ReleasePayload),
-    /// Placeholder facts for an unimplemented sequencing operation.
-    Sequence(PendingPayload),
+    /// Facts returned by `sequence`.
+    Sequence(SequencePayload),
     /// Placeholder facts for an unimplemented integration.
     Integrate(PendingPayload),
     /// Facts returned by a recovery decision.
@@ -156,26 +171,26 @@ enum OutputFacts {
 
 /// The resources an `init` call created or left intact.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct InitializationPayload {
+struct InitializationPayload {
     /// Whether initialization created the journal or found an existing one.
-    pub(crate) ledger:        InitializationResource,
+    ledger:        InitializationResource,
     /// Whether initialization created the config or left an existing file intact.
-    pub(crate) configuration: InitializationResource,
+    configuration: InitializationResource,
 }
 
 /// The explicit guarantee reported after rebuilding the disposable projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct ProjectionRepairPayload {
+struct ProjectionRepairPayload {
     /// The only file this operation rebuilt.
-    pub(crate) projection: RepairedProjection,
+    projection: RepairedProjection,
     /// The journal mutation guarantee of explicit projection repair.
-    pub(crate) journal:    ProjectionRepairJournalEffect,
+    journal:    ProjectionRepairJournalEffect,
 }
 
 /// The disposable projection rebuilt by explicit repair.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum RepairedProjection {
+enum RepairedProjection {
     /// `reservations.json` was derived again from complete journal facts.
     ReservationsJsonRebuilt,
 }
@@ -183,7 +198,7 @@ pub(crate) enum RepairedProjection {
 /// Whether explicit projection repair changed journal truth.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ProjectionRepairJournalEffect {
+enum ProjectionRepairJournalEffect {
     /// `journal.ndjson` remained byte-identical.
     Unchanged,
 }
@@ -191,7 +206,7 @@ pub(crate) enum ProjectionRepairJournalEffect {
 /// The initialization outcome for one durable resource.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum InitializationResource {
+enum InitializationResource {
     /// This initialization call created the resource.
     Created,
     /// This initialization call retained an existing resource unchanged.
@@ -200,7 +215,7 @@ pub(crate) enum InitializationResource {
 
 /// A deliberately empty typed placeholder for a verb whose engine arrives later.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct PendingPayload {}
+struct PendingPayload {}
 
 /// Typed outcomes returned by `resolve`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -224,15 +239,15 @@ pub(crate) enum ResolvePayload {
 
 /// Typed facts returned by `renew`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct RenewPayload {
+struct RenewPayload {
     /// The reservation whose activity timestamp advanced.
-    pub(crate) reservation_id: ReservationId,
+    reservation_id: ReservationId,
 }
 
 /// Typed outcomes returned by `claim`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-pub(crate) enum ClaimPayload {
+enum ClaimPayload {
     /// A reservation was appended with this minimal antichain.
     Claimed {
         /// The newly minted reservation identity.
@@ -255,6 +270,154 @@ pub(crate) enum ClaimPayload {
         #[serde(flatten)]
         escalation: Box<OverlapEscalationPayload>,
     },
+    /// Repository policy rejected another live reservation.
+    ReservationLimitReached {
+        /// The configured maximum number of nonterminal reservations.
+        maximum: u32,
+    },
+    /// Repository policy rejected another claim-time ordering edge.
+    OrderingEdgeLimitReached {
+        /// The configured maximum number of durable ordering edges.
+        maximum: u32,
+    },
+}
+
+/// Typed outcomes returned by `sequence`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum SequencePayload {
+    /// One durable edge was appended by resolving a prior deferral.
+    Sequenced {
+        /// The complete replayable edge record.
+        edge:      OrderingEdge,
+        /// The edge state derived from the preceding repository snapshot.
+        readiness: EdgeReadiness,
+    },
+    /// The locked graph rejected the requested relationship.
+    Rejected {
+        /// The requested predecessor.
+        first:  ReservationId,
+        /// The requested successor.
+        then:   ReservationId,
+        /// The semantic reason no edge was appended.
+        reason: SequenceRejectionKind,
+    },
+}
+
+/// A stable semantic rejection returned by `sequence`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum SequenceRejectionKind {
+    /// At least one endpoint does not name a retained reservation.
+    UnknownEndpoint {
+        /// The missing reservation.
+        reservation_id: ReservationId,
+    },
+    /// One reservation was supplied as both endpoints.
+    SameEndpoint,
+    /// The exact directed edge already exists.
+    Duplicate,
+    /// The proposed edge would create a directed cycle.
+    Cycle,
+    /// No unresolved defer answer joins the endpoints.
+    MissingDeferral,
+    /// Both endpoint directions contain defer answers.
+    AmbiguousDeferral,
+    /// Repository policy permits no additional ordering edge.
+    OrderingEdgeLimitReached {
+        /// The configured durable edge maximum.
+        maximum: u32,
+    },
+    /// A marker no longer identifies active work in the invoking worktree.
+    InactiveMarkerRun {
+        /// The stale coordination run named by that marker.
+        coordination_run_id: CoordinationRunId,
+    },
+}
+
+impl From<EdgeDeclarationRejection> for SequenceRejectionKind {
+    fn from(rejection: EdgeDeclarationRejection) -> Self {
+        match rejection {
+            EdgeDeclarationRejection::UnknownEndpoint(reservation_id) => {
+                Self::UnknownEndpoint { reservation_id }
+            },
+            EdgeDeclarationRejection::SameEndpoint => Self::SameEndpoint,
+            EdgeDeclarationRejection::Duplicate => Self::Duplicate,
+            EdgeDeclarationRejection::Cycle => Self::Cycle,
+            EdgeDeclarationRejection::MissingDeferral => Self::MissingDeferral,
+            EdgeDeclarationRejection::AmbiguousDeferral => Self::AmbiguousDeferral,
+        }
+    }
+}
+
+impl SequenceRejectionKind {
+    fn blocked_by(&self, first: ReservationId, then: ReservationId) -> Vec<ReservationId> {
+        match self {
+            Self::Duplicate => vec![first],
+            Self::Cycle => vec![then],
+            Self::UnknownEndpoint { .. }
+            | Self::SameEndpoint
+            | Self::MissingDeferral
+            | Self::AmbiguousDeferral
+            | Self::OrderingEdgeLimitReached { .. }
+            | Self::InactiveMarkerRun { .. } => Vec::new(),
+        }
+    }
+
+    fn response(
+        &self,
+        first: ReservationId,
+        then: ReservationId,
+    ) -> (OutputStatus, BerthExit, String) {
+        match self {
+            Self::Duplicate => (
+                OutputStatus::DuplicateOrderingEdge,
+                BerthExit::BlockedByOrdering,
+                format!("Ordering edge {first} before {then} already exists."),
+            ),
+            Self::Cycle => (
+                OutputStatus::OrderingCycle,
+                BerthExit::BlockedByOrdering,
+                format!("Ordering edge {first} before {then} would create a cycle."),
+            ),
+            Self::MissingDeferral => (
+                OutputStatus::MissingDeferral,
+                BerthExit::BlockedByOrdering,
+                format!(
+                    "Reservations {first} and {then} have no unresolved defer answer to sequence."
+                ),
+            ),
+            Self::OrderingEdgeLimitReached { maximum } => (
+                OutputStatus::OrderingEdgeLimitReached,
+                BerthExit::BlockedByOrdering,
+                format!("The configured maximum of {maximum} ordering edges has been reached."),
+            ),
+            Self::UnknownEndpoint { reservation_id } => (
+                OutputStatus::InvalidInput,
+                BerthExit::UsageError,
+                format!("Reservation {reservation_id} does not exist."),
+            ),
+            Self::SameEndpoint => (
+                OutputStatus::InvalidInput,
+                BerthExit::UsageError,
+                "An ordering edge requires two different reservations.".to_owned(),
+            ),
+            Self::AmbiguousDeferral => (
+                OutputStatus::InvalidInput,
+                BerthExit::UsageError,
+                format!("Reservations {first} and {then} recorded deferrals in both directions."),
+            ),
+            Self::InactiveMarkerRun {
+                coordination_run_id,
+            } => (
+                OutputStatus::InvalidInput,
+                BerthExit::UsageError,
+                format!(
+                    "Coordination-run marker {coordination_run_id} no longer has an active reservation."
+                ),
+            ),
+        }
+    }
 }
 
 /// Whether the successful claim also published its worktree run marker.
@@ -273,7 +436,7 @@ pub(crate) enum CoordinationRunMarkerPublication {
 /// Typed outcomes returned by `check`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-pub(crate) enum CheckPayload {
+enum CheckPayload {
     /// No foreign live reservation overlaps the requested paths.
     Clear {
         /// The minimal exact-file antichain evaluated by the hook.
@@ -477,6 +640,85 @@ impl OutputEnvelope {
                 coordination_run_id,
                 scopes,
                 marker_publication,
+            })),
+        }
+    }
+
+    /// Build a typed rejection when no additional live reservation is permitted.
+    pub(crate) fn reservation_limit_reached(maximum: u32) -> Self {
+        Self {
+            verb:         CommandVerb::Claim,
+            status:       OutputStatus::ReservationLimitReached,
+            exit_code:    BerthExit::BlockedByOverlap,
+            reservations: Vec::new(),
+            blocked_by:   Vec::new(),
+            message:      format!(
+                "The configured maximum of {maximum} live reservations has been reached."
+            ),
+            payload:      OutputPayload::from_facts(OutputFacts::Claim(
+                ClaimPayload::ReservationLimitReached { maximum },
+            )),
+        }
+    }
+
+    /// Build a typed claim rejection when no additional ordering edge is permitted.
+    pub(crate) fn claim_ordering_edge_limit_reached(maximum: u32) -> Self {
+        Self {
+            verb:         CommandVerb::Claim,
+            status:       OutputStatus::OrderingEdgeLimitReached,
+            exit_code:    BerthExit::BlockedByOrdering,
+            reservations: Vec::new(),
+            blocked_by:   Vec::new(),
+            message:      format!(
+                "The configured maximum of {maximum} ordering edges has been reached."
+            ),
+            payload:      OutputPayload::from_facts(OutputFacts::Claim(
+                ClaimPayload::OrderingEdgeLimitReached { maximum },
+            )),
+        }
+    }
+
+    /// Build the successful response for a deferral converted into an ordering edge.
+    pub(crate) fn sequenced(edge: OrderingEdge, readiness: EdgeReadiness) -> Self {
+        let edge_id = edge.edge_id;
+        let before = edge.before;
+        let after = edge.after;
+        Self {
+            verb:         CommandVerb::Sequence,
+            status:       OutputStatus::Sequenced,
+            exit_code:    BerthExit::Clear,
+            reservations: vec![before, after],
+            blocked_by:   if readiness.holds_successor() {
+                vec![before]
+            } else {
+                Vec::new()
+            },
+            message:      format!("Recorded ordering edge {edge_id}: {before} before {after}."),
+            payload:      OutputPayload::from_facts(OutputFacts::Sequence(
+                SequencePayload::Sequenced { edge, readiness },
+            )),
+        }
+    }
+
+    /// Build a locked semantic rejection for a requested deferral resolution.
+    pub(crate) fn sequence_rejected(
+        first: ReservationId,
+        then: ReservationId,
+        reason: SequenceRejectionKind,
+    ) -> Self {
+        let (status, exit_code, message) = reason.response(first, then);
+        let blocked_by = reason.blocked_by(first, then);
+        Self {
+            verb: CommandVerb::Sequence,
+            status,
+            exit_code,
+            reservations: vec![first, then],
+            blocked_by,
+            message,
+            payload: OutputPayload::from_facts(OutputFacts::Sequence(SequencePayload::Rejected {
+                first,
+                then,
+                reason,
             })),
         }
     }
@@ -745,12 +987,14 @@ impl OutputPayload {
         let pending = PendingPayload {};
         let facts = match command_verb {
             CommandVerb::Board => OutputFacts::Board(pending),
-            CommandVerb::Init | CommandVerb::Check | CommandVerb::Claim | CommandVerb::Release => {
-                OutputFacts::NoFacts
-            },
-            CommandVerb::Sequence => OutputFacts::Sequence(pending),
+            CommandVerb::Init
+            | CommandVerb::Check
+            | CommandVerb::Claim
+            | CommandVerb::Release
+            | CommandVerb::Sequence
+            | CommandVerb::Resolve
+            | CommandVerb::Renew => OutputFacts::NoFacts,
             CommandVerb::Integrate => OutputFacts::Integrate(pending),
-            CommandVerb::Resolve | CommandVerb::Renew => OutputFacts::NoFacts,
         };
         Self::from_facts(facts)
     }
@@ -842,6 +1086,8 @@ mod tests {
     use super::CommandVerb;
     use super::OutputEnvelope;
     use super::OutputStatus;
+    use crate::config::InitializationState;
+    use crate::ledger::LedgerInitialization;
 
     #[test]
     fn envelope_round_trips_with_its_additive_payload_field() {
@@ -866,9 +1112,9 @@ mod tests {
 
     #[test]
     fn init_has_a_non_placeholder_status() {
-        let output_envelope = OutputEnvelope::initialized(crate::ledger::LedgerInitialization {
-            ledger:        crate::config::InitializationState::Created,
-            configuration: crate::config::InitializationState::Existing,
+        let output_envelope = OutputEnvelope::initialized(LedgerInitialization {
+            ledger:        InitializationState::Created,
+            configuration: InitializationState::Existing,
         });
 
         assert_eq!(output_envelope.status, OutputStatus::Initialized);

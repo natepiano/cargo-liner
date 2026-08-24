@@ -1,8 +1,11 @@
 //! Repository-local configuration for `cargo-berth`.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs;
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -28,12 +31,12 @@ pub(crate) struct BerthConfig {
     /// The maximum number of declared ordering edges the graph may contain.
     pub(crate) maximum_ordering_edges: u32,
     /// Whether the trunk gate reports or rejects an invalid integration.
-    pub(crate) gate_mode:              GateMode,
+    gate_mode:                         GateMode,
 }
 
 /// The repository's selected trunk-gate policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GateMode {
+enum GateMode {
     /// Evaluate the gate and report its decision without rejecting the update.
     Observe,
     /// Reject updates that violate the gate's ordering decision.
@@ -62,7 +65,7 @@ impl Default for BerthConfig {
 
 impl BerthConfig {
     /// Return this repository's configuration location.
-    pub(crate) fn path(repository_root: &Path) -> PathBuf {
+    fn path(repository_root: &Path) -> PathBuf {
         repository_root
             .join(CLAUDE_DIRECTORY)
             .join(CONFIGURATION_DIRECTORY)
@@ -83,7 +86,7 @@ impl BerthConfig {
             .open(&configuration_path)
         {
             Ok(configuration_file) => configuration_file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                 return Ok(InitializationState::Existing);
             },
             Err(error) => return Err(ConfigError::Io(error)),
@@ -263,8 +266,8 @@ pub(crate) enum ConfigError {
     UnknownKey(String),
 }
 
-impl fmt::Display for ConfigError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ConfigError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPath(path) => {
                 write!(

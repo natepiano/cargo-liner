@@ -1,6 +1,9 @@
 //! Reservation progress and independently revalidated integration evidence.
 
+use std::error::Error;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::str::FromStr;
 
 use serde::Deserialize;
@@ -8,6 +11,7 @@ use serde::Serialize;
 
 use super::evidence::ProtectedReservationTip;
 use crate::ids::GitObjectId;
+use crate::ids::InvalidGitObjectId;
 
 /// How far a reservation has progressed through the coordination protocol.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -291,7 +295,7 @@ impl AsRef<GitObjectId> for RewrittenIntegrationTrunkCommit {
 }
 
 impl FromStr for RewrittenIntegrationTrunkCommit {
-    type Err = crate::ids::InvalidGitObjectId;
+    type Err = InvalidGitObjectId;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> { value.parse::<GitObjectId>().map(Self) }
 }
@@ -313,8 +317,8 @@ pub(crate) enum LifecycleTransitionError {
     ReplacementRequiresRelease,
 }
 
-impl fmt::Display for LifecycleTransitionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for LifecycleTransitionError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::CheckpointRequiresActive => {
                 formatter.write_str("checkpoint requires an active reservation")
@@ -336,4 +340,4 @@ impl fmt::Display for LifecycleTransitionError {
     }
 }
 
-impl std::error::Error for LifecycleTransitionError {}
+impl Error for LifecycleTransitionError {}

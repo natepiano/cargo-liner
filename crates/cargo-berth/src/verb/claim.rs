@@ -1,9 +1,12 @@
 //! Atomic reservation acquisition.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::path::Path;
 use std::process::Command;
 use std::process::Output;
+use std::string::FromUtf8Error;
 
 use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapAuthorizationRequest;
@@ -11,14 +14,19 @@ use crate::answer::OverlapEscalationPayload;
 use crate::answer::OverlapProposal;
 use crate::answer::OverlapProposalSubmission;
 use crate::answer::OverlapRequester;
+use crate::answer::PermissiveOverlapAnswer;
 use crate::answer::PermissiveOverlapAuthorizationRequest;
 use crate::answer::RequesterCoordinationIdentity;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::edge::EdgeReplayError;
+use crate::edge::OrderingGraph;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::ReservationId;
+use crate::ids::WorktreeId;
+use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadCommit;
 use crate::ledger::ClaimHeadSnapshot;
@@ -36,10 +44,10 @@ use crate::ledger::TransactionValidation;
 use crate::ledger::TrunkCommitAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
-use crate::ledger::worktree_identity;
 use crate::output::CommandVerb;
 use crate::output::CoordinationRunMarkerPublication;
 use crate::output::OutputEnvelope;
+use crate::reconcile;
 use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
@@ -93,7 +101,7 @@ enum ClaimRunValidation {
     /// A marker remains valid only while this worktree and run retain active work.
     ActiveMarkerRequired {
         coordination_run_id: CoordinationRunId,
-        worktree_id:         crate::ids::WorktreeId,
+        worktree_id:         WorktreeId,
     },
 }
 
@@ -123,6 +131,16 @@ struct PreparedClaim {
     worktree_administrative_locator: WorktreeAdministrativeLocator,
 }
 
+struct ClaimValidationContext {
+    run_validation:         ClaimRunValidation,
+    coordination_run_id:    CoordinationRunId,
+    path_case:              PathCase,
+    requester:              OverlapRequester,
+    overlap_authorization:  OverlapAuthorizationRequest,
+    maximum_reservations:   u32,
+    maximum_ordering_edges: u32,
+}
+
 /// Acquire a reservation or return a typed conflict without appending.
 pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
     let invocation_directory = match std::env::current_dir() {
@@ -131,7 +149,7 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Claim, &error.to_string());
         },
     };
-    let reconciliation_report = match crate::reconcile::reconcile(&invocation_directory) {
+    let reconciliation_report = match reconcile::reconcile(&invocation_directory) {
         Ok(reconciliation_report) => reconciliation_report,
         Err(error) => return error.into_output(CommandVerb::Claim),
     };
@@ -150,6 +168,12 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
         Ok(ClaimExecution::Blocked(conflicts)) => OutputEnvelope::blocked_claim(conflicts),
         Ok(ClaimExecution::AuthorizationRequired(escalation)) => {
             OutputEnvelope::claim_authorization_required(*escalation)
+        },
+        Ok(ClaimExecution::ReservationLimitReached(maximum)) => {
+            OutputEnvelope::reservation_limit_reached(maximum)
+        },
+        Ok(ClaimExecution::OrderingEdgeLimitReached(maximum)) => {
+            OutputEnvelope::claim_ordering_edge_limit_reached(maximum)
         },
         Err(ClaimError::Transaction(error)) => match error {
             LedgerTransactionError::CorrectableInput(error) => {
@@ -182,6 +206,8 @@ enum ClaimExecution {
     },
     Blocked(Vec<ReservationConflict>),
     AuthorizationRequired(Box<OverlapEscalationPayload>),
+    ReservationLimitReached(u32),
+    OrderingEdgeLimitReached(u32),
 }
 
 fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimError> {
@@ -210,7 +236,7 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
     let berth_config = BerthConfig::read(worktree_context.repository_root())?;
     let trunk_at_claim =
         read_trunk_commit(worktree_context.repository_root(), &berth_config.trunk)?;
-    let worktree_identity = worktree_identity(
+    let worktree_identity = ledger::worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
@@ -237,13 +263,26 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
         validate_claim_transaction(
             &state,
             prepared_claim,
-            claim_run_validation,
-            actor_run_id,
-            path_case,
-            requester,
-            overlap_authorization,
+            ClaimValidationContext {
+                run_validation: claim_run_validation,
+                coordination_run_id: actor_run_id,
+                path_case,
+                requester,
+                overlap_authorization,
+                maximum_reservations: berth_config.maximum_reservations,
+                maximum_ordering_edges: berth_config.maximum_ordering_edges,
+            },
         )
     })?;
+    claim_execution_from_outcome(outcome, reservation_id, scopes, &worktree_context)
+}
+
+fn claim_execution_from_outcome(
+    outcome: LedgerTransactionOutcome<ClaimRejection>,
+    reservation_id: ReservationId,
+    scopes: ReservationScopeSet,
+    worktree_context: &WorktreeContext,
+) -> Result<ClaimExecution, ClaimError> {
     match outcome {
         LedgerTransactionOutcome::Appended(event) => {
             let coordination_run_id = event.actor.run;
@@ -271,28 +310,53 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
         LedgerTransactionOutcome::Rejected(ClaimRejection::Replay(error)) => {
             Err(ClaimError::ReservationReplay(error))
         },
+        LedgerTransactionOutcome::Rejected(ClaimRejection::EdgeReplay(error)) => {
+            Err(ClaimError::EdgeReplay(error))
+        },
         LedgerTransactionOutcome::Rejected(ClaimRejection::InactiveMarkerRun(
             coordination_run_id,
         )) => Err(ClaimError::InactiveMarkerRun(coordination_run_id)),
+        LedgerTransactionOutcome::Rejected(ClaimRejection::ReservationLimitReached(maximum)) => {
+            Ok(ClaimExecution::ReservationLimitReached(maximum))
+        },
+        LedgerTransactionOutcome::Rejected(ClaimRejection::OrderingEdgeLimitReached(maximum)) => {
+            Ok(ClaimExecution::OrderingEdgeLimitReached(maximum))
+        },
     }
 }
 
 fn validate_claim_transaction(
     state: &ReplayedLedgerState<'_>,
     prepared_claim: PreparedClaim,
-    claim_run_validation: ClaimRunValidation,
-    coordination_run_id: CoordinationRunId,
-    path_case: PathCase,
-    requester: OverlapRequester,
-    overlap_authorization: OverlapAuthorizationRequest,
+    context: ClaimValidationContext,
 ) -> TransactionValidation<ClaimRejection> {
+    let ClaimValidationContext {
+        run_validation,
+        coordination_run_id,
+        path_case,
+        requester,
+        overlap_authorization,
+        maximum_reservations,
+        maximum_ordering_edges,
+    } = context;
     let reservations = match RetainedReservationSet::replay(state.events()) {
         Ok(reservations) => reservations,
         Err(error) => return TransactionValidation::Reject(ClaimRejection::Replay(error)),
     };
-    if let Err(rejection) = claim_run_validation.validate(&reservations) {
+    if let Err(rejection) = run_validation.validate(&reservations) {
         return TransactionValidation::Reject(rejection);
     }
+    if count_reaches_limit(reservations.nonterminal_count(), maximum_reservations) {
+        return TransactionValidation::Reject(ClaimRejection::ReservationLimitReached(
+            maximum_reservations,
+        ));
+    }
+    let ordering_graph = match OrderingGraph::replay(state.events()) {
+        Ok(ordering_graph) => ordering_graph,
+        Err(error) => {
+            return TransactionValidation::Reject(ClaimRejection::EdgeReplay(error));
+        },
+    };
     let conflicts =
         reservations.conflicts_for_claim(&prepared_claim.scopes, coordination_run_id, path_case);
     match overlap_authorization {
@@ -304,9 +368,14 @@ fn validate_claim_transaction(
         OverlapAuthorizationRequest::Absent => {
             TransactionValidation::Reject(ClaimRejection::Conflict(conflicts))
         },
-        OverlapAuthorizationRequest::Permissive(request) => {
-            validate_authorization(*request, conflicts, requester, prepared_claim)
-        },
+        OverlapAuthorizationRequest::Permissive(request) => validate_authorization(
+            *request,
+            conflicts,
+            requester,
+            prepared_claim,
+            &ordering_graph,
+            maximum_ordering_edges,
+        ),
     }
 }
 
@@ -315,6 +384,8 @@ fn validate_authorization(
     conflicts: Vec<ReservationConflict>,
     requester: OverlapRequester,
     prepared_claim: PreparedClaim,
+    ordering_graph: &OrderingGraph,
+    maximum_ordering_edges: u32,
 ) -> TransactionValidation<ClaimRejection> {
     let PermissiveOverlapAuthorizationRequest {
         answer,
@@ -327,10 +398,23 @@ fn validate_authorization(
     if conflict.reservation_id != answer.blocker() {
         return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
     }
+    let edge_effect = match &answer {
+        PermissiveOverlapAnswer::Sequence { .. } => ClaimEdgeEffect::Adds,
+        PermissiveOverlapAnswer::Defer { .. } | PermissiveOverlapAnswer::Override { .. } => {
+            ClaimEdgeEffect::Unchanged
+        },
+    };
     let proposal =
         OverlapProposal::recompute(requester, reason, &prepared_claim.scopes, answer, conflict);
     match proposal_submission {
         OverlapProposalSubmission::Apply(proposal_token) if proposal_token.matches(&proposal) => {
+            if matches!(edge_effect, ClaimEdgeEffect::Adds)
+                && count_reaches_limit(ordering_graph.edge_count(), maximum_ordering_edges)
+            {
+                return TransactionValidation::Reject(ClaimRejection::OrderingEdgeLimitReached(
+                    maximum_ordering_edges,
+                ));
+            }
             let authorization = ConflictAuthorization::from_approved_proposal(proposal);
             TransactionValidation::Append(Box::new(prepared_claim.into_operation(authorization)))
         },
@@ -340,6 +424,16 @@ fn validate_authorization(
             )))
         },
     }
+}
+
+#[derive(Clone, Copy)]
+enum ClaimEdgeEffect {
+    Unchanged,
+    Adds,
+}
+
+fn count_reaches_limit(count: usize, maximum: u32) -> bool {
+    u64::try_from(count).map_or(true, |count| count >= u64::from(maximum))
 }
 
 impl PreparedClaim {
@@ -528,6 +622,9 @@ enum ClaimRejection {
     AuthorizationRequired(Box<OverlapEscalationPayload>),
     Replay(ReservationReplayError),
     InactiveMarkerRun(CoordinationRunId),
+    ReservationLimitReached(u32),
+    OrderingEdgeLimitReached(u32),
+    EdgeReplay(EdgeReplayError),
 }
 
 #[derive(Debug)]
@@ -538,17 +635,18 @@ enum ClaimError {
     PathCase(PathCaseError),
     Transaction(LedgerTransactionError),
     ReservationReplay(ReservationReplayError),
+    EdgeReplay(EdgeReplayError),
     InactiveMarkerRun(CoordinationRunId),
     InvalidGitObjectId(InvalidGitObjectId),
-    InvalidUtf8(std::string::FromUtf8Error),
+    InvalidUtf8(FromUtf8Error),
     GitCommandFailed(String),
     InvalidHeadReference,
     NonUtf8WorktreeRoot,
     InvalidCanonicalWorktreeRoot,
 }
 
-impl fmt::Display for ClaimError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ClaimError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "claim I/O failed: {error}"),
             Self::Config(error) => error.fmt(formatter),
@@ -558,6 +656,7 @@ impl fmt::Display for ClaimError {
             Self::ReservationReplay(error) => {
                 write!(formatter, "reservation replay failed: {error}")
             },
+            Self::EdgeReplay(error) => write!(formatter, "ordering replay failed: {error}"),
             Self::InactiveMarkerRun(coordination_run_id) => write!(
                 formatter,
                 "coordination-run marker {coordination_run_id} no longer has an active reservation"
@@ -600,6 +699,6 @@ impl From<LedgerTransactionError> for ClaimError {
     fn from(error: LedgerTransactionError) -> Self { Self::Transaction(error) }
 }
 
-impl From<std::string::FromUtf8Error> for ClaimError {
-    fn from(error: std::string::FromUtf8Error) -> Self { Self::InvalidUtf8(error) }
+impl From<FromUtf8Error> for ClaimError {
+    fn from(error: FromUtf8Error) -> Self { Self::InvalidUtf8(error) }
 }

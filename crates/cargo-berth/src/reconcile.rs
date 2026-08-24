@@ -1,16 +1,34 @@
 //! Shared liveness, evidence, retention-ref, and marker reconciliation.
 
+use std::collections::HashMap;
+use std::error::Error;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::path::Path;
+use std::path::PathBuf;
 
 use crate::alert;
 use crate::alert::Alert;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::edge::EdgeReplayError;
+use crate::edge::OrderingGraph;
+use crate::edge::PredecessorReachability;
+use crate::edge::RepositoryReservationEvidence;
+use crate::edge::RepositoryReservationSnapshot;
+use crate::edge::RepositorySnapshot;
+use crate::edge::RepositoryTrunk;
+use crate::edge::SuccessorHeadReachability;
+use crate::git;
+use crate::git::CandidateHeadReachability;
+use crate::git::DescendantCommitQuery;
 use crate::git::GitError;
 use crate::ids::CoordinationRunId;
+use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
+use crate::ledger;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
@@ -19,10 +37,9 @@ use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::WorktreeContext;
-use crate::ledger::read_worktree_identity;
-use crate::ledger::worktree_identity;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
+use crate::reservation;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
@@ -32,10 +49,8 @@ use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
-use crate::reservation::current_trunk;
-use crate::reservation::integration_status;
-use crate::reservation::outstanding_integration_status;
-use crate::reservation::retain_protected_tip;
+use crate::worktree::WorktreeHead;
+use crate::worktree::WorktreeLiveness;
 use crate::worktree::WorktreeRegistry;
 use crate::worktree::WorktreeRelocation;
 use crate::worktree::liveness::WorktreeRegistryError;
@@ -43,9 +58,11 @@ use crate::worktree::liveness::WorktreeRegistryError;
 /// Alerts that remain after one complete reconciliation.
 pub(crate) struct ReconciliationReport {
     /// Durable alerts derived from retained journal state.
-    pub(crate) alerts:   Vec<Alert>,
+    pub(crate) alerts:              Vec<Alert>,
     /// Integration conclusions appended by this reconciliation.
-    pub(crate) evidence: Vec<ReconciledEvidence>,
+    pub(crate) evidence:            Vec<ReconciledEvidence>,
+    /// The one complete repository observation shared by edge and board consumers.
+    pub(crate) repository_snapshot: RepositorySnapshot,
 }
 
 /// One evidence conclusion appended before the requesting stateful verb ran.
@@ -61,13 +78,23 @@ struct ReconciliationPlan {
     action:     ReconciliationAction,
 }
 
+#[derive(Default)]
+struct ReconciliationChanges {
+    operations:          Vec<JournalOperation>,
+    retention_repairs:   Vec<RetentionRepair>,
+    retention_deletions: Vec<ReservationId>,
+    evidence:            Vec<ReconciledEvidence>,
+}
+
 struct ReconciliationAction {
-    active_holders:    Vec<ActiveHolder>,
-    marker_contexts:   Vec<WorktreeContext>,
-    repository_root:   std::path::PathBuf,
-    retention_repairs: Vec<RetentionRepair>,
-    alert_subjects:    Vec<AlertSubject>,
-    evidence:          Vec<ReconciledEvidence>,
+    active_holders:      Vec<ActiveHolder>,
+    marker_contexts:     Vec<WorktreeContext>,
+    repository_root:     PathBuf,
+    retention_repairs:   Vec<RetentionRepair>,
+    retention_deletions: Vec<ReservationId>,
+    alert_subjects:      Vec<AlertSubject>,
+    evidence:            Vec<ReconciledEvidence>,
+    repository_snapshot: RepositorySnapshot,
 }
 
 #[derive(Clone, Copy)]
@@ -83,19 +110,49 @@ struct RetentionRepair {
 
 struct AlertSubject {
     reservation:       Reservation,
-    worktree_liveness: crate::worktree::WorktreeLiveness,
+    worktree_liveness: WorktreeLiveness,
+}
+
+#[derive(Clone, Copy)]
+enum RepositoryObservationScope {
+    CurrentOrderingGraph,
+    RequestedOrderingEdge {
+        before: ReservationId,
+        after:  ReservationId,
+    },
 }
 
 /// Reconcile every retained reservation before a stateful command consumes it.
 pub(crate) fn reconcile(
     invocation_directory: &Path,
 ) -> Result<ReconciliationReport, ReconcileError> {
+    reconcile_with_scope(
+        invocation_directory,
+        RepositoryObservationScope::CurrentOrderingGraph,
+    )
+}
+
+/// Reconcile with the ordering graph that would result if one request is admitted.
+pub(crate) fn reconcile_for_sequence(
+    invocation_directory: &Path,
+    before: ReservationId,
+    after: ReservationId,
+) -> Result<ReconciliationReport, ReconcileError> {
+    reconcile_with_scope(
+        invocation_directory,
+        RepositoryObservationScope::RequestedOrderingEdge { before, after },
+    )
+}
+
+fn reconcile_with_scope(
+    invocation_directory: &Path,
+    repository_observation_scope: RepositoryObservationScope,
+) -> Result<ReconciliationReport, ReconcileError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
-    let worktree_registry = WorktreeRegistry::read(worktree_context.repository_root())?;
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let ledger_repository = ledger.repository_identity()?;
     let berth_config = BerthConfig::read(worktree_context.repository_root())?;
-    let worktree_identity = worktree_identity(
+    let worktree_identity = ledger::worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
@@ -107,21 +164,45 @@ pub(crate) fn reconcile(
             |state| {
                 let reservations = match RetainedReservationSet::replay(state.events()) {
                     Ok(reservations) => reservations,
-                    Err(error) => return ReconciliationValidation::Reject(error),
+                    Err(error) => {
+                        return ReconciliationValidation::Reject(
+                            ReconciliationPlanningError::Reservation(error),
+                        );
+                    },
                 };
+                let ordering_graph = match OrderingGraph::replay(state.events()) {
+                    Ok(ordering_graph) => ordering_graph,
+                    Err(error) => {
+                        return ReconciliationValidation::Reject(
+                            ReconciliationPlanningError::Edge(error),
+                        );
+                    },
+                };
+                let worktree_registry =
+                    match WorktreeRegistry::read(worktree_context.repository_root()) {
+                        Ok(worktree_registry) => worktree_registry,
+                        Err(error) => {
+                            return ReconciliationValidation::Reject(
+                                ReconciliationPlanningError::WorktreeRegistry(error),
+                            );
+                        },
+                    };
                 match build_plan(
                     &reservations,
+                    &ordering_graph,
+                    repository_observation_scope,
                     &worktree_registry,
                     ledger_repository,
-                    worktree_context.common_git_directory(),
-                    worktree_context.repository_root(),
-                    &berth_config.trunk,
+                    &worktree_context,
+                    &berth_config,
                 ) {
                     Ok(reconciliation_plan) => ReconciliationValidation::Apply {
                         operations: reconciliation_plan.operations,
                         action:     reconciliation_plan.action,
                     },
-                    Err(error) => ReconciliationValidation::Reject(error),
+                    Err(error) => ReconciliationValidation::Reject(
+                        ReconciliationPlanningError::Reservation(error),
+                    ),
                 }
             },
             ReconciliationAction::commit,
@@ -132,46 +213,68 @@ pub(crate) fn reconcile(
         })?;
     match outcome {
         LedgerCommittedActionOutcome::Appended(report) => Ok(report),
-        LedgerCommittedActionOutcome::Rejected(error) => Err(ReconcileError::Replay(error)),
+        LedgerCommittedActionOutcome::Rejected(error) => Err(error.into()),
     }
 }
 
 fn build_plan(
     reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    repository_observation_scope: RepositoryObservationScope,
     worktree_registry: &WorktreeRegistry,
-    ledger_repository: crate::ids::RepoInstanceId,
-    common_git_directory: &Path,
-    repository_root: &Path,
-    trunk_branch: &str,
+    ledger_repository: RepoInstanceId,
+    worktree_context: &WorktreeContext,
+    berth_config: &BerthConfig,
 ) -> Result<ReconciliationPlan, ReservationReplayError> {
-    let mut operations = Vec::new();
-    let mut retention_repairs = Vec::new();
+    let common_git_directory = worktree_context.common_git_directory();
+    let repository_root = worktree_context.repository_root();
+    let mut changes = ReconciliationChanges::default();
     let mut alert_subjects = Vec::new();
-    let mut evidence = Vec::new();
+    let repository_trunk = reservation::current_trunk(repository_root, &berth_config.trunk)
+        .map_or(RepositoryTrunk::ObjectUnknown, RepositoryTrunk::Resolved);
+    let mut reservation_snapshots = Vec::new();
     for reservation in reservations.iter() {
         let observation =
             worktree_registry.classify(ledger_repository, common_git_directory, reservation);
-        if let WorktreeRelocation::Relocated { current_root } = observation.relocation {
-            operations.push(JournalOperation::RelocateWorktree {
+        if let WorktreeRelocation::Relocated { current_root } = &observation.relocation {
+            changes.operations.push(JournalOperation::RelocateWorktree {
                 reservation_id: reservation.id(),
-                worktree_id: reservation.actor().worktree,
-                previous_root: reservation.worktree_root().clone(),
-                current_root,
+                worktree_id:    reservation.actor().worktree,
+                previous_root:  reservation.worktree_root().clone(),
+                current_root:   current_root.clone(),
             });
         }
         alert_subjects.push(AlertSubject {
             reservation:       reservation.clone(),
             worktree_liveness: observation.liveness,
         });
+        let repository_evidence =
+            repository_evidence(repository_root, reservation, &repository_trunk)?;
         append_evidence_and_retention(
-            repository_root,
-            trunk_branch,
             reservation,
-            &mut operations,
-            &mut retention_repairs,
-            &mut evidence,
+            &repository_evidence,
+            reservations,
+            ordering_graph,
+            &mut changes,
         )?;
+        reservation_snapshots.push(RepositoryReservationSnapshot {
+            reservation_id:    reservation.id(),
+            worktree_liveness: observation.liveness,
+            worktree_head:     observation.head,
+            evidence:          repository_evidence,
+        });
     }
+    let predecessor_reachability = predecessor_descendants(
+        repository_root,
+        ordering_graph,
+        repository_observation_scope,
+        &reservation_snapshots,
+    );
+    let repository_snapshot = RepositorySnapshot::new(
+        repository_trunk,
+        reservation_snapshots,
+        predecessor_reachability,
+    );
     let active_holders = reservations
         .iter()
         .filter(|reservation| matches!(reservation.lifecycle(), ReservationLifecycle::Active))
@@ -181,57 +284,57 @@ fn build_plan(
         })
         .collect();
     Ok(ReconciliationPlan {
-        operations,
-        action: ReconciliationAction {
+        operations: changes.operations,
+        action:     ReconciliationAction {
             active_holders,
             marker_contexts: worktree_registry.marker_sweep_contexts(common_git_directory),
             repository_root: repository_root.to_path_buf(),
-            retention_repairs,
+            retention_repairs: changes.retention_repairs,
+            retention_deletions: changes.retention_deletions,
             alert_subjects,
-            evidence,
+            evidence: changes.evidence,
+            repository_snapshot,
         },
     })
 }
 
-fn append_evidence_and_retention(
+fn repository_evidence(
     repository_root: &Path,
-    trunk_branch: &str,
     reservation: &Reservation,
-    operations: &mut Vec<JournalOperation>,
-    retention_repairs: &mut Vec<RetentionRepair>,
-    evidence_conclusions: &mut Vec<ReconciledEvidence>,
-) -> Result<(), ReservationReplayError> {
-    let evidence_state = reservation.evidence_state()?;
-    let (protected_tip, evidence) = match evidence_state {
-        ReservationEvidenceState::Active { .. }
-        | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => return Ok(()),
+    repository_trunk: &RepositoryTrunk,
+) -> Result<RepositoryReservationEvidence, ReservationReplayError> {
+    match reservation.evidence_state()? {
+        ReservationEvidenceState::Active { .. } => Ok(RepositoryReservationEvidence::Active),
         ReservationEvidenceState::Outstanding {
             protected_tip,
             trunk_snapshot,
             integration_status: materialized,
         } => {
-            let evidence = current_trunk(repository_root, trunk_branch).map_or(
-                IntegrationEvidenceStatus::ObjectUnknown,
-                |current_trunk_oid| {
+            let integration_status = match repository_trunk {
+                RepositoryTrunk::Resolved(current_trunk_oid) => {
                     if matches!(materialized, IntegrationEvidenceStatus::Integrated { .. }) {
-                        integration_status(
+                        reservation::integration_status(
                             repository_root,
                             &protected_tip,
-                            &current_trunk_oid,
+                            current_trunk_oid,
                             PriorIntegrationStatus::Proven,
                         )
                     } else {
-                        outstanding_integration_status(
+                        reservation::outstanding_integration_status(
                             repository_root,
                             &protected_tip,
                             &trunk_snapshot,
-                            &current_trunk_oid,
+                            current_trunk_oid,
                         )
                     }
                     .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown)
                 },
-            );
-            (protected_tip, Some((materialized, evidence)))
+                RepositoryTrunk::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
+            };
+            Ok(RepositoryReservationEvidence::Outstanding {
+                protected_tip,
+                integration_status,
+            })
         },
         ReservationEvidenceState::Released {
             protected_tip,
@@ -239,63 +342,221 @@ fn append_evidence_and_retention(
             integration_status: materialized,
             ..
         } => {
-            let revalidation_tip = match disposition.revalidation_subject() {
-                ReleaseRevalidationSubject::ProtectedTip => protected_tip.clone(),
+            let integration_status = match disposition.revalidation_subject() {
+                ReleaseRevalidationSubject::ProtectedTip => {
+                    revalidate_release(repository_root, &protected_tip, repository_trunk)
+                },
                 ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => {
-                    ProtectedReservationTip::from(trunk_commit.as_ref().clone())
+                    let revalidation_tip =
+                        ProtectedReservationTip::from(trunk_commit.as_ref().clone());
+                    revalidate_release(repository_root, &revalidation_tip, repository_trunk)
                 },
-                ReleaseRevalidationSubject::None => {
-                    retention_repairs.push(RetentionRepair {
-                        reservation_id: reservation.id(),
-                        protected_tip,
-                    });
-                    return Ok(());
-                },
+                ReleaseRevalidationSubject::None => materialized,
             };
-            let evidence = current_trunk(repository_root, trunk_branch).map_or(
-                IntegrationEvidenceStatus::ObjectUnknown,
-                |current_trunk_oid| {
-                    integration_status(
-                        repository_root,
-                        &revalidation_tip,
-                        &current_trunk_oid,
-                        PriorIntegrationStatus::Proven,
-                    )
-                    .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown)
+            Ok(RepositoryReservationEvidence::Released {
+                protected_tip,
+                disposition,
+                integration_status,
+            })
+        },
+        ReservationEvidenceState::ReleasedWithoutCheckpoint { disposition } => {
+            Ok(RepositoryReservationEvidence::ReleasedWithoutCheckpoint { disposition })
+        },
+    }
+}
+
+fn revalidate_release(
+    repository_root: &Path,
+    protected_tip: &ProtectedReservationTip,
+    repository_trunk: &RepositoryTrunk,
+) -> IntegrationEvidenceStatus {
+    match repository_trunk {
+        RepositoryTrunk::Resolved(current_trunk_oid) => reservation::integration_status(
+            repository_root,
+            protected_tip,
+            current_trunk_oid,
+            PriorIntegrationStatus::Proven,
+        )
+        .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown),
+        RepositoryTrunk::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
+    }
+}
+
+fn append_evidence_and_retention(
+    reservation: &Reservation,
+    repository_evidence: &RepositoryReservationEvidence,
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    changes: &mut ReconciliationChanges,
+) -> Result<(), ReservationReplayError> {
+    let (protected_tip, evidence_revalidation, retention) = match repository_evidence {
+        RepositoryReservationEvidence::Active
+        | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => return Ok(()),
+        RepositoryReservationEvidence::Outstanding {
+            protected_tip,
+            integration_status,
+        } => (
+            protected_tip,
+            EvidenceRevalidation::Required(integration_status),
+            RetentionDecision::Repair,
+        ),
+        RepositoryReservationEvidence::Released {
+            protected_tip,
+            integration_status,
+            disposition,
+        } => {
+            let retention =
+                if ordering_graph.has_nonterminal_dependent(reservation.id(), reservations)? {
+                    RetentionDecision::Repair
+                } else {
+                    RetentionDecision::Delete
+                };
+            let evidence_revalidation = match disposition.revalidation_subject() {
+                ReleaseRevalidationSubject::ProtectedTip
+                | ReleaseRevalidationSubject::RewrittenIntegration(_) => {
+                    EvidenceRevalidation::Required(integration_status)
                 },
-            );
-            (protected_tip, Some((materialized, evidence)))
+                ReleaseRevalidationSubject::None => EvidenceRevalidation::NotApplicable,
+            };
+            (protected_tip, evidence_revalidation, retention)
         },
     };
-    retention_repairs.push(RetentionRepair {
-        reservation_id: reservation.id(),
-        protected_tip,
-    });
-    if let Some((materialized, evidence)) = evidence {
-        let edit_blocking_status = evidence.edit_blocking_status();
-        if materialized != evidence || reservation.edit_blocking_status() != edit_blocking_status {
-            operations.push(JournalOperation::EvidenceRevalidated {
+    match retention {
+        RetentionDecision::Repair => changes.retention_repairs.push(RetentionRepair {
+            reservation_id: reservation.id(),
+            protected_tip:  protected_tip.clone(),
+        }),
+        RetentionDecision::Delete => changes.retention_deletions.push(reservation.id()),
+    }
+    let EvidenceRevalidation::Required(evidence) = evidence_revalidation else {
+        return Ok(());
+    };
+    let materialized = match reservation.evidence_state()? {
+        ReservationEvidenceState::Outstanding {
+            integration_status, ..
+        }
+        | ReservationEvidenceState::Released {
+            integration_status, ..
+        } => integration_status,
+        ReservationEvidenceState::Active { .. }
+        | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => return Ok(()),
+    };
+    let edit_blocking_status = evidence.edit_blocking_status();
+    if materialized != *evidence || reservation.edit_blocking_status() != edit_blocking_status {
+        changes
+            .operations
+            .push(JournalOperation::EvidenceRevalidated {
                 reservation_id: reservation.id(),
                 status: evidence.clone(),
                 edit_blocking_status,
             });
-            evidence_conclusions.push(ReconciledEvidence {
-                reservation_id: reservation.id(),
-                status:         evidence,
-            });
-        }
+        changes.evidence.push(ReconciledEvidence {
+            reservation_id: reservation.id(),
+            status:         evidence.clone(),
+        });
     }
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum RetentionDecision {
+    Repair,
+    Delete,
+}
+
+enum EvidenceRevalidation<'evidence> {
+    Required(&'evidence IntegrationEvidenceStatus),
+    NotApplicable,
+}
+
+fn predecessor_descendants(
+    repository_root: &Path,
+    ordering_graph: &OrderingGraph,
+    repository_observation_scope: RepositoryObservationScope,
+    reservation_snapshots: &[RepositoryReservationSnapshot],
+) -> Vec<(ReservationId, PredecessorReachability)> {
+    let snapshots_by_reservation = reservation_snapshots
+        .iter()
+        .map(|snapshot| (snapshot.reservation_id, snapshot))
+        .collect::<HashMap<_, _>>();
+    let mut successors_by_predecessor = ordering_graph
+        .predecessors()
+        .map(|predecessor| (predecessor.reservation_id, predecessor.successors.to_vec()))
+        .collect::<HashMap<_, _>>();
+    if let RepositoryObservationScope::RequestedOrderingEdge { before, after } =
+        repository_observation_scope
+    {
+        let successors = successors_by_predecessor.entry(before).or_default();
+        if !successors.contains(&after) {
+            successors.push(after);
+        }
+    }
+    successors_by_predecessor
+        .into_iter()
+        .filter_map(|(predecessor_id, successors)| {
+            let predecessor_snapshot = snapshots_by_reservation.get(&predecessor_id)?;
+            let protected_tip = match &predecessor_snapshot.evidence {
+                RepositoryReservationEvidence::Outstanding { protected_tip, .. }
+                | RepositoryReservationEvidence::Released { protected_tip, .. } => protected_tip,
+                RepositoryReservationEvidence::Active
+                | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => return None,
+            };
+            let candidate_heads = successors
+                .iter()
+                .filter_map(|successor| {
+                    snapshots_by_reservation
+                        .get(successor)
+                        .and_then(|snapshot| match &snapshot.worktree_head {
+                            WorktreeHead::Resolved(head) => Some(head.clone()),
+                            WorktreeHead::Unavailable => None,
+                        })
+                })
+                .collect::<Vec<_>>();
+            if candidate_heads.is_empty() {
+                return None;
+            }
+            let predecessor_reachability =
+                git::descendant_commits(repository_root, protected_tip.as_ref(), &candidate_heads)
+                    .map_or(PredecessorReachability::QueryFailed, |query| match query {
+                        DescendantCommitQuery::Classified(candidate_heads) => {
+                            PredecessorReachability::Classified(
+                                candidate_heads
+                                    .into_iter()
+                                    .map(|candidate_head| match candidate_head {
+                                        CandidateHeadReachability::Descendant(head) => {
+                                            (head, SuccessorHeadReachability::ContainsPredecessor)
+                                        },
+                                        CandidateHeadReachability::NotDescendant(head) => (
+                                            head,
+                                            SuccessorHeadReachability::DoesNotContainPredecessor,
+                                        ),
+                                        CandidateHeadReachability::ObjectUnknown(head) => {
+                                            (head, SuccessorHeadReachability::ObjectUnknown)
+                                        },
+                                    })
+                                    .collect(),
+                            )
+                        },
+                        DescendantCommitQuery::AncestorObjectUnknown => {
+                            PredecessorReachability::ObjectUnknown
+                        },
+                    });
+            Some((predecessor_id, predecessor_reachability))
+        })
+        .collect()
+}
+
 impl ReconciliationAction {
     fn commit(self) -> Result<ReconciliationReport, ReconcileError> {
+        for reservation_id in self.retention_deletions {
+            git::delete_reservation_retention_ref(&self.repository_root, reservation_id)?;
+        }
         for retention_repair in self.retention_repairs {
-            if crate::git::commit_is_available(
+            if git::commit_is_available(
                 &self.repository_root,
                 retention_repair.protected_tip.as_ref(),
             )? {
-                retain_protected_tip(
+                reservation::retain_protected_tip(
                     &self.repository_root,
                     retention_repair.reservation_id,
                     &retention_repair.protected_tip,
@@ -304,7 +565,7 @@ impl ReconciliationAction {
         }
         for marker_context in self.marker_contexts {
             let marker_worktree_id =
-                read_worktree_identity(marker_context.administrative_directory());
+                ledger::read_worktree_identity(marker_context.administrative_directory());
             marker_context.sweep_coordination_run_marker(|coordination_run_id| {
                 marker_worktree_id.is_ok_and(|worktree_id| {
                     self.active_holders.iter().any(|active_holder| {
@@ -325,8 +586,16 @@ impl ReconciliationAction {
         Ok(ReconciliationReport {
             alerts,
             evidence: self.evidence,
+            repository_snapshot: self.repository_snapshot,
         })
     }
+}
+
+#[derive(Debug)]
+enum ReconciliationPlanningError {
+    Reservation(ReservationReplayError),
+    Edge(EdgeReplayError),
+    WorktreeRegistry(WorktreeRegistryError),
 }
 
 /// A reconciliation failure classified for command-boundary exit behavior.
@@ -336,6 +605,7 @@ pub(crate) enum ReconcileError {
     Git(GitError),
     Ledger(LedgerError),
     Replay(ReservationReplayError),
+    EdgeReplay(EdgeReplayError),
     Transaction(LedgerTransactionError),
     WorktreeRegistry(WorktreeRegistryError),
 }
@@ -364,6 +634,9 @@ impl ReconcileError {
             Self::Replay(error) => {
                 OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
             },
+            Self::EdgeReplay(error) => {
+                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+            },
             Self::WorktreeRegistry(error) => {
                 OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
             },
@@ -371,20 +644,21 @@ impl ReconcileError {
     }
 }
 
-impl fmt::Display for ReconcileError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ReconcileError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(error) => error.fmt(formatter),
             Self::Git(error) => error.fmt(formatter),
             Self::Ledger(error) => error.fmt(formatter),
             Self::Replay(error) => error.fmt(formatter),
+            Self::EdgeReplay(error) => error.fmt(formatter),
             Self::Transaction(error) => error.fmt(formatter),
             Self::WorktreeRegistry(error) => error.fmt(formatter),
         }
     }
 }
 
-impl std::error::Error for ReconcileError {}
+impl Error for ReconcileError {}
 
 impl From<ConfigError> for ReconcileError {
     fn from(error: ConfigError) -> Self { Self::Config(error) }
@@ -400,4 +674,14 @@ impl From<LedgerError> for ReconcileError {
 
 impl From<WorktreeRegistryError> for ReconcileError {
     fn from(error: WorktreeRegistryError) -> Self { Self::WorktreeRegistry(error) }
+}
+
+impl From<ReconciliationPlanningError> for ReconcileError {
+    fn from(error: ReconciliationPlanningError) -> Self {
+        match error {
+            ReconciliationPlanningError::Reservation(error) => Self::Replay(error),
+            ReconciliationPlanningError::Edge(error) => Self::EdgeReplay(error),
+            ReconciliationPlanningError::WorktreeRegistry(error) => Self::WorktreeRegistry(error),
+        }
+    }
 }

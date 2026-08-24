@@ -1,14 +1,21 @@
 //! Checkpoint, resnapshot, release, and evidence revalidation.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::path::Path;
 
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::edge::EdgeReplayError;
+use crate::edge::OrderingGraph;
+use crate::git;
 use crate::git::GitError;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
+use crate::ledger;
 use crate::ledger::CommittedActionValidation;
 use crate::ledger::CoordinationRunMarkerRemoval;
 use crate::ledger::EditAuthorization;
@@ -18,13 +25,15 @@ use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
+use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::WorktreeContext;
-use crate::ledger::worktree_identity;
 use crate::output::CommandVerb;
 use crate::output::CoordinationRunMarkerRetirement;
 use crate::output::OutputEnvelope;
 use crate::output::ReleasePayload;
+use crate::reconcile;
+use crate::reservation;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
@@ -33,17 +42,20 @@ use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
-use crate::reservation::current_head;
-use crate::reservation::current_trunk;
-use crate::reservation::integration_status;
-use crate::reservation::outstanding_integration_status;
-use crate::reservation::retain_protected_tip;
 
 /// A parsed request to checkpoint or revalidate one reservation.
 #[derive(Clone, Copy)]
 pub(crate) struct ReleaseRequest {
     /// The reservation named at the command line.
     pub(crate) reservation_id: ReservationId,
+}
+
+#[derive(Clone, Copy)]
+struct ReleaseTransactionContext<'context> {
+    repository_root:      &'context Path,
+    trunk_branch:         &'context str,
+    reservation_id:       ReservationId,
+    invoking_worktree_id: WorktreeId,
 }
 
 /// Execute the release lifecycle operation and map every failure to the public envelope.
@@ -54,7 +66,7 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string());
         },
     };
-    let mut reconciliation_report = match crate::reconcile::reconcile(&invocation_directory) {
+    let mut reconciliation_report = match reconcile::reconcile(&invocation_directory) {
         Ok(reconciliation_report) => reconciliation_report,
         Err(error) => return error.into_output(CommandVerb::Release),
     };
@@ -112,7 +124,7 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
 fn execute_release(release_request: ReleaseRequest) -> Result<ReleasePayload, ReleaseError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let worktree_identity = worktree_identity(
+    let worktree_identity = ledger::worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
@@ -124,55 +136,15 @@ fn execute_release(release_request: ReleaseRequest) -> Result<ReleasePayload, Re
             worktree_identity.id,
             coordination_run_id,
             |state| {
-                let reservations = match RetainedReservationSet::replay(state.events()) {
-                    Ok(reservations) => reservations,
-                    Err(error) => {
-                        return CommittedActionValidation::Reject(ReleaseRejection::Replay(error));
+                validate_release_transaction(
+                    &state,
+                    ReleaseTransactionContext {
+                        repository_root:      worktree_context.repository_root(),
+                        trunk_branch:         &berth_config.trunk,
+                        reservation_id:       release_request.reservation_id,
+                        invoking_worktree_id: worktree_identity.id,
                     },
-                };
-                let reservation = match reservations.reservation(release_request.reservation_id) {
-                    Ok(reservation) => reservation,
-                    Err(ReservationReplayError::UnknownReservation(_)) => {
-                        return CommittedActionValidation::Reject(
-                            ReleaseRejection::UnknownReservation,
-                        );
-                    },
-                    Err(error) => {
-                        return CommittedActionValidation::Reject(ReleaseRejection::Replay(error));
-                    },
-                };
-                let marker_plan = marker_plan_for(
-                    &reservations,
-                    reservation.actor().run,
-                    reservation.actor().worktree,
-                    worktree_identity.id,
-                    release_request.reservation_id,
-                );
-                let evidence_state = match reservation.evidence_state() {
-                    Ok(evidence_state) => evidence_state,
-                    Err(error) => {
-                        return CommittedActionValidation::Reject(ReleaseRejection::Replay(error));
-                    },
-                };
-                let release_append = match operation_for_state(
-                    worktree_context.repository_root(),
-                    &berth_config.trunk,
-                    release_request.reservation_id,
-                    worktree_identity.id,
-                    reservation.actor().worktree,
-                    evidence_state,
-                ) {
-                    Ok(release_append) => release_append,
-                    Err(error) => return CommittedActionValidation::Reject(error),
-                };
-                CommittedActionValidation::Append {
-                    operation: Box::new(release_append.operation),
-                    action:    ReleaseCommittedAction {
-                        payload_seed: release_append.payload_seed,
-                        protected_tip_retention: release_append.protected_tip_retention,
-                        marker_plan,
-                    },
-                }
+                )
             },
             |committed_action| {
                 committed_action.commit(worktree_context.repository_root(), &worktree_context)
@@ -199,11 +171,91 @@ fn execute_release(release_request: ReleaseRequest) -> Result<ReleasePayload, Re
         LedgerCommittedActionOutcome::Rejected(ReleaseRejection::Git(error)) => {
             Err(ReleaseError::Git(error))
         },
+        LedgerCommittedActionOutcome::Rejected(ReleaseRejection::EdgeReplay(error)) => {
+            Err(ReleaseError::EdgeReplay(error))
+        },
     }
 }
 
+fn validate_release_transaction(
+    state: &ReplayedLedgerState<'_>,
+    context: ReleaseTransactionContext<'_>,
+) -> CommittedActionValidation<ReleaseRejection, ReleaseCommittedAction> {
+    let reservations = match RetainedReservationSet::replay(state.events()) {
+        Ok(reservations) => reservations,
+        Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Replay(error)),
+    };
+    let ordering_graph = match OrderingGraph::replay(state.events()) {
+        Ok(ordering_graph) => ordering_graph,
+        Err(error) => {
+            return CommittedActionValidation::Reject(ReleaseRejection::EdgeReplay(error));
+        },
+    };
+    let reservation = match reservations.reservation(context.reservation_id) {
+        Ok(reservation) => reservation,
+        Err(ReservationReplayError::UnknownReservation(_)) => {
+            return CommittedActionValidation::Reject(ReleaseRejection::UnknownReservation);
+        },
+        Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Replay(error)),
+    };
+    let marker_plan = marker_plan_for(
+        &reservations,
+        reservation.actor().run,
+        reservation.actor().worktree,
+        context.invoking_worktree_id,
+        context.reservation_id,
+    );
+    let evidence_state = match reservation.evidence_state() {
+        Ok(evidence_state) => evidence_state,
+        Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Replay(error)),
+    };
+    let release_append = match operation_for_state(
+        context.repository_root,
+        context.trunk_branch,
+        context.reservation_id,
+        context.invoking_worktree_id,
+        reservation.actor().worktree,
+        evidence_state,
+    ) {
+        Ok(release_append) => release_append,
+        Err(error) => return CommittedActionValidation::Reject(error),
+    };
+    let retention_deletions = match release_retention_deletions(
+        &release_append.operation,
+        &ordering_graph,
+        context.reservation_id,
+        &reservations,
+    ) {
+        Ok(retention_deletions) => retention_deletions,
+        Err(error) => return CommittedActionValidation::Reject(error),
+    };
+    CommittedActionValidation::Append {
+        operation: Box::new(release_append.operation),
+        action:    ReleaseCommittedAction {
+            payload_seed: release_append.payload_seed,
+            protected_tip_retention: release_append.protected_tip_retention,
+            marker_plan,
+            retention_deletions,
+        },
+    }
+}
+
+fn release_retention_deletions(
+    operation: &JournalOperation,
+    ordering_graph: &OrderingGraph,
+    terminal_successor: ReservationId,
+    reservations: &RetainedReservationSet,
+) -> Result<Vec<ReservationId>, ReleaseRejection> {
+    if !matches!(operation, JournalOperation::Release { .. }) {
+        return Ok(Vec::new());
+    }
+    ordering_graph
+        .retention_refs_retired_by_terminal(terminal_successor, reservations)
+        .map_err(ReleaseRejection::Replay)
+}
+
 fn operation_for_state(
-    repository_root: &std::path::Path,
+    repository_root: &Path,
     trunk_branch: &str,
     reservation_id: ReservationId,
     invoking_worktree_id: WorktreeId,
@@ -256,9 +308,10 @@ fn checkpoint_operation(
         return Err(ReleaseRejection::ForeignActiveReservation);
     }
     let protected_tip = ProtectedReservationTip::from(
-        current_head(release_repository_context.repository_root).map_err(ReleaseRejection::Git)?,
+        reservation::current_head(release_repository_context.repository_root)
+            .map_err(ReleaseRejection::Git)?,
     );
-    let trunk_oid = current_trunk(
+    let trunk_oid = reservation::current_trunk(
         release_repository_context.repository_root,
         release_repository_context.trunk_branch,
     )
@@ -286,7 +339,7 @@ fn outstanding_operation(
     trunk_snapshot: &GitObjectId,
     materialized_status: &IntegrationEvidenceStatus,
 ) -> Result<ReleaseAppend, ReleaseRejection> {
-    let Ok(current_trunk) = current_trunk(
+    let Ok(current_trunk) = reservation::current_trunk(
         release_repository_context.repository_root,
         release_repository_context.trunk_branch,
     ) else {
@@ -300,14 +353,14 @@ fn outstanding_operation(
         materialized_status,
         IntegrationEvidenceStatus::Integrated { .. }
     ) {
-        integration_status(
+        reservation::integration_status(
             release_repository_context.repository_root,
             protected_tip,
             &current_trunk,
             PriorIntegrationStatus::Proven,
         )
     } else {
-        outstanding_integration_status(
+        reservation::outstanding_integration_status(
             release_repository_context.repository_root,
             protected_tip,
             trunk_snapshot,
@@ -343,7 +396,7 @@ fn outstanding_operation(
             evidence,
             IntegrationEvidenceStatus::NotIntegrated | IntegrationEvidenceStatus::TrunkRewritten
         )
-        && current_head(release_repository_context.repository_root)
+        && reservation::current_head(release_repository_context.repository_root)
             .is_ok_and(|current_head| current_head != *protected_tip.as_ref())
     {
         return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
@@ -361,7 +414,8 @@ fn resnapshot_operation(
     current_trunk: &GitObjectId,
 ) -> Result<ReleaseAppend, ReleaseRejection> {
     let replacement_tip = ProtectedReservationTip::from(
-        current_head(release_repository_context.repository_root).map_err(ReleaseRejection::Git)?,
+        reservation::current_head(release_repository_context.repository_root)
+            .map_err(ReleaseRejection::Git)?,
     );
     Ok(ReleaseAppend::new(
         JournalOperation::Resnapshot {
@@ -395,7 +449,7 @@ fn released_evidence_operation(
         },
         ReleaseRevalidationSubject::None => return Err(ReleaseRejection::AlreadyReleased),
     };
-    let Ok(current_trunk) = current_trunk(
+    let Ok(current_trunk) = reservation::current_trunk(
         release_repository_context.repository_root,
         release_repository_context.trunk_branch,
     ) else {
@@ -405,7 +459,7 @@ fn released_evidence_operation(
             protected_tip.clone(),
         ));
     };
-    let evidence = integration_status(
+    let evidence = reservation::integration_status(
         release_repository_context.repository_root,
         &revalidation_tip,
         &current_trunk,
@@ -421,7 +475,7 @@ fn released_evidence_operation(
             evidence,
             IntegrationEvidenceStatus::NotIntegrated | IntegrationEvidenceStatus::TrunkRewritten
         )
-        && current_head(release_repository_context.repository_root)
+        && reservation::current_head(release_repository_context.repository_root)
             .is_ok_and(|current_head| current_head != *protected_tip.as_ref())
     {
         return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
@@ -434,7 +488,7 @@ fn released_evidence_operation(
 }
 
 struct ReleaseRepositoryContext<'repository> {
-    repository_root: &'repository std::path::Path,
+    repository_root: &'repository Path,
     trunk_branch:    &'repository str,
     holder_worktree: HolderWorktree,
 }
@@ -476,7 +530,7 @@ fn evidence_operation(
     )
 }
 
-fn mutation_run_id(administrative_directory: &std::path::Path) -> CoordinationRunId {
+fn mutation_run_id(administrative_directory: &Path) -> CoordinationRunId {
     match EditAuthorization::resolve(administrative_directory) {
         EditAuthorization::Environment(coordination_run_id)
         | EditAuthorization::Marker {
@@ -533,8 +587,8 @@ struct ProtectedTipRetention {
 }
 
 impl ProtectedTipRetention {
-    fn commit(self, repository_root: &std::path::Path) -> Result<(), GitError> {
-        retain_protected_tip(repository_root, self.reservation_id, &self.protected_tip)
+    fn commit(self, repository_root: &Path) -> Result<(), GitError> {
+        reservation::retain_protected_tip(repository_root, self.reservation_id, &self.protected_tip)
     }
 }
 
@@ -542,14 +596,18 @@ struct ReleaseCommittedAction {
     payload_seed:            ReleasePayloadSeed,
     protected_tip_retention: ProtectedTipRetention,
     marker_plan:             CoordinationRunMarkerPlan,
+    retention_deletions:     Vec<ReservationId>,
 }
 
 impl ReleaseCommittedAction {
     fn commit(
         self,
-        repository_root: &std::path::Path,
+        repository_root: &Path,
         worktree_context: &WorktreeContext,
     ) -> Result<ReleasePayload, ReleaseError> {
+        for reservation_id in self.retention_deletions {
+            git::delete_reservation_retention_ref(repository_root, reservation_id)?;
+        }
         self.protected_tip_retention.commit(repository_root)?;
         let marker = self.marker_plan.finish(worktree_context);
         Ok(self.payload_seed.into_payload(marker))
@@ -664,6 +722,7 @@ enum ReleaseRejection {
     ForeignActiveReservation,
     Replay(ReservationReplayError),
     Git(GitError),
+    EdgeReplay(EdgeReplayError),
 }
 
 #[derive(Debug)]
@@ -677,10 +736,11 @@ enum ReleaseError {
     UnknownReservation(ReservationId),
     AlreadyReleased(ReservationId),
     ForeignActiveReservation(ReservationId),
+    EdgeReplay(EdgeReplayError),
 }
 
-impl fmt::Display for ReleaseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ReleaseError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "release I/O failed: {error}"),
             Self::Config(error) => error.fmt(formatter),
@@ -703,6 +763,7 @@ impl fmt::Display for ReleaseError {
                 formatter,
                 "reservation {reservation_id} is active in another worktree"
             ),
+            Self::EdgeReplay(error) => write!(formatter, "ordering replay failed: {error}"),
         }
     }
 }

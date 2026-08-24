@@ -1,22 +1,32 @@
 //! Typed worktree liveness derived from git's porcelain registry and opaque identity.
 
+use std::error::Error;
 #[cfg(unix)]
 use std::ffi::OsStr;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str::Utf8Error;
+#[cfg(not(unix))]
+use std::string::FromUtf8Error;
 
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::constants::HEAD_FIELD_PREFIX;
 use super::constants::LOCKED_FIELD;
 use super::constants::PRUNABLE_FIELD;
 use super::constants::WORKTREE_FIELD_PREFIX;
+use super::identity;
 use super::identity::ValidatedWorktreeOwner;
-use super::identity::validate_same_owner;
 use crate::git;
+use crate::git::GitError;
+use crate::ids::GitObjectId;
+use crate::ids::InvalidGitObjectId;
 use crate::ids::RepoInstanceId;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::WorktreeContext;
@@ -38,6 +48,15 @@ pub(crate) enum WorktreeLiveness {
     Unknown,
 }
 
+/// The holder commit included in the one repository worktree-list observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum WorktreeHead {
+    /// Git reported this full commit for the registered holder.
+    Resolved(GitObjectId),
+    /// No validated registered holder commit is available.
+    Unavailable,
+}
+
 /// Whether reconciliation must update the recorded root for an otherwise live holder.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum WorktreeRelocation {
@@ -54,6 +73,8 @@ pub(crate) struct WorktreeLivenessObservation {
     pub(crate) liveness:   WorktreeLiveness,
     /// A root update that is valid only because opaque identity validation succeeded.
     pub(crate) relocation: WorktreeRelocation,
+    /// The commit reported for the same registered holder.
+    pub(crate) head:       WorktreeHead,
 }
 
 /// Parsed registered worktrees from one `git worktree list --porcelain` call.
@@ -64,6 +85,7 @@ pub(crate) struct WorktreeRegistry {
 struct WorktreeRegistration {
     root:  PathBuf,
     state: WorktreeRegistrationState,
+    head:  WorktreeHead,
 }
 
 #[derive(Clone, Copy)]
@@ -93,9 +115,11 @@ impl WorktreeRegistry {
             .find(|registration| registration.root == reservation.worktree_root().as_ref())
         {
             return match registration.state {
-                WorktreeRegistrationState::Locked => observation(WorktreeLiveness::Unavailable),
+                WorktreeRegistrationState::Locked => {
+                    observation(WorktreeLiveness::Unavailable, registration.head.clone())
+                },
                 WorktreeRegistrationState::Prunable => {
-                    observation(WorktreeLiveness::OrphanCandidate)
+                    observation(WorktreeLiveness::OrphanCandidate, registration.head.clone())
                 },
                 WorktreeRegistrationState::Available => Self::validate_registration(
                     ledger_repository,
@@ -119,7 +143,7 @@ impl WorktreeRegistry {
                 return validated;
             }
         }
-        observation(WorktreeLiveness::Orphaned)
+        observation(WorktreeLiveness::Orphaned, WorktreeHead::Unavailable)
     }
 
     /// Discover contexts whose administrative directories are eligible for marker sweeping.
@@ -147,9 +171,9 @@ impl WorktreeRegistry {
         registration: &WorktreeRegistration,
     ) -> WorktreeLivenessObservation {
         let Ok(candidate) = WorktreeContext::discover(&registration.root) else {
-            return observation(WorktreeLiveness::Unknown);
+            return observation(WorktreeLiveness::Unknown, WorktreeHead::Unavailable);
         };
-        match validate_same_owner(
+        match identity::validate_same_owner(
             ledger_repository,
             reservation.actor().repository,
             common_git_directory,
@@ -158,12 +182,15 @@ impl WorktreeRegistry {
             reservation.worktree_locator(),
             &candidate,
         ) {
-            Ok(ValidatedWorktreeOwner::RecordedRoot) => observation(WorktreeLiveness::Live),
+            Ok(ValidatedWorktreeOwner::RecordedRoot) => {
+                observation(WorktreeLiveness::Live, registration.head.clone())
+            },
             Ok(ValidatedWorktreeOwner::Relocated { current_root }) => WorktreeLivenessObservation {
                 liveness:   WorktreeLiveness::Live,
                 relocation: WorktreeRelocation::Relocated { current_root },
+                head:       registration.head.clone(),
             },
-            Err(_) => observation(WorktreeLiveness::Unknown),
+            Err(_) => observation(WorktreeLiveness::Unknown, WorktreeHead::Unavailable),
         }
     }
 
@@ -184,11 +211,20 @@ impl WorktreeRegistry {
                 .map(PathBuf::from)
                 .map_err(WorktreeRegistryError::InvalidPathEncoding)?;
             let mut state = WorktreeRegistrationState::Available;
+            let mut head = WorktreeHead::Unavailable;
             for field in fields.by_ref() {
                 if field.is_empty() {
                     break;
                 }
-                if field.starts_with(LOCKED_FIELD.as_bytes()) {
+                if let Some(head_field) = field.strip_prefix(HEAD_FIELD_PREFIX.as_bytes()) {
+                    let head_text = std::str::from_utf8(head_field)
+                        .map_err(WorktreeRegistryError::InvalidHeadEncoding)?;
+                    head = WorktreeHead::Resolved(
+                        head_text
+                            .parse()
+                            .map_err(WorktreeRegistryError::InvalidHead)?,
+                    );
+                } else if field.starts_with(LOCKED_FIELD.as_bytes()) {
                     state = WorktreeRegistrationState::Locked;
                 } else if field.starts_with(PRUNABLE_FIELD.as_bytes())
                     && !matches!(state, WorktreeRegistrationState::Locked)
@@ -196,16 +232,20 @@ impl WorktreeRegistry {
                     state = WorktreeRegistrationState::Prunable;
                 }
             }
-            registrations.push(WorktreeRegistration { root, state });
+            registrations.push(WorktreeRegistration { root, state, head });
         }
         Ok(Self { registrations })
     }
 }
 
-const fn observation(liveness: WorktreeLiveness) -> WorktreeLivenessObservation {
+const fn observation(
+    liveness: WorktreeLiveness,
+    head: WorktreeHead,
+) -> WorktreeLivenessObservation {
     WorktreeLivenessObservation {
         liveness,
         relocation: WorktreeRelocation::Unchanged,
+        head,
     }
 }
 
@@ -213,21 +253,32 @@ const fn observation(liveness: WorktreeLiveness) -> WorktreeLivenessObservation 
 #[derive(Debug)]
 pub(crate) enum WorktreeRegistryError {
     /// Git could not list registered worktrees.
-    Git(git::GitError),
+    Git(GitError),
     /// One porcelain record did not begin with its required worktree root.
     MissingRoot,
+    /// A porcelain HEAD field was not UTF-8.
+    InvalidHeadEncoding(Utf8Error),
+    /// A porcelain HEAD field was not a full git object id.
+    InvalidHead(InvalidGitObjectId),
     /// A non-Unix platform could not decode git's worktree root representation.
     #[cfg(not(unix))]
-    InvalidPathEncoding(std::string::FromUtf8Error),
+    InvalidPathEncoding(FromUtf8Error),
 }
 
-impl fmt::Display for WorktreeRegistryError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for WorktreeRegistryError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Git(error) => error.fmt(formatter),
             Self::MissingRoot => {
                 formatter.write_str("git worktree porcelain omitted a worktree root")
             },
+            Self::InvalidHeadEncoding(error) => {
+                write!(
+                    formatter,
+                    "git worktree porcelain returned a non-UTF-8 HEAD: {error}"
+                )
+            },
+            Self::InvalidHead(error) => error.fmt(formatter),
             #[cfg(not(unix))]
             Self::InvalidPathEncoding(error) => {
                 write!(formatter, "git returned an invalid worktree path: {error}")
@@ -236,8 +287,8 @@ impl fmt::Display for WorktreeRegistryError {
     }
 }
 
-impl std::error::Error for WorktreeRegistryError {}
+impl Error for WorktreeRegistryError {}
 
-impl From<git::GitError> for WorktreeRegistryError {
-    fn from(error: git::GitError) -> Self { Self::Git(error) }
+impl From<GitError> for WorktreeRegistryError {
+    fn from(error: GitError) -> Self { Self::Git(error) }
 }

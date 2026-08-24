@@ -7,8 +7,11 @@ mod projection;
 
 use std::ffi::OsString;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs;
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -45,6 +48,7 @@ pub(crate) use journal::FullRefName;
 use journal::Journal;
 pub(crate) use journal::JournalActor;
 use journal::JournalAppendError;
+use journal::JournalError;
 pub(crate) use journal::JournalEvent;
 pub(crate) use journal::JournalOperation;
 use journal::JournalReplay;
@@ -65,7 +69,9 @@ pub(crate) use journal::WidenCause;
 pub(crate) use journal::WorkPlanReference;
 pub(crate) use journal::WorktreeAdministrativeLocator;
 use lock::MutationLock;
+use lock::MutationLockError;
 use projection::Projection;
+use projection::ProjectionError;
 use projection::ProjectionSynchronization;
 use projection::read_validated;
 use uuid::Uuid;
@@ -74,8 +80,10 @@ use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::config::InitializationState;
 use crate::git;
+use crate::git::GitError;
 use crate::ids::CoordinationRunId;
 use crate::ids::InvalidUuidV7;
+use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
 use crate::ids::WorktreeId;
@@ -373,7 +381,7 @@ impl WorktreeContext {
                     retirement_path,
                 },
             )),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(error) if error.kind() == ErrorKind::NotFound => {
                 Ok(CoordinationRunMarkerAtRetirement::AlreadyAbsent)
             },
             Err(error) => Err(LedgerError::Io(error)),
@@ -459,7 +467,7 @@ impl DetachedCoordinationRunMarker {
     fn restore(&self) -> Result<(), LedgerError> {
         match fs::hard_link(&self.retirement_path, &self.marker_path) {
             Ok(()) => {},
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {},
             Err(error) => return Err(LedgerError::Io(error)),
         }
         self.remove()
@@ -478,7 +486,7 @@ impl EditCheckLedgerSnapshot {
 pub(crate) struct ReplayedLedgerState<'replay> {
     events:             &'replay [JournalEvent],
     generation:         ProjectionGeneration,
-    journal_end_offset: crate::ids::JournalByteOffset,
+    journal_end_offset: JournalByteOffset,
 }
 
 impl ReplayedLedgerState<'_> {
@@ -493,7 +501,7 @@ impl ReplayedLedgerState<'_> {
             reason = "The claim engine inspects the replay point; no verb reaches it yet."
         )
     )]
-    pub(crate) const fn generation(&self) -> ProjectionGeneration { self.generation }
+    const fn generation(&self) -> ProjectionGeneration { self.generation }
 
     /// Return the journal byte offset represented by the replay.
     #[cfg_attr(
@@ -503,9 +511,7 @@ impl ReplayedLedgerState<'_> {
             reason = "The claim engine inspects the replay point; no verb reaches it yet."
         )
     )]
-    pub(crate) const fn journal_end_offset(&self) -> crate::ids::JournalByteOffset {
-        self.journal_end_offset
-    }
+    const fn journal_end_offset(&self) -> JournalByteOffset { self.journal_end_offset }
 }
 
 /// The only two outcomes a transaction validator can authorize.
@@ -562,9 +568,9 @@ pub(crate) enum LedgerCommittedActionOutcome<Rejection, CommittedActionOutput> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WorktreeIdentity {
     /// The opaque identity minted for this administrative directory instance.
-    pub(crate) id:   WorktreeId,
+    pub(crate) id: WorktreeId,
     /// Whether this is the main or a linked worktree.
-    pub(crate) kind: WorktreeKind,
+    kind:          WorktreeKind,
 }
 
 impl Ledger {
@@ -765,7 +771,7 @@ impl Ledger {
         validate_journal_repository(repo_instance_id, &replay)?;
         match fs::remove_file(&ledger.paths.projection) {
             Ok(()) => {},
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) if error.kind() == ErrorKind::NotFound => {},
             Err(error) => return Err(LedgerError::Io(error)),
         }
         Projection::from_replay(repo_instance_id, &replay)
@@ -853,7 +859,7 @@ impl LedgerTransaction {
         let next_generation = next_projection_generation(self.replay.generation)
             .map_err(LedgerTransactionError::LedgerUnreadable)?;
         let event = JournalEvent::for_operation(
-            journal::JournalActor {
+            JournalActor {
                 repository: self.repo_instance_id,
                 worktree:   worktree_id,
                 run:        coordination_run_id,
@@ -945,12 +951,12 @@ fn read_or_mint_repo_instance_id(path: &Path) -> Result<RepoInstanceId, LedgerEr
             .trim()
             .parse()
             .map_err(LedgerError::InvalidRepoInstanceId),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
             let repo_instance_id = RepoInstanceId::new();
             let mut identity_file = match OpenOptions::new().write(true).create_new(true).open(path)
             {
                 Ok(identity_file) => identity_file,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                     return read_or_mint_repo_instance_id(path);
                 },
                 Err(error) => return Err(LedgerError::Io(error)),
@@ -974,7 +980,7 @@ pub(crate) fn worktree_identity(
             .trim()
             .parse()
             .map_err(LedgerError::InvalidWorktreeId)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
             let new_id = WorktreeId::new();
             let mut identity_file = match OpenOptions::new()
                 .write(true)
@@ -982,7 +988,7 @@ pub(crate) fn worktree_identity(
                 .open(&identity_path)
             {
                 Ok(identity_file) => identity_file,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                     return worktree_identity(administrative_directory, kind);
                 },
                 Err(error) => return Err(LedgerError::Io(error)),
@@ -1040,19 +1046,19 @@ pub(crate) enum LedgerError {
     /// A canonical worktree root could not be reconstructed during identity validation.
     InvalidCanonicalWorktreeRoot,
     /// Git could not locate the common administrative directory.
-    Git(git::GitError),
+    Git(GitError),
     /// Ordinary filesystem access failed.
     Io(std::io::Error),
     /// Repository policy could not be initialized or read.
     Config(ConfigError),
     /// The append-only journal could not be replayed safely.
-    Journal(journal::JournalError),
+    Journal(JournalError),
     /// A validated fact could not be encoded for the journal.
     JournalEncoding(serde_json::Error),
     /// The projection cache could not be validated or published.
-    Projection(projection::ProjectionError),
+    Projection(ProjectionError),
     /// The mutation lock could not be acquired.
-    MutationLock(lock::MutationLockError),
+    MutationLock(MutationLockError),
     /// The stored repository identity is not a UUID-v7 value.
     InvalidRepoInstanceId(InvalidUuidV7),
     /// The stored worktree identity is not a UUID-v7 value.
@@ -1065,8 +1071,8 @@ pub(crate) enum LedgerError {
     ProjectionGenerationExhausted,
 }
 
-impl fmt::Display for LedgerError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for LedgerError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotInitialized => formatter.write_str(
                 "the cargo-berth ledger is not initialized; run cargo-berth init and retry",
@@ -1123,8 +1129,8 @@ impl fmt::Display for LedgerError {
 
 impl std::error::Error for LedgerError {}
 
-impl From<git::GitError> for LedgerError {
-    fn from(error: git::GitError) -> Self { Self::Git(error) }
+impl From<GitError> for LedgerError {
+    fn from(error: GitError) -> Self { Self::Git(error) }
 }
 
 impl From<std::io::Error> for LedgerError {
@@ -1135,16 +1141,16 @@ impl From<ConfigError> for LedgerError {
     fn from(error: ConfigError) -> Self { Self::Config(error) }
 }
 
-impl From<journal::JournalError> for LedgerError {
-    fn from(error: journal::JournalError) -> Self { Self::Journal(error) }
+impl From<JournalError> for LedgerError {
+    fn from(error: JournalError) -> Self { Self::Journal(error) }
 }
 
-impl From<projection::ProjectionError> for LedgerError {
-    fn from(error: projection::ProjectionError) -> Self { Self::Projection(error) }
+impl From<ProjectionError> for LedgerError {
+    fn from(error: ProjectionError) -> Self { Self::Projection(error) }
 }
 
-impl From<lock::MutationLockError> for LedgerError {
-    fn from(error: lock::MutationLockError) -> Self { Self::MutationLock(error) }
+impl From<MutationLockError> for LedgerError {
+    fn from(error: MutationLockError) -> Self { Self::MutationLock(error) }
 }
 
 fn read_git_directory_file(dot_git_path: &Path) -> Result<PathBuf, LedgerError> {
@@ -1172,7 +1178,7 @@ fn read_git_administrative_layout(
 ) -> Result<GitAdministrativeLayout, LedgerError> {
     let contents = match fs::read_to_string(worktree_administrative_directory.join("commondir")) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
             return Ok(GitAdministrativeLayout::Main);
         },
         Err(error) => return Err(LedgerError::Io(error)),
@@ -1202,7 +1208,7 @@ pub(crate) enum LedgerTransactionError {
 impl LedgerTransactionError {
     fn from_ledger_error(error: LedgerError) -> Self {
         match error {
-            LedgerError::MutationLock(lock::MutationLockError::AcquisitionTimedOut) => {
+            LedgerError::MutationLock(MutationLockError::AcquisitionTimedOut) => {
                 Self::LockContention
             },
             ledger_error => Self::LedgerUnreadable(ledger_error),
@@ -1214,8 +1220,8 @@ impl From<LedgerError> for LedgerTransactionError {
     fn from(error: LedgerError) -> Self { Self::from_ledger_error(error) }
 }
 
-impl fmt::Display for LedgerTransactionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for LedgerTransactionError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::LedgerUnreadable(error) => error.fmt(formatter),
             Self::LockContention => formatter.write_str(
@@ -1237,10 +1243,10 @@ pub(crate) enum LedgerCommittedActionError<CommittedActionError> {
     Action(CommittedActionError),
 }
 
-impl<CommittedActionError: fmt::Display> fmt::Display
+impl<CommittedActionError: fmt::Display> Display
     for LedgerCommittedActionError<CommittedActionError>
 {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Transaction(error) => error.fmt(formatter),
             Self::Action(error) => error.fmt(formatter),
@@ -1265,8 +1271,8 @@ pub(crate) enum CorrectableTransactionInput {
     },
 }
 
-impl fmt::Display for CorrectableTransactionInput {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for CorrectableTransactionInput {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::RecordTooLarge {
                 bytes,
@@ -1291,15 +1297,21 @@ mod tests {
     use std::process::Command;
     use std::sync::Arc;
     use std::thread;
+    use std::thread::JoinHandle;
 
+    use serde_json::Value;
+    use tempfile::TempDir;
     use tempfile::tempdir;
 
+    use super::BypassedAction;
     use super::COORDINATION_RUN_MARKER_FILE_NAME;
     use super::CommittedActionValidation;
     use super::CoordinationRunMarkerAtRetirement;
     use super::CoordinationRunMarkerRemoval;
     use super::CorrectableTransactionInput;
     use super::EditAuthorization;
+    use super::JournalEvent;
+    use super::JournalOperation;
     use super::Ledger;
     use super::LedgerCommittedActionOutcome;
     use super::LedgerError;
@@ -1313,9 +1325,6 @@ mod tests {
     use crate::ids::ReservationId;
     use crate::ids::WorktreeId;
     use crate::ids::WorktreeKind;
-    use crate::ledger::BypassedAction;
-    use crate::ledger::JournalEvent;
-    use crate::ledger::JournalOperation;
 
     #[test]
     fn git_file_without_common_directory_is_a_main_worktree() {
@@ -1447,7 +1456,7 @@ mod tests {
                 .count(),
             1
         );
-        let projection: serde_json::Value = serde_json::from_slice(
+        let projection: Value = serde_json::from_slice(
             &fs::read(&ledger.paths.projection).expect("projection should read"),
         )
         .expect("projection should decode");
@@ -1689,7 +1698,7 @@ mod tests {
         assert!(record_was_visible);
         assert!(matches!(outcome, LedgerTransactionOutcome::Rejected(())));
         let journal = fs::read(&ledger.paths.journal).expect("journal should read");
-        let projection: serde_json::Value = serde_json::from_slice(
+        let projection: Value = serde_json::from_slice(
             &fs::read(&ledger.paths.projection).expect("projection should read"),
         )
         .expect("projection should decode");
@@ -1710,7 +1719,7 @@ mod tests {
             let repository = scratch_repository();
             Ledger::initialize(repository.path()).expect("ledger should initialize");
             let ledger = Ledger::open(repository.path()).expect("ledger should open");
-            let mut projection: serde_json::Value = serde_json::from_slice(
+            let mut projection: Value = serde_json::from_slice(
                 &fs::read(&ledger.paths.projection).expect("projection should read"),
             )
             .expect("projection should decode");
@@ -1730,7 +1739,7 @@ mod tests {
         }
     }
 
-    fn scratch_repository() -> tempfile::TempDir {
+    fn scratch_repository() -> TempDir {
         let repository = tempdir().expect("temporary repository should exist");
         let git_init = Command::new("git")
             .args(["init", "--quiet"])
@@ -1741,9 +1750,7 @@ mod tests {
         repository
     }
 
-    fn append_renewal(
-        ledger: Arc<Ledger>,
-    ) -> thread::JoinHandle<Result<(), LedgerTransactionError>> {
+    fn append_renewal(ledger: Arc<Ledger>) -> JoinHandle<Result<(), LedgerTransactionError>> {
         thread::spawn(move || {
             ledger
                 .transact(WorktreeId::new(), CoordinationRunId::new(), |_| {

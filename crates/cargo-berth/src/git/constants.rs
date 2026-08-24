@@ -7,6 +7,8 @@ pub(super) const GIT_BINARY: &str = "git";
 pub(super) const GIT_CAT_FILE_COMMAND: &str = "cat-file";
 /// The `merge-base` subcommand.
 pub(super) const GIT_MERGE_BASE_COMMAND: &str = "merge-base";
+/// The `rev-list` subcommand.
+pub(super) const GIT_REV_LIST_COMMAND: &str = "rev-list";
 /// The `rev-parse` subcommand.
 pub(super) const GIT_REV_PARSE_COMMAND: &str = "rev-parse";
 /// The `update-ref` subcommand.
@@ -15,8 +17,12 @@ pub(super) const GIT_UPDATE_REF_COMMAND: &str = "update-ref";
 pub(super) const GIT_WORKTREE_COMMAND: &str = "worktree";
 
 // flags
+/// Ask `cat-file` to classify one object per input line.
+pub(super) const GIT_BATCH_CHECK_ARG: &str = "--batch-check";
 /// Ask `rev-parse` for the shared administrative directory.
 pub(super) const GIT_COMMON_DIRECTORY_ARG: &str = "--git-common-dir";
+/// Prefix selecting commits on descendant paths from one protected tip.
+pub(super) const GIT_ANCESTRY_PATH_ARG_PREFIX: &str = "--ancestry-path=";
 /// Test whether an object can be read without printing it.
 pub(super) const GIT_EXISTS_ARG: &str = "-e";
 /// Delete the named ref through `update-ref`.
@@ -34,11 +40,17 @@ pub(super) const GIT_SHOW_TOPLEVEL_ARG: &str = "--show-toplevel";
 /// List registered worktrees.
 pub(super) const GIT_WORKTREE_LIST_ARG: &str = "list";
 
+// output
+/// Suffix reported by `cat-file --batch-check` for an unresolved object expression.
+pub(super) const GIT_MISSING_OBJECT_SUFFIX: &str = " missing";
+
 // references
 /// The current worktree commit.
 pub(super) const GIT_HEAD_REVISION: &str = "HEAD";
 /// The prefix for local branch refs.
 pub(super) const GIT_LOCAL_BRANCH_REF_PREFIX: &str = "refs/heads/";
+/// Prefix excluding a revision while retaining its descendants.
+pub(super) const GIT_EXCLUDE_REVISION_PREFIX: &str = "^";
 /// Suffix that requires a revision to resolve as a commit.
 pub(super) const GIT_COMMIT_PEEL_SUFFIX: &str = "^{commit}";
 /// The private namespace used to retain reservation commits.

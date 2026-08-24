@@ -1,6 +1,8 @@
 //! Opaque identifiers and counters used by the reservation ledger.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::num::ParseIntError;
 use std::path::Component;
 use std::path::Path;
@@ -161,10 +163,8 @@ const SHA256_OBJECT_ID_CHARACTERS: usize = 64;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct GitObjectId(String);
 
-impl fmt::Display for GitObjectId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
+impl Display for GitObjectId {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
 
 impl FromStr for GitObjectId {
@@ -213,10 +213,8 @@ impl<'de> Deserialize<'de> for GitObjectId {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ReservationScopePath(String);
 
-impl fmt::Display for ReservationScopePath {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
+impl Display for ReservationScopePath {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
 
 impl FromStr for ReservationScopePath {
@@ -278,10 +276,8 @@ impl<'de> Deserialize<'de> for ReservationScopePath {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct WorkPlanPhase(String);
 
-impl fmt::Display for WorkPlanPhase {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
+impl Display for WorkPlanPhase {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
 
 impl FromStr for WorkPlanPhase {
@@ -348,10 +344,8 @@ impl RecordedAt {
     }
 }
 
-impl fmt::Display for RecordedAt {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
+impl Display for RecordedAt {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
 
 impl FromStr for RecordedAt {
@@ -475,8 +469,8 @@ pub(crate) enum InvalidUuidV7 {
     WrongVariant(Uuid),
 }
 
-impl fmt::Display for InvalidUuidV7 {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidUuidV7 {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidUuid(error) => write!(formatter, "invalid UUID: {error}"),
             Self::WrongVersion(identifier) => {
@@ -498,8 +492,8 @@ impl std::error::Error for InvalidUuidV7 {}
 #[derive(Debug)]
 pub(crate) struct InvalidGitObjectId(String);
 
-impl fmt::Display for InvalidGitObjectId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidGitObjectId {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
             "invalid lowercase full git object identifier: {}",
@@ -514,8 +508,8 @@ impl std::error::Error for InvalidGitObjectId {}
 #[derive(Debug)]
 pub(crate) struct InvalidReservationScopePath(String);
 
-impl fmt::Display for InvalidReservationScopePath {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidReservationScopePath {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
             "invalid repository-relative reservation scope path: {}",
@@ -530,8 +524,8 @@ impl std::error::Error for InvalidReservationScopePath {}
 #[derive(Debug)]
 pub(crate) struct InvalidWorkPlanPhase;
 
-impl fmt::Display for InvalidWorkPlanPhase {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidWorkPlanPhase {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("work-plan phase labels cannot be empty")
     }
 }
@@ -542,8 +536,8 @@ impl std::error::Error for InvalidWorkPlanPhase {}
 #[derive(Debug)]
 pub(crate) struct InvalidRecordedAt(String);
 
-impl fmt::Display for InvalidRecordedAt {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidRecordedAt {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
             "invalid RFC 3339 UTC millisecond timestamp: {}",

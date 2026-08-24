@@ -1,9 +1,12 @@
 //! The append-only journal and its complete version-one operation union.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::num::TryFromIntError;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -17,6 +20,7 @@ use super::constants::DELETE_CONTROL_BYTE;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
 use crate::answer::ConflictAuthorization;
 use crate::config::InitializationState;
+use crate::edge::OrderingReason;
 use crate::ids::CoordinationRunId;
 use crate::ids::EdgeId;
 use crate::ids::EventId;
@@ -69,6 +73,9 @@ impl JournalEvent {
             operation,
         }
     }
+
+    /// Return the durable identity of this journal fact.
+    pub(crate) const fn event_id(&self) -> EventId { self.event_id }
 }
 
 /// The durable identity of the actor that made a journal mutation.
@@ -180,20 +187,7 @@ pub(crate) enum JournalOperation {
         /// The ordering chosen for the two reservations.
         direction:               OrderingDirection,
         /// The reason for choosing this ordering now.
-        reason:                  String,
-    },
-    /// Declare an ordering edge that did not begin as a deferral.
-    DeclareOrderingEdge {
-        /// The durable identity for this edge.
-        edge_id: EdgeId,
-        /// The reservation required to integrate first.
-        before:  ReservationId,
-        /// The reservation held until `before` is satisfied.
-        after:   ReservationId,
-        /// The overlap scopes that make this edge relevant.
-        scopes:  Vec<ReservationScopePath>,
-        /// The reason for the ordering.
-        reason:  String,
+        reason:                  OrderingReason,
     },
     /// Record a write that entered scopes reserved by another worktree.
     Incursion {
@@ -431,10 +425,8 @@ pub(crate) enum ClaimHeadSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FullRefName(String);
 
-impl fmt::Display for FullRefName {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
+impl Display for FullRefName {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
 
 impl FromStr for FullRefName {
@@ -495,8 +487,8 @@ impl<'de> Deserialize<'de> for FullRefName {
 #[derive(Debug)]
 pub(crate) struct InvalidFullRefName;
 
-impl fmt::Display for InvalidFullRefName {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidFullRefName {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(
             "a full git reference name must begin with refs/ and satisfy git reference rules",
         )
@@ -562,8 +554,8 @@ impl<'de> Deserialize<'de> for ReservationScopeSet {
 #[derive(Debug)]
 pub(crate) struct EmptyReservationScopeSet;
 
-impl fmt::Display for EmptyReservationScopeSet {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for EmptyReservationScopeSet {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("a reservation scope set cannot be empty")
     }
 }
@@ -574,10 +566,8 @@ impl std::error::Error for EmptyReservationScopeSet {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CanonicalWorktreeRoot(String);
 
-impl fmt::Display for CanonicalWorktreeRoot {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
+impl Display for CanonicalWorktreeRoot {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
 
 impl AsRef<Path> for CanonicalWorktreeRoot {
@@ -633,8 +623,8 @@ impl<'de> Deserialize<'de> for CanonicalWorktreeRoot {
 #[derive(Debug)]
 pub(crate) struct InvalidCanonicalWorktreeRoot;
 
-impl fmt::Display for InvalidCanonicalWorktreeRoot {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidCanonicalWorktreeRoot {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("a canonical worktree root must be an absolute normalized UTF-8 path")
     }
 }
@@ -645,10 +635,8 @@ impl std::error::Error for InvalidCanonicalWorktreeRoot {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WorktreeAdministrativeLocator(String);
 
-impl fmt::Display for WorktreeAdministrativeLocator {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
+impl Display for WorktreeAdministrativeLocator {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
 
 impl FromStr for WorktreeAdministrativeLocator {
@@ -704,8 +692,8 @@ impl<'de> Deserialize<'de> for WorktreeAdministrativeLocator {
 #[derive(Debug)]
 pub(crate) struct InvalidWorktreeAdministrativeLocator;
 
-impl fmt::Display for InvalidWorktreeAdministrativeLocator {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidWorktreeAdministrativeLocator {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("a worktree administrative locator must be normalized and relative")
     }
 }
@@ -786,7 +774,7 @@ pub(super) struct JournalFingerprint(pub(super) u64);
 
 /// The journal file opened at its fixed ledger path.
 pub(super) struct Journal {
-    path: std::path::PathBuf,
+    path: PathBuf,
 }
 
 impl Journal {
@@ -937,11 +925,11 @@ pub(crate) enum JournalError {
     /// A record names a schema this binary cannot safely interpret.
     UnsupportedSchemaVersion(SchemaVersion),
     /// The journal length cannot fit in the stored offset type.
-    JournalTooLarge(std::num::TryFromIntError),
+    JournalTooLarge(TryFromIntError),
 }
 
-impl fmt::Display for JournalError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for JournalError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "journal I/O failed: {error}"),
             Self::CorruptInteriorRecord { line, error } => {
@@ -975,8 +963,8 @@ pub(super) enum JournalAppendError {
     },
 }
 
-impl fmt::Display for JournalAppendError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for JournalAppendError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "journal append failed: {error}"),
             Self::Serialization(error) => {

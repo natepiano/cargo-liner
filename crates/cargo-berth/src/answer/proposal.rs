@@ -1,6 +1,8 @@
 //! Proposal creation, transport, and escalation material.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::str::FromStr;
 
 use serde::Deserialize;
@@ -132,7 +134,7 @@ pub(crate) struct OverlapEscalationPayload {
     /// The editing and integration effect of applying the answer.
     pub(crate) consequence:          OverlapAnswerConsequence,
     /// The exact current proposal material.
-    pub(crate) proposal:             OverlapProposal,
+    proposal:                        OverlapProposal,
     /// The token required on the applying invocation.
     pub(crate) proposal_token:       OverlapProposalToken,
 }
@@ -149,10 +151,8 @@ pub(crate) enum OverlapAnswerConsequence {
     IntegrationUnconstrained,
 }
 
-impl fmt::Display for OverlapAuthorizationReason {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
+impl Display for OverlapAuthorizationReason {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
 
 impl FromStr for OverlapAuthorizationReason {
@@ -275,8 +275,8 @@ impl OverlapProposalToken {
     pub(crate) fn matches(&self, current: &OverlapProposal) -> bool { self.0 == *current }
 }
 
-impl fmt::Display for OverlapProposalToken {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for OverlapProposalToken {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         serde_json::to_string(&self.0)
             .map_err(|_| fmt::Error)
             .and_then(|proposal| formatter.write_str(&proposal))
@@ -319,8 +319,8 @@ impl<'de> Deserialize<'de> for OverlapProposalToken {
     }
 }
 
-impl fmt::Display for OverlapAnswerConsequence {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for OverlapAnswerConsequence {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::SequencedIntegration => formatter.write_str(
                 "editing proceeds on the shown scopes and integration enforces the selected order",
@@ -339,8 +339,8 @@ impl fmt::Display for OverlapAnswerConsequence {
 #[derive(Debug)]
 pub(crate) struct EmptyOverlapAuthorizationReason;
 
-impl fmt::Display for EmptyOverlapAuthorizationReason {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for EmptyOverlapAuthorizationReason {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("an overlap authorization reason cannot be empty")
     }
 }
@@ -351,8 +351,8 @@ impl std::error::Error for EmptyOverlapAuthorizationReason {}
 #[derive(Debug)]
 pub(crate) struct InvalidOverlapProposalToken(serde_json::Error);
 
-impl fmt::Display for InvalidOverlapProposalToken {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvalidOverlapProposalToken {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         write!(formatter, "invalid overlap proposal token: {}", self.0)
     }
 }

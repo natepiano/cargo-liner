@@ -1,8 +1,11 @@
 //! The disposable generation-stamped projection of the append-only journal.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs;
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 
@@ -154,7 +157,7 @@ pub(super) fn read_validated(
 fn read_once(projection_path: &Path) -> Result<ProjectionRead, ProjectionError> {
     let contents = match fs::read(projection_path) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
             return Ok(ProjectionRead::Missing);
         },
         Err(error) => return Err(ProjectionError::Io(error)),
@@ -189,8 +192,8 @@ pub(crate) enum ProjectionError {
     JournalFingerprintMismatch,
 }
 
-impl fmt::Display for ProjectionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ProjectionError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "projection I/O failed: {error}"),
             Self::Serialization(error) => {

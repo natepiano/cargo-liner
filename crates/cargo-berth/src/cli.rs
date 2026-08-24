@@ -8,10 +8,12 @@ use std::env;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::ArgGroup;
 use clap::Args;
+use clap::Error;
 use clap::Parser;
 use clap::Subcommand;
 use clap::error::ErrorKind;
@@ -27,6 +29,7 @@ use crate::constants::OVERLAP_WHY_ARGUMENT_ID;
 use crate::constants::OVERLAP_WHY_VALUE_NAME;
 use crate::constants::PROPOSAL_ARGUMENT;
 use crate::constants::PROPOSAL_VALUE_NAME;
+use crate::edge::OrderingReason;
 use crate::exit::BerthExit;
 use crate::git;
 use crate::ids::CoordinationRunId;
@@ -34,6 +37,7 @@ use crate::ids::ReservationId;
 use crate::ids::WorkPlanPhase;
 use crate::ledger::ClaimSource;
 use crate::ledger::Ledger;
+use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::NonEmptyReservationPurpose;
 use crate::ledger::OrderingDirection;
@@ -42,6 +46,7 @@ use crate::ledger::ReservationPurpose;
 use crate::ledger::WorkPlanReference;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
+use crate::recovery;
 use crate::recovery::RecoveryRequest;
 use crate::recovery::RenewRequest;
 use crate::recovery::ResolveRequest;
@@ -50,11 +55,16 @@ use crate::reservation::OrphanRetirementReason;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::ScopeKind;
+use crate::verb::check;
 use crate::verb::check::CheckRequest;
+use crate::verb::claim;
 use crate::verb::claim::ClaimCoordinationRunSelection;
 use crate::verb::claim::ClaimRequest;
 use crate::verb::claim::PhaseStartSelection;
+use crate::verb::release;
 use crate::verb::release::ReleaseRequest;
+use crate::verb::sequence;
+use crate::verb::sequence::SequenceRequest;
 
 const ABANDON_ARGUMENT: &str = "abandon";
 const ABOUT: &str = "Reserve git-worktree paths before they overlap";
@@ -111,7 +121,7 @@ pub(crate) enum CliInvocation {
     /// A valid command line.
     Command(Box<Cli>),
     /// A command line clap could not parse.
-    Usage(clap::Error),
+    Usage(Error),
 }
 
 /// The verbs available from the frozen `cargo-berth` interface.
@@ -181,7 +191,7 @@ impl JsonOutput {
 struct PathArguments {
     /// The repository paths the command concerns.
     #[arg(required = true, value_name = PATH_VALUE_NAME)]
-    paths:       Vec<std::path::PathBuf>,
+    paths:       Vec<PathBuf>,
     /// The output representation requested for this command.
     #[command(flatten)]
     json_output: JsonOutput,
@@ -202,7 +212,7 @@ struct PathArguments {
 struct ClaimArguments {
     /// The repository paths to reserve.
     #[arg(required = true, value_name = PATH_VALUE_NAME)]
-    paths:                Vec<std::path::PathBuf>,
+    paths:                Vec<PathBuf>,
     /// Sequence this reservation before the blocking reservation.
     #[arg(
         long = CLAIM_BEFORE_ARGUMENT,
@@ -413,24 +423,29 @@ impl Command {
             Self::Init(init_arguments) => initialize_ledger(init_arguments.repair_request()),
             Self::Board(_) => OutputEnvelope::unimplemented(CommandVerb::Board),
             Self::Check(path_arguments) => match path_arguments.into_check_request() {
-                Ok(check_request) => crate::verb::check::execute(check_request),
+                Ok(check_request) => check::execute(check_request),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Check, &error),
             },
             Self::Claim(claim_arguments) => match claim_arguments.into_claim_request() {
-                Ok(claim_request) => crate::verb::claim::execute(claim_request),
+                Ok(claim_request) => claim::execute(claim_request),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Claim, &error),
             },
             Self::Release(reservation_arguments) => {
-                crate::verb::release::execute(reservation_arguments.into_release_request())
+                release::execute(reservation_arguments.into_release_request())
             },
-            Self::Sequence(_) => OutputEnvelope::unimplemented(CommandVerb::Sequence),
+            Self::Sequence(sequence_arguments) => {
+                match sequence_arguments.into_sequence_request() {
+                    Ok(sequence_request) => sequence::execute(&sequence_request),
+                    Err(error) => OutputEnvelope::invalid_input(CommandVerb::Sequence, &error),
+                }
+            },
             Self::Integrate(_) => OutputEnvelope::unimplemented(CommandVerb::Integrate),
             Self::Resolve(resolve_arguments) => match resolve_arguments.into_resolve_request() {
-                Ok(resolve_request) => crate::recovery::resolve(resolve_request),
+                Ok(resolve_request) => recovery::resolve(resolve_request),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Resolve, &error),
             },
             Self::Renew(reservation_arguments) => {
-                crate::recovery::renew(reservation_arguments.into_renew_request())
+                recovery::renew(reservation_arguments.into_renew_request())
             },
         }
     }
@@ -615,6 +630,20 @@ impl ReservationArguments {
     }
 }
 
+impl SequenceArguments {
+    fn into_sequence_request(self) -> Result<SequenceRequest, String> {
+        let reason = self
+            .why
+            .parse::<OrderingReason>()
+            .map_err(|error| error.to_string())?;
+        Ok(SequenceRequest {
+            first: self.first,
+            then: self.then,
+            reason,
+        })
+    }
+}
+
 impl ResolveArguments {
     fn into_resolve_request(self) -> Result<ResolveRequest, String> {
         let Self {
@@ -674,7 +703,7 @@ fn initialize_ledger(repair_request: ProjectionRepairRequest) -> OutputEnvelope 
     }
 }
 
-fn initialization_error(error: crate::ledger::LedgerError) -> OutputEnvelope {
+fn initialization_error(error: LedgerError) -> OutputEnvelope {
     match LedgerTransactionError::from(error) {
         LedgerTransactionError::LockContention => OutputEnvelope::contention(
             CommandVerb::Init,
@@ -708,7 +737,7 @@ fn write_line(mut rendered: String) {
 }
 
 /// Decide the exit status required by a clap parser error.
-fn exit_for_parser_error(error: &clap::Error) -> BerthExit {
+fn exit_for_parser_error(error: &Error) -> BerthExit {
     match error.kind() {
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => BerthExit::Clear,
         _ => BerthExit::UsageError,
@@ -730,6 +759,7 @@ fn without_subcommand_name(mut arguments: Vec<OsString>) -> Vec<OsString> {
 mod tests {
     use std::ffi::OsString;
 
+    use clap::Error;
     use clap::Parser;
 
     use super::BINARY_NAME;
@@ -739,6 +769,7 @@ mod tests {
     use super::exit_for_parser_error;
     use super::without_subcommand_name;
     use crate::exit::BerthExit;
+    use crate::verb::claim::ClaimRequest;
 
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 
@@ -969,14 +1000,14 @@ mod tests {
         assert!(parsed_verb(cargo_arguments).is_ok_and(|parsed_verb| parsed_verb == command_verb));
     }
 
-    fn parsed_verb(arguments: &[&str]) -> Result<CommandVerb, clap::Error> {
+    fn parsed_verb(arguments: &[&str]) -> Result<CommandVerb, Error> {
         Cli::try_parse_from(without_subcommand_name(
             arguments.iter().map(OsString::from).collect(),
         ))
         .map(|cli| cli.command.verb())
     }
 
-    fn claim_request(arguments: &[&str]) -> Result<crate::verb::claim::ClaimRequest, String> {
+    fn claim_request(arguments: &[&str]) -> Result<ClaimRequest, String> {
         let cli = Cli::try_parse_from(without_subcommand_name(
             arguments.iter().map(OsString::from).collect(),
         ))

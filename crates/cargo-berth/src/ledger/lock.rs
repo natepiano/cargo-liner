@@ -1,8 +1,11 @@
 //! Descriptor-held serialization for every ledger mutation.
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::fs::TryLockError;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -32,7 +35,7 @@ impl MutationLock {
         loop {
             match descriptor.try_lock() {
                 Ok(()) => return Ok(Self { descriptor }),
-                Err(std::fs::TryLockError::WouldBlock) => {
+                Err(TryLockError::WouldBlock) => {
                     let elapsed = started_at.elapsed();
                     if elapsed >= acquisition_timeout {
                         return Err(MutationLockError::AcquisitionTimedOut);
@@ -42,7 +45,7 @@ impl MutationLock {
                             .min(acquisition_timeout.saturating_sub(elapsed)),
                     );
                 },
-                Err(std::fs::TryLockError::Error(error)) => {
+                Err(TryLockError::Error(error)) => {
                     return Err(MutationLockError::Io(error));
                 },
             }
@@ -66,8 +69,8 @@ pub(crate) enum MutationLockError {
     AcquisitionTimedOut,
 }
 
-impl fmt::Display for MutationLockError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for MutationLockError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "could not acquire ledger mutation lock: {error}"),
             Self::AcquisitionTimedOut => formatter.write_str(

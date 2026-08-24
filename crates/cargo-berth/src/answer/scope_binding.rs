@@ -1,6 +1,9 @@
 //! Scope-only revisions and non-empty overlap bindings.
 
+use std::error::Error;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -51,6 +54,9 @@ impl From<&ReservationScopeSet> for OverlapScopeRevision {
 }
 
 impl AuthorizedOverlapScopeSet {
+    /// Borrow the validated non-empty overlap scopes.
+    pub(crate) fn as_slice(&self) -> &[ReservationScope] { self.0.as_slice() }
+
     fn covers(&self, overlap_scope: &ReservationScope, path_case: PathCase) -> bool {
         self.0
             .as_slice()
@@ -124,10 +130,10 @@ impl<'de> Deserialize<'de> for AuthorizedOverlapSet {
 #[derive(Debug)]
 pub(crate) struct EmptyAuthorizedOverlapSet;
 
-impl fmt::Display for EmptyAuthorizedOverlapSet {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for EmptyAuthorizedOverlapSet {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str("an authorized overlap set cannot be empty")
     }
 }
 
-impl std::error::Error for EmptyAuthorizedOverlapSet {}
+impl Error for EmptyAuthorizedOverlapSet {}

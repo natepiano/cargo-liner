@@ -1,9 +1,12 @@
 //! Git command construction.
 
 use std::io;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::process::Output;
+use std::process::Stdio;
+use std::thread;
 
 use super::constants::GIT_BINARY;
 use super::constants::GIT_NO_OPTIONAL_LOCKS_ARG;
@@ -23,4 +26,42 @@ pub(super) fn git_output<const ARGUMENT_COUNT: usize>(
     arguments: [&str; ARGUMENT_COUNT],
 ) -> io::Result<Output> {
     git_command(repository_root).args(arguments).output()
+}
+
+/// Run one git operation whose revision arguments are assembled at runtime.
+pub(super) fn git_output_dynamic(
+    repository_root: &Path,
+    arguments: &[String],
+) -> io::Result<Output> {
+    git_command(repository_root).args(arguments).output()
+}
+
+/// Run one dynamically assembled git operation with complete standard input.
+pub(super) fn git_output_dynamic_with_input(
+    repository_root: &Path,
+    arguments: &[String],
+    input: &[u8],
+) -> io::Result<Output> {
+    let mut child = git_command(repository_root)
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("git child standard input was not piped"))?;
+    thread::scope(|scope| {
+        let input_writer = scope.spawn(move || {
+            let result = stdin.write_all(input);
+            drop(stdin);
+            result
+        });
+        let output = child.wait_with_output();
+        input_writer
+            .join()
+            .map_err(|_| io::Error::other("git child standard input writer panicked"))??;
+        output
+    })
 }

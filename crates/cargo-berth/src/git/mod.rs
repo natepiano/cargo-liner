@@ -5,22 +5,33 @@ mod constants;
 mod refs;
 
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::fmt::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::string::FromUtf8Error;
 
 use command::git_output;
+use command::git_output_dynamic;
+use command::git_output_dynamic_with_input;
+use constants::GIT_ANCESTRY_PATH_ARG_PREFIX;
+use constants::GIT_BATCH_CHECK_ARG;
 use constants::GIT_CAT_FILE_COMMAND;
 use constants::GIT_COMMIT_PEEL_SUFFIX;
 use constants::GIT_COMMON_DIRECTORY_ARG;
+use constants::GIT_EXCLUDE_REVISION_PREFIX;
 use constants::GIT_EXISTS_ARG;
 use constants::GIT_HEAD_REVISION;
 use constants::GIT_IS_ANCESTOR_ARG;
 use constants::GIT_LOCAL_BRANCH_REF_PREFIX;
 use constants::GIT_MERGE_BASE_COMMAND;
+use constants::GIT_MISSING_OBJECT_SUFFIX;
 use constants::GIT_NOT_ANCESTOR_EXIT_CODE;
 use constants::GIT_NUL_TERMINATED_ARG;
 use constants::GIT_PORCELAIN_ARG;
+use constants::GIT_REV_LIST_COMMAND;
 use constants::GIT_REV_PARSE_COMMAND;
 use constants::GIT_SHOW_TOPLEVEL_ARG;
 use constants::GIT_WORKTREE_COMMAND;
@@ -166,6 +177,126 @@ pub(crate) fn reachability(
     }
 }
 
+/// Find supplied holder heads that descend from one protected predecessor tip.
+pub(crate) fn descendant_commits(
+    repository_root: &Path,
+    ancestor: &GitObjectId,
+    candidate_heads: &[GitObjectId],
+) -> Result<DescendantCommitQuery, GitError> {
+    if candidate_heads.is_empty() {
+        return Ok(DescendantCommitQuery::Classified(Vec::new()));
+    }
+    let mut queried_objects = Vec::with_capacity(candidate_heads.len() + 1);
+    queried_objects.push(ancestor.clone());
+    queried_objects.extend(candidate_heads.iter().cloned());
+    let object_availability = commit_availability(repository_root, &queried_objects)?;
+    let Some((ancestor_availability, candidate_availability)) = object_availability.split_first()
+    else {
+        return Err(GitError::InvalidBatchObjectCount {
+            expected: queried_objects.len(),
+            actual:   0,
+        });
+    };
+    if matches!(ancestor_availability, CommitAvailability::ObjectUnknown) {
+        return Ok(DescendantCommitQuery::AncestorObjectUnknown);
+    }
+    let available_heads = candidate_heads
+        .iter()
+        .zip(candidate_availability)
+        .filter_map(|(head, availability)| match availability {
+            CommitAvailability::Available => Some(head.clone()),
+            CommitAvailability::ObjectUnknown => None,
+        })
+        .collect::<Vec<_>>();
+    if available_heads.is_empty() {
+        return Ok(DescendantCommitQuery::Classified(
+            candidate_heads
+                .iter()
+                .cloned()
+                .map(CandidateHeadReachability::ObjectUnknown)
+                .collect(),
+        ));
+    }
+    let ancestor_text = ancestor.to_string();
+    let mut arguments = Vec::with_capacity(available_heads.len() + 3);
+    arguments.push(GIT_REV_LIST_COMMAND.to_owned());
+    arguments.extend(available_heads.iter().map(ToString::to_string));
+    arguments.push(format!("{GIT_ANCESTRY_PATH_ARG_PREFIX}{ancestor_text}"));
+    arguments.push(format!("{GIT_EXCLUDE_REVISION_PREFIX}{ancestor_text}"));
+    let output = git_output_dynamic(repository_root, &arguments)?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_LIST_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    let mut descendants = output_text
+        .lines()
+        .map(str::parse)
+        .collect::<Result<Vec<GitObjectId>, _>>()
+        .map_err(GitError::InvalidObjectId)?;
+    descendants.push(ancestor.clone());
+    Ok(DescendantCommitQuery::Classified(
+        candidate_heads
+            .iter()
+            .zip(candidate_availability)
+            .map(|(head, availability)| match availability {
+                CommitAvailability::Available if descendants.contains(head) => {
+                    CandidateHeadReachability::Descendant(head.clone())
+                },
+                CommitAvailability::Available => {
+                    CandidateHeadReachability::NotDescendant(head.clone())
+                },
+                CommitAvailability::ObjectUnknown => {
+                    CandidateHeadReachability::ObjectUnknown(head.clone())
+                },
+            })
+            .collect(),
+    ))
+}
+
+fn commit_availability(
+    repository_root: &Path,
+    object_ids: &[GitObjectId],
+) -> Result<Vec<CommitAvailability>, GitError> {
+    let input = object_ids
+        .iter()
+        .fold(String::new(), |mut input, object_id| {
+            let _ = writeln!(input, "{object_id}{GIT_COMMIT_PEEL_SUFFIX}");
+            input
+        });
+    let arguments = [
+        GIT_CAT_FILE_COMMAND.to_owned(),
+        GIT_BATCH_CHECK_ARG.to_owned(),
+    ];
+    let output = git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_CAT_FILE_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    let availability = output_text
+        .lines()
+        .map(|line| {
+            if line.ends_with(GIT_MISSING_OBJECT_SUFFIX) {
+                CommitAvailability::ObjectUnknown
+            } else {
+                CommitAvailability::Available
+            }
+        })
+        .collect::<Vec<_>>();
+    if availability.len() != object_ids.len() {
+        return Err(GitError::InvalidBatchObjectCount {
+            expected: object_ids.len(),
+            actual:   availability.len(),
+        });
+    }
+    Ok(availability)
+}
+
 /// Create or update a reservation's retention ref.
 pub(crate) fn write_reservation_retention_ref(
     repository_root: &Path,
@@ -181,10 +312,6 @@ pub(crate) fn reservation_retention_ref_name(reservation_id: ReservationId) -> S
 }
 
 /// Delete a reservation's retention ref.
-#[expect(
-    dead_code,
-    reason = "a retention ref lives until every dependent successor is terminal, so nothing deletes one yet"
-)]
 pub(crate) fn delete_reservation_retention_ref(
     repository_root: &Path,
     reservation_id: ReservationId,
@@ -215,6 +342,30 @@ pub(crate) enum Reachability {
     ObjectUnknown,
 }
 
+/// One candidate head's relation to a protected predecessor tip.
+pub(crate) enum CandidateHeadReachability {
+    /// The candidate head contains the protected predecessor tip.
+    Descendant(GitObjectId),
+    /// The candidate head resolves but does not contain the predecessor tip.
+    NotDescendant(GitObjectId),
+    /// This candidate head does not resolve as a commit.
+    ObjectUnknown(GitObjectId),
+}
+
+/// The grouped descendant result for one protected predecessor tip.
+pub(crate) enum DescendantCommitQuery {
+    /// Every candidate head received its own typed reachability result.
+    Classified(Vec<CandidateHeadReachability>),
+    /// The protected predecessor tip does not resolve as a commit.
+    AncestorObjectUnknown,
+}
+
+#[derive(Clone, Copy)]
+enum CommitAvailability {
+    Available,
+    ObjectUnknown,
+}
+
 /// Whether a full git reference currently resolves to an object.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ReferenceLookup {
@@ -237,13 +388,15 @@ pub(crate) enum GitError {
         stderr:  String,
     },
     /// Git printed a non-UTF-8 administrative path.
-    InvalidOutput(std::string::FromUtf8Error),
+    InvalidOutput(FromUtf8Error),
     /// Git printed text that was not a full object id.
     InvalidObjectId(InvalidGitObjectId),
+    /// `cat-file --batch-check` did not classify every submitted object.
+    InvalidBatchObjectCount { expected: usize, actual: usize },
 }
 
-impl fmt::Display for GitError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for GitError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "could not run git: {error}"),
             Self::CommandFailed { command, stderr } => {
@@ -255,6 +408,10 @@ impl fmt::Display for GitError {
             Self::InvalidObjectId(error) => {
                 write!(formatter, "git printed an invalid object id: {error}")
             },
+            Self::InvalidBatchObjectCount { expected, actual } => write!(
+                formatter,
+                "git cat-file classified {actual} objects when {expected} were submitted"
+            ),
         }
     }
 }
