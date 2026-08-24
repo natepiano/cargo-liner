@@ -66,6 +66,20 @@ const FAMILY_COLOR_CLEARANCE: u16 = 200;
 /// that has happened is that a command started another one.
 fn reserved_colors() -> [Color; 2] { [label_color(), error_color()] }
 
+/// The palette entries standing clear of every colour in `reserved`.
+///
+/// Split out from [`family_palette`] so a test can aim it at a theme by
+/// name. The colours that matter are the ones this app ships, and the
+/// theme a test process runs under is the framework's fallback, whose
+/// label colour is a plain grey none of ours is.
+fn palette_clear_of(reserved: &[Color]) -> impl Iterator<Item = Color> + use<'_> {
+    FAMILY_COLORS.into_iter().filter(move |color| {
+        reserved.iter().all(|taken| {
+            color_distance(*color, *taken).is_none_or(|apart| apart >= FAMILY_COLOR_CLEARANCE)
+        })
+    })
+}
+
 /// The palette entries a family may be handed, which is every one
 /// standing clear of [`reserved_colors`].
 ///
@@ -77,11 +91,9 @@ fn reserved_colors() -> [Color; 2] { [label_color(), error_color()] }
 /// palette over one unreadable colour is the worse failure.
 fn family_palette() -> impl Iterator<Item = Color> {
     let reserved = reserved_colors();
-    FAMILY_COLORS.into_iter().filter(move |color| {
-        reserved.iter().all(|taken| {
-            color_distance(*color, *taken).is_none_or(|apart| apart >= FAMILY_COLOR_CLEARANCE)
-        })
-    })
+    palette_clear_of(&reserved)
+        .collect::<Vec<Color>>()
+        .into_iter()
 }
 
 /// How many families can be told apart at once.
@@ -159,5 +171,32 @@ mod tests {
     #[test]
     fn what_the_display_already_spends_never_takes_the_whole_palette() {
         assert!(family_color_count() > 1, "{}", family_color_count());
+    }
+
+    /// The test above reads whatever theme the process is running
+    /// under, which is the framework's fallback and not one of ours.
+    /// These are the palettes that actually ship.
+    #[test]
+    fn every_theme_this_app_ships_leaves_families_to_tell_apart() {
+        for variant in builtins::builtins() {
+            let reserved = [
+                variant.theme.semantic.label.color,
+                variant.theme.semantic.error.color,
+            ];
+            let clear: Vec<Color> = palette_clear_of(&reserved).collect();
+
+            assert!(clear.len() > 1, "{:?} leaves {clear:?}", variant.id);
+            for color in clear {
+                for taken in reserved {
+                    let apart = color_distance(color, taken);
+
+                    assert!(
+                        apart.is_none_or(|apart| apart >= FAMILY_COLOR_CLEARANCE),
+                        "{:?}: {color:?} stands {apart:?} from {taken:?}",
+                        variant.id
+                    );
+                }
+            }
+        }
     }
 }

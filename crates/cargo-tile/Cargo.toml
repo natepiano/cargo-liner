@@ -27,5 +27,11 @@ toml      = { workspace = true }
 # tui_pane provides the framework used by the binary.
 tui_pane = { workspace = true }
 
+# `login` stands between a terminal and the shell in it and is root's, and
+# sysinfo leaves the parent of a process it cannot read the BSD info of
+# unset. The kernel answers it directly -- see `kernel_parent`.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -553,7 +553,15 @@ fn draw_group(
     // row there: the chain stands over the whole cell, and the cell
     // goes out when the command does.
     let faded = heading_fade(&rows).min(group.lead.faded());
-    let used = draw_ancestry(buffer, inner, &ancestry, faded, ground, foot);
+    let used = draw_ancestry(
+        buffer,
+        inner,
+        &ancestry,
+        faded,
+        ground,
+        foot,
+        leads_as_ancestor,
+    );
     let table = Rect {
         y: inner.y.saturating_add(used),
         height: inner.height.saturating_sub(used),
@@ -621,6 +629,13 @@ fn carried(chain: Vec<Ancestor>) -> Vec<Ancestor> {
 /// The block fades the way a heading does -- with the least-faded row
 /// under it -- so it holds its colour while a single invocation in the
 /// cell is still running, and sinks with the cell when none is.
+///
+/// A pid here is drawn the way a pid in the table below is: the foot of
+/// the chain is the very number the first row's `parent` cell names, so
+/// the two are read as one thing or not at all. Where that foot heads a
+/// family, `foot` carries the colour its `parent` cells point with; the
+/// rest of the chain heads nothing, and takes the same plain text
+/// [`pid_style`] leaves an unfamilied pid in.
 fn draw_ancestry(
     buffer: &mut Buffer,
     area: Rect,
@@ -628,12 +643,13 @@ fn draw_ancestry(
     faded: u8,
     ground: Color,
     foot: Option<Color>,
+    foot_is_the_command: bool,
 ) -> u16 {
-    let levels = ancestry_levels(ancestry, ancestry_budget(area.height));
+    let levels = ancestry_levels(ancestry, ancestry_budget(area.height), foot_is_the_command);
     if levels.is_empty() {
         return 0;
     }
-    let pid = blend_color(label_color(), ground, faded);
+    let pid = blend_color(text_default(), ground, faded);
     let command = blend_color(secondary_text_color(), ground, faded);
     let last = levels.len().saturating_sub(1);
     let lines: Vec<Line<'static>> = levels
@@ -670,17 +686,41 @@ fn ancestry_budget(height: u16) -> usize {
 /// the top-level parent, and the levels nearest the command, which are
 /// what say how it was actually started. Below
 /// [`ANCESTRY_MIN_ELIDED_ROWS`] there is no room for two ends and an
-/// elision between them, and the foot of the chain is what stays -- it
-/// is the step closest to the work, and in a driver's cell it is the
-/// driver itself.
-fn ancestry_levels(ancestry: &[Ancestor], budget: usize) -> Vec<Option<&Ancestor>> {
+/// elision between them, and the head is what stays: it is the one step
+/// that says where the command came from. The foot of a hand-typed
+/// command is the shell it was typed into, which every command in a
+/// terminal has -- a cell squeezed to one row that spends it on `-zsh`
+/// has said nothing, where the same row spent on `zed` has said the
+/// whole thing.
+///
+/// `foot_is_the_command` turns that around, because there the foot is
+/// not a step above the command but the command itself -- see
+/// [`crate::roster::TrackedGroup::leads_as_ancestor`] -- and it is
+/// where that cargo's pid is written for the table below to point at.
+fn ancestry_levels(
+    ancestry: &[Ancestor],
+    budget: usize,
+    foot_is_the_command: bool,
+) -> Vec<Option<&Ancestor>> {
+    if budget == 0 {
+        return Vec::new();
+    }
     if ancestry.len() <= budget {
         return ancestry.iter().map(Some).collect();
     }
     if budget < ANCESTRY_MIN_ELIDED_ROWS {
-        return ancestry[ancestry.len() - budget..]
-            .iter()
+        if foot_is_the_command {
+            return ancestry[ancestry.len() - budget..]
+                .iter()
+                .map(Some)
+                .collect();
+        }
+        let tail = budget - 1;
+        return ancestry
+            .first()
             .map(Some)
+            .into_iter()
+            .chain(ancestry[ancestry.len() - tail..].iter().map(Some))
             .collect();
     }
     let tail = budget - 2;
@@ -1154,22 +1194,30 @@ fn parent_text(process: &CargoProcess) -> String {
 }
 
 /// The `pid` cell's style: the family colour where the invocation has
-/// cargo running under it, and the muted one where it does not.
+/// cargo running under it, and plain text where it does not.
 ///
-/// Only a command with something under it takes a colour. The colour
-/// exists to be matched against the `parent` cells pointing at it, so
-/// on a row nothing points at it would be a mark meaning nothing.
+/// Only a command with something under it takes a family colour. The
+/// colour exists to be matched against the `parent` cells pointing at
+/// it, so on a row nothing points at it would be a mark meaning
+/// nothing.
+///
+/// What is left over is [`text_default`] rather than the muted colour
+/// the rest of the row is drawn in, which is the colour of the column
+/// headers. A pid written in the header's own colour disappears into
+/// the header, and a pid is the one number on this screen that is read
+/// by being searched for.
 fn pid_style(row: &TrackedRow, layout: &TableLayout) -> Style {
-    let color = row.family().map_or_else(label_color, theme::family_color);
+    let color = row.family().map_or_else(text_default, theme::family_color);
     Style::default().fg(layout.ink(color, row.faded()))
 }
 
 /// The `parent` cell's style: the family colour of the cargo named,
-/// which is the colour that cargo's own `pid` cell carries.
+/// which is the colour that cargo's own `pid` cell carries, and plain
+/// text where the pid names something that heads no family.
 fn parent_style(row: &TrackedRow, layout: &TableLayout) -> Style {
     let color = row
         .parent_family()
-        .map_or_else(label_color, theme::family_color);
+        .map_or_else(text_default, theme::family_color);
     Style::default().fg(layout.ink(color, row.faded()))
 }
 
@@ -1680,7 +1728,7 @@ mod tests {
     fn a_chain_that_fits_is_drawn_whole() {
         let ancestry = chain(3);
         assert_eq!(
-            drawn(&ancestry_levels(&ancestry, 4)),
+            drawn(&ancestry_levels(&ancestry, 4, false)),
             vec![Some(0), Some(1), Some(2)],
         );
     }
@@ -1692,19 +1740,35 @@ mod tests {
     fn a_chain_too_long_for_the_cell_keeps_both_ends() {
         let ancestry = chain(6);
         assert_eq!(
-            drawn(&ancestry_levels(&ancestry, 4)),
+            drawn(&ancestry_levels(&ancestry, 4, false)),
             vec![Some(0), None, Some(4), Some(5)],
         );
     }
 
     /// Under three rows there is no room for two ends and an elision
-    /// between them, and the foot of the chain is the end that matters
-    /// -- in a driver's cell it is the driver itself.
+    /// between them, and the head is the end that survives: the foot of
+    /// a hand-typed command is the shell it was typed into, which every
+    /// command in a terminal has, while the head is what says whether an
+    /// editor or an agent was behind it.
     #[test]
-    fn a_block_too_short_for_an_elision_keeps_the_foot_of_the_chain() {
+    fn a_block_too_short_for_an_elision_keeps_the_head_of_the_chain() {
         let ancestry = chain(6);
         assert_eq!(
-            drawn(&ancestry_levels(&ancestry, 2)),
+            drawn(&ancestry_levels(&ancestry, 2, false)),
+            vec![Some(0), Some(5)]
+        );
+        assert_eq!(drawn(&ancestry_levels(&ancestry, 1, false)), vec![Some(0)]);
+    }
+
+    /// A driver's cell turns that around: the foot there is not a step
+    /// above the command but the command itself, and it is where that
+    /// cargo's pid is written for the rows below to point at.
+    #[test]
+    fn a_driver_squeezed_to_one_row_keeps_its_own_step() {
+        let ancestry = chain(6);
+        assert_eq!(drawn(&ancestry_levels(&ancestry, 1, true)), vec![Some(5)]);
+        assert_eq!(
+            drawn(&ancestry_levels(&ancestry, 2, true)),
             vec![Some(4), Some(5)]
         );
     }
@@ -1724,7 +1788,7 @@ mod tests {
     /// leaves the table every row it had.
     #[test]
     fn a_cell_too_short_for_the_block_spends_nothing_on_it() {
-        assert!(ancestry_levels(&chain(3), ancestry_budget(2)).is_empty());
+        assert!(ancestry_levels(&chain(3), ancestry_budget(2), false).is_empty());
     }
 
     /// A command whose parents could not be read costs the table
@@ -1734,7 +1798,15 @@ mod tests {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 10));
         let area = buffer.area;
         assert_eq!(
-            draw_ancestry(&mut buffer, area, &[], 0, pane_background(false), None),
+            draw_ancestry(
+                &mut buffer,
+                area,
+                &[],
+                0,
+                pane_background(false),
+                None,
+                false
+            ),
             0
         );
     }
@@ -1758,12 +1830,45 @@ mod tests {
             0,
             pane_background(false),
             None,
+            false,
         );
 
         assert_eq!(used, 4, "three levels and the blank row under them");
         assert_eq!(buffer_line(&buffer, 0), " 6218 zed");
         assert_eq!(buffer_line(&buffer, 1), "  12445 -zsh");
         assert_eq!(buffer_line(&buffer, 2), "   18581 claude");
+    }
+
+    /// The foot of the chain is the pid the first row's `parent` cell
+    /// names, so the two have to be drawn alike: the family colour
+    /// where that foot heads a family, and otherwise the same plain
+    /// text an unfamilied pid takes in the table. The column headers'
+    /// colour is what this used to draw, and it tied the chain to the
+    /// headings instead of to the rows underneath.
+    #[test]
+    fn a_chain_writes_its_pids_the_way_the_table_writes_its_own() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 10));
+        let area = buffer.area;
+        let ground = pane_background(false);
+        let ancestry = vec![ancestor(6218, "zed"), ancestor(12445, "-zsh")];
+
+        draw_ancestry(
+            &mut buffer,
+            area,
+            &ancestry,
+            0,
+            ground,
+            Some(theme::family_color(0)),
+            true,
+        );
+
+        assert_eq!(buffer[(1, 0)].fg, blend_color(text_default(), ground, 0));
+        assert_ne!(buffer[(1, 0)].fg, blend_color(label_color(), ground, 0));
+        assert_eq!(
+            buffer[(2, 1)].fg,
+            blend_color(theme::family_color(0), ground, 0),
+            "the foot is drawn in the colour its parent cells point with"
+        );
     }
 
     /// A row here identifies an ancestor rather than reporting it, so
@@ -1782,6 +1887,7 @@ mod tests {
             0,
             pane_background(false),
             None,
+            false,
         );
 
         assert_eq!(used, 2);
