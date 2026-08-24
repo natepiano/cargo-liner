@@ -57,6 +57,7 @@ use tui_pane::PaneFrame;
 use tui_pane::ResolvedPane;
 use tui_pane::ResolvedPaneLayout;
 use tui_pane::constraints_for_sizes;
+use tui_pane::frame_inner;
 use tui_pane::share_borders;
 
 use crate::constants::FOCUS_ANIMATION_MILLIS;
@@ -77,7 +78,7 @@ pub(crate) struct TileDemand {
     /// The group's identity, matching [`crate::roster::TrackedGroup`].
     pub(crate) id:   u32,
     /// Rows the group's cell would draw given all the room it wants,
-    /// which is [`crate::roster::TrackedGroup::drawn_rows`].
+    /// which [`crate::render`] measures at the width the cell will have.
     pub(crate) rows: usize,
 }
 
@@ -108,7 +109,7 @@ impl TileDemands {
     }
 
     /// The identity of every group that gets a cell, in order.
-    pub(crate) fn ids(&self) -> Vec<u32> { self.groups.iter().map(|demand| demand.id).collect() }
+    fn ids(&self) -> Vec<u32> { self.groups.iter().map(|demand| demand.id).collect() }
 }
 
 /// What a cell is showing.
@@ -347,6 +348,36 @@ impl TileGrid {
 
     /// Cells the grid holds, the summary included.
     const fn count(&self) -> usize { self.slots.len() + TABLE_CELL }
+
+    /// The interior width of the cell drawing each thing on screen.
+    ///
+    /// How many columns there are is settled by the cell count alone,
+    /// so a cell's width is known before its column has been divided
+    /// vertically. That is what lets [`crate::render`] measure a cell's
+    /// contents at the width they will be wrapped to and hand the
+    /// result back as the demand this same grid divides by.
+    pub(crate) fn content_widths(
+        &self,
+        area: Rect,
+        initial_rows: usize,
+    ) -> Vec<(TileContent, u16)> {
+        let held = columns(self.count(), initial_rows);
+        let opened: Vec<Rect> = Layout::horizontal(constraints_for_sizes(&fills(held.len())))
+            .split(area)
+            .to_vec();
+        let mut widths = Vec::with_capacity(self.count());
+        for (column, &cells_here) in held.iter().enumerate() {
+            let inner = opened
+                .get(column)
+                .map_or(0, |&rect| frame_inner(share_borders(rect, area)).width);
+            widths.extend(std::iter::repeat_n(inner, cells_here));
+        }
+        cells(&self.slots)
+            .into_iter()
+            .zip(widths)
+            .map(|((content, _), width)| (content, width))
+            .collect()
+    }
 
     /// Record the geometry the pane just laid out.
     pub(crate) const fn set_layout(&mut self, area: Rect, initial_rows: usize) {

@@ -104,11 +104,14 @@ use crate::processes::ManifestPath;
 use crate::progress::Progress;
 use crate::progress::RunState;
 use crate::roster::Roster;
+use crate::roster::TrackedGroup;
 use crate::roster::TrackedRow;
 use crate::sccache::LabelRunKind;
 use crate::sccache::SccacheStats;
 use crate::settings;
 use crate::tiles::TileContent;
+use crate::tiles::TileDemand;
+use crate::tiles::TileDemands;
 use crate::wrap;
 
 /// Draw one frame: panes fill the terminal above the status line, and an
@@ -147,9 +150,12 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
     let initial_rows = app.loaded_config.config.tiles.initial_rows();
     app.tiles.set_layout(area, initial_rows);
-    let demands = app
-        .roster
-        .tiled_demands(&app.loaded_config.config.commands.hidden_when_idle);
+    let widths = app.tiles.content_widths(area, initial_rows);
+    let demands = tile_demands(
+        &app.roster,
+        &widths,
+        &app.loaded_config.config.commands.hidden_when_idle,
+    );
     app.tiles.sync(&demands, initial_rows);
     let placements = app.tiles.placements(area, initial_rows);
     let mut grid_lines = GridLines::new(area);
@@ -194,6 +200,130 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
         default_pane_chrome(),
         PaneBorders::Shared,
     );
+}
+
+/// What every cell is asking for, each measured at the width it will be
+/// drawn at.
+///
+/// The demand is counted here rather than in [`crate::roster`] because a
+/// command line wraps, and how many lines it wraps to is something only
+/// the table layout knows. The roster still says which groups get cells;
+/// this says how tall each of them wants to be.
+///
+/// A group that has no cell yet -- a command first seen on this scan --
+/// is measured at the narrowest cell on screen, which is the width it
+/// will have once the grid has opened one for it.
+fn tile_demands(
+    roster: &Roster,
+    widths: &[(TileContent, u16)],
+    hidden_when_idle: &[String],
+) -> TileDemands {
+    let narrowest = widths
+        .iter()
+        .map(|&(_, width)| width)
+        .min()
+        .unwrap_or_default();
+    let width_of = |wanted: TileContent| {
+        widths
+            .iter()
+            .find(|&&(content, _)| content == wanted)
+            .map_or(narrowest, |&(_, width)| width)
+    };
+    let leads: Vec<&TrackedRow> = roster.groups().iter().map(|group| &group.lead).collect();
+    TileDemands {
+        summary: table_height(
+            &leads,
+            TableKind::Summary,
+            width_of(TileContent::Summary),
+            None,
+        ),
+        groups:  roster
+            .tiled_ids(hidden_when_idle)
+            .into_iter()
+            .filter_map(|id| roster.groups().iter().find(|group| group.id == id))
+            .map(|group| TileDemand {
+                id:   group.id,
+                rows: group_height(
+                    group,
+                    width_of(TileContent::Group(group.id)),
+                    hidden_when_idle,
+                ),
+            })
+            .collect(),
+    }
+}
+
+/// Rows one command's cell lays out with all the room it could want: the
+/// ancestry block and the blank row under it, then the table.
+///
+/// The whole chain counts, not the levels a cell of some particular
+/// height has room for -- the ask is what the cell wants, and what it is
+/// given is the answer. A lead drawn as the foot of its own chain is
+/// left out of the table, the same as [`draw_group`] leaves it out.
+fn group_height(group: &TrackedGroup, width: u16, hidden_when_idle: &[String]) -> usize {
+    let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
+    let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
+    let chain = group
+        .ancestry()
+        .len()
+        .saturating_add(usize::from(leads_as_ancestor));
+    let above = if chain == 0 {
+        0
+    } else {
+        chain.saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
+    };
+    above.saturating_add(table_height(
+        &rows,
+        TableKind::Command,
+        width,
+        Some(group.lead.process.path.as_str()),
+    ))
+}
+
+/// Rows a table of `rows` lays out at `width`: the one column-label row
+/// the whole cell shares, then a heading and the rows under it for each
+/// working directory they were run in, with a gap between one directory
+/// and the next.
+///
+/// A row is as tall as its command line wraps to, which is why this goes
+/// through the same [`TableLayout`] and the same [`process_row`] the
+/// draw does -- counting a row as one line is what had a cell ask for a
+/// third of the rows it went on to lay out. The ground passed to the
+/// layout only settles what colour a faded row is written in, so any of
+/// them measures the same.
+///
+/// Only the gaps between directories count: [`draw_path_group`] advances
+/// past one after the last directory too, but nothing follows it there.
+fn table_height(rows: &[&TrackedRow], kind: TableKind, width: u16, pinned: Option<&str>) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width,
+        height: TABLE_HEADER_HEIGHT,
+    };
+    let layout = TableLayout::of(rows, kind, area, pane_background(false));
+    let groups = group_by_path(rows, pinned);
+    let gaps = groups
+        .len()
+        .saturating_sub(1)
+        .saturating_mul(usize::from(GROUP_GAP_HEIGHT));
+    let laid_out: usize = groups
+        .iter()
+        .map(|group| {
+            let lines: usize = group
+                .rows
+                .iter()
+                .map(|row| usize::from(process_row(row, &layout).lines))
+                .sum();
+            usize::from(GROUP_HEADER_HEIGHT).saturating_add(lines)
+        })
+        .sum();
+    usize::from(TABLE_HEADER_HEIGHT)
+        .saturating_add(laid_out)
+        .saturating_add(gaps)
 }
 
 /// Write what a cell's contents ask for against what the cell was
