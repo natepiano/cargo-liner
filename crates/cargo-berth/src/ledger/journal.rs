@@ -123,13 +123,15 @@ pub(crate) enum JournalOperation {
     /// Enlarge an existing reservation and any conflict answer that authorized it.
     Widen {
         /// The reservation receiving additional scopes.
-        reservation_id: ReservationId,
-        /// The new paths added by this mutation.
-        added_scopes:   Vec<ReservationScopePath>,
+        reservation_id:       ReservationId,
+        /// The non-empty complete scopes added by this mutation.
+        added_scopes:         ReservationScopeAdditionSet,
         /// Why the footprint expanded.
-        cause:          WidenCause,
+        cause:                WidenCause,
         /// The overlap result that authorized this widening.
-        authorization:  ConflictAuthorization,
+        authorization:        ConflictAuthorization,
+        /// The edit decision resulting from the enlarged footprint.
+        edit_blocking_status: EditBlockingStatus,
     },
     /// Record the phase result used to protect an outstanding reservation.
     Checkpoint {
@@ -195,9 +197,9 @@ pub(crate) enum JournalOperation {
         /// The reservation whose worktree made the write.
         reservation_id:          ReservationId,
         /// The foreign reservations whose scopes were entered.
-        foreign_reservation_ids: Vec<ReservationId>,
+        foreign_reservation_ids: ForeignReservationIdSet,
         /// The paths written without coverage.
-        paths:                   Vec<ReservationScopePath>,
+        paths:                   IncursionPathSet,
     },
     /// Issue a one-use permit for a confirmed forced integration.
     ForcedIntegrationPermit {
@@ -396,6 +398,13 @@ nonempty_claim_text!(
     "a forced-integration reason cannot be empty"
 );
 nonempty_claim_text!(
+    trim,
+    ExplicitWidenReason,
+    EmptyExplicitWidenReason,
+    "A non-empty explanation for one explicit reservation widening.",
+    "an explicit widen reason cannot be empty"
+);
+nonempty_claim_text!(
     preserve,
     WorkPlanReference,
     EmptyWorkPlanReference,
@@ -572,6 +581,85 @@ impl Display for EmptyReservationScopeSet {
 
 impl std::error::Error for EmptyReservationScopeSet {}
 
+macro_rules! nonempty_journal_set {
+    ($name:ident, $item:ty, $error:ident, $documentation:literal, $error_message:literal) => {
+        #[doc = $documentation]
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+        #[serde(transparent)]
+        pub(crate) struct $name(Vec<$item>);
+
+        impl $name {
+            #[doc = concat!("Borrow the values in this `", stringify!($name), "`.")]
+            pub(crate) fn as_slice(&self) -> &[$item] { &self.0 }
+        }
+
+        impl TryFrom<Vec<$item>> for $name {
+            type Error = $error;
+
+            fn try_from(values: Vec<$item>) -> Result<Self, Self::Error> {
+                if values.is_empty() {
+                    Err($error)
+                } else {
+                    Ok(Self(values))
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<DeserializerType>(
+                deserializer: DeserializerType,
+            ) -> Result<Self, DeserializerType::Error>
+            where
+                DeserializerType: serde::Deserializer<'de>,
+            {
+                let values = Vec::<$item>::deserialize(deserializer)?;
+                Self::try_from(values).map_err(serde::de::Error::custom)
+            }
+        }
+
+        #[doc = concat!("An error returned when constructing an empty `", stringify!($name), "`.")]
+        #[derive(Debug)]
+        pub(crate) struct $error;
+
+        impl Display for $error {
+            fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+                formatter.write_str($error_message)
+            }
+        }
+
+        impl std::error::Error for $error {}
+    };
+}
+
+nonempty_journal_set!(
+    ReservationScopeAdditionSet,
+    ReservationScope,
+    EmptyReservationScopeAdditionSet,
+    "A non-empty set of complete scopes added by one widening.",
+    "a reservation scope addition set cannot be empty"
+);
+nonempty_journal_set!(
+    ForeignReservationIdSet,
+    ReservationId,
+    EmptyForeignReservationIdSet,
+    "The non-empty foreign-holder set proven by one incursion.",
+    "an incursion must name at least one foreign reservation"
+);
+nonempty_journal_set!(
+    IncursionPathSet,
+    ReservationScopePath,
+    EmptyIncursionPathSet,
+    "The non-empty repository path set entered by one incursion.",
+    "an incursion must name at least one path"
+);
+nonempty_journal_set!(
+    CollisionPathSet,
+    ReservationScopePath,
+    EmptyCollisionPathSet,
+    "The non-empty repository path set refused by one drift collision.",
+    "a collision must name at least one path"
+);
+
 /// A canonical, absolute, UTF-8 worktree root stored for identity validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CanonicalWorktreeRoot(String);
@@ -715,14 +803,11 @@ impl std::error::Error for InvalidWorktreeAdministrativeLocator {}
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum WidenCause {
     /// Reconciliation observed paths not covered by the claim.
-    Drift {
-        /// The newly observed paths.
-        observed_paths: Vec<ReservationScopePath>,
-    },
+    Drift,
     /// The caller deliberately expanded the reservation.
     Explicit {
         /// The caller's explanation.
-        reason: String,
+        reason: ExplicitWidenReason,
     },
 }
 
@@ -1167,7 +1252,11 @@ mod tests {
     use super::ClaimHeadCommit;
     use super::ClaimHeadSnapshot;
     use super::ClaimSource;
+    use super::CollisionPathSet;
+    use super::ExplicitWidenReason;
+    use super::ForeignReservationIdSet;
     use super::FullRefName;
+    use super::IncursionPathSet;
     use super::Journal;
     use super::JournalActor;
     use super::JournalEvent;
@@ -1178,9 +1267,11 @@ mod tests {
     use super::ProtectedPhaseStartHead;
     use super::ReservationPurpose;
     use super::ReservationScope;
+    use super::ReservationScopeAdditionSet;
     use super::ReservationScopeSet;
     use super::ScopeKind;
     use super::TrunkCommitAtClaim;
+    use super::WidenCause;
     use super::WorkPlanReference;
     use super::WorktreeAdministrativeLocator;
     use crate::answer::AuthorizedOverlap;
@@ -1350,6 +1441,29 @@ mod tests {
     fn reservation_scope_sets_cannot_be_empty() {
         assert!(ReservationScopeSet::try_from(Vec::new()).is_err());
         assert!(serde_json::from_str::<ReservationScopeSet>("[]").is_err());
+    }
+
+    #[test]
+    fn drift_journal_inputs_reject_empty_domain_values() {
+        assert!(" \t\n".parse::<ExplicitWidenReason>().is_err());
+        assert!(serde_json::from_str::<ExplicitWidenReason>("\"\"").is_err());
+        assert!(ReservationScopeAdditionSet::try_from(Vec::new()).is_err());
+        assert!(ForeignReservationIdSet::try_from(Vec::new()).is_err());
+        assert!(IncursionPathSet::try_from(Vec::new()).is_err());
+        assert!(CollisionPathSet::try_from(Vec::new()).is_err());
+        assert!(serde_json::from_str::<ReservationScopeAdditionSet>("[]").is_err());
+        assert!(serde_json::from_str::<ForeignReservationIdSet>("[]").is_err());
+        assert!(serde_json::from_str::<IncursionPathSet>("[]").is_err());
+        assert!(serde_json::from_str::<CollisionPathSet>("[]").is_err());
+
+        let reason = "  reviewed expansion  "
+            .parse::<ExplicitWidenReason>()
+            .expect("non-empty widen reason should parse");
+        let cause = WidenCause::Explicit { reason };
+        assert_eq!(
+            serde_json::to_value(cause).expect("widen cause should serialize"),
+            serde_json::json!({"kind": "explicit", "reason": "reviewed expansion"})
+        );
     }
 
     #[test]

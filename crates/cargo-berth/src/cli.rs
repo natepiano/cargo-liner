@@ -31,6 +31,9 @@ use crate::constants::OVERLAP_WHY_ARGUMENT_ID;
 use crate::constants::OVERLAP_WHY_VALUE_NAME;
 use crate::constants::PROPOSAL_ARGUMENT;
 use crate::constants::PROPOSAL_VALUE_NAME;
+use crate::drift::DriftComparisonChoice;
+use crate::drift::DriftRequest;
+use crate::drift::DriftReservationSelection;
 use crate::edge::OrderingReason;
 use crate::exit::BerthExit;
 use crate::gate;
@@ -53,6 +56,7 @@ use crate::ledger::ReservationPurpose;
 use crate::ledger::WorkPlanReference;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
+use crate::output::PostCommitRendering;
 use crate::recovery;
 use crate::recovery::RecoveryRequest;
 use crate::recovery::RenewRequest;
@@ -68,6 +72,7 @@ use crate::verb::claim;
 use crate::verb::claim::ClaimCoordinationRunSelection;
 use crate::verb::claim::ClaimRequest;
 use crate::verb::claim::PhaseStartSelection;
+use crate::verb::drift;
 use crate::verb::integrate;
 use crate::verb::integrate::IntegrateRequest;
 use crate::verb::release;
@@ -87,6 +92,7 @@ const CLAIM_OVERRIDE_ARGUMENT: &str = "override";
 const CLAIM_OVERRIDE_ARGUMENT_ID: &str = "override_reservation";
 const CLAIM_RESOLUTION_GROUP: &str = "claim-resolution";
 const FORCE_ARGUMENT: &str = "force";
+const FULL_ARGUMENT: &str = "full";
 const HEAD_ARGUMENT: &str = "head";
 const HEAD_VALUE_NAME: &str = "OID";
 const INTEGRATED_AS_ARGUMENT: &str = "integrated-as";
@@ -99,6 +105,8 @@ const PHASE_VALUE_NAME: &str = "PHASE";
 const PLAN_ARGUMENT: &str = "plan";
 const PLAN_VALUE_NAME: &str = "PLAN";
 const RECOVERED_ARGUMENT: &str = "recovered";
+const RESERVATION_ARGUMENT: &str = "reservation";
+const RESERVATION_VALUE_NAME: &str = "RESERVATION_ID";
 const REPAIR_PROJECTION_ARGUMENT: &str = "repair-projection";
 const REPAIR_PROJECTION_ARGUMENT_ID: &str = "repair_projection";
 const REINITIALIZE_AFTER_REVIEW_ARGUMENT: &str = "reinitialize-after-review";
@@ -109,6 +117,7 @@ const RETIRE_ORPHAN_ARGUMENT: &str = "retire-orphan";
 const RETIRE_ORPHAN_ARGUMENT_ID: &str = "retire_orphan";
 const RUN_ARGUMENT: &str = "run";
 const RUN_VALUE_NAME: &str = "COORDINATION_RUN_ID";
+const POST_COMMIT_HOOK_ENVIRONMENT: &str = "CARGO_BERTH_POST_COMMIT";
 const TRUNK_OID_VALUE_NAME: &str = "TRUNK_OID";
 const WHY_ARGUMENT: &str = "why";
 const WHY_VALUE_NAME: &str = "WHY";
@@ -148,6 +157,8 @@ enum Command {
     Check(PathArguments),
     /// Claim paths for a reservation.
     Claim(ClaimArguments),
+    /// Compare observed worktree changes with an active reservation.
+    Drift(DriftArguments),
     /// Release a reservation at a checkpoint.
     Release(ReservationArguments),
     /// Record an ordering relationship between reservations.
@@ -329,6 +340,20 @@ struct ReservationArguments {
     json_output:    JsonOutput,
 }
 
+/// Arguments selecting a cheap delta or complete phase-start drift comparison.
+#[derive(Debug, Args)]
+struct DriftArguments {
+    /// Name the active reservation to widen or receive an incursion record.
+    #[arg(long = RESERVATION_ARGUMENT, value_name = RESERVATION_VALUE_NAME)]
+    reservation: Option<ReservationId>,
+    /// Run the complete four-command comparison against the protected phase-start HEAD.
+    #[arg(long = FULL_ARGUMENT)]
+    full:        bool,
+    /// The output representation requested for this command.
+    #[command(flatten)]
+    json_output: JsonOutput,
+}
+
 /// Arguments for the `sequence` verb.
 #[derive(Debug, Args)]
 struct SequenceArguments {
@@ -437,7 +462,11 @@ impl Cli {
         let output_format = command.output_format();
         let output_envelope = command.execute();
         let berth_exit = output_envelope.exit_code;
-        emit_response(output_format, &output_envelope);
+        if post_commit_hook_requested() {
+            emit_post_commit_response(&output_envelope);
+        } else {
+            emit_response(output_format, &output_envelope);
+        }
         berth_exit.into()
     }
 }
@@ -474,6 +503,7 @@ impl Command {
                 Ok(claim_request) => claim::execute(claim_request),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Claim, &error),
             },
+            Self::Drift(drift_arguments) => drift::execute(drift_arguments.into_drift_request()),
             Self::Release(reservation_arguments) => {
                 release::execute(reservation_arguments.into_release_request())
             },
@@ -510,6 +540,7 @@ impl Command {
             Self::Board(json_output) => json_output.output_format(),
             Self::Check(path_arguments) => path_arguments.json_output.output_format(),
             Self::Claim(claim_arguments) => claim_arguments.json_output.output_format(),
+            Self::Drift(drift_arguments) => drift_arguments.json_output.output_format(),
             Self::Release(reservation_arguments) | Self::Renew(reservation_arguments) => {
                 reservation_arguments.json_output.output_format()
             },
@@ -528,6 +559,7 @@ impl Command {
             Self::Board(_) => CommandVerb::Board,
             Self::Check(_) => CommandVerb::Check,
             Self::Claim(_) => CommandVerb::Claim,
+            Self::Drift(_) => CommandVerb::Drift,
             Self::Release(_) => CommandVerb::Release,
             Self::Sequence(_) => CommandVerb::Sequence,
             Self::Integrate(_) | Self::ReferenceTransaction(_) => CommandVerb::Integrate,
@@ -681,6 +713,28 @@ impl ReservationArguments {
     const fn into_renew_request(self) -> RenewRequest {
         RenewRequest {
             reservation_id: self.reservation_id,
+        }
+    }
+}
+
+impl DriftArguments {
+    fn into_drift_request(self) -> DriftRequest {
+        let comparison = if self.full {
+            DriftComparisonChoice::FullPhaseStart
+        } else {
+            DriftComparisonChoice::CheapDelta
+        };
+        let reservation = if post_commit_hook_requested() {
+            DriftReservationSelection::EveryActiveForPostCommit
+        } else {
+            self.reservation.map_or(
+                DriftReservationSelection::UniqueActiveForActingIdentity,
+                DriftReservationSelection::Explicit,
+            )
+        };
+        DriftRequest {
+            comparison,
+            reservation,
         }
     }
 }
@@ -1041,6 +1095,19 @@ fn emit_response(output_format: CliOutputFormat, output_envelope: &OutputEnvelop
     write_line(rendered);
 }
 
+fn emit_post_commit_response(output_envelope: &OutputEnvelope) {
+    match output_envelope.post_commit_rendering() {
+        PostCommitRendering::Silent => {},
+        PostCommitRendering::Warning(warning) => {
+            let _ = writeln!(std::io::stderr().lock(), "{warning}");
+        },
+    }
+}
+
+fn post_commit_hook_requested() -> bool {
+    env::var_os(POST_COMMIT_HOOK_ENVIRONMENT).is_some_and(|value| value == "1")
+}
+
 fn write_line(mut rendered: String) {
     rendered.push('\n');
     let standard_output = std::io::stdout();
@@ -1106,6 +1173,17 @@ mod tests {
             &[BINARY_NAME, "claim", "src", "--json"],
             &[BINARY_NAME, CARGO_SUBCOMMAND_NAME, "claim", "src", "--json"],
             CommandVerb::Claim,
+        );
+        assert_verb_parses(
+            &[BINARY_NAME, "drift", "--full", "--json"],
+            &[
+                BINARY_NAME,
+                CARGO_SUBCOMMAND_NAME,
+                "drift",
+                "--full",
+                "--json",
+            ],
+            CommandVerb::Drift,
         );
         assert_verb_parses(
             &[BINARY_NAME, "release", RESERVATION_ID, "--json"],

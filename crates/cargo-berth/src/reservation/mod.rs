@@ -26,13 +26,14 @@ pub(crate) use lifecycle::RewrittenIntegrationTrunkCommit;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::answer::AuthorizedOverlap;
+use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapScopeRevision;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationRevision;
-use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadSnapshot;
@@ -41,14 +42,15 @@ use crate::ledger::EditAuthorization;
 use crate::ledger::JournalActor;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
+use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
+use crate::ledger::ReservationScopeAdditionSet;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::TrunkCommitAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::scope::PathCase;
 use crate::scope::ReservationScope;
 use crate::scope::ReservationScopeSet;
-use crate::scope::ScopeKind;
 
 /// Every retained reservation after replaying the journal in append order.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -66,6 +68,7 @@ pub(crate) struct Reservation {
     source:                     ClaimSource,
     purpose:                    ReservationPurpose,
     head_snapshot:              ClaimHeadSnapshot,
+    phase_start_head:           ProtectedPhaseStartHead,
     actor:                      JournalActor,
     lifecycle:                  ReservationLifecycle,
     retained_protected_tip:     RetainedProtectedTip,
@@ -103,6 +106,7 @@ struct ReplayedClaim<'event> {
     purpose:          &'event ReservationPurpose,
     trunk_at_claim:   &'event TrunkCommitAtClaim,
     head_snapshot:    &'event ClaimHeadSnapshot,
+    phase_start_head: &'event ProtectedPhaseStartHead,
     actor:            &'event JournalActor,
     worktree_root:    &'event CanonicalWorktreeRoot,
     worktree_locator: &'event WorktreeAdministrativeLocator,
@@ -167,6 +171,25 @@ pub(crate) struct ReservationConflict {
     pub(crate) overlapping_scopes:     ReservationScopeSet,
 }
 
+/// How current edit-blocking reservations cover one drift path.
+pub(crate) enum DriftBlockingCoverage {
+    /// Another reservation from the same run and worktree already claims the path.
+    SameIdentity,
+    /// Reservations from another run or worktree currently block the path.
+    Foreign(Vec<ReservationConflict>),
+    /// No edit-blocking reservation claims the path.
+    Unclaimed,
+}
+
+/// The result of re-binding every overlapping scope against existing answers for a proposed
+/// widening.
+pub(crate) enum WidenScopeBinding {
+    /// The complete widened scope set is covered by this durable authorization result.
+    Authorized(ConflictAuthorization),
+    /// One or more foreign overlaps have no existing answer for their exact scopes.
+    Blocked(Vec<ReservationConflict>),
+}
+
 /// The run identity permitted to receive its reservation-specific overlap answers.
 #[derive(Clone, Copy)]
 enum AuthorizedEditingRun {
@@ -196,6 +219,85 @@ impl RetainedReservationSet {
         self.conflicts(candidate, path_case, |holder| {
             holder.actor.run != coordination_run_id
         })
+    }
+
+    /// Evaluate changed paths against edit-blocking reservations of another acting identity.
+    pub(crate) fn conflicts_for_drift(
+        &self,
+        candidate: &ReservationScopeSet,
+        acting_run_id: CoordinationRunId,
+        acting_worktree_id: WorktreeId,
+        path_case: PathCase,
+    ) -> Vec<ReservationConflict> {
+        self.conflicts(candidate, path_case, |holder| {
+            holder.actor.run != acting_run_id || holder.actor.worktree != acting_worktree_id
+        })
+    }
+
+    /// Classify all blocking coverage of one changed path in drift-table order.
+    pub(crate) fn blocking_coverage_for_drift(
+        &self,
+        candidate: &ReservationScopeSet,
+        acting_run_id: CoordinationRunId,
+        acting_worktree_id: WorktreeId,
+        path_case: PathCase,
+    ) -> DriftBlockingCoverage {
+        if !self
+            .conflicts_with_holders(candidate, path_case, |holder| {
+                holder.actor.run == acting_run_id && holder.actor.worktree == acting_worktree_id
+            })
+            .is_empty()
+        {
+            return DriftBlockingCoverage::SameIdentity;
+        }
+        let conflicts =
+            self.conflicts_for_drift(candidate, acting_run_id, acting_worktree_id, path_case);
+        if conflicts.is_empty() {
+            DriftBlockingCoverage::Unclaimed
+        } else {
+            DriftBlockingCoverage::Foreign(conflicts)
+        }
+    }
+
+    /// Re-run exact overlap binding against one reservation's complete widened scope set.
+    pub(crate) fn bind_widened_scopes(
+        &self,
+        subject: &Reservation,
+        added_scopes: &ReservationScopeAdditionSet,
+        path_case: PathCase,
+    ) -> WidenScopeBinding {
+        let mut widened_scopes = subject.scopes.as_slice().to_vec();
+        widened_scopes.extend(added_scopes.as_slice().iter().cloned());
+        let complete_scopes = ReservationScopeSet::try_from(widened_scopes).map_or_else(
+            |_| subject.scopes.clone(),
+            |scopes| scopes.minimal_antichain(path_case),
+        );
+        let conflicts = self.conflicts_with_holders(&complete_scopes, path_case, |holder| {
+            holder.actor.run != subject.actor.run || holder.actor.worktree != subject.actor.worktree
+        });
+        let blocked =
+            conflicts
+                .iter()
+                .filter(|(holder, conflict)| {
+                    conflict.overlapping_scopes.as_slice().iter().any(|scope| {
+                        !reservations_authorize_scope(subject, holder, scope, path_case)
+                    })
+                })
+                .map(|(_, conflict)| conflict.clone())
+                .collect::<Vec<_>>();
+        if !blocked.is_empty() {
+            return WidenScopeBinding::Blocked(blocked);
+        }
+        let overlaps = conflicts
+            .iter()
+            .map(|(_, conflict)| AuthorizedOverlap::from(conflict))
+            .collect::<Vec<_>>();
+        AuthorizedOverlapSet::try_from(overlaps).map_or(
+            WidenScopeBinding::Authorized(ConflictAuthorization::NoConflict),
+            |overlaps| {
+                WidenScopeBinding::Authorized(ConflictAuthorization::Revalidated { overlaps })
+            },
+        )
     }
 
     /// Evaluate an edit check using only authorization resolved by the process.
@@ -286,6 +388,7 @@ impl RetainedReservationSet {
                 purpose,
                 trunk_at_claim,
                 head_snapshot,
+                phase_start_head,
                 worktree_root,
                 worktree_administrative_locator,
                 authorization,
@@ -297,6 +400,7 @@ impl RetainedReservationSet {
                 purpose,
                 trunk_at_claim,
                 head_snapshot,
+                phase_start_head,
                 actor: &event.actor,
                 worktree_root,
                 worktree_locator: worktree_administrative_locator,
@@ -306,8 +410,14 @@ impl RetainedReservationSet {
                 reservation_id,
                 added_scopes,
                 authorization,
+                edit_blocking_status,
                 ..
-            } => self.apply_widen(*reservation_id, added_scopes, authorization)?,
+            } => self.apply_widen(
+                *reservation_id,
+                added_scopes,
+                authorization,
+                *edit_blocking_status,
+            )?,
             JournalOperation::Checkpoint {
                 reservation_id,
                 protected_tip,
@@ -340,35 +450,24 @@ impl RetainedReservationSet {
                 current_worktree_id,
                 current_worktree_root,
                 current_worktree_administrative_locator,
-            } => {
-                let reservation = self.find_mut(*reservation_id)?;
-                if reservation.actor.worktree != *previous_worktree_id {
-                    return Err(ReservationReplayError::WorktreeRebindingMismatch(
-                        *reservation_id,
-                    ));
-                }
-                reservation.actor.worktree = *current_worktree_id;
-                reservation.worktree_root = current_worktree_root.clone();
-                reservation.worktree_locator = current_worktree_administrative_locator.clone();
-                reservation.advance_revision()?;
-            },
+            } => self.apply_worktree_rebinding(
+                *reservation_id,
+                *previous_worktree_id,
+                *current_worktree_id,
+                current_worktree_root,
+                current_worktree_administrative_locator,
+            )?,
             JournalOperation::RelocateWorktree {
                 reservation_id,
                 worktree_id,
                 previous_root,
                 current_root,
-            } => {
-                let reservation = self.find_mut(*reservation_id)?;
-                if reservation.actor.worktree != *worktree_id
-                    || reservation.worktree_root != *previous_root
-                {
-                    return Err(ReservationReplayError::WorktreeRelocationMismatch(
-                        *reservation_id,
-                    ));
-                }
-                reservation.worktree_root = current_root.clone();
-                reservation.advance_revision()?;
-            },
+            } => self.apply_worktree_relocation(
+                *reservation_id,
+                *worktree_id,
+                previous_root,
+                current_root,
+            )?,
             JournalOperation::ResolveDefer { .. }
             | JournalOperation::Incursion { .. }
             | JournalOperation::ForcedIntegrationPermit { .. }
@@ -376,6 +475,44 @@ impl RetainedReservationSet {
             | JournalOperation::Bypass { .. } => {},
         }
         Ok(())
+    }
+
+    fn apply_worktree_rebinding(
+        &mut self,
+        reservation_id: ReservationId,
+        previous_worktree_id: WorktreeId,
+        current_worktree_id: WorktreeId,
+        current_worktree_root: &CanonicalWorktreeRoot,
+        current_worktree_locator: &WorktreeAdministrativeLocator,
+    ) -> Result<(), ReservationReplayError> {
+        let reservation = self.find_mut(reservation_id)?;
+        if reservation.actor.worktree != previous_worktree_id {
+            return Err(ReservationReplayError::WorktreeRebindingMismatch(
+                reservation_id,
+            ));
+        }
+        reservation.actor.worktree = current_worktree_id;
+        reservation.worktree_root = current_worktree_root.clone();
+        reservation.worktree_locator = current_worktree_locator.clone();
+        reservation.advance_revision()
+    }
+
+    fn apply_worktree_relocation(
+        &mut self,
+        reservation_id: ReservationId,
+        worktree_id: WorktreeId,
+        previous_root: &CanonicalWorktreeRoot,
+        current_root: &CanonicalWorktreeRoot,
+    ) -> Result<(), ReservationReplayError> {
+        let reservation = self.find_mut(reservation_id)?;
+        if reservation.actor.worktree != worktree_id || reservation.worktree_root != *previous_root
+        {
+            return Err(ReservationReplayError::WorktreeRelocationMismatch(
+                reservation_id,
+            ));
+        }
+        reservation.worktree_root = current_root.clone();
+        reservation.advance_revision()
     }
 
     fn apply_claim(
@@ -397,6 +534,7 @@ impl RetainedReservationSet {
             source:                     replayed_claim.source.clone(),
             purpose:                    replayed_claim.purpose.clone(),
             head_snapshot:              replayed_claim.head_snapshot.clone(),
+            phase_start_head:           replayed_claim.phase_start_head.clone(),
             actor:                      replayed_claim.actor.clone(),
             lifecycle:                  ReservationLifecycle::Active,
             retained_protected_tip:     RetainedProtectedTip::NotCheckpointed,
@@ -414,17 +552,16 @@ impl RetainedReservationSet {
     fn apply_widen(
         &mut self,
         reservation_id: ReservationId,
-        added_scopes: &[ReservationScopePath],
+        added_scopes: &ReservationScopeAdditionSet,
         authorization: &ConflictAuthorization,
+        edit_blocking_status: EditBlockingStatus,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
         let mut scopes = reservation.scopes.as_slice().to_vec();
-        scopes.extend(added_scopes.iter().cloned().map(|path| ReservationScope {
-            path,
-            kind: ScopeKind::File,
-        }));
+        scopes.extend(added_scopes.as_slice().iter().cloned());
         reservation.scopes = ReservationScopeSet::try_from(scopes)
             .map_err(|_| ReservationReplayError::EmptyScopeSet(reservation_id))?;
+        reservation.edit_blocking_status = edit_blocking_status;
         reservation.advance_revision()?;
         reservation.authorizations.push(authorization.clone());
         Ok(())
@@ -453,12 +590,14 @@ impl RetainedReservationSet {
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
         match snapshot {
-            ReservationSnapshot::Active { .. } => {
+            ReservationSnapshot::Active { claim_snapshot } => {
                 if !matches!(reservation.lifecycle, ReservationLifecycle::Active) {
                     return Err(ReservationReplayError::SnapshotStateMismatch(
                         reservation_id,
                     ));
                 }
+                reservation.phase_start_head =
+                    ProtectedPhaseStartHead::from(claim_snapshot.clone());
             },
             ReservationSnapshot::Outstanding {
                 protected_tip,
@@ -735,6 +874,11 @@ impl Reservation {
     /// Return the branch or detached commit recorded at acquisition.
     pub(crate) const fn head_snapshot(&self) -> &ClaimHeadSnapshot { &self.head_snapshot }
 
+    /// Return the protected commit used as this active phase's drift baseline.
+    pub(crate) const fn phase_start_head(&self) -> &ProtectedPhaseStartHead {
+        &self.phase_start_head
+    }
+
     /// Return the materialized edit decision.
     pub(crate) const fn edit_blocking_status(&self) -> EditBlockingStatus {
         self.edit_blocking_status
@@ -941,17 +1085,27 @@ mod tests {
     use serde_json::Value;
     use serde_json::json;
 
+    use super::DriftBlockingCoverage;
     use super::IntegrationEvidenceStatus;
     use super::ReservationEvidenceState;
     use super::RetainedReservationSet;
     use super::lifecycle::EditBlockingStatus;
+    use crate::ids::CoordinationRunId;
     use crate::ids::ReservationId;
+    use crate::ids::WorktreeId;
     use crate::ledger::JournalEvent;
+    use crate::scope::PathCase;
+    use crate::scope::ReservationScopeSet;
+    use crate::scope::ScopeKind;
 
     const PROTECTED_TIP: &str = "2222222222222222222222222222222222222222";
     const REPLACEMENT_TIP: &str = "3333333333333333333333333333333333333333";
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
+    const RUN_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
+    const SECOND_RUN_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
     const TRUNK_OID: &str = "1111111111111111111111111111111111111111";
+    const WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
+    const SECOND_WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a21";
 
     #[test]
     fn replay_retains_active_outstanding_released_and_rewritten_states()
@@ -1049,6 +1203,121 @@ mod tests {
                 .reservation(reservation_id)?
                 .edit_blocking_status,
             EditBlockingStatus::Blocking
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_preserves_phase_start_and_complete_widened_scope_kinds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let [claim, ..] = lifecycle_events()?;
+        let widen = journal_event(
+            2,
+            &json!({
+                "op": "widen",
+                "reservation_id": RESERVATION_ID,
+                "added_scopes": [
+                    {"path": "generated", "kind": "tree"},
+                    {"path": "single.txt", "kind": "file"}
+                ],
+                "cause": {"kind": "explicit", "reason": "reviewed test expansion"},
+                "authorization": {"kind": "no_conflict"},
+                "edit_blocking_status": "blocking"
+            }),
+        )?;
+
+        let reservations = RetainedReservationSet::replay(&[claim, widen])?;
+        let reservation = reservations.reservation(reservation_id)?;
+        assert_eq!(
+            reservation.phase_start_head().as_ref().to_string(),
+            TRUNK_OID
+        );
+        let Some(generated) = reservation
+            .scopes()
+            .as_slice()
+            .iter()
+            .find(|scope| scope.path.to_string() == "generated")
+        else {
+            return Err(std::io::Error::other("widened tree should replay").into());
+        };
+        let Some(single) = reservation
+            .scopes()
+            .as_slice()
+            .iter()
+            .find(|scope| scope.path.to_string() == "single.txt")
+        else {
+            return Err(std::io::Error::other("widened file should replay").into());
+        };
+        assert_eq!(generated.kind, ScopeKind::Tree);
+        assert_eq!(single.kind, ScopeKind::File);
+        assert!(generated.contains(
+            &crate::scope::ReservationScope {
+                path: "generated/child.rs".parse()?,
+                kind: ScopeKind::File,
+            },
+            PathCase::Sensitive,
+        ));
+        assert!(!single.contains(
+            &crate::scope::ReservationScope {
+                path: "single.txt/child".parse()?,
+                kind: ScopeKind::File,
+            },
+            PathCase::Sensitive,
+        ));
+        assert_eq!(
+            reservation.edit_blocking_status(),
+            EditBlockingStatus::Blocking
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn drift_blocking_coverage_requires_both_run_and_worktree_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let [claim, ..] = lifecycle_events()?;
+        let reservations = RetainedReservationSet::replay(&[claim])?;
+        let candidate = serde_json::from_value::<ReservationScopeSet>(json!([
+            {"path": "src/lib.rs", "kind": "file"}
+        ]))?;
+        let run_id = RUN_ID.parse::<CoordinationRunId>()?;
+        let second_run_id = SECOND_RUN_ID.parse::<CoordinationRunId>()?;
+        let worktree_id = WORKTREE_ID.parse::<WorktreeId>()?;
+        let second_worktree_id = SECOND_WORKTREE_ID.parse::<WorktreeId>()?;
+
+        assert!(matches!(
+            reservations.blocking_coverage_for_drift(
+                &candidate,
+                run_id,
+                worktree_id,
+                PathCase::Sensitive,
+            ),
+            DriftBlockingCoverage::SameIdentity
+        ));
+        let DriftBlockingCoverage::Foreign(different_run) = reservations
+            .blocking_coverage_for_drift(
+                &candidate,
+                second_run_id,
+                worktree_id,
+                PathCase::Sensitive,
+            )
+        else {
+            return Err(std::io::Error::other("another run should be foreign").into());
+        };
+        assert_eq!(different_run[0].reservation_id.to_string(), RESERVATION_ID);
+        let DriftBlockingCoverage::Foreign(different_worktree) = reservations
+            .blocking_coverage_for_drift(
+                &candidate,
+                run_id,
+                second_worktree_id,
+                PathCase::Sensitive,
+            )
+        else {
+            return Err(std::io::Error::other("another worktree should be foreign").into());
+        };
+        assert_eq!(
+            different_worktree[0].reservation_id.to_string(),
+            RESERVATION_ID
         );
         Ok(())
     }

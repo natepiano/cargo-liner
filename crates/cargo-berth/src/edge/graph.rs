@@ -316,7 +316,9 @@ impl OrderingGraph {
         event_id: EventId,
     ) -> Result<(), EdgeReplayError> {
         match authorization {
-            ConflictAuthorization::NoConflict | ConflictAuthorization::Override { .. } => Ok(()),
+            ConflictAuthorization::NoConflict
+            | ConflictAuthorization::Override { .. }
+            | ConflictAuthorization::Revalidated { .. } => Ok(()),
             ConflictAuthorization::Defer {
                 overlaps,
                 blocker,

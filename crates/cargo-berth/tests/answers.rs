@@ -1308,9 +1308,10 @@ fn append_widen(repository_root: &Path, reservation_id: &str, added_scope: &str)
         "projection_generation": next_generation,
         "op": "widen",
         "reservation_id": reservation_id,
-        "added_scopes": [added_scope],
+        "added_scopes": [{"path": added_scope, "kind": "file"}],
         "cause": {"kind": "explicit", "reason": "test widens the reservation"},
         "authorization": {"kind": "no_conflict"},
+        "edit_blocking_status": "blocking",
     });
     let mut journal = fs::OpenOptions::new()
         .append(true)

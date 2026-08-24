@@ -15,6 +15,8 @@ use super::permit::PENDING_BYPASS_FILE_SUFFIX;
 use crate::git;
 
 const EXECUTABLE_PERMISSIONS: u32 = 0o755;
+const POST_COMMIT_HOOK_NAME: &str = "post-commit";
+const POST_COMMIT_MARKER: &str = "# cargo-berth managed hook: post-commit";
 const REFERENCE_TRANSACTION_HOOK_NAME: &str = "reference-transaction";
 const REFERENCE_TRANSACTION_MARKER: &str = "# cargo-berth managed hook: reference-transaction";
 /// One hook name paired with the complete script body owned by `cargo-berth`.
@@ -27,6 +29,7 @@ struct ManagedHook {
 
 #[derive(Clone, Copy)]
 enum ManagedHookDispatch {
+    PostCommit,
     ReferenceTransaction,
 }
 
@@ -36,8 +39,14 @@ const REFERENCE_TRANSACTION_HOOK: ManagedHook = ManagedHook {
     marker:   REFERENCE_TRANSACTION_MARKER,
     dispatch: ManagedHookDispatch::ReferenceTransaction,
 };
+/// The post-commit drift-warning hook definition registered below.
+const POST_COMMIT_HOOK: ManagedHook = ManagedHook {
+    name:     POST_COMMIT_HOOK_NAME,
+    marker:   POST_COMMIT_MARKER,
+    dispatch: ManagedHookDispatch::PostCommit,
+};
 /// The complete managed hook registry extended by later hook-owning phases.
-const MANAGED_HOOKS: &[ManagedHook] = &[REFERENCE_TRANSACTION_HOOK];
+const MANAGED_HOOKS: &[ManagedHook] = &[REFERENCE_TRANSACTION_HOOK, POST_COMMIT_HOOK];
 
 /// The activation outcome for one managed hook name.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -219,6 +228,9 @@ impl ManagedHook {
         let policy_worktree = shell_single_quoted(&policy_worktree.to_string_lossy());
         let trunk_reference = shell_single_quoted(trunk_reference);
         match self.dispatch {
+            ManagedHookDispatch::PostCommit => format!(
+                "#!/bin/sh\n{POST_COMMIT_MARKER}\nif [ \"${{CARGO_BERTH_BYPASS:-}}\" = \"1\" ]; then\n    exit 0\nfi\nif [ ! -x {executable} ]; then\n    printf '%s\\n' 'cargo-berth could not check this commit drift because its executable is unavailable. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\n    exit 0\nfi\nCARGO_BERTH_POST_COMMIT=1 {executable} drift --full\nstatus=$?\nif [ \"$status\" -eq 126 ] || [ \"$status\" -eq 127 ]; then\n    printf '%s\\n' 'cargo-berth could not run the post-commit drift check. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\nfi\nexit 0\n"
+            ),
             ManagedHookDispatch::ReferenceTransaction => format!(
                 "#!/bin/sh\n{REFERENCE_TRANSACTION_MARKER}\nif [ -d {policy_worktree} ]; then\n    cd {policy_worktree}\nfi\nif [ \"${{CARGO_BERTH_BYPASS:-}}\" = \"1\" ]; then\n    if [ -x {executable} ]; then\n        {executable} __reference-transaction \"$@\" {trunk_reference}\n        status=$?\n        if [ \"$status\" -eq 0 ]; then\n            exit 0\n        fi\n        printf '%s\\n' 'cargo-berth could not record this bypass; permitting this ref transaction and leaving a marker to report it later. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2\n    else\n        printf '%s\\n' 'cargo-berth trunk gate executable is unavailable; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2\n    fi\n    if [ \"$1\" = \"prepared\" ]; then\n        if occurred_at=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null); then\n            case \"$occurred_at\" in\n                [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z) marker_contents='{{\"cause\":{{\"kind\":\"environment_override\"}},\"occurrence_time\":{{\"status\":\"known\",\"at\":\"'\"$occurred_at\"'\"}}}}' ;;\n                *) marker_contents='{{\"cause\":{{\"kind\":\"environment_override\"}},\"occurrence_time\":{{\"status\":\"unavailable\"}}}}' ;;\n            esac\n        else\n            marker_contents='{{\"cause\":{{\"kind\":\"environment_override\"}},\"occurrence_time\":{{\"status\":\"unavailable\"}}}}'\n        fi\n        marker_base={pending_marker_prefix}\"$$\"\n        marker=\"$marker_base\"{pending_marker_suffix}\n        sequence=0\n        while [ -e \"$marker\" ]; do\n            sequence=$((sequence + 1))\n            marker=\"$marker_base-$sequence\"{pending_marker_suffix}\n        done\n        (umask 077; set -C; printf '%s\\n' \"$marker_contents\" > \"$marker\") 2>/dev/null || :\n    fi\n    exit 0\nfi\nif [ ! -x {executable} ]; then\n    printf '%s\\n' 'cargo-berth trunk gate executable is unavailable; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2\n    exit 0\nfi\n{executable} __reference-transaction \"$@\" {trunk_reference}\nstatus=$?\nif [ \"$status\" -eq 126 ] || [ \"$status\" -eq 127 ]; then\n    printf '%s\\n' 'cargo-berth trunk gate executable could not run; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2\n    exit 0\nfi\nexit \"$status\"\n"
             ),

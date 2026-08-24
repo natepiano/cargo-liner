@@ -15,7 +15,6 @@ pub(crate) use proposal::OverlapRequester;
 pub(crate) use proposal::PermissiveOverlapAnswer;
 pub(crate) use proposal::PermissiveOverlapAuthorizationRequest;
 pub(crate) use proposal::RequesterCoordinationIdentity;
-#[cfg(test)]
 pub(crate) use scope_binding::AuthorizedOverlap;
 #[cfg(test)]
 pub(crate) use scope_binding::AuthorizedOverlapScopeSet;

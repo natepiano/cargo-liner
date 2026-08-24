@@ -13,6 +13,9 @@ use crate::alert::Alert;
 use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::config::InitializationState;
+use crate::drift::DriftEffect;
+use crate::drift::DriftReport;
+use crate::drift::ReservationDriftResult;
 use crate::edge::EdgeDeclarationRejection;
 use crate::edge::EdgeHold;
 use crate::edge::EdgeReadiness;
@@ -74,6 +77,8 @@ pub(crate) enum CommandVerb {
     Check,
     /// Claim paths for a reservation.
     Claim,
+    /// Compare observed changes with one or more active reservations.
+    Drift,
     /// Release a reservation at a checkpoint.
     Release,
     /// Record an ordering relationship.
@@ -84,6 +89,14 @@ pub(crate) enum CommandVerb {
     Resolve,
     /// Renew a reservation's explicit activity record.
     Renew,
+}
+
+/// Whether the post-commit hook should stay silent or print a warning.
+pub(crate) enum PostCommitRendering {
+    /// The full comparison found nothing the hook needs to report.
+    Silent,
+    /// The hook must print this diagnostic while leaving the commit standing.
+    Warning(String),
 }
 
 /// The status named in a JSON response.
@@ -104,6 +117,12 @@ enum OutputStatus {
     Clear,
     /// A new reservation was appended and published.
     Claimed,
+    /// Unreserved changed paths were added to a reservation.
+    Widened,
+    /// A write entered a foreign edit-blocking reservation.
+    Incursion,
+    /// A widening gained a foreign blocker before its lock was acquired.
+    DriftCollision,
     /// Repository policy permits no additional live reservations.
     ReservationLimitReached,
     /// Repository policy permits no additional ordering edges.
@@ -171,6 +190,8 @@ enum OutputFacts {
     Check(CheckPayload),
     /// Facts returned by `claim`.
     Claim(ClaimPayload),
+    /// Facts returned by `drift`.
+    Drift(DriftReport),
     /// Facts returned by `release`.
     Release(ReleasePayload),
     /// Facts returned by `sequence`.
@@ -873,6 +894,51 @@ impl OutputEnvelope {
         }
     }
 
+    /// Build a complete drift result with status and process outcome in agreement.
+    pub(crate) fn drift(report: DriftReport) -> Self {
+        let has_incursion = report.results.iter().any(|result| {
+            result_has_effect(result, |effect| {
+                matches!(effect, DriftEffect::Incursion { .. })
+            })
+        });
+        let has_collision = report.results.iter().any(|result| {
+            result_has_effect(result, |effect| {
+                matches!(effect, DriftEffect::Collision { .. })
+            })
+        });
+        let has_widen = report.results.iter().any(|result| {
+            result_has_effect(result, |effect| {
+                matches!(effect, DriftEffect::Widened { .. })
+            })
+        });
+        let status = if has_incursion {
+            OutputStatus::Incursion
+        } else if has_collision {
+            OutputStatus::DriftCollision
+        } else if has_widen {
+            OutputStatus::Widened
+        } else {
+            OutputStatus::Clear
+        };
+        let exit_code = if report.has_blocking_effect() {
+            BerthExit::BlockedByOverlap
+        } else {
+            BerthExit::Clear
+        };
+        let reservations = report.reservation_ids();
+        let blocked_by = report.blocking_reservation_ids();
+        let message = drift_message(&report);
+        Self {
+            verb: CommandVerb::Drift,
+            status,
+            exit_code,
+            reservations,
+            blocked_by,
+            message,
+            payload: OutputPayload::from_facts(OutputFacts::Drift(report)),
+        }
+    }
+
     /// Build a typed rejection when no additional live reservation is permitted.
     pub(crate) fn reservation_limit_reached(maximum: u32) -> Self {
         Self {
@@ -1082,6 +1148,28 @@ impl OutputEnvelope {
         }
     }
 
+    /// Convert a drift envelope into the commit hook's silent-or-warning behavior.
+    pub(crate) fn post_commit_rendering(&self) -> PostCommitRendering {
+        match self.status {
+            OutputStatus::Clear => PostCommitRendering::Silent,
+            OutputStatus::Widened | OutputStatus::Incursion | OutputStatus::DriftCollision => {
+                PostCommitRendering::Warning(self.message.clone())
+            },
+            OutputStatus::LedgerUnreadable => PostCommitRendering::Warning(format!(
+                "cargo-berth could not check this commit's drift because the ledger was unreadable. {} Run `cargo-berth drift --full` by hand; this commit remains in place.",
+                self.message
+            )),
+            OutputStatus::Contention => PostCommitRendering::Warning(format!(
+                "cargo-berth could not check this commit's drift because the ledger lock deadline was exhausted. {} Run `cargo-berth drift --full` by hand; this commit remains in place.",
+                self.message
+            )),
+            _ => PostCommitRendering::Warning(format!(
+                "cargo-berth could not complete the post-commit drift check. {} Run `cargo-berth drift --full` by hand; this commit remains in place.",
+                self.message
+            )),
+        }
+    }
+
     /// Build a bounded lock-contention result with retry guidance.
     pub(crate) fn contention(command_verb: CommandVerb, diagnostic: &str) -> Self {
         Self {
@@ -1219,6 +1307,7 @@ impl OutputPayload {
             CommandVerb::Init
             | CommandVerb::Check
             | CommandVerb::Claim
+            | CommandVerb::Drift
             | CommandVerb::Release
             | CommandVerb::Sequence
             | CommandVerb::Resolve
@@ -1266,6 +1355,100 @@ fn blocked_message(conflicts: &[ReservationConflict]) -> String {
             )
         },
     }
+}
+
+fn result_has_effect(
+    result: &ReservationDriftResult,
+    matches_effect: impl Fn(&DriftEffect) -> bool,
+) -> bool {
+    match result {
+        ReservationDriftResult::Unchanged { .. } => false,
+        ReservationDriftResult::Changed { effects, .. } => {
+            effects.as_slice().iter().any(matches_effect)
+        },
+    }
+}
+
+fn drift_message(report: &DriftReport) -> String {
+    if !report.has_reportable_effect() {
+        return if report.results.is_empty() {
+            "No active reservation in this worktree required a drift check.".to_owned()
+        } else {
+            "No changed path fell outside the selected reservation coverage.".to_owned()
+        };
+    }
+    let mut message = String::new();
+    for result in &report.results {
+        let ReservationDriftResult::Changed {
+            reservation_id,
+            effects,
+        } = result
+        else {
+            continue;
+        };
+        for effect in effects.as_slice() {
+            if !message.is_empty() {
+                message.push(' ');
+            }
+            match effect {
+                DriftEffect::Widened { added_scopes } => {
+                    let rendered = added_scopes
+                        .as_slice()
+                        .iter()
+                        .map(|scope| format!("file:{}", scope.path))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let _ = write!(
+                        message,
+                        "Widened reservation {reservation_id} to cover {rendered}."
+                    );
+                },
+                DriftEffect::Incursion {
+                    foreign_reservation_ids,
+                    paths,
+                } => {
+                    let _ = write!(
+                        message,
+                        "Incursion: reservation {reservation_id} entered {} held by foreign reservation(s) {}. Stop and resolve the overlap before making more changes.",
+                        paths
+                            .as_slice()
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        foreign_reservation_ids
+                            .as_slice()
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                },
+                DriftEffect::Collision {
+                    foreign_reservation_ids,
+                    paths,
+                } => {
+                    let _ = write!(
+                        message,
+                        "Reservation {reservation_id} could not widen to {} because foreign reservation(s) {} acquired an edit-blocking overlap. Stop and resolve the collision.",
+                        paths
+                            .as_slice()
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        foreign_reservation_ids
+                            .as_slice()
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                },
+            }
+        }
+    }
+    message
 }
 
 fn integration_blockers(violations: &[IntegrationViolation]) -> Vec<ReservationId> {
@@ -1551,6 +1734,18 @@ mod tests {
                     )
                 )
                 .is_ok_and(|round_tripped| round_tripped == output_envelope)
+        );
+    }
+
+    #[test]
+    fn drift_verb_uses_its_frozen_serde_spelling() {
+        assert!(
+            serde_json::to_string(&CommandVerb::Drift)
+                .is_ok_and(|serialized| serialized == "\"drift\"")
+        );
+        assert_eq!(
+            serde_json::from_str::<CommandVerb>("\"drift\"").ok(),
+            Some(CommandVerb::Drift)
         );
     }
 

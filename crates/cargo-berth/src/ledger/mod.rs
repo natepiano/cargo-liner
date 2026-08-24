@@ -35,8 +35,11 @@ pub(crate) use journal::CanonicalWorktreeRoot;
 pub(crate) use journal::ClaimHeadCommit;
 pub(crate) use journal::ClaimHeadSnapshot;
 pub(crate) use journal::ClaimSource;
+pub(crate) use journal::CollisionPathSet;
 pub(crate) use journal::ForcedIntegrationReason;
+pub(crate) use journal::ForeignReservationIdSet;
 pub(crate) use journal::FullRefName;
+pub(crate) use journal::IncursionPathSet;
 use journal::Journal;
 pub(crate) use journal::JournalActor;
 use journal::JournalAppendError;
@@ -49,6 +52,7 @@ pub(crate) use journal::OrderingDirection;
 pub(crate) use journal::ProtectedPhaseStartHead;
 pub(crate) use journal::ReservationPurpose;
 pub(crate) use journal::ReservationScope;
+pub(crate) use journal::ReservationScopeAdditionSet;
 pub(crate) use journal::ReservationScopeSet;
 pub(crate) use journal::ReservationSnapshot;
 pub(crate) use journal::ScopeKind;
@@ -56,10 +60,6 @@ pub(crate) use journal::SkippedDeferral;
 pub(crate) use journal::SkippedIntegrationHoldSet;
 pub(crate) use journal::SkippedOrderingEdge;
 pub(crate) use journal::TrunkCommitAtClaim;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
 pub(crate) use journal::WidenCause;
 pub(crate) use journal::WorkPlanReference;
 pub(crate) use journal::WorktreeAdministrativeLocator;

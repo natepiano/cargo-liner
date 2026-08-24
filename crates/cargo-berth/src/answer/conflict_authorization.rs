@@ -52,6 +52,11 @@ pub(crate) enum ConflictAuthorization {
         /// The approved reason for accepting the conflict.
         reason:   OverlapAuthorizationReason,
     },
+    /// Existing answers still cover every current foreign overlap after a widen.
+    Revalidated {
+        /// The exact current holder bindings covered by those earlier answers.
+        overlaps: AuthorizedOverlapSet,
+    },
 }
 
 impl ConflictAuthorization {
@@ -85,7 +90,8 @@ impl ConflictAuthorization {
             Self::NoConflict => &[],
             Self::Sequence { overlaps, .. }
             | Self::Defer { overlaps, .. }
-            | Self::Override { overlaps, .. } => overlaps.as_slice(),
+            | Self::Override { overlaps, .. }
+            | Self::Revalidated { overlaps } => overlaps.as_slice(),
         }
     }
 
