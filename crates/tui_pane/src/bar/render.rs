@@ -47,7 +47,13 @@ pub fn render<Ctx: AppContext + 'static>(
     for region in BarRegion::ALL {
         match region {
             BarRegion::Nav => {
-                bar.nav = nav_region::render::<Ctx>(mode.as_ref(), keymap, &pane_slots, palette);
+                bar.nav = nav_region::render::<Ctx>(
+                    mode.as_ref(),
+                    keymap,
+                    &pane_slots,
+                    framework.pane_cycle_is_live(ctx),
+                    palette,
+                );
             },
             BarRegion::PaneAction => {
                 bar.pane_action =

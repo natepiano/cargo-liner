@@ -35,6 +35,7 @@ use tui_pane::status_line_global_spans;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum AppPaneId {
     Project,
+    Detail,
 }
 
 tui_pane::action_enum! {
@@ -92,6 +93,14 @@ impl Shortcuts<App> for ProjectPane {
     }
 }
 
+/// A second pane, so the pane cycle has somewhere to step. No
+/// shortcuts of its own -- it is here to be tabbed to.
+struct DetailPane;
+
+impl Pane<App> for DetailPane {
+    const APP_PANE_ID: AppPaneId = AppPaneId::Detail;
+}
+
 struct AppNav;
 
 impl Navigation<App> for AppNav {
@@ -126,6 +135,7 @@ fn fresh(initial: FocusedPane<AppPaneId>) -> (App, Keymap<App>) {
         .register_globals::<AppGlobals>()
         .expect("register_globals")
         .register::<ProjectPane>(ProjectPane)
+        .register_pane::<DetailPane>()
         .build_into(&mut app.framework)
         .expect("build_into");
     (app, keymap)
@@ -174,6 +184,40 @@ fn render_status_bar_navigable_pane_shows_every_region() {
     assert!(
         global.contains("quit"),
         "global must show framework's Quit (got {global:?})",
+    );
+}
+
+/// The row promises a step, so it is drawn only where there is one to
+/// take: a lone registered pane with no ring of its own has none.
+#[test]
+fn render_status_bar_lone_pane_drops_the_pane_cycle_row() {
+    let mut app = App {
+        framework: Framework::new(FocusedPane::App(AppPaneId::Project)),
+    };
+    let keymap = Keymap::<App>::builder()
+        .register_navigation::<AppNav>()
+        .expect("register_navigation")
+        .register_globals::<AppGlobals>()
+        .expect("register_globals")
+        .register::<ProjectPane>(ProjectPane)
+        .build_into(&mut app.framework)
+        .expect("build_into");
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Project),
+        &app,
+        &keymap,
+        app.framework(),
+        &BarPalette::default(),
+    );
+    let nav = flatten(&bar.nav);
+
+    assert!(
+        nav.contains('↑'),
+        "nav still shows the list keys (got {nav:?})"
+    );
+    assert!(
+        !nav.contains("tab"),
+        "one pane and no ring of its own leaves the step nowhere to go (got {nav:?})",
     );
 }
 

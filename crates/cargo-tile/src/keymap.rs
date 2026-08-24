@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use tui_pane::CycleDirection;
 use tui_pane::Framework;
 use tui_pane::Keymap;
 use tui_pane::KeymapError;
@@ -27,6 +28,15 @@ struct MainPane;
 
 impl Pane<App> for MainPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Main;
+
+    /// Tab walks the tile grid rather than the framework's pane cycle.
+    /// The app registers one pane and puts every command in a cell
+    /// inside it, so the cells are what a developer means by "the next
+    /// one" -- and the step never falls through, because there is no
+    /// second pane behind the grid to fall through to.
+    fn cycle_step() -> Option<fn(&mut App, CycleDirection) -> bool> {
+        Some(|app, direction| app.tiles.cycle_focus(direction))
+    }
 }
 
 /// Assemble the keymap and install its pane registry on `framework`.

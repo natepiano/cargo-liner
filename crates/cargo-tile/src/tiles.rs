@@ -33,6 +33,7 @@ use std::time::Instant;
 use ratatui::layout::Layout;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::CycleDirection;
 use tui_pane::PaneAxisSize;
 use tui_pane::PaneFrame;
 use tui_pane::ResolvedPane;
@@ -459,6 +460,30 @@ impl TileGrid {
             .saturating_add(row)
             .saturating_add(TABLE_CELL);
         self.focus = self.focus_at(cell);
+    }
+
+    /// Take the focus ring one cell along the grid's own order, the
+    /// way Tab asks for it, wrapping at either end.
+    ///
+    /// Where the arrows read the grid as rows and columns -- a column
+    /// to the left, the cell above -- this reads it as the list it is
+    /// numbered as: the summary, then every command's cell in turn,
+    /// then back to the summary. Reports whether it took the step, so
+    /// the framework knows the key was spent here rather than on the
+    /// pane cycle.
+    pub(crate) fn cycle_focus(&mut self, direction: CycleDirection) -> bool {
+        let last = self.count();
+        let Some(cell) = self.focused_cell() else {
+            return false;
+        };
+        let next = match direction {
+            CycleDirection::Next if cell >= last => TABLE_CELL,
+            CycleDirection::Next => cell.saturating_add(1),
+            CycleDirection::Prev if cell <= TABLE_CELL => last,
+            CycleDirection::Prev => cell.saturating_sub(1),
+        };
+        self.focus = self.focus_at(next);
+        true
     }
 
     /// The cell number focus rests on, or `None` while the focused slot
@@ -1634,6 +1659,28 @@ mod tests {
         grid.focus_step(Direction::Up, 4);
         grid.focus_step(Direction::Up, 4);
         assert_eq!(grid.focus, Focus::Summary, "and the summary is the ceiling");
+    }
+
+    /// Tab reads the grid as the list it is numbered as, and wraps
+    /// rather than stopping where the arrows stop.
+    #[test]
+    fn tab_walks_every_cell_and_comes_back_round() {
+        let mut grid = seeded_grid();
+        grid.sync(&[7, 8], 4);
+        grid.settle();
+
+        assert!(grid.cycle_focus(CycleDirection::Next));
+        assert_eq!(grid.focused_cell(), Some(2));
+        assert!(grid.cycle_focus(CycleDirection::Next));
+        assert_eq!(grid.focused_cell(), Some(3));
+        assert!(grid.cycle_focus(CycleDirection::Next));
+        assert_eq!(
+            grid.focus,
+            Focus::Summary,
+            "the last cell wraps to the summary"
+        );
+        assert!(grid.cycle_focus(CycleDirection::Prev));
+        assert_eq!(grid.focused_cell(), Some(3), "and back the other way");
     }
 
     /// Focus is held by identity, so the cell it is on keeps it while

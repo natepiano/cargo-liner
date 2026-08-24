@@ -12,6 +12,9 @@
 //! Suppression: empty `Vec` whenever the focused pane's mode is
 //! anything other than [`Some(Mode::Navigable)`](crate::Mode::Navigable) — `Static`,
 //! `TextInput(_)`, and `None` (no registered pane) all return empty.
+//! The pane-cycle row is dropped on its own when `pane_cycle_is_live`
+//! says the step has nowhere to go — one registered pane, and no ring
+//! of its own — rather than advertising a key that does nothing.
 
 use ratatui::text::Span;
 
@@ -30,6 +33,7 @@ pub(super) fn render<Ctx: AppContext + 'static>(
     mode: Option<&Mode<Ctx>>,
     keymap: &Keymap<Ctx>,
     pane_slots: &[RenderedSlot],
+    pane_cycle_is_live: bool,
     palette: &BarPalette,
 ) -> Vec<Span<'static>> {
     if !matches!(mode, Some(Mode::Navigable)) {
@@ -55,8 +59,13 @@ pub(super) fn render<Ctx: AppContext + 'static>(
     }
 
     // Pane-cycle row from the framework globals. Advertises the
-    // forward key only ("Tab pane") even though Shift+Tab also works.
-    if let Some(next) = keymap.framework_globals().key_for(GlobalAction::NextPane) {
+    // forward key only ("Tab pane") even though Shift+Tab also works,
+    // and only when the step has somewhere to land.
+    if let Some(next) = keymap
+        .framework_globals()
+        .key_for(GlobalAction::NextPane)
+        .filter(|_| pane_cycle_is_live)
+    {
         let slot = RenderedSlot {
             region:         BarRegion::Nav,
             label:          "pane",

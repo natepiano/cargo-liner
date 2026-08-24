@@ -16,6 +16,22 @@
 //! in both being the shim's own, which is an ancestor of the cargo
 //! process the grid draws.
 //!
+//! A command that runs tests counts twice over. `cargo nextest run`
+//! compiles first, under cargo's own bar, and then works through the
+//! tests under a bar of its own -- `Running [ 00:00:03] ███▏ 22/24: 2
+//! running, 22 passed` -- which is the same `done/total` pair, with
+//! the drawn bar standing between the bracket and the counter rather
+//! than in front of it. Both are read, and which of them
+//! the reading came from is what the display names the phase by.
+//!
+//! A runner with nowhere to draw a bar still counts. Nextest draws one
+//! only on a terminal, so a run started by a script or an agent -- and
+//! that is most of the test runs on this machine -- has none, and the
+//! count goes inline into every line it prints instead: `PASS [
+//! 1.014s] (11/24) nxprobe t18`. That tally is the same reading in
+//! parentheses, and reading it is what keeps those runs from sitting
+//! at whatever the build last said for as long as the tests take.
+//!
 //! So a run reports progress when it was captured and reports none when
 //! it was not, and the cell is drawn either way.
 //!
@@ -36,14 +52,21 @@ use std::io::SeekFrom;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::constants::BAR_GLYPH_FIRST;
+use crate::constants::BAR_GLYPH_LAST;
 use crate::constants::CAPTURE_LIVE_RUNS_DIR;
 use crate::constants::CAPTURE_ROOT;
 use crate::constants::CAPTURE_ROOT_ENV;
 use crate::constants::LOCK_WAIT_MARKER;
+use crate::constants::PHASE_BUILDING;
+use crate::constants::PHASE_TESTING;
 use crate::constants::PID_SEPARATOR;
 use crate::constants::RUN_LOG_PREFIX;
 use crate::constants::RUN_LOG_SUFFIX;
 use crate::constants::RUN_LOG_TAIL_BYTES;
+use crate::constants::TALLY_CLOSE;
+use crate::constants::TALLY_OPEN;
+use crate::constants::TEST_PHASE_MARKER;
 use crate::constants::UNIT_COUNTER_LEAD;
 use crate::constants::UNIT_COUNTER_SEPARATOR;
 use crate::constants::UNIT_COUNTER_TRAILER;
@@ -72,6 +95,31 @@ impl Progress {
     }
 }
 
+/// Which counter a reading came from, which is the whole of what the
+/// numbers themselves say about what the run is doing.
+///
+/// A command that only ever compiles stays in one of these for its
+/// whole life; `cargo nextest run` passes through both, and the two
+/// counters are unrelated -- the second opens at nought over the tests
+/// collected the moment the first reaches its total.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Phase {
+    /// Cargo compiling the units of its build plan.
+    Building,
+    /// A test runner working through the tests it collected.
+    Testing,
+}
+
+impl Phase {
+    /// The word a working-directory header names this phase with.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Building => PHASE_BUILDING,
+            Self::Testing => PHASE_TESTING,
+        }
+    }
+}
+
 /// What a captured run was doing when its log was last read.
 ///
 /// Cargo takes a lock on the build directory, so a second command in
@@ -82,18 +130,24 @@ impl Progress {
 /// out of the log is what separates them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RunState {
-    /// Compiling, as far along as cargo's own counter says.
-    Compiling(Progress),
+    /// Getting somewhere, as far along as the counter of the phase it
+    /// is in says.
+    Working {
+        /// Which counter the reading came from.
+        phase:    Phase,
+        /// What that counter last said.
+        progress: Progress,
+    },
     /// Waiting for another cargo to give up the build directory.
     Blocked,
 }
 
 impl RunState {
-    /// The reading behind this state, for the two places that can only
-    /// draw one: the heading rule and the bar.
-    pub(crate) const fn reading(self) -> Option<Progress> {
+    /// The reading and the phase it belongs to, for the one place that
+    /// draws either: the rule along a working-directory header.
+    pub(crate) const fn working(self) -> Option<(Phase, Progress)> {
         match self {
-            Self::Compiling(progress) => Some(progress),
+            Self::Working { phase, progress } => Some((phase, progress)),
             Self::Blocked => None,
         }
     }
@@ -124,7 +178,7 @@ impl Capture {
 
     /// [`Capture::take`] against a given directory, which is what makes
     /// the directory layout testable without moving the real one.
-    fn take_from(root: &Path) -> Self {
+    pub(crate) fn take_from(root: &Path) -> Self {
         let live = live_runs(root);
         if live.is_empty() {
             return Self::default();
@@ -207,9 +261,9 @@ fn parse_state(tail: &str) -> Option<RunState> {
     let counter = last_counter(tail);
     let waiting = tail.rfind(LOCK_WAIT_MARKER);
     match (counter, waiting) {
-        (Some((at, progress)), Some(wait)) if at > wait => Some(RunState::Compiling(progress)),
+        (Some((at, state)), Some(wait)) if at > wait => Some(state),
         (_, Some(_)) => Some(RunState::Blocked),
-        (Some((_, progress)), None) => Some(RunState::Compiling(progress)),
+        (Some((_, state)), None) => Some(state),
         (None, None) => None,
     }
 }
@@ -218,27 +272,98 @@ fn parse_state(tail: &str) -> Option<RunState> {
 /// recent redraw of the bar.
 ///
 /// Last rather than first because a run draws more than one bar: cargo
-/// counts downloads before it counts compilations, and each nested cargo
-/// a command drives counts its own. The one at the end is the one
-/// happening now.
-fn last_counter(tail: &str) -> Option<(usize, Progress)> {
+/// counts downloads before it counts compilations, each nested cargo a
+/// command drives counts its own, and a test runner counts the tests
+/// once the compiling is over. The one at the end is the one happening
+/// now.
+fn last_counter(tail: &str) -> Option<(usize, RunState)> {
     tail.rmatch_indices(UNIT_COUNTER_LEAD)
         .find_map(|(index, lead)| {
             let after = index.saturating_add(lead.len());
-            Some((index, counter_at(tail.get(after..)?)?))
+            let (counter, progress) = counter_at(tail.get(after..)?)?;
+            Some((
+                index,
+                RunState::Working {
+                    phase: counter.phase(tail, index),
+                    progress,
+                },
+            ))
         })
 }
 
-/// Read `<done>/<total>:` off the front of `text`.
+/// Which of the two counters a reading came off, which is half of
+/// what says whose counter it is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Counter {
+    /// Drawn in a bar and closed by a colon, `149/403:`. Cargo draws
+    /// one and so does a test runner, so the line it sits on is what
+    /// separates them.
+    Bar,
+    /// A test runner's per-test tally, `(11/24)`. Nothing else writes
+    /// one, so the parentheses alone settle it.
+    Tally,
+}
+
+impl Counter {
+    /// Which phase a counter of this kind at `index` belongs to.
+    ///
+    /// A tally answers for itself. A bar is read off the status word
+    /// opening the line it was drawn on -- cargo says `Building`, a
+    /// test runner says `Running` -- and only that line is searched: a
+    /// log holds the word many times over, cargo saying `Running` of
+    /// every test binary a plain `cargo test` starts, and none of those
+    /// lines carries a counter.
+    fn phase(self, tail: &str, index: usize) -> Phase {
+        let Self::Bar = self else {
+            return Phase::Testing;
+        };
+        let opens = tail
+            .get(..index)
+            .and_then(|ahead| ahead.rfind(['\n', '\r']))
+            .map_or(0, |at| at.saturating_add(1));
+        if tail
+            .get(opens..index)
+            .is_some_and(|line| line.contains(TEST_PHASE_MARKER))
+        {
+            Phase::Testing
+        } else {
+            Phase::Building
+        }
+    }
+}
+
+/// Read a counter off the front of `text`, past a drawn bar where one
+/// stands in the way.
 ///
-/// The trailing colon is what separates cargo's counter from anything
-/// else that pairs two numbers with a slash -- a test runner's tally,
-/// most of all, which writes the same two numbers with a space after
-/// them.
-fn counter_at(text: &str) -> Option<Progress> {
-    let (done, text) = leading_number(text)?;
+/// Cargo puts its counter straight after the bracket that closes its
+/// bar. A test runner brackets its elapsed time instead and draws the
+/// bar after it, so the counter is reached across the blocks the bar is
+/// filled with and the blanks it is padded to width with -- and where
+/// it has no bar at all, it brackets each test's own duration and puts
+/// the count in parentheses beyond that.
+///
+/// How the two numbers are closed is what tells a counter from anything
+/// else that pairs numbers with a slash: a colon for a bar, a
+/// parenthesis for a tally, and a pair closed by neither is not a
+/// counter at all.
+fn counter_at(text: &str) -> Option<(Counter, Progress)> {
+    let text = text.trim_start_matches(bar_fill);
+    let (counter, text) = text
+        .strip_prefix(TALLY_OPEN)
+        .map_or((Counter::Bar, text), |inside| (Counter::Tally, inside));
+    let (done, text) = leading_number(text.trim_start_matches(bar_fill))?;
     let (total, text) = leading_number(text.strip_prefix(UNIT_COUNTER_SEPARATOR)?)?;
-    (total > 0 && text.starts_with(UNIT_COUNTER_TRAILER)).then_some(Progress { done, total })
+    let closed = match counter {
+        Counter::Bar => text.starts_with(UNIT_COUNTER_TRAILER),
+        Counter::Tally => text.starts_with(TALLY_CLOSE),
+    };
+    (total > 0 && closed).then_some((counter, Progress { done, total }))
+}
+
+/// Whether `character` is part of a drawn bar rather than of the
+/// counter beyond it.
+fn bar_fill(character: char) -> bool {
+    character == ' ' || (BAR_GLYPH_FIRST..=BAR_GLYPH_LAST).contains(&character)
 }
 
 /// The digits `text` opens with, and what follows them.
@@ -266,13 +391,43 @@ mod tests {
 
     /// The state a run reports while it is compiling `done` of `total`.
     fn compiling(done: usize, total: usize) -> RunState {
-        RunState::Compiling(Progress { done, total })
+        RunState::Working {
+            phase:    Phase::Building,
+            progress: Progress { done, total },
+        }
+    }
+
+    /// The state a run reports while it works through `done` of `total`
+    /// tests.
+    fn testing(done: usize, total: usize) -> RunState {
+        RunState::Working {
+            phase:    Phase::Testing,
+            progress: Progress { done, total },
+        }
     }
 
     /// A redraw of cargo's bar as the shim captures it, colour codes and
     /// carriage return included.
     const CAPTURED_REDRAW: &str = "\u{1b}[1m\u{1b}[92m    Building\u{1b}[0m \
          [========>                ] 149/403: globset, regex-automata\r";
+
+    /// A redraw of nextest's bar as the shim captures it: the elapsed
+    /// time bracketed, the drawn bar after it, and the counter past
+    /// that.
+    const CAPTURED_TEST_REDRAW: &str = "\u{1b}[32;1m     Running\u{1b}[0m \
+         [ 00:00:01] \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{258b}      \
+         12/24: \u{1b}[1m2\u{1b}[0m running, \u{1b}[1m12\u{1b}[0m passed\r\n";
+
+    /// A tally as nextest writes it where it has no bar to put the
+    /// count in, which is every run whose output is not a terminal.
+    /// Left-padded to the width of the total, so a run of a thousand
+    /// tests opens with three blanks inside the parenthesis.
+    const CAPTURED_TALLY: &str = "        PASS [   1.014s] (11/24) nxprobe t18\n";
+
+    /// The line nextest prints under its bar for each test in flight,
+    /// which is what stands between the bar and the end of the log.
+    const CAPTURED_TEST_ROW: &str =
+        "             [ 00:00:00] \u{1b}[35;1mnxprobe\u{1b}[0m \u{1b}[34;1mt18\u{1b}[0m\r\n";
 
     /// A capture directory holding one log per run named, and a live
     /// marker for each pid in `live`.
@@ -319,15 +474,15 @@ mod tests {
         assert_eq!(
             capture
                 .read(33395)
-                .and_then(RunState::reading)
-                .map(Progress::percent),
+                .and_then(RunState::working)
+                .map(|(_, progress)| progress.percent()),
             Some(36)
         );
         assert_eq!(
             capture
                 .read(33396)
-                .and_then(RunState::reading)
-                .map(Progress::percent),
+                .and_then(RunState::working)
+                .map(|(_, progress)| progress.percent()),
             Some(25)
         );
         assert_eq!(capture.read(70001), None);
@@ -366,6 +521,59 @@ mod tests {
     #[test]
     fn a_test_runners_tally_is_not_a_counter() {
         assert_eq!(parse_state("PASS [   0.012s] 12/345 crate::suite"), None);
+    }
+
+    #[test]
+    fn a_test_runners_own_bar_reports_the_tests_it_has_got_through() {
+        assert_eq!(parse_state(CAPTURED_TEST_REDRAW), Some(testing(12, 24)));
+    }
+
+    /// The bar is redrawn above the tests in flight, so the counter is
+    /// never the last thing in the log while the run is going.
+    #[test]
+    fn the_rows_drawn_under_a_test_bar_do_not_hide_its_counter() {
+        let tail = format!("{CAPTURED_TEST_REDRAW}{CAPTURED_TEST_ROW}{CAPTURED_TEST_ROW}");
+
+        assert_eq!(parse_state(&tail), Some(testing(12, 24)));
+    }
+
+    /// What `cargo nextest run` does from end to end: cargo's units
+    /// first, then the tests. Each phase is reported while it is the
+    /// one running.
+    #[test]
+    fn a_test_run_reports_building_and_then_testing() {
+        assert_eq!(parse_state(CAPTURED_REDRAW), Some(compiling(149, 403)));
+
+        let tail = format!("{CAPTURED_REDRAW}\n{CAPTURED_TEST_REDRAW}");
+
+        assert_eq!(parse_state(&tail), Some(testing(12, 24)));
+    }
+
+    /// A run with no terminal under it -- a script, an agent, a CI job
+    /// -- gets no bar from nextest at all, and the count it would have
+    /// drawn there goes into every line it prints instead.
+    #[test]
+    fn a_tally_reports_the_tests_where_there_was_no_bar_to_draw() {
+        assert_eq!(parse_state(CAPTURED_TALLY), Some(testing(11, 24)));
+    }
+
+    /// The first numbers of a run are padded out to the width of the
+    /// total, blanks inside the parenthesis rather than in front of it.
+    #[test]
+    fn a_padded_tally_is_read_the_same_as_a_full_one() {
+        assert_eq!(
+            parse_state("        PASS [   1.022s] (  1/240) nxprobe t1\n"),
+            Some(testing(1, 240))
+        );
+    }
+
+    /// The build is what a run without a terminal reports until the
+    /// tests start, cargo drawing the bar it is asked for either way.
+    #[test]
+    fn a_tally_after_a_build_bar_is_what_the_run_is_doing() {
+        let tail = format!("{CAPTURED_REDRAW}\n{CAPTURED_TALLY}");
+
+        assert_eq!(parse_state(&tail), Some(testing(11, 24)));
     }
 
     #[test]
@@ -424,7 +632,7 @@ mod tests {
 
     #[test]
     fn a_blocked_state_has_no_reading_to_draw() {
-        assert_eq!(RunState::Blocked.reading(), None);
+        assert_eq!(RunState::Blocked.working(), None);
     }
 
     #[test]

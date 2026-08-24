@@ -289,12 +289,14 @@ pub(crate) const DURATION_COLUMN: usize = 2;
 /// stands beside `dur` because the two answer the same question from
 /// either end -- how long this has been going, and how hard.
 pub(crate) const CPU_COLUMN: usize = 3;
-/// Index of the `state` column in [`TABLE_HEADERS`], which says what a
-/// command is doing right now: how far along it is, or that it is
-/// waiting on another cargo's lock. It is the one column that comes and
-/// goes, and joins only where a heading cannot carry what a row has to
-/// say -- a column of dashes costs a narrow tile the width its command
-/// line needs and reports nothing.
+/// Index of the `state` column in [`TABLE_HEADERS`], which says that a
+/// command is waiting on another cargo's lock. How far along a command
+/// is goes on the working-directory heading over it instead. It is the
+/// one column that comes and goes, and joins only where a row is
+/// waiting -- an empty column costs a narrow tile the width its command
+/// line needs and reports nothing. Every row but the waiting one leaves
+/// the cell blank, so the one word in the column is the only thing in
+/// it.
 pub(crate) const STATE_COLUMN: usize = 4;
 /// Index of the `command` column in [`TABLE_HEADERS`]. It absorbs
 /// whatever width the fitted columns leave, wherever it stands among
@@ -369,30 +371,12 @@ pub(crate) const CAPTURE_ROOT_ENV: &str = "CARGO_TILE_ROOT";
 /// What separates the pid at the end of a run log's name from the
 /// timestamp in front of it.
 pub(crate) const PID_SEPARATOR: char = '-';
-/// Shown in `state` for a run with no capture behind it to read.
-pub(crate) const PROGRESS_ABSENT: &str = "\u{2014}";
 /// Shown in `state` for a run waiting on another cargo to give up the
 /// build directory. A word rather than a bar: there is no reading to
 /// draw, which is the whole of what it says.
 pub(crate) const STATE_BLOCKED: &str = "blocked";
-/// Cells the `state` column's bar occupies, the reading among them
-/// rather than beside them: the number is set to the right of the field
-/// and the bar fills it from the left, so a finished build reads on a
-/// solid ground rather than next to one.
-///
-/// Wide enough for `100%` several times over, because the eighths in
-/// [`PROGRESS_CELL_PARTIALS`] only buy resolution where there is a cell
-/// to spend them in.
-pub(crate) const PROGRESS_CELL_BAR_WIDTH: usize = 11;
-/// Trough glyph of the `state` column's bar.
-pub(crate) const PROGRESS_CELL_EMPTY: char = '\u{2591}';
-/// Eighths of a filled cell, narrowest first, for the one cell a bar is
-/// part way through.
-pub(crate) const PROGRESS_CELL_PARTIALS: [char; 7] = [
-    '\u{258f}', '\u{258e}', '\u{258d}', '\u{258c}', '\u{258b}', '\u{258a}', '\u{2589}',
-];
-/// Cells the reading itself takes at the right of the field, `100%`
-/// being the widest it goes.
+/// Cells the reading itself takes at the end of a header's rule,
+/// `100%` being the widest it goes.
 pub(crate) const PROGRESS_READING_WIDTH: usize = 4;
 /// Unfilled glyph of the rule running along a working-directory header.
 pub(crate) const PROGRESS_HEADING_EMPTY: char = '\u{254c}';
@@ -404,11 +388,9 @@ pub(crate) const PROGRESS_HEADING_MARGINS: u16 = 2;
 /// Cells a header's rule needs before it is worth drawing at all. Below
 /// this the header shows the directory alone, the way it always has.
 pub(crate) const PROGRESS_HEADING_MIN_WIDTH: u16 = 4;
-/// Readings one working-directory header can carry. A header stands
-/// over every command started from that directory, so a second command
-/// reporting progress there has nowhere to put its reading and the
-/// summary falls back to a column of them.
-pub(crate) const PROGRESS_HEADING_READING_CAPACITY: usize = 1;
+/// The blank cell between the working directory and the word naming
+/// the phase, where the header has the room to carry one.
+pub(crate) const PROGRESS_HEADING_PHASE_MARGIN: u16 = 1;
 /// Bytes of a run log's end to read for the counter. Sized to hold the
 /// bar's last redraw across a burst of diagnostics printed over it.
 pub(crate) const RUN_LOG_TAIL_BYTES: u64 = 64 * 1024;
@@ -424,6 +406,32 @@ pub(crate) const UNIT_COUNTER_SEPARATOR: &str = "/";
 /// What closes cargo's counter, ahead of the crate names it is
 /// currently building.
 pub(crate) const UNIT_COUNTER_TRAILER: &str = ":";
+/// First of the block-element glyphs a drawn bar is filled with, and
+/// [`BAR_GLYPH_LAST`] the last. A test runner draws its bar between the
+/// bracket closing its elapsed time and the counter beyond it, where
+/// cargo puts nothing at all, so the two are told apart by what stands
+/// between them.
+pub(crate) const BAR_GLYPH_FIRST: char = '\u{2580}';
+/// Last of the block-element glyphs described by [`BAR_GLYPH_FIRST`].
+pub(crate) const BAR_GLYPH_LAST: char = '\u{259f}';
+/// What opens a test runner's per-test tally and [`TALLY_CLOSE`] what
+/// closes it: `PASS [   1.014s] (11/24) nxprobe t18`. That is where the
+/// count goes when the runner has no bar to put it in, which is every
+/// run whose output is not a terminal.
+pub(crate) const TALLY_OPEN: &str = "(";
+/// What closes the tally opened by [`TALLY_OPEN`].
+pub(crate) const TALLY_CLOSE: &str = ")";
+/// The status word a test runner draws its counter under. Cargo's own
+/// bars say `Building` or `Downloading`; only a run of the tests says
+/// this with a counter beside it. Matched on the word alone, the colour
+/// codes around it leaving it whole.
+pub(crate) const TEST_PHASE_MARKER: &str = "Running";
+/// What a working-directory header calls the phase a run is in while
+/// cargo compiles the units of its build plan.
+pub(crate) const PHASE_BUILDING: &str = "building";
+/// What a working-directory header calls the phase a run is in while a
+/// test runner works through the tests it collected.
+pub(crate) const PHASE_TESTING: &str = "testing";
 /// What cargo says while it waits for another cargo to give up the
 /// build directory. Matched on the phrase alone: the `Blocking` status
 /// word ahead of it arrives wrapped in colour codes, and what it names

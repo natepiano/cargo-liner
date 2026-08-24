@@ -42,6 +42,11 @@ pub(super) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx)
 /// `true`, [`FocusedPane::Framework`] with [`FrameworkFocusId::Toasts`]
 /// appended at the end.
 ///
+/// The focused surface gets first refusal on the step: toasts scroll
+/// their own stack before focus advances, and an app pane that declared
+/// [`Pane::cycle_step`](crate::Pane::cycle_step) walks its own ring the
+/// same way. Either one taking the step ends the call.
+///
 /// On entry into Toasts focus, the manager's viewport is reset to the
 /// first or last toast based on direction.
 pub(super) fn focus_step<Ctx: AppContext>(ctx: &mut Ctx, direction: CycleDirection) {
@@ -50,6 +55,14 @@ pub(super) fn focus_step<Ctx: AppContext>(ctx: &mut Ctx, direction: CycleDirecti
         && ctx.framework_mut().toasts.try_consume_cycle_step(direction)
     {
         return;
+    }
+    if let FocusedPane::App(id) = current {
+        let pane_ring = ctx.framework().cycle_step_for(id);
+        if let Some(step) = pane_ring
+            && step(ctx, direction)
+        {
+            return;
+        }
     }
 
     let cycle = focus_cycle(ctx);

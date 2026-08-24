@@ -45,12 +45,17 @@ pub use title::pane_title;
 pub use title::prefixed_pane_title;
 
 use crate::AppContext;
+use crate::CycleDirection;
 use crate::TabStop;
 use crate::keymap::KeyBind;
 
 /// `fn` pointer stored per registered pane to query the pane's
 /// current input mode.
 pub(crate) type ModeQuery<Ctx> = fn(&Ctx) -> Mode<Ctx>;
+
+/// `fn` pointer stored per registered pane that owns a focus ring of
+/// its own, offered each Tab step before focus leaves the pane.
+pub(crate) type CycleStep<Ctx> = fn(&mut Ctx, CycleDirection) -> bool;
 
 /// Per-pane identity + input mode. Implemented by every app pane type.
 ///
@@ -90,6 +95,22 @@ pub trait Pane<Ctx: AppContext>: 'static {
     /// pane from `NextPane` / `PrevPane` traversal.
     #[must_use]
     fn tab_stop() -> TabStop<Ctx> { TabStop::registration_order() }
+
+    /// The pane's own answer to a Tab step, taken before the framework
+    /// moves focus off the pane -- the app-pane counterpart of
+    /// [`Toasts::try_consume_cycle_step`](crate::Toasts::try_consume_cycle_step).
+    ///
+    /// A pane that draws a grid or a ring of its own returns
+    /// `Some(step)`; `step` returns `true` when it took the Tab for
+    /// itself and `false` to let the step fall through to the next
+    /// pane in the framework's cycle. Declaring the hook is also what
+    /// the bar's `Tab pane` row is drawn from: an app with one
+    /// registered pane and no ring of its own advertises nothing,
+    /// because Tab would have nowhere to go.
+    ///
+    /// Default returns `None` -- the pane holds Tab for no one.
+    #[must_use]
+    fn cycle_step() -> Option<fn(&mut Ctx, CycleDirection) -> bool> { None }
 }
 
 /// How a pane consumes keyboard input.

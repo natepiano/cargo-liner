@@ -40,6 +40,7 @@ use crate::OverlayAction;
 use crate::Pane;
 use crate::SettingsPane;
 use crate::TabStop;
+use crate::pane::CycleStep;
 use crate::pane::ModeQuery;
 
 mod finalize;
@@ -72,6 +73,7 @@ struct PaneRegistration<Ctx: AppContext> {
     app_pane_id: Ctx::AppPaneId,
     mode_query:  ModeQuery<Ctx>,
     tab_stop:    TabStop<Ctx>,
+    cycle_step:  Option<CycleStep<Ctx>>,
 }
 
 struct CopyRegistration<Ctx: AppContext> {
@@ -508,6 +510,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
                 registration.app_pane_id,
                 registration.mode_query,
                 registration.tab_stop,
+                registration.cycle_step,
             );
         }
         for registration in &self.copy_registrations {
@@ -550,6 +553,7 @@ impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
             app_pane_id: P::APP_PANE_ID,
             mode_query:  <P as Pane<Ctx>>::mode(),
             tab_stop:    <P as Pane<Ctx>>::tab_stop(),
+            cycle_step:  <P as Pane<Ctx>>::cycle_step(),
         });
         self.registered_scopes
             .insert(<P as Shortcuts<Ctx>>::SCOPE_NAME);
@@ -563,6 +567,7 @@ impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
             app_pane_id: P::APP_PANE_ID,
             mode_query:  <P as Pane<Ctx>>::mode(),
             tab_stop:    <P as Pane<Ctx>>::tab_stop(),
+            cycle_step:  <P as Pane<Ctx>>::cycle_step(),
         });
     }
 }
@@ -590,6 +595,7 @@ mod tests {
     use crate::CopyPayload;
     use crate::CopySelection;
     use crate::CopySelectionResult;
+    use crate::CycleDirection;
     use crate::FocusedPane;
     use crate::Framework;
     use crate::FrameworkFocusId;
@@ -735,6 +741,29 @@ mod tests {
 
     impl Pane<TestApp> for BarPane {
         const APP_PANE_ID: TestPaneId = TestPaneId::Bar;
+    }
+
+    /// A pane with a focus ring of its own that takes every Tab.
+    struct RingFooPane;
+
+    impl Pane<TestApp> for RingFooPane {
+        const APP_PANE_ID: TestPaneId = TestPaneId::Foo;
+
+        fn cycle_step() -> Option<fn(&mut TestApp, CycleDirection) -> bool> {
+            Some(|_app, _direction| true)
+        }
+    }
+
+    /// A pane with a ring that has run out of cells, so the step
+    /// belongs to the pane cycle again.
+    struct SpentRingFooPane;
+
+    impl Pane<TestApp> for SpentRingFooPane {
+        const APP_PANE_ID: TestPaneId = TestPaneId::Foo;
+
+        fn cycle_step() -> Option<fn(&mut TestApp, CycleDirection) -> bool> {
+            Some(|_app, _direction| false)
+        }
     }
 
     impl Shortcuts<TestApp> for BarPane {
@@ -1473,6 +1502,87 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert!(matches!(result, Err(KeymapError::UnknownScope { .. })));
+    }
+
+    #[test]
+    fn a_panes_own_ring_takes_the_tab_before_focus_leaves_it() {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
+        let keymap = fresh_builder_singletons()
+            .register_pane::<RingFooPane>()
+            .register::<BarPane>(BarPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Foo),
+            "the pane consumed the step, so focus stayed put",
+        );
+    }
+
+    #[test]
+    fn a_spent_ring_lets_the_tab_fall_through_to_the_next_pane() {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
+        let keymap = fresh_builder_singletons()
+            .register_pane::<SpentRingFooPane>()
+            .register::<BarPane>(BarPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Bar),
+        );
+    }
+
+    /// The bar's `Tab pane` row promises a step; a lone pane with no
+    /// ring of its own has none to take.
+    #[test]
+    fn a_lone_ringless_pane_reports_no_live_pane_cycle() {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
+        let _keymap = fresh_builder_singletons()
+            .register::<FooPane>(FooPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        assert!(!app.framework().pane_cycle_is_live(&app));
+    }
+
+    #[test]
+    fn a_lone_pane_with_a_ring_reports_a_live_pane_cycle() {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
+        let _keymap = fresh_builder_singletons()
+            .register_pane::<RingFooPane>()
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        assert!(app.framework().pane_cycle_is_live(&app));
     }
 
     #[test]

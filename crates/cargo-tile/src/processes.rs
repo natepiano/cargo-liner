@@ -664,6 +664,31 @@ impl Census {
         None
     }
 
+    /// The same read for an invocation the group's lead is driving,
+    /// stopped before it reaches the lead.
+    ///
+    /// A nested cargo is captured under a shim of its own, which sits
+    /// between it and the lead, so the bound costs it nothing. What the
+    /// bound rules out is the row underneath borrowing the lead's
+    /// reading when it has no capture of its own -- an invocation that
+    /// went round the shim would otherwise report whatever the command
+    /// above it is doing, which is not its own state and is already on
+    /// the row above.
+    fn captured_run_under(&self, capture: &Capture, pid: Pid, lead: Pid) -> Option<RunState> {
+        let mut walking = pid;
+        for _ in 0..PARENT_WALK_LIMIT {
+            if let Some(state) = capture.read(walking.as_u32()) {
+                return Some(state);
+            }
+            let parent = *self.parents.get(&walking)?;
+            if parent == lead {
+                return None;
+            }
+            walking = parent;
+        }
+        None
+    }
+
     /// Pid breaks the tie in the same direction: macOS hands them out in
     /// order, so within one second the higher pid is the later start.
     fn groups(
@@ -728,17 +753,20 @@ impl Census {
             .filter_map(|pid| {
                 let process = system.process(pid)?;
                 let under = Self::descendants(children, pid).len();
-                Some((
-                    process.start_time(),
-                    row(
-                        process,
-                        pid,
-                        attributed.compilers.get(&pid).cloned(),
-                        under,
-                        home,
-                        aggregate_cpu(&attributed.cpu, std::iter::once(pid)),
-                    )?,
-                ))
+                let mut managed_row = row(
+                    process,
+                    pid,
+                    attributed.compilers.get(&pid).cloned(),
+                    under,
+                    home,
+                    aggregate_cpu(&attributed.cpu, std::iter::once(pid)),
+                )?;
+                // An invocation the lead is driving is captured in its
+                // own right, and a wait for the build-directory lock is
+                // the row's own news: nothing above it says which
+                // invocation is the one waiting.
+                managed_row.state = self.captured_run_under(capture, pid, root);
+                Some((process.start_time(), managed_row))
             })
             .collect();
         dated.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.pid.cmp(&left.1.pid)));
@@ -977,9 +1005,89 @@ fn base_name(argument: &OsString) -> String {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+    use tempfile::tempdir;
+
     use super::*;
+    use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
+    use crate::constants::PID_SEPARATOR;
+    use crate::constants::RUN_LOG_PREFIX;
+    use crate::constants::RUN_LOG_SUFFIX;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
+
+    /// A capture directory holding one live run's log per entry.
+    fn capture_root(runs: &[(u32, &str)]) -> TempDir {
+        let root = tempdir().expect("temp dir must be created");
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        fs::create_dir_all(&markers).expect("marker dir must be created");
+        for (pid, output) in runs {
+            let name =
+                format!("{RUN_LOG_PREFIX}20260824-084300{PID_SEPARATOR}{pid}{RUN_LOG_SUFFIX}");
+            fs::write(root.path().join(name), output).expect("run log must be written");
+            fs::write(markers.join(pid.to_string()), "").expect("live marker must be written");
+        }
+        root
+    }
+
+    /// A census that knows nothing but who each process's parent is,
+    /// which is all the capture walk reads.
+    fn census_of(parents: &[(u32, u32)]) -> Census {
+        Census {
+            parents:   parents
+                .iter()
+                .map(|&(child, parent)| (Pid::from_u32(child), Pid::from_u32(parent)))
+                .collect(),
+            cargo:     Vec::new(),
+            compilers: Vec::new(),
+            cpu:       HashMap::new(),
+        }
+    }
+
+    /// A nested cargo waits on the build-directory lock in its own
+    /// right, and nothing above it can say which invocation is the one
+    /// waiting -- so the row has to carry it.
+    #[test]
+    fn an_invocation_under_the_lead_reports_its_own_wait() {
+        // `cargo doc` (76847) under a shim (76846) the lead (64432)
+        // started, which is how a manager's nested cargo is captured.
+        let root = capture_root(&[(
+            76846,
+            "    Blocking waiting for file lock on build directory",
+        )]);
+        let census = census_of(&[(76847, 76846), (76846, 64432)]);
+        let capture = Capture::take_from(root.path());
+
+        assert_eq!(
+            census.captured_run_under(&capture, Pid::from_u32(76847), Pid::from_u32(64432)),
+            Some(RunState::Blocked),
+        );
+    }
+
+    /// An invocation that went round the shim has no capture of its
+    /// own. The lead's is not it: that state is already on the row
+    /// above, and it is not this row's news.
+    #[test]
+    fn an_uncaptured_invocation_does_not_borrow_the_leads_state() {
+        let root = capture_root(&[(
+            64431,
+            "    Blocking waiting for file lock on build directory",
+        )]);
+        let census = census_of(&[(76847, 64432), (64432, 64431)]);
+        let capture = Capture::take_from(root.path());
+
+        assert_eq!(
+            census.captured_run_under(&capture, Pid::from_u32(76847), Pid::from_u32(64432)),
+            None,
+        );
+        assert_eq!(
+            census.captured_run(&capture, Pid::from_u32(64432)),
+            Some(RunState::Blocked),
+            "the lead still reads its own shim",
+        );
+    }
 
     /// The list as it reaches [`CommandText::is_hidden_when_idle`] once
     /// the config has turned it into owned strings.

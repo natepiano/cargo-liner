@@ -78,7 +78,7 @@ pub use diagnostics::init as init_perf_log;
 pub use diagnostics::ms as perf_log_ms;
 pub use diagnostics::severity as cpu_severity;
 pub use format::format_progressive;
-pub(crate) use framework::CycleDirection;
+pub use framework::CycleDirection;
 pub use framework::Framework;
 pub use framework::FrameworkHit;
 pub use framework::HitTestRegistry;

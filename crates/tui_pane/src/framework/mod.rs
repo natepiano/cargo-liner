@@ -49,6 +49,7 @@ use crate::SettingsPane;
 use crate::SettingsStore;
 use crate::ToastSettings;
 use crate::Toasts;
+use crate::pane::CycleStep;
 use crate::pane::ModeQuery;
 
 type CopyResolver<Ctx> = fn(&Ctx) -> CopySelectionResult;
@@ -81,6 +82,7 @@ pub struct Framework<Ctx: AppContext> {
     focused:                   FocusedPane<Ctx::AppPaneId>,
     lifecycle_request:         LifecycleRequest,
     mode_queries:              HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
+    cycle_steps:               HashMap<Ctx::AppPaneId, CycleStep<Ctx>>,
     copy_resolvers:            HashMap<Ctx::AppPaneId, CopyResolver<Ctx>>,
     pane_order:                Vec<Ctx::AppPaneId>,
     tab_stops:                 Vec<RegisteredTabStop<Ctx>>,
@@ -113,6 +115,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
             focused:               initial_focus,
             lifecycle_request:     LifecycleRequest::None,
             mode_queries:          HashMap::new(),
+            cycle_steps:           HashMap::new(),
             copy_resolvers:        HashMap::new(),
             pane_order:            Vec::new(),
             tab_stops:             Vec::new(),
@@ -218,6 +221,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
         app_pane_id: Ctx::AppPaneId,
         mode_query: ModeQuery<Ctx>,
         tab_stop: TabStop<Ctx>,
+        cycle_step: Option<CycleStep<Ctx>>,
     ) {
         if self.mode_queries.insert(app_pane_id, mode_query).is_none() {
             let registration_index = self.pane_order.len();
@@ -227,6 +231,29 @@ impl<Ctx: AppContext> Framework<Ctx> {
                 registration_index,
                 tab_stop,
             ));
+            if let Some(step) = cycle_step {
+                self.cycle_steps.insert(app_pane_id, step);
+            }
+        }
+    }
+
+    /// The pane-local Tab handler registered for `id`, if that pane
+    /// declared one through [`Pane::cycle_step`](crate::Pane::cycle_step).
+    fn cycle_step_for(&self, id: Ctx::AppPaneId) -> Option<CycleStep<Ctx>> {
+        self.cycle_steps.get(&id).copied()
+    }
+
+    /// Whether a Tab step has anywhere to go, which is what the bar's
+    /// `Tab pane` row promises. True when the live cycle holds more
+    /// than one stop, or when the focused pane owns a ring of its own.
+    #[must_use]
+    pub fn pane_cycle_is_live(&self, ctx: &Ctx) -> bool {
+        if self.live_focus_cycle(ctx).len() > 1 {
+            return true;
+        }
+        match self.focused {
+            FocusedPane::App(id) => self.cycle_steps.contains_key(&id),
+            FocusedPane::Framework(FrameworkFocusId::Toasts) => false,
         }
     }
 

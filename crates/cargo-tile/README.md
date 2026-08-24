@@ -237,45 +237,34 @@ back to the summary when that cell goes.
 
 ### build progress
 
-A compiling command shows how far along it is on the heading over it, in the
-summary and in the command's own cell alike:
+A command shows how far along it is on the heading over it, in the summary and
+in the command's own cell alike, with the word for what it is doing ahead of
+the rule:
 
 ```
-~/rust/nateroids ━━━━━━━╌╌╌╌╌╌╌╌╌╌╌╌╌  36%
+~/rust/nateroids building ━━━━━━━╌╌╌╌╌╌╌╌╌╌╌╌╌  36%
 ```
 
-A heading stands over every command started from one directory, so it can only
-carry one reading. Where two of them are compiling in the same directory at
-once, the table falls back to a `state` column, which has room for a reading on
-every row:
+The heading is the only place a reading is ever drawn. A heading stands over
+every command started from one directory and carries one reading, which is all
+one directory ever has to report: cargo locks the build directory, so a second
+command against the same target waits rather than compiles alongside the first.
+
+That wait is what the `state` column is for. A blocked cargo prints
+`Blocking waiting for file lock on build directory` and then nothing, which
+from outside is a row with a pid, a climbing duration and no reading -- exactly
+like a build that has not reached its first unit yet. The column separates
+them, and joins the table only when some row is waiting:
 
 ```
-pid    start  dur   state        command
-41883  14:02  1:07  ████░░░ 36%  cargo build --release
+pid    start  dur   state    command
+41883  14:02  1:07           cargo build --release
+41902  14:03  0:41  blocked  cargo check --workspace
 ```
 
-The reading sits at the right of that field and the fill runs under it, as a
-background rather than a run of glyphs, so a finished build reads `100%` on a
-solid ground instead of beside one. The cell the fill has reached is drawn in
-eighths: whole cells alone would move the bar once every ninth of the build,
-and the reading is right-aligned, so that cell is free for most of a run.
-
-The same column says when a command is not building at all. Cargo locks the
-build directory, so a second command against the same target waits rather than
-fails -- it prints `Blocking waiting for file lock on build directory` and then
-nothing, which from outside is a row with a pid, a climbing duration, and no
-reading, exactly like a build that has not reached its first unit yet. The
-column separates them:
-
-```
-pid    start  dur   state        command
-41883  14:02  1:07  ████░░░ 36%  cargo build --release
-41902  14:03  0:41  blocked      cargo check --workspace
-```
-
-A wait is per row and a heading is per directory, so a blocked row brings the
-column in even where every reading is already on a heading. It does not take a
-heading from a reading, though: it has none of its own to put there.
+A wait is per row and a heading is per directory, so nothing but the column can
+say which of the two commands is the one waiting. The row that is getting
+somewhere says nothing there: the heading above it is already ruling that.
 
 The number is cargo's own. While it compiles, cargo draws
 `Building [========>    ] 149/403: globset, regex-automata`, and those two
@@ -283,6 +272,22 @@ counts are units of its build plan finished and planned — a unit being one
 compilation of one crate target. Nothing here estimates anything. A unit that is
 already fresh counts as finished the moment cargo checks it, so an incremental
 build opens near its total rather than at zero.
+
+A command that runs tests counts twice over, and the word says which count is
+on screen. `cargo nextest run` compiles under cargo's bar and then works
+through the tests under a bar of its own —
+`Running [ 00:00:03] ███▏ 22/24: 2 running, 22 passed` — so the heading reads
+`building` and then `testing`, the second counter opening at nought over the
+tests collected the moment the first reaches its total:
+
+```
+~/rust/nateroids testing ━━━━━━━━━━━━━━━╌╌╌╌╌  91%
+```
+
+The word is what the heading gives up first: a cell too narrow to carry both
+still rules the reading. A run whose tests are drawn without a terminal — piped
+output, or a script — reports the build alone, a test runner drawing no bar
+where nothing is watching.
 
 Reading it takes a capture, and that is what the shim is for:
 
@@ -306,7 +311,7 @@ Without the shim nothing breaks: the `state` column simply stays out and
 headings draw no rule. What a command is doing is the only thing it adds.
 
 A run with no terminal — one started by a script, or with its output piped —
-gets a bar too, but by a different route: cargo draws no progress at all
+reports too, but by a different route: cargo draws no progress at all
 without a tty unless asked, so the shim asks, and passes a width because cargo
 rejects `always` without one. Only stderr is copied there, so piped stdout
 stays byte for byte what the caller expects.
@@ -318,7 +323,7 @@ Worth knowing before installing it:
   with — it only copies the output aside.
 - **A run already going cannot be captured.** The shim is only there for
   processes it starts, so anything mid-flight when you install shows in the grid
-  without a bar until it is run again. Installing during a build is otherwise
+  without a reading until it is run again. Installing during a build is otherwise
   safe: a running cargo holds its binary open, and moving that file aside does
   not disturb it.
 - **Query invocations are passed straight through** — `cargo metadata`,
