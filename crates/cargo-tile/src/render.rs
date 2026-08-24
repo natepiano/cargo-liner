@@ -54,6 +54,10 @@ use tui_pane::title_color;
 use tui_pane::warning_color;
 
 use crate::app::App;
+use crate::constants::ANCESTRY_ELISION;
+use crate::constants::ANCESTRY_GAP_HEIGHT;
+use crate::constants::ANCESTRY_LEVEL_INDENT;
+use crate::constants::ANCESTRY_MIN_ELIDED_ROWS;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
 use crate::constants::COMMAND_COLUMN;
@@ -90,6 +94,7 @@ use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::TILE_NUMBER_INDENT;
 use crate::globals::AppGlobalAction;
+use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
 use crate::processes::ManifestPath;
 use crate::progress::Progress;
@@ -148,8 +153,16 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
         // The ground a fading row is carried toward is the one its own
         // cell is painted on, which focus moves.
         let ground = pane_background(placement.frame.is_focused());
+        let hidden_when_idle = &app.loaded_config.config.commands.hidden_when_idle;
         draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
-            draw_contents(buffer, &app.roster, placement.content, inner, ground);
+            draw_contents(
+                buffer,
+                &app.roster,
+                placement.content,
+                inner,
+                ground,
+                hidden_when_idle,
+            );
         });
         match placement.content {
             TileContent::Summary => {
@@ -174,17 +187,22 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// What a cell holds inside its borders. `ground` is the colour the
-/// cell is painted on, which a finished row's text fades toward.
+/// cell is painted on, which a finished row's text fades toward, and
+/// `hidden_when_idle` is what settles whether a command's own cell
+/// draws it as a row or as the last step of its chain.
 fn draw_contents(
     buffer: &mut Buffer,
     roster: &Roster,
     content: TileContent,
     inner: Rect,
     ground: Color,
+    hidden_when_idle: &[String],
 ) {
     match content {
         TileContent::Summary => draw_summary(buffer, roster, inner, ground),
-        TileContent::Group(id) => draw_group(buffer, roster, id, inner, ground),
+        TileContent::Group(id) => {
+            draw_group(buffer, roster, id, inner, ground, hidden_when_idle);
+        },
         TileContent::Empty(number) => draw_number(buffer, number, inner),
     }
 }
@@ -193,7 +211,7 @@ fn draw_contents(
 /// underneath.
 fn draw_summary(buffer: &mut Buffer, roster: &Roster, inner: Rect, ground: Color) {
     let rows: Vec<&TrackedRow> = roster.groups().iter().map(|group| &group.lead).collect();
-    draw_process_table(buffer, inner, &rows, TableKind::Summary, ground);
+    draw_process_table(buffer, inner, &rows, TableKind::Summary, ground, None);
 }
 
 /// What sccache reports, written along the summary cell's top border.
@@ -255,14 +273,217 @@ fn run_color(kind: LabelRunKind) -> Color {
     }
 }
 
-/// One command's own cell: every invocation the summary put behind that
-/// command's single row, the command itself included.
-fn draw_group(buffer: &mut Buffer, roster: &Roster, id: u32, inner: Rect, ground: Color) {
+/// One command's own cell: what launched the command, then every
+/// invocation the summary put behind that command's single row.
+///
+/// The command itself is usually the first of those rows. A driver
+/// that `commands.hidden_when_idle` names is the exception -- see
+/// [`TrackedGroup::leads_as_ancestor`] -- and closes the chain instead,
+/// leaving the table to the invocations the cell was opened for.
+fn draw_group(
+    buffer: &mut Buffer,
+    roster: &Roster,
+    id: u32,
+    inner: Rect,
+    ground: Color,
+    hidden_when_idle: &[String],
+) {
     let Some(group) = roster.groups().iter().find(|group| group.id == id) else {
         return;
     };
-    let rows: Vec<&TrackedRow> = group.rows().collect();
-    draw_process_table(buffer, inner, &rows, TableKind::Command, ground);
+    let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
+    let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
+    let mut chain = group.ancestry().to_vec();
+    if leads_as_ancestor {
+        chain.push(as_ancestor(&group.lead.process));
+    }
+    let ancestry = carried(chain);
+    // The lead's own fade goes into the block whether or not it is a
+    // row there: the chain stands over the whole cell, and the cell
+    // goes out when the command does.
+    let faded = heading_fade(&rows).min(group.lead.faded());
+    let used = draw_ancestry(buffer, inner, &ancestry, faded, ground);
+    let table = Rect {
+        y: inner.y.saturating_add(used),
+        height: inner.height.saturating_sub(used),
+        ..inner
+    };
+    // The directory pinned to the top of the cell is the command's own,
+    // drawn as a row there or not: the invocations under a driver run
+    // wherever the work is, and none of those is what the cell is about.
+    draw_process_table(
+        buffer,
+        table,
+        &rows,
+        TableKind::Command,
+        ground,
+        Some(group.lead.process.path.as_str()),
+    );
+}
+
+/// A command as the last step of its own cell's chain: its pid, and the
+/// whole line it was typed as.
+fn as_ancestor(process: &CargoProcess) -> Ancestor {
+    let arguments = process.command.line(ManifestPath::Shown);
+    let program = process.command.program.as_str();
+    Ancestor {
+        pid:            process.pid,
+        command:        if arguments.is_empty() {
+            program.to_string()
+        } else {
+            format!("{program} {arguments}")
+        },
+        // The command is what the chain is a chain *to*, so it is never
+        // one of the steps the chain passes through.
+        passes_through: false,
+    }
+}
+
+/// The steps of `chain` a cell draws: everything that started
+/// something, plus whatever stands at the foot.
+///
+/// A command a developer typed has a shell at the foot and nothing else
+/// above it but the terminal, which says which window rather than who
+/// typed it -- so dropping that one would leave the cell unable to tell
+/// a command run by hand from one an editor or an agent ran. Every
+/// shell further up did only pass a command through, and says no more
+/// than that a terminal was involved.
+///
+/// Which step is the foot is why this runs here rather than in the
+/// scan: a driver closes its own cell's chain, and that puts the
+/// driver at the foot and the shell that started it back among the
+/// steps passed through.
+fn carried(chain: Vec<Ancestor>) -> Vec<Ancestor> {
+    let last = chain.len().saturating_sub(1);
+    chain
+        .into_iter()
+        .enumerate()
+        .filter(|&(at, ref ancestor)| at == last || !ancestor.passes_through)
+        .map(|(_, ancestor)| ancestor)
+        .collect()
+}
+
+/// Draw what stands above a command into the top of `area`, outermost
+/// first and one space deeper per level, answering how many rows that
+/// took including the blank row below it.
+///
+/// The block fades the way a heading does -- with the least-faded row
+/// under it -- so it holds its colour while a single invocation in the
+/// cell is still running, and sinks with the cell when none is.
+fn draw_ancestry(
+    buffer: &mut Buffer,
+    area: Rect,
+    ancestry: &[Ancestor],
+    faded: u8,
+    ground: Color,
+) -> u16 {
+    let levels = ancestry_levels(ancestry, ancestry_budget(area.height));
+    if levels.is_empty() {
+        return 0;
+    }
+    let pid = blend_color(label_color(), ground, faded);
+    let command = blend_color(secondary_text_color(), ground, faded);
+    let lines: Vec<Line<'static>> = levels
+        .iter()
+        .enumerate()
+        .map(|(level, ancestor)| ancestry_line(*ancestor, level, area.width, pid, command))
+        .collect();
+    // `u16` because the count came out of a budget measured in rows of
+    // this same area.
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    Paragraph::new(lines).render(Rect { height, ..area }, buffer);
+    height.saturating_add(ANCESTRY_GAP_HEIGHT)
+}
+
+/// Rows the ancestry block may take at a cell of `height`.
+///
+/// Never more than half the cell, and the blank row under the block
+/// comes out of that half: whatever the chain has to say, the table it
+/// stands over is what the cell is for.
+fn ancestry_budget(height: u16) -> usize {
+    usize::from(height / 2).saturating_sub(usize::from(ANCESTRY_GAP_HEIGHT))
+}
+
+/// Which levels of `ancestry` a block of `budget` rows carries, `None`
+/// standing for the levels left out.
+///
+/// A chain that fits is drawn whole. One that does not keeps both ends:
+/// the top-level parent, and the levels nearest the command, which are
+/// what say how it was actually started. Below
+/// [`ANCESTRY_MIN_ELIDED_ROWS`] there is no room for two ends and an
+/// elision between them, and the foot of the chain is what stays -- it
+/// is the step closest to the work, and in a driver's cell it is the
+/// driver itself.
+fn ancestry_levels(ancestry: &[Ancestor], budget: usize) -> Vec<Option<&Ancestor>> {
+    if ancestry.len() <= budget {
+        return ancestry.iter().map(Some).collect();
+    }
+    if budget < ANCESTRY_MIN_ELIDED_ROWS {
+        return ancestry[ancestry.len() - budget..]
+            .iter()
+            .map(Some)
+            .collect();
+    }
+    let tail = budget - 2;
+    ancestry
+        .first()
+        .map(Some)
+        .into_iter()
+        .chain(std::iter::once(None))
+        .chain(ancestry[ancestry.len() - tail..].iter().map(Some))
+        .collect()
+}
+
+/// One level of the ancestry block: its pid and what the process is,
+/// set one space further in than the level above it.
+///
+/// The command is cut at the cell's edge rather than wrapped. A row
+/// here identifies an ancestor rather than reporting it, and the head
+/// of a command line is what does that -- wrapping one would spend
+/// rows the table below is owed.
+fn ancestry_line(
+    ancestor: Option<&Ancestor>,
+    level: usize,
+    width: u16,
+    pid: Color,
+    command: Color,
+) -> Line<'static> {
+    let indent = format!(
+        "{SECTION_HEADER_INDENT}{}",
+        ANCESTRY_LEVEL_INDENT.repeat(level)
+    );
+    let Some(ancestor) = ancestor else {
+        return Line::from(vec![
+            Span::raw(indent),
+            Span::styled(ANCESTRY_ELISION, Style::default().fg(pid)),
+        ]);
+    };
+    let label = ancestor.pid.to_string();
+    let room = usize::from(width)
+        .saturating_sub(indent.chars().count())
+        .saturating_sub(label.chars().count())
+        .saturating_sub(1);
+    Line::from(vec![
+        Span::raw(indent),
+        Span::styled(label, Style::default().fg(pid)),
+        Span::raw(" "),
+        Span::styled(
+            truncated(&ancestor.command, room),
+            Style::default().fg(command),
+        ),
+    ])
+}
+
+/// `text` cut to `cells`, the last cell kept for an ellipsis whenever
+/// anything was taken off.
+fn truncated(text: &str, cells: usize) -> String {
+    if text.chars().count() <= cells {
+        return text.to_string();
+    }
+    let kept = cells.saturating_sub(ANCESTRY_ELISION.chars().count());
+    let mut out: String = text.chars().take(kept).collect();
+    out.push_str(ANCESTRY_ELISION);
+    out
 }
 
 /// A cell opened with `+` that no command has claimed: its number, on
@@ -289,19 +510,6 @@ impl TableKind {
     /// Whether this cell describes single invocations, which is what
     /// the columns in [`SUMMARY_HIDDEN_COLUMNS`] have to say.
     const fn shows_invocation_detail(self) -> bool { matches!(self, Self::Command) }
-
-    /// Whether the row leading this table pins its working directory to
-    /// the top of the cell.
-    ///
-    /// A command's own cell is led by the command itself, and the
-    /// invocations under it are often somewhere else entirely -- a test
-    /// run drives cargo in a temporary directory per case, each one
-    /// alive for seconds. Sorted with the rest, those directories come
-    /// out ahead of a home-relative one and push the command being
-    /// watched off the bottom of the cell. The summary pins nothing:
-    /// every row there leads a command of its own, so there is no one
-    /// directory the cell is about.
-    const fn pins_lead_path(self) -> bool { matches!(self, Self::Command) }
 
     /// Whether a row here needs its manifest path. A summary row already
     /// sits under the working directory heading its group, so the path
@@ -373,12 +581,22 @@ fn heading_fade(rows: &[&TrackedRow]) -> u8 {
 
 /// Render a cargo table: one working-directory header per distinct path,
 /// with that directory's invocations tabulated beneath it.
+///
+/// `pinned` is the directory that heads the cell whatever the rest sort
+/// to. A command's own cell pins the command's: the invocations under
+/// it are often somewhere else entirely -- a test run drives cargo in a
+/// temporary directory per case, each one alive for seconds -- and
+/// sorted with the rest those come out ahead of a home-relative path
+/// and push the command being watched off the bottom of its own cell.
+/// The summary pins nothing: every row there leads a command of its
+/// own, so there is no one directory the cell is about.
 fn draw_process_table(
     buffer: &mut Buffer,
     area: Rect,
     rows: &[&TrackedRow],
     kind: TableKind,
     ground: Color,
+    pinned: Option<&str>,
 ) {
     if rows.is_empty() {
         Paragraph::new(vec![
@@ -410,12 +628,6 @@ fn draw_process_table(
     let mut remaining = area;
     remaining.y = remaining.y.saturating_add(TABLE_HEADER_HEIGHT);
     remaining.height = remaining.height.saturating_sub(TABLE_HEADER_HEIGHT);
-    // The lead heads `rows` in a command's own cell, which is what puts
-    // its working directory within reach here.
-    let pinned = rows
-        .first()
-        .filter(|_| kind.pins_lead_path())
-        .map(|row| row.process.path.as_str());
     for group in group_by_path(rows, pinned) {
         if remaining.height == 0 {
             break;
@@ -1004,8 +1216,12 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
     use crate::constants::PHASE_TESTING;
+    use crate::constants::SIBLING_SUBCOMMAND_NAME;
+    use crate::processes::CargoGroup;
     use crate::processes::CargoProcess;
     use crate::processes::CommandText;
     use crate::progress::Phase;
@@ -1087,6 +1303,259 @@ mod tests {
             managed: 0,
             command: CommandText::of("cargo", &["build"]),
         })
+    }
+
+    /// One process above a command, for the ancestry tests.
+    fn ancestor(pid: u32, command: &str) -> Ancestor {
+        Ancestor {
+            pid,
+            command: command.to_string(),
+            passes_through: false,
+        }
+    }
+
+    /// One shell or login process above a command: a step the chain
+    /// passes through rather than something that started anything.
+    fn shell(pid: u32, command: &str) -> Ancestor {
+        Ancestor {
+            passes_through: true,
+            ..ancestor(pid, command)
+        }
+    }
+
+    /// A chain of `count` ancestors, outermost first.
+    fn chain(count: u32) -> Vec<Ancestor> { (0..count).map(|step| ancestor(step, "sh")).collect() }
+
+    /// The pids the block draws, `None` where a level was elided.
+    fn drawn(levels: &[Option<&Ancestor>]) -> Vec<Option<u32>> {
+        levels
+            .iter()
+            .map(|level| level.map(|ancestor| ancestor.pid))
+            .collect()
+    }
+
+    #[test]
+    fn a_chain_that_fits_is_drawn_whole() {
+        let ancestry = chain(3);
+        assert_eq!(
+            drawn(&ancestry_levels(&ancestry, 4)),
+            vec![Some(0), Some(1), Some(2)],
+        );
+    }
+
+    /// The top of the chain is the cell's answer to what launched the
+    /// command, and the levels nearest it say how -- so a short cell
+    /// keeps both ends and drops the middle.
+    #[test]
+    fn a_chain_too_long_for_the_cell_keeps_both_ends() {
+        let ancestry = chain(6);
+        assert_eq!(
+            drawn(&ancestry_levels(&ancestry, 4)),
+            vec![Some(0), None, Some(4), Some(5)],
+        );
+    }
+
+    /// Under three rows there is no room for two ends and an elision
+    /// between them, and the foot of the chain is the end that matters
+    /// -- in a driver's cell it is the driver itself.
+    #[test]
+    fn a_block_too_short_for_an_elision_keeps_the_foot_of_the_chain() {
+        let ancestry = chain(6);
+        assert_eq!(
+            drawn(&ancestry_levels(&ancestry, 2)),
+            vec![Some(4), Some(5)]
+        );
+    }
+
+    /// Half a cell, with the blank row under the block taken out of
+    /// that half: whatever the chain says, the table is what the cell
+    /// is for.
+    #[test]
+    fn the_block_never_takes_more_than_half_the_cell() {
+        assert_eq!(ancestry_budget(12), 5);
+        assert_eq!(ancestry_budget(4), 1);
+        assert_eq!(ancestry_budget(2), 0);
+        assert_eq!(ancestry_budget(0), 0);
+    }
+
+    /// A cell with no room for the block at all draws none of it, and
+    /// leaves the table every row it had.
+    #[test]
+    fn a_cell_too_short_for_the_block_spends_nothing_on_it() {
+        assert!(ancestry_levels(&chain(3), ancestry_budget(2)).is_empty());
+    }
+
+    /// A command whose parents could not be read costs the table
+    /// nothing, not even the blank row.
+    #[test]
+    fn a_command_with_no_ancestry_costs_the_table_no_rows() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 10));
+        let area = buffer.area;
+        assert_eq!(
+            draw_ancestry(&mut buffer, area, &[], 0, pane_background(false)),
+            0
+        );
+    }
+
+    /// The block reads as a staircase: outermost first, one space
+    /// further in per level, each row its pid and what the process is.
+    #[test]
+    fn the_block_steps_one_space_in_per_level() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 10));
+        let area = buffer.area;
+        let ancestry = vec![
+            ancestor(6218, "zed"),
+            ancestor(12445, "-zsh"),
+            ancestor(18581, "claude"),
+        ];
+
+        let used = draw_ancestry(&mut buffer, area, &ancestry, 0, pane_background(false));
+
+        assert_eq!(used, 4, "three levels and the blank row under them");
+        assert_eq!(buffer_line(&buffer, 0), " 6218 zed");
+        assert_eq!(buffer_line(&buffer, 1), "  12445 -zsh");
+        assert_eq!(buffer_line(&buffer, 2), "   18581 claude");
+    }
+
+    /// A row here identifies an ancestor rather than reporting it, so
+    /// a long command line is cut at the cell's edge rather than
+    /// wrapped into rows the table below is owed.
+    #[test]
+    fn a_command_too_wide_for_the_cell_is_cut_rather_than_wrapped() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 6));
+        let area = buffer.area;
+        let ancestry = vec![ancestor(6218, "node ~/.claude/local/claude")];
+
+        let used = draw_ancestry(&mut buffer, area, &ancestry, 0, pane_background(false));
+
+        assert_eq!(used, 2);
+        assert_eq!(buffer_line(&buffer, 0), " 6218 node ~/.claud\u{2026}");
+    }
+
+    /// A cargo process for a group the roster is to carry.
+    fn invocation(pid: u32, arguments: &[&str]) -> CargoProcess {
+        CargoProcess {
+            path: "~/rust/cargo-liner".to_string(),
+            pid,
+            start: "11:04".to_string(),
+            duration: "00:18".to_string(),
+            cpu: "12%".to_string(),
+            compiler: None,
+            state: None,
+            managed: 0,
+            command: CommandText::of("cargo", arguments),
+        }
+    }
+
+    /// `commands.hidden_when_idle` as the config hands it over.
+    fn hidden_when_idle() -> Vec<String> { vec![SIBLING_SUBCOMMAND_NAME.to_string()] }
+
+    /// A roster carrying one command, with `rest` running under it.
+    fn roster_of(lead: CargoProcess, rest: Vec<CargoProcess>) -> Roster {
+        let mut roster = Roster::new();
+        roster.observe(
+            vec![CargoGroup {
+                lead,
+                rest,
+                ancestry: vec![ancestor(6218, "zed"), shell(36744, "-zsh")],
+            }],
+            Instant::now(),
+        );
+        roster
+    }
+
+    /// A command typed by hand has a shell at the foot of its chain and
+    /// nothing else above it worth naming, so that shell stays.
+    #[test]
+    fn the_shell_a_command_was_typed_into_stays() {
+        let chain = vec![ancestor(6218, "zed"), shell(12445, "-zsh")];
+
+        assert_eq!(
+            carried(chain)
+                .iter()
+                .map(|step| step.pid)
+                .collect::<Vec<u32>>(),
+            vec![6218, 12445],
+        );
+    }
+
+    /// A shell further up did only pass the command through, and says
+    /// no more than that a terminal was involved.
+    #[test]
+    fn a_shell_partway_up_the_chain_goes() {
+        let chain = vec![
+            ancestor(6218, "zed"),
+            shell(12444, "login -pf natepiano"),
+            shell(12445, "-zsh"),
+            ancestor(18581, "node ~/.claude/local/claude"),
+        ];
+
+        assert_eq!(
+            carried(chain)
+                .iter()
+                .map(|step| step.pid)
+                .collect::<Vec<u32>>(),
+            vec![6218, 18581],
+        );
+    }
+
+    /// A driver that `commands.hidden_when_idle` names closes its
+    /// cell's chain rather than taking a row in the table: its row
+    /// would say the same thing on every scan and cost the cell one of
+    /// the invocations it was opened for.
+    #[test]
+    fn a_driver_closes_its_cells_chain_instead_of_heading_its_table() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 14));
+        let area = buffer.area;
+        let roster = roster_of(
+            invocation(4100, &[SIBLING_SUBCOMMAND_NAME]),
+            vec![invocation(4212, &["build"])],
+        );
+
+        draw_group(
+            &mut buffer,
+            &roster,
+            4100,
+            area,
+            Color::Reset,
+            &hidden_when_idle(),
+        );
+
+        // The driver is the foot of the chain now, so the shell above
+        // it is a step passed through like any other.
+        assert_eq!(buffer_line(&buffer, 0), " 6218 zed");
+        assert_eq!(buffer_line(&buffer, 1), "  4100 cargo port");
+        let table: Vec<String> = (2..area.height).map(|y| buffer_line(&buffer, y)).collect();
+        let table = table.join("\n");
+        assert!(table.contains("4212"), "{table}");
+        assert!(
+            !table.contains("4100"),
+            "the driver is not a row too: {table}"
+        );
+    }
+
+    /// Every other command is a row in its own cell, the chain above it
+    /// ending where the command begins.
+    #[test]
+    fn an_ordinary_command_still_heads_its_own_table() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 14));
+        let area = buffer.area;
+        let roster = roster_of(invocation(4100, &["build"]), Vec::new());
+
+        draw_group(
+            &mut buffer,
+            &roster,
+            4100,
+            area,
+            Color::Reset,
+            &hidden_when_idle(),
+        );
+
+        // Nothing closes this chain, so its shell is the foot and stays.
+        assert_eq!(buffer_line(&buffer, 0), " 6218 zed");
+        assert_eq!(buffer_line(&buffer, 1), "  36744 -zsh");
+        let table: Vec<String> = (2..area.height).map(|y| buffer_line(&buffer, y)).collect();
+        assert!(table.join("\n").contains("4100"), "{table:#?}");
     }
 
     /// A test run drives cargo in a directory per case, each alive for
@@ -1308,6 +1777,7 @@ mod tests {
             &rows.iter().collect::<Vec<&TrackedRow>>(),
             TableKind::Command,
             Color::Reset,
+            None,
         );
 
         // The column labels are drawn once at the top of the cell, so
@@ -1350,6 +1820,7 @@ mod tests {
             &rows.iter().collect::<Vec<&TrackedRow>>(),
             TableKind::Command,
             Color::Reset,
+            None,
         );
 
         let header = buffer_line(&buffer, 0);

@@ -166,6 +166,74 @@ came out as. A single argument too long for the column at all -- a path, a long
 `--features` list with no spaces in it -- is the one thing broken anywhere but a
 space, and only where no space would do.
 
+A command's own cell is headed by what launched it. The parent chain above the
+command is walked and listed outermost first, one space deeper per level, each
+row carrying a pid and what that process is running -- the editor, the agent, the
+script that typed the command. Three kinds of process are stepped over on the way
+up. The one the whole tree roots at, `launchd` or `init`: every command on the
+machine descends from it, so a row for it tells one from no other. The wrappers
+belonging to the invocation itself: a captured run reaches cargo through the shim
+and a pty, and both of those are running this same cargo command line, so listing
+them would answer "what started this" with the machinery cargo-tile installed to
+watch it. And the shells and login processes between them -- `zsh`, `bash`,
+`login` -- which passed the command through rather than starting it.
+
+Whatever stands at the foot of the chain is the exception, and stays. A command a
+developer typed has a shell sitting there and nothing else above it but the
+terminal, which says which window rather than who typed it -- so stepping that
+one over would leave the cell unable to tell a command run by hand from one an
+editor or an agent ran. Which step is the foot is settled after the chain is
+assembled, not while it is walked: a driver closes its own cell's chain, and that
+puts the driver at the foot and the shell that started it back among the steps
+passed through.
+
+```
+ 6218 zed
+  18581 node ~/.claude/local/claude
+
+ pid    start  dur    cpu   command
+ ~/rust/cargo-liner ━━━━━━━━━━━━━━━╸╌╌╌╌╌ 62%
+ 92130  10:04  00:12  310%  cargo build
+```
+
+A command typed into a terminal keeps that terminal's shell, and comes out as the
+one row:
+
+```
+ 12445 -zsh
+
+ pid    start  dur    cpu   command
+ ~/rust/cargo-liner ━━━━━━━━━━━━━━━╸╌╌╌╌╌ 62%
+ 92130  10:04  00:12  310%  cargo build
+```
+
+A command named by `commands.hidden_when_idle` closes its own cell's chain
+instead of taking a row in the table under it. Those are the drivers -- `cargo
+port` to begin with -- open all day and compiling nothing on their own, whose
+cell exists only because something is running under them. A row for one says the
+same thing on every scan while costing the cell one of the invocations it was
+opened for; as the last step of the chain it says what the rest of the chain
+says, which is where the work came from.
+
+```
+ 6218 zed
+  4100 cargo port
+
+ pid    start  dur    cpu   command
+ ~/rust/cargo-liner ━━━━━━━━━━━━━━━╸╌╌╌╌╌ 62%
+ 4212   10:04  00:12  310%  cargo build
+```
+
+The block never takes more than half the cell, the blank row under it included:
+whatever the chain has to say, the table it stands over is what the cell is for.
+A chain too long for what is left keeps both ends -- the top-level parent, and
+the levels nearest the command, which are what say how it was actually started --
+with an ellipsis standing for the levels between them. Below three rows there is
+no room for two ends, and the foot of the chain is what stays. A command line too
+wide for the cell is cut at the edge rather than wrapped, a row there identifying
+an ancestor rather than reporting it. The summary has no such block: every row
+there leads a command of its own, and there is no one chain the cell is about.
+
 Every summary row also gets its own cell, carrying the invocations that row
 stands for: one for a plain command, many for a manager. `+` opens an empty cell
 at the end and `-` closes one: the focused cell when `+` opened it, otherwise the

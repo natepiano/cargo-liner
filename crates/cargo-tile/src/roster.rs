@@ -13,6 +13,7 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::processes::Ancestor;
 use crate::processes::CargoGroup;
 use crate::processes::CargoProcess;
 
@@ -106,15 +107,20 @@ pub(crate) struct TrackedGroup {
     pub(crate) lead: TrackedRow,
     /// The invocations running under the lead, newest first.
     rest:            Vec<TrackedRow>,
+    /// What stands above the command, outermost first. Refreshed with
+    /// the rest of the group: a chain is read fresh every scan, and a
+    /// process in it that exits is one the next scan no longer carries.
+    ancestry:        Vec<Ancestor>,
 }
 
 impl From<CargoGroup> for TrackedGroup {
     /// Track a group the current scan has just turned up.
     fn from(group: CargoGroup) -> Self {
         Self {
-            id:   group.id(),
-            lead: TrackedRow::from(group.lead),
-            rest: group.rest.into_iter().map(TrackedRow::from).collect(),
+            id:       group.id(),
+            lead:     TrackedRow::from(group.lead),
+            rest:     group.rest.into_iter().map(TrackedRow::from).collect(),
+            ancestry: group.ancestry,
         }
     }
 }
@@ -125,6 +131,27 @@ impl TrackedGroup {
         std::iter::once(&self.lead).chain(self.rest.iter())
     }
 
+    /// What stands above the command, outermost first.
+    pub(crate) fn ancestry(&self) -> &[Ancestor] { &self.ancestry }
+
+    /// Whether the command itself belongs at the foot of its cell's
+    /// ancestry chain rather than in the table.
+    ///
+    /// True for exactly the commands `commands.hidden_when_idle`
+    /// names. Those are drivers: they compile nothing, they are open
+    /// all day, and their cell exists only because something is
+    /// running under them. A row for the driver in that table says the
+    /// same thing on every scan and takes a row from the invocations
+    /// the cell was opened for -- while as the last step of the chain
+    /// it says what the rest of the chain says, which is where the
+    /// work came from.
+    pub(crate) fn leads_as_ancestor(&self, hidden_when_idle: &[String]) -> bool {
+        self.lead
+            .process
+            .command
+            .is_hidden_when_idle(hidden_when_idle)
+    }
+
     /// Fold in the scan's account of a group that is still running.
     ///
     /// Rows the scan no longer carries are stamped rather than dropped,
@@ -132,6 +159,7 @@ impl TrackedGroup {
     /// of the place it occupied, not pull the rows under it upward.
     fn refresh(&mut self, group: CargoGroup, now: Instant) {
         self.lead.refresh(group.lead);
+        self.ancestry = group.ancestry;
         let mut arriving = group.rest;
         for tracked in &mut self.rest {
             match arriving
@@ -304,8 +332,9 @@ mod tests {
     /// A group led by `lead` with one invocation per entry of `rest`.
     fn group(lead: u32, rest: &[u32]) -> CargoGroup {
         CargoGroup {
-            lead: process(lead),
-            rest: rest.iter().copied().map(process).collect(),
+            lead:     process(lead),
+            rest:     rest.iter().copied().map(process).collect(),
+            ancestry: Vec::new(),
         }
     }
 

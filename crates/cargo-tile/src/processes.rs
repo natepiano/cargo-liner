@@ -49,11 +49,13 @@ use crate::constants::HOME_ALIAS;
 use crate::constants::MANIFEST_PATH_FLAG;
 use crate::constants::PARENT_WALK_LIMIT;
 use crate::constants::PROCESS_POLL_MILLIS;
+use crate::constants::ROOT_PROCESS_PID;
 use crate::constants::SCCACHE_BINARY;
 use crate::constants::SECONDS_PER_HOUR;
 use crate::constants::SECONDS_PER_MINUTE;
 use crate::constants::SELF_PROCESS_NAME;
 use crate::constants::START_TIME_FORMAT;
+use crate::constants::TRANSPARENT_PROCESS_NAMES;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
 use crate::progress::Capture;
@@ -197,6 +199,24 @@ fn is_manifest_assignment(argument: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('='))
 }
 
+/// One process standing above a command in the process tree.
+///
+/// What a cell lists to say where the command came from: a shell, an
+/// editor, the agent or script that typed it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Ancestor {
+    /// Process id.
+    pub(crate) pid:            u32,
+    /// What the process is, as [`describe`] reads it.
+    pub(crate) command:        String,
+    /// Whether the process passed a command through rather than
+    /// starting it, per [`is_transparent`]. Whether a cell draws one of
+    /// these is settled where the chain is drawn rather than here: the
+    /// exception is the foot of the chain, and a driver's cell closes
+    /// its own chain with the driver, which moves where the foot is.
+    pub(crate) passes_through: bool,
+}
+
 /// One command and every cargo invocation running under it.
 ///
 /// A plain `cargo build` is a group of one. A command that drives other
@@ -207,10 +227,14 @@ fn is_manifest_assignment(argument: &str) -> bool {
 pub(crate) struct CargoGroup {
     /// The outermost invocation: the command that was typed, and the row
     /// the summary carries.
-    pub(crate) lead: CargoProcess,
+    pub(crate) lead:     CargoProcess,
     /// Everything running under [`lead`](Self::lead), newest first.
     /// Empty for a plain command.
-    pub(crate) rest: Vec<CargoProcess>,
+    pub(crate) rest:     Vec<CargoProcess>,
+    /// What stands above [`lead`](Self::lead), outermost first, ending
+    /// at the process that started it. Empty for a command whose
+    /// parents cannot be read.
+    pub(crate) ancestry: Vec<Ancestor>,
 }
 
 impl CargoGroup {
@@ -288,13 +312,19 @@ fn scan(
 
     let mut census = Census::take(system);
 
-    // Phase two: the costly fields, for cargo processes only.
+    // Phase two: the costly fields, for the cargo processes and for the
+    // handful standing above each of them. The ancestors are read for
+    // the same reason the invocations are -- a cell says what launched
+    // the command -- and a chain is a few processes long, against the
+    // hundreds this pass still skips.
+    let detailed = census.detailed();
     system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&census.cargo),
+        ProcessesToUpdate::Some(&detailed),
         false,
         ProcessRefreshKind::nothing()
             .with_cwd(UpdateKind::OnlyIfNotSet)
-            .with_cmd(UpdateKind::OnlyIfNotSet),
+            .with_cmd(UpdateKind::OnlyIfNotSet)
+            .with_exe(UpdateKind::OnlyIfNotSet),
     );
 
     // A process can carry the name `cargo` without being one, so the argv
@@ -641,6 +671,79 @@ impl Census {
         None
     }
 
+    /// Every process a scan reads the costly fields for: the cargo
+    /// invocations, and everything standing above one of them.
+    ///
+    /// A superset of what any cell ends up listing. Which ancestors are
+    /// the invocation's own plumbing is settled on argv, which is what
+    /// this pass is about to read, so the filtering waits for
+    /// [`Self::ancestry`] and the extra reads are a handful of
+    /// processes.
+    fn detailed(&self) -> Vec<Pid> {
+        let mut pids = self.cargo.clone();
+        for &pid in &self.cargo {
+            for ancestor in self.ancestor_pids(pid) {
+                if !pids.contains(&ancestor) {
+                    pids.push(ancestor);
+                }
+            }
+        }
+        pids
+    }
+
+    /// Every process standing above `pid`, outermost first.
+    ///
+    /// The walk stops short of the init process the whole tree roots
+    /// at: everything on the machine descends from it, so a row naming
+    /// it tells one command from no other. [`PARENT_WALK_LIMIT`] bounds
+    /// it the way it bounds the compiler walk, and a pid already on the
+    /// chain ends it outright, so a reparented cycle cannot spin here.
+    fn ancestor_pids(&self, pid: Pid) -> Vec<Pid> {
+        let mut chain = Vec::new();
+        let mut current = pid;
+        for _ in 0..PARENT_WALK_LIMIT {
+            let Some(&parent) = self.parents.get(&current) else {
+                break;
+            };
+            if parent.as_u32() <= ROOT_PROCESS_PID || chain.contains(&parent) {
+                break;
+            }
+            chain.push(parent);
+            current = parent;
+        }
+        chain.reverse();
+        chain
+    }
+
+    /// What stands above `pid`, as the command's own cell lists it:
+    /// outermost first, each entry a pid and what that process is.
+    ///
+    /// One kind of process is dropped outright: the wrappers belonging
+    /// to the invocation itself. A captured run reaches cargo through a
+    /// shim and a pty, both running this same cargo command line, and
+    /// listing them would answer "what started this" with the machinery
+    /// this tool installed to watch it.
+    ///
+    /// The shells and login processes that merely passed the command
+    /// through are marked rather than dropped -- see
+    /// [`Ancestor::passes_through`].
+    ///
+    /// A cargo ancestor that is *not* plumbing cannot reach here:
+    /// [`Self::groups`] leads a group with an invocation that has no
+    /// cargo above it.
+    fn ancestry(&self, system: &System, home: Option<&Path>, pid: Pid) -> Vec<Ancestor> {
+        self.ancestor_pids(pid)
+            .into_iter()
+            .filter_map(|pid| system.process(pid))
+            .filter(|process| !names_cargo(process.cmd()))
+            .map(|process| Ancestor {
+                pid:            process.pid().as_u32(),
+                command:        describe(process, home),
+                passes_through: is_transparent(process.name()),
+            })
+            .collect()
+    }
+
     /// Every group the surviving cargo set forms, newest lead first.
     ///
     /// A lead ties with another when both started inside the same second
@@ -773,6 +876,7 @@ impl Census {
         Some(CargoGroup {
             lead,
             rest: dated.into_iter().map(|(_, process)| process).collect(),
+            ancestry: self.ancestry(system, home, root),
         })
     }
 }
@@ -836,6 +940,36 @@ fn row(
 fn cpu_label(cpu: f32) -> String {
     let percent = cpu.max(0.0);
     format!("{percent:.0}%")
+}
+
+/// Whether a process only passed a command through rather than being
+/// what launched it, per [`TRANSPARENT_PROCESS_NAMES`].
+fn is_transparent(name: &OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|name| TRANSPARENT_PROCESS_NAMES.contains(&name))
+}
+
+/// What an ancestor row calls a process: the command line it is
+/// running, the executable behind it when its arguments cannot be read,
+/// or the name the kernel reports when neither can.
+///
+/// macOS lets a process read the argument area of processes its own
+/// user owns and of nothing else, so a root-owned ancestor -- a login
+/// process, a launch agent -- arrives with an empty argv and falls
+/// through to one of the other two.
+fn describe(process: &Process, home: Option<&Path>) -> String {
+    let line: Vec<String> = process
+        .cmd()
+        .iter()
+        .map(|word| home_relative(Path::new(word), home))
+        .collect();
+    if !line.is_empty() {
+        return line.join(" ");
+    }
+    process.exe().map_or_else(
+        || process.name().to_string_lossy().into_owned(),
+        |exe| home_relative(exe, home),
+    )
 }
 
 /// Render `path` with the home directory collapsed to `~`.
@@ -1043,6 +1177,65 @@ mod tests {
             cargo:     Vec::new(),
             compilers: Vec::new(),
             cpu:       HashMap::new(),
+        }
+    }
+
+    /// A cell names what launched the command, so the walk has to
+    /// reach past the shell to whatever started that.
+    #[test]
+    fn the_chain_above_a_command_reads_outermost_first() {
+        // cargo (64432) under a shell (12445) under a login (12444)
+        // under the editor that opened it (6218), which launchd owns.
+        let census = census_of(&[(64432, 12445), (12445, 12444), (12444, 6218), (6218, 1)]);
+
+        assert_eq!(
+            census.ancestor_pids(Pid::from_u32(64432)),
+            vec![
+                Pid::from_u32(6218),
+                Pid::from_u32(12444),
+                Pid::from_u32(12445),
+            ],
+        );
+    }
+
+    /// Every command on the machine descends from the init process, so
+    /// a row naming it tells one command from no other.
+    #[test]
+    fn the_walk_stops_short_of_the_process_the_tree_roots_at() {
+        let census = census_of(&[(64432, 12445), (12445, 1)]);
+
+        assert_eq!(
+            census.ancestor_pids(Pid::from_u32(64432)),
+            vec![Pid::from_u32(12445)],
+        );
+    }
+
+    /// A reparented chain that comes back round on itself must end the
+    /// walk rather than spin it.
+    #[test]
+    fn a_chain_that_loops_ends_where_it_repeats() {
+        let census = census_of(&[(64432, 900), (900, 901), (901, 900)]);
+
+        assert_eq!(
+            census.ancestor_pids(Pid::from_u32(64432)),
+            vec![Pid::from_u32(901), Pid::from_u32(900)],
+        );
+    }
+
+    /// A shell or login process passed a command through rather than
+    /// starting it, and is marked so the cell can decide whether to
+    /// draw it.
+    #[test]
+    fn a_shell_and_a_login_are_marked_as_passing_through() {
+        for name in ["zsh", "bash", "sh", "login"] {
+            assert!(is_transparent(OsStr::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn what_started_a_command_is_never_marked() {
+        for name in ["zed", "iTerm2", "node", "cargo-mend"] {
+            assert!(!is_transparent(OsStr::new(name)), "{name}");
         }
     }
 

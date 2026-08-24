@@ -231,6 +231,31 @@ pub(crate) const SELF_PROCESS_NAME: &str = BINARY_NAME;
 /// reporting priority order: with a wrapper in use every `rustc` is a
 /// child of one, so `sccache` wins to avoid counting a compile twice.
 pub(crate) const COMPILER_PROCESS_NAMES: [&str; 2] = [SCCACHE_BINARY, "rustc"];
+/// The process every tree on this machine roots at -- `launchd` on
+/// macOS, `init` on Linux. An ancestry walk stops short of it: a row
+/// naming the one process everything descends from tells one command
+/// from no other.
+pub(crate) const ROOT_PROCESS_PID: u32 = 1;
+/// Added to a cell's indent once per level of the ancestry block, so
+/// the chain reads as a staircase down to the command.
+pub(crate) const ANCESTRY_LEVEL_INDENT: &str = " ";
+/// Blank rows between the ancestry block and the table under it.
+pub(crate) const ANCESTRY_GAP_HEIGHT: u16 = 1;
+/// Rows the ancestry block needs before it can drop levels out of the
+/// middle rather than off the end: one for the top-level parent, one
+/// for the elision, and one for the level nearest the command.
+pub(crate) const ANCESTRY_MIN_ELIDED_ROWS: usize = 3;
+/// What stands in the ancestry block for the levels a short cell has no
+/// room to draw.
+pub(crate) const ANCESTRY_ELISION: &str = "\u{2026}";
+/// Process names an ancestry chain steps over: the shells a command is
+/// typed into, and the login process a terminal session starts under.
+/// None of them launched anything -- they passed a command through --
+/// and a row for one says only that a terminal was involved, which the
+/// row above it already said.
+pub(crate) const TRANSPARENT_PROCESS_NAMES: [&str; 9] = [
+    "login", "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh",
+];
 /// How far up a parent chain to look for the cargo process that owns a
 /// compiler, bounding the walk against a reparented cycle.
 pub(crate) const PARENT_WALK_LIMIT: usize = 32;
