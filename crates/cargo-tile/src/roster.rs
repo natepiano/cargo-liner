@@ -13,9 +13,15 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::constants::ANCESTRY_GAP_HEIGHT;
+use crate::constants::GROUP_GAP_HEIGHT;
+use crate::constants::GROUP_HEADER_HEIGHT;
+use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::processes::Ancestor;
 use crate::processes::CargoGroup;
 use crate::processes::CargoProcess;
+use crate::tiles::TileDemand;
+use crate::tiles::TileDemands;
 
 /// One table row, once it has stopped when that happened, and how far
 /// its text has since been carried toward the ground it is drawn on.
@@ -134,6 +140,35 @@ impl TrackedGroup {
     /// What stands above the command, outermost first.
     pub(crate) fn ancestry(&self) -> &[Ancestor] { &self.ancestry }
 
+    /// Rows the group's cell draws with all the room it could want: the
+    /// ancestry block and the blank row under it, then the table.
+    ///
+    /// This is what [`crate::tiles::TileGrid`] divides a column by, so
+    /// it counts what [`crate::render`] would lay out rather than what
+    /// fits -- a cell asking for more than it is given is exactly the
+    /// case the division exists to settle. Which is also why it counts
+    /// the whole chain rather than the levels a cell of some particular
+    /// height has the room for: the ask is what the cell wants, and
+    /// what it is given is the answer.
+    ///
+    /// A lead drawn as the foot of its own chain is left out of the
+    /// table, the same as [`crate::render`] leaves it out, so a
+    /// driver's cell does not ask for a row and a working-directory
+    /// heading it never draws.
+    fn drawn_rows(&self, hidden_when_idle: &[String]) -> usize {
+        let leads_as_ancestor = self.leads_as_ancestor(hidden_when_idle);
+        let chain = self
+            .ancestry
+            .len()
+            .saturating_add(usize::from(leads_as_ancestor));
+        let above = if chain == 0 {
+            0
+        } else {
+            chain.saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
+        };
+        above.saturating_add(table_rows(self.rows().skip(usize::from(leads_as_ancestor))))
+    }
+
     /// Whether the command itself belongs at the foot of its cell's
     /// ancestry chain rather than in the table.
     ///
@@ -247,18 +282,28 @@ impl Roster {
     /// The groups to display, newest first.
     pub(crate) fn groups(&self) -> &[TrackedGroup] { &self.groups }
 
-    /// The identity of every group that gets a cell, in order -- what
-    /// [`crate::tiles::TileGrid::sync`] assigns cells from.
+    /// Every group that gets a cell and how much room each one is
+    /// asking for -- what [`crate::tiles::TileGrid::sync`] assigns
+    /// cells from and divides the columns by.
     ///
     /// Narrower than [`groups`](Self::groups), which the summary reads:
     /// a command held back by `commands.hidden_when_idle` keeps its
-    /// summary line and is left out here.
-    pub(crate) fn tiled_ids(&self, hidden_when_idle: &[String]) -> Vec<u32> {
-        self.groups
-            .iter()
-            .filter(|group| group.deserves_a_cell(hidden_when_idle))
-            .map(|group| group.id)
-            .collect()
+    /// summary line and is left out of the cells. Its summary row still
+    /// counts toward what the summary cell asks for, which is why that
+    /// figure is read off `groups` rather than off this list.
+    pub(crate) fn tiled_demands(&self, hidden_when_idle: &[String]) -> TileDemands {
+        TileDemands {
+            summary: table_rows(self.groups.iter().map(|group| &group.lead)),
+            groups:  self
+                .groups
+                .iter()
+                .filter(|group| group.deserves_a_cell(hidden_when_idle))
+                .map(|group| TileDemand {
+                    id:   group.id,
+                    rows: group.drawn_rows(hidden_when_idle),
+                })
+                .collect(),
+        }
     }
 
     /// Fold one scan in, stamping whatever it no longer carries.
@@ -305,6 +350,42 @@ impl Roster {
         }
         changed
     }
+}
+
+/// Rows a table of `rows` draws with all the room it could want: the one
+/// column-label row the whole cell shares, then a heading and the rows
+/// under it for each working directory they were run in, with a gap
+/// between one directory and the next.
+///
+/// The accounting `draw_process_table` in [`crate::render`] lays out, kept
+/// here because it is also what a cell asks for. Only the gaps between
+/// directories count: the layout advances past one after the last
+/// directory too, but nothing follows it there, so counting it would
+/// have every cell ask for a row that never shows. A row counts as one
+/// line -- a command long enough to wrap takes more, but wrapping needs
+/// a width, and how wide a cell is falls out of dividing a column by
+/// these very counts.
+fn table_rows<'a>(rows: impl Iterator<Item = &'a TrackedRow>) -> usize {
+    let mut paths: Vec<&str> = Vec::new();
+    let mut count: usize = 0;
+    for row in rows {
+        count = count.saturating_add(1);
+        if !paths.contains(&row.process.path.as_str()) {
+            paths.push(row.process.path.as_str());
+        }
+    }
+    if count == 0 {
+        return 0;
+    }
+    let headings = paths.len().saturating_mul(usize::from(GROUP_HEADER_HEIGHT));
+    let gaps = paths
+        .len()
+        .saturating_sub(1)
+        .saturating_mul(usize::from(GROUP_GAP_HEIGHT));
+    usize::from(TABLE_HEADER_HEIGHT)
+        .saturating_add(count)
+        .saturating_add(headings)
+        .saturating_add(gaps)
 }
 
 #[cfg(test)]
@@ -545,7 +626,7 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![hidden_group(10, &[])], start());
 
-        assert!(roster.tiled_ids(&hidden_when_idle()).is_empty());
+        assert!(roster.tiled_demands(&hidden_when_idle()).ids().is_empty());
         // The summary is not what the list holds back: the command is
         // running, and one line saying so is the whole of what it has.
         assert_eq!(roster.groups().len(), 1);
@@ -556,7 +637,7 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![hidden_group(10, &[11])], start());
 
-        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
+        assert_eq!(roster.tiled_demands(&hidden_when_idle()).ids(), vec![10]);
     }
 
     #[test]
@@ -568,9 +649,9 @@ mod tests {
 
         // The invocation is stamped rather than gone, so the cell goes
         // out through the fade instead of vanishing under the reader.
-        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
+        assert_eq!(roster.tiled_demands(&hidden_when_idle()).ids(), vec![10]);
         roster.advance(now + Duration::from_secs(1), Duration::ZERO);
-        assert!(roster.tiled_ids(&hidden_when_idle()).is_empty());
+        assert!(roster.tiled_demands(&hidden_when_idle()).ids().is_empty());
     }
 
     #[test]
@@ -578,6 +659,6 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![group(10, &[])], start());
 
-        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
+        assert_eq!(roster.tiled_demands(&hidden_when_idle()).ids(), vec![10]);
     }
 }

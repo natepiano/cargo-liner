@@ -137,6 +137,16 @@ pub(crate) const MIN_TILE_HEIGHT: u16 = 3;
 /// Columns one cell standing alone needs, its two border lines
 /// included. A cell with a neighbour to its right costs one less.
 pub(crate) const MIN_TILE_WIDTH: u16 = 8;
+/// Rows a cell spends on its own border, which is what its contents
+/// have to be given on top of. Two, though neighbours share one of
+/// them, so a stacked cell costs less than this and the division is a
+/// little conservative rather than a little short.
+pub(crate) const TILE_BORDER_ROWS: u16 = 2;
+/// Rows of content one step of demand is worth. A cell asks for its
+/// content rounded up to a whole number of these, so a column
+/// re-divides on the move from a quiet cell to a busy one rather than
+/// on every scan that added a row or rewrapped a command line.
+pub(crate) const TILE_DEMAND_STEP: usize = 3;
 /// Laid over the comparison buffer to make every cell differ from
 /// anything a frame can render, which is what turns the next draw into
 /// a full repaint.
@@ -191,6 +201,14 @@ pub(crate) const TILE_ANIMATION_MILLIS: u64 = 720;
 /// Floor on one step of a ripple, so a long one still reads as cells
 /// moving rather than flickering past.
 pub(crate) const MIN_STEP_MILLIS: u64 = 60;
+/// How long the resize a step of the focus ring asks for takes.
+///
+/// Far shorter than [`TILE_ANIMATION_MILLIS`], because the two are
+/// different events: a cell opening or closing happens on its own and
+/// wants watching, while this one is a key the developer just pressed
+/// and is already pressing again. At the full travel, holding an arrow
+/// down would leave the grid still settling from the first press.
+pub(crate) const FOCUS_ANIMATION_MILLIS: u64 = 140;
 /// Steps the grid queues before it gives up propagating and settles the
 /// rest in one move. A whole test suite finishing at once would take
 /// longer to walk through cell by cell than anyone would watch.
@@ -198,6 +216,16 @@ pub(crate) const MAX_PENDING_STEPS: usize = 64;
 /// Kept between a cell's left border and the number it carries, so the
 /// number is not flush against the line.
 pub(crate) const TILE_NUMBER_INDENT: &str = " ";
+/// Ahead of what a cell's contents ask for, in the readout along the
+/// foot of every cell.
+pub(crate) const TILE_ROWS_CONTENT_LABEL: &str = "content rows: ";
+/// Ahead of what the cell was given, in the same readout.
+pub(crate) const TILE_ROWS_CELL_LABEL: &str = " cell rows: ";
+/// Kept between that readout and the cell's right border, so it is not
+/// flush against the line.
+pub(crate) const TILE_ROWS_RIGHT_INSET: u16 = 1;
+/// Rows the readout takes: it is one line along the foot of the cell.
+pub(crate) const TILE_ROWS_READOUT_HEIGHT: u16 = 1;
 
 // running-cargo table
 /// Process names that are the genuine cargo binary.

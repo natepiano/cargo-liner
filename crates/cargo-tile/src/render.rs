@@ -93,6 +93,10 @@ use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::TILE_NUMBER_INDENT;
+use crate::constants::TILE_ROWS_CELL_LABEL;
+use crate::constants::TILE_ROWS_CONTENT_LABEL;
+use crate::constants::TILE_ROWS_READOUT_HEIGHT;
+use crate::constants::TILE_ROWS_RIGHT_INSET;
 use crate::globals::AppGlobalAction;
 use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
@@ -143,10 +147,10 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
     let initial_rows = app.loaded_config.config.tiles.initial_rows();
     app.tiles.set_layout(area, initial_rows);
-    let ids = app
+    let demands = app
         .roster
-        .tiled_ids(&app.loaded_config.config.commands.hidden_when_idle);
-    app.tiles.sync(&ids, initial_rows);
+        .tiled_demands(&app.loaded_config.config.commands.hidden_when_idle);
+    app.tiles.sync(&demands, initial_rows);
     let placements = app.tiles.placements(area, initial_rows);
     let mut grid_lines = GridLines::new(area);
     for placement in &placements {
@@ -154,6 +158,11 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
         // cell is painted on, which focus moves.
         let ground = pane_background(placement.frame.is_focused());
         let hidden_when_idle = &app.loaded_config.config.commands.hidden_when_idle;
+        let content_rows = match placement.content {
+            TileContent::Summary => demands.summary,
+            TileContent::Group(id) => demands.rows_for(id),
+            TileContent::Empty(_) => 0,
+        };
         draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
             draw_contents(
                 buffer,
@@ -163,6 +172,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
                 ground,
                 hidden_when_idle,
             );
+            draw_rows_readout(buffer, inner, content_rows);
         });
         match placement.content {
             TileContent::Summary => {
@@ -184,6 +194,57 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
         default_pane_chrome(),
         PaneBorders::Shared,
     );
+}
+
+/// Write what a cell's contents ask for against what the cell was
+/// given, along the foot of the cell and over whatever its contents
+/// drew there.
+///
+/// `rows` is the unrounded count the contents would take if nothing
+/// stopped them -- what [`crate::tiles`] rounds to a step of demand
+/// before dividing a column by it -- and `inner.height` is the rows the
+/// cell actually has to draw into, which is one short of its allotment
+/// wherever it shares a border with the cell below. The count is
+/// written green while it fits and red once it does not.
+fn draw_rows_readout(buffer: &mut Buffer, inner: Rect, rows: usize) {
+    let asked = u16::try_from(rows).unwrap_or(u16::MAX);
+    let reading = if asked <= inner.height {
+        success_color()
+    } else {
+        error_color()
+    };
+    let line = Line::from(vec![
+        Span::styled(TILE_ROWS_CONTENT_LABEL, Style::default().fg(label_color())),
+        Span::styled(rows.to_string(), Style::default().fg(reading)),
+        Span::styled(TILE_ROWS_CELL_LABEL, Style::default().fg(label_color())),
+        Span::styled(
+            inner.height.to_string(),
+            Style::default().fg(text_default()),
+        ),
+    ]);
+    let Some(area) = readout_area(inner, u16::try_from(line.width()).unwrap_or(u16::MAX)) else {
+        return;
+    };
+    Paragraph::new(line).render(area, buffer);
+}
+
+/// The last row of a cell's interior, right-aligned and held off the
+/// border, or `None` when the cell has no room for the readout at all.
+fn readout_area(inner: Rect, width: u16) -> Option<Rect> {
+    let room = inner.width.saturating_sub(TILE_ROWS_RIGHT_INSET);
+    if inner.height < TILE_ROWS_READOUT_HEIGHT || room == 0 {
+        return None;
+    }
+    let width = width.min(room);
+    Some(Rect {
+        x: inner
+            .right()
+            .saturating_sub(TILE_ROWS_RIGHT_INSET)
+            .saturating_sub(width),
+        y: inner.bottom().saturating_sub(TILE_ROWS_READOUT_HEIGHT),
+        width,
+        height: TILE_ROWS_READOUT_HEIGHT,
+    })
 }
 
 /// What a cell holds inside its borders. `ground` is the colour the
