@@ -105,6 +105,7 @@ uuid_identifier!(ReservationId);
 uuid_identifier!(CoordinationRunId);
 uuid_identifier!(EdgeId);
 uuid_identifier!(EventId);
+uuid_identifier!(ForcedIntegrationPermitId);
 uuid_identifier!(RepoInstanceId);
 uuid_identifier!(WorktreeId);
 
@@ -134,6 +135,7 @@ uuid_identifier_minter!(ReservationId);
 uuid_identifier_minter!(CoordinationRunId);
 uuid_identifier_minter!(EdgeId);
 uuid_identifier_minter!(EventId);
+uuid_identifier_minter!(ForcedIntegrationPermitId);
 uuid_identifier_minter!(RepoInstanceId);
 uuid_identifier_minter!(WorktreeId);
 

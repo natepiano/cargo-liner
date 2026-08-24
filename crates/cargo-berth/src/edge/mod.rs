@@ -29,9 +29,15 @@ use crate::answer::AuthorizedOverlapSet;
 use crate::answer::OverlapAuthorizationReason;
 use crate::ids::EdgeId;
 use crate::ids::EventId;
+use crate::ids::GitObjectId;
+use crate::ids::ProjectionGeneration;
 use crate::ids::ReservationId;
+use crate::ledger::ClaimSource;
+use crate::ledger::JournalActor;
+use crate::ledger::ReservationPurpose;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::ReleaseDisposition;
+use crate::reservation::ReservationLifecycle;
 use crate::scope::ReservationScope;
 use crate::scope::ReservationScopeSet;
 
@@ -141,6 +147,117 @@ pub(crate) struct OrderingEdge {
     declaration_event_id: EventId,
     /// How the ordering relationship entered the journal.
     declaration:          EdgeDeclaration,
+}
+
+/// One read-only view of every integration constraint at a journal generation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct IntegrationConstraintProjection {
+    /// The journal generation from which every reservation and hold was rebuilt.
+    pub(crate) generation:   ProjectionGeneration,
+    /// The retained reservation facts required by a denial or board row.
+    pub(crate) reservations: Vec<IntegrationReservationFacts>,
+    /// Only relationships that currently hold at the accompanying repository snapshot.
+    pub(crate) holds:        Vec<IntegrationHold>,
+}
+
+/// Reservation material shared by the trunk gate and the later board renderer.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct IntegrationReservationFacts {
+    /// The reservation these facts describe.
+    pub(crate) reservation_id: ReservationId,
+    /// The actor that acquired the reservation.
+    pub(crate) actor:          JournalActor,
+    /// The plan-and-phase or explicit provenance supplied at acquisition.
+    pub(crate) source:         ClaimSource,
+    /// The caller's explanation of the protected work.
+    pub(crate) purpose:        ReservationPurpose,
+    /// The complete normalized footprint, not only one edge's overlap.
+    pub(crate) scopes:         ReservationScopeSet,
+    /// The reservation's replayed progress state.
+    pub(crate) lifecycle:      ReservationLifecycle,
+    /// The commit whose newly-reachable appearance identifies this reservation.
+    pub(crate) subject:        IntegrationSubject,
+}
+
+/// The commit identity available for matching a reservation to a proposed ref update.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum IntegrationSubject {
+    /// This commit is the reservation's current integration subject.
+    Commit { object_id: GitObjectId },
+    /// The holder worktree had no resolvable current head.
+    WorktreeHeadUnavailable,
+    /// A terminal reservation without a checkpoint has no integration subject.
+    NotApplicable,
+}
+
+/// A directed edge or symmetric deferral that currently prevents integration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum IntegrationHold {
+    /// A derived ordering edge still holds its successor.
+    OrderingEdge {
+        /// The stable edge identity.
+        edge_id:     EdgeId,
+        /// The reservation that must be incorporated first.
+        predecessor: ReservationId,
+        /// The reservation this hold blocks.
+        successor:   ReservationId,
+        /// The exact approved overlap scopes that justified this edge.
+        scopes:      ReservationScopeSet,
+        /// Why the order was selected.
+        reason:      OrderingReason,
+        /// The structurally holding readiness value and its precise recovery case.
+        readiness:   EdgeReadiness,
+    },
+    /// A defer answer holds both named endpoints until a direction is selected.
+    DeferredOverlap {
+        /// The claim event that first recorded this unresolved answer.
+        declaration_event_id: EventId,
+        /// The reservation whose claim carried the answer.
+        deferred:             ReservationId,
+        /// The exact counterpart named by that answer.
+        blocker:              ReservationId,
+        /// The exact approved overlap scopes.
+        scopes:               ReservationScopeSet,
+        /// Why the ordering decision was deferred.
+        reason:               OverlapAuthorizationReason,
+    },
+}
+
+impl IntegrationConstraintProjection {
+    /// Find the retained facts for one reservation.
+    pub(crate) fn reservation(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<&IntegrationReservationFacts, MissingReadinessFact> {
+        self.reservations
+            .iter()
+            .find(|reservation| reservation.reservation_id == reservation_id)
+            .ok_or(MissingReadinessFact::Reservation(reservation_id))
+    }
+
+    /// Iterate only holds that prevent this reservation from integrating now.
+    pub(crate) fn holds_for(
+        &self,
+        reservation_id: ReservationId,
+    ) -> impl Iterator<Item = &IntegrationHold> {
+        self.holds
+            .iter()
+            .filter(move |hold| hold.blocks(reservation_id))
+    }
+}
+
+impl IntegrationHold {
+    /// Return whether this relationship currently blocks the supplied reservation.
+    pub(crate) fn blocks(&self, reservation_id: ReservationId) -> bool {
+        match self {
+            Self::OrderingEdge { successor, .. } => *successor == reservation_id,
+            Self::DeferredOverlap {
+                deferred, blocker, ..
+            } => *deferred == reservation_id || *blocker == reservation_id,
+        }
+    }
 }
 
 impl OrderingEdge {

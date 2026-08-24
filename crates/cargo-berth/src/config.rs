@@ -31,12 +31,12 @@ pub(crate) struct BerthConfig {
     /// The maximum number of declared ordering edges the graph may contain.
     pub(crate) maximum_ordering_edges: u32,
     /// Whether the trunk gate reports or rejects an invalid integration.
-    gate_mode:                         GateMode,
+    pub(crate) gate_mode:              GateMode,
 }
 
 /// The repository's selected trunk-gate policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GateMode {
+pub(crate) enum GateMode {
     /// Evaluate the gate and report its decision without rejecting the update.
     Observe,
     /// Reject updates that violate the gate's ordering decision.
@@ -195,6 +195,9 @@ impl<Value> ConfigValue<Value> {
 }
 
 impl GateMode {
+    /// Return whether invalid trunk updates must be rejected.
+    pub(crate) const fn enforces(self) -> bool { matches!(self, Self::Enforce) }
+
     fn parse(value: &str) -> Result<Self, ConfigError> {
         match parse_toml_string(value)?.as_str() {
             "observe" => Ok(Self::Observe),

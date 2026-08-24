@@ -111,13 +111,20 @@ impl RepositorySnapshot {
         }
     }
 
-    pub(super) fn reservation(
+    pub(crate) fn reservation(
         &self,
         reservation_id: ReservationId,
     ) -> Result<&RepositoryReservationSnapshot, MissingReadinessFact> {
         self.reservations
             .get(&reservation_id)
             .ok_or(MissingReadinessFact::Reservation(reservation_id))
+    }
+
+    /// Iterate the one grouped reachability result recorded per graph predecessor.
+    pub(crate) fn predecessor_reachability(
+        &self,
+    ) -> impl Iterator<Item = (&ReservationId, &PredecessorReachability)> {
+        self.predecessor_reachability.iter()
     }
 
     pub(super) fn successor_reachability(

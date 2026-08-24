@@ -712,6 +712,15 @@ impl Reservation {
     /// Return the reservation's owning actor.
     pub(crate) const fn actor(&self) -> &JournalActor { &self.actor }
 
+    /// Borrow the normalized scopes this reservation currently protects.
+    pub(crate) const fn scopes(&self) -> &ReservationScopeSet { &self.scopes }
+
+    /// Borrow the external provenance recorded when this reservation was claimed.
+    pub(crate) const fn source(&self) -> &ClaimSource { &self.source }
+
+    /// Borrow the caller's explanation of the work this reservation protects.
+    pub(crate) const fn purpose(&self) -> &ReservationPurpose { &self.purpose }
+
     /// Return the canonical root last validated for the owning worktree.
     pub(crate) const fn worktree_root(&self) -> &CanonicalWorktreeRoot { &self.worktree_root }
 

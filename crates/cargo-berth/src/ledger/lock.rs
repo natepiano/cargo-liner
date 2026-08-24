@@ -11,7 +11,8 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::constants::MUTATION_LOCK_RETRY_INTERVAL;
+use super::constants::MUTATION_LOCK_INITIAL_RETRY_INTERVAL;
+use super::constants::MUTATION_LOCK_MAXIMUM_RETRY_INTERVAL;
 
 /// A held advisory lock whose descriptor releases automatically on process death.
 #[derive(Debug)]
@@ -32,6 +33,7 @@ impl MutationLock {
             .truncate(false)
             .open(lock_path)?;
         let started_at = Instant::now();
+        let mut retry_interval = MUTATION_LOCK_INITIAL_RETRY_INTERVAL;
         loop {
             match descriptor.try_lock() {
                 Ok(()) => return Ok(Self { descriptor }),
@@ -40,10 +42,10 @@ impl MutationLock {
                     if elapsed >= acquisition_timeout {
                         return Err(MutationLockError::AcquisitionTimedOut);
                     }
-                    thread::sleep(
-                        MUTATION_LOCK_RETRY_INTERVAL
-                            .min(acquisition_timeout.saturating_sub(elapsed)),
-                    );
+                    thread::sleep(retry_interval.min(acquisition_timeout.saturating_sub(elapsed)));
+                    retry_interval = retry_interval
+                        .saturating_mul(2)
+                        .min(MUTATION_LOCK_MAXIMUM_RETRY_INTERVAL);
                 },
                 Err(TryLockError::Error(error)) => {
                     return Err(MutationLockError::Io(error));

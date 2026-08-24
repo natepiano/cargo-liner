@@ -13,6 +13,8 @@ use crate::alert::Alert;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::edge::EdgeReplayError;
+use crate::edge::IntegrationConstraintProjection;
+use crate::edge::MissingReadinessFact;
 use crate::edge::OrderingGraph;
 use crate::edge::PredecessorReachability;
 use crate::edge::RepositoryReservationEvidence;
@@ -25,6 +27,8 @@ use crate::git::CandidateHeadReachability;
 use crate::git::DescendantCommitQuery;
 use crate::git::GitError;
 use crate::ids::CoordinationRunId;
+use crate::ids::GitObjectId;
+use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
@@ -76,6 +80,19 @@ pub(crate) struct ReconciledEvidence {
 struct ReconciliationPlan {
     operations: Vec<JournalOperation>,
     action:     ReconciliationAction,
+}
+
+/// Actual-trunk reconciliation plus proposed-trunk constraints prepared under one lock.
+pub(crate) struct GateReconciliation {
+    reconciliation: ReconciliationPlan,
+    constraints:    IntegrationConstraintProjection,
+    reservations:   RetainedReservationSet,
+}
+
+/// A gate decision committed together with any reconciliation and permit records.
+pub(crate) struct GateReconciliationAction<Decision> {
+    reconciliation: ReconciliationAction,
+    decision:       Decision,
 }
 
 #[derive(Default)]
@@ -297,6 +314,146 @@ fn build_plan(
         },
     })
 }
+
+/// Prepare the actual reconciliation and proposed-ref constraint read from one replay.
+///
+/// Beyond the one fixed `rev-list` used to identify newly reachable commits, the hook performs
+/// one `cat-file` batch and at most one grouped `rev-list` for each protected graph predecessor,
+/// independent of the total retained-reservation count. The proposed-trunk view reuses those
+/// reachability facts and changes only trunk evidence.
+pub(crate) fn prepare_gate_reconciliation(
+    events: &[crate::ledger::JournalEvent],
+    generation: ProjectionGeneration,
+    worktree_context: &WorktreeContext,
+    ledger_repository: RepoInstanceId,
+    berth_config: &BerthConfig,
+    proposed_trunk: GitObjectId,
+) -> Result<GateReconciliation, GateReconciliationError> {
+    let reservations =
+        RetainedReservationSet::replay(events).map_err(GateReconciliationError::Reservation)?;
+    let ordering_graph = OrderingGraph::replay(events).map_err(GateReconciliationError::Edge)?;
+    let worktree_registry = WorktreeRegistry::read(worktree_context.repository_root())
+        .map_err(GateReconciliationError::WorktreeRegistry)?;
+    let reconciliation = build_plan(
+        &reservations,
+        &ordering_graph,
+        RepositoryObservationScope::CurrentOrderingGraph,
+        &worktree_registry,
+        ledger_repository,
+        worktree_context,
+        berth_config,
+    )
+    .map_err(GateReconciliationError::Reservation)?;
+    let proposed_snapshot = observe_proposed_trunk(
+        &reservations,
+        &reconciliation.action.repository_snapshot,
+        worktree_context,
+        proposed_trunk,
+    )?;
+    let constraints = ordering_graph
+        .integration_constraints(&reservations, &proposed_snapshot, generation)
+        .map_err(GateReconciliationError::MissingReadinessFact)?;
+    Ok(GateReconciliation {
+        reconciliation,
+        constraints,
+        reservations,
+    })
+}
+
+fn observe_proposed_trunk(
+    reservations: &RetainedReservationSet,
+    actual_snapshot: &RepositorySnapshot,
+    worktree_context: &WorktreeContext,
+    proposed_trunk: GitObjectId,
+) -> Result<RepositorySnapshot, GateReconciliationError> {
+    let repository_trunk = RepositoryTrunk::Resolved(proposed_trunk);
+    let reservation_snapshots = reservations
+        .iter()
+        .map(|reservation| {
+            let actual_reservation = actual_snapshot
+                .reservation(reservation.id())
+                .map_err(GateReconciliationError::MissingReadinessFact)?;
+            Ok(RepositoryReservationSnapshot {
+                reservation_id:    reservation.id(),
+                worktree_liveness: actual_reservation.worktree_liveness,
+                worktree_head:     actual_reservation.worktree_head.clone(),
+                evidence:          repository_evidence(
+                    worktree_context.repository_root(),
+                    reservation,
+                    &repository_trunk,
+                )
+                .map_err(GateReconciliationError::Reservation)?,
+            })
+        })
+        .collect::<Result<Vec<_>, GateReconciliationError>>()?;
+    let predecessor_reachability = actual_snapshot
+        .predecessor_reachability()
+        .map(|(reservation_id, reachability)| (*reservation_id, reachability.clone()))
+        .collect();
+    Ok(RepositorySnapshot::new(
+        repository_trunk,
+        reservation_snapshots,
+        predecessor_reachability,
+    ))
+}
+
+impl GateReconciliation {
+    /// Borrow the shared gate-and-board projection prepared at this generation.
+    pub(crate) const fn constraints(&self) -> &IntegrationConstraintProjection { &self.constraints }
+
+    /// Borrow reservations when a stateful caller validates its marker-derived actor.
+    pub(crate) const fn reservations(&self) -> &RetainedReservationSet { &self.reservations }
+
+    /// Join a gate decision and its journal records to the prepared reconciliation.
+    pub(crate) fn into_action<Decision>(
+        mut self,
+        additional_operations: Vec<JournalOperation>,
+        decision: Decision,
+    ) -> (Vec<JournalOperation>, GateReconciliationAction<Decision>) {
+        self.reconciliation.operations.extend(additional_operations);
+        (
+            self.reconciliation.operations,
+            GateReconciliationAction {
+                reconciliation: self.reconciliation.action,
+                decision,
+            },
+        )
+    }
+}
+
+impl<Decision> GateReconciliationAction<Decision> {
+    /// Commit reconciliation repairs while retaining the already validated gate decision.
+    pub(crate) fn commit(self) -> Result<(ReconciliationReport, Decision), ReconcileError> {
+        let report = self.reconciliation.commit()?;
+        Ok((report, self.decision))
+    }
+}
+
+/// A locked gate read could not produce complete replayed constraints.
+#[derive(Debug)]
+pub(crate) enum GateReconciliationError {
+    /// Reservation replay failed.
+    Reservation(ReservationReplayError),
+    /// Ordering-graph replay failed.
+    Edge(EdgeReplayError),
+    /// The repository's worktree registry could not be observed.
+    WorktreeRegistry(WorktreeRegistryError),
+    /// A derived readiness value lacked a required repository fact.
+    MissingReadinessFact(MissingReadinessFact),
+}
+
+impl Display for GateReconciliationError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reservation(error) => error.fmt(formatter),
+            Self::Edge(error) => error.fmt(formatter),
+            Self::WorktreeRegistry(error) => error.fmt(formatter),
+            Self::MissingReadinessFact(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for GateReconciliationError {}
 
 fn repository_evidence(
     repository_root: &Path,

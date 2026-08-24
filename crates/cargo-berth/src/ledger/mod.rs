@@ -16,6 +16,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 
 use constants::COORDINATION_RUN_ENVIRONMENT;
 use constants::COORDINATION_RUN_MARKER_FILE_NAME;
@@ -28,22 +29,13 @@ use constants::MUTATING_VERB_CONTENTION_TOLERANCE;
 use constants::PROJECTION_FILE_NAME;
 use constants::REPO_INSTANCE_ID_FILE_NAME;
 use constants::WORKTREE_ID_FILE_NAME;
-#[cfg_attr(
-    not(test),
-    expect(
-        unused_imports,
-        reason = "The edit-hook verb constructs the bypass payload; no verb reaches it yet."
-    )
-)]
+pub(crate) use journal::BypassCause;
 pub(crate) use journal::BypassedAction;
 pub(crate) use journal::CanonicalWorktreeRoot;
 pub(crate) use journal::ClaimHeadCommit;
 pub(crate) use journal::ClaimHeadSnapshot;
 pub(crate) use journal::ClaimSource;
-#[expect(
-    unused_imports,
-    reason = "The claim and check verbs construct these operation payloads; no verb reaches them yet."
-)]
+pub(crate) use journal::ForcedIntegrationReason;
 pub(crate) use journal::FullRefName;
 use journal::Journal;
 pub(crate) use journal::JournalActor;
@@ -60,6 +52,9 @@ pub(crate) use journal::ReservationScope;
 pub(crate) use journal::ReservationScopeSet;
 pub(crate) use journal::ReservationSnapshot;
 pub(crate) use journal::ScopeKind;
+pub(crate) use journal::SkippedDeferral;
+pub(crate) use journal::SkippedIntegrationHoldSet;
+pub(crate) use journal::SkippedOrderingEdge;
 pub(crate) use journal::TrunkCommitAtClaim;
 #[expect(
     unused_imports,
@@ -150,6 +145,15 @@ pub(crate) struct LedgerInitialization {
     pub(crate) ledger:        InitializationState,
     /// Whether this call created the repository configuration or retained it.
     pub(crate) configuration: InitializationState,
+}
+
+/// The exact journal material discarded by confirmed reinitialization.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LedgerReinitialization {
+    /// The number of bytes removed from `journal.ndjson`.
+    pub(crate) discarded_bytes:            u64,
+    /// The number of newline-terminated records that were present, valid or corrupt.
+    pub(crate) discarded_complete_records: u64,
 }
 
 /// The coordination identity an edit check can prove for its current process.
@@ -494,14 +498,7 @@ impl ReplayedLedgerState<'_> {
     pub(crate) const fn events(&self) -> &[JournalEvent] { self.events }
 
     /// Return the projection generation represented by the replay.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The claim engine inspects the replay point; no verb reaches it yet."
-        )
-    )]
-    const fn generation(&self) -> ProjectionGeneration { self.generation }
+    pub(crate) const fn generation(&self) -> ProjectionGeneration { self.generation }
 
     /// Return the journal byte offset represented by the replay.
     #[cfg_attr(
@@ -628,6 +625,38 @@ impl Ledger {
     ) -> Result<LedgerTransactionOutcome<Rejection>, LedgerTransactionError> {
         let mut transaction = self
             .begin_mutation()
+            .map_err(LedgerTransactionError::from_ledger_error)?;
+        let replayed_state = ReplayedLedgerState {
+            events:             &transaction.replay.events,
+            generation:         transaction.replay.generation,
+            journal_end_offset: transaction.replay.end_offset,
+        };
+        match validate(replayed_state) {
+            TransactionValidation::Append(operation) => {
+                let event = transaction.append(worktree_id, coordination_run_id, *operation)?;
+                transaction
+                    .publish(&self.paths)
+                    .map_err(LedgerTransactionError::LedgerUnreadable)?;
+                Ok(LedgerTransactionOutcome::Appended(Box::new(event)))
+            },
+            TransactionValidation::Reject(rejection) => {
+                transaction
+                    .publish_if_rebuild_required(&self.paths)
+                    .map_err(LedgerTransactionError::LedgerUnreadable)?;
+                Ok(LedgerTransactionOutcome::Rejected(rejection))
+            },
+        }
+    }
+
+    /// Attempt one bypass-audit append without ever waiting behind a live lock holder.
+    pub(crate) fn try_transact<Rejection>(
+        &self,
+        worktree_id: WorktreeId,
+        coordination_run_id: CoordinationRunId,
+        validate: impl FnOnce(ReplayedLedgerState<'_>) -> TransactionValidation<Rejection>,
+    ) -> Result<LedgerTransactionOutcome<Rejection>, LedgerTransactionError> {
+        let mut transaction = self
+            .begin_mutation_with_tolerance(Duration::ZERO)
             .map_err(LedgerTransactionError::from_ledger_error)?;
         let replayed_state = ReplayedLedgerState {
             events:             &transaction.replay.events,
@@ -779,6 +808,38 @@ impl Ledger {
         Ok(())
     }
 
+    /// Discard journal truth only after the caller has confirmed pending orders were reviewed.
+    pub(crate) fn reinitialize_after_review(
+        repository_root: &Path,
+    ) -> Result<LedgerReinitialization, LedgerError> {
+        let ledger = Self::locate(repository_root)?;
+        if !ledger.paths.directory.is_dir() || !ledger.paths.repo_instance_id.is_file() {
+            return Err(LedgerError::NotInitialized);
+        }
+        let _lock = MutationLock::acquire(&ledger.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
+        let journal_bytes = match fs::read(&ledger.paths.journal) {
+            Ok(journal_bytes) => journal_bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(LedgerError::Io(error)),
+        };
+        let discarded_bytes = u64::try_from(journal_bytes.len())
+            .map_err(|_| LedgerError::JournalSizeUnrepresentable)?;
+        let complete_record_count = journal_bytes.split(|byte| *byte == b'\n').count() - 1;
+        let discarded_complete_records = u64::try_from(complete_record_count)
+            .map_err(|_| LedgerError::JournalSizeUnrepresentable)?;
+        let (journal, _) = Journal::open_or_create(&ledger.paths.journal)?;
+        journal.truncate()?;
+        let repo_instance_id = read_repo_instance_id(&ledger.paths.repo_instance_id)?;
+        let replay = Journal::replay_read_only(&ledger.paths.journal)?;
+        Projection::from_replay(repo_instance_id, &replay)
+            .publish(&ledger.paths.directory, &ledger.paths.projection)?;
+        fs::File::open(&ledger.paths.directory)?.sync_all()?;
+        Ok(LedgerReinitialization {
+            discarded_bytes,
+            discarded_complete_records,
+        })
+    }
+
     fn locate(repository_root: &Path) -> Result<Self, LedgerError> {
         let common_git_directory = git::common_directory(repository_root)?;
         Ok(Self::at_common_git_directory(&common_git_directory))
@@ -808,8 +869,15 @@ impl Ledger {
     }
 
     fn begin_mutation(&self) -> Result<LedgerTransaction, LedgerError> {
+        self.begin_mutation_with_tolerance(MUTATING_VERB_CONTENTION_TOLERANCE)
+    }
+
+    fn begin_mutation_with_tolerance(
+        &self,
+        contention_tolerance: Duration,
+    ) -> Result<LedgerTransaction, LedgerError> {
         self.require_existing()?;
-        let lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
+        let lock = MutationLock::acquire(&self.paths.lock, contention_tolerance)?;
         let repo_instance_id = read_repo_instance_id(&self.paths.repo_instance_id)?;
         let journal = Journal::open_existing(&self.paths.journal)?;
         self.begin_locked_transaction(
@@ -1069,6 +1137,10 @@ pub(crate) enum LedgerError {
     RepositoryIdentityMismatch,
     /// The projection counter can no longer advance.
     ProjectionGenerationExhausted,
+    /// The journal size could not be represented by the public reinitialization result.
+    JournalSizeUnrepresentable,
+    /// Best-effort bypass auditing could not wait for or encode the journal transaction.
+    BypassAuditUnavailable,
 }
 
 impl Display for LedgerError {
@@ -1122,6 +1194,12 @@ impl Display for LedgerError {
             },
             Self::ProjectionGenerationExhausted => {
                 formatter.write_str("projection generation counter is exhausted")
+            },
+            Self::JournalSizeUnrepresentable => {
+                formatter.write_str("journal size cannot be represented for reinitialization")
+            },
+            Self::BypassAuditUnavailable => {
+                formatter.write_str("the bypass audit could not be journalled immediately")
             },
         }
     }
@@ -1303,6 +1381,7 @@ mod tests {
     use tempfile::TempDir;
     use tempfile::tempdir;
 
+    use super::BypassCause;
     use super::BypassedAction;
     use super::COORDINATION_RUN_MARKER_FILE_NAME;
     use super::CommittedActionValidation;
@@ -1310,6 +1389,7 @@ mod tests {
     use super::CoordinationRunMarkerRemoval;
     use super::CorrectableTransactionInput;
     use super::EditAuthorization;
+    use super::ForcedIntegrationReason;
     use super::JournalEvent;
     use super::JournalOperation;
     use super::Ledger;
@@ -1321,6 +1401,7 @@ mod tests {
     use super::WorktreeContext;
     use super::worktree_identity;
     use crate::ids::CoordinationRunId;
+    use crate::ids::ForcedIntegrationPermitId;
     use crate::ids::RepoInstanceId;
     use crate::ids::ReservationId;
     use crate::ids::WorktreeId;
@@ -1653,7 +1734,13 @@ mod tests {
         let result = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
             TransactionValidation::<()>::Append(Box::new(JournalOperation::Bypass {
                 action: BypassedAction::Editing,
-                reason: "x".repeat(super::MAXIMUM_JOURNAL_RECORD_BYTES),
+                cause:  BypassCause::ForcedIntegration {
+                    permit_id: ForcedIntegrationPermitId::new(),
+                    reason:    "x"
+                        .repeat(super::MAXIMUM_JOURNAL_RECORD_BYTES)
+                        .parse::<ForcedIntegrationReason>()
+                        .expect("oversized reason should remain non-empty"),
+                },
             }))
         });
 
@@ -1769,6 +1856,7 @@ mod tests {
     mod sibling_style_validator {
         use crate::ids::CoordinationRunId;
         use crate::ids::WorktreeId;
+        use crate::ledger::BypassCause;
         use crate::ledger::BypassedAction;
         use crate::ledger::JournalOperation;
         use crate::ledger::Ledger;
@@ -1785,7 +1873,7 @@ mod tests {
                 assert_eq!(u64::from(state.journal_end_offset()), 0);
                 TransactionValidation::Append(Box::new(JournalOperation::Bypass {
                     action: BypassedAction::Editing,
-                    reason: "test a crate-visible transaction".to_owned(),
+                    cause:  BypassCause::EnvironmentOverride,
                 }))
             })
         }

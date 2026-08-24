@@ -4,6 +4,8 @@
 //! typed `payload` field. Consumers can continue reading the original fields,
 //! while newer consumers use `payload` instead of scraping `message`.
 
+use std::fmt::Write as _;
+
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -12,10 +14,15 @@ use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::config::InitializationState;
 use crate::edge::EdgeDeclarationRejection;
+use crate::edge::EdgeHold;
 use crate::edge::EdgeReadiness;
+use crate::edge::IntegrationHold;
 use crate::edge::OrderingEdge;
+use crate::edge::UnintegratedPredecessorEvidence;
 use crate::exit::BerthExit;
+use crate::gate::IntegrationViolation;
 use crate::ids::CoordinationRunId;
+use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
@@ -23,6 +30,7 @@ use crate::ledger::ClaimSource;
 use crate::ledger::LedgerInitialization;
 use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
+use crate::ledger::SkippedIntegrationHoldSet;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
@@ -88,6 +96,8 @@ enum OutputStatus {
     Initialized,
     /// Explicit repair rebuilt only the disposable journal projection.
     ProjectionRepaired,
+    /// Confirmed reinitialization discarded the reviewed journal state.
+    Reinitialized,
     /// The journal or its projection could not be safely read or published.
     LedgerUnreadable,
     /// An overlap-free edit check may proceed.
@@ -100,6 +110,8 @@ enum OutputStatus {
     OrderingEdgeLimitReached,
     /// One or more foreign reservations overlap the requested paths.
     BlockedByOverlap,
+    /// One or more ordering or deferral holds reject integration.
+    BlockedByOrdering,
     /// A permissive overlap answer needs a matching reviewed proposal.
     NeedsUserAuthorization,
     /// The caller can correct the request and retry without repairing the ledger.
@@ -151,6 +163,8 @@ enum OutputFacts {
     Init(InitializationPayload),
     /// Facts returned by `init --repair-projection`.
     ProjectionRepair(ProjectionRepairPayload),
+    /// Facts returned by confirmed journal reinitialization.
+    Reinitialize(ReinitializationPayload),
     /// Placeholder facts for an unimplemented board query.
     Board(PendingPayload),
     /// Facts returned by `check`.
@@ -161,8 +175,8 @@ enum OutputFacts {
     Release(ReleasePayload),
     /// Facts returned by `sequence`.
     Sequence(SequencePayload),
-    /// Placeholder facts for an unimplemented integration.
-    Integrate(PendingPayload),
+    /// Facts returned by `integrate`.
+    Integrate(IntegrationPayload),
     /// Facts returned by a recovery decision.
     Resolve(ResolvePayload),
     /// Facts returned by a renewal.
@@ -176,6 +190,56 @@ struct InitializationPayload {
     ledger:        InitializationResource,
     /// Whether initialization created the config or left an existing file intact.
     configuration: InitializationResource,
+    /// Whether every registered managed hook is now in force.
+    hooks:         Vec<InitializedManagedHook>,
+}
+
+/// The activation result for one hook in the managed-hook registry.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct InitializedManagedHook {
+    /// The git hook name from the managed-hook registry.
+    name:       String,
+    /// Whether the hook will run and how initialization reached that state.
+    activation: ManagedHookActivation,
+}
+
+/// Whether one managed hook will run after initialization.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ManagedHookActivation {
+    /// The managed hook is installed and executable.
+    Active {
+        /// Whether this call installed or retained the managed script.
+        installation: ActiveHookInstallation,
+    },
+    /// The managed hook is not in force.
+    Inactive {
+        /// Why initialization could not activate this hook.
+        reason: ManagedHookInactivity,
+    },
+}
+
+/// How an active managed hook reached its current state.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ActiveHookInstallation {
+    /// This initialization call created the hook.
+    Installed,
+    /// This initialization call retained or refreshed the managed hook.
+    Current,
+}
+
+/// Why a managed hook is not in force after initialization.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ManagedHookInactivity {
+    /// An unrelated hook still owns the hook name.
+    PreservedUnmanaged,
+    /// Filesystem or git access prevented hook installation.
+    InstallationFailed {
+        /// The error returned while installing this hook.
+        diagnostic: String,
+    },
 }
 
 /// The explicit guarantee reported after rebuilding the disposable projection.
@@ -185,6 +249,17 @@ struct ProjectionRepairPayload {
     projection: RepairedProjection,
     /// The journal mutation guarantee of explicit projection repair.
     journal:    ProjectionRepairJournalEffect,
+}
+
+/// The exact destructive effect of confirmed ledger reinitialization.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct ReinitializationPayload {
+    /// The journal bytes discarded after confirmation.
+    discarded_bytes:              u64,
+    /// The newline-terminated records present before truncation.
+    discarded_complete_records:   u64,
+    /// Environment bypass markers retained outside the unreadable journal.
+    pending_environment_bypasses: u64,
 }
 
 /// The disposable projection rebuilt by explicit repair.
@@ -216,6 +291,56 @@ enum InitializationResource {
 /// A deliberately empty typed placeholder for a verb whose engine arrives later.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct PendingPayload {}
+
+/// Typed outcomes returned by the trunk integration gate.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum IntegrationPayload {
+    /// The selected reservation entered trunk after a clear decision.
+    Integrated {
+        /// The reservation whose protected work entered trunk.
+        reservation_id: ReservationId,
+        /// The main object against which the update was validated.
+        previous:       GitObjectId,
+        /// The new main object installed by the update.
+        proposed:       GitObjectId,
+        /// The journal generation validated under the decision lock.
+        generation:     crate::ids::ProjectionGeneration,
+        /// How gate policy treated the update.
+        gate:           IntegratedGateOutcome,
+    },
+    /// Enforcing policy refused an out-of-order update.
+    Blocked {
+        /// The reservation the caller asked to integrate.
+        reservation_id: ReservationId,
+        /// The journal generation validated under the decision lock.
+        generation:     crate::ids::ProjectionGeneration,
+        /// Every exact hold that prevented integration.
+        violations:     Vec<IntegrationViolation>,
+    },
+}
+
+/// How a successful integration related to current gate policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum IntegratedGateOutcome {
+    /// No integration constraint held the reservation.
+    Clear,
+    /// Observe-only policy logged holds that enforcing mode would reject.
+    Observed {
+        /// The holds reported without rejecting the update.
+        violations: Vec<IntegrationViolation>,
+    },
+    /// A one-use permit was minted and consumed by the update.
+    Forced {
+        /// The durable permit identity.
+        permit_id:           ForcedIntegrationPermitId,
+        /// The exact holds the user chose to skip.
+        skipped_holds:       SkippedIntegrationHoldSet,
+        /// Holds on other entering reservations reported by observe-only policy.
+        observed_violations: Vec<IntegrationViolation>,
+    },
+}
 
 /// Typed outcomes returned by `resolve`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -566,17 +691,26 @@ impl OutputEnvelope {
     }
 
     /// Build the successful response for completed initialization.
-    pub(crate) fn initialized(initialization: LedgerInitialization) -> Self {
+    pub(crate) fn initialized(
+        initialization: LedgerInitialization,
+        hook_installations: &[crate::gate::install::ManagedHookInstallation],
+    ) -> Self {
+        let hooks = hook_installations
+            .iter()
+            .map(InitializedManagedHook::from)
+            .collect::<Vec<_>>();
+        let message = initialization_message(&hooks);
         Self {
-            verb:         CommandVerb::Init,
-            status:       OutputStatus::Initialized,
-            exit_code:    BerthExit::Clear,
+            verb: CommandVerb::Init,
+            status: OutputStatus::Initialized,
+            exit_code: BerthExit::Clear,
             reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      INITIALIZED_MESSAGE.to_owned(),
-            payload:      OutputPayload::from_facts(OutputFacts::Init(InitializationPayload {
-                ledger:        initialization.ledger.into(),
+            blocked_by: Vec::new(),
+            message,
+            payload: OutputPayload::from_facts(OutputFacts::Init(InitializationPayload {
+                ledger: initialization.ledger.into(),
                 configuration: initialization.configuration.into(),
+                hooks,
             })),
         }
     }
@@ -594,6 +728,101 @@ impl OutputEnvelope {
                 ProjectionRepairPayload {
                     projection: RepairedProjection::ReservationsJsonRebuilt,
                     journal:    ProjectionRepairJournalEffect::Unchanged,
+                },
+            )),
+        }
+    }
+
+    /// Build a successful trunk update after its locked gate decision.
+    pub(crate) fn integrated(integration_payload: IntegrationPayload) -> Self {
+        let IntegrationPayload::Integrated {
+            reservation_id,
+            gate,
+            ..
+        } = &integration_payload
+        else {
+            return Self::invalid_input(
+                CommandVerb::Integrate,
+                "an integrated response requires an integrated payload",
+            );
+        };
+        let policy = match gate {
+            IntegratedGateOutcome::Clear => "the ordering gate was clear",
+            IntegratedGateOutcome::Observed { .. } => {
+                "observe-only policy reported an ordering hold"
+            },
+            IntegratedGateOutcome::Forced { permit_id, .. } => {
+                return Self {
+                    verb:         CommandVerb::Integrate,
+                    status:       OutputStatus::Integrated,
+                    exit_code:    BerthExit::Clear,
+                    reservations: vec![*reservation_id],
+                    blocked_by:   Vec::new(),
+                    message:      format!(
+                        "Integrated reservation {reservation_id} using one-use permit {permit_id}."
+                    ),
+                    payload:      OutputPayload::from_facts(OutputFacts::Integrate(
+                        integration_payload,
+                    )),
+                };
+            },
+        };
+        Self {
+            verb:         CommandVerb::Integrate,
+            status:       OutputStatus::Integrated,
+            exit_code:    BerthExit::Clear,
+            reservations: vec![*reservation_id],
+            blocked_by:   Vec::new(),
+            message:      format!("Integrated reservation {reservation_id}; {policy}."),
+            payload:      OutputPayload::from_facts(OutputFacts::Integrate(integration_payload)),
+        }
+    }
+
+    /// Build an enforcing gate denial with complete reservation and recovery context.
+    pub(crate) fn integration_blocked(
+        reservation_id: ReservationId,
+        generation: crate::ids::ProjectionGeneration,
+        violations: Vec<IntegrationViolation>,
+    ) -> Self {
+        let blocked_by = integration_blockers(&violations);
+        let message = integration_blocked_message(reservation_id, &violations);
+        Self {
+            verb: CommandVerb::Integrate,
+            status: OutputStatus::BlockedByOrdering,
+            exit_code: BerthExit::BlockedByOrdering,
+            reservations: vec![reservation_id],
+            blocked_by,
+            message,
+            payload: OutputPayload::from_facts(OutputFacts::Integrate(
+                IntegrationPayload::Blocked {
+                    reservation_id,
+                    generation,
+                    violations,
+                },
+            )),
+        }
+    }
+
+    /// Build the result of confirmed journal reinitialization.
+    pub(crate) fn reinitialized(
+        discarded_bytes: u64,
+        discarded_complete_records: u64,
+        pending_environment_bypasses: u64,
+    ) -> Self {
+        Self {
+            verb:         CommandVerb::Init,
+            status:       OutputStatus::Reinitialized,
+            exit_code:    BerthExit::Clear,
+            reservations: Vec::new(),
+            blocked_by:   Vec::new(),
+            message:      format!(
+                "Reinitialized cargo-berth after confirmed order review; discarded {discarded_bytes} journal bytes across {discarded_complete_records} complete record(s). {pending_environment_bypasses} environment bypass marker(s) remain reportable."
+            ),
+            payload:      OutputPayload::from_facts(OutputFacts::Reinitialize(
+                ReinitializationPayload {
+                    discarded_bytes,
+                    discarded_complete_records,
+                    pending_environment_bypasses,
                 },
             )),
         }
@@ -993,8 +1222,8 @@ impl OutputPayload {
             | CommandVerb::Release
             | CommandVerb::Sequence
             | CommandVerb::Resolve
-            | CommandVerb::Renew => OutputFacts::NoFacts,
-            CommandVerb::Integrate => OutputFacts::Integrate(pending),
+            | CommandVerb::Renew
+            | CommandVerb::Integrate => OutputFacts::NoFacts,
         };
         Self::from_facts(facts)
     }
@@ -1039,6 +1268,143 @@ fn blocked_message(conflicts: &[ReservationConflict]) -> String {
     }
 }
 
+fn integration_blockers(violations: &[IntegrationViolation]) -> Vec<ReservationId> {
+    let mut blockers = violations
+        .iter()
+        .flat_map(|violation| violation.blocking_reservations.iter())
+        .map(|reservation| reservation.reservation_id)
+        .collect::<Vec<_>>();
+    blockers.sort_by_key(ToString::to_string);
+    blockers.dedup();
+    blockers
+}
+
+fn integration_blocked_message(
+    reservation_id: ReservationId,
+    violations: &[IntegrationViolation],
+) -> String {
+    let mut message = format!(
+        "Reservation {reservation_id} cannot enter main while its integration order is held."
+    );
+    for violation in violations {
+        let _ = write!(
+            message,
+            "\nEntering reservation {}: {}; purpose: {}; protected paths: {}.",
+            violation.reservation.reservation_id,
+            source_description(&violation.reservation.source),
+            purpose_description(&violation.reservation.purpose),
+            render_scopes(&violation.reservation.scopes),
+        );
+        for blocker in &violation.blocking_reservations {
+            let _ = write!(
+                message,
+                "\nBlocking reservation {}: {}; purpose: {}; protected paths: {}.",
+                blocker.reservation_id,
+                source_description(&blocker.source),
+                purpose_description(&blocker.purpose),
+                render_scopes(&blocker.scopes),
+            );
+        }
+        for hold in &violation.holds {
+            message.push('\n');
+            message.push_str(&integration_hold_message(
+                violation.reservation.reservation_id,
+                hold,
+            ));
+        }
+    }
+    let _ = write!(
+        message,
+        "\nTo deliberately proceed once: cargo-berth integrate {reservation_id} --force --why \"<reason>\". Last resort: CARGO_BERTH_BYPASS=1 <git command>."
+    );
+    message
+}
+
+fn integration_hold_message(subject: ReservationId, hold: &IntegrationHold) -> String {
+    match hold {
+        IntegrationHold::OrderingEdge {
+            edge_id,
+            predecessor,
+            scopes,
+            reason,
+            readiness,
+            ..
+        } => {
+            let recovery = match readiness {
+                EdgeReadiness::Holding {
+                    hold: EdgeHold::AwaitingPredecessorCheckpoint,
+                } => format!("run cargo-berth release {predecessor} after checkpointing it"),
+                EdgeReadiness::Holding {
+                    hold:
+                        EdgeHold::PredecessorNotOnTrunk {
+                            evidence: UnintegratedPredecessorEvidence::NotIntegrated,
+                        },
+                } => format!("run cargo-berth integrate {predecessor}"),
+                EdgeReadiness::Holding {
+                    hold:
+                        EdgeHold::PredecessorNotOnTrunk {
+                            evidence: UnintegratedPredecessorEvidence::TrunkRewritten,
+                        },
+                } => format!(
+                    "re-record verified evidence with cargo-berth resolve {predecessor} --integrated-as <trunk-oid>"
+                ),
+                EdgeReadiness::Holding {
+                    hold:
+                        EdgeHold::PredecessorNotOnTrunk {
+                            evidence: UnintegratedPredecessorEvidence::ObjectUnknown,
+                        },
+                } => "repair the unresolvable git object, then rerun the integration".to_owned(),
+                EdgeReadiness::Holding {
+                    hold: EdgeHold::AwaitingSuccessorIncorporation,
+                } => "rebase this worktree onto current main so it incorporates the predecessor"
+                    .to_owned(),
+                EdgeReadiness::Cancelled | EdgeReadiness::Fulfilled => {
+                    "rerun the gate because this edge is no longer holding".to_owned()
+                },
+            };
+            format!(
+                "Ordering edge {edge_id} waits on reservation {predecessor}; covered paths: {}; recorded reason: {reason}; recovery: {recovery}.",
+                render_scopes(scopes),
+            )
+        },
+        IntegrationHold::DeferredOverlap {
+            deferred,
+            blocker,
+            scopes,
+            reason,
+            ..
+        } => {
+            let counterpart = if *deferred == subject {
+                *blocker
+            } else {
+                *deferred
+            };
+            format!(
+                "Unresolved deferral with reservation {counterpart}; covered paths: {}; recorded reason: {reason}; recovery: cargo-berth sequence {counterpart} {subject} --why \"{}\".",
+                render_scopes(scopes),
+                shell_double_quoted(&reason.to_string()),
+            )
+        },
+    }
+}
+
+fn render_scopes(scopes: &ReservationScopeSet) -> String {
+    scopes
+        .as_slice()
+        .iter()
+        .map(|scope| {
+            let kind = match scope.kind {
+                ScopeKind::File => "file",
+                ScopeKind::Tree => "tree",
+            };
+            format!("{kind}:{}", scope.path)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn shell_double_quoted(value: &str) -> String { value.replace('\\', "\\\\").replace('"', "\\\"") }
+
 fn source_description(claim_source: &ClaimSource) -> String {
     match claim_source {
         ClaimSource::WorkPlan { plan, phase } => format!("plan {plan}, phase {phase}"),
@@ -1081,6 +1447,84 @@ impl From<InitializationState> for InitializationResource {
     }
 }
 
+impl From<&crate::gate::install::ManagedHookInstallation> for InitializedManagedHook {
+    fn from(installation: &crate::gate::install::ManagedHookInstallation) -> Self {
+        Self {
+            name:       installation.name().to_owned(),
+            activation: ManagedHookActivation::from(installation.activation()),
+        }
+    }
+}
+
+impl From<&crate::gate::install::ManagedHookActivationOutcome> for ManagedHookActivation {
+    fn from(activation: &crate::gate::install::ManagedHookActivationOutcome) -> Self {
+        match activation {
+            crate::gate::install::ManagedHookActivationOutcome::Active { installation } => {
+                Self::Active {
+                    installation: ActiveHookInstallation::from(*installation),
+                }
+            },
+            crate::gate::install::ManagedHookActivationOutcome::Inactive { reason } => {
+                Self::Inactive {
+                    reason: ManagedHookInactivity::from(reason),
+                }
+            },
+        }
+    }
+}
+
+impl From<crate::gate::install::ActiveManagedHookInstallation> for ActiveHookInstallation {
+    fn from(installation: crate::gate::install::ActiveManagedHookInstallation) -> Self {
+        match installation {
+            crate::gate::install::ActiveManagedHookInstallation::Installed => Self::Installed,
+            crate::gate::install::ActiveManagedHookInstallation::Current => Self::Current,
+        }
+    }
+}
+
+impl From<&crate::gate::install::ManagedHookInactivity> for ManagedHookInactivity {
+    fn from(reason: &crate::gate::install::ManagedHookInactivity) -> Self {
+        match reason {
+            crate::gate::install::ManagedHookInactivity::PreservedUnmanaged => {
+                Self::PreservedUnmanaged
+            },
+            crate::gate::install::ManagedHookInactivity::InstallationFailed { diagnostic } => {
+                Self::InstallationFailed {
+                    diagnostic: diagnostic.clone(),
+                }
+            },
+        }
+    }
+}
+
+fn initialization_message(hooks: &[InitializedManagedHook]) -> String {
+    let mut message = INITIALIZED_MESSAGE.to_owned();
+    for hook in hooks {
+        match &hook.activation {
+            ManagedHookActivation::Active { .. } => {},
+            ManagedHookActivation::Inactive {
+                reason: ManagedHookInactivity::PreservedUnmanaged,
+            } => {
+                let _ = write!(
+                    message,
+                    " Hook '{}' is occupied by an unmanaged hook, so cargo-berth protection for that hook is not active. Incorporate the existing hook in a wrapper or move it aside, then rerun cargo berth init.",
+                    hook.name
+                );
+            },
+            ManagedHookActivation::Inactive {
+                reason: ManagedHookInactivity::InstallationFailed { diagnostic },
+            } => {
+                let _ = write!(
+                    message,
+                    " Hook '{}' is not active because cargo-berth could not install it: {diagnostic}. Resolve the reported hook installation error, then rerun cargo berth init.",
+                    hook.name
+                );
+            },
+        }
+    }
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use super::CommandVerb;
@@ -1112,10 +1556,13 @@ mod tests {
 
     #[test]
     fn init_has_a_non_placeholder_status() {
-        let output_envelope = OutputEnvelope::initialized(LedgerInitialization {
-            ledger:        InitializationState::Created,
-            configuration: InitializationState::Existing,
-        });
+        let output_envelope = OutputEnvelope::initialized(
+            LedgerInitialization {
+                ledger:        InitializationState::Created,
+                configuration: InitializationState::Existing,
+            },
+            &[],
+        );
 
         assert_eq!(output_envelope.status, OutputStatus::Initialized);
         assert_eq!(output_envelope.exit_code, crate::exit::BerthExit::Clear);

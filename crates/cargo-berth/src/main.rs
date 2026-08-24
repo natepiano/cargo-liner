@@ -7,6 +7,7 @@ mod config;
 mod constants;
 mod edge;
 mod exit;
+mod gate;
 mod git;
 mod ids;
 mod ledger;

@@ -7,6 +7,7 @@
 use std::env;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -24,6 +25,7 @@ use crate::answer::OverlapProposalSubmission;
 use crate::answer::OverlapProposalToken;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::answer::PermissiveOverlapAuthorizationRequest;
+use crate::config::BerthConfig;
 use crate::constants::OVERLAP_WHY_ARGUMENT;
 use crate::constants::OVERLAP_WHY_ARGUMENT_ID;
 use crate::constants::OVERLAP_WHY_VALUE_NAME;
@@ -31,11 +33,16 @@ use crate::constants::PROPOSAL_ARGUMENT;
 use crate::constants::PROPOSAL_VALUE_NAME;
 use crate::edge::OrderingReason;
 use crate::exit::BerthExit;
+use crate::gate;
+use crate::gate::GateDecision;
+use crate::gate::GateError;
+use crate::gate::ReferenceTransactionPhase;
 use crate::git;
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
 use crate::ids::WorkPlanPhase;
 use crate::ledger::ClaimSource;
+use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
@@ -61,6 +68,8 @@ use crate::verb::claim;
 use crate::verb::claim::ClaimCoordinationRunSelection;
 use crate::verb::claim::ClaimRequest;
 use crate::verb::claim::PhaseStartSelection;
+use crate::verb::integrate;
+use crate::verb::integrate::IntegrateRequest;
 use crate::verb::release;
 use crate::verb::release::ReleaseRequest;
 use crate::verb::sequence;
@@ -82,6 +91,7 @@ const HEAD_ARGUMENT: &str = "head";
 const HEAD_VALUE_NAME: &str = "OID";
 const INTEGRATED_AS_ARGUMENT: &str = "integrated-as";
 const INTEGRATED_AS_ARGUMENT_ID: &str = "integrated_as";
+const INIT_OPERATION_GROUP: &str = "init-operation";
 const JSON_ARGUMENT: &str = "json";
 const PATH_VALUE_NAME: &str = "PATH";
 const PHASE_ARGUMENT: &str = "phase";
@@ -90,6 +100,9 @@ const PLAN_ARGUMENT: &str = "plan";
 const PLAN_VALUE_NAME: &str = "PLAN";
 const RECOVERED_ARGUMENT: &str = "recovered";
 const REPAIR_PROJECTION_ARGUMENT: &str = "repair-projection";
+const REPAIR_PROJECTION_ARGUMENT_ID: &str = "repair_projection";
+const REINITIALIZE_AFTER_REVIEW_ARGUMENT: &str = "reinitialize-after-review";
+const REINITIALIZE_AFTER_REVIEW_ARGUMENT_ID: &str = "reinitialize_after_review";
 const RESOLVE_REASONED_DISPOSITION_GROUP: &str = "resolve-reasoned-disposition";
 const RESOLVE_DISPOSITION_GROUP: &str = "resolve-disposition";
 const RETIRE_ORPHAN_ARGUMENT: &str = "retire-orphan";
@@ -147,6 +160,9 @@ enum Command {
     /// Renew a reservation's activity record.
     #[command(about = "Renew a reservation", long_about = RENEW_LONG_ABOUT)]
     Renew(ReservationArguments),
+    /// Private dispatch used only by the installed git hook.
+    #[command(name = "__reference-transaction", hide = true)]
+    ReferenceTransaction(ReferenceTransactionArguments),
 }
 
 /// The `--json` flag shared by every verb.
@@ -159,13 +175,33 @@ struct JsonOutput {
 
 /// Initialization arguments including explicit projection-only recovery.
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new(INIT_OPERATION_GROUP)
+        .args([
+            REPAIR_PROJECTION_ARGUMENT_ID,
+            REINITIALIZE_AFTER_REVIEW_ARGUMENT_ID,
+        ])
+        .multiple(false)
+))]
 struct InitArguments {
     /// Remove and rebuild only `reservations.json` from journal truth.
     #[arg(long = REPAIR_PROJECTION_ARGUMENT)]
-    repair_projection: bool,
+    repair_projection:         bool,
+    /// Discard journal state after confirming every pending order was reviewed.
+    #[arg(long = REINITIALIZE_AFTER_REVIEW_ARGUMENT)]
+    reinitialize_after_review: bool,
     /// The output representation requested for this command.
     #[command(flatten)]
-    json_output:       JsonOutput,
+    json_output:               JsonOutput,
+}
+
+/// Git's private hook lifecycle argument; update lines arrive on standard input.
+#[derive(Debug, Args)]
+struct ReferenceTransactionArguments {
+    /// The prepared, committed, or aborted reference-transaction phase.
+    phase:           ReferenceTransactionPhase,
+    /// The full configured trunk ref captured when the hook was installed.
+    trunk_reference: crate::ledger::FullRefName,
 }
 
 /// The output representation requested at the command line boundary.
@@ -392,8 +428,14 @@ impl Cli {
 
     /// Execute the parsed command and return its published process exit status.
     fn run(self) -> ExitCode {
-        let output_format = self.command.output_format();
-        let output_envelope = self.command.execute();
+        let command = match self.command {
+            Command::ReferenceTransaction(arguments) => {
+                return run_reference_transaction(arguments.phase, arguments.trunk_reference);
+            },
+            command => command,
+        };
+        let output_format = command.output_format();
+        let output_envelope = command.execute();
         let berth_exit = output_envelope.exit_code;
         emit_response(output_format, &output_envelope);
         berth_exit.into()
@@ -420,7 +462,9 @@ impl Command {
     /// Execute this command's available engine or return its typed placeholder.
     fn execute(self) -> OutputEnvelope {
         match self {
-            Self::Init(init_arguments) => initialize_ledger(init_arguments.repair_request()),
+            Self::Init(init_arguments) => {
+                initialize_ledger(init_arguments.initialization_request())
+            },
             Self::Board(_) => OutputEnvelope::unimplemented(CommandVerb::Board),
             Self::Check(path_arguments) => match path_arguments.into_check_request() {
                 Ok(check_request) => check::execute(check_request),
@@ -439,7 +483,12 @@ impl Command {
                     Err(error) => OutputEnvelope::invalid_input(CommandVerb::Sequence, &error),
                 }
             },
-            Self::Integrate(_) => OutputEnvelope::unimplemented(CommandVerb::Integrate),
+            Self::Integrate(integrate_arguments) => {
+                match integrate_arguments.into_integrate_request() {
+                    Ok(integrate_request) => integrate::execute(integrate_request),
+                    Err(error) => OutputEnvelope::invalid_input(CommandVerb::Integrate, &error),
+                }
+            },
             Self::Resolve(resolve_arguments) => match resolve_arguments.into_resolve_request() {
                 Ok(resolve_request) => recovery::resolve(resolve_request),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Resolve, &error),
@@ -447,6 +496,10 @@ impl Command {
             Self::Renew(reservation_arguments) => {
                 recovery::renew(reservation_arguments.into_renew_request())
             },
+            Self::ReferenceTransaction(_) => OutputEnvelope::invalid_input(
+                CommandVerb::Integrate,
+                "the private reference-transaction dispatch cannot use the public envelope path",
+            ),
         }
     }
 
@@ -463,6 +516,7 @@ impl Command {
             Self::Sequence(sequence_arguments) => sequence_arguments.json_output.output_format(),
             Self::Integrate(integrate_arguments) => integrate_arguments.json_output.output_format(),
             Self::Resolve(resolve_arguments) => resolve_arguments.json_output.output_format(),
+            Self::ReferenceTransaction(_) => CliOutputFormat::Text,
         }
     }
 
@@ -476,7 +530,7 @@ impl Command {
             Self::Claim(_) => CommandVerb::Claim,
             Self::Release(_) => CommandVerb::Release,
             Self::Sequence(_) => CommandVerb::Sequence,
-            Self::Integrate(_) => CommandVerb::Integrate,
+            Self::Integrate(_) | Self::ReferenceTransaction(_) => CommandVerb::Integrate,
             Self::Resolve(_) => CommandVerb::Resolve,
             Self::Renew(_) => CommandVerb::Renew,
         }
@@ -492,17 +546,18 @@ impl PathArguments {
 }
 
 #[derive(Clone, Copy)]
-enum ProjectionRepairRequest {
+enum InitializationRequest {
     Initialize,
     RepairProjection,
+    ReinitializeAfterReview,
 }
 
 impl InitArguments {
-    const fn repair_request(&self) -> ProjectionRepairRequest {
-        if self.repair_projection {
-            ProjectionRepairRequest::RepairProjection
-        } else {
-            ProjectionRepairRequest::Initialize
+    const fn initialization_request(&self) -> InitializationRequest {
+        match (self.repair_projection, self.reinitialize_after_review) {
+            (true, false) => InitializationRequest::RepairProjection,
+            (false, true) => InitializationRequest::ReinitializeAfterReview,
+            (false, false) | (true, true) => InitializationRequest::Initialize,
         }
     }
 }
@@ -644,6 +699,25 @@ impl SequenceArguments {
     }
 }
 
+impl IntegrateArguments {
+    fn into_integrate_request(self) -> Result<IntegrateRequest, String> {
+        let integration = match (self.force, self.why) {
+            (false, None) => gate::IntegrationRequest::EnforceOrdering,
+            (true, Some(reason)) => reason
+                .parse::<ForcedIntegrationReason>()
+                .map(gate::IntegrationRequest::ForceOnce)
+                .map_err(|error| error.to_string())?,
+            (true, None) | (false, Some(_)) => {
+                return Err("--force and --why must be supplied together".to_owned());
+            },
+        };
+        Ok(IntegrateRequest {
+            reservation_id: self.reservation_id,
+            integration,
+        })
+    }
+}
+
 impl ResolveArguments {
     fn into_resolve_request(self) -> Result<ResolveRequest, String> {
         let Self {
@@ -682,17 +756,66 @@ impl ResolveArguments {
     }
 }
 
-fn initialize_ledger(repair_request: ProjectionRepairRequest) -> OutputEnvelope {
+fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnvelope {
     match env::current_dir() {
         Ok(invocation_directory) => match git::repository_root(&invocation_directory) {
-            Ok(repository_root) => match repair_request {
-                ProjectionRepairRequest::Initialize => match Ledger::initialize(&repository_root) {
-                    Ok(initialization) => OutputEnvelope::initialized(initialization),
+            Ok(repository_root) => match initialization_request {
+                InitializationRequest::Initialize => match Ledger::initialize(&repository_root) {
+                    Ok(initialization) => {
+                        let worktree_context =
+                            match crate::ledger::WorktreeContext::discover(&repository_root) {
+                                Ok(worktree_context) => worktree_context,
+                                Err(error) => return initialization_error(error),
+                            };
+                        let berth_config = match BerthConfig::read(&repository_root) {
+                            Ok(berth_config) => berth_config,
+                            Err(error) => {
+                                return OutputEnvelope::ledger_unreadable(
+                                    CommandVerb::Init,
+                                    &error.to_string(),
+                                );
+                            },
+                        };
+                        let trunk_reference = format!("refs/heads/{}", berth_config.trunk);
+                        let hook_installations = gate::install::install_managed_hooks(
+                            worktree_context.common_git_directory(),
+                            worktree_context.repository_root(),
+                            &trunk_reference,
+                        );
+                        OutputEnvelope::initialized(initialization, &hook_installations)
+                    },
                     Err(error) => initialization_error(error),
                 },
-                ProjectionRepairRequest::RepairProjection => {
+                InitializationRequest::RepairProjection => {
                     match Ledger::repair_projection(&repository_root) {
                         Ok(()) => OutputEnvelope::projection_repaired(),
+                        Err(error) => initialization_error(error),
+                    }
+                },
+                InitializationRequest::ReinitializeAfterReview => {
+                    let worktree_context =
+                        match crate::ledger::WorktreeContext::discover(&repository_root) {
+                            Ok(worktree_context) => worktree_context,
+                            Err(error) => return initialization_error(error),
+                        };
+                    let pending_environment_bypasses =
+                        match gate::permit::pending_environment_bypass_count(
+                            worktree_context.common_git_directory(),
+                        ) {
+                            Ok(count) => count,
+                            Err(error) => {
+                                return OutputEnvelope::ledger_unreadable(
+                                    CommandVerb::Init,
+                                    &error.to_string(),
+                                );
+                            },
+                        };
+                    match Ledger::reinitialize_after_review(&repository_root) {
+                        Ok(reinitialization) => OutputEnvelope::reinitialized(
+                            reinitialization.discarded_bytes,
+                            reinitialization.discarded_complete_records,
+                            pending_environment_bypasses,
+                        ),
                         Err(error) => initialization_error(error),
                     }
                 },
@@ -700,6 +823,195 @@ fn initialize_ledger(repair_request: ProjectionRepairRequest) -> OutputEnvelope 
             Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string()),
         },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string()),
+    }
+}
+
+/// Writes a reference-transaction diagnostic as best effort so a stderr failure
+/// cannot change the gate's exit code.
+fn write_reference_transaction_diagnostic(arguments: std::fmt::Arguments<'_>) {
+    let _ = writeln!(std::io::stderr().lock(), "{arguments}");
+}
+
+fn run_reference_transaction(
+    phase: ReferenceTransactionPhase,
+    trunk_reference: crate::ledger::FullRefName,
+) -> ExitCode {
+    const TOTAL_GATE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    if gate::permit::environment_bypass_requested() {
+        if phase == ReferenceTransactionPhase::Prepared {
+            match env::current_dir() {
+                Ok(invocation_directory) => {
+                    match gate::permit::record_environment_bypass(&invocation_directory) {
+                        gate::permit::EnvironmentBypassRetentionOutcome::Journalled
+                        | gate::permit::EnvironmentBypassRetentionOutcome::PendingMarker => {},
+                        gate::permit::EnvironmentBypassRetentionOutcome::Unrecorded => {
+                            write_reference_transaction_diagnostic(format_args!(
+                                "cargo-berth took the CARGO_BERTH_BYPASS=1 override, but neither the journal nor a pending marker retained its audit fact. This ref transaction remains permitted. Restore repository write access, then rerun cargo berth init."
+                            ));
+                        },
+                    }
+                },
+                Err(error) => {
+                    write_reference_transaction_diagnostic(format_args!(
+                        "cargo-berth took the CARGO_BERTH_BYPASS=1 override but could not resolve its invocation directory: {error}. No audit fact was retained; this ref transaction remains permitted. Enter the repository from an existing directory, then rerun cargo berth init."
+                    ));
+                },
+            }
+        }
+        return BerthExit::Clear.into();
+    }
+    let started_at = std::time::Instant::now();
+    let mut input = String::new();
+    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
+        write_reference_transaction_diagnostic(format_args!(
+            "cargo-berth trunk gate could not read git's transaction: {error}. To proceed anyway, rerun the git command with CARGO_BERTH_BYPASS=1."
+        ));
+        return BerthExit::LedgerUnreadable.into();
+    }
+    let transaction = match gate::parse_reference_transaction(phase, &input) {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth trunk gate rejected malformed hook input: {error}. To proceed anyway, rerun the git command with CARGO_BERTH_BYPASS=1."
+            ));
+            return BerthExit::UsageError.into();
+        },
+    };
+    let invocation_directory = match env::current_dir() {
+        Ok(invocation_directory) => invocation_directory,
+        Err(error) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth trunk gate could not resolve its invocation directory: {error}. To proceed anyway, rerun the git command with CARGO_BERTH_BYPASS=1."
+            ));
+            return BerthExit::LedgerUnreadable.into();
+        },
+    };
+    let remaining = TOTAL_GATE_DEADLINE.saturating_sub(started_at.elapsed());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let gate_worker = std::thread::spawn(move || {
+        let result = gate::evaluate_reference_transaction(
+            &invocation_directory,
+            &transaction,
+            &trunk_reference,
+        );
+        let _ = sender.send(result);
+    });
+    let results = match receiver.recv_timeout(remaining) {
+        Ok(Ok(results)) => results,
+        Ok(Err(error)) => return reference_transaction_error(&error),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth trunk gate exhausted its 10-second total deadline; no integration decision was made. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately."
+            ));
+            return BerthExit::BlockedByContention.into();
+        },
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth trunk gate stopped before making a decision. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately."
+            ));
+            return BerthExit::LedgerUnreadable.into();
+        },
+    };
+    if gate_worker.join().is_err() {
+        write_reference_transaction_diagnostic(format_args!(
+            "cargo-berth trunk gate stopped after reporting its decision. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately."
+        ));
+        return BerthExit::LedgerUnreadable.into();
+    }
+    exit_for_reference_transaction_results(results)
+}
+
+fn exit_for_reference_transaction_results(results: Vec<gate::GateResult>) -> ExitCode {
+    let mut blocked = false;
+    for result in results {
+        match result.decision {
+            GateDecision::Observed {
+                generation,
+                violations,
+            } => {
+                for violation in violations {
+                    let reservation_id = violation.reservation.reservation_id;
+                    let rendered = OutputEnvelope::integration_blocked(
+                        reservation_id,
+                        generation,
+                        vec![violation],
+                    )
+                    .with_alerts(result.alerts.clone())
+                    .render_text();
+                    write_reference_transaction_diagnostic(format_args!(
+                        "Observe-only cargo-berth trunk gate: {rendered}"
+                    ));
+                }
+            },
+            GateDecision::Blocked {
+                generation,
+                violations,
+            } => {
+                blocked = true;
+                for violation in violations {
+                    let reservation_id = violation.reservation.reservation_id;
+                    write_reference_transaction_diagnostic(format_args!(
+                        "{}",
+                        OutputEnvelope::integration_blocked(
+                            reservation_id,
+                            generation,
+                            vec![violation],
+                        )
+                        .with_alerts(result.alerts.clone())
+                        .render_text()
+                    ));
+                }
+            },
+            GateDecision::Clear { .. }
+            | GateDecision::PermitIssued { .. }
+            | GateDecision::Forced { .. } => {},
+        }
+    }
+    if blocked {
+        BerthExit::BlockedByOrdering.into()
+    } else {
+        BerthExit::Clear.into()
+    }
+}
+
+fn reference_transaction_error(error: &GateError) -> ExitCode {
+    match error {
+        GateError::Config(_) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth trunk gate could not read its configuration, so it could not check this possible trunk update: {error}. The ref transaction was permitted. Restore the configuration; CARGO_BERTH_BYPASS=1 remains the explicit override."
+            ));
+            BerthExit::Clear.into()
+        },
+        GateError::Transaction(LedgerTransactionError::LockContention) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth trunk gate exhausted its 10-second lock deadline; the ledger was busy and no integration decision was made. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately."
+            ));
+            BerthExit::BlockedByContention.into()
+        },
+        GateError::InactiveMarkerRun(_)
+        | GateError::ReservationNotEntering(_)
+        | GateError::NoHoldToForce(_)
+        | GateError::MissingSkippedHold
+        | GateError::Transaction(LedgerTransactionError::CorrectableInput(_)) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth trunk gate rejected invalid input: {error}. To proceed anyway, rerun the git command with CARGO_BERTH_BYPASS=1."
+            ));
+            BerthExit::UsageError.into()
+        },
+        GateError::Ledger(_)
+        | GateError::Transaction(LedgerTransactionError::LedgerUnreadable(_))
+        | GateError::Reconciliation(_)
+        | GateError::Planning(_)
+        | GateError::MissingConstraintFact(_)
+        | GateError::UnsupportedSymbolicTrunkUpdate
+        | GateError::Git(_)
+        | GateError::PermitReplay(_) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth trunk gate could not prove this integration safe: {error}. To proceed anyway, rerun the git command with CARGO_BERTH_BYPASS=1."
+            ));
+            BerthExit::LedgerUnreadable.into()
+        },
     }
 }
 

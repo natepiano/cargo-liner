@@ -16,8 +16,9 @@ pub(super) const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
 pub(super) const COORDINATION_RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 
 // lock acquisition
-pub(super) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(5);
-pub(super) const MUTATION_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+pub(super) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(10);
+pub(super) const MUTATION_LOCK_INITIAL_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+pub(super) const MUTATION_LOCK_MAXIMUM_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 // git reference validation
 pub(super) const DELETE_CONTROL_BYTE: u8 = 0x7f;

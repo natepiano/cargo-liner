@@ -8,13 +8,22 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 
 use super::EdgeDeclaration;
+use super::IntegrationConstraintProjection;
+use super::IntegrationHold;
+use super::IntegrationReservationFacts;
+use super::IntegrationSubject;
+use super::MissingReadinessFact;
 use super::OrderingEdge;
 use super::OrderingOverlapScopeSet;
 use super::OrderingReason;
 use super::cycle;
 use crate::answer::ConflictAuthorization;
+use crate::answer::OverlapAuthorizationReason;
+use crate::edge::RepositoryReservationEvidence;
+use crate::edge::RepositorySnapshot;
 use crate::ids::EdgeId;
 use crate::ids::EventId;
+use crate::ids::ProjectionGeneration;
 use crate::ids::ReservationId;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
@@ -22,13 +31,16 @@ use crate::ledger::OrderingDirection;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
+use crate::worktree::WorktreeHead;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DeferredOverlap {
-    deferred: ReservationId,
-    blocker:  ReservationId,
-    scopes:   OrderingOverlapScopeSet,
-    resolved: DeferralResolution,
+    declaration_event_id: EventId,
+    deferred:             ReservationId,
+    blocker:              ReservationId,
+    scopes:               OrderingOverlapScopeSet,
+    reason:               OverlapAuthorizationReason,
+    resolved:             DeferralResolution,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,6 +142,78 @@ impl OrderingGraph {
                 reservation_id: *reservation_id,
                 successors,
             })
+    }
+
+    /// Build the gate-and-board projection without exposing graph internals.
+    pub(crate) fn integration_constraints(
+        &self,
+        reservations: &RetainedReservationSet,
+        repository_snapshot: &RepositorySnapshot,
+        generation: ProjectionGeneration,
+    ) -> Result<IntegrationConstraintProjection, MissingReadinessFact> {
+        let reservation_facts = reservations
+            .iter()
+            .map(|reservation| {
+                let snapshot = repository_snapshot.reservation(reservation.id())?;
+                let subject = match &snapshot.evidence {
+                    RepositoryReservationEvidence::Active => match &snapshot.worktree_head {
+                        WorktreeHead::Resolved(object_id) => IntegrationSubject::Commit {
+                            object_id: object_id.clone(),
+                        },
+                        WorktreeHead::Unavailable => IntegrationSubject::WorktreeHeadUnavailable,
+                    },
+                    RepositoryReservationEvidence::Outstanding { protected_tip, .. }
+                    | RepositoryReservationEvidence::Released { protected_tip, .. } => {
+                        IntegrationSubject::Commit {
+                            object_id: protected_tip.as_ref().clone(),
+                        }
+                    },
+                    RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => {
+                        IntegrationSubject::NotApplicable
+                    },
+                };
+                Ok(IntegrationReservationFacts {
+                    reservation_id: reservation.id(),
+                    actor: reservation.actor().clone(),
+                    source: reservation.source().clone(),
+                    purpose: reservation.purpose().clone(),
+                    scopes: reservation.scopes().clone(),
+                    lifecycle: reservation.lifecycle().clone(),
+                    subject,
+                })
+            })
+            .collect::<Result<Vec<_>, MissingReadinessFact>>()?;
+        let mut holds = Vec::new();
+        for edge in &self.edges {
+            let readiness = edge.readiness(repository_snapshot)?;
+            if readiness.holds_successor() {
+                holds.push(IntegrationHold::OrderingEdge {
+                    edge_id: edge.edge_id,
+                    predecessor: edge.before,
+                    successor: edge.after,
+                    scopes: edge.scopes.0.clone(),
+                    reason: edge.reason.clone(),
+                    readiness,
+                });
+            }
+        }
+        holds.extend(
+            self.deferrals
+                .iter()
+                .filter(|deferral| deferral.resolved == DeferralResolution::Pending)
+                .map(|deferral| IntegrationHold::DeferredOverlap {
+                    declaration_event_id: deferral.declaration_event_id,
+                    deferred:             deferral.deferred,
+                    blocker:              deferral.blocker,
+                    scopes:               deferral.scopes.0.clone(),
+                    reason:               deferral.reason.clone(),
+                }),
+        );
+        Ok(IntegrationConstraintProjection {
+            generation,
+            reservations: reservation_facts,
+            holds,
+        })
     }
 
     /// Validate and prepare one edge that resolves an existing deferral.
@@ -234,14 +318,18 @@ impl OrderingGraph {
         match authorization {
             ConflictAuthorization::NoConflict | ConflictAuthorization::Override { .. } => Ok(()),
             ConflictAuthorization::Defer {
-                overlaps, blocker, ..
+                overlaps,
+                blocker,
+                reason,
             } => {
                 let scopes = OrderingOverlapScopeSet::from_authorized_overlaps(*blocker, overlaps)?;
                 let deferral_index = self.deferrals.len();
                 self.deferrals.push(DeferredOverlap {
+                    declaration_event_id: event_id,
                     deferred: requester,
                     blocker: *blocker,
                     scopes,
+                    reason: reason.clone(),
                     resolved: DeferralResolution::Pending,
                 });
                 self.deferral_indices

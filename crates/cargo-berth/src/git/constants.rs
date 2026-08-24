@@ -31,6 +31,10 @@ pub(super) const GIT_DELETE_REF_ARG: &str = "-d";
 pub(super) const GIT_IS_ANCESTOR_ARG: &str = "--is-ancestor";
 /// Disable git's optional locks for read-only calls.
 pub(super) const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
+/// Ask `rev-parse` to resolve its path result to an absolute path.
+pub(super) const GIT_PATH_FORMAT_ABSOLUTE_ARG: &str = "--path-format=absolute";
+/// Ask `rev-parse` to resolve a repository path after configuration overrides.
+pub(super) const GIT_PATH_ARG: &str = "--git-path";
 /// Request a stable machine-readable worktree listing.
 pub(super) const GIT_PORCELAIN_ARG: &str = "--porcelain";
 /// Terminate each porcelain field with NUL so worktree paths remain verbatim.
@@ -47,6 +51,8 @@ pub(super) const GIT_MISSING_OBJECT_SUFFIX: &str = " missing";
 // references
 /// The current worktree commit.
 pub(super) const GIT_HEAD_REVISION: &str = "HEAD";
+/// Git's configured hook directory selector.
+pub(super) const GIT_HOOKS_PATH: &str = "hooks";
 /// The prefix for local branch refs.
 pub(super) const GIT_LOCAL_BRANCH_REF_PREFIX: &str = "refs/heads/";
 /// Prefix excluding a revision while retaining its descendants.

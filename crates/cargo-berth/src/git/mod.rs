@@ -24,16 +24,20 @@ use constants::GIT_COMMON_DIRECTORY_ARG;
 use constants::GIT_EXCLUDE_REVISION_PREFIX;
 use constants::GIT_EXISTS_ARG;
 use constants::GIT_HEAD_REVISION;
+use constants::GIT_HOOKS_PATH;
 use constants::GIT_IS_ANCESTOR_ARG;
 use constants::GIT_LOCAL_BRANCH_REF_PREFIX;
 use constants::GIT_MERGE_BASE_COMMAND;
 use constants::GIT_MISSING_OBJECT_SUFFIX;
 use constants::GIT_NOT_ANCESTOR_EXIT_CODE;
 use constants::GIT_NUL_TERMINATED_ARG;
+use constants::GIT_PATH_ARG;
+use constants::GIT_PATH_FORMAT_ABSOLUTE_ARG;
 use constants::GIT_PORCELAIN_ARG;
 use constants::GIT_REV_LIST_COMMAND;
 use constants::GIT_REV_PARSE_COMMAND;
 use constants::GIT_SHOW_TOPLEVEL_ARG;
+use constants::GIT_UPDATE_REF_COMMAND;
 use constants::GIT_WORKTREE_COMMAND;
 use constants::GIT_WORKTREE_LIST_ARG;
 
@@ -85,6 +89,27 @@ pub(crate) fn repository_root(invocation_directory: &Path) -> Result<PathBuf, Gi
     })
 }
 
+/// Resolve the hook directory Git uses after applying `core.hooksPath`.
+pub(crate) fn hooks_directory(repository_root: &Path) -> Result<PathBuf, GitError> {
+    let output = git_output(
+        repository_root,
+        [
+            GIT_REV_PARSE_COMMAND,
+            GIT_PATH_FORMAT_ABSOLUTE_ARG,
+            GIT_PATH_ARG,
+            GIT_HOOKS_PATH,
+        ],
+    )?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_PARSE_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let hooks_directory = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    Ok(PathBuf::from(hooks_directory.trim()))
+}
+
 /// Read the full object id currently named by `HEAD`.
 pub(crate) fn head_object_id(repository_root: &Path) -> Result<GitObjectId, GitError> {
     object_id(repository_root, GIT_HEAD_REVISION)
@@ -99,6 +124,95 @@ pub(crate) fn branch_object_id(
         repository_root,
         &format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"),
     )
+}
+
+/// Return every commit that would become reachable from `proposed` but not `previous`.
+pub(crate) fn newly_reachable_commits(
+    repository_root: &Path,
+    previous: &GitObjectId,
+    proposed: &GitObjectId,
+) -> Result<Vec<GitObjectId>, GitError> {
+    let arguments = vec![
+        GIT_REV_LIST_COMMAND.to_owned(),
+        proposed.to_string(),
+        format!("{GIT_EXCLUDE_REVISION_PREFIX}{previous}"),
+    ];
+    let output = git_output_dynamic(repository_root, &arguments)?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_LIST_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    String::from_utf8(output.stdout)
+        .map_err(GitError::InvalidOutput)?
+        .lines()
+        .map(|line| line.parse().map_err(GitError::InvalidObjectId))
+        .collect()
+}
+
+/// Return every commit reachable from a proposed initial trunk object.
+pub(crate) fn reachable_commits(
+    repository_root: &Path,
+    proposed: &GitObjectId,
+) -> Result<Vec<GitObjectId>, GitError> {
+    let arguments = vec![GIT_REV_LIST_COMMAND.to_owned(), proposed.to_string()];
+    let output = git_output_dynamic(repository_root, &arguments)?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_LIST_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    String::from_utf8(output.stdout)
+        .map_err(GitError::InvalidOutput)?
+        .lines()
+        .map(|line| line.parse().map_err(GitError::InvalidObjectId))
+        .collect()
+}
+
+/// Atomically move one local branch from the expected old object to a proposed object.
+pub(crate) fn update_local_branch(
+    repository_root: &Path,
+    branch: &str,
+    proposed: &GitObjectId,
+    expected_previous: &GitObjectId,
+) -> Result<(), GitError> {
+    match reachability(repository_root, expected_previous, proposed)? {
+        Reachability::Ancestor => {},
+        Reachability::NotAncestor => {
+            return Err(GitError::NonFastForwardBranchUpdate {
+                previous: expected_previous.clone(),
+                proposed: proposed.clone(),
+            });
+        },
+        Reachability::ObjectUnknown => {
+            return Err(GitError::BranchUpdateObjectUnavailable {
+                previous: expected_previous.clone(),
+                proposed: proposed.clone(),
+            });
+        },
+    }
+    let reference = format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}");
+    let proposed = proposed.to_string();
+    let expected_previous = expected_previous.to_string();
+    let output = git_output(
+        repository_root,
+        [
+            GIT_UPDATE_REF_COMMAND,
+            &reference,
+            &proposed,
+            &expected_previous,
+        ],
+    )?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(GitError::CommandFailed {
+            command: GIT_UPDATE_REF_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+    }
 }
 
 /// Resolve a revision while treating an ordinary unresolved name as a typed absence.
@@ -393,6 +507,16 @@ pub(crate) enum GitError {
     InvalidObjectId(InvalidGitObjectId),
     /// `cat-file --batch-check` did not classify every submitted object.
     InvalidBatchObjectCount { expected: usize, actual: usize },
+    /// The expected branch object is not an ancestor of the proposed object.
+    NonFastForwardBranchUpdate {
+        previous: GitObjectId,
+        proposed: GitObjectId,
+    },
+    /// Git could not verify both objects needed for a fast-forward branch update.
+    BranchUpdateObjectUnavailable {
+        previous: GitObjectId,
+        proposed: GitObjectId,
+    },
 }
 
 impl Display for GitError {
@@ -411,6 +535,14 @@ impl Display for GitError {
             Self::InvalidBatchObjectCount { expected, actual } => write!(
                 formatter,
                 "git cat-file classified {actual} objects when {expected} were submitted"
+            ),
+            Self::NonFastForwardBranchUpdate { previous, proposed } => write!(
+                formatter,
+                "refusing non-fast-forward branch update from {previous} to {proposed}"
+            ),
+            Self::BranchUpdateObjectUnavailable { previous, proposed } => write!(
+                formatter,
+                "could not verify a fast-forward branch update from {previous} to {proposed}"
             ),
         }
     }

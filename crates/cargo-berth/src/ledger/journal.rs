@@ -24,6 +24,7 @@ use crate::edge::OrderingReason;
 use crate::ids::CoordinationRunId;
 use crate::ids::EdgeId;
 use crate::ids::EventId;
+use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
@@ -201,16 +202,18 @@ pub(crate) enum JournalOperation {
     /// Issue a one-use permit for a confirmed forced integration.
     ForcedIntegrationPermit {
         /// The opaque identity of the one-use permit.
-        permit_id:      EventId,
+        permit_id:      ForcedIntegrationPermitId,
         /// The reservation allowed to integrate past a hold.
         reservation_id: ReservationId,
         /// The reason the user accepted this exception.
-        reason:         String,
+        reason:         ForcedIntegrationReason,
+        /// Every ordering or deferral hold this one update may skip.
+        skipped_holds:  SkippedIntegrationHoldSet,
     },
     /// Consume a previously issued forced-integration permit.
     ConsumeForcedIntegrationPermit {
         /// The permit that cannot be used again.
-        permit_id:      EventId,
+        permit_id:      ForcedIntegrationPermitId,
         /// The reservation that consumed it.
         reservation_id: ReservationId,
     },
@@ -218,8 +221,8 @@ pub(crate) enum JournalOperation {
     Bypass {
         /// The action permitted outside normal ledger validation.
         action: BypassedAction,
-        /// The explanation for accepting the bypass.
-        reason: String,
+        /// The typed release valve that permitted the action.
+        cause:  BypassCause,
     },
     /// Move a reservation's ownership to a replacement worktree.
     RebindWorktree {
@@ -384,6 +387,13 @@ nonempty_claim_text!(
     EmptyNonEmptyReservationPurpose,
     "A non-empty explanation of the work protected by a reservation.",
     "a reservation purpose cannot be empty"
+);
+nonempty_claim_text!(
+    trim,
+    ForcedIntegrationReason,
+    EmptyForcedIntegrationReason,
+    "A non-empty explanation for one forced integration.",
+    "a forced-integration reason cannot be empty"
 );
 nonempty_claim_text!(
     preserve,
@@ -754,6 +764,152 @@ pub(crate) enum BypassedAction {
     Editing,
 }
 
+/// Why ordinary integration validation was deliberately bypassed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum BypassCause {
+    /// `CARGO_BERTH_BYPASS=1` was present before the hook read any ledger state.
+    EnvironmentOverride,
+    /// A one-use forced-integration permit authorized exactly its recorded holds.
+    ForcedIntegration {
+        /// The permit consumed by the bypassed update.
+        permit_id: ForcedIntegrationPermitId,
+        /// The user's non-empty explanation retained with the permit.
+        reason:    ForcedIntegrationReason,
+    },
+}
+
+/// One ordering relationship deliberately skipped by a forced integration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct SkippedOrderingEdge {
+    /// The durable relationship that remained holding when the permit was issued.
+    pub(crate) edge_id:     EdgeId,
+    /// The predecessor whose ordered work had not yet been incorporated.
+    pub(crate) predecessor: ReservationId,
+}
+
+/// One unresolved symmetric deferral deliberately skipped by a forced integration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct SkippedDeferral {
+    /// The claim event that first recorded the unresolved deferral.
+    pub(crate) declaration_event_id: EventId,
+    /// The reservation whose acquisition carried the defer answer.
+    pub(crate) deferred:             ReservationId,
+    /// The exact counterpart named by that answer.
+    pub(crate) blocker:              ReservationId,
+}
+
+/// A non-empty set of integration holds authorized for one forced update.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum SkippedIntegrationHoldSet {
+    /// One or more ordering edges, with no unresolved deferral.
+    OrderingEdges {
+        /// The non-empty edge set.
+        edges: Vec<SkippedOrderingEdge>,
+    },
+    /// One or more unresolved deferrals, with no ordering edge.
+    Deferrals {
+        /// The non-empty deferral set.
+        deferrals: Vec<SkippedDeferral>,
+    },
+    /// Both kinds of hold were present.
+    OrderingEdgesAndDeferrals {
+        /// The non-empty edge set.
+        edges:     Vec<SkippedOrderingEdge>,
+        /// The non-empty deferral set.
+        deferrals: Vec<SkippedDeferral>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SkippedIntegrationHoldRepresentation {
+    OrderingEdges {
+        edges: Vec<SkippedOrderingEdge>,
+    },
+    Deferrals {
+        deferrals: Vec<SkippedDeferral>,
+    },
+    OrderingEdgesAndDeferrals {
+        edges:     Vec<SkippedOrderingEdge>,
+        deferrals: Vec<SkippedDeferral>,
+    },
+}
+
+impl<'de> Deserialize<'de> for SkippedIntegrationHoldSet {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: serde::Deserializer<'de>,
+    {
+        match SkippedIntegrationHoldRepresentation::deserialize(deserializer)? {
+            SkippedIntegrationHoldRepresentation::OrderingEdges { edges } => {
+                Self::new(edges, Vec::new()).map_err(serde::de::Error::custom)
+            },
+            SkippedIntegrationHoldRepresentation::Deferrals { deferrals } => {
+                Self::new(Vec::new(), deferrals).map_err(serde::de::Error::custom)
+            },
+            SkippedIntegrationHoldRepresentation::OrderingEdgesAndDeferrals {
+                edges,
+                deferrals,
+            } if !edges.is_empty() && !deferrals.is_empty() => {
+                Ok(Self::OrderingEdgesAndDeferrals { edges, deferrals })
+            },
+            SkippedIntegrationHoldRepresentation::OrderingEdgesAndDeferrals { .. } => {
+                Err(serde::de::Error::custom(EmptySkippedIntegrationHoldSet))
+            },
+        }
+    }
+}
+
+impl SkippedIntegrationHoldSet {
+    /// Construct a non-empty typed set without representable empty or half-empty variants.
+    pub(crate) fn new(
+        edges: Vec<SkippedOrderingEdge>,
+        deferrals: Vec<SkippedDeferral>,
+    ) -> Result<Self, EmptySkippedIntegrationHoldSet> {
+        match (edges.is_empty(), deferrals.is_empty()) {
+            (false, true) => Ok(Self::OrderingEdges { edges }),
+            (true, false) => Ok(Self::Deferrals { deferrals }),
+            (false, false) => Ok(Self::OrderingEdgesAndDeferrals { edges, deferrals }),
+            (true, true) => Err(EmptySkippedIntegrationHoldSet),
+        }
+    }
+
+    /// Return whether this permit covers every supplied edge and deferral hold.
+    pub(crate) fn covers(&self, edge_ids: &[EdgeId], deferral_event_ids: &[EventId]) -> bool {
+        let (edges, deferrals): (&[SkippedOrderingEdge], &[SkippedDeferral]) = match self {
+            Self::OrderingEdges { edges } => (edges, &[]),
+            Self::Deferrals { deferrals } => (&[], deferrals),
+            Self::OrderingEdgesAndDeferrals { edges, deferrals } => (edges, deferrals),
+        };
+        edge_ids.len() == edges.len()
+            && edge_ids
+                .iter()
+                .all(|edge_id| edges.iter().any(|edge| edge.edge_id == *edge_id))
+            && deferral_event_ids.len() == deferrals.len()
+            && deferral_event_ids.iter().all(|event_id| {
+                deferrals
+                    .iter()
+                    .any(|deferral| deferral.declaration_event_id == *event_id)
+            })
+    }
+}
+
+/// An attempted forced integration had no hold to bypass.
+#[derive(Debug)]
+pub(crate) struct EmptySkippedIntegrationHoldSet;
+
+impl Display for EmptySkippedIntegrationHoldSet {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a forced-integration permit must skip at least one hold")
+    }
+}
+
+impl std::error::Error for EmptySkippedIntegrationHoldSet {}
+
 /// A replayed journal and the metadata needed to validate its cache.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct JournalReplay {
@@ -839,6 +995,16 @@ impl Journal {
 
         let mut journal_file = OpenOptions::new().append(true).open(&self.path)?;
         journal_file.write_all(&record)?;
+        journal_file.sync_all()?;
+        Ok(())
+    }
+
+    /// Discard every journal byte after explicit reinitialization confirmation.
+    pub(super) fn truncate(&self) -> Result<(), JournalError> {
+        let journal_file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&self.path)?;
         journal_file.sync_all()?;
         Ok(())
     }
