@@ -17,6 +17,7 @@ mod reconcile;
 mod recovery;
 mod reservation;
 mod scope;
+mod session;
 mod verb;
 mod worktree;
 

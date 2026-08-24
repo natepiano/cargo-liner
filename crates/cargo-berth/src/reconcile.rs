@@ -229,7 +229,7 @@ fn reconcile_with_scope(
             LedgerCommittedActionError::Action(error) => error,
         })?;
     match outcome {
-        LedgerCommittedActionOutcome::Appended(report) => Ok(report),
+        LedgerCommittedActionOutcome::Appended { output: report, .. } => Ok(report),
         LedgerCommittedActionOutcome::Rejected(error) => Err(error.into()),
     }
 }

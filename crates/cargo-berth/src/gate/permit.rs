@@ -131,8 +131,15 @@ pub(crate) fn record_environment_bypass(
 }
 
 fn coordination_run_id(worktree_context: &WorktreeContext) -> CoordinationRunId {
-    match EditAuthorization::resolve(worktree_context.administrative_directory()) {
-        EditAuthorization::Environment(run)
+    match EditAuthorization::resolve(
+        worktree_context.administrative_directory(),
+        &worktree_context.ledger_directory(),
+    ) {
+        EditAuthorization::Session {
+            coordination_run_id: run,
+            ..
+        }
+        | EditAuthorization::Environment(run)
         | EditAuthorization::Marker {
             coordination_run_id: run,
             ..

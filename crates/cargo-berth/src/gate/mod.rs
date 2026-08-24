@@ -195,6 +195,11 @@ enum GatePurpose {
 #[derive(Clone, Copy)]
 enum ActingRun {
     Independent(CoordinationRunId),
+    ActiveSessionReservationRequired {
+        coordination_run_id: CoordinationRunId,
+        reservation_id:      ReservationId,
+        worktree_id:         WorktreeId,
+    },
     ActiveMarkerRequired {
         coordination_run_id: CoordinationRunId,
         worktree_id:         WorktreeId,
@@ -390,7 +395,7 @@ fn commit_forced_permit_audits(
             LedgerCommittedActionError::Action(error) => match error {},
         })?;
     match outcome {
-        LedgerCommittedActionOutcome::Appended(()) => Ok(()),
+        LedgerCommittedActionOutcome::Appended { output: (), .. } => Ok(()),
         LedgerCommittedActionOutcome::Rejected(rejection) => Err(rejection.into()),
     }
 }
@@ -404,7 +409,7 @@ pub(crate) fn evaluate_integration(
     proposed: GitObjectId,
 ) -> Result<GateResult, GateError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
-    let acting_run = ActingRun::resolve(worktree_context.administrative_directory());
+    let acting_run = ActingRun::resolve(&worktree_context);
     let update = ProposedMainMove {
         previous: PreviousMain::Existing(previous),
         proposed,
@@ -499,13 +504,9 @@ fn evaluate_locked(
                     },
                 };
                 if let GatePurpose::Integrate { acting_run, .. } = purpose
-                    && !acting_run.is_valid(prepared.reservations())
+                    && let Err(rejection) = acting_run.validate(prepared.reservations())
                 {
-                    return ReconciliationValidation::Reject(
-                        GateTransactionRejection::InactiveMarkerRun(
-                            acting_run.coordination_run_id(),
-                        ),
-                    );
+                    return ReconciliationValidation::Reject(rejection);
                 }
                 let newly_reachable =
                     match newly_reachable_commits(worktree_context.repository_root(), update) {
@@ -537,7 +538,10 @@ fn evaluate_locked(
             LedgerCommittedActionError::Action(error) => GateError::Reconciliation(error),
         })?;
     match outcome {
-        LedgerCommittedActionOutcome::Appended((report, decision)) => Ok(GateResult {
+        LedgerCommittedActionOutcome::Appended {
+            output: (report, decision),
+            ..
+        } => Ok(GateResult {
             decision,
             alerts: report.alerts,
         }),
@@ -866,8 +870,20 @@ impl GatePurpose {
 }
 
 impl ActingRun {
-    fn resolve(administrative_directory: &Path) -> Self {
-        match EditAuthorization::resolve(administrative_directory) {
+    fn resolve(worktree_context: &WorktreeContext) -> Self {
+        match EditAuthorization::resolve(
+            worktree_context.administrative_directory(),
+            &worktree_context.ledger_directory(),
+        ) {
+            EditAuthorization::Session {
+                coordination_run_id,
+                reservation_id,
+                worktree_id,
+            } => Self::ActiveSessionReservationRequired {
+                coordination_run_id,
+                reservation_id,
+                worktree_id,
+            },
             EditAuthorization::Environment(coordination_run_id) => {
                 Self::Independent(coordination_run_id)
             },
@@ -885,6 +901,10 @@ impl ActingRun {
     const fn coordination_run_id(self) -> CoordinationRunId {
         match self {
             Self::Independent(coordination_run_id)
+            | Self::ActiveSessionReservationRequired {
+                coordination_run_id,
+                ..
+            }
             | Self::ActiveMarkerRequired {
                 coordination_run_id,
                 ..
@@ -892,19 +912,47 @@ impl ActingRun {
         }
     }
 
-    fn is_valid(self, reservations: &crate::reservation::RetainedReservationSet) -> bool {
+    fn validate(
+        self,
+        reservations: &crate::reservation::RetainedReservationSet,
+    ) -> Result<(), GateTransactionRejection> {
+        if let Self::ActiveSessionReservationRequired {
+            coordination_run_id,
+            reservation_id,
+            worktree_id,
+        } = self
+        {
+            return if reservations.iter().any(|reservation| {
+                reservation.id() == reservation_id
+                    && reservation.actor().run == coordination_run_id
+                    && reservation.actor().worktree == worktree_id
+                    && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
+            }) {
+                Ok(())
+            } else {
+                Err(GateTransactionRejection::InactiveSessionMapping(
+                    coordination_run_id,
+                ))
+            };
+        }
         let Self::ActiveMarkerRequired {
             coordination_run_id,
             worktree_id,
         } = self
         else {
-            return true;
+            return Ok(());
         };
-        reservations.iter().any(|reservation| {
+        if reservations.iter().any(|reservation| {
             reservation.actor().run == coordination_run_id
                 && reservation.actor().worktree == worktree_id
                 && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-        })
+        }) {
+            Ok(())
+        } else {
+            Err(GateTransactionRejection::InactiveMarkerRun(
+                coordination_run_id,
+            ))
+        }
     }
 }
 
@@ -976,6 +1024,7 @@ enum GateTransactionRejection {
     Reconciliation(GateReconciliationError),
     Git(GitError),
     PermitReplay(permit::ForcedIntegrationPermitReplayError),
+    InactiveSessionMapping(CoordinationRunId),
     InactiveMarkerRun(CoordinationRunId),
     ReservationNotEntering(ReservationId),
     NoHoldToForce(ReservationId),
@@ -993,6 +1042,7 @@ pub(crate) enum GateError {
     Planning(GateReconciliationError),
     Git(GitError),
     PermitReplay(permit::ForcedIntegrationPermitReplayError),
+    InactiveSessionMapping(CoordinationRunId),
     InactiveMarkerRun(CoordinationRunId),
     ReservationNotEntering(ReservationId),
     NoHoldToForce(ReservationId),
@@ -1011,6 +1061,10 @@ impl Display for GateError {
             Self::Planning(error) => error.fmt(formatter),
             Self::Git(error) => error.fmt(formatter),
             Self::PermitReplay(error) => error.fmt(formatter),
+            Self::InactiveSessionMapping(run) => write!(
+                formatter,
+                "harness session mapping for coordination run {run} no longer names an active reservation in this worktree"
+            ),
             Self::InactiveMarkerRun(run) => write!(
                 formatter,
                 "coordination-run marker {run} no longer has an active reservation in this worktree"
@@ -1042,6 +1096,9 @@ impl From<GateTransactionRejection> for GateError {
             GateTransactionRejection::Reconciliation(error) => Self::Planning(error),
             GateTransactionRejection::Git(error) => Self::Git(error),
             GateTransactionRejection::PermitReplay(error) => Self::PermitReplay(error),
+            GateTransactionRejection::InactiveSessionMapping(run) => {
+                Self::InactiveSessionMapping(run)
+            },
             GateTransactionRejection::InactiveMarkerRun(run) => Self::InactiveMarkerRun(run),
             GateTransactionRejection::ReservationNotEntering(reservation_id) => {
                 Self::ReservationNotEntering(reservation_id)

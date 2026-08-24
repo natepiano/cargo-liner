@@ -37,6 +37,8 @@ const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const RETENTION_REF_PREFIX: &str = "refs/cargo-berth/reservations/";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 
 #[test]
 fn checkpoint_retains_commit_after_branch_deletion_and_git_gc() {
@@ -77,6 +79,52 @@ fn checkpoint_retains_commit_after_branch_deletion_and_git_gc() {
     assert_eq!(
         git_stdout(repository.path(), &["cat-file", "-t", &protected_tip],),
         "commit"
+    );
+}
+
+#[test]
+fn resolve_reports_failed_session_mapping_retirement() {
+    let repository = initialized_repository();
+    let session_id = "resolve-retirement-failure";
+    let claim = run_berth_with_session(
+        repository.path(),
+        &["claim", "file:session-mapped", "--run", FIRST_RUN, "--json"],
+        session_id,
+    );
+    assert!(claim.status.success());
+    let reservation_id = reservation_id(&claim);
+    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
+    assert!(
+        fs::read_to_string(&mapping_path)
+            .expect("session mapping should read")
+            .contains(session_id)
+    );
+    fs::remove_file(&mapping_path).expect("session mapping should remove");
+    fs::create_dir(&mapping_path).expect("mapping destination directory should exist");
+
+    let resolved = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &reservation_id,
+            "--abandon",
+            "--why",
+            "confirmed mapped work abandonment",
+            "--json",
+        ],
+    );
+    let resolved_json = json_output(&resolved);
+
+    assert!(resolved.status.success());
+    assert_eq!(resolved_json["payload"]["data"]["status"], "released");
+    assert_eq!(
+        resolved_json["payload"]["data"]["session_mapping_publication"]["status"],
+        "unavailable"
+    );
+    assert!(
+        resolved_json["message"].as_str().is_some_and(
+            |message| message.contains("harness session mapping could not be published")
+        )
     );
 }
 
@@ -540,6 +588,17 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("cargo-berth should run")
+}
+
+fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(RUN_ENVIRONMENT)
+        .env(SESSION_ENVIRONMENT, session_id)
         .output()
         .expect("cargo-berth should run")
 }

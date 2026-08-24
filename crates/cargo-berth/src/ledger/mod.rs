@@ -39,6 +39,7 @@ pub(crate) use journal::CollisionPathSet;
 pub(crate) use journal::ForcedIntegrationReason;
 pub(crate) use journal::ForeignReservationIdSet;
 pub(crate) use journal::FullRefName;
+pub(crate) use journal::IncursionIncidentId;
 pub(crate) use journal::IncursionPathSet;
 use journal::Journal;
 pub(crate) use journal::JournalActor;
@@ -83,6 +84,7 @@ use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
 use crate::ids::WorktreeId;
 use crate::ids::WorktreeKind;
+use crate::session;
 
 /// The shared append-only ledger for one git common directory.
 pub(crate) struct Ledger {
@@ -159,6 +161,15 @@ pub(crate) struct LedgerReinitialization {
 /// The coordination identity an edit check can prove for its current process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EditAuthorization {
+    /// The harness session mapping supplied one active reservation identity.
+    Session {
+        /// The run recorded on the mapped reservation.
+        coordination_run_id: CoordinationRunId,
+        /// The reservation selected for this harness session.
+        reservation_id:      crate::ids::ReservationId,
+        /// The worktree from which this mapping is being used.
+        worktree_id:         WorktreeId,
+    },
     /// The process environment explicitly supplied the coordination run.
     Environment(CoordinationRunId),
     /// The worktree marker supplied a run paired with its minted worktree identity.
@@ -186,43 +197,55 @@ pub(crate) enum CoordinationRunMarkerRemoval {
 }
 
 impl EditAuthorization {
-    /// Resolve the active run from the environment, then the worktree marker.
-    pub(crate) fn resolve(worktree_administrative_directory: &Path) -> Self {
-        Self::resolve_from_environment(
+    /// Resolve identity from the harness session, environment, marker, or no source.
+    pub(crate) fn resolve(
+        worktree_administrative_directory: &Path,
+        ledger_directory: &Path,
+    ) -> Self {
+        Self::resolve_from_sources(
+            session::resolve(ledger_directory),
             std::env::var_os(COORDINATION_RUN_ENVIRONMENT),
             worktree_administrative_directory,
         )
     }
 
-    fn resolve_from_environment(
+    fn resolve_from_sources(
+        session_identity: session::SessionIdentityLookup,
         environment_run: Option<OsString>,
         worktree_administrative_directory: &Path,
     ) -> Self {
-        environment_run.map_or_else(
-            || {
-                let marker_path =
-                    worktree_administrative_directory.join(COORDINATION_RUN_MARKER_FILE_NAME);
-                fs::read_to_string(marker_path)
+        if let session::SessionIdentityLookup::Mapped(identity) = session_identity
+            && let Ok(worktree_id) = read_worktree_id(worktree_administrative_directory)
+        {
+            return Self::Session {
+                coordination_run_id: identity.coordination_run_id(),
+                reservation_id: identity.reservation_id(),
+                worktree_id,
+            };
+        }
+        if let Some(environment) = environment_run
+            .and_then(|value| value.into_string().ok())
+            .and_then(|value| value.parse().ok())
+            .map(Self::Environment)
+        {
+            return environment;
+        }
+        let marker_path = worktree_administrative_directory.join(COORDINATION_RUN_MARKER_FILE_NAME);
+        if let Some(marker) = fs::read_to_string(marker_path)
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+            .and_then(|coordination_run_id| {
+                read_worktree_id(worktree_administrative_directory)
                     .ok()
-                    .and_then(|value| value.trim().parse().ok())
-                    .and_then(|coordination_run_id| {
-                        read_worktree_id(worktree_administrative_directory)
-                            .ok()
-                            .map(|worktree_id| Self::Marker {
-                                coordination_run_id,
-                                worktree_id,
-                            })
+                    .map(|worktree_id| Self::Marker {
+                        coordination_run_id,
+                        worktree_id,
                     })
-                    .unwrap_or(Self::Unidentified)
-            },
-            |value| {
-                value
-                    .into_string()
-                    .ok()
-                    .and_then(|value| value.parse().ok())
-                    .map_or(Self::Unidentified, Self::Environment)
-            },
-        )
+            })
+        {
+            return marker;
+        }
+        Self::Unidentified
     }
 }
 
@@ -301,6 +324,11 @@ impl WorktreeContext {
 
     /// Return the common git directory shared by every linked worktree.
     pub(crate) fn common_git_directory(&self) -> &Path { &self.common_git_directory }
+
+    /// Return the shared cargo-berth ledger directory.
+    pub(crate) fn ledger_directory(&self) -> PathBuf {
+        self.common_git_directory.join(LEDGER_DIRECTORY_NAME)
+    }
 
     /// Return the common-directory-relative worktree administrative locator.
     pub(crate) const fn administrative_locator(&self) -> &WorktreeAdministrativeLocator {
@@ -548,7 +576,12 @@ pub(crate) enum ReconciliationValidation<Rejection, CommittedAction> {
 /// The durable result of a validation-controlled ledger transaction.
 pub(crate) enum LedgerTransactionOutcome<Rejection> {
     /// Exactly one approved event was appended and published.
-    Appended(Box<JournalEvent>),
+    Appended {
+        /// The durable journal event.
+        event:                       Box<JournalEvent>,
+        /// Whether the event's session identity consequence was published.
+        session_mapping_publication: session::SessionIdentityMappingPublication,
+    },
     /// Validation rejected the proposal before any append.
     Rejected(Rejection),
 }
@@ -556,7 +589,12 @@ pub(crate) enum LedgerTransactionOutcome<Rejection> {
 /// The result of a transaction whose appended record authorizes a locked side effect.
 pub(crate) enum LedgerCommittedActionOutcome<Rejection, CommittedActionOutput> {
     /// The event committed, its action ran under the lock, and the projection published.
-    Appended(CommittedActionOutput),
+    Appended {
+        /// The output produced by the committed action.
+        output:                      CommittedActionOutput,
+        /// Whether the event's session identity consequence was published.
+        session_mapping_publication: session::SessionIdentityMappingPublication,
+    },
     /// Validation rejected the proposal before any append or side effect.
     Rejected(Rejection),
 }
@@ -633,11 +671,15 @@ impl Ledger {
         };
         match validate(replayed_state) {
             TransactionValidation::Append(operation) => {
-                let event = transaction.append(worktree_id, coordination_run_id, *operation)?;
+                let journal_append =
+                    transaction.append(worktree_id, coordination_run_id, *operation)?;
                 transaction
                     .publish(&self.paths)
                     .map_err(LedgerTransactionError::LedgerUnreadable)?;
-                Ok(LedgerTransactionOutcome::Appended(Box::new(event)))
+                Ok(LedgerTransactionOutcome::Appended {
+                    event:                       Box::new(journal_append.event),
+                    session_mapping_publication: journal_append.session_mapping_publication,
+                })
             },
             TransactionValidation::Reject(rejection) => {
                 transaction
@@ -665,11 +707,15 @@ impl Ledger {
         };
         match validate(replayed_state) {
             TransactionValidation::Append(operation) => {
-                let event = transaction.append(worktree_id, coordination_run_id, *operation)?;
+                let journal_append =
+                    transaction.append(worktree_id, coordination_run_id, *operation)?;
                 transaction
                     .publish(&self.paths)
                     .map_err(LedgerTransactionError::LedgerUnreadable)?;
-                Ok(LedgerTransactionOutcome::Appended(Box::new(event)))
+                Ok(LedgerTransactionOutcome::Appended {
+                    event:                       Box::new(journal_append.event),
+                    session_mapping_publication: journal_append.session_mapping_publication,
+                })
             },
             TransactionValidation::Reject(rejection) => {
                 transaction
@@ -711,7 +757,7 @@ impl Ledger {
         };
         match validate(replayed_state) {
             CommittedActionValidation::Append { operation, action } => {
-                transaction
+                let journal_append = transaction
                     .append(worktree_id, coordination_run_id, *operation)
                     .map_err(LedgerCommittedActionError::Transaction)?;
                 let action_output = commit_action(action);
@@ -721,7 +767,12 @@ impl Ledger {
                     .map_err(LedgerCommittedActionError::Transaction)?;
                 action_output.map_or_else(
                     |error| Err(LedgerCommittedActionError::Action(error)),
-                    |output| Ok(LedgerCommittedActionOutcome::Appended(output)),
+                    |output| {
+                        Ok(LedgerCommittedActionOutcome::Appended {
+                            output,
+                            session_mapping_publication: journal_append.session_mapping_publication,
+                        })
+                    },
                 )
             },
             CommittedActionValidation::Reject(rejection) => {
@@ -765,10 +816,14 @@ impl Ledger {
         };
         match validate(replayed_state) {
             ReconciliationValidation::Apply { operations, action } => {
+                let mut session_mapping_publication =
+                    session::SessionIdentityMappingPublication::Published;
                 for operation in operations {
-                    transaction
+                    let journal_append = transaction
                         .append(worktree_id, coordination_run_id, operation)
                         .map_err(LedgerCommittedActionError::Transaction)?;
+                    session_mapping_publication = session_mapping_publication
+                        .merge(journal_append.session_mapping_publication);
                 }
                 let action_output = commit_action(action);
                 transaction
@@ -777,7 +832,12 @@ impl Ledger {
                     .map_err(LedgerCommittedActionError::Transaction)?;
                 action_output.map_or_else(
                     |error| Err(LedgerCommittedActionError::Action(error)),
-                    |output| Ok(LedgerCommittedActionOutcome::Appended(output)),
+                    |output| {
+                        Ok(LedgerCommittedActionOutcome::Appended {
+                            output,
+                            session_mapping_publication,
+                        })
+                    },
                 )
             },
             ReconciliationValidation::Reject(rejection) => {
@@ -910,6 +970,7 @@ impl Ledger {
             _lock: lock,
             journal,
             journal_initialization,
+            ledger_directory: self.paths.directory.clone(),
             projection_synchronization,
             replay,
             repo_instance_id,
@@ -923,7 +984,7 @@ impl LedgerTransaction {
         worktree_id: WorktreeId,
         coordination_run_id: CoordinationRunId,
         operation: JournalOperation,
-    ) -> Result<JournalEvent, LedgerTransactionError> {
+    ) -> Result<JournalAppend, LedgerTransactionError> {
         let next_generation = next_projection_generation(self.replay.generation)
             .map_err(LedgerTransactionError::LedgerUnreadable)?;
         let event = JournalEvent::for_operation(
@@ -956,7 +1017,12 @@ impl LedgerTransaction {
             .replay_repairing_tail()
             .map_err(LedgerError::from)
             .map_err(LedgerTransactionError::LedgerUnreadable)?;
-        Ok(event)
+        let session_mapping_publication =
+            session::apply_journal_event(&self.ledger_directory, &event);
+        Ok(JournalAppend {
+            event,
+            session_mapping_publication,
+        })
     }
 
     fn publish(&self, paths: &LedgerPaths) -> Result<(), LedgerError> {
@@ -977,9 +1043,15 @@ struct LedgerTransaction {
     _lock:                      MutationLock,
     journal:                    Journal,
     journal_initialization:     InitializationState,
+    ledger_directory:           PathBuf,
     projection_synchronization: ProjectionSynchronization,
     replay:                     JournalReplay,
     repo_instance_id:           RepoInstanceId,
+}
+
+struct JournalAppend {
+    event:                       JournalEvent,
+    session_mapping_publication: session::SessionIdentityMappingPublication,
 }
 
 struct LedgerPaths {
@@ -1392,6 +1464,7 @@ mod tests {
     use super::ForcedIntegrationReason;
     use super::JournalEvent;
     use super::JournalOperation;
+    use super::LEDGER_DIRECTORY_NAME;
     use super::Ledger;
     use super::LedgerCommittedActionOutcome;
     use super::LedgerError;
@@ -1525,8 +1598,11 @@ mod tests {
             })
             .expect("approved transaction should append");
 
-        assert!(matches!(&appended, LedgerTransactionOutcome::Appended(_)));
-        let LedgerTransactionOutcome::Appended(event) = appended else {
+        assert!(matches!(
+            &appended,
+            LedgerTransactionOutcome::Appended { .. }
+        ));
+        let LedgerTransactionOutcome::Appended { event, .. } = appended else {
             return;
         };
         assert_eq!(u64::from(event.projection_generation), 1);
@@ -1576,7 +1652,7 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            LedgerCommittedActionOutcome::Appended(())
+            LedgerCommittedActionOutcome::Appended { output: (), .. }
         ));
         assert_eq!(
             fs::read_to_string(&ledger.paths.journal)
@@ -1643,7 +1719,7 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            LedgerTransactionOutcome::Appended(event)
+            LedgerTransactionOutcome::Appended { event, .. }
                 if matches!(
                     event.operation,
                     JournalOperation::Bypass {
@@ -1693,14 +1769,40 @@ mod tests {
         .expect("coordination marker should write");
 
         assert_eq!(
-            EditAuthorization::resolve_from_environment(
+            EditAuthorization::resolve_from_sources(
+                crate::session::SessionIdentityLookup::Unavailable,
                 Some(environment_run.to_string().into()),
                 administrative_directory.path(),
             ),
             EditAuthorization::Environment(environment_run)
         );
+
+        let session_run = CoordinationRunId::new();
+        let session_reservation = ReservationId::new();
         assert_eq!(
-            EditAuthorization::resolve_from_environment(None, administrative_directory.path(),),
+            EditAuthorization::resolve_from_sources(
+                crate::session::SessionIdentityLookup::Mapped(
+                    crate::session::SessionReservationIdentity::new(
+                        session_run,
+                        session_reservation,
+                    ),
+                ),
+                Some(environment_run.to_string().into()),
+                administrative_directory.path(),
+            ),
+            EditAuthorization::Session {
+                coordination_run_id: session_run,
+                reservation_id:      session_reservation,
+                worktree_id:         marker_worktree,
+            }
+        );
+
+        assert_eq!(
+            EditAuthorization::resolve_from_sources(
+                crate::session::SessionIdentityLookup::Unavailable,
+                None,
+                administrative_directory.path(),
+            ),
             EditAuthorization::Marker {
                 coordination_run_id: marker_run,
                 worktree_id:         marker_worktree,
@@ -1714,12 +1816,28 @@ mod tests {
         )
         .expect("coordination marker should remove");
         assert_eq!(
-            EditAuthorization::resolve_from_environment(None, administrative_directory.path(),),
+            EditAuthorization::resolve_from_sources(
+                crate::session::SessionIdentityLookup::Unavailable,
+                Some(environment_run.to_string().into()),
+                administrative_directory.path(),
+            ),
+            EditAuthorization::Environment(environment_run)
+        );
+        assert_eq!(
+            EditAuthorization::resolve_from_sources(
+                crate::session::SessionIdentityLookup::Unavailable,
+                None,
+                administrative_directory.path(),
+            ),
             EditAuthorization::Unidentified
         );
         assert!(matches!(
-            EditAuthorization::resolve(administrative_directory.path()),
-            EditAuthorization::Environment(_)
+            EditAuthorization::resolve(
+                administrative_directory.path(),
+                &administrative_directory.path().join(LEDGER_DIRECTORY_NAME),
+            ),
+            EditAuthorization::Session { .. }
+                | EditAuthorization::Environment(_)
                 | EditAuthorization::Marker { .. }
                 | EditAuthorization::Unidentified
         ));

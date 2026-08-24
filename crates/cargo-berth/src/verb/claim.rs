@@ -55,6 +55,7 @@ use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
 use crate::scope::PathCaseError;
 use crate::scope::ReservationScopeSet;
+use crate::session::SessionIdentityMappingPublication;
 
 const GIT_BINARY: &str = "git";
 const GIT_FULL_REF_NAME_ARG: &str = "--quiet";
@@ -101,6 +102,12 @@ enum ClaimRunValidation {
     /// A marker remains valid only while this worktree and run retain active work.
     ActiveMarkerRequired {
         coordination_run_id: CoordinationRunId,
+        worktree_id:         WorktreeId,
+    },
+    /// A session mapping remains valid only while its exact reservation is active here.
+    ActiveSessionReservationRequired {
+        coordination_run_id: CoordinationRunId,
+        reservation_id:      ReservationId,
         worktree_id:         WorktreeId,
     },
 }
@@ -159,11 +166,13 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
             coordination_run_id,
             scopes,
             marker_publication,
+            session_mapping_publication,
         }) => OutputEnvelope::claimed(
             reservation_id,
             coordination_run_id,
             scopes,
             marker_publication,
+            session_mapping_publication,
         ),
         Ok(ClaimExecution::Blocked(conflicts)) => OutputEnvelope::blocked_claim(conflicts),
         Ok(ClaimExecution::AuthorizationRequired(escalation)) => {
@@ -192,6 +201,14 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
                 "coordination-run marker {coordination_run_id} no longer has an active reservation; retry the claim"
             ),
         ),
+        Err(ClaimError::InactiveSessionMapping(coordination_run_id)) => {
+            OutputEnvelope::invalid_input(
+                CommandVerb::Claim,
+                &format!(
+                    "harness session mapping for coordination run {coordination_run_id} no longer names an active reservation; retry the claim"
+                ),
+            )
+        },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Claim, &error.to_string()),
     };
     output_envelope.with_alerts(reconciliation_report.alerts)
@@ -199,10 +216,11 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
 
 enum ClaimExecution {
     Claimed {
-        reservation_id:      ReservationId,
-        coordination_run_id: CoordinationRunId,
-        scopes:              ReservationScopeSet,
-        marker_publication:  CoordinationRunMarkerPublication,
+        reservation_id:              ReservationId,
+        coordination_run_id:         CoordinationRunId,
+        scopes:                      ReservationScopeSet,
+        marker_publication:          CoordinationRunMarkerPublication,
+        session_mapping_publication: SessionIdentityMappingPublication,
     },
     Blocked(Vec<ReservationConflict>),
     AuthorizationRequired(Box<OverlapEscalationPayload>),
@@ -221,8 +239,7 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
     } = claim_request;
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let claim_run_validation =
-        coordination_run_selection.resolve(worktree_context.administrative_directory());
+    let claim_run_validation = coordination_run_selection.resolve(&worktree_context);
     let actor_run_id = claim_run_validation.actor_run_id();
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let scopes = declared_scopes.into_minimal_antichain(path_case);
@@ -284,7 +301,10 @@ fn claim_execution_from_outcome(
     worktree_context: &WorktreeContext,
 ) -> Result<ClaimExecution, ClaimError> {
     match outcome {
-        LedgerTransactionOutcome::Appended(event) => {
+        LedgerTransactionOutcome::Appended {
+            event,
+            session_mapping_publication,
+        } => {
             let coordination_run_id = event.actor.run;
             let marker_publication = worktree_context
                 .publish_coordination_run_marker(coordination_run_id)
@@ -299,6 +319,7 @@ fn claim_execution_from_outcome(
                 coordination_run_id,
                 scopes,
                 marker_publication,
+                session_mapping_publication,
             })
         },
         LedgerTransactionOutcome::Rejected(ClaimRejection::Conflict(conflicts)) => {
@@ -316,6 +337,9 @@ fn claim_execution_from_outcome(
         LedgerTransactionOutcome::Rejected(ClaimRejection::InactiveMarkerRun(
             coordination_run_id,
         )) => Err(ClaimError::InactiveMarkerRun(coordination_run_id)),
+        LedgerTransactionOutcome::Rejected(ClaimRejection::InactiveSessionMapping(
+            coordination_run_id,
+        )) => Err(ClaimError::InactiveSessionMapping(coordination_run_id)),
         LedgerTransactionOutcome::Rejected(ClaimRejection::ReservationLimitReached(maximum)) => {
             Ok(ClaimExecution::ReservationLimitReached(maximum))
         },
@@ -454,13 +478,25 @@ impl PreparedClaim {
 }
 
 impl ClaimCoordinationRunSelection {
-    fn resolve(self, worktree_administrative_directory: &Path) -> ClaimRunValidation {
+    fn resolve(self, worktree_context: &WorktreeContext) -> ClaimRunValidation {
         match self {
             Self::Specified(coordination_run_id) => {
                 ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id)
             },
             Self::ContinueOrStart => {
-                match EditAuthorization::resolve(worktree_administrative_directory) {
+                match EditAuthorization::resolve(
+                    worktree_context.administrative_directory(),
+                    &worktree_context.ledger_directory(),
+                ) {
+                    EditAuthorization::Session {
+                        coordination_run_id,
+                        reservation_id,
+                        worktree_id,
+                    } => ClaimRunValidation::ActiveSessionReservationRequired {
+                        coordination_run_id,
+                        reservation_id,
+                        worktree_id,
+                    },
                     EditAuthorization::Environment(coordination_run_id) => {
                         ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id)
                     },
@@ -490,6 +526,10 @@ impl ClaimRunValidation {
             | Self::ActiveMarkerRequired {
                 coordination_run_id: actor_run_id,
                 ..
+            }
+            | Self::ActiveSessionReservationRequired {
+                coordination_run_id: actor_run_id,
+                ..
             } => actor_run_id,
         }
     }
@@ -505,11 +545,35 @@ impl ClaimRunValidation {
             Self::ActiveMarkerRequired {
                 coordination_run_id,
                 ..
+            }
+            | Self::ActiveSessionReservationRequired {
+                coordination_run_id,
+                ..
             } => RequesterCoordinationIdentity::Presented(coordination_run_id),
         }
     }
 
     fn validate(self, reservations: &RetainedReservationSet) -> Result<(), ClaimRejection> {
+        if let Self::ActiveSessionReservationRequired {
+            coordination_run_id,
+            reservation_id,
+            worktree_id,
+        } = self
+        {
+            return if reservations.iter().any(|reservation| {
+                reservation.id() == reservation_id
+                    && reservation.actor().run == coordination_run_id
+                    && reservation.actor().worktree == worktree_id
+                    && matches!(
+                        reservation.lifecycle(),
+                        crate::reservation::ReservationLifecycle::Active
+                    )
+            }) {
+                Ok(())
+            } else {
+                Err(ClaimRejection::InactiveSessionMapping(coordination_run_id))
+            };
+        }
         let Self::ActiveMarkerRequired {
             coordination_run_id,
             worktree_id,
@@ -622,6 +686,7 @@ enum ClaimRejection {
     AuthorizationRequired(Box<OverlapEscalationPayload>),
     Replay(ReservationReplayError),
     InactiveMarkerRun(CoordinationRunId),
+    InactiveSessionMapping(CoordinationRunId),
     ReservationLimitReached(u32),
     OrderingEdgeLimitReached(u32),
     EdgeReplay(EdgeReplayError),
@@ -637,6 +702,7 @@ enum ClaimError {
     ReservationReplay(ReservationReplayError),
     EdgeReplay(EdgeReplayError),
     InactiveMarkerRun(CoordinationRunId),
+    InactiveSessionMapping(CoordinationRunId),
     InvalidGitObjectId(InvalidGitObjectId),
     InvalidUtf8(FromUtf8Error),
     GitCommandFailed(String),
@@ -660,6 +726,10 @@ impl Display for ClaimError {
             Self::InactiveMarkerRun(coordination_run_id) => write!(
                 formatter,
                 "coordination-run marker {coordination_run_id} no longer has an active reservation"
+            ),
+            Self::InactiveSessionMapping(coordination_run_id) => write!(
+                formatter,
+                "harness session mapping for coordination run {coordination_run_id} no longer names an active reservation"
             ),
             Self::InvalidGitObjectId(error) => error.fmt(formatter),
             Self::InvalidUtf8(error) => write!(formatter, "git output was not UTF-8: {error}"),

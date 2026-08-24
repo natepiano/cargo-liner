@@ -27,9 +27,13 @@ const GIT_BINARY: &str = "git";
 const HOOK_PATH: &str = ".git/hooks/reference-transaction";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
+const MARKER_PATH: &str = ".git/cargo-berth-run-id";
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
+const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
@@ -146,6 +150,348 @@ fn init_reports_hook_installation_failure_without_claiming_the_ledger_is_unreada
             .as_str()
             .is_some_and(|diagnostic| diagnostic.contains("managed hook installation failed"))
     );
+}
+
+#[test]
+fn session_mapping_authorizes_only_its_live_claim_and_retires_at_checkpoint() {
+    let repository = initialized_repository();
+    let session_id = "session-live-claim";
+    let claimed = run_berth_with_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "protect mapped work",
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(claimed.status.success());
+    assert_eq!(
+        json_output(&claimed)["payload"]["data"]["session_mapping_publication"]["status"],
+        "published"
+    );
+    let reservation_id = reservation_id(&claimed);
+    fs::remove_file(repository.path().join(MARKER_PATH))
+        .expect("coordination marker should remove");
+
+    let mapped = run_berth_with_session(
+        repository.path(),
+        &["check", "file:src/lib.rs", "--json"],
+        session_id,
+    );
+    assert!(mapped.status.success());
+    assert_eq!(json_output(&mapped)["status"], "clear");
+
+    let mapping_before_checkpoint =
+        fs::read(repository.path().join(SESSION_MAPPING_PATH)).expect("mapping should read");
+    let checkpointed = run_berth_with_session(
+        repository.path(),
+        &["release", &reservation_id, "--json"],
+        session_id,
+    );
+    assert!(checkpointed.status.success());
+    assert_eq!(
+        json_output(&checkpointed)["payload"]["data"]["session_mapping_publication"]["status"],
+        "published"
+    );
+    assert!(
+        !fs::read_to_string(repository.path().join(SESSION_MAPPING_PATH))
+            .expect("retired mapping should read")
+            .contains(session_id)
+    );
+    let next_claim = claim(
+        repository.path(),
+        "file:tests/base.rs",
+        FIRST_RUN,
+        "docs/session.md",
+        "phase-after-checkpoint",
+    );
+    assert!(next_claim.status.success());
+    fs::remove_file(repository.path().join(MARKER_PATH))
+        .expect("coordination marker should remove");
+    let retired = run_berth_with_session(
+        repository.path(),
+        &["check", "file:tests/base.rs", "--json"],
+        session_id,
+    );
+    assert_eq!(retired.status.code(), Some(1));
+    assert_eq!(json_output(&retired)["status"], "blocked_by_overlap");
+
+    fs::write(
+        repository.path().join(SESSION_MAPPING_PATH),
+        mapping_before_checkpoint,
+    )
+    .expect("stale mapping should write");
+    let stale = run_berth_with_session(
+        repository.path(),
+        &["check", "file:tests/base.rs", "--json"],
+        session_id,
+    );
+    assert_eq!(stale.status.code(), Some(1));
+    assert_eq!(json_output(&stale)["status"], "blocked_by_overlap");
+}
+
+#[test]
+fn session_mapping_authorizes_every_reservation_owned_by_its_run() {
+    let repository = initialized_repository();
+    let session_id = "same-run-reservations";
+    let first = run_berth_with_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:first.txt",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "protect first phase",
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(first.status.success());
+    let second = claim(
+        repository.path(),
+        "file:second.txt",
+        FIRST_RUN,
+        "docs/session.md",
+        "second-phase",
+    );
+    assert!(second.status.success());
+
+    let session_check = run_berth_with_session(
+        repository.path(),
+        &["check", "file:second.txt", "--json"],
+        session_id,
+    );
+    let marker_check = run_berth(repository.path(), &["check", "file:second.txt", "--json"]);
+
+    assert!(session_check.status.success());
+    assert!(marker_check.status.success());
+    assert_eq!(json_output(&session_check)["status"], "clear");
+    assert_eq!(json_output(&marker_check)["status"], "clear");
+}
+
+#[test]
+fn mapping_publication_failures_are_reported_by_claim_and_checkpoint() {
+    let claim_repository = initialized_repository();
+    fs::create_dir(claim_repository.path().join(SESSION_MAPPING_PATH))
+        .expect("mapping destination directory should exist");
+    let claimed = run_berth_with_session(
+        claim_repository.path(),
+        &[
+            "claim",
+            "file:claim.txt",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "exercise mapping failure",
+            "--json",
+        ],
+        "claim-publication-failure",
+    );
+    assert!(claimed.status.success());
+    assert_eq!(
+        json_output(&claimed)["payload"]["data"]["session_mapping_publication"]["status"],
+        "unavailable"
+    );
+
+    let checkpoint_repository = initialized_repository();
+    let checkpoint_claim = run_berth_with_session(
+        checkpoint_repository.path(),
+        &[
+            "claim",
+            "file:checkpoint.txt",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "exercise checkpoint mapping failure",
+            "--json",
+        ],
+        "checkpoint-publication-failure",
+    );
+    assert!(checkpoint_claim.status.success());
+    let reservation_id = reservation_id(&checkpoint_claim);
+    fs::remove_file(checkpoint_repository.path().join(SESSION_MAPPING_PATH))
+        .expect("mapping file should remove");
+    fs::create_dir(checkpoint_repository.path().join(SESSION_MAPPING_PATH))
+        .expect("mapping destination directory should exist");
+    let checkpointed = run_berth_with_session(
+        checkpoint_repository.path(),
+        &["release", &reservation_id, "--json"],
+        "checkpoint-publication-failure",
+    );
+    assert!(checkpointed.status.success());
+    assert_eq!(
+        json_output(&checkpointed)["payload"]["data"]["session_mapping_publication"]["status"],
+        "unavailable"
+    );
+}
+
+#[test]
+fn integrate_reports_an_inactive_session_mapping_without_a_marker_diagnostic() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let integration_root = add_worktree(
+        repository.path(),
+        worktrees.path(),
+        "inactive-session-integration",
+    );
+    let session_id = "stale-integration-session";
+    let mapped_claim = run_berth_with_session(
+        &integration_root,
+        &[
+            "claim",
+            "file:mapped-session",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "establish integration session mapping",
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(mapped_claim.status.success());
+    let mapped_reservation_id = reservation_id(&mapped_claim);
+    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
+    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
+    assert!(
+        run_berth(
+            &integration_root,
+            &["release", &mapped_reservation_id, "--json"],
+        )
+        .status
+        .success()
+    );
+    let integrating_claim = claim(
+        &integration_root,
+        "file:integrating-session",
+        SECOND_RUN,
+        "docs/integrating-session.md",
+        "integration",
+    );
+    assert!(integrating_claim.status.success());
+    let integrating_reservation_id = reservation_id(&integrating_claim);
+    commit_work(
+        &integration_root,
+        "integrating-session",
+        "integration work\n",
+        "integration work",
+    );
+    fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
+
+    let rejected = run_berth_with_session(
+        &integration_root,
+        &["integrate", &integrating_reservation_id, "--json"],
+        session_id,
+    );
+    let rejected_json = json_output(&rejected);
+    let diagnostic = rejected_json["message"]
+        .as_str()
+        .expect("integration rejection should have a message");
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_eq!(rejected_json["status"], "invalid_input");
+    assert!(diagnostic.contains("harness session mapping"));
+    assert!(!diagnostic.contains("coordination-run marker"));
+}
+
+#[test]
+fn unavailable_session_mapping_falls_through_to_marker_and_environment() {
+    let repository = initialized_repository();
+    let claimed = claim(
+        repository.path(),
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "docs/session.md",
+        "phase-session",
+    );
+    assert!(claimed.status.success());
+    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
+
+    fs::write(&mapping_path, "not json\n").expect("corrupt mapping should write");
+    let marker_fallback = run_berth_with_session(
+        repository.path(),
+        &["check", "file:src/lib.rs", "--json"],
+        "session-corrupt-marker",
+    );
+    assert!(marker_fallback.status.success());
+    assert_eq!(json_output(&marker_fallback)["status"], "clear");
+
+    fs::remove_file(&mapping_path).expect("mapping should remove");
+    let absent_marker_fallback = run_berth_with_session(
+        repository.path(),
+        &["check", "file:src/lib.rs", "--json"],
+        "session-absent-marker",
+    );
+    assert!(absent_marker_fallback.status.success());
+
+    fs::write(&mapping_path, "not json\n").expect("corrupt mapping should write");
+    fs::remove_file(repository.path().join(MARKER_PATH))
+        .expect("coordination marker should remove");
+    let environment_fallback = run_berth_with_session_and_run(
+        repository.path(),
+        &["check", "file:src/lib.rs", "--json"],
+        "session-corrupt-environment",
+        FIRST_RUN,
+    );
+    assert!(environment_fallback.status.success());
+    assert_eq!(json_output(&environment_fallback)["status"], "clear");
+
+    fs::remove_file(&mapping_path).expect("mapping should remove");
+    let absent_environment_fallback = run_berth_with_session_and_run(
+        repository.path(),
+        &["check", "file:src/lib.rs", "--json"],
+        "session-absent-environment",
+        FIRST_RUN,
+    );
+    assert!(absent_environment_fallback.status.success());
+}
+
+#[test]
+fn session_mapping_survives_unavailable_marker_publication() {
+    let repository = initialized_repository();
+    let marker_path = repository.path().join(MARKER_PATH);
+    let git_directory = repository.path().join(".git");
+    let original_permissions = fs::metadata(&git_directory)
+        .expect("git directory metadata should read")
+        .permissions();
+    let mut read_only_permissions = original_permissions.clone();
+    read_only_permissions.set_mode(0o555);
+    fs::set_permissions(&git_directory, read_only_permissions)
+        .expect("git directory should become read-only");
+    let claimed = run_berth_with_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "protect mapped work",
+            "--json",
+        ],
+        "session-without-marker",
+    );
+    fs::set_permissions(&git_directory, original_permissions)
+        .expect("git directory permissions should restore");
+    assert!(claimed.status.success());
+    assert_eq!(
+        json_output(&claimed)["payload"]["data"]["marker_publication"]["status"],
+        "unavailable"
+    );
+    assert!(!marker_path.exists());
+
+    let mapped = run_berth_with_session(
+        repository.path(),
+        &["check", "file:src/lib.rs", "--json"],
+        "session-without-marker",
+    );
+    assert!(mapped.status.success());
+    assert_eq!(json_output(&mapped)["status"], "clear");
 }
 
 #[test]
@@ -462,7 +808,8 @@ fn an_observed_violation_with_closed_stderr_still_permits_the_ref_update() {
         .args(["-c", &command])
         .current_dir(repository.path())
         .env_remove(BYPASS_ENVIRONMENT)
-        .env_remove("CARGO_BERTH_RUN")
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
         .stdin(Stdio::piped())
         .spawn()
         .expect("private gate should start with closed stderr");
@@ -1289,7 +1636,8 @@ fn run_private_hook(repository_root: &Path, phase: &str, input: &str) -> Output 
         .args(["__reference-transaction", phase, "refs/heads/main"])
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
-        .env_remove("CARGO_BERTH_RUN")
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1375,7 +1723,8 @@ fn run_private_hook_with_git_trace(repository_root: &Path, input: &str) -> Trace
         .env(REAL_GIT_ENVIRONMENT, git_binary())
         .env(TRACE_ENVIRONMENT, &trace_path)
         .env_remove(BYPASS_ENVIRONMENT)
-        .env_remove("CARGO_BERTH_RUN")
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1402,7 +1751,8 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
-        .env_remove("CARGO_BERTH_RUN")
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
         .output()
         .expect("cargo-berth should run")
 }
@@ -1417,8 +1767,36 @@ fn run_berth_with_environment(
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
-        .env_remove("CARGO_BERTH_RUN")
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
         .env(name, value)
+        .output()
+        .expect("cargo-berth should run")
+}
+
+fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env(SESSION_ENVIRONMENT, session_id)
+        .output()
+        .expect("cargo-berth should run")
+}
+
+fn run_berth_with_session_and_run(
+    repository_root: &Path,
+    arguments: &[&str],
+    session_id: &str,
+    coordination_run_id: &str,
+) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env(RUN_ENVIRONMENT, coordination_run_id)
+        .env(SESSION_ENVIRONMENT, session_id)
         .output()
         .expect("cargo-berth should run")
 }

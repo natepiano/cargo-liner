@@ -132,7 +132,8 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         GateError::Transaction(LedgerTransactionError::CorrectableInput(error)) => {
             OutputEnvelope::invalid_input(CommandVerb::Integrate, &error.to_string())
         },
-        GateError::InactiveMarkerRun(_)
+        GateError::InactiveSessionMapping(_)
+        | GateError::InactiveMarkerRun(_)
         | GateError::ReservationNotEntering(_)
         | GateError::NoHoldToForce(_)
         | GateError::MissingSkippedHold => {

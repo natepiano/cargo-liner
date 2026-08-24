@@ -20,6 +20,7 @@ use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::CommittedActionValidation;
 use crate::ledger::EditAuthorization;
+use crate::ledger::IncursionIncidentId;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
@@ -44,17 +45,26 @@ use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
+use crate::session::SessionIdentityMappingPublication;
 
-/// A parsed recovery request whose variant contains exactly its required evidence.
+/// A parsed resolution request whose variant contains exactly its required evidence.
 pub(crate) struct ResolveRequest {
-    /// The reservation receiving the recovery decision.
+    /// The reservation receiving the reservation or incident decision.
     pub(crate) reservation_id: ReservationId,
-    /// The one user-selected recovery decision.
-    pub(crate) recovery:       RecoveryRequest,
+    /// The one user-selected resolution decision.
+    pub(crate) decision:       ResolveDecision,
 }
 
-/// The mutually exclusive recovery decisions accepted at the command boundary.
-pub(crate) enum RecoveryRequest {
+/// The reservation or incident decision accepted at the command boundary.
+pub(crate) enum ResolveDecision {
+    /// Apply one recovery decision to the named reservation.
+    Reservation(ReservationRecoveryDecision),
+    /// Answer one outstanding incursion incident.
+    Incursion(IncursionIncidentId),
+}
+
+/// The mutually exclusive reservation recovery decisions.
+pub(crate) enum ReservationRecoveryDecision {
     /// Move surviving work to the invoking replacement worktree.
     Recovered,
     /// Record a verified alternate commit already reachable from trunk.
@@ -87,9 +97,11 @@ pub(crate) fn resolve(resolve_request: ResolveRequest) -> OutputEnvelope {
     };
     let output_envelope = match execute_resolution(resolve_request) {
         Ok(resolve_payload) => {
-            reconciliation_report
-                .alerts
-                .retain(|alert| alert.reservation_id() != resolved_reservation_id);
+            if !matches!(resolve_payload, ResolvePayload::IncursionResolved { .. }) {
+                reconciliation_report
+                    .alerts
+                    .retain(|alert| alert.reservation_id() != resolved_reservation_id);
+            }
             OutputEnvelope::resolved(resolve_payload)
         },
         Err(error) => error.into_output(CommandVerb::Resolve),
@@ -117,13 +129,90 @@ pub(crate) fn renew(renew_request: RenewRequest) -> OutputEnvelope {
 }
 
 fn execute_resolution(resolve_request: ResolveRequest) -> Result<ResolvePayload, RecoveryError> {
+    match resolve_request.decision {
+        ResolveDecision::Reservation(recovery) => {
+            execute_reservation_resolution(ReservationResolutionRequest {
+                reservation_id: resolve_request.reservation_id,
+                recovery,
+            })
+        },
+        ResolveDecision::Incursion(incident_id) => {
+            execute_incursion_resolution(resolve_request.reservation_id, incident_id)
+        },
+    }
+}
+
+struct ReservationResolutionRequest {
+    reservation_id: ReservationId,
+    recovery:       ReservationRecoveryDecision,
+}
+
+fn execute_incursion_resolution(
+    reservation_id: ReservationId,
+    incident_id: IncursionIncidentId,
+) -> Result<ResolvePayload, RecoveryError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
     let worktree_identity = ledger::worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
-    let coordination_run_id = mutation_run_id(worktree_context.administrative_directory());
+    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let outcome = ledger.transact(
+        worktree_identity.id,
+        mutation_run_id(&worktree_context),
+        |state| {
+            let reservations = match RetainedReservationSet::replay(state.events()) {
+                Ok(reservations) => reservations,
+                Err(error) => {
+                    return TransactionValidation::Reject(RecoveryRejection::Replay(error));
+                },
+            };
+            let Some(incident) = reservations
+                .outstanding_incursion_incidents()
+                .find(|incident| incident.id() == incident_id)
+            else {
+                let rejection = match reservations.incursion_incident(incident_id) {
+                    Ok(_) => RecoveryRejection::IncursionIncidentAlreadyResolved(incident_id),
+                    Err(ReservationReplayError::UnknownIncursionIncident(_)) => {
+                        RecoveryRejection::UnknownIncursionIncident(incident_id)
+                    },
+                    Err(error) => RecoveryRejection::Replay(error),
+                };
+                return TransactionValidation::Reject(rejection);
+            };
+            if incident.reservation_id() != reservation_id {
+                return TransactionValidation::Reject(
+                    RecoveryRejection::IncursionReservationMismatch {
+                        incident_id,
+                        reservation_id,
+                    },
+                );
+            }
+            TransactionValidation::Append(Box::new(JournalOperation::ResolveIncursion {
+                incident_id,
+            }))
+        },
+    )?;
+    match outcome {
+        LedgerTransactionOutcome::Appended { .. } => Ok(ResolvePayload::IncursionResolved {
+            reservation_id,
+            incident_id,
+        }),
+        LedgerTransactionOutcome::Rejected(rejection) => Err(RecoveryError::Rejected(rejection)),
+    }
+}
+
+fn execute_reservation_resolution(
+    resolve_request: ReservationResolutionRequest,
+) -> Result<ResolvePayload, RecoveryError> {
+    let invocation_directory = std::env::current_dir()?;
+    let worktree_context = WorktreeContext::discover(&invocation_directory)?;
+    let worktree_identity = ledger::worktree_identity(
+        worktree_context.administrative_directory(),
+        worktree_context.worktree_kind(),
+    )?;
+    let coordination_run_id = mutation_run_id(&worktree_context);
     let repository_root = worktree_context.repository_root();
     let berth_config = BerthConfig::read(repository_root)?;
     let current_worktree_root = canonical_root(&worktree_context)?;
@@ -174,7 +263,7 @@ fn execute_resolution(resolve_request: ResolveRequest) -> Result<ResolvePayload,
                     current_worktree_root,
                     worktree_context.administrative_locator().clone(),
                 ) {
-                    Ok((operation, resolve_payload, committed_action)) => {
+                    Ok((operation, resolve_payload_seed, committed_action)) => {
                         let retention_deletions = match recovery_retention_deletions(
                             &operation,
                             &ordering_graph,
@@ -188,7 +277,7 @@ fn execute_resolution(resolve_request: ResolveRequest) -> Result<ResolvePayload,
                             operation: Box::new(operation),
                             action:    RecoveryCommittedAction {
                                 committed_action,
-                                resolve_payload,
+                                resolve_payload_seed,
                                 retention_deletions,
                             },
                         }
@@ -203,7 +292,10 @@ fn execute_resolution(resolve_request: ResolveRequest) -> Result<ResolvePayload,
             LedgerCommittedActionError::Action(error) => error,
         })?;
     match outcome {
-        LedgerCommittedActionOutcome::Appended(resolve_payload) => Ok(resolve_payload),
+        LedgerCommittedActionOutcome::Appended {
+            output: resolve_payload_seed,
+            session_mapping_publication,
+        } => Ok(resolve_payload_seed.into_payload(session_mapping_publication)),
         LedgerCommittedActionOutcome::Rejected(RecoveryRejection::Git(error)) => {
             Err(RecoveryError::Git(error))
         },
@@ -237,7 +329,7 @@ fn execute_renewal(renew_request: RenewRequest) -> Result<(), RecoveryError> {
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let outcome = ledger.transact(
         worktree_identity.id,
-        mutation_run_id(worktree_context.administrative_directory()),
+        mutation_run_id(&worktree_context),
         |state| {
             let reservations = match RetainedReservationSet::replay(state.events()) {
                 Ok(reservations) => reservations,
@@ -266,7 +358,7 @@ fn execute_renewal(renew_request: RenewRequest) -> Result<(), RecoveryError> {
         },
     )?;
     match outcome {
-        LedgerTransactionOutcome::Appended(_) => Ok(()),
+        LedgerTransactionOutcome::Appended { .. } => Ok(()),
         LedgerTransactionOutcome::Rejected(rejection) => Err(RecoveryError::Rejected(rejection)),
     }
 }
@@ -274,9 +366,9 @@ fn execute_renewal(renew_request: RenewRequest) -> Result<(), RecoveryError> {
 fn validate_recovery_request(
     repository_root: &Path,
     trunk_branch: &str,
-    recovery_request: RecoveryRequest,
-) -> Result<RecoveryRequest, RecoveryRejection> {
-    let RecoveryRequest::IntegratedAs(trunk_commit) = recovery_request else {
+    recovery_request: ReservationRecoveryDecision,
+) -> Result<ReservationRecoveryDecision, RecoveryRejection> {
+    let ReservationRecoveryDecision::IntegratedAs(trunk_commit) = recovery_request else {
         return Ok(recovery_request);
     };
     let trunk_oid = reservation::current_trunk(repository_root, trunk_branch)
@@ -284,7 +376,7 @@ fn validate_recovery_request(
     match git::reachability(repository_root, trunk_commit.as_ref(), &trunk_oid)
         .map_err(RecoveryRejection::Git)?
     {
-        Reachability::Ancestor => Ok(RecoveryRequest::IntegratedAs(trunk_commit)),
+        Reachability::Ancestor => Ok(ReservationRecoveryDecision::IntegratedAs(trunk_commit)),
         Reachability::NotAncestor | Reachability::ObjectUnknown => {
             Err(RecoveryRejection::UnreachableIntegrationEvidence)
         },
@@ -294,13 +386,13 @@ fn validate_recovery_request(
 fn recovery_operation(
     reservation: &Reservation,
     reservation_id: ReservationId,
-    recovery_request: RecoveryRequest,
+    recovery_request: ReservationRecoveryDecision,
     current_worktree_id: WorktreeId,
     current_worktree_root: CanonicalWorktreeRoot,
     current_worktree_administrative_locator: WorktreeAdministrativeLocator,
-) -> Result<(JournalOperation, ResolvePayload, RecoveryAction), RecoveryRejection> {
+) -> Result<(JournalOperation, ResolvePayloadSeed, RecoveryAction), RecoveryRejection> {
     match recovery_request {
-        RecoveryRequest::Recovered => {
+        ReservationRecoveryDecision::Recovered => {
             if reservation.actor().worktree == current_worktree_id {
                 return Err(RecoveryRejection::SameWorktreeRecovery);
             }
@@ -321,14 +413,14 @@ fn recovery_operation(
                     current_worktree_root,
                     current_worktree_administrative_locator,
                 },
-                ResolvePayload::Recovered {
+                ResolvePayloadSeed::Recovered {
                     reservation_id,
                     worktree_id: current_worktree_id,
                 },
                 committed_action,
             ))
         },
-        RecoveryRequest::IntegratedAs(trunk_commit) => {
+        ReservationRecoveryDecision::IntegratedAs(trunk_commit) => {
             let disposition = ReleaseDisposition::RewrittenIntegration(trunk_commit);
             let operation = match reservation.lifecycle() {
                 ReservationLifecycle::Outstanding { .. } => JournalOperation::Release {
@@ -353,19 +445,19 @@ fn recovery_operation(
             };
             Ok((
                 operation,
-                ResolvePayload::Released {
+                ResolvePayloadSeed::Released {
                     reservation_id,
                     disposition,
                 },
                 RecoveryAction::None,
             ))
         },
-        RecoveryRequest::Abandon(reason) => disposition_operation(
+        ReservationRecoveryDecision::Abandon(reason) => disposition_operation(
             reservation,
             reservation_id,
             ReleaseDisposition::Abandoned(reason),
         ),
-        RecoveryRequest::RetireOrphan(reason) => disposition_operation(
+        ReservationRecoveryDecision::RetireOrphan(reason) => disposition_operation(
             reservation,
             reservation_id,
             ReleaseDisposition::RetiredOrphan(reason),
@@ -377,14 +469,14 @@ fn disposition_operation(
     reservation: &Reservation,
     reservation_id: ReservationId,
     disposition: ReleaseDisposition,
-) -> Result<(JournalOperation, ResolvePayload, RecoveryAction), RecoveryRejection> {
+) -> Result<(JournalOperation, ResolvePayloadSeed, RecoveryAction), RecoveryRejection> {
     match reservation.lifecycle() {
         ReservationLifecycle::Active | ReservationLifecycle::Outstanding { .. } => Ok((
             JournalOperation::Release {
                 reservation_id,
                 disposition: disposition.clone(),
             },
-            ResolvePayload::Released {
+            ResolvePayloadSeed::Released {
                 reservation_id,
                 disposition,
             },
@@ -405,9 +497,16 @@ fn canonical_root(
         .map_err(|_| RecoveryError::InvalidCanonicalWorktreeRoot)
 }
 
-fn mutation_run_id(administrative_directory: &Path) -> CoordinationRunId {
-    match EditAuthorization::resolve(administrative_directory) {
-        EditAuthorization::Environment(coordination_run_id)
+fn mutation_run_id(worktree_context: &WorktreeContext) -> CoordinationRunId {
+    match EditAuthorization::resolve(
+        worktree_context.administrative_directory(),
+        &worktree_context.ledger_directory(),
+    ) {
+        EditAuthorization::Session {
+            coordination_run_id,
+            ..
+        }
+        | EditAuthorization::Environment(coordination_run_id)
         | EditAuthorization::Marker {
             coordination_run_id,
             ..
@@ -417,9 +516,9 @@ fn mutation_run_id(administrative_directory: &Path) -> CoordinationRunId {
 }
 
 struct RecoveryCommittedAction {
-    committed_action:    RecoveryAction,
-    resolve_payload:     ResolvePayload,
-    retention_deletions: Vec<ReservationId>,
+    committed_action:     RecoveryAction,
+    resolve_payload_seed: ResolvePayloadSeed,
+    retention_deletions:  Vec<ReservationId>,
 }
 
 enum RecoveryAction {
@@ -428,7 +527,10 @@ enum RecoveryAction {
 }
 
 impl RecoveryCommittedAction {
-    fn commit(self, worktree_context: &WorktreeContext) -> Result<ResolvePayload, RecoveryError> {
+    fn commit(
+        self,
+        worktree_context: &WorktreeContext,
+    ) -> Result<ResolvePayloadSeed, RecoveryError> {
         for reservation_id in self.retention_deletions {
             git::delete_reservation_retention_ref(
                 worktree_context.repository_root(),
@@ -441,13 +543,55 @@ impl RecoveryCommittedAction {
                 worktree_context.publish_coordination_run_marker(coordination_run_id)?;
             },
         }
-        Ok(self.resolve_payload)
+        Ok(self.resolve_payload_seed)
+    }
+}
+
+enum ResolvePayloadSeed {
+    Recovered {
+        reservation_id: ReservationId,
+        worktree_id:    WorktreeId,
+    },
+    Released {
+        reservation_id: ReservationId,
+        disposition:    ReleaseDisposition,
+    },
+}
+
+impl ResolvePayloadSeed {
+    fn into_payload(
+        self,
+        session_mapping_publication: SessionIdentityMappingPublication,
+    ) -> ResolvePayload {
+        match self {
+            Self::Recovered {
+                reservation_id,
+                worktree_id,
+            } => ResolvePayload::Recovered {
+                reservation_id,
+                worktree_id,
+            },
+            Self::Released {
+                reservation_id,
+                disposition,
+            } => ResolvePayload::Released {
+                reservation_id,
+                disposition,
+                session_mapping_publication,
+            },
+        }
     }
 }
 
 #[derive(Debug)]
 enum RecoveryRejection {
     UnknownReservation,
+    UnknownIncursionIncident(IncursionIncidentId),
+    IncursionIncidentAlreadyResolved(IncursionIncidentId),
+    IncursionReservationMismatch {
+        incident_id:    IncursionIncidentId,
+        reservation_id: ReservationId,
+    },
     Replay(ReservationReplayError),
     CheckpointRequired,
     AlreadyResolved,
@@ -515,6 +659,19 @@ impl Display for RecoveryRejection {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownReservation => formatter.write_str("the reservation does not exist"),
+            Self::UnknownIncursionIncident(incident_id) => {
+                write!(formatter, "incursion incident {incident_id} does not exist")
+            },
+            Self::IncursionIncidentAlreadyResolved(incident_id) => {
+                write!(formatter, "incursion incident {incident_id} is already resolved")
+            },
+            Self::IncursionReservationMismatch {
+                incident_id,
+                reservation_id,
+            } => write!(
+                formatter,
+                "incursion incident {incident_id} does not belong to reservation {reservation_id}"
+            ),
             Self::Replay(error) => error.fmt(formatter),
             Self::CheckpointRequired => {
                 formatter.write_str("the reservation must have a protected checkpoint first")

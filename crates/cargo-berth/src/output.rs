@@ -15,6 +15,7 @@ use crate::answer::PermissiveOverlapAnswer;
 use crate::config::InitializationState;
 use crate::drift::DriftEffect;
 use crate::drift::DriftReport;
+use crate::drift::DriftWideningOutcome;
 use crate::drift::ReservationDriftResult;
 use crate::edge::EdgeDeclarationRejection;
 use crate::edge::EdgeHold;
@@ -30,6 +31,7 @@ use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
+use crate::ledger::IncursionIncidentId;
 use crate::ledger::LedgerInitialization;
 use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
@@ -40,6 +42,7 @@ use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationConflict;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
+use crate::session::SessionIdentityMappingPublication;
 
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.";
 const PROJECTION_REPAIRED_MESSAGE: &str =
@@ -123,6 +126,8 @@ enum OutputStatus {
     Incursion,
     /// A widening gained a foreign blocker before its lock was acquired.
     DriftCollision,
+    /// Unclaimed paths require an explicit reservation attribution.
+    DriftAttributionRequired,
     /// Repository policy permits no additional live reservations.
     ReservationLimitReached,
     /// Repository policy permits no additional ordering edges.
@@ -159,6 +164,8 @@ enum OutputStatus {
     Recovered,
     /// A still-live reservation recorded recent activity.
     Renewed,
+    /// A user disposition answered one outstanding incursion incident.
+    IncursionResolved,
 }
 
 /// Structured facts and additive alerts returned inside the typed payload field.
@@ -367,6 +374,13 @@ pub(crate) enum IntegratedGateOutcome {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ResolvePayload {
+    /// A user disposition answered an outstanding incursion incident.
+    IncursionResolved {
+        /// The reservation whose drift produced the incident.
+        reservation_id: ReservationId,
+        /// The incident answered by the appended disposition.
+        incident_id:    IncursionIncidentId,
+    },
     /// Surviving work moved to a replacement worktree identity.
     Recovered {
         /// The reservation whose holder changed.
@@ -377,9 +391,11 @@ pub(crate) enum ResolvePayload {
     /// A user-confirmed terminal disposition resolved the reservation.
     Released {
         /// The reservation that received the disposition.
-        reservation_id: ReservationId,
+        reservation_id:              ReservationId,
         /// The recorded disposition or replacement disposition.
-        disposition:    ReleaseDisposition,
+        disposition:                 ReleaseDisposition,
+        /// Whether the harness session mapping retired this reservation.
+        session_mapping_publication: SessionIdentityMappingPublication,
     },
 }
 
@@ -397,13 +413,15 @@ enum ClaimPayload {
     /// A reservation was appended with this minimal antichain.
     Claimed {
         /// The newly minted reservation identity.
-        reservation_id:      ReservationId,
+        reservation_id:              ReservationId,
         /// The coordination run that owns the appended reservation.
-        coordination_run_id: CoordinationRunId,
+        coordination_run_id:         CoordinationRunId,
         /// The exact durable footprint.
-        scopes:              ReservationScopeSet,
+        scopes:                      ReservationScopeSet,
         /// Whether the worktree marker records `coordination_run_id`.
-        marker_publication:  CoordinationRunMarkerPublication,
+        marker_publication:          CoordinationRunMarkerPublication,
+        /// Whether the harness session mapping reflects this claim.
+        session_mapping_publication: SessionIdentityMappingPublication,
     },
     /// Foreign holders prevented the append.
     Blocked {
@@ -474,6 +492,11 @@ pub(crate) enum SequenceRejectionKind {
         /// The configured durable edge maximum.
         maximum: u32,
     },
+    /// A harness session mapping no longer identifies its exact active reservation.
+    InactiveSessionMapping {
+        /// The stale coordination run named by that mapping.
+        coordination_run_id: CoordinationRunId,
+    },
     /// A marker no longer identifies active work in the invoking worktree.
     InactiveMarkerRun {
         /// The stale coordination run named by that marker.
@@ -506,6 +529,7 @@ impl SequenceRejectionKind {
             | Self::MissingDeferral
             | Self::AmbiguousDeferral
             | Self::OrderingEdgeLimitReached { .. }
+            | Self::InactiveSessionMapping { .. }
             | Self::InactiveMarkerRun { .. } => Vec::new(),
         }
     }
@@ -552,6 +576,15 @@ impl SequenceRejectionKind {
                 OutputStatus::InvalidInput,
                 BerthExit::UsageError,
                 format!("Reservations {first} and {then} recorded deferrals in both directions."),
+            ),
+            Self::InactiveSessionMapping {
+                coordination_run_id,
+            } => (
+                OutputStatus::InvalidInput,
+                BerthExit::UsageError,
+                format!(
+                    "Harness session mapping for coordination run {coordination_run_id} no longer names an active reservation."
+                ),
             ),
             Self::InactiveMarkerRun {
                 coordination_run_id,
@@ -604,13 +637,15 @@ pub(crate) enum ReleasePayload {
     /// An active reservation recorded its first protected checkpoint.
     Checkpointed {
         /// The reservation that changed state.
-        reservation_id: ReservationId,
+        reservation_id:              ReservationId,
         /// The fixed commit retained for integration checks.
-        protected_tip:  ProtectedReservationTip,
+        protected_tip:               ProtectedReservationTip,
         /// The trunk commit observed at checkpoint.
-        trunk_oid:      GitObjectId,
+        trunk_oid:                   GitObjectId,
         /// What happened to the worktree coordination-run marker.
-        marker:         CoordinationRunMarkerRetirement,
+        marker:                      CoordinationRunMarkerRetirement,
+        /// Whether the harness session mapping retired this reservation.
+        session_mapping_publication: SessionIdentityMappingPublication,
     },
     /// A rebased outstanding reservation replaced its protected checkpoint.
     Resnapshotted {
@@ -635,11 +670,13 @@ pub(crate) enum ReleasePayload {
     /// A verified or user-confirmed disposition was appended.
     Released {
         /// The reservation that received the disposition.
-        reservation_id: ReservationId,
+        reservation_id:              ReservationId,
         /// The retained terminal disposition.
-        disposition:    ReleaseDisposition,
+        disposition:                 ReleaseDisposition,
         /// What happened to the worktree coordination-run marker.
-        marker:         CoordinationRunMarkerRetirement,
+        marker:                      CoordinationRunMarkerRetirement,
+        /// Whether the harness session mapping retired this reservation.
+        session_mapping_publication: SessionIdentityMappingPublication,
     },
 }
 
@@ -868,14 +905,37 @@ impl OutputEnvelope {
         coordination_run_id: CoordinationRunId,
         scopes: ReservationScopeSet,
         marker_publication: CoordinationRunMarkerPublication,
+        session_mapping_publication: SessionIdentityMappingPublication,
     ) -> Self {
         let scope_count = scopes.as_slice().len();
-        let message = match &marker_publication {
-            CoordinationRunMarkerPublication::Published => {
+        let message = match (&marker_publication, &session_mapping_publication) {
+            (
+                CoordinationRunMarkerPublication::Published,
+                SessionIdentityMappingPublication::Published,
+            ) => {
                 format!("Claimed {scope_count} reservation scope(s) as {reservation_id}.")
             },
-            CoordinationRunMarkerPublication::Unavailable { diagnostic } => format!(
+            (
+                CoordinationRunMarkerPublication::Unavailable { diagnostic },
+                SessionIdentityMappingPublication::Published,
+            ) => format!(
                 "Claimed {scope_count} reservation scope(s) as {reservation_id}, but the coordination-run marker could not be published: {diagnostic}. Restore coordination run {coordination_run_id} through the process environment before subsequent commands."
+            ),
+            (
+                CoordinationRunMarkerPublication::Published,
+                SessionIdentityMappingPublication::Unavailable { diagnostic },
+            ) => format!(
+                "Claimed {scope_count} reservation scope(s) as {reservation_id}, but the harness session mapping could not be published: {diagnostic}. Later session-keyed drift checks may require an explicit coordination run and reservation."
+            ),
+            (
+                CoordinationRunMarkerPublication::Unavailable {
+                    diagnostic: marker_diagnostic,
+                },
+                SessionIdentityMappingPublication::Unavailable {
+                    diagnostic: session_diagnostic,
+                },
+            ) => format!(
+                "Claimed {scope_count} reservation scope(s) as {reservation_id}, but neither fallback identity publication completed. Coordination-run marker: {marker_diagnostic}. Harness session mapping: {session_diagnostic}. Restore coordination run {coordination_run_id} through the process environment and name reservation {reservation_id} explicitly for later drift checks."
             ),
         };
         Self {
@@ -890,6 +950,7 @@ impl OutputEnvelope {
                 coordination_run_id,
                 scopes,
                 marker_publication,
+                session_mapping_publication,
             })),
         }
     }
@@ -917,6 +978,12 @@ impl OutputEnvelope {
             OutputStatus::DriftCollision
         } else if has_widen {
             OutputStatus::Widened
+        } else if matches!(
+            &report.widening,
+            DriftWideningOutcome::Ambiguous { .. }
+                | DriftWideningOutcome::CoordinationRunRequired { .. }
+        ) {
+            OutputStatus::DriftAttributionRequired
         } else {
             OutputStatus::Clear
         };
@@ -1188,8 +1255,15 @@ impl OutputEnvelope {
         let reservation_id = release_payload.reservation_id();
         let status = release_payload.output_status();
         let message = match &release_payload {
-            ReleasePayload::Checkpointed { protected_tip, .. } => format!(
-                "Reservation {reservation_id} is outstanding at protected tip {protected_tip}."
+            ReleasePayload::Checkpointed {
+                protected_tip,
+                session_mapping_publication,
+                ..
+            } => message_with_session_mapping_publication(
+                format!(
+                    "Reservation {reservation_id} is outstanding at protected tip {protected_tip}."
+                ),
+                session_mapping_publication,
             ),
             ReleasePayload::Resnapshotted { protected_tip, .. } => {
                 format!("Reservation {reservation_id} now retains protected tip {protected_tip}.")
@@ -1208,9 +1282,14 @@ impl OutputEnvelope {
                     "Reservation {reservation_id} is blocking because git could not resolve its integration evidence."
                 ),
             },
-            ReleasePayload::Released { disposition, .. } => {
-                format!("Reservation {reservation_id} recorded disposition {disposition:?}.")
-            },
+            ReleasePayload::Released {
+                disposition,
+                session_mapping_publication,
+                ..
+            } => message_with_session_mapping_publication(
+                format!("Reservation {reservation_id} recorded disposition {disposition:?}."),
+                session_mapping_publication,
+            ),
         };
         Self {
             verb: CommandVerb::Release,
@@ -1226,6 +1305,14 @@ impl OutputEnvelope {
     /// Build a successful recovery response.
     pub(crate) fn resolved(resolve_payload: ResolvePayload) -> Self {
         let (reservation_id, status, message) = match &resolve_payload {
+            ResolvePayload::IncursionResolved {
+                reservation_id,
+                incident_id,
+            } => (
+                *reservation_id,
+                OutputStatus::IncursionResolved,
+                format!("Incursion incident {incident_id} is resolved."),
+            ),
             ResolvePayload::Recovered {
                 reservation_id,
                 worktree_id,
@@ -1237,6 +1324,7 @@ impl OutputEnvelope {
             ResolvePayload::Released {
                 reservation_id,
                 disposition,
+                session_mapping_publication,
             } => (
                 *reservation_id,
                 match disposition {
@@ -1246,7 +1334,10 @@ impl OutputEnvelope {
                         OutputStatus::Released
                     },
                 },
-                format!("Reservation {reservation_id} recorded disposition {disposition:?}."),
+                message_with_session_mapping_publication(
+                    format!("Reservation {reservation_id} recorded disposition {disposition:?}."),
+                    session_mapping_publication,
+                ),
             ),
         };
         Self {
@@ -1357,6 +1448,18 @@ fn blocked_message(conflicts: &[ReservationConflict]) -> String {
     }
 }
 
+fn message_with_session_mapping_publication(
+    message: String,
+    publication: &SessionIdentityMappingPublication,
+) -> String {
+    match publication {
+        SessionIdentityMappingPublication::Published => message,
+        SessionIdentityMappingPublication::Unavailable { diagnostic } => format!(
+            "{message} The harness session mapping could not be published: {diagnostic}. Name the coordination run and reservation explicitly for later drift checks."
+        ),
+    }
+}
+
 fn result_has_effect(
     result: &ReservationDriftResult,
     matches_effect: impl Fn(&DriftEffect) -> bool,
@@ -1377,7 +1480,7 @@ fn drift_message(report: &DriftReport) -> String {
             "No changed path fell outside the selected reservation coverage.".to_owned()
         };
     }
-    let mut message = String::new();
+    let mut message = drift_widening_message(&report.widening);
     for result in &report.results {
         let ReservationDriftResult::Changed {
             reservation_id,
@@ -1404,12 +1507,13 @@ fn drift_message(report: &DriftReport) -> String {
                     );
                 },
                 DriftEffect::Incursion {
+                    incident_id,
                     foreign_reservation_ids,
                     paths,
                 } => {
                     let _ = write!(
                         message,
-                        "Incursion: reservation {reservation_id} entered {} held by foreign reservation(s) {}. Stop and resolve the overlap before making more changes.",
+                        "Incursion {incident_id}: reservation {reservation_id} entered {} held by foreign reservation(s) {}. Stop and resolve the overlap with `resolve {reservation_id} --incursion {incident_id}` before making more changes.",
                         paths
                             .as_slice()
                             .iter()
@@ -1449,6 +1553,36 @@ fn drift_message(report: &DriftReport) -> String {
         }
     }
     message
+}
+
+fn drift_widening_message(widening: &DriftWideningOutcome) -> String {
+    match widening {
+        DriftWideningOutcome::NotNeeded | DriftWideningOutcome::Attributed { .. } => String::new(),
+        DriftWideningOutcome::Ambiguous { candidates, paths } => format!(
+            "Changed paths {} were not widened because attribution is ambiguous among reservations {}. Run drift --reservation <id> with one listed reservation.",
+            paths
+                .as_slice()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            candidates
+                .as_slice()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        DriftWideningOutcome::CoordinationRunRequired { paths } => format!(
+            "Changed paths {} were not widened because no coordination run was identified. Set CARGO_BERTH_RUN to the run that owns the target reservation, then run drift --reservation <id>.",
+            paths
+                .as_slice()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 fn integration_blockers(violations: &[IntegrationViolation]) -> Vec<ReservationId> {

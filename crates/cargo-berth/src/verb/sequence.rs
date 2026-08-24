@@ -4,7 +4,6 @@ use std::cell::RefCell;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::path::Path;
 
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
@@ -77,6 +76,15 @@ pub(crate) fn execute(sequence_request: &SequenceRequest) -> OutputEnvelope {
                 SequenceRejectionKind::OrderingEdgeLimitReached { maximum },
             )
         },
+        Err(SequenceError::Rejected(SequenceRejection::InactiveSessionMapping(
+            coordination_run_id,
+        ))) => OutputEnvelope::sequence_rejected(
+            sequence_request.first,
+            sequence_request.then,
+            SequenceRejectionKind::InactiveSessionMapping {
+                coordination_run_id,
+            },
+        ),
         Err(SequenceError::Rejected(SequenceRejection::InactiveMarkerRun(coordination_run_id))) => {
             OutputEnvelope::sequence_rejected(
                 sequence_request.first,
@@ -111,8 +119,7 @@ fn execute_sequence(sequence_request: &SequenceRequest) -> Result<OrderingEdge, 
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
-    let run_validation =
-        SequenceRunValidation::resolve(worktree_context.administrative_directory());
+    let run_validation = SequenceRunValidation::resolve(&worktree_context);
     let berth_config = BerthConfig::read(worktree_context.repository_root())?;
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let prepared_edge = RefCell::<PreparedEdgeState>::new(PreparedEdgeState::NotPrepared);
@@ -161,7 +168,7 @@ fn execute_sequence(sequence_request: &SequenceRequest) -> Result<OrderingEdge, 
         },
     )?;
     match outcome {
-        LedgerTransactionOutcome::Appended(event) => {
+        LedgerTransactionOutcome::Appended { event, .. } => {
             let PreparedEdgeState::Prepared(edge) = prepared_edge.into_inner() else {
                 return Err(SequenceError::MissingPreparedEdge);
             };
@@ -179,6 +186,11 @@ enum PreparedEdgeState {
 #[derive(Clone, Copy)]
 enum SequenceRunValidation {
     Independent(CoordinationRunId),
+    ActiveSessionReservationRequired {
+        coordination_run_id: CoordinationRunId,
+        reservation_id:      ReservationId,
+        worktree_id:         WorktreeId,
+    },
     ActiveMarkerRequired {
         coordination_run_id: CoordinationRunId,
         worktree_id:         WorktreeId,
@@ -186,8 +198,20 @@ enum SequenceRunValidation {
 }
 
 impl SequenceRunValidation {
-    fn resolve(administrative_directory: &Path) -> Self {
-        match EditAuthorization::resolve(administrative_directory) {
+    fn resolve(worktree_context: &WorktreeContext) -> Self {
+        match EditAuthorization::resolve(
+            worktree_context.administrative_directory(),
+            &worktree_context.ledger_directory(),
+        ) {
+            EditAuthorization::Session {
+                coordination_run_id,
+                reservation_id,
+                worktree_id,
+            } => Self::ActiveSessionReservationRequired {
+                coordination_run_id,
+                reservation_id,
+                worktree_id,
+            },
             EditAuthorization::Environment(coordination_run_id) => {
                 Self::Independent(coordination_run_id)
             },
@@ -205,6 +229,10 @@ impl SequenceRunValidation {
     const fn coordination_run_id(self) -> CoordinationRunId {
         match self {
             Self::Independent(coordination_run_id)
+            | Self::ActiveSessionReservationRequired {
+                coordination_run_id,
+                ..
+            }
             | Self::ActiveMarkerRequired {
                 coordination_run_id,
                 ..
@@ -213,6 +241,25 @@ impl SequenceRunValidation {
     }
 
     fn validate(self, reservations: &RetainedReservationSet) -> Result<(), SequenceRejection> {
+        if let Self::ActiveSessionReservationRequired {
+            coordination_run_id,
+            reservation_id,
+            worktree_id,
+        } = self
+        {
+            return if reservations.iter().any(|reservation| {
+                reservation.id() == reservation_id
+                    && reservation.actor().run == coordination_run_id
+                    && reservation.actor().worktree == worktree_id
+                    && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
+            }) {
+                Ok(())
+            } else {
+                Err(SequenceRejection::InactiveSessionMapping(
+                    coordination_run_id,
+                ))
+            };
+        }
         let Self::ActiveMarkerRequired {
             coordination_run_id,
             worktree_id,
@@ -242,6 +289,7 @@ enum SequenceRejection {
     EdgeReplay(EdgeReplayError),
     Declaration(EdgeDeclarationRejection),
     EdgeLimitReached(u32),
+    InactiveSessionMapping(CoordinationRunId),
     InactiveMarkerRun(CoordinationRunId),
 }
 
@@ -279,6 +327,10 @@ impl Display for SequenceRejection {
             Self::EdgeLimitReached(maximum) => write!(
                 formatter,
                 "the configured maximum of {maximum} ordering edges has been reached"
+            ),
+            Self::InactiveSessionMapping(coordination_run_id) => write!(
+                formatter,
+                "harness session mapping for coordination run {coordination_run_id} no longer names an active reservation"
             ),
             Self::InactiveMarkerRun(coordination_run_id) => write!(
                 formatter,

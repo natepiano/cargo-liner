@@ -109,6 +109,7 @@ impl OrderingGraph {
                 | JournalOperation::ReplaceReleaseDisposition { .. }
                 | JournalOperation::EvidenceRevalidated { .. }
                 | JournalOperation::Incursion { .. }
+                | JournalOperation::ResolveIncursion { .. }
                 | JournalOperation::ForcedIntegrationPermit { .. }
                 | JournalOperation::ConsumeForcedIntegrationPermit { .. }
                 | JournalOperation::Bypass { .. }

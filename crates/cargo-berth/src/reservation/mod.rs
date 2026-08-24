@@ -31,7 +31,9 @@ use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapScopeRevision;
 use crate::ids::CoordinationRunId;
+use crate::ids::EventId;
 use crate::ids::GitObjectId;
+use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::ReservationRevision;
 use crate::ids::WorktreeId;
@@ -39,6 +41,9 @@ use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
 use crate::ledger::EditAuthorization;
+use crate::ledger::ForeignReservationIdSet;
+use crate::ledger::IncursionIncidentId;
+use crate::ledger::IncursionPathSet;
 use crate::ledger::JournalActor;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
@@ -55,7 +60,8 @@ use crate::scope::ReservationScopeSet;
 /// Every retained reservation after replaying the journal in append order.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RetainedReservationSet {
-    reservations: Vec<Reservation>,
+    reservations:        Vec<Reservation>,
+    incursion_incidents: Vec<IncursionIncident>,
 }
 
 /// One reservation retained for overlap, evidence, and audit decisions.
@@ -77,6 +83,38 @@ pub(crate) struct Reservation {
     edit_blocking_status:       EditBlockingStatus,
     worktree_root:              CanonicalWorktreeRoot,
     worktree_locator:           WorktreeAdministrativeLocator,
+}
+
+/// One incursion incident and its current replayed disposition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct IncursionIncident {
+    id:                      IncursionIncidentId,
+    reservation_id:          ReservationId,
+    foreign_reservation_ids: ForeignReservationIdSet,
+    paths:                   IncursionPathSet,
+    status:                  IncursionIncidentStatus,
+}
+
+/// Whether an incursion still requires a user disposition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum IncursionIncidentStatus {
+    /// No disposition record has answered this incident.
+    Outstanding,
+    /// One later journal event recorded the incident's disposition.
+    Resolved {
+        /// The journal append that answered the incident.
+        resolution_event_id: EventId,
+        /// When the disposition was recorded.
+        resolved_at:         RecordedAt,
+    },
+}
+
+/// Whether a drift observation matches an already-outstanding incident.
+pub(crate) enum IncursionObservation {
+    /// Replay already carries the same unanswered incident.
+    AlreadyOutstanding(IncursionIncidentId),
+    /// This observation requires a newly minted incident record.
+    NewlyObserved(IncursionIncidentId),
 }
 
 /// Whether replay has recorded a protected tip for this reservation.
@@ -192,9 +230,14 @@ pub(crate) enum WidenScopeBinding {
 
 /// The run identity permitted to receive its reservation-specific overlap answers.
 #[derive(Clone, Copy)]
-enum AuthorizedEditingRun {
+pub(crate) enum AuthorizedEditingIdentity {
+    /// A live session mapping identifies one exact reservation.
+    SessionReservation {
+        coordination_run_id: CoordinationRunId,
+        reservation_id:      ReservationId,
+    },
     /// The process or validated marker identifies this coordination run.
-    Identified(CoordinationRunId),
+    Run(CoordinationRunId),
     /// No coordination run can be proven for this edit.
     Unidentified,
 }
@@ -307,31 +350,9 @@ impl RetainedReservationSet {
         edit_authorization: EditAuthorization,
         path_case: PathCase,
     ) -> Vec<ReservationConflict> {
-        let marker_is_active = match edit_authorization {
-            EditAuthorization::Marker {
-                coordination_run_id,
-                worktree_id,
-            } => self.reservations.iter().any(|reservation| {
-                matches!(reservation.lifecycle, ReservationLifecycle::Active)
-                    && reservation.actor.run == coordination_run_id
-                    && reservation.actor.worktree == worktree_id
-            }),
-            EditAuthorization::Environment(_) | EditAuthorization::Unidentified => false,
-        };
-        let authorized_editing_run = match edit_authorization {
-            EditAuthorization::Environment(coordination_run_id) => {
-                AuthorizedEditingRun::Identified(coordination_run_id)
-            },
-            EditAuthorization::Marker {
-                coordination_run_id,
-                ..
-            } if marker_is_active => AuthorizedEditingRun::Identified(coordination_run_id),
-            EditAuthorization::Marker { .. } | EditAuthorization::Unidentified => {
-                AuthorizedEditingRun::Unidentified
-            },
-        };
+        let authorized_editing_identity = self.resolve_editing_identity(edit_authorization);
         let conflicts = self.conflicts_with_holders(candidate, path_case, |holder| {
-            authorized_editing_run.is_foreign(holder)
+            authorized_editing_identity.is_foreign(holder)
         });
         let mut unanswered_conflicts = Vec::new();
         for (holder, mut conflict) in conflicts {
@@ -340,7 +361,7 @@ impl RetainedReservationSet {
                 .as_slice()
                 .iter()
                 .filter(|overlap_scope| {
-                    !authorized_editing_run.authorizes(self, holder, overlap_scope, path_case)
+                    !authorized_editing_identity.authorizes(self, holder, overlap_scope, path_case)
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -350,6 +371,61 @@ impl RetainedReservationSet {
             }
         }
         unanswered_conflicts
+    }
+
+    /// Validate a process-resolved edit identity against retained active reservations.
+    pub(crate) fn resolve_editing_identity(
+        &self,
+        edit_authorization: EditAuthorization,
+    ) -> AuthorizedEditingIdentity {
+        let session_is_active = match edit_authorization {
+            EditAuthorization::Session {
+                coordination_run_id,
+                reservation_id,
+                worktree_id,
+            } => self.reservations.iter().any(|reservation| {
+                reservation.id == reservation_id
+                    && matches!(reservation.lifecycle, ReservationLifecycle::Active)
+                    && reservation.actor.run == coordination_run_id
+                    && reservation.actor.worktree == worktree_id
+            }),
+            EditAuthorization::Environment(_)
+            | EditAuthorization::Marker { .. }
+            | EditAuthorization::Unidentified => false,
+        };
+        let marker_is_active = match edit_authorization {
+            EditAuthorization::Marker {
+                coordination_run_id,
+                worktree_id,
+            } => self.reservations.iter().any(|reservation| {
+                matches!(reservation.lifecycle, ReservationLifecycle::Active)
+                    && reservation.actor.run == coordination_run_id
+                    && reservation.actor.worktree == worktree_id
+            }),
+            EditAuthorization::Session { .. }
+            | EditAuthorization::Environment(_)
+            | EditAuthorization::Unidentified => false,
+        };
+        match edit_authorization {
+            EditAuthorization::Session {
+                coordination_run_id,
+                reservation_id,
+                ..
+            } if session_is_active => AuthorizedEditingIdentity::SessionReservation {
+                coordination_run_id,
+                reservation_id,
+            },
+            EditAuthorization::Environment(coordination_run_id) => {
+                AuthorizedEditingIdentity::Run(coordination_run_id)
+            },
+            EditAuthorization::Marker {
+                coordination_run_id,
+                ..
+            } if marker_is_active => AuthorizedEditingIdentity::Run(coordination_run_id),
+            EditAuthorization::Session { .. }
+            | EditAuthorization::Marker { .. }
+            | EditAuthorization::Unidentified => AuthorizedEditingIdentity::Unidentified,
+        }
     }
 
     /// Iterate over every reservation retained for constraints or audit history.
@@ -364,6 +440,49 @@ impl RetainedReservationSet {
             .iter()
             .find(|reservation| reservation.id == reservation_id)
             .ok_or(ReservationReplayError::UnknownReservation(reservation_id))
+    }
+
+    /// Find one retained incursion by its durable identity.
+    pub(crate) fn incursion_incident(
+        &self,
+        incident_id: IncursionIncidentId,
+    ) -> Result<&IncursionIncident, ReservationReplayError> {
+        self.incursion_incidents
+            .iter()
+            .find(|incident| incident.id() == incident_id)
+            .ok_or(ReservationReplayError::UnknownIncursionIncident(
+                incident_id,
+            ))
+    }
+
+    /// Classify an observed incursion against unanswered incidents from replay.
+    pub(crate) fn observe_incursion(
+        &self,
+        reservation_id: ReservationId,
+        foreign_reservation_ids: &ForeignReservationIdSet,
+        paths: &IncursionPathSet,
+    ) -> IncursionObservation {
+        self.incursion_incidents
+            .iter()
+            .find(|incident| {
+                incident.reservation_id() == reservation_id
+                    && incident.foreign_reservation_ids() == foreign_reservation_ids
+                    && incident.paths() == paths
+                    && matches!(incident.status(), IncursionIncidentStatus::Outstanding)
+            })
+            .map_or_else(
+                || IncursionObservation::NewlyObserved(IncursionIncidentId::new()),
+                |incident| IncursionObservation::AlreadyOutstanding(incident.id()),
+            )
+    }
+
+    /// Iterate over the incursion incidents that still require a disposition.
+    pub(crate) fn outstanding_incursion_incidents(
+        &self,
+    ) -> impl Iterator<Item = &IncursionIncident> {
+        self.incursion_incidents
+            .iter()
+            .filter(|incident| matches!(incident.status(), IncursionIncidentStatus::Outstanding))
     }
 
     /// Return whether the run still has another reservation in `Active`.
@@ -468,12 +587,89 @@ impl RetainedReservationSet {
                 previous_root,
                 current_root,
             )?,
+            JournalOperation::Incursion { .. } | JournalOperation::ResolveIncursion { .. } => {
+                self.apply_incursion_journal_event(event)?;
+            },
             JournalOperation::ResolveDefer { .. }
-            | JournalOperation::Incursion { .. }
             | JournalOperation::ForcedIntegrationPermit { .. }
             | JournalOperation::ConsumeForcedIntegrationPermit { .. }
             | JournalOperation::Bypass { .. } => {},
         }
+        Ok(())
+    }
+
+    fn apply_incursion_journal_event(
+        &mut self,
+        event: &JournalEvent,
+    ) -> Result<(), ReservationReplayError> {
+        match &event.operation {
+            JournalOperation::Incursion {
+                incident_id,
+                reservation_id,
+                foreign_reservation_ids,
+                paths,
+            } => self.apply_incursion(
+                *incident_id,
+                *reservation_id,
+                foreign_reservation_ids,
+                paths,
+            ),
+            JournalOperation::ResolveIncursion { incident_id } => {
+                self.apply_incursion_resolution(*incident_id, event.event_id(), event.recorded_at())
+            },
+            _ => Ok(()),
+        }
+    }
+
+    fn apply_incursion(
+        &mut self,
+        incident_id: IncursionIncidentId,
+        reservation_id: ReservationId,
+        foreign_reservation_ids: &ForeignReservationIdSet,
+        paths: &IncursionPathSet,
+    ) -> Result<(), ReservationReplayError> {
+        self.reservation(reservation_id)?;
+        if self
+            .incursion_incidents
+            .iter()
+            .any(|incident| incident.id == incident_id)
+        {
+            return Err(ReservationReplayError::DuplicateIncursionIncident(
+                incident_id,
+            ));
+        }
+        self.incursion_incidents.push(IncursionIncident {
+            id: incident_id,
+            reservation_id,
+            foreign_reservation_ids: foreign_reservation_ids.clone(),
+            paths: paths.clone(),
+            status: IncursionIncidentStatus::Outstanding,
+        });
+        Ok(())
+    }
+
+    fn apply_incursion_resolution(
+        &mut self,
+        incident_id: IncursionIncidentId,
+        resolution_event_id: EventId,
+        resolved_at: &RecordedAt,
+    ) -> Result<(), ReservationReplayError> {
+        let incident = self
+            .incursion_incidents
+            .iter_mut()
+            .find(|incident| incident.id == incident_id)
+            .ok_or(ReservationReplayError::UnknownIncursionIncident(
+                incident_id,
+            ))?;
+        if matches!(incident.status, IncursionIncidentStatus::Resolved { .. }) {
+            return Err(ReservationReplayError::IncursionIncidentAlreadyResolved(
+                incident_id,
+            ));
+        }
+        incident.status = IncursionIncidentStatus::Resolved {
+            resolution_event_id,
+            resolved_at: resolved_at.clone(),
+        };
         Ok(())
     }
 
@@ -779,10 +975,14 @@ impl RetainedReservationSet {
     }
 }
 
-impl AuthorizedEditingRun {
+impl AuthorizedEditingIdentity {
     fn is_foreign(self, holder: &Reservation) -> bool {
         match self {
-            Self::Identified(coordination_run_id) => holder.actor.run != coordination_run_id,
+            Self::SessionReservation {
+                coordination_run_id,
+                ..
+            }
+            | Self::Run(coordination_run_id) => holder.actor.run != coordination_run_id,
             Self::Unidentified => true,
         }
     }
@@ -794,14 +994,11 @@ impl AuthorizedEditingRun {
         overlap_scope: &ReservationScope,
         path_case: PathCase,
     ) -> bool {
-        let Self::Identified(coordination_run_id) = self else {
-            return false;
-        };
         reservations
             .reservations
             .iter()
             .filter(|requester| {
-                requester.actor.run == coordination_run_id
+                self.identifies_requester(requester)
                     && requester.edit_blocking_status == EditBlockingStatus::Blocking
                     && requester
                         .scopes
@@ -812,6 +1009,17 @@ impl AuthorizedEditingRun {
             .any(|requester| {
                 reservations_authorize_scope(requester, holder, overlap_scope, path_case)
             })
+    }
+
+    fn identifies_requester(self, requester: &Reservation) -> bool {
+        match self {
+            Self::SessionReservation {
+                coordination_run_id,
+                ..
+            }
+            | Self::Run(coordination_run_id) => requester.actor.run == coordination_run_id,
+            Self::Unidentified => false,
+        }
     }
 }
 
@@ -971,13 +1179,38 @@ impl ReservationConflict {
     }
 }
 
+impl IncursionIncident {
+    /// Return the incident's durable identity.
+    pub(crate) const fn id(&self) -> IncursionIncidentId { self.id }
+
+    /// Return the reservation whose worktree entered foreign scopes.
+    pub(crate) const fn reservation_id(&self) -> ReservationId { self.reservation_id }
+
+    /// Borrow the foreign reservations entered by this incident.
+    pub(crate) const fn foreign_reservation_ids(&self) -> &ForeignReservationIdSet {
+        &self.foreign_reservation_ids
+    }
+
+    /// Borrow the repository paths entered by this incident.
+    pub(crate) const fn paths(&self) -> &IncursionPathSet { &self.paths }
+
+    /// Return the incident's current replayed disposition.
+    pub(crate) const fn status(&self) -> &IncursionIncidentStatus { &self.status }
+}
+
 /// A journal sequence that cannot represent valid reservation state.
 #[derive(Debug)]
 pub(crate) enum ReservationReplayError {
     /// Two claims reused one non-recyclable reservation identity.
     DuplicateClaim(ReservationId),
+    /// Two incursion records reused one non-recyclable incident identity.
+    DuplicateIncursionIncident(IncursionIncidentId),
     /// A replayed mutation referenced no retained reservation.
     UnknownReservation(ReservationId),
+    /// A replayed disposition referenced no retained incursion incident.
+    UnknownIncursionIncident(IncursionIncidentId),
+    /// More than one disposition attempted to answer the same incursion.
+    IncursionIncidentAlreadyResolved(IncursionIncidentId),
     /// A replayed widen somehow produced an empty scope set.
     EmptyScopeSet(ReservationId),
     /// A reservation revision counter can no longer advance.
@@ -1013,10 +1246,25 @@ impl Display for ReservationReplayError {
                     "duplicate claim for reservation {reservation_id}"
                 )
             },
+            Self::DuplicateIncursionIncident(incident_id) => {
+                write!(formatter, "duplicate incursion incident {incident_id}")
+            },
             Self::UnknownReservation(reservation_id) => {
                 write!(
                     formatter,
                     "journal operation names unknown reservation {reservation_id}"
+                )
+            },
+            Self::UnknownIncursionIncident(incident_id) => {
+                write!(
+                    formatter,
+                    "journal operation names unknown incursion {incident_id}"
+                )
+            },
+            Self::IncursionIncidentAlreadyResolved(incident_id) => {
+                write!(
+                    formatter,
+                    "incursion incident {incident_id} is already resolved"
                 )
             },
             Self::EmptyScopeSet(reservation_id) => {

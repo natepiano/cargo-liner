@@ -27,6 +27,8 @@ const MARKER_PATH: &str = ".git/cargo-berth-run-id";
 const MARKER_PATH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_PATH";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const STALE_MARKER_GIT_WRAPPER: &str = r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ] && [ "$2" = "rev-parse" ] && [ "$3" = "$CARGO_BERTH_TEST_ALERT_BRANCH" ]; then
     printf '%s\n' "$CARGO_BERTH_TEST_STALE_RUN" > "$CARGO_BERTH_TEST_MARKER_PATH"
@@ -172,6 +174,65 @@ fn sequence_rejects_a_stale_post_reconciliation_marker_and_carries_alerts() {
         rejected_json["payload"]["alerts"][0]["data"]["reservation_id"],
         orphan_id
     );
+    assert_eq!(resolve_defer_count(repository.path()), 0);
+}
+
+#[test]
+fn sequence_reports_an_inactive_session_mapping_without_a_marker_diagnostic() {
+    let repository = initialized_repository();
+    let (holder_id, requester_id) = deferred_pair(repository.path());
+    let session_id = "stale-sequence-session";
+    let mapped_claim = run_berth_with_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:session-sequence",
+            "--run",
+            THIRD_RUN,
+            "--why",
+            "establish sequence session mapping",
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(mapped_claim.status.success());
+    let mapped_reservation_id = reservation_id(&mapped_claim);
+    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
+    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
+    assert!(
+        run_berth(
+            repository.path(),
+            &["release", &mapped_reservation_id, "--json"],
+        )
+        .status
+        .success()
+    );
+    fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
+
+    let rejected = run_berth_with_session(
+        repository.path(),
+        &[
+            "sequence",
+            &holder_id,
+            &requester_id,
+            "--why",
+            "the holder must land first",
+            "--json",
+        ],
+        session_id,
+    );
+    let rejected_json = json_output(&rejected);
+    let diagnostic = rejected_json["message"]
+        .as_str()
+        .expect("sequence rejection should have a message");
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_eq!(
+        rejected_json["payload"]["data"]["reason"]["kind"],
+        "inactive_session_mapping"
+    );
+    assert!(diagnostic.contains("Harness session mapping"));
+    assert!(!diagnostic.contains("coordination-run marker"));
     assert_eq!(resolve_defer_count(repository.path()), 0);
 }
 
@@ -1183,6 +1244,17 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .args(arguments)
         .current_dir(repository_root)
         .env_remove("CARGO_BERTH_RUN")
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("cargo-berth should run")
+}
+
+fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove("CARGO_BERTH_RUN")
+        .env(SESSION_ENVIRONMENT, session_id)
         .output()
         .expect("cargo-berth should run")
 }

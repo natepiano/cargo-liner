@@ -34,6 +34,7 @@ use crate::constants::PROPOSAL_VALUE_NAME;
 use crate::drift::DriftComparisonChoice;
 use crate::drift::DriftRequest;
 use crate::drift::DriftReservationSelection;
+use crate::drift::PostCommitWideningSelection;
 use crate::edge::OrderingReason;
 use crate::exit::BerthExit;
 use crate::gate;
@@ -46,6 +47,7 @@ use crate::ids::ReservationId;
 use crate::ids::WorkPlanPhase;
 use crate::ledger::ClaimSource;
 use crate::ledger::ForcedIntegrationReason;
+use crate::ledger::IncursionIncidentId;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
@@ -58,8 +60,9 @@ use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::PostCommitRendering;
 use crate::recovery;
-use crate::recovery::RecoveryRequest;
 use crate::recovery::RenewRequest;
+use crate::recovery::ReservationRecoveryDecision;
+use crate::recovery::ResolveDecision;
 use crate::recovery::ResolveRequest;
 use crate::reservation::AbandonmentReason;
 use crate::reservation::OrphanRetirementReason;
@@ -97,6 +100,8 @@ const HEAD_ARGUMENT: &str = "head";
 const HEAD_VALUE_NAME: &str = "OID";
 const INTEGRATED_AS_ARGUMENT: &str = "integrated-as";
 const INTEGRATED_AS_ARGUMENT_ID: &str = "integrated_as";
+const INCURSION_ARGUMENT: &str = "incursion";
+const INCURSION_VALUE_NAME: &str = "INCIDENT_ID";
 const INIT_OPERATION_GROUP: &str = "init-operation";
 const JSON_ARGUMENT: &str = "json";
 const PATH_VALUE_NAME: &str = "PATH";
@@ -127,7 +132,7 @@ const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work rea
 const RECOVERED_LONG_ABOUT: &str = "Use this when the reservation's work is still present but now belongs to this replacement worktree. It records a new worktree identity; choosing it when the work was actually integrated or discarded leaves an inaccurate live reservation blocking other work.";
 const RETIRE_ORPHAN_LONG_ABOUT: &str = "Use this only after confirming an orphaned reservation can retire without classifying its work as deliberately discarded. It records a distinct orphan-retirement disposition and requires --why so later readers can audit that decision.";
 const RENEW_LONG_ABOUT: &str = "Record that this still-live reservation remains active after inspection. Renewal changes neither its scopes nor any ordering edge; using it to hide abandoned work delays the user-confirmed recovery or abandonment decision that must eventually resolve it.";
-const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation that is stuck because its original worktree disappeared or its integration evidence changed. Choose exactly one disposition: --recovered when the work survives in this replacement worktree; --integrated-as <TRUNK_OID> when the work reached trunk in a form the tool could not prove; --abandon --why <WHY> only when the work is deliberately discarded; or --retire-orphan --why <WHY> after confirming an orphan may retire without classifying its work as discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
+const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation recovery or an incursion incident. Choose exactly one disposition: --incursion <INCIDENT_ID> for an outstanding incident; --recovered when work survives in this replacement worktree; --integrated-as <TRUNK_OID> when work reached trunk in a form the tool could not prove; --abandon --why <WHY> only when work is deliberately discarded; or --retire-orphan --why <WHY> after confirming an orphan may retire without classifying its work as discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
 
 /// `cargo-berth`, as the command line sees it.
 #[derive(Debug, Parser)]
@@ -394,6 +399,7 @@ struct IntegrateArguments {
             INTEGRATED_AS_ARGUMENT_ID,
             ABANDON_ARGUMENT,
             RETIRE_ORPHAN_ARGUMENT_ID,
+            INCURSION_ARGUMENT,
         ])
         .required(true)
         .multiple(false)
@@ -406,6 +412,9 @@ struct IntegrateArguments {
 struct ResolveArguments {
     /// The stuck reservation to resolve.
     reservation_id: ReservationId,
+    /// Answer this outstanding incursion incident.
+    #[arg(long = INCURSION_ARGUMENT, value_name = INCURSION_VALUE_NAME)]
+    incursion:      Option<IncursionIncidentId>,
     /// Record this worktree as the recovered holder of surviving work.
     #[arg(long = RECOVERED_ARGUMENT, long_help = RECOVERED_LONG_ABOUT)]
     recovered:      bool,
@@ -725,10 +734,15 @@ impl DriftArguments {
             DriftComparisonChoice::CheapDelta
         };
         let reservation = if post_commit_hook_requested() {
-            DriftReservationSelection::EveryActiveForPostCommit
+            DriftReservationSelection::EveryActiveForPostCommit {
+                widening: self.reservation.map_or(
+                    PostCommitWideningSelection::SessionMappingOrSingleCandidate,
+                    PostCommitWideningSelection::Explicit,
+                ),
+            }
         } else {
             self.reservation.map_or(
-                DriftReservationSelection::UniqueActiveForActingIdentity,
+                DriftReservationSelection::SessionMappingOrSingleActive,
                 DriftReservationSelection::Explicit,
             )
         };
@@ -776,6 +790,7 @@ impl ResolveArguments {
     fn into_resolve_request(self) -> Result<ResolveRequest, String> {
         let Self {
             reservation_id,
+            incursion,
             recovered,
             integrated_as,
             abandon,
@@ -783,29 +798,43 @@ impl ResolveArguments {
             why,
             json_output: _,
         } = self;
-        let recovery = match (recovered, integrated_as, abandon, retire_orphan, why) {
-            (true, None, false, false, None) => RecoveryRequest::Recovered,
-            (false, Some(trunk_commit), false, false, None) => {
-                RecoveryRequest::IntegratedAs(trunk_commit)
+        let decision = match (
+            incursion,
+            recovered,
+            integrated_as,
+            abandon,
+            retire_orphan,
+            why,
+        ) {
+            (Some(incident_id), false, None, false, false, None) => {
+                ResolveDecision::Incursion(incident_id)
             },
-            (false, None, true, false, Some(reason)) => reason
+            (None, true, None, false, false, None) => {
+                ResolveDecision::Reservation(ReservationRecoveryDecision::Recovered)
+            },
+            (None, false, Some(trunk_commit), false, false, None) => ResolveDecision::Reservation(
+                ReservationRecoveryDecision::IntegratedAs(trunk_commit),
+            ),
+            (None, false, None, true, false, Some(reason)) => reason
                 .parse::<AbandonmentReason>()
-                .map(RecoveryRequest::Abandon)
+                .map(ReservationRecoveryDecision::Abandon)
+                .map(ResolveDecision::Reservation)
                 .map_err(|error| error.to_string())?,
-            (false, None, false, true, Some(reason)) => reason
+            (None, false, None, false, true, Some(reason)) => reason
                 .parse::<OrphanRetirementReason>()
-                .map(RecoveryRequest::RetireOrphan)
+                .map(ReservationRecoveryDecision::RetireOrphan)
+                .map(ResolveDecision::Reservation)
                 .map_err(|error| error.to_string())?,
             _ => {
                 return Err(
-                    "choose exactly one recovery disposition and provide --why only for --abandon or --retire-orphan"
+                    "choose exactly one resolution disposition and provide --why only for --abandon or --retire-orphan"
                         .to_owned(),
                 );
             },
         };
         Ok(ResolveRequest {
             reservation_id,
-            recovery,
+            decision,
         })
     }
 }
@@ -1043,7 +1072,8 @@ fn reference_transaction_error(error: &GateError) -> ExitCode {
             ));
             BerthExit::BlockedByContention.into()
         },
-        GateError::InactiveMarkerRun(_)
+        GateError::InactiveSessionMapping(_)
+        | GateError::InactiveMarkerRun(_)
         | GateError::ReservationNotEntering(_)
         | GateError::NoHoldToForce(_)
         | GateError::MissingSkippedHold

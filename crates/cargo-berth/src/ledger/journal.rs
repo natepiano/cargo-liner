@@ -14,6 +14,7 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 use serde::Serialize;
+use uuid::Uuid;
 
 use super::constants::CURRENT_SCHEMA_VERSION;
 use super::constants::DELETE_CONTROL_BYTE;
@@ -26,6 +27,7 @@ use crate::ids::EdgeId;
 use crate::ids::EventId;
 use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
+use crate::ids::InvalidUuidV7;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
 use crate::ids::RecordedAt;
@@ -77,6 +79,9 @@ impl JournalEvent {
 
     /// Return the durable identity of this journal fact.
     pub(crate) const fn event_id(&self) -> EventId { self.event_id }
+
+    /// Return when this journal fact was recorded.
+    pub(crate) const fn recorded_at(&self) -> &RecordedAt { &self.at }
 }
 
 /// The durable identity of the actor that made a journal mutation.
@@ -88,6 +93,58 @@ pub(crate) struct JournalActor {
     pub(crate) worktree:   WorktreeId,
     /// The active coordination run in that worktree.
     pub(crate) run:        CoordinationRunId,
+}
+
+/// The opaque UUID-v7 identity of one incursion incident.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct IncursionIncidentId(Uuid);
+
+impl IncursionIncidentId {
+    /// Mint a new non-recyclable incident identity.
+    pub(crate) fn new() -> Self { Self(Uuid::now_v7()) }
+}
+
+impl Display for IncursionIncidentId {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }
+}
+
+impl FromStr for IncursionIncidentId {
+    type Err = InvalidUuidV7;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let identifier = value.parse::<Uuid>().map_err(InvalidUuidV7::InvalidUuid)?;
+        if identifier.get_version_num() != 7 {
+            return Err(InvalidUuidV7::WrongVersion(identifier));
+        }
+        if identifier.get_variant() != uuid::Variant::RFC4122 {
+            return Err(InvalidUuidV7::WrongVariant(identifier));
+        }
+        Ok(Self(identifier))
+    }
+}
+
+impl Serialize for IncursionIncidentId {
+    fn serialize<SerializerType>(
+        &self,
+        serializer: SerializerType,
+    ) -> Result<SerializerType::Ok, SerializerType::Error>
+    where
+        SerializerType: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for IncursionIncidentId {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 /// Every v1 operation a journal can contain.
@@ -194,12 +251,19 @@ pub(crate) enum JournalOperation {
     },
     /// Record a write that entered scopes reserved by another worktree.
     Incursion {
+        /// The durable identity used to answer this incident.
+        incident_id:             IncursionIncidentId,
         /// The reservation whose worktree made the write.
         reservation_id:          ReservationId,
         /// The foreign reservations whose scopes were entered.
         foreign_reservation_ids: ForeignReservationIdSet,
         /// The paths written without coverage.
         paths:                   IncursionPathSet,
+    },
+    /// Record the user disposition that answers one incursion incident.
+    ResolveIncursion {
+        /// The incident leaving outstanding state.
+        incident_id: IncursionIncidentId,
     },
     /// Issue a one-use permit for a confirmed forced integration.
     ForcedIntegrationPermit {

@@ -42,6 +42,7 @@ use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
+use crate::session::SessionIdentityMappingPublication;
 
 /// A parsed request to checkpoint or revalidate one reservation.
 #[derive(Clone, Copy)]
@@ -128,7 +129,7 @@ fn execute_release(release_request: ReleaseRequest) -> Result<ReleasePayload, Re
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
-    let coordination_run_id = mutation_run_id(worktree_context.administrative_directory());
+    let coordination_run_id = mutation_run_id(&worktree_context);
     let berth_config = BerthConfig::read(worktree_context.repository_root())?;
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let outcome = ledger
@@ -155,7 +156,10 @@ fn execute_release(release_request: ReleaseRequest) -> Result<ReleasePayload, Re
             LedgerCommittedActionError::Action(error) => error,
         })?;
     match outcome {
-        LedgerCommittedActionOutcome::Appended(output) => Ok(output),
+        LedgerCommittedActionOutcome::Appended {
+            output,
+            session_mapping_publication,
+        } => Ok(output.into_payload(session_mapping_publication)),
         LedgerCommittedActionOutcome::Rejected(ReleaseRejection::UnknownReservation) => Err(
             ReleaseError::UnknownReservation(release_request.reservation_id),
         ),
@@ -530,9 +534,16 @@ fn evidence_operation(
     )
 }
 
-fn mutation_run_id(administrative_directory: &Path) -> CoordinationRunId {
-    match EditAuthorization::resolve(administrative_directory) {
-        EditAuthorization::Environment(coordination_run_id)
+fn mutation_run_id(worktree_context: &WorktreeContext) -> CoordinationRunId {
+    match EditAuthorization::resolve(
+        worktree_context.administrative_directory(),
+        &worktree_context.ledger_directory(),
+    ) {
+        EditAuthorization::Session {
+            coordination_run_id,
+            ..
+        }
+        | EditAuthorization::Environment(coordination_run_id)
         | EditAuthorization::Marker {
             coordination_run_id,
             ..
@@ -604,13 +615,31 @@ impl ReleaseCommittedAction {
         self,
         repository_root: &Path,
         worktree_context: &WorktreeContext,
-    ) -> Result<ReleasePayload, ReleaseError> {
+    ) -> Result<ReleasePayloadPreparation, ReleaseError> {
         for reservation_id in self.retention_deletions {
             git::delete_reservation_retention_ref(repository_root, reservation_id)?;
         }
         self.protected_tip_retention.commit(repository_root)?;
         let marker = self.marker_plan.finish(worktree_context);
-        Ok(self.payload_seed.into_payload(marker))
+        Ok(ReleasePayloadPreparation {
+            payload_seed: self.payload_seed,
+            marker,
+        })
+    }
+}
+
+struct ReleasePayloadPreparation {
+    payload_seed: ReleasePayloadSeed,
+    marker:       CoordinationRunMarkerRetirement,
+}
+
+impl ReleasePayloadPreparation {
+    fn into_payload(
+        self,
+        session_mapping_publication: SessionIdentityMappingPublication,
+    ) -> ReleasePayload {
+        self.payload_seed
+            .into_payload(self.marker, session_mapping_publication)
     }
 }
 
@@ -636,7 +665,11 @@ enum ReleasePayloadSeed {
 }
 
 impl ReleasePayloadSeed {
-    fn into_payload(self, marker: CoordinationRunMarkerRetirement) -> ReleasePayload {
+    fn into_payload(
+        self,
+        marker: CoordinationRunMarkerRetirement,
+        session_mapping_publication: SessionIdentityMappingPublication,
+    ) -> ReleasePayload {
         match self {
             Self::Checkpointed {
                 reservation_id,
@@ -647,6 +680,7 @@ impl ReleasePayloadSeed {
                 protected_tip,
                 trunk_oid,
                 marker,
+                session_mapping_publication,
             },
             Self::Resnapshotted {
                 reservation_id,
@@ -673,6 +707,7 @@ impl ReleasePayloadSeed {
                 reservation_id,
                 disposition,
                 marker,
+                session_mapping_publication,
             },
         }
     }

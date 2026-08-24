@@ -35,6 +35,8 @@ const POST_COMMIT_ENVIRONMENT: &str = "CARGO_BERTH_POST_COMMIT";
 const REAL_PATH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_PATH";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ]; then
@@ -57,7 +59,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 
 #[test]
-fn full_classification_covers_silent_widen_and_incursion_rows() {
+fn full_classification_covers_silent_and_widen_rows() {
     let covered_repository = initialized_repository();
     let covered_id = claim(covered_repository.path(), "file:claimed.txt", FIRST_RUN);
     fs::write(covered_repository.path().join("claimed.txt"), "claimed\n")
@@ -96,13 +98,18 @@ fn full_classification_covers_silent_widen_and_incursion_rows() {
     assert_eq!(widen_event["edit_blocking_status"], "blocking");
     fs::remove_file(widened_repository.path().join(PROJECTION_PATH))
         .expect("projection should delete");
+    fs::remove_file(widened_repository.path().join(MARKER_PATH))
+        .expect("coordination marker should remove");
     let replayed_block = run_berth_with_run(
         widened_repository.path(),
         &["check", "file:untracked.txt", "--json"],
         SECOND_RUN,
     );
     assert_eq!(replayed_block.status.code(), Some(1));
+}
 
+#[test]
+fn incursion_incident_round_trip_deduplicates_and_resolves() {
     let incursion_repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");
     let foreign_root = add_worktree(incursion_repository.path(), worktrees.path(), "foreign");
@@ -136,6 +143,10 @@ fn full_classification_covers_silent_widen_and_incursion_rows() {
         .into_iter()
         .find(|event| event["op"] == "incursion")
         .expect("drift should append an incursion");
+    let incident_id = incursion_event["incident_id"]
+        .as_str()
+        .expect("incursion should carry an incident id")
+        .to_owned();
     assert_eq!(incursion_event["reservation_id"], subject_id);
     assert_eq!(
         incursion_event["foreign_reservation_ids"],
@@ -145,6 +156,104 @@ fn full_classification_covers_silent_widen_and_incursion_rows() {
         incursion_event["paths"],
         serde_json::json!(["shared/entered.txt"])
     );
+    assert_eq!(
+        incursion_envelope["payload"]["data"]["results"][0]["effects"][0]["incident_id"],
+        incident_id
+    );
+
+    let repeated = drift(
+        incursion_repository.path(),
+        &["--full", "--reservation", &subject_id],
+    );
+    assert_eq!(repeated.status.code(), Some(1));
+    let repeated_events = journal_events(incursion_repository.path());
+    assert_eq!(
+        repeated_events
+            .iter()
+            .filter(|event| event["op"] == "incursion")
+            .count(),
+        1
+    );
+    assert_eq!(
+        json_output(&repeated)["payload"]["data"]["results"][0]["effects"][0]["incident_id"],
+        incident_id
+    );
+
+    let resolved = run_berth(
+        incursion_repository.path(),
+        &[
+            "resolve",
+            &subject_id,
+            "--incursion",
+            &incident_id,
+            "--json",
+        ],
+    );
+    assert!(resolved.status.success());
+    assert_eq!(json_output(&resolved)["status"], "incursion_resolved");
+    let resolved_events = journal_events(incursion_repository.path());
+    assert_eq!(
+        resolved_events
+            .iter()
+            .filter(|event| event["op"] == "incursion")
+            .count(),
+        1
+    );
+    assert_eq!(
+        resolved_events
+            .iter()
+            .filter(|event| event["op"] == "resolve_incursion")
+            .count(),
+        1
+    );
+
+    assert_new_incident_after_resolution(&incursion_repository, &subject_id, &incident_id);
+}
+
+fn assert_new_incident_after_resolution(
+    incursion_repository: &TempDir,
+    subject_id: &str,
+    original_incident_id: &str,
+) {
+    let observed_after_resolution = drift(
+        incursion_repository.path(),
+        &["--full", "--reservation", subject_id],
+    );
+    assert_eq!(observed_after_resolution.status.code(), Some(1));
+    let incident_ids = journal_events(incursion_repository.path())
+        .into_iter()
+        .filter(|event| event["op"] == "incursion")
+        .map(|event| {
+            event["incident_id"]
+                .as_str()
+                .expect("incursion should carry an incident id")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(incident_ids.len(), 2);
+    assert_eq!(incident_ids[0], original_incident_id);
+    assert_ne!(incident_ids[0], incident_ids[1]);
+}
+
+#[test]
+fn resolve_rejects_an_unknown_incursion_incident() {
+    let repository = initialized_repository();
+    let reservation_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
+
+    let rejected = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &reservation_id,
+            "--incursion",
+            "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d",
+            "--json",
+        ],
+    );
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_eq!(json_output(&rejected)["status"], "invalid_input");
+    assert!(!journal_text(repository.path()).contains("\"op\":\"resolve_incursion\""));
 }
 
 #[test]
@@ -269,6 +378,10 @@ fn post_commit_treats_another_run_in_the_same_worktree_as_foreign() {
         .into_iter()
         .find(|event| event["op"] == "incursion" && event["reservation_id"] == subject_id)
         .expect("the other run should record an incursion");
+    let incident_id = incursion["incident_id"]
+        .as_str()
+        .expect("incursion should carry an incident id");
+    assert!(warning.contains(&format!("resolve {subject_id} --incursion {incident_id}")));
     assert_eq!(
         incursion["foreign_reservation_ids"],
         serde_json::json!([holder_id])
@@ -276,15 +389,33 @@ fn post_commit_treats_another_run_in_the_same_worktree_as_foreign() {
 }
 
 #[test]
-fn markerless_post_commit_selects_every_run_and_records_widens() {
+fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
     let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let foreign_root = add_worktree(repository.path(), worktrees.path(), "foreign");
     let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
     let second_id = claim(repository.path(), "file:second.txt", SECOND_RUN);
+    let foreign_id = claim(&foreign_root, "tree:shared", THIRD_RUN);
     fs::remove_file(repository.path().join(MARKER_PATH))
         .expect("coordination marker should remove");
+    fs::create_dir_all(repository.path().join("shared")).expect("shared directory should exist");
+    fs::write(
+        repository.path().join("shared/entered.txt"),
+        "foreign scope\n",
+    )
+    .expect("foreign path should write");
     fs::write(repository.path().join("outside.txt"), "outside both runs\n")
         .expect("outside path should write");
-    git(repository.path(), &["add", "outside.txt"]);
+    git(
+        repository.path(),
+        &["add", "shared/entered.txt", "outside.txt"],
+    );
+
+    let markerless = post_commit_drift(repository.path(), &[]);
+    assert_eq!(markerless.status.code(), Some(1));
+    let markerless_warning = String::from_utf8_lossy(&markerless.stderr);
+    assert!(markerless_warning.contains("no coordination run was identified"));
+    assert!(markerless_warning.contains("CARGO_BERTH_RUN"));
 
     let committed = git_output(repository.path(), &["commit", "-m", "markerless widening"]);
     let warning = String::from_utf8_lossy(&committed.stderr);
@@ -292,16 +423,147 @@ fn markerless_post_commit_selects_every_run_and_records_widens() {
     assert!(committed.status.success());
     assert!(warning.contains(&first_id));
     assert!(warning.contains(&second_id));
+    assert!(warning.contains(&foreign_id));
+    assert!(warning.contains("no coordination run was identified"));
+    assert!(warning.contains("CARGO_BERTH_RUN"));
+    let journal_events = journal_events(repository.path());
+    let incursion_events = journal_events
+        .iter()
+        .filter(|event| event["op"] == "incursion")
+        .collect::<Vec<_>>();
+    assert_eq!(incursion_events.len(), 2);
+    assert!(incursion_events.iter().any(|event| {
+        event["reservation_id"] == first_id
+            && event["foreign_reservation_ids"] == serde_json::json!([foreign_id])
+    }));
+    assert!(incursion_events.iter().any(|event| {
+        event["reservation_id"] == second_id
+            && event["foreign_reservation_ids"] == serde_json::json!([foreign_id])
+    }));
+    assert!(!journal_events.iter().any(|event| event["op"] == "widen"));
+}
+
+#[test]
+fn post_commit_attribution_candidates_belong_to_the_identified_run() {
+    let repository = initialized_repository();
+    let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
+    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
+    let selected_id = claim(repository.path(), "file:selected.txt", SECOND_RUN);
+    fs::write(
+        repository.path().join("outside.txt"),
+        "outside every scope\n",
+    )
+    .expect("outside path should write");
+
+    let widened = post_commit_drift(repository.path(), &[]);
+
+    assert!(widened.status.success());
+    assert!(String::from_utf8_lossy(&widened.stderr).contains(&selected_id));
+    let journal = journal_text(repository.path());
+    assert!(!journal.contains(&format!(
+        "\"op\":\"widen\",\"reservation_id\":\"{first_id}\""
+    )));
+    assert!(!journal.contains(&format!(
+        "\"op\":\"widen\",\"reservation_id\":\"{second_id}\""
+    )));
+}
+
+#[test]
+fn post_commit_widens_the_only_active_reservation() {
+    let repository = initialized_repository();
+    let reservation_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
+    fs::write(repository.path().join("outside.txt"), "outside\n")
+        .expect("outside path should write");
+
+    let widened = post_commit_drift(repository.path(), &[]);
+
+    assert!(widened.status.success());
     let widen_events = journal_events(repository.path())
         .into_iter()
         .filter(|event| event["op"] == "widen")
         .collect::<Vec<_>>();
-    assert_eq!(widen_events.len(), 2);
-    assert!(
-        widen_events
-            .iter()
-            .all(|event| event["added_scopes"][0]["path"] == "outside.txt")
+    assert_eq!(widen_events.len(), 1);
+    assert_eq!(widen_events[0]["reservation_id"], reservation_id);
+}
+
+#[test]
+fn explicit_post_commit_attribution_widens_only_the_named_reservation() {
+    let repository = initialized_repository();
+    let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
+    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
+    fs::write(repository.path().join("outside.txt"), "outside\n")
+        .expect("outside path should write");
+
+    let widened = post_commit_drift(repository.path(), &["--reservation", &first_id]);
+
+    assert!(widened.status.success());
+    let widen_events = journal_events(repository.path())
+        .into_iter()
+        .filter(|event| event["op"] == "widen")
+        .collect::<Vec<_>>();
+    assert_eq!(widen_events.len(), 1);
+    assert_eq!(widen_events[0]["reservation_id"], first_id);
+    assert!(!journal_text(repository.path()).contains(&format!(
+        "\"op\":\"widen\",\"reservation_id\":\"{second_id}\""
+    )));
+}
+
+#[test]
+fn ambiguous_post_commit_keeps_changes_for_an_explicit_cheap_retry() {
+    let repository = initialized_repository();
+    let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
+    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
+    fs::write(
+        repository.path().join("outside.txt"),
+        "outside both scopes\n",
+    )
+    .expect("outside path should write");
+
+    let ambiguous = post_commit_drift(repository.path(), &[]);
+    assert_eq!(ambiguous.status.code(), Some(1));
+    let warning = String::from_utf8_lossy(&ambiguous.stderr);
+    assert!(warning.contains(&first_id));
+    assert!(warning.contains(&second_id));
+    assert!(warning.contains("drift --reservation <id>"));
+
+    let widened = drift(repository.path(), &["--reservation", &first_id]);
+
+    assert!(widened.status.success());
+    assert_eq!(
+        json_output(&widened)["payload"]["data"]["comparison"],
+        "full_phase_start_fallback"
     );
+    assert!(journal_text(repository.path()).contains(&format!(
+        "\"op\":\"widen\",\"reservation_id\":\"{first_id}\""
+    )));
+    assert!(!journal_text(repository.path()).contains(&format!(
+        "\"op\":\"widen\",\"reservation_id\":\"{second_id}\""
+    )));
+}
+
+#[test]
+fn session_mapping_attributes_post_commit_widening_with_two_active_reservations() {
+    let repository = initialized_repository();
+    let session_id = "drift-attribution-session";
+    let first_id = claim_with_session(repository.path(), "file:first.txt", FIRST_RUN, session_id);
+    let second_id = claim(repository.path(), "file:second.txt", SECOND_RUN);
+    fs::remove_file(repository.path().join(MARKER_PATH))
+        .expect("coordination marker should remove");
+    fs::write(repository.path().join("outside.txt"), "outside\n")
+        .expect("outside path should write");
+
+    let widened = post_commit_drift_with_session(repository.path(), session_id);
+
+    assert!(widened.status.success());
+    let widen_events = journal_events(repository.path())
+        .into_iter()
+        .filter(|event| event["op"] == "widen")
+        .collect::<Vec<_>>();
+    assert_eq!(widen_events.len(), 1);
+    assert_eq!(widen_events[0]["reservation_id"], first_id);
+    assert!(!journal_text(repository.path()).contains(&format!(
+        "\"op\":\"widen\",\"reservation_id\":\"{second_id}\""
+    )));
 }
 
 #[test]
@@ -529,7 +791,7 @@ fn post_commit_is_managed_separately_and_warns_without_rejecting_commits() {
 }
 
 #[test]
-fn post_commit_checks_every_local_reservation_and_honors_bypass_before_corruption() {
+fn post_commit_reports_ambiguous_attribution_and_honors_bypass_before_corruption() {
     let repository = initialized_repository();
     let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
     let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
@@ -541,12 +803,8 @@ fn post_commit_checks_every_local_reservation_and_honors_bypass_before_corruptio
     let warning = String::from_utf8_lossy(&committed.stderr);
     assert!(warning.contains(&first_id));
     assert!(warning.contains(&second_id));
-    assert_eq!(
-        journal_text(repository.path())
-            .matches("\"op\":\"widen\"")
-            .count(),
-        2
-    );
+    assert!(warning.contains("drift --reservation <id>"));
+    assert!(!journal_text(repository.path()).contains("\"op\":\"widen\""));
 
     let manual = drift(repository.path(), &["--full"]);
     let manual_message = json_output(&manual)["message"]
@@ -814,6 +1072,31 @@ fn claim(repository_root: &Path, scope: &str, run: &str) -> String {
         .to_owned()
 }
 
+fn claim_with_session(repository_root: &Path, scope: &str, run: &str, session_id: &str) -> String {
+    let claimed = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args([
+            "claim",
+            scope,
+            "--run",
+            run,
+            "--why",
+            "test mapped work",
+            "--json",
+        ])
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(POST_COMMIT_ENVIRONMENT)
+        .env(SESSION_ENVIRONMENT, session_id)
+        .output()
+        .expect("mapped claim should run");
+    assert!(claimed.status.success());
+    json_output(&claimed)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("claim should return a reservation id")
+        .to_owned()
+}
+
 fn claim_with_override(repository_root: &Path, scope: &str, run: &str, holder_id: &str) -> String {
     let arguments = [
         "claim",
@@ -858,6 +1141,33 @@ fn drift(repository_root: &Path, arguments: &[&str]) -> Output {
     run_berth(repository_root, &command_arguments)
 }
 
+fn post_commit_drift(repository_root: &Path, arguments: &[&str]) -> Output {
+    let mut command_arguments = vec!["drift", "--full"];
+    command_arguments.extend_from_slice(arguments);
+    command_arguments.push("--json");
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(command_arguments)
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(POST_COMMIT_ENVIRONMENT, "1")
+        .output()
+        .expect("post-commit drift should run")
+}
+
+fn post_commit_drift_with_session(repository_root: &Path, session_id: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["drift", "--full", "--json"])
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env(POST_COMMIT_ENVIRONMENT, "1")
+        .env(SESSION_ENVIRONMENT, session_id)
+        .output()
+        .expect("mapped post-commit drift should run")
+}
+
 fn fingerprint_cache(repository_root: &Path) -> PathBuf {
     fs::read_dir(repository_root.join(".git/cargo-berth"))
         .expect("ledger directory should read")
@@ -894,6 +1204,7 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .env_remove(BYPASS_ENVIRONMENT)
         .env_remove(RUN_ENVIRONMENT)
         .env_remove(POST_COMMIT_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
         .output()
         .expect("cargo-berth should run")
 }
@@ -904,6 +1215,7 @@ fn run_berth_with_run(repository_root: &Path, arguments: &[&str], run: &str) -> 
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
         .env(RUN_ENVIRONMENT, run)
+        .env_remove(SESSION_ENVIRONMENT)
         .output()
         .expect("cargo-berth should run")
 }
