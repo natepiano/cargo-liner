@@ -10,12 +10,15 @@
 //! Every entry is keyed by pid, so a row and its tile survive a scan
 //! unchanged rather than being rebuilt four times a second.
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::Duration;
 use std::time::Instant;
 
 use crate::processes::Ancestor;
 use crate::processes::CargoGroup;
 use crate::processes::CargoProcess;
+use crate::theme;
 
 /// One table row, once it has stopped when that happened, and how far
 /// its text has since been carried toward the ground it is drawn on.
@@ -29,6 +32,14 @@ pub(crate) struct TrackedRow {
     /// runs, [`u8::MAX`] once it has reached the ground and is about to
     /// be let go of.
     faded:              u8,
+    /// The family this invocation heads, where it has cargo running
+    /// under it, as an index into the palette. `None` on a row nothing
+    /// points at.
+    family:             Option<usize>,
+    /// The family of the cargo this invocation is running under, which
+    /// is the index that cargo's own row carries. `None` where nothing
+    /// above it started it.
+    parent_family:      Option<usize>,
 }
 
 impl From<CargoProcess> for TrackedRow {
@@ -38,6 +49,11 @@ impl From<CargoProcess> for TrackedRow {
             process,
             ended: None,
             faded: 0,
+            // Stamped by the roster once the whole scan is in: which
+            // colours are free is a question about every group at
+            // once, not about this row.
+            family: None,
+            parent_family: None,
         }
     }
 }
@@ -48,6 +64,12 @@ impl TrackedRow {
 
     /// How far the row's text has been carried toward the ground.
     pub(crate) const fn faded(&self) -> u8 { self.faded }
+
+    /// The family this invocation heads, where it heads one.
+    pub(crate) const fn family(&self) -> Option<usize> { self.family }
+
+    /// The family of the cargo this invocation runs under.
+    pub(crate) const fn parent_family(&self) -> Option<usize> { self.parent_family }
 
     /// Take the scan's account of a process that is still running.
     fn refresh(&mut self, process: CargoProcess) {
@@ -129,6 +151,11 @@ impl TrackedGroup {
     /// Every row the group's tile draws, the lead first.
     pub(crate) fn rows(&self) -> impl Iterator<Item = &TrackedRow> {
         std::iter::once(&self.lead).chain(self.rest.iter())
+    }
+
+    /// The same rows, for the pass that stamps each one's family.
+    fn rows_mut(&mut self) -> impl Iterator<Item = &mut TrackedRow> {
+        std::iter::once(&mut self.lead).chain(self.rest.iter_mut())
     }
 
     /// What stands above the command, outermost first.
@@ -228,19 +255,28 @@ impl TrackedGroup {
 pub(crate) struct Roster {
     /// Groups in scan order -- newest command first -- with finished
     /// ones held in place until they expire.
-    groups: Vec<TrackedGroup>,
+    groups:   Vec<TrackedGroup>,
     /// The scan last folded in, kept so an identical one can be
     /// recognised and skipped. With nothing building, the display has no
     /// reason to repaint four times a second.
-    last:   Vec<CargoGroup>,
+    last:     Vec<CargoGroup>,
+    /// The palette index each family holds, by the pid heading it.
+    ///
+    /// Kept here rather than worked out per cell because the colour has
+    /// to be the same in the summary and in the command's own cell, and
+    /// because which colours are free is a question about every group
+    /// at once. An index is held for as long as the family is on screen,
+    /// fading rows included, so a colour never moves under the reader.
+    families: HashMap<u32, usize>,
 }
 
 impl Roster {
     /// An empty roster.
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            groups: Vec::new(),
-            last:   Vec::new(),
+            groups:   Vec::new(),
+            last:     Vec::new(),
+            families: HashMap::new(),
         }
     }
 
@@ -291,7 +327,56 @@ impl Roster {
                 tracked.finish(now);
             }
         }
+        self.assign_families();
         true
+    }
+
+    /// Hand every family on screen a colour no other family on screen
+    /// holds, and stamp it on the rows that draw it.
+    ///
+    /// A family is a cargo with cargo running under it. Its index is
+    /// kept for as long as it is on screen: reassigning from scratch
+    /// each scan would recolour every cell whenever a build finished,
+    /// which is the most routine event here. A family that goes away
+    /// gives its index back, so the palette is spent on what is
+    /// actually running.
+    ///
+    /// More families at once than the palette holds is the one case
+    /// this cannot serve, and it wraps rather than leaving the extra
+    /// ones unmarked -- a repeated colour still pairs correctly far
+    /// more often than none does.
+    fn assign_families(&mut self) {
+        let heads: Vec<u32> = self
+            .groups
+            .iter()
+            .flat_map(TrackedGroup::rows)
+            .filter(|row| row.process.managed > 0)
+            .map(|row| row.process.pid)
+            .collect();
+        let mut families = std::mem::take(&mut self.families);
+        families.retain(|pid, _| heads.contains(pid));
+        // Asked of the theme rather than of the palette, because how
+        // many colours are left depends on what the column headers are
+        // drawn in and that is the reader's to change.
+        let count = theme::family_color_count().max(1);
+        for pid in heads {
+            if families.contains_key(&pid) {
+                continue;
+            }
+            let taken: HashSet<usize> = families.values().copied().collect();
+            let free = (0..count).find(|index| !taken.contains(index));
+            families.insert(pid, free.unwrap_or(families.len() % count));
+        }
+        for group in &mut self.groups {
+            for row in group.rows_mut() {
+                row.family = families.get(&row.process.pid).copied();
+                row.parent_family = row
+                    .process
+                    .parent
+                    .and_then(|parent| families.get(&parent).copied());
+            }
+        }
+        self.families = families;
     }
 
     /// Move every fade on and drop whatever has finished one, reporting
@@ -304,6 +389,12 @@ impl Roster {
         let before = self.groups.len();
         self.groups.retain(|group| !group.is_expired(now, fade));
         let mut changed = self.groups.len() != before;
+        // A group that has finished fading gives its colour back here
+        // rather than at the next scan, which with nothing running
+        // would never come.
+        if changed {
+            self.assign_families();
+        }
         for group in &mut self.groups {
             changed |= group.advance(now, fade);
         }
@@ -318,11 +409,92 @@ mod tests {
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::processes::CommandText;
 
+    /// The colour is a tie between a row and the rows under it, so a
+    /// row's `parent` stamp has to be the very index its parent's own
+    /// row carries. Anything else pairs the eye off against nothing.
+    #[test]
+    fn a_child_carries_the_index_its_parent_was_given() {
+        let mut roster = Roster::new();
+
+        roster.observe(vec![family(64432, &[4003, 4058])], Instant::now());
+
+        let stamped = stamps(&roster);
+        let lead = stamped
+            .iter()
+            .find(|(pid, ..)| *pid == 64432)
+            .and_then(|(_, family, _)| *family);
+        assert!(lead.is_some(), "{stamped:?}");
+        for (pid, _, parent) in &stamped {
+            if *pid == 64432 {
+                continue;
+            }
+            assert_eq!(*parent, lead, "{stamped:?}");
+        }
+    }
+
+    /// Two families on screen at once must not share a colour. A
+    /// function of the pid alone cannot promise that -- the first two
+    /// families the display was shown collided -- so the indices are
+    /// handed out against what is already taken.
+    #[test]
+    fn two_families_are_never_given_one_colour() {
+        let mut roster = Roster::new();
+
+        roster.observe(
+            vec![family(64432, &[4003]), family(70001, &[4058])],
+            Instant::now(),
+        );
+
+        let heads: Vec<Option<usize>> = stamps(&roster)
+            .into_iter()
+            .filter(|(pid, ..)| *pid == 64432 || *pid == 70001)
+            .map(|(_, family, _)| family)
+            .collect();
+        assert_eq!(heads.len(), 2);
+        assert_ne!(heads[0], heads[1]);
+    }
+
+    /// A colour that moved when an unrelated command finished would be
+    /// no use for pairing rows off, and a build finishing is the most
+    /// routine thing on this screen.
+    #[test]
+    fn a_family_keeps_its_colour_when_another_one_ends() {
+        let mut roster = Roster::new();
+        roster.observe(
+            vec![family(64432, &[4003]), family(70001, &[4058])],
+            Instant::now(),
+        );
+        let before = stamps(&roster)
+            .into_iter()
+            .find(|(pid, ..)| *pid == 70001)
+            .and_then(|(_, family, _)| family);
+
+        roster.observe(vec![family(70001, &[4058])], Instant::now());
+
+        let after = stamps(&roster)
+            .into_iter()
+            .find(|(pid, ..)| *pid == 70001)
+            .and_then(|(_, family, _)| family);
+        assert_eq!(before, after);
+    }
+
+    /// A command with nothing running under it has nothing pointing at
+    /// it, so a colour on its pid would be a mark meaning nothing.
+    #[test]
+    fn a_command_with_no_children_is_given_no_colour() {
+        let mut roster = Roster::new();
+
+        roster.observe(vec![group(64432, &[])], Instant::now());
+
+        assert_eq!(stamps(&roster), [(64432, None, None)]);
+    }
+
     /// A process row carrying nothing but the pid the tests key on.
     fn process(pid: u32) -> CargoProcess {
         CargoProcess {
             path: "~/rust/project".to_string(),
             pid,
+            parent: None,
             start: "10:00".to_string(),
             started: 0,
             duration: "00:01".to_string(),
@@ -342,6 +514,29 @@ mod tests {
             rest:     rest.iter().copied().map(process).collect(),
             ancestry: Vec::new(),
         }
+    }
+
+    /// The same, with the lead owning every invocation under it -- what
+    /// the census reports for a command actually driving cargo, and
+    /// what makes the lead a family.
+    fn family(lead: u32, rest: &[u32]) -> CargoGroup {
+        let mut group = group(lead, rest);
+        group.lead.managed = rest.len();
+        for row in &mut group.rest {
+            row.parent = Some(lead);
+        }
+        group
+    }
+
+    /// The palette index every row of `roster` came out with, as
+    /// `(pid, own family, parent's family)`.
+    fn stamps(roster: &Roster) -> Vec<(u32, Option<usize>, Option<usize>)> {
+        roster
+            .groups()
+            .iter()
+            .flat_map(TrackedGroup::rows)
+            .map(|row| (row.process.pid, row.family(), row.parent_family()))
+            .collect()
     }
 
     /// The same, led by a command `commands.hidden_when_idle` names.

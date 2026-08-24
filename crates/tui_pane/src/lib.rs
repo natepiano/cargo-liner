@@ -230,6 +230,7 @@ pub use theme::accent_color;
 pub use theme::active_border_color;
 pub use theme::active_focus_color;
 pub use theme::blend_color;
+pub use theme::color_distance;
 pub use theme::ensure_theme_state_installed;
 pub use theme::error_color;
 pub use theme::fallback_theme;

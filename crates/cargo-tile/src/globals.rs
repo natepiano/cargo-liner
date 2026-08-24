@@ -9,6 +9,10 @@
 //! rest from the registration in [`crate::keymap`]: TOML loading, the
 //! status-line slots, and the rows in the keymap overlay.
 //!
+//! One of them is not about the grid at all: `f` holds the whole
+//! display still, which is what makes a screen that repaints four times
+//! a second readable.
+//!
 //! To add another, give the enum a variant, bind a default key in
 //! [`Globals::defaults`], and handle it in [`dispatch`].
 
@@ -29,6 +33,7 @@ tui_pane::action_enum! {
         FocusRight => ("focus_right", "Focus the tile to the right");
         FocusUp    => ("focus_up",    "Focus the tile above");
         FocusDown  => ("focus_down",  "Focus the tile below");
+        Freeze     => ("freeze",      "Freeze the display");
     }
 }
 
@@ -47,6 +52,7 @@ impl Globals<App> for AppGlobalAction {
             KeyCode::Right => Self::FocusRight,
             KeyCode::Up => Self::FocusUp,
             KeyCode::Down => Self::FocusDown,
+            'f' => Self::Freeze,
         }
     }
 
@@ -63,5 +69,6 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::FocusRight => app.tiles.focus_step(Direction::Right, initial_rows),
         AppGlobalAction::FocusUp => app.tiles.focus_step(Direction::Up, initial_rows),
         AppGlobalAction::FocusDown => app.tiles.focus_step(Direction::Down, initial_rows),
+        AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
     }
 }

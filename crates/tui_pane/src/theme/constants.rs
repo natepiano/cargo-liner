@@ -37,6 +37,17 @@ pub(super) const ANSI_GRAYSCALE_BASE: u8 = 232;
 pub(super) const ANSI_GRAYSCALE_START: u8 = 8;
 /// How far each entry of the grayscale ramp stands above the last.
 pub(super) const ANSI_GRAYSCALE_STEP: u8 = 10;
+/// Fixed point the redmean weights are carried in, so
+/// [`color_distance`](super::color_distance) reaches its answer without
+/// a float anywhere.
+pub(super) const COLOR_DISTANCE_SCALE: u32 = 256;
+/// The redmean weight red and blue start from, before the shift that
+/// adds to one of them whatever it takes from the other.
+pub(super) const COLOR_DISTANCE_SIDE_WEIGHT: u32 = 2 * COLOR_DISTANCE_SCALE;
+/// The redmean weight on green, which is the same at every point of
+/// the scale -- green is where the eye reads most of a difference, and
+/// it reads it the same however red the pair is.
+pub(super) const COLOR_DISTANCE_GREEN_WEIGHT: u32 = 4 * COLOR_DISTANCE_SCALE;
 
 // tui_pane src theme poller
 pub(super) const BACKOFF_INTERVAL: Duration = Duration::from_secs(30);

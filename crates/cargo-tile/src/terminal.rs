@@ -45,6 +45,7 @@ use tui_pane::matches_open_overlay_toggle;
 use tui_pane::overlay_is_in_text_mode;
 
 use crate::app::App;
+use crate::app::Updates;
 use crate::config;
 use crate::constants::BINARY_NAME;
 use crate::constants::FULL_REPAINT_SECONDS;
@@ -186,31 +187,43 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             // spin on a disconnected channel.
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
-        if drain_scans(app, &scans) {
-            dirty = true;
-        }
-        // The scan above is what says whether a server is up, so the
-        // read is claimed after it rather than before: on the first pass
-        // that ordering is the difference between the border filling in
-        // straight away and waiting out an interval for the next tick.
-        if drain_sccache(app, &sccache_replies) {
-            dirty = true;
-        }
-        sccache::refresh_if_due(&mut app.sccache, &sccache_reads, Instant::now());
-        // A finished row walks its grey toward the ground it is drawn
-        // on for the configured spell and then goes, taking its cell
-        // with it. Nothing external announces either the steps or the
-        // moment, so the poll is what carries them.
-        if app
-            .roster
-            .advance(Instant::now(), app.loaded_config.config.tiles.fade())
-        {
-            dirty = true;
-        }
-        // A grid in motion repaints every poll until it settles, which
-        // is the one thing here that draws without an event behind it.
-        if app.tiles.tick() {
-            dirty = true;
+        // Frozen, every one of these is skipped: what a scan found,
+        // how far a fade has walked and where a travelling cell has
+        // reached are the whole of what moves on this screen. The
+        // channels are still emptied, so nothing queues up behind the
+        // freeze and the first scan after it describes the world as it
+        // is then rather than as it was when `f` was pressed.
+        if app.updates == Updates::Frozen {
+            discard_scans(&scans, &sccache_replies);
+        } else {
+            if drain_scans(app, &scans) {
+                dirty = true;
+            }
+            // The scan above is what says whether a server is up, so
+            // the read is claimed after it rather than before: on the
+            // first pass that ordering is the difference between the
+            // border filling in straight away and waiting out an
+            // interval for the next tick.
+            if drain_sccache(app, &sccache_replies) {
+                dirty = true;
+            }
+            sccache::refresh_if_due(&mut app.sccache, &sccache_reads, Instant::now());
+            // A finished row walks its grey toward the ground it is
+            // drawn on for the configured spell and then goes, taking
+            // its cell with it. Nothing external announces either the
+            // steps or the moment, so the poll is what carries them.
+            if app
+                .roster
+                .advance(Instant::now(), app.loaded_config.config.tiles.fade())
+            {
+                dirty = true;
+            }
+            // A grid in motion repaints every poll until it settles,
+            // which is the one thing here that draws without an event
+            // behind it.
+            if app.tiles.tick() {
+                dirty = true;
+            }
         }
         // Whatever else has written to this terminal is written over
         // here, because a difference-based draw would leave it standing.
@@ -221,6 +234,20 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
         }
     }
     Ok(())
+}
+
+/// Empty both worker channels without reading anything out of them,
+/// for a display being held still.
+///
+/// The workers go on scanning while the screen is frozen -- stopping
+/// them would mean unfreezing to a world minutes stale, and restarting
+/// them is a cost paid at exactly the moment the reader wants to see
+/// something. Left alone the queues would instead grow for as long as
+/// the freeze lasts, and unfreezing would walk the display through
+/// every scan taken in between.
+fn discard_scans(scans: &Receiver<Scan>, sccache_replies: &Receiver<SccacheSummary>) {
+    while scans.try_recv().is_ok() {}
+    while sccache_replies.try_recv().is_ok() {}
 }
 
 /// Take the newest process scan, reporting whether it changed anything.

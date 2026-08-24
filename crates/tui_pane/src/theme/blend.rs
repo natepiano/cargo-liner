@@ -19,6 +19,9 @@ use super::constants::ANSI_CUBE_LEVELS;
 use super::constants::ANSI_GRAYSCALE_BASE;
 use super::constants::ANSI_GRAYSCALE_START;
 use super::constants::ANSI_GRAYSCALE_STEP;
+use super::constants::COLOR_DISTANCE_GREEN_WEIGHT;
+use super::constants::COLOR_DISTANCE_SCALE;
+use super::constants::COLOR_DISTANCE_SIDE_WEIGHT;
 
 /// `color` carried `alpha` of the way toward `toward`: zero leaves
 /// `color` where it is, [`u8::MAX`] arrives at `toward`.
@@ -38,6 +41,41 @@ pub fn blend_color(color: Color, toward: Color, alpha: u8) -> Color {
         mix(from.1, to.1, alpha),
         mix(from.2, to.2, alpha),
     )
+}
+
+/// How far apart two colours look, on the 0 to 764 scale black against
+/// white sits at the top of. [`None`] where either of them has no
+/// channels to read.
+///
+/// Straight channel distance answers a different question: it weights
+/// the three equally, and the eye does not. This is the redmean
+/// approximation, which weights green heaviest throughout and slides
+/// the rest from blue toward red as the pair gets redder -- the
+/// cheapest correction that tracks perception at all, and enough to
+/// ask whether two colours would be read as the same one.
+///
+/// Integer throughout: the weights are held in a fixed point and
+/// divided back out under the root, which lands on the same answer the
+/// float formula gives.
+#[must_use]
+pub fn color_distance(color: Color, other: Color) -> Option<u16> {
+    let (Some(from), Some(to)) = (channels(color), channels(other)) else {
+        return None;
+    };
+    let mean = u32::midpoint(u32::from(from.0), u32::from(to.0));
+    let red = COLOR_DISTANCE_SIDE_WEIGHT.saturating_add(mean);
+    let blue = COLOR_DISTANCE_SIDE_WEIGHT.saturating_add(u32::from(u8::MAX) - mean);
+    let weighted = red * squared(from.0, to.0)
+        + COLOR_DISTANCE_GREEN_WEIGHT * squared(from.1, to.1)
+        + blue * squared(from.2, to.2);
+    u16::try_from((weighted / COLOR_DISTANCE_SCALE).isqrt()).ok()
+}
+
+/// The gap between two channels, squared, wide enough to hold the
+/// weight [`color_distance`] multiplies it by.
+fn squared(from: u8, to: u8) -> u32 {
+    let difference = u32::from(from.abs_diff(to));
+    difference * difference
 }
 
 /// One channel of `from` carried `alpha` of the way to `to`.
@@ -115,6 +153,42 @@ mod tests {
     /// Where [`Color::Cyan`] sits in the sixteen, which is the entry a
     /// blend against it reads.
     const CYAN_PALETTE_INDEX: usize = 6;
+
+    /// The widest pair there is has to reach the top of the scale, or
+    /// a threshold written against the scale means nothing.
+    #[test]
+    fn black_and_white_stand_the_whole_scale_apart() {
+        assert_eq!(
+            color_distance(Color::Rgb(0, 0, 0), Color::Rgb(255, 255, 255)),
+            Some(764)
+        );
+    }
+
+    #[test]
+    fn a_colour_stands_no_distance_from_itself() {
+        let color = Color::Rgb(0x2A, 0xA1, 0x98);
+
+        assert_eq!(color_distance(color, color), Some(0));
+    }
+
+    /// Green carries the heaviest weight throughout, so the same gap
+    /// on green reads wider than it does on red or blue.
+    #[test]
+    fn green_counts_for_more_than_the_channels_either_side_of_it() {
+        let gap = 60;
+        let green = color_distance(Color::Rgb(0, 0, 0), Color::Rgb(0, gap, 0));
+
+        assert!(green > color_distance(Color::Rgb(0, 0, 0), Color::Rgb(gap, 0, 0)));
+        assert!(green > color_distance(Color::Rgb(0, 0, 0), Color::Rgb(0, 0, gap)));
+    }
+
+    /// [`Color::Reset`] names whatever the terminal profile calls its
+    /// default, which is a colour this side of the wire cannot read.
+    #[test]
+    fn a_colour_with_no_channels_is_no_distance_from_anything() {
+        assert_eq!(color_distance(Color::Reset, Color::Rgb(0, 0, 0)), None);
+        assert_eq!(color_distance(Color::Rgb(0, 0, 0), Color::Reset), None);
+    }
 
     #[test]
     fn a_blend_of_nothing_leaves_the_colour_where_it_is() {

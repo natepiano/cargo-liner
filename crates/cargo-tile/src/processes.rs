@@ -70,6 +70,15 @@ pub(crate) struct CargoProcess {
     pub(crate) path:     String,
     /// Process id.
     pub(crate) pid:      u32,
+    /// The nearest ancestor the cell draws: the cargo above this one
+    /// where there is one, since that is a row of the same table, and
+    /// otherwise the step of the chain block the command was started
+    /// from. Never the immediate parent, which is the pty and shim the
+    /// capture opened and is drawn nowhere.
+    ///
+    /// `None` only where the walk reaches the top having found nothing
+    /// on screen.
+    pub(crate) parent:   Option<u32>,
     /// Local wall-clock start time, `hh:mm`.
     pub(crate) start:    String,
     /// The same instant as seconds since the epoch, which is what
@@ -689,6 +698,40 @@ impl Census {
         out
     }
 
+    /// Walk `pid` up its parent chain to the nearest ancestor the cell
+    /// actually draws, which is what the `parent` column names.
+    ///
+    /// Two things are drawn: the cargo invocations, which are the rows
+    /// of the table, and the chain block standing over it. The first
+    /// ancestor that is one of them is the answer, and it is the only
+    /// answer worth writing down -- a pid the screen shows nowhere is a
+    /// number the eye cannot pair with anything.
+    ///
+    /// Which is why the immediate parent is never it. A captured run's
+    /// parent is the pty the shim opened, whose parent is the shim,
+    /// whose parent is the shell; none of the three is drawn, and the
+    /// shell is the first thing above them that is. For an invocation
+    /// another cargo started, the same walk stops one step sooner, at
+    /// that cargo's own row.
+    ///
+    /// Bounded by [`PARENT_WALK_LIMIT`], like every other walk here, so
+    /// a reparented chain that loops cannot spin.
+    fn drawn_parent(&self, pid: Pid, ancestry: &[Ancestor]) -> Option<u32> {
+        let mut current = pid;
+        for _ in 0..PARENT_WALK_LIMIT {
+            let parent = *self.parents.get(&current)?;
+            if self.cargo.contains(&parent)
+                || ancestry
+                    .iter()
+                    .any(|ancestor| ancestor.pid == parent.as_u32())
+            {
+                return Some(parent.as_u32());
+            }
+            current = parent;
+        }
+        None
+    }
+
     /// Walk `pid` up its parent chain to the cargo invocation that owns
     /// it, bounded by [`PARENT_WALK_LIMIT`] so a reparented process whose
     /// chain loops back on itself cannot spin here.
@@ -777,11 +820,6 @@ impl Census {
             .collect()
     }
 
-    /// Every group the surviving cargo set forms, newest lead first.
-    ///
-    /// A lead ties with another when both started inside the same second
-    /// -- the start time is whole seconds, since sysinfo reads the
-    /// kernel's `pbi_start_tvsec` and drops the microseconds beside it.
     /// What the capture behind `pid` reports, if one is behind it.
     ///
     /// The walk goes upward because the pid a capture is filed under is
@@ -800,6 +838,11 @@ impl Census {
         None
     }
 
+    /// Every group the surviving cargo set forms, newest lead first.
+    ///
+    /// A lead ties with another when both started inside the same second
+    /// -- the start time is whole seconds, since sysinfo reads the
+    /// kernel's `pbi_start_tvsec` and drops the microseconds beside it.
     /// Pid breaks the tie in the same direction: macOS hands them out in
     /// order, so within one second the higher pid is the later start.
     fn groups(
@@ -858,6 +901,8 @@ impl Census {
         // told in cores rather than in processes.
         lead.compiler = aggregate_compilers(&attributed.compilers, whole_group);
         lead.state = self.captured_run(capture, root);
+        let ancestry = self.ancestry(system, home, root);
+        lead.parent = self.drawn_parent(root, &ancestry);
 
         let mut dated: Vec<(u64, CargoProcess)> = managed
             .into_iter()
@@ -881,6 +926,7 @@ impl Census {
                 // this row is waiting on, mirrored into the log of the
                 // run it is inside.
                 managed_row.state = self.captured_run(capture, pid);
+                managed_row.parent = self.drawn_parent(pid, &ancestry);
                 managed_row.nested = !children
                     .get(&root)
                     .is_some_and(|started_by_the_lead| started_by_the_lead.contains(&pid));
@@ -891,7 +937,7 @@ impl Census {
         Some(CargoGroup {
             lead,
             rest: dated.into_iter().map(|(_, process)| process).collect(),
-            ancestry: self.ancestry(system, home, root),
+            ancestry,
         })
     }
 }
@@ -937,6 +983,7 @@ fn row(
             |cwd| home_relative(cwd, home),
         ),
         pid: pid.as_u32(),
+        parent: None,
         start: start_label(process.start_time()),
         started: process.start_time(),
         duration: duration_label(process.run_time()),

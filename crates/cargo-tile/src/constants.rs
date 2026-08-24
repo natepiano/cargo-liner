@@ -348,20 +348,26 @@ pub(crate) const ARGUMENT_SEPARATOR: &str = "--";
 /// Column headers, in table order. The working directory is not among
 /// them: it heads the group of invocations that share it rather than
 /// repeating on every row.
-pub(crate) const TABLE_HEADERS: [&str; 8] = [
-    "pid", "start", "dur", "cpu", "state", "command", "compiler", "runs",
+pub(crate) const TABLE_HEADERS: [&str; 9] = [
+    "pid", "parent", "start", "dur", "cpu", "state", "command", "compiler", "runs",
 ];
 /// Index of the `pid` column in [`TABLE_HEADERS`].
 pub(crate) const PID_COLUMN: usize = 0;
+/// Index of the `parent` column in [`TABLE_HEADERS`], which names what
+/// started an invocation: the cargo above it where there is one, and
+/// otherwise the foot of the chain drawn over the table. It stands
+/// beside `pid` because the two are read together -- the eye follows a
+/// row's parent up to whatever carries that number.
+pub(crate) const PARENT_COLUMN: usize = 1;
 /// Index of the `start` column in [`TABLE_HEADERS`].
-pub(crate) const START_COLUMN: usize = 1;
+pub(crate) const START_COLUMN: usize = 2;
 /// Index of the `dur` column in [`TABLE_HEADERS`].
-pub(crate) const DURATION_COLUMN: usize = 2;
+pub(crate) const DURATION_COLUMN: usize = 3;
 /// Index of the `cpu` column in [`TABLE_HEADERS`], which carries the
 /// share of a core the invocation and everything under it are using. It
 /// stands beside `dur` because the two answer the same question from
 /// either end -- how long this has been going, and how hard.
-pub(crate) const CPU_COLUMN: usize = 3;
+pub(crate) const CPU_COLUMN: usize = 4;
 /// Index of the `state` column in [`TABLE_HEADERS`], which says that a
 /// command is waiting on another cargo's lock. How far along a command
 /// is goes on the working-directory heading over it instead. It is the
@@ -370,25 +376,37 @@ pub(crate) const CPU_COLUMN: usize = 3;
 /// line needs and reports nothing. Every row but the waiting one leaves
 /// the cell blank, so the one word in the column is the only thing in
 /// it.
-pub(crate) const STATE_COLUMN: usize = 4;
+pub(crate) const STATE_COLUMN: usize = 5;
 /// Index of the `command` column in [`TABLE_HEADERS`]. It absorbs
 /// whatever width the fitted columns leave, wherever it stands among
 /// them, so it comes ahead of the two that describe an invocation
 /// rather than after them.
-pub(crate) const COMMAND_COLUMN: usize = 5;
+pub(crate) const COMMAND_COLUMN: usize = 6;
 /// Index of the `compiler` column in [`TABLE_HEADERS`].
-pub(crate) const COMPILER_COLUMN: usize = 6;
+pub(crate) const COMPILER_COLUMN: usize = 7;
 /// Index of the `runs` column in [`TABLE_HEADERS`], which carries how
 /// many cargo invocations a command is managing. Blank on the rows that
 /// manage nothing, which is most of them.
-pub(crate) const MANAGED_COLUMN: usize = 7;
+pub(crate) const MANAGED_COLUMN: usize = 8;
 /// Columns the summary leaves out. One row there stands for a whole
-/// command rather than for a single invocation, and both of these
-/// describe an invocation: what is compiling under it at this instant,
-/// and how many invocations it is managing. The command's own cell has
-/// the room to say so, and the summary spends that width on the command
-/// line instead.
-pub(crate) const SUMMARY_HIDDEN_COLUMNS: [usize; 2] = [COMPILER_COLUMN, MANAGED_COLUMN];
+/// command rather than for a single invocation, and each of these
+/// describes an invocation: what is compiling under it at this instant,
+/// how many invocations it is managing, and which cargo started it.
+/// The command's own cell has the room to say so, and the summary
+/// spends that width on the command line instead.
+///
+/// `parent` has nothing to point at there. A pid in that column is only
+/// worth reading because the screen shows it somewhere else -- another
+/// row of the same table, or the ancestry chain over it -- and the
+/// summary has neither: it draws one row per command, over every
+/// directory at once, with no chain above it. What ties a summary row
+/// to the command's own cell is the colour on `pid`, which it keeps.
+pub(crate) const SUMMARY_HIDDEN_COLUMNS: [usize; 3] =
+    [PARENT_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN];
+/// What the status line says while the display is held still. It stands
+/// alone rather than labelling a value: there is nothing to report but
+/// that nothing is being reported.
+pub(crate) const FROZEN_NOTE_LABEL: &str = "frozen";
 /// Rows the working-directory header above each group's table occupies.
 pub(crate) const GROUP_HEADER_HEIGHT: u16 = 1;
 /// Rows the column-label row at the top of the pane occupies. There is

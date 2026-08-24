@@ -49,6 +49,7 @@ pub use self::accessors::text_default;
 pub use self::accessors::title_color;
 pub use self::accessors::warning_color;
 pub use self::blend::blend_color;
+pub use self::blend::color_distance;
 pub use self::fallback::fallback_theme;
 pub use self::poller::spawn_appearance_poller;
 pub use self::registry::RegisterOutcome;

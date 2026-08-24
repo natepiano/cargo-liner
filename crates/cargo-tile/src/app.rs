@@ -37,6 +37,32 @@ pub(crate) enum AppPaneId {
     Main,
 }
 
+/// Whether the display takes new work in as it arrives or is being
+/// held still.
+///
+/// Held, nothing is folded in: no scan, no fade, no cell in motion.
+/// Reading a screen that repaints four times a second is what this is
+/// for -- a pid pairs off with its parent far more easily when neither
+/// of them is about to move.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Updates {
+    /// Every scan, fade and step is folded in as it reaches the loop.
+    Live,
+    /// Nothing is folded in until the reader lets go.
+    Frozen,
+}
+
+impl Updates {
+    /// The other of the two, which is all the key that holds the
+    /// display asks for.
+    pub(crate) const fn toggled(self) -> Self {
+        match self {
+            Self::Live => Self::Frozen,
+            Self::Frozen => Self::Live,
+        }
+    }
+}
+
 /// Top-level application state.
 pub(crate) struct App {
     /// Framework state — overlays, panes, toasts, settings pane.
@@ -67,6 +93,8 @@ pub(crate) struct App {
     inline_error:             Option<String>,
     /// When the app started, for the status line's uptime segment.
     pub(crate) started:       Instant,
+    /// Whether the display is taking new work in or being held still.
+    pub(crate) updates:       Updates,
 }
 
 impl App {
@@ -87,6 +115,7 @@ impl App {
             sccache: SccacheStats::new(),
             inline_error: None,
             started: Instant::now(),
+            updates: Updates::Live,
         })
     }
 }

@@ -54,6 +54,7 @@ use tui_pane::title_color;
 use tui_pane::warning_color;
 
 use crate::app::App;
+use crate::app::Updates;
 use crate::constants::ANCESTRY_ELISION;
 use crate::constants::ANCESTRY_GAP_HEIGHT;
 use crate::constants::ANCESTRY_LEVEL_INDENT;
@@ -65,10 +66,12 @@ use crate::constants::COMPILER_COLUMN;
 use crate::constants::COMPILER_SEPARATOR_WIDTH;
 use crate::constants::CPU_COLUMN;
 use crate::constants::DURATION_COLUMN;
+use crate::constants::FROZEN_NOTE_LABEL;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
 use crate::constants::MANAGED_COLUMN;
 use crate::constants::NO_PROCESSES_NOTE;
+use crate::constants::PARENT_COLUMN;
 use crate::constants::PID_COLUMN;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
@@ -109,6 +112,7 @@ use crate::roster::TrackedRow;
 use crate::sccache::LabelRunKind;
 use crate::sccache::SccacheStats;
 use crate::settings;
+use crate::theme;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemand;
 use crate::tiles::TileDemands;
@@ -538,11 +542,18 @@ fn draw_group(
         chain.push(as_ancestor(&group.lead.process));
     }
     let ancestry = carried(chain);
+    // Where the driver stands at the foot of its own chain, that is
+    // where its pid is written, and the rows pointing at it in the
+    // table below need it in the colour they are pointing with.
+    let foot = leads_as_ancestor
+        .then(|| group.lead.family())
+        .flatten()
+        .map(theme::family_color);
     // The lead's own fade goes into the block whether or not it is a
     // row there: the chain stands over the whole cell, and the cell
     // goes out when the command does.
     let faded = heading_fade(&rows).min(group.lead.faded());
-    let used = draw_ancestry(buffer, inner, &ancestry, faded, ground);
+    let used = draw_ancestry(buffer, inner, &ancestry, faded, ground, foot);
     let table = Rect {
         y: inner.y.saturating_add(used),
         height: inner.height.saturating_sub(used),
@@ -616,6 +627,7 @@ fn draw_ancestry(
     ancestry: &[Ancestor],
     faded: u8,
     ground: Color,
+    foot: Option<Color>,
 ) -> u16 {
     let levels = ancestry_levels(ancestry, ancestry_budget(area.height));
     if levels.is_empty() {
@@ -623,10 +635,17 @@ fn draw_ancestry(
     }
     let pid = blend_color(label_color(), ground, faded);
     let command = blend_color(secondary_text_color(), ground, faded);
+    let last = levels.len().saturating_sub(1);
     let lines: Vec<Line<'static>> = levels
         .iter()
         .enumerate()
-        .map(|(level, ancestor)| ancestry_line(*ancestor, level, area.width, pid, command))
+        .map(|(level, ancestor)| {
+            let ink = match foot {
+                Some(color) if level == last => blend_color(color, ground, faded),
+                _ => pid,
+            };
+            ancestry_line(*ancestor, level, area.width, ink, command)
+        })
         .collect();
     // `u16` because the count came out of a budget measured in rows of
     // this same area.
@@ -913,14 +932,22 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: Option<&str>) -> Vec<PathG
     // instead put a nested crate's live build under blocked commands
     // that came after it, and leaving the rows in arrival order did the
     // same thing one directory down.
+    //
+    // Pid breaks a tie, the same rule [`Census::groups`] orders leads
+    // by: the start time is whole seconds, so a command and the cargo it
+    // launches almost always share one, and macOS hands pids out in
+    // order -- the lower pid is the earlier start. Without it the tied
+    // rows kept arrival order, which drew `cargo clippy` under the
+    // `cargo check` it had just started.
     for group in &mut groups {
-        group.rows.sort_by_key(|row| row.process.started);
-    }
-    groups.sort_by_key(|group| {
         group
             .rows
-            .first()
-            .map_or(u64::MAX, |row| row.process.started)
+            .sort_by_key(|row| (row.process.started, row.process.pid));
+    }
+    groups.sort_by_key(|group| {
+        group.rows.first().map_or((u64::MAX, u32::MAX), |row| {
+            (row.process.started, row.process.pid)
+        })
     });
     // Whatever the rest sort to, the pinned directory heads the cell.
     // The others keep the order they had under it, so a group that
@@ -1006,6 +1033,7 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
     for row in rows {
         let process = &row.process;
         widths.observe_cell_usize(PID_COLUMN, process.pid.to_string().chars().count());
+        widths.observe_cell_usize(PARENT_COLUMN, parent_text(process).chars().count());
         widths.observe_cell_usize(START_COLUMN, process.start.chars().count());
         widths.observe_cell_usize(DURATION_COLUMN, process.duration.chars().count());
         widths.observe_cell_usize(CPU_COLUMN, process.cpu.chars().count());
@@ -1087,7 +1115,14 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
     );
     let lines = u16::try_from(command.height()).unwrap_or(u16::MAX);
     let cells = [
-        Text::from(Span::styled(process.pid.to_string(), muted)),
+        Text::from(Span::styled(
+            process.pid.to_string(),
+            pid_style(row, layout),
+        )),
+        Text::from(Span::styled(
+            parent_text(process),
+            parent_style(row, layout),
+        )),
         Text::from(Span::styled(process.start.clone(), muted)),
         Text::from(Span::styled(process.duration.clone(), muted)),
         Text::from(Span::styled(process.cpu.clone(), muted)),
@@ -1107,6 +1142,35 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
         .height(lines),
         lines,
     }
+}
+
+/// The `parent` cell: the cargo an invocation is running under, and an
+/// empty cell for a command nothing above it started.
+fn parent_text(process: &CargoProcess) -> String {
+    process
+        .parent
+        .map(|pid| pid.to_string())
+        .unwrap_or_default()
+}
+
+/// The `pid` cell's style: the family colour where the invocation has
+/// cargo running under it, and the muted one where it does not.
+///
+/// Only a command with something under it takes a colour. The colour
+/// exists to be matched against the `parent` cells pointing at it, so
+/// on a row nothing points at it would be a mark meaning nothing.
+fn pid_style(row: &TrackedRow, layout: &TableLayout) -> Style {
+    let color = row.family().map_or_else(label_color, theme::family_color);
+    Style::default().fg(layout.ink(color, row.faded()))
+}
+
+/// The `parent` cell's style: the family colour of the cargo named,
+/// which is the colour that cargo's own `pid` cell carries.
+fn parent_style(row: &TrackedRow, layout: &TableLayout) -> Style {
+    let color = row
+        .parent_family()
+        .map_or_else(label_color, theme::family_color);
+    Style::default().fg(layout.ink(color, row.faded()))
 }
 
 /// Cells the `command` column is left with once the fitted columns have
@@ -1343,10 +1407,18 @@ fn cell_width(text: &str) -> u16 { u16::try_from(text.chars().count()).unwrap_or
 /// bound to whatever `keymap.toml` maps it to.
 fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
     let globals = [StatusLineGlobal::global_shortcuts_help()];
-    let notes = [StatusLineNote {
+    let mut notes = vec![StatusLineNote {
         label: APP_NAME.to_string(),
         value: APP_VERSION.to_string(),
     }];
+    // A held display looks exactly like an idle one, and the difference
+    // between the two is whether anything is being missed. Say which.
+    if app.updates == Updates::Frozen {
+        notes.push(StatusLineNote {
+            label: FROZEN_NOTE_LABEL.to_string(),
+            value: String::new(),
+        });
+    }
     let status = StatusLine::new(
         app.started.elapsed().as_secs(),
         ScanIndicator::Hidden,
@@ -1554,6 +1626,7 @@ mod tests {
         TrackedRow::from(CargoProcess {
             path: path.to_string(),
             pid: 41233,
+            parent: None,
             start: "11:04".to_string(),
             started,
             duration: "00:18".to_string(),
@@ -1564,6 +1637,14 @@ mod tests {
             nested: false,
             command: CommandText::of("cargo", &["build"]),
         })
+    }
+
+    /// The same, for one of a pair that started inside the same second
+    /// -- where the pid is all that separates them.
+    fn same_second(path: &str, pid: u32) -> TrackedRow {
+        let mut row = started_at(path, None, 100);
+        row.process.pid = pid;
+        row
     }
 
     /// One process above a command, for the ancestry tests.
@@ -1653,7 +1734,7 @@ mod tests {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 10));
         let area = buffer.area;
         assert_eq!(
-            draw_ancestry(&mut buffer, area, &[], 0, pane_background(false)),
+            draw_ancestry(&mut buffer, area, &[], 0, pane_background(false), None),
             0
         );
     }
@@ -1670,7 +1751,14 @@ mod tests {
             ancestor(18581, "claude"),
         ];
 
-        let used = draw_ancestry(&mut buffer, area, &ancestry, 0, pane_background(false));
+        let used = draw_ancestry(
+            &mut buffer,
+            area,
+            &ancestry,
+            0,
+            pane_background(false),
+            None,
+        );
 
         assert_eq!(used, 4, "three levels and the blank row under them");
         assert_eq!(buffer_line(&buffer, 0), " 6218 zed");
@@ -1687,7 +1775,14 @@ mod tests {
         let area = buffer.area;
         let ancestry = vec![ancestor(6218, "node ~/.claude/local/claude")];
 
-        let used = draw_ancestry(&mut buffer, area, &ancestry, 0, pane_background(false));
+        let used = draw_ancestry(
+            &mut buffer,
+            area,
+            &ancestry,
+            0,
+            pane_background(false),
+            None,
+        );
 
         assert_eq!(used, 2);
         assert_eq!(buffer_line(&buffer, 0), " 6218 node ~/.claud\u{2026}");
@@ -1698,6 +1793,7 @@ mod tests {
         CargoProcess {
             path: "~/rust/cargo-liner".to_string(),
             pid,
+            parent: None,
             start: "11:04".to_string(),
             started: 0,
             duration: "00:18".to_string(),
@@ -1901,6 +1997,27 @@ mod tests {
         );
     }
 
+    /// The start time is whole seconds, and a cargo that launches
+    /// another shares one with it, so the pair reads in whatever order
+    /// the tie is broken in.
+    #[test]
+    fn a_tied_second_reads_by_pid() {
+        let nested = same_second("~/rust/cargo-liner", 93739);
+        let driver = same_second("~/rust/cargo-liner", 93738);
+        let rows = [&nested, &driver];
+
+        let sorted = group_by_path(&rows, None);
+
+        assert_eq!(
+            sorted.first().map(|group| group
+                .rows
+                .iter()
+                .map(|row| row.process.pid)
+                .collect::<Vec<u32>>()),
+            Some(vec![93738, 93739])
+        );
+    }
+
     /// A run counts units and then tests, so a reading says nothing on
     /// its own about which of the two it is a reading of.
     #[test]
@@ -2018,8 +2135,9 @@ mod tests {
         );
     }
 
-    /// A summary row stands for a whole command, so the two columns
-    /// describing a single invocation have nothing to say on it.
+    /// A summary row stands for a whole command, so the columns
+    /// describing a single invocation have nothing to say on it --
+    /// `parent` among them, which would be blank on every row there.
     #[test]
     fn the_summary_leaves_out_the_columns_that_describe_one_invocation() {
         let rows = [row(None)];
@@ -2029,13 +2147,15 @@ mod tests {
             TableKind::Summary,
         );
 
+        assert!(!columns.contains(&PARENT_COLUMN));
         assert!(!columns.contains(&COMPILER_COLUMN));
         assert!(!columns.contains(&MANAGED_COLUMN));
         assert!(columns.contains(&COMMAND_COLUMN));
     }
 
-    /// A command's own cell is where those two belong: its rows are the
-    /// invocations they describe.
+    /// A command's own cell is where those belong: its rows are the
+    /// invocations they describe, and the cargo above each one is in
+    /// the same table to be found.
     #[test]
     fn a_commands_own_cell_keeps_them() {
         let rows = [row(None)];
@@ -2045,6 +2165,7 @@ mod tests {
             TableKind::Command,
         );
 
+        assert!(columns.contains(&PARENT_COLUMN));
         assert!(columns.contains(&COMPILER_COLUMN));
         assert!(columns.contains(&MANAGED_COLUMN));
     }
@@ -2059,8 +2180,8 @@ mod tests {
         let columns = visible_columns(&rows, TableKind::Command);
         let constraints = fitted_constraints(&rows, &columns);
 
-        let narrow = command_column_width(50, &constraints, &columns);
-        let wide = command_column_width(80, &constraints, &columns);
+        let narrow = command_column_width(58, &constraints, &columns);
+        let wide = command_column_width(88, &constraints, &columns);
 
         assert!(narrow > cell_width(TABLE_HEADERS[COMMAND_COLUMN]));
         assert_eq!(wide.saturating_sub(narrow), 30);
@@ -2071,7 +2192,7 @@ mod tests {
     /// starts, and nothing of it is dropped.
     #[test]
     fn a_long_command_wraps_within_its_own_column() {
-        let area = Rect::new(0, 0, 56, 8);
+        let area = Rect::new(0, 0, 64, 8);
         let mut buffer = Buffer::empty(area);
         let rows = [long_row()];
 
