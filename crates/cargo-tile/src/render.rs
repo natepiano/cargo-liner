@@ -278,7 +278,7 @@ fn run_color(kind: LabelRunKind) -> Color {
 ///
 /// The command itself is usually the first of those rows. A driver
 /// that `commands.hidden_when_idle` names is the exception -- see
-/// [`TrackedGroup::leads_as_ancestor`] -- and closes the chain instead,
+/// [`crate::roster::TrackedGroup::leads_as_ancestor`] -- and closes the chain instead,
 /// leaving the table to the invocations the cell was opened for.
 fn draw_group(
     buffer: &mut Buffer,
