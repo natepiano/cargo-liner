@@ -38,6 +38,7 @@ use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
 use sysinfo::UpdateKind;
 
+use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::CARGO_PROCESS_NAMES;
 use crate::constants::CARGO_SUBCOMMAND_PREFIX;
@@ -46,7 +47,6 @@ use crate::constants::COMPILER_PROCESS_NAMES;
 use crate::constants::CPU_REPORT_MILLIS;
 use crate::constants::CPU_SMOOTHING_SECONDS;
 use crate::constants::HOME_ALIAS;
-use crate::constants::MANIFEST_PATH_FLAG;
 use crate::constants::PARENT_WALK_LIMIT;
 use crate::constants::PROCESS_POLL_MILLIS;
 use crate::constants::ROOT_PROCESS_PID;
@@ -55,6 +55,7 @@ use crate::constants::SECONDS_PER_HOUR;
 use crate::constants::SECONDS_PER_MINUTE;
 use crate::constants::SELF_PROCESS_NAME;
 use crate::constants::START_TIME_FORMAT;
+use crate::constants::SUMMARY_HIDDEN_VALUED_FLAGS;
 use crate::constants::TRANSPARENT_PROCESS_NAMES;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
@@ -71,6 +72,11 @@ pub(crate) struct CargoProcess {
     pub(crate) pid:      u32,
     /// Local wall-clock start time, `hh:mm`.
     pub(crate) start:    String,
+    /// The same instant as seconds since the epoch, which is what
+    /// orders one invocation against another. The label above it is
+    /// only accurate to the minute and turns over at midnight, so it
+    /// reads well and sorts badly.
+    pub(crate) started:  u64,
     /// Elapsed run time, `mm:ss` until an hour and `hh:mm:ss` past it.
     pub(crate) duration: String,
     /// Share of a core this invocation and everything running under it
@@ -83,13 +89,24 @@ pub(crate) struct CargoProcess {
     /// the summary reports the build rather than the driver process.
     pub(crate) compiler: Option<Compiler>,
     /// What the command is doing, when a capture of its output is there
-    /// to read it from. Carried by the invocation leading a group and by
-    /// nothing under it: the capture covers the whole command, so what a
-    /// child reported would repeat its parent's.
+    /// to read it from. Read off the nearest capture at or above the
+    /// invocation, so a cargo the enclosing run started -- which the
+    /// shim declines to capture a second time -- reports the run it is
+    /// inside rather than nothing at all.
     pub(crate) state:    Option<RunState>,
     /// Cargo invocations running under this one. Zero for a plain
     /// command, which is what most rows are.
     pub(crate) managed:  usize,
+    /// Whether another cargo stands between this invocation and the
+    /// lead of its group. False for the lead itself and for the
+    /// invocations it started directly.
+    ///
+    /// What the summary keeps out. A command's own cell lists its whole
+    /// tree, which is where the tree is worth reading; gathered into
+    /// one table with every other command's, the deeper levels bury the
+    /// runs they came from -- one `cargo nextest run` puts a `cargo
+    /// mend` in the table for every test it runs.
+    pub(crate) nested:   bool,
     /// The command line, split so program and arguments style apart.
     pub(crate) command:  CommandText,
 }
@@ -165,24 +182,40 @@ impl CommandText {
             .is_some_and(|subcommand| hidden_when_idle.iter().any(|hidden| hidden == subcommand))
     }
 
-    /// The arguments as one line, the manifest path in or out.
+    /// The arguments as one line, the summary's own flags in or out.
     pub(crate) fn line(&self, manifest: ManifestPath) -> String {
         if manifest == ManifestPath::Shown {
             return self.arguments.join(" ");
         }
         let mut kept: Vec<&str> = Vec::with_capacity(self.arguments.len());
         let mut skipping = false;
+        let mut handed_over = false;
         for argument in &self.arguments {
-            // The word after a bare `--manifest-path` is the path it
-            // takes, and goes wherever the flag goes.
+            // Everything past a bare `--` belongs to the program cargo
+            // runs, which spells its flags however it likes. Nothing
+            // there is cargo's to read, so nothing there is dropped.
+            if handed_over {
+                kept.push(argument);
+                continue;
+            }
+            if argument == ARGUMENT_SEPARATOR {
+                handed_over = true;
+                kept.push(argument);
+                continue;
+            }
+            // The word after a bare `--color` is the value it takes,
+            // and goes wherever the flag goes.
             if std::mem::take(&mut skipping) {
                 continue;
             }
-            if argument == MANIFEST_PATH_FLAG {
+            if SUMMARY_HIDDEN_VALUED_FLAGS.contains(&argument.as_str()) {
                 skipping = true;
                 continue;
             }
-            if is_manifest_assignment(argument) {
+            if SUMMARY_HIDDEN_VALUED_FLAGS
+                .iter()
+                .any(|flag| is_assignment(argument, flag))
+            {
                 continue;
             }
             kept.push(argument);
@@ -191,11 +224,11 @@ impl CommandText {
     }
 }
 
-/// Whether an argument is the `--manifest-path=<path>` spelling, which
-/// carries the path in the same word instead of the next one.
-fn is_manifest_assignment(argument: &str) -> bool {
+/// Whether an argument is the `--flag=<value>` spelling, which carries
+/// the value in the same word instead of the next one.
+fn is_assignment(argument: &str, flag: &str) -> bool {
     argument
-        .strip_prefix(MANIFEST_PATH_FLAG)
+        .strip_prefix(flag)
         .is_some_and(|rest| rest.starts_with('='))
 }
 
@@ -767,31 +800,6 @@ impl Census {
         None
     }
 
-    /// The same read for an invocation the group's lead is driving,
-    /// stopped before it reaches the lead.
-    ///
-    /// A nested cargo is captured under a shim of its own, which sits
-    /// between it and the lead, so the bound costs it nothing. What the
-    /// bound rules out is the row underneath borrowing the lead's
-    /// reading when it has no capture of its own -- an invocation that
-    /// went round the shim would otherwise report whatever the command
-    /// above it is doing, which is not its own state and is already on
-    /// the row above.
-    fn captured_run_under(&self, capture: &Capture, pid: Pid, lead: Pid) -> Option<RunState> {
-        let mut walking = pid;
-        for _ in 0..PARENT_WALK_LIMIT {
-            if let Some(state) = capture.read(walking.as_u32()) {
-                return Some(state);
-            }
-            let parent = *self.parents.get(&walking)?;
-            if parent == lead {
-                return None;
-            }
-            walking = parent;
-        }
-        None
-    }
-
     /// Pid breaks the tie in the same direction: macOS hands them out in
     /// order, so within one second the higher pid is the later start.
     fn groups(
@@ -864,11 +872,18 @@ impl Census {
                     home,
                     aggregate_cpu(&attributed.cpu, std::iter::once(pid)),
                 )?;
-                // An invocation the lead is driving is captured in its
-                // own right, and a wait for the build-directory lock is
-                // the row's own news: nothing above it says which
-                // invocation is the one waiting.
-                managed_row.state = self.captured_run_under(capture, pid, root);
+                // The same read the lead gets. An invocation the lead
+                // is driving is captured in its own right where it came
+                // through the shim, and where it went round the shim --
+                // a cargo the enclosing run started, which the shim
+                // declines to capture twice -- the enclosing capture is
+                // still its own: the lock it prints about is the one
+                // this row is waiting on, mirrored into the log of the
+                // run it is inside.
+                managed_row.state = self.captured_run(capture, pid);
+                managed_row.nested = !children
+                    .get(&root)
+                    .is_some_and(|started_by_the_lead| started_by_the_lead.contains(&pid));
                 Some((process.start_time(), managed_row))
             })
             .collect();
@@ -923,11 +938,13 @@ fn row(
         ),
         pid: pid.as_u32(),
         start: start_label(process.start_time()),
+        started: process.start_time(),
         duration: duration_label(process.run_time()),
         cpu: cpu_label(cpu),
         compiler,
         state: None,
         managed,
+        nested: false,
         command: command_text(process.cmd(), home)?,
     })
 }
@@ -1254,16 +1271,18 @@ mod tests {
         let capture = Capture::take_from(root.path());
 
         assert_eq!(
-            census.captured_run_under(&capture, Pid::from_u32(76847), Pid::from_u32(64432)),
+            census.captured_run(&capture, Pid::from_u32(76847)),
             Some(RunState::Blocked),
         );
     }
 
-    /// An invocation that went round the shim has no capture of its
-    /// own. The lead's is not it: that state is already on the row
-    /// above, and it is not this row's news.
+    /// A cargo the enclosing run started has no capture of its own --
+    /// the shim declines to open a second one inside a run it is
+    /// already capturing. The enclosing one is still its own reading:
+    /// the wait it prints about is mirrored into that log because it is
+    /// the process doing the waiting.
     #[test]
-    fn an_uncaptured_invocation_does_not_borrow_the_leads_state() {
+    fn a_nested_invocation_reads_the_run_it_is_inside() {
         let root = capture_root(&[(
             64431,
             "    Blocking waiting for file lock on build directory",
@@ -1272,8 +1291,8 @@ mod tests {
         let capture = Capture::take_from(root.path());
 
         assert_eq!(
-            census.captured_run_under(&capture, Pid::from_u32(76847), Pid::from_u32(64432)),
-            None,
+            census.captured_run(&capture, Pid::from_u32(76847)),
+            Some(RunState::Blocked),
         );
         assert_eq!(
             census.captured_run(&capture, Pid::from_u32(64432)),
@@ -1422,6 +1441,83 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(text.line(ManifestPath::Hidden), "check --all-targets");
+    }
+
+    /// What is being built is what the row is there to say: which
+    /// member of a workspace, and how much of it.
+    #[test]
+    fn the_summary_keeps_what_names_the_work() {
+        let argv = vec![
+            OsString::from("cargo"),
+            OsString::from("mend"),
+            OsString::from("--all-targets"),
+            OsString::from("-p"),
+            OsString::from("hana_clerestory"),
+        ];
+        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        assert_eq!(
+            text.line(ManifestPath::Hidden),
+            "mend --all-targets -p hana_clerestory"
+        );
+    }
+
+    /// A rendering flag says how the caller wanted the output, which is
+    /// the caller's business rather than the run's -- in either
+    /// spelling, and wherever in the line it falls.
+    #[test]
+    fn the_summary_drops_the_rendering_flags() {
+        let argv = vec![
+            OsString::from("cargo"),
+            OsString::from("--color=auto"),
+            OsString::from("test"),
+            OsString::from("--no-run"),
+            OsString::from("--message-format"),
+            OsString::from("json-render-diagnostics"),
+        ];
+        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        assert_eq!(text.line(ManifestPath::Hidden), "test --no-run");
+    }
+
+    /// Past a bare `--` the arguments are the other program's. It
+    /// spells its flags however it likes, and none of them are cargo's
+    /// to drop -- a `--color` there is the other program's setting.
+    #[test]
+    fn the_summary_keeps_everything_handed_to_another_program() {
+        let argv = vec![
+            OsString::from("cargo"),
+            OsString::from("clippy"),
+            OsString::from("--color"),
+            OsString::from("never"),
+            OsString::from("--"),
+            OsString::from("-D"),
+            OsString::from("warnings"),
+            OsString::from("--color"),
+            OsString::from("always"),
+        ];
+        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        assert_eq!(
+            text.line(ManifestPath::Hidden),
+            "clippy -- -D warnings --color always"
+        );
+    }
+
+    /// A command's own cell shows the line as it was typed, however
+    /// much of it the summary leaves out.
+    #[test]
+    fn a_cell_of_its_own_keeps_the_whole_line() {
+        let argv = vec![
+            OsString::from("cargo"),
+            OsString::from("build"),
+            OsString::from("--bin"),
+            OsString::from("hana"),
+            OsString::from("--message-format=json"),
+        ];
+        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        assert_eq!(
+            text.line(ManifestPath::Shown),
+            "build --bin hana --message-format=json"
+        );
+        assert_eq!(text.line(ManifestPath::Hidden), "build --bin hana");
     }
 
     /// The flag is matched whole: an argument that merely starts the

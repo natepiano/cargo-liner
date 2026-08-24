@@ -324,11 +324,13 @@ mod tests {
             path: "~/rust/project".to_string(),
             pid,
             start: "10:00".to_string(),
+            started: 0,
             duration: "00:01".to_string(),
             cpu: "0%".to_string(),
             compiler: None,
             state: None,
             managed: 0,
+            nested: false,
             command: CommandText::of("cargo", &["build"]),
         }
     }

@@ -324,7 +324,27 @@ pub(crate) const UNRESOLVED_TIME: &str = "--:--";
 pub(crate) const HOME_ALIAS: &str = "~";
 /// The argument the summary leaves out, in either of the two spellings
 /// cargo accepts -- `--manifest-path <path>` and `--manifest-path=<path>`.
-pub(crate) const MANIFEST_PATH_FLAG: &str = "--manifest-path";
+const MANIFEST_PATH_FLAG: &str = "--manifest-path";
+/// Flags the summary leaves out, with the word each of them takes.
+/// Both spellings count: `--color always` and `--color=always`.
+///
+/// What they have in common is that none of them say anything about
+/// what is being built. A `--manifest-path` names the directory already
+/// heading the row, in full and in absolute form; a `--message-format`
+/// or `--color` names how the caller wanted the output rendered, which
+/// is the caller's business rather than the run's. Between them they
+/// are long enough to push the subcommand -- the one word worth
+/// reading -- off the edge of a narrow cell.
+///
+/// Only these. Everything else stands, however long: `-p` names which
+/// member of a workspace is being built and `--all-targets` names how
+/// much of it, which is exactly what the row is there to say.
+pub(crate) const SUMMARY_HIDDEN_VALUED_FLAGS: [&str; 3] =
+    [MANIFEST_PATH_FLAG, "--message-format", "--color"];
+/// The bare `--` handing everything after it to whatever cargo runs.
+/// Those arguments are the other program's, so the summary passes them
+/// through untouched however they are spelled.
+pub(crate) const ARGUMENT_SEPARATOR: &str = "--";
 /// Column headers, in table order. The working directory is not among
 /// them: it heads the group of invocations that share it rather than
 /// repeating on every row.

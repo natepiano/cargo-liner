@@ -229,10 +229,9 @@ fn tile_demands(
             .find(|&&(content, _)| content == wanted)
             .map_or(narrowest, |&(_, width)| width)
     };
-    let leads: Vec<&TrackedRow> = roster.groups().iter().map(|group| &group.lead).collect();
     TileDemands {
         summary: table_height(
-            &leads,
+            &summary_rows(roster, hidden_when_idle),
             TableKind::Summary,
             width_of(TileContent::Summary),
             None,
@@ -390,7 +389,7 @@ fn draw_contents(
     hidden_when_idle: &[String],
 ) {
     match content {
-        TileContent::Summary => draw_summary(buffer, roster, inner, ground),
+        TileContent::Summary => draw_summary(buffer, roster, inner, ground, hidden_when_idle),
         TileContent::Group(id) => {
             draw_group(buffer, roster, id, inner, ground, hidden_when_idle);
         },
@@ -398,11 +397,61 @@ fn draw_contents(
     }
 }
 
-/// The summary cell: one row per command, whatever each one is running
-/// underneath.
-fn draw_summary(buffer: &mut Buffer, roster: &Roster, inner: Rect, ground: Color) {
-    let rows: Vec<&TrackedRow> = roster.groups().iter().map(|group| &group.lead).collect();
-    draw_process_table(buffer, inner, &rows, TableKind::Summary, ground, None);
+/// The summary cell: every invocation running anywhere, gathered under
+/// the working directory it was run in.
+///
+/// Grouped by directory rather than by the command that launched it,
+/// which is what the cells already do. A directory is where invocations
+/// queue up -- one holds the build-directory lock and the rest wait on
+/// it -- so heading them together says which path is backed up and by
+/// what, whoever started them. The same lock read off the cells would
+/// mean reading across them.
+fn draw_summary(
+    buffer: &mut Buffer,
+    roster: &Roster,
+    inner: Rect,
+    ground: Color,
+    hidden_when_idle: &[String],
+) {
+    draw_process_table(
+        buffer,
+        inner,
+        &summary_rows(roster, hidden_when_idle),
+        TableKind::Summary,
+        ground,
+        None,
+    );
+}
+
+/// Every row the summary draws: one per command, and for a driver the
+/// commands it is driving instead.
+///
+/// A driver `commands.hidden_when_idle` names gives up its own row, the
+/// same as [`TrackedGroup::leads_as_ancestor`] gives it up in the
+/// driver's cell. It compiles nothing and sits in a directory of its
+/// own, so among rows gathered by working directory it would head a
+/// directory holding nothing else; the invocations it drives say where
+/// the work is, from the directories they are building in.
+///
+/// Every other command gives its lead row and nothing under it. What a
+/// command started is its cell's business -- one `cargo nextest run`
+/// whose suite runs `cargo mend` per case would otherwise put every one
+/// of them in the summary and bury the handful of commands actually
+/// worth reading. The lead carries the reading either way, since a row
+/// takes the state of the nearest capture at or above it.
+///
+/// Read by [`draw_summary`] and by [`tile_demands`] both, so the cell is
+/// measured over exactly the rows it goes on to lay out.
+fn summary_rows<'a>(roster: &'a Roster, hidden_when_idle: &[String]) -> Vec<&'a TrackedRow> {
+    let mut rows: Vec<&TrackedRow> = Vec::new();
+    for group in roster.groups() {
+        if group.leads_as_ancestor(hidden_when_idle) {
+            rows.extend(group.rows().skip(1).filter(|row| !row.process.nested));
+        } else {
+            rows.push(&group.lead);
+        }
+    }
+    rows
 }
 
 /// What sccache reports, written along the summary cell's top border.
@@ -691,7 +740,8 @@ fn draw_number(buffer: &mut Buffer, number: usize, inner: Rect) {
 /// row it has the room to say.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TableKind {
-    /// The summary: one row per command, over every directory at once.
+    /// The summary: every invocation running, over every directory at
+    /// once.
     Summary,
     /// One command's own cell: every invocation running under it.
     Command,
@@ -835,9 +885,6 @@ fn draw_process_table(
 /// newest invocation, which moves a directory down the cell when the
 /// build holding its place finishes -- a reshuffle triggered by the most
 /// routine event on this screen. Path order never moves on its own.
-/// Recency is not lost: the rows arrive newest first and that carries
-/// into each group, so a build just fired off still heads its own
-/// directory.
 ///
 /// A linear search per row is enough: the grouping key is a path a
 /// developer is building in, and there are only ever a handful of those
@@ -857,7 +904,24 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: Option<&str>) -> Vec<PathG
             rows: vec![row],
         });
     }
-    groups.sort_by(|left, right| left.path.cmp(right.path));
+    // Oldest work first, within a directory and between them. A run
+    // that started later can only be waiting on one that started
+    // earlier, so the earlier start reads above the runs queued behind
+    // it -- the directory holding the build-directory lock over the
+    // directories waiting on it, and inside each one the build over the
+    // lint that queued behind it. Sorting the directories by name
+    // instead put a nested crate's live build under blocked commands
+    // that came after it, and leaving the rows in arrival order did the
+    // same thing one directory down.
+    for group in &mut groups {
+        group.rows.sort_by_key(|row| row.process.started);
+    }
+    groups.sort_by_key(|group| {
+        group
+            .rows
+            .first()
+            .map_or(u64::MAX, |row| row.process.started)
+    });
     // Whatever the rest sort to, the pinned directory heads the cell.
     // The others keep the order they had under it, so a group that
     // comes and goes moves nothing but itself.
@@ -1482,16 +1546,22 @@ mod tests {
     }
 
     /// A row for a command running in `path`.
-    fn row_at(path: &str, state: Option<RunState>) -> TrackedRow {
+    fn row_at(path: &str, state: Option<RunState>) -> TrackedRow { started_at(path, state, 0) }
+
+    /// The same, for a command that started `started` seconds into the
+    /// epoch -- which is what orders one directory against another.
+    fn started_at(path: &str, state: Option<RunState>, started: u64) -> TrackedRow {
         TrackedRow::from(CargoProcess {
             path: path.to_string(),
             pid: 41233,
             start: "11:04".to_string(),
+            started,
             duration: "00:18".to_string(),
             cpu: "12%".to_string(),
             compiler: None,
             state,
             managed: 0,
+            nested: false,
             command: CommandText::of("cargo", &["build"]),
         })
     }
@@ -1629,11 +1699,13 @@ mod tests {
             path: "~/rust/cargo-liner".to_string(),
             pid,
             start: "11:04".to_string(),
+            started: 0,
             duration: "00:18".to_string(),
             cpu: "12%".to_string(),
             compiler: None,
             state: None,
             managed: 0,
+            nested: false,
             command: CommandText::of("cargo", arguments),
         }
     }
@@ -1772,8 +1844,8 @@ mod tests {
         );
     }
 
-    /// Every row in the summary leads a command of its own, so there is
-    /// no one directory the cell is about and the paths simply sort.
+    /// The summary is about no one directory, so nothing is pinned and
+    /// the directories fall in the order their work began.
     #[test]
     fn the_summary_pins_no_directory() {
         let lead = row_at("~/rust/cargo-berth-init", None);
@@ -1784,7 +1856,48 @@ mod tests {
 
         assert_eq!(
             sorted.first().map(|group| group.path),
-            Some("/private/var/folders/T/case-1")
+            Some("~/rust/cargo-berth-init"),
+            "nothing pinned, and neither started first, so the order stands"
+        );
+    }
+
+    /// A directory holding the build-directory lock started before
+    /// whatever is queued behind it, and the eye wants the run doing
+    /// the work above the runs waiting on it. Sorting by name put a
+    /// nested crate's live build under blocked commands that came after
+    /// it, since the nested path sorts second.
+    #[test]
+    fn a_directory_that_started_first_heads_the_summary() {
+        let building = started_at("~/rust/hana_recovery/crates/hana", None, 100);
+        let blocked = started_at("~/rust/hana_recovery", Some(RunState::Blocked), 160);
+        let rows = [&blocked, &building];
+
+        let sorted = group_by_path(&rows, None);
+
+        assert_eq!(
+            sorted.iter().map(|group| group.path).collect::<Vec<&str>>(),
+            ["~/rust/hana_recovery/crates/hana", "~/rust/hana_recovery"]
+        );
+    }
+
+    /// Two commands in one directory, the second necessarily waiting on
+    /// the first. Reading them in arrival order showed the lint that had
+    /// just queued above the test run it was queued behind.
+    #[test]
+    fn a_directorys_own_rows_read_oldest_first() {
+        let building = started_at("~/rust/cargo-liner", None, 100);
+        let queued = started_at("~/rust/cargo-liner", Some(RunState::Blocked), 160);
+        let rows = [&queued, &building];
+
+        let sorted = group_by_path(&rows, None);
+
+        assert_eq!(
+            sorted.first().map(|group| group
+                .rows
+                .iter()
+                .map(|row| row.process.started)
+                .collect::<Vec<u64>>()),
+            Some(vec![100, 160])
         );
     }
 
