@@ -127,7 +127,13 @@ impl Desktop {
     /// has no window the window server will describe. Every one of
     /// those is a case for drawing nothing rather than for an error:
     /// the animation this feeds is decoration.
-    pub(super) fn capture(metrics: Metrics) -> Option<Self> { platform::capture(metrics) }
+    /// `pinned` is the window this app has been found to be drawn in,
+    /// where [`window_titled`] settled it. Without one the window is
+    /// picked by size alone, which cannot tell two windows of the same
+    /// size apart.
+    pub(super) fn capture(metrics: Metrics, pinned: Option<u32>) -> Option<Self> {
+        platform::capture(metrics, pinned)
+    }
 
     /// The window this capture was taken for, as the window server
     /// numbers it, so that its position can be asked for from a thread
@@ -208,6 +214,25 @@ impl Desktop {
 /// the thread that is drawing.
 pub(super) fn window_frame(window: u32) -> Option<Frame> { platform::window_frame(window) }
 
+/// Every window the emulator has open, as the window server numbers
+/// and titles them.
+///
+/// Read before the terminal is asked to wear a marker title, so that
+/// whatever it was wearing can be put back once the marker has done
+/// its work.
+pub(super) fn window_titles() -> Vec<(u32, Option<String>)> { platform::window_titles() }
+
+/// The emulator's window whose title holds `marker`, or [`None`] while
+/// the window server has yet to see the title change.
+///
+/// This is how one of an emulator's windows is told from another. Size
+/// cannot do it -- two windows opened side by side are commonly the
+/// same size to the pixel -- and neither can ownership, because every
+/// window of the emulator answers to the same application. A title
+/// only this process knows is unambiguous, and the terminal will wear
+/// one for as long as it takes to ask.
+pub(super) fn window_titled(marker: &str) -> Option<u32> { platform::window_titled(marker) }
+
 /// A distance measured in cells, as a whole number of them.
 ///
 /// The window server measures in floating-point points, and a
@@ -285,11 +310,20 @@ mod platform {
     const BLUE: usize = 2;
 
     /// See [`Desktop::capture`].
-    pub(super) fn capture(metrics: Metrics) -> Option<Desktop> {
+    pub(super) fn capture(metrics: Metrics, pinned: Option<u32>) -> Option<Desktop> {
         let content = SCShareableContent::get().ok()?;
         let windows = content.windows();
         let terminal_windows = terminal_windows(&windows);
-        let chosen = frontmost_window(&terminal_windows, metrics.text_pixels)?;
+        // Falling back to size is for the run where the marker title
+        // never took, and for the window closed since it did.
+        let chosen = pinned
+            .and_then(|pinned| {
+                terminal_windows
+                    .iter()
+                    .find(|window| window.window_id() == pinned)
+                    .copied()
+            })
+            .or_else(|| frontmost_window(&terminal_windows, metrics.text_pixels))?;
         let window = chosen.window_id();
 
         let displays = content.displays();
@@ -341,6 +375,28 @@ mod platform {
             rows,
             colors,
         })
+    }
+
+    /// See [`super::window_titles`].
+    pub(super) fn window_titles() -> Vec<(u32, Option<String>)> {
+        let Ok(content) = SCShareableContent::get() else {
+            return Vec::new();
+        };
+        let windows = content.windows();
+        terminal_windows(&windows)
+            .into_iter()
+            .map(|window| (window.window_id(), window.title()))
+            .collect()
+    }
+
+    /// See [`super::window_titled`].
+    pub(super) fn window_titled(marker: &str) -> Option<u32> {
+        let content = SCShareableContent::get().ok()?;
+        let windows = content.windows();
+        terminal_windows(&windows)
+            .into_iter()
+            .find(|window| window.title().is_some_and(|title| title.contains(marker)))
+            .map(SCWindow::window_id)
     }
 
     /// See [`super::window_frame`].
@@ -669,8 +725,14 @@ mod platform {
     use super::Metrics;
 
     /// No capture backend outside macOS, so nothing is drawn.
-    pub(super) const fn capture(_: Metrics) -> Option<Desktop> { None }
+    pub(super) const fn capture(_: Metrics, _: Option<u32>) -> Option<Desktop> { None }
 
     /// Nothing to ask, where there is no capture to ask about.
     pub(super) const fn window_frame(_: u32) -> Option<Frame> { None }
+
+    /// No windows to describe, so no title tells one from another.
+    pub(super) const fn window_titles() -> Vec<(u32, Option<String>)> { Vec::new() }
+
+    /// Nothing wears the marker where nothing can be asked.
+    pub(super) const fn window_titled(_: &str) -> Option<u32> { None }
 }

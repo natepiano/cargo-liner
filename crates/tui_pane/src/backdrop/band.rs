@@ -6,19 +6,31 @@
 //! edge is coming back in at the other, so the grid is never empty
 //! between one pass and the next.
 //!
-//! Every cell it covers is drawn in exactly the colour the [`Backdrop`]
-//! has there -- no lift at the front, no ramp along the tail. A
-//! terminal cell is opaque and carries no alpha, so anything done to
-//! that colour is done to what the reader came to look at: the strip's
-//! one subject is the desktop the window is standing on, and a cell
-//! wearing a mixture is a cell showing something that is not there.
+//! Every cell the strip stands wholly on is drawn in exactly the colour
+//! the [`Backdrop`] has there -- no ramp along its length. A terminal
+//! cell is opaque and carries no alpha, so anything done to that colour
+//! is done to what the reader came to look at: the strip's one subject
+//! is the desktop the window is standing on, and a cell wearing a
+//! mixture is a cell showing something that is not there.
+//!
+//! The exception is the one line at each end that the strip stands only
+//! part way across, which is lit by however much of it the strip covers.
+//! Whole cells are the only places a strip on a character grid can
+//! stand, so without that the strip could only step from cell to cell,
+//! and stepping is what the eye reads as stop motion rather than travel.
 //!
 //! What gives the strip edges to read, then, is where it stops. The
-//! leading edge is flat across every line. So is the trailing edge,
-//! until [`TravelingBand::toggle_variable_tail`] is called -- after
-//! which the strip runs back its own distance at every offset across
-//! itself, and those distances grow and shrink between a third of its
-//! width and all of it while it travels.
+//! leading edge is flat across every line. The trailing edge is not:
+//! the strip runs back its own distance at every offset across itself,
+//! and those distances grow and shrink between a third of its width and
+//! all of it while it travels. How fast they do that is steerable, and
+//! [`TravelingBand::toggle_variable_tail`] turns the fraying off
+//! altogether for a trailing edge as flat as the leading one.
+//!
+//! A strip that has not been steered sets off left to right, standing
+//! across the whole window: the leading edge is at one side while the
+//! tail is still leaving the other, so the fraying is the whole of what
+//! there is to watch until a key thins it.
 //!
 //! Position is tracked in whole numbers throughout. A strip that moves
 //! a fraction of a cell per frame wants sub-cell precision, and
@@ -29,6 +41,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use crossterm::terminal;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -36,17 +49,20 @@ use ratatui::style::Color;
 use super::Backdrop;
 use super::constants::CHURN_CELLS_PER_FRAME;
 use super::constants::DEFAULT_BAND_SPEED;
-use super::constants::DEFAULT_BAND_WIDTH;
+use super::constants::DEFAULT_TAIL_SPEED;
 use super::constants::GLYPHS;
 use super::constants::MAX_BAND_SPEED;
 use super::constants::MAX_BAND_WIDTH;
+use super::constants::MAX_TAIL_SPEED;
+use super::constants::MICROS_PER_SECOND;
 use super::constants::MILLIS_PER_SECOND;
 use super::constants::MIN_BAND_SPEED;
 use super::constants::MIN_BAND_WIDTH;
+use super::constants::MIN_TAIL_SPEED;
+use super::constants::PIXEL_PRECISION;
 use super::constants::SUBCELLS_PER_CELL;
 use super::constants::VARIABLE_TAIL_FLOOR_PERCENT;
-use super::constants::VARIABLE_TAIL_HOLD;
-use super::constants::VARIABLE_TAIL_TRAVEL_PER_SECOND;
+use super::constants::VARIABLE_TAIL_HOLD_PERCENT;
 use super::constants::WHOLE_PERCENT;
 use super::constants::XORSHIFT_FALLBACK_SEED;
 use super::constants::XORSHIFT_FIRST;
@@ -72,6 +88,30 @@ pub enum BandDirection {
     Up,
     /// Enters at the top edge and travels toward the bottom.
     Down,
+}
+
+/// How much of the run of `length` starting at `start` falls inside
+/// `0..inside`, on a ring of circumference `span`.
+///
+/// The run is allowed to pass the wrap point, in which case what it is
+/// owed is whatever it picks up before the wrap plus whatever it picks
+/// up after it.
+const fn ring_overlap(start: u32, length: u32, inside: u32, span: u32) -> u32 {
+    let before_wrap = span - start;
+    let first = if length < before_wrap {
+        length
+    } else {
+        before_wrap
+    };
+    let head = if start < inside {
+        let room = inside - start;
+        if first < room { first } else { room }
+    } else {
+        0
+    };
+    let wrapped = length - first;
+    let foot = if wrapped < inside { wrapped } else { inside };
+    head + foot
 }
 
 /// Xorshift64, seeded from the clock.
@@ -122,9 +162,10 @@ impl Xorshift {
 ///
 /// A depth drawn at random and taken up on the next frame would read as
 /// a trailing edge boiling rather than as one moving, so a fresh draw
-/// is a place to travel to: the offset walks there over as many frames
-/// as [`VARIABLE_TAIL_TRAVEL_PER_SECOND`] takes, stands at it for
-/// [`VARIABLE_TAIL_HOLD`], and only then draws again.
+/// is a place to travel to: the offset walks there, stands at it for a
+/// while, and only then draws again. How long both of those take comes
+/// from [`TravelingBand::tail_speed`], so one key governs the whole of
+/// how fast the trailing edge changes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TailRun {
     /// How far back the strip runs here now, on the scale
@@ -150,13 +191,14 @@ impl TailRun {
     }
 
     /// Carry the offset one frame on: `travel` further toward its
-    /// target, or `elapsed` further through the stand it is keeping at
-    /// one, taking `drawn` as its next target when that stand runs out.
+    /// target, or `elapsed` further through the stand of `hold` it is
+    /// keeping at one, taking `drawn` as its next target when that
+    /// stand runs out.
     ///
     /// `drawn` is handed in already rolled rather than rolled here, so
     /// the strip's one generator stays where the rest of its randomness
     /// comes from. Most frames it goes unused.
-    fn advance(&mut self, elapsed: Duration, travel: u8, drawn: u8) {
+    fn advance(&mut self, elapsed: Duration, travel: u8, hold: Duration, drawn: u8) {
         if self.depth != self.target {
             self.depth = if self.depth < self.target {
                 self.depth.saturating_add(travel).min(self.target)
@@ -164,7 +206,7 @@ impl TailRun {
                 self.depth.saturating_sub(travel).max(self.target)
             };
             if self.depth == self.target {
-                self.holding = VARIABLE_TAIL_HOLD;
+                self.holding = hold;
             }
             return;
         }
@@ -221,8 +263,19 @@ pub struct TravelingBand {
     direction:      BandDirection,
     /// How deep the strip stands, in cells along the axis it travels.
     width:          u32,
+    /// One character cell across and down, in pixels scaled by
+    /// [`PIXEL_PRECISION`], or zeroes where the terminal will not say.
+    ///
+    /// What this is for is turning the strip between the two axes: a
+    /// cell is taller than it is wide, so the same count of them is a
+    /// different depth on the screen depending on which way they stack.
+    cell_pixels:    (u32, u32),
     /// How far the strip travels each second, in cells.
     speed:          u32,
+    /// How fast the trailing edge frays, on the [`u8`] scale one
+    /// offset's depth is held in, per second. Governs both the walk
+    /// toward a fresh depth and the stand at it -- see [`TailRun`].
+    tail_speed:     u32,
     /// How many lines the leading edge has re-rolled on this pass. A
     /// line is a column while the strip travels sideways and a row
     /// while it travels up or down.
@@ -249,12 +302,17 @@ impl Default for TravelingBand {
             columns:        0,
             rows:           0,
             direction:      BandDirection::default(),
-            width:          DEFAULT_BAND_WIDTH,
+            // Deeper than any grid, so the first draw clamps it to
+            // whatever the window turns out to be: the strip starts
+            // standing across the whole of it.
+            width:          MAX_BAND_WIDTH,
+            cell_pixels:    (0, 0),
             speed:          DEFAULT_BAND_SPEED,
+            tail_speed:     DEFAULT_TAIL_SPEED,
             rolled_through: 0,
             xorshift:       Xorshift::default(),
             faded:          0,
-            variable_tail:  false,
+            variable_tail:  true,
         }
     }
 }
@@ -272,13 +330,14 @@ impl TravelingBand {
         if self.columns == 0 || self.rows == 0 {
             return;
         }
-        let elapsed_millis = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
-        let travel = self
-            .speed
-            .saturating_mul(SUBCELLS_PER_CELL)
-            .saturating_mul(elapsed_millis)
-            / MILLIS_PER_SECOND;
-        self.leading_edge = self.leading_edge.saturating_add(travel);
+        let elapsed_micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        let travel = u64::from(self.speed)
+            .saturating_mul(u64::from(SUBCELLS_PER_CELL))
+            .saturating_mul(elapsed_micros)
+            / MICROS_PER_SECOND;
+        self.leading_edge = self
+            .leading_edge
+            .saturating_add(u32::try_from(travel).unwrap_or(u32::MAX));
 
         // The strip wraps rather than running clear of the grid and
         // starting over: the position is measured modulo the lines
@@ -305,7 +364,8 @@ impl TravelingBand {
     /// draws nothing at all.
     pub const fn fade(&mut self, faded: u8) { self.faded = faded; }
 
-    /// Turn the ragged trailing edge on or off.
+    /// Turn the ragged trailing edge off or back on. On is where a
+    /// strip that has not been steered starts.
     ///
     /// On, the strip runs back its own distance at each offset across
     /// itself -- every row of a strip crossing sideways, every column
@@ -326,7 +386,7 @@ impl TravelingBand {
     /// its position across: the position is measured from that edge, so
     /// a reversal read the old number as a strip most of the way to the
     /// far side rather than one just setting off.
-    pub const fn set_direction(&mut self, direction: BandDirection) {
+    pub fn set_direction(&mut self, direction: BandDirection) {
         if matches!(
             (self.direction, direction),
             (BandDirection::Left, BandDirection::Left)
@@ -336,9 +396,55 @@ impl TravelingBand {
         ) {
             return;
         }
+        // A turn from one axis to the other is a turn between two
+        // rulers. The depth is carried across it rather than the count
+        // of cells, so a strip a ruler measures at an inch across the
+        // screen is still an inch after it turns.
+        let turning =
+            self.sideways() != matches!(direction, BandDirection::Left | BandDirection::Right);
+        if turning {
+            self.width = self.turned_depth();
+        }
         self.direction = direction;
         self.leading_edge = 0;
         self.rolled_through = 0;
+        // The ceiling is the grid's extent along the axis travelled,
+        // and that is a different number after the turn.
+        self.set_width(self.width);
+    }
+
+    /// Whether the strip travels along the rows rather than down the
+    /// columns.
+    const fn sideways(&self) -> bool {
+        matches!(self.direction, BandDirection::Left | BandDirection::Right)
+    }
+
+    /// The strip's depth in the cells of the axis it is turning on to,
+    /// standing as deep on the screen as it does in the ones it leaves.
+    ///
+    /// Where the terminal will not say how big a cell is, the count is
+    /// carried across unchanged -- which is what it did before there
+    /// was anything to scale it by.
+    fn turned_depth(&self) -> u32 {
+        let (across, down) = self.cell_pixels;
+        if across == 0 || down == 0 {
+            return self.width;
+        }
+        // Leaving the sideways axis the strip is counted in columns and
+        // arrives counted in rows, and the other way round coming back.
+        let (from, to) = if self.sideways() {
+            (across, down)
+        } else {
+            (down, across)
+        };
+        // Rounded rather than truncated, so a turn and a turn back land
+        // on the depth they started at rather than a cell shallower
+        // every time round.
+        self.width
+            .saturating_mul(from)
+            .saturating_add(to / 2)
+            .checked_div(to)
+            .unwrap_or(self.width)
     }
 
     /// Stand the strip `cells` deeper, up to the widest it goes.
@@ -361,6 +467,24 @@ impl TravelingBand {
             .speed
             .saturating_sub(cells_per_second)
             .clamp(MIN_BAND_SPEED, MAX_BAND_SPEED);
+    }
+
+    /// Fray the trailing edge `per_second` faster, up to the fastest it
+    /// goes. Does nothing visible while the trailing edge is flat.
+    pub fn tail_faster(&mut self, per_second: u32) {
+        self.tail_speed = self
+            .tail_speed
+            .saturating_add(per_second)
+            .clamp(MIN_TAIL_SPEED, MAX_TAIL_SPEED);
+    }
+
+    /// Fray the trailing edge `per_second` slower, down to the slowest
+    /// it goes.
+    pub fn tail_slower(&mut self, per_second: u32) {
+        self.tail_speed = self
+            .tail_speed
+            .saturating_sub(per_second)
+            .clamp(MIN_TAIL_SPEED, MAX_TAIL_SPEED);
     }
 
     /// Draw the strip over `area`, colouring each cell by the
@@ -387,7 +511,14 @@ impl TravelingBand {
         }
         for row in 0..self.rows.min(area.height) {
             for column in 0..self.columns.min(area.width) {
-                if !self.covers(column, row) {
+                let Some(strength) = self.coverage(column, row) else {
+                    continue;
+                };
+                // A cell the edge has only just entered is drawn no
+                // more strongly than it has been entered, and a cell it
+                // has not entered at all is left alone rather than
+                // painted in the colour it would be invisible in.
+                if strength == 0 {
                     continue;
                 }
                 let Some(color) = backdrop.color_at(column, row) else {
@@ -401,27 +532,88 @@ impl TravelingBand {
                         Color::Reset => ground,
                         background => background,
                     };
+                    // The strip's own fade and this cell's share of it
+                    // compound: what is left of the colour is the one
+                    // scaled by the other, and the alpha handed on is
+                    // whatever that leaves.
+                    let visible =
+                        u32::from(u8::MAX - self.faded) * u32::from(strength) / u32::from(u8::MAX);
+                    let alpha = u8::MAX - u8::try_from(visible).unwrap_or(u8::MAX);
                     cell.set_char(glyph);
-                    cell.set_fg(blend_color(color, toward, self.faded));
+                    cell.set_fg(blend_color(color, toward, alpha));
                 }
             }
         }
     }
 
-    /// Whether the strip covers the cell at `column`, `row` this frame.
+    /// Whether the strip reaches the cell at `column`, `row` at all
+    /// this frame.
+    ///
+    /// Where the strip reaches is a separate question from how strongly
+    /// it lights what it reaches, and the tests below ask it directly.
+    /// Rendering asks only [`Self::coverage`], which answers both at
+    /// once.
+    #[cfg(test)]
+    fn covers(&self, column: u16, row: u16) -> bool { self.coverage(column, row).is_some() }
+
+    /// How strongly the strip lights the cell at `column`, `row` this
+    /// frame, or [`None`] where it does not reach the cell at all.
+    ///
+    /// [`u8::MAX`] is the strip at full strength, and anything less is
+    /// a cell the leading edge has only partly entered.
+    ///
+    /// That partial line is what makes the strip travel rather than
+    /// step. The edge moves a fraction of a cell per frame -- a little
+    /// over half of one at the default speed -- so a cell that could
+    /// only be lit or unlit holds still for a frame or two and then
+    /// changes all at once, and a whole cell arriving on an uneven beat
+    /// is what the eye reads as stop motion. Lighting the line in
+    /// proportion to how far the edge has come into it gives every
+    /// frame something to show.
+    ///
+    /// Both edges are read the same way, and they have to be. A strip
+    /// travelling across a character grid can only ever stand on whole
+    /// cells, but how brightly a cell is lit is not quantised at all --
+    /// so where the strip has reached between one cell and the next is
+    /// carried by the brightness of the line it is part way through.
+    /// Doing that at the leading edge alone leaves the trailing one
+    /// dropping a whole line at a time, and the strip has only two
+    /// edges to read its travel from: one of them stepping is half the
+    /// motion stepping.
     ///
     /// Distance behind the leading edge is measured the long way round,
     /// so a line the edge has not reached on this pass is read as one
     /// its tail has not finished leaving on the last -- which is what
     /// the wrap means.
-    fn covers(&self, column: u16, row: u16) -> bool {
+    fn coverage(&self, column: u16, row: u16) -> Option<u8> {
         let span = self.span();
         if span == 0 {
-            return false;
+            return None;
+        }
+        let tail = self.tail_at(self.offset_of(column, row));
+        // A strip standing as deep as the grid has lines is the whole
+        // ring: its tail has met its own leading edge, and there is no
+        // line left anywhere for either edge to be part way across.
+        if tail >= span {
+            return Some(u8::MAX);
         }
         let line = self.line_of(column, row);
-        let behind = (self.leading_edge + span - u32::from(line) * SUBCELLS_PER_CELL) % span;
-        behind <= self.tail_at(self.offset_of(column, row))
+        // Both the cell and the strip are runs on the same ring -- the
+        // cell one line long ending at `near`, the strip `tail` long
+        // ending at the leading edge -- so a cell near the wrap can have
+        // one end of it inside the strip's head and the other inside
+        // its tail, and owning only the first is what left a line unlit
+        // at every width.
+        let near = (self.leading_edge + span - u32::from(line) * SUBCELLS_PER_CELL) % span;
+        let start = (near + span - SUBCELLS_PER_CELL) % span;
+        let covered = ring_overlap(start, SUBCELLS_PER_CELL, tail, span);
+        if covered == 0 {
+            return None;
+        }
+        if covered >= SUBCELLS_PER_CELL {
+            return Some(u8::MAX);
+        }
+        u8::try_from(covered * u32::from(u8::MAX) / SUBCELLS_PER_CELL).ok()
     }
 
     /// How far back the strip runs at `offset` across itself, in
@@ -504,8 +696,38 @@ impl TravelingBand {
     }
 
     /// Stand the strip `width` deep, clamped to what it is allowed.
+    ///
+    /// Never deeper than the grid it crosses. At exactly that depth the
+    /// tail meets the leading edge and the whole grid is lit, which is
+    /// a reasonable place to be able to get to; past it the strip has
+    /// nothing further to show and the extra depth is only a number
+    /// that stops answering the key that changes it.
     fn set_width(&mut self, width: u32) {
-        self.width = width.clamp(MIN_BAND_WIDTH, MAX_BAND_WIDTH);
+        let lines = self.lines();
+        let widest = if lines == 0 {
+            MAX_BAND_WIDTH
+        } else {
+            u32::from(lines)
+        };
+        self.width = width.clamp(MIN_BAND_WIDTH, widest.max(MIN_BAND_WIDTH));
+    }
+
+    /// Ask the terminal how big one character cell is, and keep the
+    /// answer where a turn between the axes can read it.
+    ///
+    /// A terminal that will not say leaves the last answer standing, so
+    /// a single refusal does not undo a size already learned.
+    fn read_cell_pixels(&mut self) {
+        let Ok(size) = terminal::window_size() else {
+            return;
+        };
+        if size.width == 0 || size.height == 0 || size.columns == 0 || size.rows == 0 {
+            return;
+        }
+        self.cell_pixels = (
+            u32::from(size.width) * PIXEL_PRECISION / u32::from(size.columns),
+            u32::from(size.height) * PIXEL_PRECISION / u32::from(size.rows),
+        );
     }
 
     /// Re-size to `area`, drawing a fresh set of characters and putting
@@ -519,6 +741,10 @@ impl TravelingBand {
         self.rows = area.height;
         self.leading_edge = 0;
         self.rolled_through = 0;
+        self.read_cell_pixels();
+        // The grid is the ceiling on how deep the strip stands, so a
+        // grid that has just become smaller than the strip lowers it.
+        self.set_width(self.width);
         let cells = usize::from(area.width) * usize::from(area.height);
         let mut glyphs = Vec::with_capacity(cells);
         for _ in 0..cells {
@@ -539,16 +765,27 @@ impl TravelingBand {
     /// whether or not the offset has run out of stand to use it.
     fn advance_tails(&mut self, elapsed: Duration) {
         let elapsed_millis = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
-        let travel = u8::try_from(
-            elapsed_millis.saturating_mul(VARIABLE_TAIL_TRAVEL_PER_SECOND) / MILLIS_PER_SECOND,
-        )
-        .unwrap_or(u8::MAX);
+        let travel =
+            u8::try_from(elapsed_millis.saturating_mul(self.tail_speed) / MILLIS_PER_SECOND)
+                .unwrap_or(u8::MAX);
+        let hold = self.tail_hold();
         for index in 0..self.tails.len() {
             let drawn = random_tail(&mut self.xorshift);
             if let Some(run) = self.tails.get_mut(index) {
-                run.advance(elapsed, travel, drawn);
+                run.advance(elapsed, travel, hold, drawn);
             }
         }
+    }
+
+    /// How long an offset stands at the depth it reached before drawing
+    /// a fresh one, which is a share of what the walk across the whole
+    /// range costs at the speed the trailing edge is fraying.
+    fn tail_hold(&self) -> Duration {
+        let full_range_millis =
+            u32::from(u8::MAX).saturating_mul(MILLIS_PER_SECOND) / self.tail_speed.max(1);
+        Duration::from_millis(u64::from(
+            full_range_millis.saturating_mul(VARIABLE_TAIL_HOLD_PERCENT) / WHOLE_PERCENT,
+        ))
     }
 
     /// Draw a fresh character for every cell on every line the leading
@@ -618,6 +855,10 @@ mod tests {
     /// tail and the edge itself is inside the area.
     fn entered(direction: BandDirection) -> TravelingBand {
         let mut band = TravelingBand::new();
+        // Where the strip stops is what these ask about, and a fraying
+        // trailing edge is a second thing moving it. The tests that
+        // want the fraying turn it back on.
+        band.toggle_variable_tail();
         band.narrow(u32::MAX);
         band.widen(NARROW - MIN_BAND_WIDTH);
         band.set_direction(direction);
@@ -640,10 +881,15 @@ mod tests {
     /// The strip stands its own width deep and stops: the cell one
     /// past its leading edge is not covered, and neither is the one
     /// past its tail.
+    ///
+    /// Its own width deep means exactly that many lines lit. The line
+    /// the edge has arrived at but not yet entered is lit by nothing,
+    /// so it is one of the ones past the leading edge rather than the
+    /// leading edge itself.
     #[test]
     fn the_strip_stops_at_its_own_width() {
         let band = entered(BandDirection::Right);
-        let edge = u16::try_from(band.width).unwrap_or(u16::MAX);
+        let edge = u16::try_from(band.width.saturating_sub(1)).unwrap_or(u16::MAX);
 
         assert!(
             band.covers(edge, 0),
@@ -655,6 +901,36 @@ mod tests {
             !band.covers(AREA.width - 1, 0),
             "nor is the cell the tail has already left",
         );
+    }
+
+    /// Standing as deep as the grid has lines, the strip is the whole
+    /// ring and there is no gap anywhere in it.
+    ///
+    /// Both of its edges are runs on that ring, so at this depth the
+    /// tail has met the leading edge and the line the edge is part way
+    /// across is the same line the tail is part way off. Owning only
+    /// the leading share of it left one column short of full at every
+    /// position the strip could be in.
+    #[test]
+    fn a_strip_as_deep_as_the_grid_leaves_no_line_unlit() {
+        let mut band = entered(BandDirection::Right);
+        band.widen(u32::MAX);
+
+        assert_eq!(
+            band.width,
+            u32::from(AREA.width),
+            "the grid itself is as deep as the strip is allowed to stand"
+        );
+        for step in 0..8 {
+            band.leading_edge = step * SUBCELLS_PER_CELL / 8;
+            for column in 0..AREA.width {
+                assert_eq!(
+                    band.coverage(column, 0),
+                    Some(u8::MAX),
+                    "column {column} is short of full at step {step}"
+                );
+            }
+        }
     }
 
     /// A strip with no area yet covers nothing, rather than reading its
@@ -701,13 +977,20 @@ mod tests {
         }
     }
 
-    /// A cell the strip covers wears the colour of the backdrop under
-    /// it, which is the whole point of drawing over one.
+    /// A cell in the body of the strip wears the colour of the backdrop
+    /// under it, which is the whole point of drawing over one.
+    ///
+    /// The edge is carried a whole cell past the origin first, so the
+    /// cell read is one the strip has fully arrived on rather than the
+    /// one it is still entering -- that line is the single exception,
+    /// and [`the_line_the_edge_is_entering_is_lit_in_proportion_to_how_far_in_it_is`]
+    /// is what covers it.
     #[test]
     fn a_covered_cell_is_drawn_in_the_colour_behind_it() {
         let color = Color::Rgb(200, 100, 50);
         let mut band = TravelingBand::new();
         band.advance(AREA, Duration::ZERO);
+        band.leading_edge = SUBCELLS_PER_CELL;
         let backdrop = Backdrop::flat(AREA, color);
         let mut buffer = Buffer::empty(AREA);
 
@@ -721,12 +1004,19 @@ mod tests {
     }
 
     /// The one thing the strip is for is showing what the desktop
-    /// behind the window looks like, so every cell of it is that colour
-    /// exactly -- the leading edge, the tail, and everything between.
-    /// A cell carried any distance toward the ground shows something
-    /// that is not behind the window at all, and where the window is
-    /// transparent the ground is not what the reader is looking at
-    /// either.
+    /// behind the window looks like, so every cell of its body is that
+    /// colour exactly -- the tail, and everything up to the line the
+    /// edge is still entering. A cell carried any distance toward the
+    /// ground shows something that is not behind the window at all, and
+    /// where the window is transparent the ground is not what the
+    /// reader is looking at either.
+    ///
+    /// The one line the edge is part of the way into is the exception,
+    /// and it is bought deliberately: without it the strip cannot
+    /// change between one whole cell and the next, and a whole cell
+    /// arriving on an uneven beat is what the eye reads as stepping
+    /// rather than as travel. One line of a strip twenty deep pays for
+    /// the other nineteen moving smoothly.
     #[test]
     fn the_whole_strip_is_the_desktop_colour_front_to_back() {
         let color = Color::Rgb(200, 100, 50);
@@ -736,7 +1026,7 @@ mod tests {
 
         band.render(AREA, &backdrop, Color::Black, &mut buffer);
 
-        for column in 0..=u16::try_from(band.width).unwrap_or(u16::MAX) {
+        for column in 0..u16::try_from(band.width).unwrap_or(u16::MAX) {
             let cell = buffer
                 .cell((AREA.x + column, AREA.y))
                 .expect("area covers the strip");
@@ -745,6 +1035,82 @@ mod tests {
                 "column {column} should wear the desktop's colour"
             );
         }
+    }
+
+    /// The line the leading edge is part of the way into is lit that
+    /// far and no further, and lit differently at two different points
+    /// within the same cell.
+    ///
+    /// That second half is the whole reason the shading exists: it is
+    /// what gives a frame that has not crossed a cell boundary
+    /// something to show, and so what makes the strip travel rather
+    /// than step.
+    #[test]
+    fn the_line_the_edge_is_entering_is_lit_in_proportion_to_how_far_in_it_is() {
+        let color = Color::Rgb(200, 100, 50);
+        let backdrop = Backdrop::flat(AREA, color);
+        let leading = u16::try_from(entered(BandDirection::Right).width).unwrap_or(u16::MAX);
+        let lit_at = |into: u32| {
+            let mut band = entered(BandDirection::Right);
+            band.leading_edge = band.width * SUBCELLS_PER_CELL + into;
+            let mut buffer = Buffer::empty(AREA);
+            band.render(AREA, &backdrop, Color::Black, &mut buffer);
+            buffer
+                .cell((AREA.x + leading, AREA.y))
+                .expect("area covers the leading line")
+                .fg
+        };
+
+        let quarter = lit_at(SUBCELLS_PER_CELL / 4);
+        let most = lit_at(SUBCELLS_PER_CELL * 3 / 4);
+
+        assert_ne!(
+            quarter, color,
+            "a line the edge has only entered is not yet at full strength"
+        );
+        assert_ne!(
+            quarter, most,
+            "and two points inside one cell are lit differently, which is \
+             what a frame that crosses no boundary has to show"
+        );
+    }
+
+    /// The counterpart of the leading edge shading the line it is
+    /// entering. A strip whose tail leaves a whole line at a time has
+    /// one edge travelling and one stepping, and the eye reads the
+    /// stepping one -- so the last line is lit by however much of it
+    /// the strip still stands on, exactly as the first is.
+    #[test]
+    fn the_line_the_tail_is_leaving_is_lit_in_proportion_to_how_much_is_left() {
+        let color = Color::Rgb(200, 100, 50);
+        let backdrop = Backdrop::flat(AREA, color);
+        let lit_at = |past: u32| {
+            let mut band = entered(BandDirection::Right);
+            // Carry the strip `past` subcells beyond the point where its
+            // tail sits exactly on the far edge of the first column, so
+            // that column is the one being left.
+            band.leading_edge = band.width * SUBCELLS_PER_CELL + past;
+            let mut buffer = Buffer::empty(AREA);
+            band.render(AREA, &backdrop, Color::Black, &mut buffer);
+            buffer
+                .cell((AREA.x, AREA.y))
+                .expect("area covers the trailing line")
+                .fg
+        };
+
+        let mostly_there = lit_at(SUBCELLS_PER_CELL / 4);
+        let nearly_gone = lit_at(SUBCELLS_PER_CELL * 3 / 4);
+
+        assert_ne!(
+            nearly_gone, color,
+            "a line the tail has most of the way off is no longer at full \
+             strength"
+        );
+        assert_ne!(
+            mostly_there, nearly_gone,
+            "and two points inside one cell are lit differently, which is \
+             what keeps the tail travelling rather than stepping"
+        );
     }
 
     /// Varying the trailing edge shortens the run each row draws
@@ -760,7 +1126,7 @@ mod tests {
         band.toggle_variable_tail();
         band.tails = vec![TailRun::full(); usize::from(AREA.height)];
         band.tails[0].depth = 0;
-        let edge = u16::try_from(band.width).unwrap_or(u16::MAX);
+        let edge = u16::try_from(band.width.saturating_sub(1)).unwrap_or(u16::MAX);
 
         assert_eq!(
             band.tail_at(0),
@@ -806,14 +1172,15 @@ mod tests {
     fn an_offset_walks_to_its_next_depth_and_stands_there_before_drawing_again() {
         let frame = Duration::from_millis(100);
         let travel = u8::try_from(
-            u32::try_from(frame.as_millis()).unwrap_or(u32::MAX) * VARIABLE_TAIL_TRAVEL_PER_SECOND
+            u32::try_from(frame.as_millis()).unwrap_or(u32::MAX) * DEFAULT_TAIL_SPEED
                 / MILLIS_PER_SECOND,
         )
         .unwrap_or(u8::MAX);
+        let hold = TravelingBand::new().tail_hold();
         let mut run = TailRun::full();
 
         // The first frame has nothing to stand out, so it draws.
-        run.advance(frame, travel, 0);
+        run.advance(frame, travel, hold, 0);
         assert_eq!(run.target, 0);
         assert_eq!(
             run.depth,
@@ -822,23 +1189,23 @@ mod tests {
         );
 
         // And it walks there, one frame's travel at a time.
-        run.advance(frame, travel, u8::MAX);
+        run.advance(frame, travel, hold, u8::MAX);
         assert_eq!(run.depth, u8::MAX - travel);
         let frames_to_arrive = u32::from(u8::MAX).div_ceil(u32::from(travel));
         for _ in 0..frames_to_arrive {
-            run.advance(frame, travel, u8::MAX);
+            run.advance(frame, travel, hold, u8::MAX);
         }
         assert_eq!(run.depth, 0, "it should have arrived by now");
-        assert_eq!(run.holding, VARIABLE_TAIL_HOLD.saturating_sub(frame));
+        assert_eq!(run.holding, hold.saturating_sub(frame));
 
         // Arrived, it stands. A draw offered mid-stand is not taken.
-        run.advance(frame, travel, u8::MAX);
+        run.advance(frame, travel, hold, u8::MAX);
         assert_eq!(run.target, 0, "the stand is not over yet");
         while !run.holding.is_zero() {
-            run.advance(frame, travel, 0);
+            run.advance(frame, travel, hold, 0);
         }
 
-        run.advance(frame, travel, u8::MAX);
+        run.advance(frame, travel, hold, u8::MAX);
         assert_eq!(run.target, u8::MAX, "the stand is over, so it draws again");
     }
 
@@ -928,8 +1295,9 @@ mod tests {
         assert_eq!(band.leading_edge, leading_edge);
     }
 
-    /// Width and speed are clamped where they are set, so a caller can
-    /// hand a held key straight through without knowing the limits.
+    /// Width and both speeds are clamped where they are set, so a
+    /// caller can hand a held key straight through without knowing the
+    /// limits.
     #[test]
     fn width_and_speed_stop_at_the_limits_rather_than_running_past_them() {
         let mut band = TravelingBand::new();
@@ -943,6 +1311,54 @@ mod tests {
         assert_eq!(band.speed, MAX_BAND_SPEED);
         band.slow_down(u32::MAX);
         assert_eq!(band.speed, MIN_BAND_SPEED);
+
+        band.tail_faster(u32::MAX);
+        assert_eq!(band.tail_speed, MAX_TAIL_SPEED);
+        band.tail_slower(u32::MAX);
+        assert_eq!(band.tail_speed, MIN_TAIL_SPEED);
+    }
+
+    /// A strip nobody has steered sets off left to right, standing
+    /// across the whole window with its trailing edge already fraying.
+    /// Everything the animation can do is on screen before a key is
+    /// pressed.
+    #[test]
+    fn an_unsteered_strip_sets_off_across_the_whole_window() {
+        let mut band = TravelingBand::new();
+
+        band.advance(AREA, Duration::ZERO);
+
+        assert_eq!(band.direction, BandDirection::Right);
+        assert_eq!(
+            band.width,
+            u32::from(AREA.width),
+            "the strip should stand across every column there is"
+        );
+        assert!(band.variable_tail, "and fray behind without being asked");
+    }
+
+    /// One key governs the whole of how fast the trailing edge changes:
+    /// the stand at a depth is taken from the speed rather than fixed,
+    /// so speeding the fraying up shortens the stand too.
+    ///
+    /// Fixing the stand instead left it outlasting the travel at the
+    /// top of the range, where the fastest setting looked no livelier
+    /// than the middle of it.
+    #[test]
+    fn fraying_faster_shortens_the_stand_as_well_as_the_walk() {
+        let mut band = TravelingBand::new();
+        let settled = band.tail_hold();
+
+        band.tail_faster(u32::MAX);
+        let hurried = band.tail_hold();
+        band.tail_slower(u32::MAX);
+        let dawdling = band.tail_hold();
+
+        assert!(
+            hurried < settled && settled < dawdling,
+            "the stand should follow the speed: {hurried:?} < {settled:?} < {dawdling:?}",
+        );
+        assert!(!hurried.is_zero(), "even the fastest setting stands");
     }
 
     /// The slowest strip still moves. A strip standing still is one the

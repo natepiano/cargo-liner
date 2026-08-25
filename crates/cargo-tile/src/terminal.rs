@@ -69,6 +69,10 @@ use crate::settings;
 use crate::settings::Step;
 use crate::theme;
 
+/// The terminal backend, with everything written to it counted on the
+/// way out. See [`probe::Counted`].
+type Backend = CrosstermBackend<probe::Counted<Stdout>>;
+
 /// Load configuration, install the theme, build the keymap, and run the
 /// event loop with the terminal in the alternate screen.
 pub(crate) fn run() -> ExitCode {
@@ -115,15 +119,13 @@ pub(crate) fn run() -> ExitCode {
 /// The iTerm2 profile is taken last, once the terminal is otherwise
 /// ready: a failure before that point returns without having changed
 /// anything the caller would then have to put back.
-fn setup_terminal(
-    iterm2_profile: &str,
-) -> io::Result<(Terminal<CrosstermBackend<Stdout>>, Option<ProfileSwitch>)> {
+fn setup_terminal(iterm2_profile: &str) -> io::Result<(Terminal<Backend>, Option<ProfileSwitch>)> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let profile_switch = ProfileSwitch::enter(iterm2_profile, &mut stdout)?;
     Ok((
-        Terminal::new(CrosstermBackend::new(stdout))?,
+        Terminal::new(CrosstermBackend::new(probe::Counted::new(stdout)))?,
         profile_switch,
     ))
 }
@@ -133,7 +135,7 @@ fn setup_terminal(
 /// The profile goes back after the alternate screen does, so the shell
 /// coming back into view is already wearing it.
 fn restore_terminal(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Terminal<Backend>,
     profile_switch: Option<&ProfileSwitch>,
 ) -> io::Result<()> {
     disable_raw_mode()?;
@@ -155,7 +157,7 @@ fn restore_terminal(
 /// arrived or the process scan came back different. With nothing
 /// building and nobody typing there is nothing to repaint, so an idle
 /// app costs essentially nothing.
-fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
+fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()> {
     let input = spawn_input_thread();
     let scans = processes::spawn();
     // Each due read runs on a worker of its own and replies here, so a
@@ -164,10 +166,17 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
     let mut dirty = true;
     let mut repainted = Instant::now();
     let mut previous = Instant::now();
+    let period = Duration::from_millis(FRAME_POLL_MILLIS);
+    let mut deadline = Instant::now() + period;
     while !app.framework.quit_requested() && !app.framework.restart_requested() {
         let started = Instant::now();
         probe::frame(started.duration_since(previous), PROBE_THRESHOLD);
         previous = started;
+        // Before the frame rather than inside it: settling the window
+        // costs several round trips to the window server, which is far
+        // longer than a frame, and `terminal.draw` is no place to spend
+        // them.
+        app.attract.identify();
         if dirty {
             // Re-borrowed every frame: rebinding a key in the keymap
             // overlay swaps the whole map out from under the loop.
@@ -177,14 +186,28 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             })?;
             dirty = false;
         }
-        // What is left of the frame after drawing it, rather than a
-        // fresh interval on top. Waiting the whole interval after a
-        // draw makes the period the draw plus the interval, which for
-        // an animation is both slower than the interval asks for and,
-        // because a draw is not the same length twice, uneven -- and
-        // uneven is what the eye reads as judder. A frame that has
-        // already overrun waits not at all and simply starts the next.
-        let remaining = Duration::from_millis(FRAME_POLL_MILLIS).saturating_sub(started.elapsed());
+        // When the next frame is due, carried forward from when the
+        // last one was due rather than worked out afresh from the top
+        // of this one.
+        //
+        // The wait below is a condvar timeout, and the system grants it
+        // late by a varying couple of milliseconds. Measured from the
+        // top of the current frame, that lateness becomes the next
+        // frame's starting point and is never given back: the loop asks
+        // for its interval, is woken well past it, and settles there --
+        // except on the frames where the wake happens to be prompt,
+        // which arrive on time. A period alternating between the two is
+        // what the eye reads as stop motion. Against a fixed deadline
+        // the same lateness merely shortens the following wait.
+        deadline += period;
+        let now = Instant::now();
+        // Far enough behind that catching up would mean a run of frames
+        // with no wait at all between them -- a long draw, or a write
+        // the emulator held on to. Start the schedule again from here.
+        if deadline < now {
+            deadline = now + period;
+        }
+        let remaining = deadline.saturating_duration_since(now);
         match input.recv_timeout(remaining) {
             Ok(event) => {
                 let mut resized = apply_event(app, &event);
@@ -255,7 +278,16 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
         }
         // Whatever else has written to this terminal is written over
         // here, because a difference-based draw would leave it standing.
-        if repainted.elapsed() >= Duration::from_secs(FULL_REPAINT_SECONDS) {
+        //
+        // Never while the attract screen is up. Marking every cell for
+        // redraw puts a write of the whole grid into one frame of an
+        // animation, which the terminal shows as a tear rather than as
+        // a repaint -- and there is nothing to write over anyway, since
+        // the strip already paints every cell it covers. The moment the
+        // strip leaves, the wait is long overdue and one fires.
+        if !app.attract.showing()
+            && repainted.elapsed() >= Duration::from_secs(FULL_REPAINT_SECONDS)
+        {
             force_repaint(terminal);
             repainted = Instant::now();
             dirty = true;
@@ -381,7 +413,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) {
 ///
 /// [`Terminal::swap_buffers`] is what moves the filled buffer into the
 /// comparison slot; the frame renders into the other one.
-fn force_repaint(terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
+fn force_repaint(terminal: &mut Terminal<Backend>) {
     let buffer = terminal.current_buffer_mut();
     let area = buffer.area;
     for y in area.top()..area.bottom() {

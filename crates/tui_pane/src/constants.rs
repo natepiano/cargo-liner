@@ -17,7 +17,14 @@ pub const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 pub const BLOCK_BORDER_WIDTH: usize = 2;
 
 /// Tick interval between render polls.
-pub const FRAME_POLL_MILLIS: u64 = 16;
+///
+/// Under the refresh interval of the displays this runs on, so that
+/// every one of their refreshes has a frame it has not already shown.
+/// A terminal app cannot wait on the vertical blank, and a loop slower
+/// than the display holds some frames for one refresh and some for
+/// two -- which at animation speeds the eye reads as hesitation rather
+/// than as travel.
+pub const FRAME_POLL_MILLIS: u64 = 8;
 
 /// Seconds in one minute.
 pub(crate) const SECONDS_PER_MINUTE: u64 = 60;

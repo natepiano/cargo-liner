@@ -18,6 +18,9 @@ pub(crate) const ATTRACT_MOVING_BAND_SECTION: &str = "Attract: Moving Band";
 /// Cells per second one step of the faster / slower keys moves the
 /// band.
 pub(crate) const BAND_SPEED_STEP: u32 = 2;
+/// How much one step of the fray-faster / fray-slower keys moves the
+/// band's trailing edge, on the per-second scale that speed is held in.
+pub(crate) const BAND_TAIL_SPEED_STEP: u32 = 24;
 /// Cells one step of the wider / thinner keys moves the band.
 pub(crate) const BAND_WIDTH_STEP: u32 = 1;
 /// Longest gap between two presses of the same steering key that still

@@ -42,6 +42,8 @@ tui_pane::action_enum! {
         Faster      => ("faster",       "Speed the band up");
         Slower      => ("slower",       "Slow the band down");
         VaryTail    => ("vary_tail",    "Vary how deep each line of the band stands");
+        TailSlower  => ("tail_slower",  "Fray the trailing edge slower");
+        TailFaster  => ("tail_faster",  "Fray the trailing edge faster");
     }
 }
 
@@ -81,11 +83,12 @@ impl Shortcuts<App> for MovingBandPane {
     /// a tile on the grid underneath, and both readings are "more of
     /// this, less of this".
     ///
-    /// The one letter here is a capital, `V` for varying. Every
-    /// lowercase letter the app already spends keeps its meaning while
-    /// the screen is up -- `f` still freezes, `s` still opens
-    /// settings, `a` still gives the grid back -- and the app spends
-    /// no capitals at all.
+    /// `v` for varying is the one letter here, and it is one the app
+    /// has never spent: every other lowercase letter keeps its ordinary
+    /// meaning while the screen is up -- `f` still freezes, `s` still
+    /// opens settings, `a` still gives the grid back. `[` and `]` are
+    /// the third matched pair, and they slow and speed the fraying `v`
+    /// turns on, which is why they sit beside it in the listing.
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
             ['+', '='] => MovingBandAction::Wider,
@@ -96,7 +99,9 @@ impl Shortcuts<App> for MovingBandPane {
             KeyCode::Down => MovingBandAction::TravelDown,
             ['>', '.'] => MovingBandAction::Faster,
             ['<', ','] => MovingBandAction::Slower,
-            'V' => MovingBandAction::VaryTail,
+            'v' => MovingBandAction::VaryTail,
+            '[' => MovingBandAction::TailSlower,
+            ']' => MovingBandAction::TailFaster,
         }
     }
 
@@ -172,7 +177,9 @@ mod tests {
     fn the_steering_keys_resolve_to_their_actions() {
         let scope = MovingBandPane::defaults().into_scope_map();
         let cases = [
-            ('V', MovingBandAction::VaryTail),
+            ('v', MovingBandAction::VaryTail),
+            ('[', MovingBandAction::TailSlower),
+            (']', MovingBandAction::TailFaster),
             ('+', MovingBandAction::Wider),
             ('=', MovingBandAction::Wider),
             ('-', MovingBandAction::Thinner),

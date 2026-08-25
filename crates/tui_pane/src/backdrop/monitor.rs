@@ -24,6 +24,8 @@
 //! puts that wait on a thread with nothing to draw, and the render loop
 //! reuses the last answer for the frame or two it takes to arrive.
 
+use std::io;
+use std::io::Write;
 use std::thread;
 use std::time::Instant;
 
@@ -34,11 +36,15 @@ use ratatui::layout::Rect;
 use super::Backdrop;
 use super::constants::CAPTURE_REFRESH;
 use super::constants::CAPTURE_RETRY;
+use super::constants::IDENTIFY_ATTEMPTS;
+use super::constants::IDENTIFY_MARKER;
 use super::desktop::Desktop;
 use super::desktop::Frame;
 use super::desktop::Metrics;
 use super::desktop::Placement;
 use super::desktop::window_frame;
+use super::desktop::window_titled;
+use super::desktop::window_titles;
 
 /// A backdrop kept up to date on two worker threads.
 ///
@@ -50,8 +56,8 @@ use super::desktop::window_frame;
 /// not be able to hold up the app's exit.
 #[derive(Debug)]
 pub struct BackdropMonitor {
-    /// Cell sizes the capture worker should capture for next.
-    requests:     Sender<Metrics>,
+    /// What the capture worker should capture for next.
+    requests:     Sender<Request>,
     /// Displays the capture worker has finished capturing and reducing.
     captures:     Receiver<Desktop>,
     /// Windows the position worker should look up next.
@@ -73,6 +79,23 @@ pub struct BackdropMonitor {
     /// Where the window stood on the previous frame, which is how a
     /// window being dragged is told from one standing still.
     placement:    Option<Placement>,
+    /// The window this app was found to be drawn in, once
+    /// [`identify`](Self::identify) has settled it.
+    pinned:       Option<u32>,
+    /// Whether settling on a window has been tried, so that a terminal
+    /// which will not wear a title is asked once rather than once a
+    /// frame.
+    attempted:    bool,
+}
+
+/// One capture, as the worker is asked for it.
+#[derive(Clone, Copy, Debug)]
+struct Request {
+    /// The cell sizes to reduce the capture to.
+    metrics: Metrics,
+    /// The window to capture the display behind, where one has been
+    /// settled on.
+    window:  Option<u32>,
 }
 
 impl Default for BackdropMonitor {
@@ -114,7 +137,64 @@ impl BackdropMonitor {
             current: None,
             requested_at: None,
             placement: None,
+            pinned: None,
+            attempted: false,
         }
+    }
+
+    /// Settle which of the emulator's windows this app is drawn in, by
+    /// having the terminal wear a title only this process knows for as
+    /// long as it takes to ask the window server who is wearing it.
+    ///
+    /// Answers whether a window has been settled on. Tried once and
+    /// once only: a terminal that will not wear a title will not wear
+    /// one on the second ask either, and the size heuristic behind
+    /// this is what carries the run then.
+    ///
+    /// Without this the window is picked by size, and two windows of
+    /// the same size cannot be told apart that way: what arrives then
+    /// is the desktop behind a sibling window rather than behind this
+    /// one.
+    ///
+    /// # Cost
+    ///
+    /// Several round trips to the window server, a few hundred
+    /// milliseconds in all. It belongs where the backdrop is first
+    /// wanted rather than in a frame that has to be drawn on time.
+    ///
+    /// # Invariants
+    ///
+    /// `out` must be the terminal this app is drawn on, and nothing
+    /// else may write to it while this runs: the title is set with an
+    /// escape sequence, and a sequence cut in half sets no title and
+    /// leaves its tail on the screen.
+    pub fn identify(&mut self, out: &mut impl Write) -> bool {
+        if self.attempted {
+            return self.pinned.is_some();
+        }
+        self.attempted = true;
+        let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
+        // What every window is titled now, so that the one found to be
+        // wearing the marker can be given its own title back.
+        let titles = window_titles();
+        if set_title(out, &marker).is_err() {
+            return false;
+        }
+        // The title has to reach the emulator, be drawn, and reach the
+        // window server before it can be asked about, and none of that
+        // is instant. Nothing paces the attempts because each one is
+        // itself a long round trip.
+        let found = (0..IDENTIFY_ATTEMPTS).find_map(|_| window_titled(&marker));
+        let restored = found
+            .and_then(|window| titles.iter().find(|(id, _)| *id == window))
+            .and_then(|(_, title)| title.as_deref());
+        // An empty title is what a window that had none goes back to,
+        // and it is also all there is to offer for a window the window
+        // server would not describe -- the emulator settles what to
+        // show in its place.
+        let _ = set_title(out, restored.unwrap_or(""));
+        self.pinned = found;
+        found.is_some()
     }
 
     /// Take delivery of anything either worker has finished, read `area`
@@ -169,9 +249,13 @@ impl BackdropMonitor {
         // not it succeeds.
         let due = !moving && (waited >= CAPTURE_REFRESH || (!usable && waited >= CAPTURE_RETRY));
         if let (true, Some(metrics)) = (due, metrics) {
+            let request = Request {
+                metrics,
+                window: self.pinned,
+            };
             // A full channel means the worker is still on the last
             // request; dropping this one is the point of the bound.
-            if self.requests.try_send(metrics).is_ok() {
+            if self.requests.try_send(request).is_ok() {
                 self.requested_at = Some(Instant::now());
             }
         }
@@ -190,15 +274,30 @@ impl BackdropMonitor {
 /// Worker loop: capture the display for each cell size asked for and
 /// send the result back. Exits when the monitor drops and the request
 /// channel disconnects.
-fn capture_loop(requests: &Receiver<Metrics>, captures: &Sender<Desktop>) {
-    while let Ok(metrics) = requests.recv() {
-        let Some(desktop) = Desktop::capture(metrics) else {
+fn capture_loop(requests: &Receiver<Request>, captures: &Sender<Desktop>) {
+    while let Ok(request) = requests.recv() {
+        let Some(desktop) = Desktop::capture(request.metrics, request.window) else {
             continue;
         };
         if captures.send(desktop).is_err() {
             break;
         }
     }
+}
+
+/// Ask the terminal to wear `title`, and see the request out to it.
+///
+/// Control characters are dropped rather than sent on: a title read
+/// back from the window server is text of unknown provenance, and one
+/// carrying an escape of its own would be a command rather than a
+/// title.
+fn set_title(out: &mut impl Write, title: &str) -> io::Result<()> {
+    let title: String = title
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    write!(out, "\u{1b}]2;{title}\u{7}")?;
+    out.flush()
 }
 
 /// Worker loop: look up each window asked about and send back where it

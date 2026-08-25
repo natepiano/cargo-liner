@@ -14,8 +14,10 @@
 
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
+use std::io;
 use std::io::Write as _;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -96,15 +98,80 @@ pub(crate) fn timed<T>(phase: Phase, body: impl FnOnce() -> T) -> T {
     answer
 }
 
+/// A writer that counts what passes through it on its way to the
+/// terminal.
+///
+/// What the render loop costs and what the emulator is asked to do are
+/// two different numbers, and only the first is visible from this
+/// process's own timings. A loop that finishes a frame in half a
+/// millisecond can still be handing the emulator more escape sequences
+/// per second than it can parse and draw, and what is then on the
+/// display is behind the app that fed it -- which no phase timed in
+/// here can show.
+#[derive(Debug)]
+pub(crate) struct Counted<W> {
+    /// Where the bytes actually go.
+    inner: W,
+}
+
+impl<W> Counted<W> {
+    /// Wrap `inner` so everything written through it is counted.
+    pub(crate) const fn new(inner: W) -> Self { Self { inner } }
+}
+
+impl<W: io::Write> io::Write for Counted<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        if on() {
+            let count = u64::try_from(written).unwrap_or(0);
+            WRITTEN.fetch_add(count, Ordering::Relaxed);
+            WRITTEN_FRAME.fetch_add(count, Ordering::Relaxed);
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> { self.inner.flush() }
+}
+
 /// How many frames go into one summary line.
 const SUMMARY_FRAMES: u32 = 120;
 
 /// What has been seen since the last summary line.
 static COUNT: AtomicU64 = AtomicU64::new(0);
+/// Nanoseconds the frames since the last summary line covered.
+static ELAPSED: AtomicU64 = AtomicU64::new(0);
+/// Bytes handed to the terminal since the last summary line.
+static WRITTEN: AtomicU64 = AtomicU64::new(0);
+/// Bytes handed to the terminal since the last frame line.
+static WRITTEN_FRAME: AtomicU64 = AtomicU64::new(0);
 /// The longest gap since the last summary line, in nanoseconds.
 static WORST: AtomicU64 = AtomicU64::new(0);
 /// Gaps over the threshold since the last summary line.
 static SLOW: AtomicU64 = AtomicU64::new(0);
+
+/// How many frames are written out in full once tracing has started.
+///
+/// Four seconds at the poll interval, which is long enough to show a
+/// cadence rather than a moment of one.
+const TRACE_FRAMES: u64 = 500;
+
+/// Whether every frame is being written out in full.
+static TRACING: AtomicBool = AtomicBool::new(false);
+/// How many frames have been written out since tracing started.
+static TRACED: AtomicU64 = AtomicU64::new(0);
+
+/// Start writing every frame out in full for the next
+/// [`TRACE_FRAMES`] frames, rather than only the slow ones.
+///
+/// A summary hides the two things a stuttering animation is most
+/// likely to be made of: frames that arrive early, which no worst-case
+/// gap can show, and frames that drew nothing at all.
+pub(crate) fn trace() {
+    if !on() {
+        return;
+    }
+    TRACING.store(true, Ordering::Relaxed);
+}
 
 /// Whether the log has been opened yet, so the first write truncates
 /// what a previous run left and the rest append.
@@ -155,24 +222,64 @@ pub(crate) fn frame(gap: Duration, threshold: Duration) {
         .collect();
     let nanos = u64::try_from(gap.as_nanos()).unwrap_or(u64::MAX);
     WORST.fetch_max(nanos, Ordering::Relaxed);
+    ELAPSED.fetch_add(nanos, Ordering::Relaxed);
     if gap >= threshold {
         SLOW.fetch_add(1, Ordering::Relaxed);
         append(&describe("gap", gap, &phases));
+    } else if TRACING.load(Ordering::Relaxed) {
+        if TRACED.fetch_add(1, Ordering::Relaxed) < TRACE_FRAMES {
+            append(&describe("frame", gap, &phases));
+        } else {
+            TRACING.store(false, Ordering::Relaxed);
+        }
     }
     if COUNT.fetch_add(1, Ordering::Relaxed) + 1 >= u64::from(SUMMARY_FRAMES) {
         COUNT.store(0, Ordering::Relaxed);
         let worst = Duration::from_nanos(WORST.swap(0, Ordering::Relaxed));
         let slow = SLOW.swap(0, Ordering::Relaxed);
+        let over = Duration::from_nanos(ELAPSED.swap(0, Ordering::Relaxed));
+        let wrote = WRITTEN.swap(0, Ordering::Relaxed);
         append(&format!(
-            "-- {SUMMARY_FRAMES} frames: worst gap {:.1}ms, {slow} over threshold",
+            "-- {SUMMARY_FRAMES} frames in {:.2}s: worst gap {:.1}ms, {slow} over \
+             threshold, wrote {wrote} bytes ({:.0} KiB/s)",
+            over.as_secs_f64(),
             worst.as_secs_f64() * 1000.0,
+            throughput(wrote, over) / 1024.0,
         ));
     }
 }
 
+/// Write `message` to the log as a line of its own, where the probe is
+/// switched on. For the things that happen once rather than per frame.
+pub(crate) fn note(message: &str) {
+    if !on() {
+        return;
+    }
+    append(message);
+}
+
+/// `bytes` spread over `over`, in bytes per second, or zero where no
+/// time has passed for them to be spread over.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a byte count over one summary's worth of frames is far \
+              inside what an f64 carries exactly"
+)]
+fn throughput(bytes: u64, over: Duration) -> f64 {
+    let seconds = over.as_secs_f64();
+    if seconds <= 0.0 {
+        return 0.0;
+    }
+    bytes as f64 / seconds
+}
+
 /// One frame as a line of the log.
 fn describe(label: &str, gap: Duration, phases: &[(Phase, u64)]) -> String {
-    let mut line = format!("{label} {:>7.1}ms", gap.as_secs_f64() * 1000.0);
+    let mut line = format!(
+        "{label} {:>7.1}ms  wrote={:<6}",
+        gap.as_secs_f64() * 1000.0,
+        WRITTEN_FRAME.swap(0, Ordering::Relaxed),
+    );
     let mut accounted = 0.0;
     for &(phase, nanos) in phases {
         #[expect(

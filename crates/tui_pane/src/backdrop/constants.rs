@@ -10,24 +10,42 @@ pub(super) const CHURN_CELLS_PER_FRAME: usize = 3;
 /// How far the strip travels each second, in cells, before anything
 /// has sped it up or slowed it down.
 pub(super) const DEFAULT_BAND_SPEED: u32 = 30;
-/// How deep the lit strip stands, in cells along the axis it travels,
-/// before anything has widened or thinned it. Cells this far behind
-/// the leading edge are the last ones drawn.
-pub(super) const DEFAULT_BAND_WIDTH: u32 = 20;
+/// How fast the trailing edge frays, on the [`u8`] scale one offset's
+/// depth is held in, per second, before anything has sped it up or
+/// slowed it down.
+///
+/// The whole range takes a second to cross here, which is fast enough
+/// that the edge is visibly working at whatever the eye happens to be
+/// resting on rather than only where it is not.
+pub(super) const DEFAULT_TAIL_SPEED: u32 = 260;
 /// Fastest the strip travels. Past this it crosses the grid inside a
 /// couple of frames, which reads as a flicker rather than as travel.
 pub(super) const MAX_BAND_SPEED: u32 = 400;
-/// Widest the strip stands. The strip wraps, so past the number of
-/// lines the grid has there is no gap left between the tail and the
-/// leading edge and the whole grid is lit at once -- which is a
-/// reasonable place to be able to get to, and not a band.
+/// How deep the strip stands before the grid it crosses is known,
+/// which is also where it starts.
+///
+/// Once the grid is known it is the ceiling: the strip wraps, so at
+/// exactly the number of lines the grid has there is no gap left
+/// between the tail and the leading edge and the whole grid is lit at
+/// once, and past that there is nothing further to show. Starting here
+/// stands the strip across the whole window, since the first draw
+/// clamps it to whatever that turns out to be.
 pub(super) const MAX_BAND_WIDTH: u32 = 200;
+/// Fastest the trailing edge frays. Past this an offset crosses the
+/// whole range inside a few frames, and a trailing edge that arrives
+/// somewhere new every frame is the boiling the travel was there to
+/// avoid.
+pub(super) const MAX_TAIL_SPEED: u32 = 2000;
 /// Slowest the strip travels. Zero is not offered: a strip that never
 /// moves is one the reader cannot tell from a frozen display.
 pub(super) const MIN_BAND_SPEED: u32 = 1;
 /// Thinnest the strip stands: a single line at full strength with no
 /// tail behind it.
 pub(super) const MIN_BAND_WIDTH: u32 = 1;
+/// Slowest the trailing edge frays: the whole range over half a minute,
+/// which is as near to a flat trailing edge as the key goes without
+/// turning the fraying off.
+pub(super) const MIN_TAIL_SPEED: u32 = 8;
 /// How finely the strip's position is tracked between one cell and the
 /// next.
 ///
@@ -44,18 +62,24 @@ pub(super) const SUBCELLS_PER_CELL: u32 = 256;
 /// it into pieces the eye reads as separate.
 pub(super) const VARIABLE_TAIL_FLOOR_PERCENT: u32 = 30;
 /// How long one offset across the strip stands at the depth it was last
-/// sent to before a new one is drawn for it.
+/// sent to, as a percentage of what crossing the whole range costs at
+/// the speed it is travelling.
 ///
-/// Long enough to be read as a depth the strip is holding rather than
-/// as a moment it passed through on the way somewhere else.
-pub(super) const VARIABLE_TAIL_HOLD: Duration = Duration::from_secs(2);
-/// How fast an offset travels toward the depth it was last sent to, on
-/// the [`u8`] scale that depth is held in, per second.
+/// Taken from the speed rather than fixed so that one key governs the
+/// whole of how fast the trailing edge changes. A stand of its own
+/// length would otherwise outlast the travel at the top of the range
+/// and leave the fastest setting looking no livelier than the middle
+/// of it.
+pub(super) const VARIABLE_TAIL_HOLD_PERCENT: u32 = 40;
+/// What a character cell's pixel measurements are scaled by before
+/// they are divided into each other.
 ///
-/// The whole range takes a little under three seconds to cross, so a
-/// varying trailing edge is something the eye follows rather than
-/// something that has already changed by the time it is looked at.
-pub(super) const VARIABLE_TAIL_TRAVEL_PER_SECOND: u32 = 90;
+/// A cell is a whole number of pixels across only by accident -- eight
+/// and a half is as ordinary as eight -- and the strip's depth is
+/// carried between the two axes by the ratio of the two. Rounding each
+/// side to whole pixels first would put a percent or so of error into
+/// every turn.
+pub(super) const PIXEL_PRECISION: u32 = 256;
 /// The whole of something, as a percentage.
 pub(super) const WHOLE_PERCENT: u32 = 100;
 
@@ -76,6 +100,16 @@ pub(super) const CAPTURE_REFRESH: Duration = Duration::from_millis(1000);
 /// a window parked off every display is not asking the window server
 /// for a full capture every frame.
 pub(super) const CAPTURE_RETRY: Duration = Duration::from_millis(150);
+/// How many times the window server is asked which window is wearing
+/// the marker title before the attempt is given up on.
+///
+/// Nothing paces these: each one is a full round trip and the title
+/// has only to travel to the emulator and back out to the window
+/// server, so asking again is already asking later.
+pub(super) const IDENTIFY_ATTEMPTS: u32 = 5;
+/// What the marker title this app briefly wears begins with, before
+/// the process id that makes it this process's alone.
+pub(super) const IDENTIFY_MARKER: &str = "tui-pane-window-";
 /// How many pixels are captured across and down each character cell,
 /// which are then averaged into the cell's one colour.
 ///
@@ -97,6 +131,13 @@ pub(super) const GLYPHS: &[char] = &[
 ];
 
 // time
+/// Microseconds in one second.
+///
+/// The strip's travel is worked out at this resolution rather than in
+/// milliseconds: a frame is a little under twenty milliseconds and
+/// rounding it down to nineteen loses a twentieth of the distance, and
+/// loses a different fraction of it whenever a frame arrives early.
+pub(super) const MICROS_PER_SECOND: u64 = 1_000_000;
 /// Milliseconds in one second.
 pub(super) const MILLIS_PER_SECOND: u32 = 1000;
 

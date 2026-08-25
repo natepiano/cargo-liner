@@ -38,6 +38,8 @@
 
 mod moving_band;
 
+use std::io;
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -55,6 +57,7 @@ pub(crate) use self::moving_band::MovingBandPane;
 use crate::app::Updates;
 use crate::constants::ATTRACT_FADE_STEP;
 use crate::constants::BAND_SPEED_STEP;
+use crate::constants::BAND_TAIL_SPEED_STEP;
 use crate::constants::BAND_WIDTH_STEP;
 use crate::probe;
 
@@ -82,6 +85,27 @@ pub(crate) enum Work {
     Idle,
     /// Something is running, so the attract screen gives it back.
     Running,
+}
+
+/// What the reader has said about the strip, which outranks what the
+/// roster says about it.
+///
+/// Two answers would not be enough. The strip comes on by itself over
+/// an idle grid, so "not asked for" and "asked to go" are the same
+/// state to the roster and opposite ones to the reader -- and reading
+/// them as one is what left `a` unable to put the strip away at
+/// exactly the moment it is being watched.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Asked {
+    /// Nothing either way, which leaves it to the roster.
+    #[default]
+    Nothing,
+    /// For the strip, which brings it in over a grid with work on it as
+    /// readily as over an empty one.
+    For,
+    /// Against it, which sends it away over an idle grid, where the
+    /// roster would otherwise be keeping it.
+    Against,
 }
 
 /// Which animation the attract screen is drawing.
@@ -117,9 +141,9 @@ pub(crate) struct Attract {
     /// When the strip was last moved on, so its speed is a speed rather
     /// than a step per frame.
     advanced_at: Instant,
-    /// Whether the reader has asked for the strip outright, which shows
-    /// it over a grid with work on it as readily as over an empty one.
-    asked_for:   bool,
+    /// What the reader has said about the strip, which the roster does
+    /// not get to overrule either way.
+    asked:       Asked,
     /// Whether the grid is being left out of the frame altogether. Not
     /// the same as [`Self::asked_for`]: it outlasts it, by the fade the
     /// strip takes to leave.
@@ -140,7 +164,7 @@ impl Attract {
             held_key:    HeldKey::new(),
             faded:       u8::MAX,
             advanced_at: Instant::now(),
-            asked_for:   false,
+            asked:       Asked::Nothing,
             covering:    false,
             held:        false,
         }
@@ -153,8 +177,11 @@ impl Attract {
     /// would show one frame of the grid with the strip over it -- the
     /// very look this is here to avoid.
     pub(crate) const fn toggle(&mut self) {
-        self.asked_for = !self.asked_for;
-        if self.asked_for {
+        self.asked = match self.asked {
+            Asked::For => Asked::Against,
+            Asked::Nothing | Asked::Against => Asked::For,
+        };
+        if matches!(self.asked, Asked::For) {
             self.covering = true;
         }
     }
@@ -163,7 +190,7 @@ impl Attract {
     /// is what the status line says: a grid taken off the screen by the
     /// attract screen otherwise looks exactly like a grid with nothing
     /// on it.
-    pub(crate) const fn asked_for(&self) -> bool { self.asked_for }
+    pub(crate) const fn asked_for(&self) -> bool { matches!(self.asked, Asked::For) }
 
     /// Which animation is taking the reader's keys, or [`None`] while
     /// the screen is not being shown on purpose.
@@ -174,7 +201,7 @@ impl Attract {
     /// no animation at all -- a developer who has stopped typing has not
     /// stopped meaning "settings".
     pub(crate) const fn keyed_mode(&self) -> Option<AttractMode> {
-        if self.asked_for {
+        if matches!(self.asked, Asked::For) {
             Some(self.mode)
         } else {
             None
@@ -200,6 +227,8 @@ impl Attract {
             MovingBandAction::TravelUp => self.band.set_direction(BandDirection::Up),
             MovingBandAction::TravelDown => self.band.set_direction(BandDirection::Down),
             MovingBandAction::VaryTail => self.band.toggle_variable_tail(),
+            MovingBandAction::TailFaster => self.band.tail_faster(step * BAND_TAIL_SPEED_STEP),
+            MovingBandAction::TailSlower => self.band.tail_slower(step * BAND_TAIL_SPEED_STEP),
         }
     }
 
@@ -235,6 +264,27 @@ impl Attract {
     /// which is what hands the idle app its quiet back.
     pub(crate) const fn showing(&self) -> bool { self.faded != u8::MAX }
 
+    /// Settle which of the emulator's windows this app is drawn in.
+    ///
+    /// Tried once, on the first poll the strip is showing on: a run
+    /// that never shows it never pays the round trips, and a terminal
+    /// that will not wear a title is not asked twice.
+    pub(crate) fn identify(&mut self) {
+        /// Whether the outcome has been written down, so it is noted
+        /// once rather than on every frame the strip is up.
+        static NOTED: OnceLock<()> = OnceLock::new();
+
+        if !self.showing() {
+            return;
+        }
+        // Cheap after the first: the monitor asks the window server
+        // once and answers from what it settled on after that.
+        let settled = self.monitor.identify(&mut io::stdout());
+        if NOTED.set(()).is_ok() {
+            probe::note(&format!("identify: settled={settled}"));
+        }
+    }
+
     /// Carry the strip one frame further in or out of view, and say
     /// what the grid should do underneath it.
     ///
@@ -269,17 +319,51 @@ impl Attract {
         if updates == Updates::Frozen {
             return self.grid();
         }
+        // Something actually running clears a dismissal. What was put
+        // away was the strip standing over an idle grid, and the grid
+        // has not been idle since -- so the screen re-arms and comes
+        // back by itself once this finishes, as it would have before.
+        if work == Work::Running {
+            self.asked = match self.asked {
+                Asked::Against => Asked::Nothing,
+                asked => asked,
+            };
+        }
         // Asked for, the roster does not get a say: the strip comes in
         // over whatever is on the grid and stays until it is asked to
-        // go, so it can be watched rather than only caught.
-        let work = if self.asked_for { Work::Idle } else { work };
+        // go, so it can be watched rather than only caught. Asked
+        // against, the roster does not get a say either -- an idle grid
+        // is exactly when the strip is being watched, and handing the
+        // answer back to a roster that reads idle as "come in" is what
+        // left the key unable to put it away at all.
+        let work = match self.asked {
+            Asked::For => Work::Idle,
+            Asked::Against => Work::Running,
+            Asked::Nothing => work,
+        };
         self.faded = match work {
             Work::Idle => self.faded.saturating_sub(ATTRACT_FADE_STEP),
             Work::Running => self.faded.saturating_add(ATTRACT_FADE_STEP),
         };
+        // Once the strip is the whole of what is on the screen, rather
+        // than on the first frame it shows on. The frames either side
+        // of that are the fade, which draws the grid underneath as
+        // well -- so a trace started there measures the arrival and
+        // runs out before reaching what the animation costs while it
+        // is simply running, which is what is being looked at.
+        if self.faded == 0 {
+            /// Whether the trace has been started, so it is started on
+            /// the first frame the strip stands alone and not again.
+            static SETTLED: OnceLock<()> = OnceLock::new();
+
+            if SETTLED.set(()).is_ok() {
+                probe::trace();
+            }
+        }
         // The grid comes back only once the strip has gone the whole
         // way, which is also where there is nothing left to draw.
-        self.covering = self.asked_for || (self.covering && self.faded != u8::MAX);
+        self.covering =
+            matches!(self.asked, Asked::For) || (self.covering && self.faded != u8::MAX);
         if self.faded == u8::MAX {
             return self.grid();
         }
@@ -318,5 +402,77 @@ pub(crate) fn ground() -> Color {
     match pane_background(false) {
         Color::Reset => Color::Black,
         background => background,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::layout::Rect;
+
+    use super::*;
+
+    /// The area the strip is advanced against. Any non-empty rectangle
+    /// will do -- nothing here reads what is drawn, only how far the
+    /// fade has walked.
+    const AREA: Rect = Rect::new(0, 0, 80, 24);
+    /// Frames to run before giving up on a fade that should have
+    /// finished. The whole range at a step per frame, and then some.
+    const FRAMES: u32 = 1000;
+
+    /// Carry `attract` forward until the strip is the whole of what is
+    /// on the screen, and answer how it went.
+    fn settle(attract: &mut Attract, work: Work) -> u8 {
+        for _ in 0..FRAMES {
+            attract.advance(AREA, work, Updates::Live);
+        }
+        attract.faded
+    }
+
+    /// Asking for the strip over an idle grid and then asking again has
+    /// to put it away. The roster reads an idle grid as a reason to
+    /// show the strip, and an idle grid is exactly what is underneath
+    /// it while it is being watched -- so a dismissal that handed the
+    /// answer back to the roster was overruled on the same frame, and
+    /// the key did nothing at all.
+    #[test]
+    fn asking_again_puts_the_strip_away_over_a_grid_with_nothing_on_it() {
+        let mut attract = Attract::new();
+
+        attract.toggle();
+        assert_eq!(settle(&mut attract, Work::Idle), 0, "the strip comes in");
+
+        attract.toggle();
+
+        assert_eq!(
+            settle(&mut attract, Work::Idle),
+            u8::MAX,
+            "and asking again sends it away, idle grid underneath or not"
+        );
+        assert_eq!(
+            attract.grid(),
+            Grid::Full,
+            "which is what gives the panes back"
+        );
+    }
+
+    /// A dismissal is of the strip standing over an idle grid, so work
+    /// arriving and finishing re-arms it: the grid has not been idle in
+    /// between, and the screen that comes on by itself is not something
+    /// the reader turned off for good.
+    #[test]
+    fn work_arriving_re_arms_a_strip_that_was_put_away() {
+        let mut attract = Attract::new();
+        attract.toggle();
+        settle(&mut attract, Work::Idle);
+        attract.toggle();
+        settle(&mut attract, Work::Idle);
+
+        attract.advance(AREA, Work::Running, Updates::Live);
+
+        assert_eq!(
+            settle(&mut attract, Work::Idle),
+            0,
+            "the strip comes back by itself once the work is done"
+        );
     }
 }
