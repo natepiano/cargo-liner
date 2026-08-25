@@ -29,6 +29,7 @@ use tui_pane::Pane;
 use crate::app::App;
 use crate::app::AppPaneId;
 use crate::attract::MovingBandPane;
+use crate::attract::MovingTextPane;
 use crate::globals::AppGlobalAction;
 use crate::navigation::AppNavigation;
 
@@ -76,6 +77,7 @@ pub(crate) fn build_keymap(
         .register_overlay()?
         .register_pane::<MainPane>()
         .register(MovingBandPane)
+        .register(MovingTextPane)
         .build_into(framework)
 }
 
@@ -106,11 +108,13 @@ mod tests {
             keymap.navigation().is_some(),
             "the settings overlay moves on the navigation scope"
         );
-        assert!(
-            keymap
-                .scope_toml_name_for(AppPaneId::Attract(AttractMode::MovingBand))
-                .is_some(),
-            "the band's keys must be rebindable under a table of their own"
-        );
+        for mode in [AttractMode::MovingBand, AttractMode::MovingText] {
+            assert!(
+                keymap
+                    .scope_toml_name_for(AppPaneId::Attract(mode))
+                    .is_some(),
+                "{mode:?} must be rebindable under a table of its own"
+            );
+        }
     }
 }

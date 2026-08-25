@@ -38,8 +38,6 @@
 //! of every cell's colour.
 
 use std::time::Duration;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 use crossterm::terminal;
 use ratatui::buffer::Buffer;
@@ -50,7 +48,6 @@ use super::Backdrop;
 use super::constants::CHURN_CELLS_PER_FRAME;
 use super::constants::DEFAULT_BAND_SPEED;
 use super::constants::DEFAULT_TAIL_SPEED;
-use super::constants::GLYPHS;
 use super::constants::MAX_BAND_SPEED;
 use super::constants::MAX_BAND_WIDTH;
 use super::constants::MAX_BAND_WIDTH_PERCENT;
@@ -66,10 +63,8 @@ use super::constants::VARIABLE_HEAD_CEILING_PERCENT;
 use super::constants::VARIABLE_TAIL_FLOOR_PERCENT;
 use super::constants::VARIABLE_TAIL_HOLD_PERCENT;
 use super::constants::WHOLE_PERCENT;
-use super::constants::XORSHIFT_FALLBACK_SEED;
-use super::constants::XORSHIFT_FIRST;
-use super::constants::XORSHIFT_SECOND;
-use super::constants::XORSHIFT_THIRD;
+use super::random::Xorshift;
+use super::random::random_glyph;
 use crate::theme::blend_color;
 
 /// Which way a [`TravelingBand`] crosses the grid.
@@ -165,49 +160,6 @@ const fn ring_overlap(start: u32, length: u32, inside: u32, span: u32) -> u32 {
     let wrapped = length - first;
     let foot = if wrapped < inside { wrapped } else { inside };
     head + foot
-}
-
-/// Xorshift64, seeded from the clock.
-///
-/// The character churn needs a cheap varying number and nothing more,
-/// so this stands in for a dependency on a real generator.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Xorshift(u64);
-
-impl Default for Xorshift {
-    fn default() -> Self {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since_epoch| {
-                u64::try_from(since_epoch.as_nanos()).unwrap_or(0)
-            });
-        Self(if seed == 0 {
-            XORSHIFT_FALLBACK_SEED
-        } else {
-            seed
-        })
-    }
-}
-
-impl Xorshift {
-    /// The next number in the sequence.
-    const fn roll(&mut self) -> u64 {
-        self.0 ^= self.0 << XORSHIFT_FIRST;
-        self.0 ^= self.0 >> XORSHIFT_SECOND;
-        self.0 ^= self.0 << XORSHIFT_THIRD;
-        self.0
-    }
-
-    /// A number in `0..len`, or zero where `len` is zero.
-    fn index(&mut self, len: usize) -> usize {
-        let Ok(len) = u64::try_from(len) else {
-            return 0;
-        };
-        if len == 0 {
-            return 0;
-        }
-        usize::try_from(self.roll() % len).unwrap_or(0)
-    }
 }
 
 /// How far back one of the strip's edges stands at one offset across
@@ -918,12 +870,6 @@ impl TravelingBand {
     }
 }
 
-/// One character drawn at random from [`GLYPHS`].
-fn random_glyph(xorshift: &mut Xorshift) -> char {
-    let index = xorshift.index(GLYPHS.len());
-    GLYPHS.get(index).copied().unwrap_or(' ')
-}
-
 /// Carry one edge's offsets a frame on. One draw per offset is rolled
 /// up front, whether or not the offset has run out of stand to use it,
 /// so the strip's one generator stays where the rest of its randomness
@@ -936,17 +882,11 @@ fn advance_runs(
     hold: Duration,
 ) {
     for index in 0..runs.len() {
-        let drawn = random_depth(xorshift);
+        let drawn = xorshift.byte();
         if let Some(run) = runs.get_mut(index) {
             run.advance(elapsed, travel, hold, drawn);
         }
     }
-}
-
-/// One depth drawn at random, on the scale an [`EdgeRun`] holds. Where
-/// an offset across one of the strip's edges is sent next.
-fn random_depth(xorshift: &mut Xorshift) -> u8 {
-    u8::try_from(xorshift.index(usize::from(u8::MAX) + 1)).unwrap_or(u8::MAX)
 }
 
 #[cfg(test)]
@@ -956,6 +896,7 @@ fn random_depth(xorshift: &mut Xorshift) -> u8 {
 )]
 mod tests {
     use super::*;
+    use crate::backdrop::constants::GLYPHS;
 
     /// An area big enough that the strip covers only part of it, so a
     /// covered and an uncovered line can both be asserted on.

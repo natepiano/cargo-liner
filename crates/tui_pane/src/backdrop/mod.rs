@@ -29,6 +29,8 @@ mod band;
 mod constants;
 mod desktop;
 mod monitor;
+mod random;
+mod text;
 
 pub use band::BandDirection;
 pub use band::BandFraying;
@@ -38,6 +40,8 @@ use desktop::Placement;
 pub use monitor::BackdropMonitor;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+pub use text::DriftingText;
+pub use text::TextDrift;
 
 /// One captured colour per character cell over some rectangle of the
 /// terminal grid.

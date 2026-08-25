@@ -6,15 +6,22 @@ use ratatui::style::Modifier;
 
 // attract screen
 /// How far the attract screen's strip is carried toward or away from
-/// full strength each frame. At the frame poll's cadence this crosses
-/// the whole fade in a little under a second, which is long enough to
-/// read as the screen changing hands rather than as a cut.
-pub(crate) const ATTRACT_FADE_STEP: u8 = 6;
+/// full strength each frame. Divides the range exactly, so the fade
+/// lands on either end rather than saturating out its last frame, and
+/// at the frame poll's cadence it crosses the whole thing in a little
+/// over half a second -- long enough to read as the screen changing
+/// hands rather than as a cut.
+pub(crate) const ATTRACT_FADE_STEP: u8 = 3;
 /// TOML table the moving band's keys are read from and written back to.
 /// Stable -- `keymap.toml` is hand-edited.
 pub(crate) const ATTRACT_MOVING_BAND_SCOPE: &str = "attract_moving_band";
 /// Section heading the keymap overlay gives the moving band's keys.
 pub(crate) const ATTRACT_MOVING_BAND_SECTION: &str = "Attract: Moving Band";
+/// TOML table the drifting text's keys are read from and written back
+/// to. Stable -- `keymap.toml` is hand-edited.
+pub(crate) const ATTRACT_MOVING_TEXT_SCOPE: &str = "attract_moving_text";
+/// Section heading the keymap overlay gives the drifting text's keys.
+pub(crate) const ATTRACT_MOVING_TEXT_SECTION: &str = "Attract: Moving Text";
 /// Cells per second one step of the faster / slower keys moves the
 /// band.
 pub(crate) const BAND_SPEED_STEP: u32 = 2;
@@ -23,6 +30,13 @@ pub(crate) const BAND_SPEED_STEP: u32 = 2;
 pub(crate) const BAND_TAIL_SPEED_STEP: u32 = 24;
 /// Cells one step of the wider / thinner keys moves the band.
 pub(crate) const BAND_WIDTH_STEP: u32 = 1;
+/// Cells per second one step of the faster / slower keys moves the
+/// drifting text. Smaller than the band's step because the range it
+/// walks is half as long.
+pub(crate) const TEXT_SPEED_STEP: u32 = 1;
+/// Percentage points one step of the spread keys moves how far the
+/// text's lines' own speeds stand from the field's.
+pub(crate) const TEXT_SPREAD_STEP: u32 = 5;
 /// Longest gap between two presses of the same steering key that still
 /// reads as the key being held down. A terminal's own auto-repeat runs
 /// at roughly twice this rate once it gets going, and a reader tapping

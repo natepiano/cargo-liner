@@ -16,8 +16,9 @@
 //! Which animation is drawn is an [`AttractMode`], and the mode is also
 //! the keymap scope the reader's keys resolve against while the screen
 //! has been asked for: `+` widens the moving band rather than opening a
-//! tile, and a second mode added later binds the same key to whatever
-//! it wants. See [`moving_band`].
+//! tile, and the other mode binds the same key to whatever it wants --
+//! or, as it happens, to nothing. `1` and `2` turn between them. See
+//! [`moving_band`] and [`moving_text`].
 //!
 //! It can also be asked for outright, with the key bound to
 //! [`AppGlobalAction::Attract`](crate::globals::AppGlobalAction). A
@@ -36,7 +37,9 @@
 //! going away, and content appearing under a strip still crossing it is
 //! the crowded look the screen exists to avoid.
 
+mod held_key;
 mod moving_band;
+mod moving_text;
 
 use std::io;
 use std::sync::OnceLock;
@@ -48,17 +51,22 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tui_pane::BackdropMonitor;
 use tui_pane::BandDirection;
+use tui_pane::DriftingText;
 use tui_pane::TravelingBand;
 use tui_pane::pane_background;
 
-use self::moving_band::HeldKey;
+use self::held_key::HeldKey;
 use self::moving_band::MovingBandAction;
 pub(crate) use self::moving_band::MovingBandPane;
+use self::moving_text::MovingTextAction;
+pub(crate) use self::moving_text::MovingTextPane;
 use crate::app::Updates;
 use crate::constants::ATTRACT_FADE_STEP;
 use crate::constants::BAND_SPEED_STEP;
 use crate::constants::BAND_TAIL_SPEED_STEP;
 use crate::constants::BAND_WIDTH_STEP;
+use crate::constants::TEXT_SPEED_STEP;
+use crate::constants::TEXT_SPREAD_STEP;
 use crate::probe;
 
 /// What [`crate::render`] should do with the tile grid this frame.
@@ -118,8 +126,11 @@ pub(crate) enum Asked {
 pub(crate) enum AttractMode {
     /// A lit strip of characters crossing the grid, drawn in the
     /// colours of the desktop behind the window.
-    #[default]
     MovingBand,
+    /// The whole window filled with characters instead, every line of
+    /// them drifting at a speed of its own, in those same colours.
+    #[default]
+    MovingText,
 }
 
 /// The attract screen's state between frames.
@@ -131,9 +142,16 @@ pub(crate) struct Attract {
     mode:        AttractMode,
     /// The strip of characters crossing the grid.
     band:        TravelingBand,
-    /// How far into a run of presses of one steering key the reader is,
-    /// which is what lets a held key move the band further per press.
-    held_key:    HeldKey,
+    /// The window of characters drifting line by line.
+    text:        DriftingText,
+    /// How far into a run of presses of one of the band's steering keys
+    /// the reader is, which is what lets a held key move it further per
+    /// press.
+    held_band:   HeldKey<MovingBandAction>,
+    /// The same for the text's own keys. One run each, so turning
+    /// between the animations does not hand the second whatever speed
+    /// the first was climbing at.
+    held_text:   HeldKey<MovingTextAction>,
     /// How far the strip is carried toward the ground it is drawn on,
     /// on the alpha scale [`tui_pane::blend_color`] reads. Starts at
     /// [`u8::MAX`] so the app opens with nothing over its grid.
@@ -161,7 +179,9 @@ impl Attract {
             monitor:     BackdropMonitor::new(),
             mode:        AttractMode::default(),
             band:        TravelingBand::new(),
-            held_key:    HeldKey::new(),
+            text:        DriftingText::new(),
+            held_band:   HeldKey::new(),
+            held_text:   HeldKey::new(),
             faded:       u8::MAX,
             advanced_at: Instant::now(),
             asked:       Asked::Nothing,
@@ -210,13 +230,13 @@ impl Attract {
 
     /// Steer the moving band.
     ///
-    /// The step comes from [`HeldKey`], so the same action does more per
-    /// press the longer its key is held. Direction is not stepped -- it
-    /// is one of four answers, and there is no such thing as being more
-    /// left -- and neither is the varying trailing edge, which is on or
-    /// off.
+    /// The step comes from the band's own [`HeldKey`], so the same
+    /// action does more per press the longer its key is held. Direction
+    /// is not stepped -- it is one of four answers, and there is no
+    /// such thing as being more left -- and neither is which of the
+    /// edges fray, which is a cycle rather than a range.
     fn moving_band(&mut self, action: MovingBandAction) {
-        let step = self.held_key.step(action, Instant::now());
+        let step = self.held_band.step(action, Instant::now());
         match action {
             MovingBandAction::Wider => self.band.widen(step * BAND_WIDTH_STEP),
             MovingBandAction::Thinner => self.band.narrow(step * BAND_WIDTH_STEP),
@@ -229,6 +249,35 @@ impl Attract {
             MovingBandAction::CycleFraying => self.band.cycle_fraying(),
             MovingBandAction::TailFaster => self.band.tail_faster(step * BAND_TAIL_SPEED_STEP),
             MovingBandAction::TailSlower => self.band.tail_slower(step * BAND_TAIL_SPEED_STEP),
+            MovingBandAction::ShowMovingBand => self.mode = AttractMode::MovingBand,
+            MovingBandAction::ShowMovingText => self.mode = AttractMode::MovingText,
+        }
+    }
+
+    /// Steer the drifting text.
+    ///
+    /// The step comes from the text's own [`HeldKey`], so the same
+    /// action does more per press the longer its key is held. Direction
+    /// is not stepped -- it is one of four answers -- and neither is
+    /// whether the lines drift as one, which is on or off.
+    ///
+    /// Turning to the other animation leaves this one exactly as it was
+    /// steered, so coming back finds it where it was left rather than
+    /// at its defaults.
+    fn moving_text(&mut self, action: MovingTextAction) {
+        let step = self.held_text.step(action, Instant::now());
+        match action {
+            MovingTextAction::TravelLeft => self.text.set_direction(BandDirection::Left),
+            MovingTextAction::TravelRight => self.text.set_direction(BandDirection::Right),
+            MovingTextAction::TravelUp => self.text.set_direction(BandDirection::Up),
+            MovingTextAction::TravelDown => self.text.set_direction(BandDirection::Down),
+            MovingTextAction::Faster => self.text.speed_up(step * TEXT_SPEED_STEP),
+            MovingTextAction::Slower => self.text.slow_down(step * TEXT_SPEED_STEP),
+            MovingTextAction::CycleDrift => self.text.cycle_drift(),
+            MovingTextAction::SpreadWider => self.text.spread_wider(step * TEXT_SPREAD_STEP),
+            MovingTextAction::SpreadNarrower => self.text.spread_narrower(step * TEXT_SPREAD_STEP),
+            MovingTextAction::ShowMovingBand => self.mode = AttractMode::MovingBand,
+            MovingTextAction::ShowMovingText => self.mode = AttractMode::MovingText,
         }
     }
 
@@ -369,8 +418,19 @@ impl Attract {
         }
 
         probe::timed(probe::Phase::Refresh, || self.monitor.refresh(area));
-        self.band.advance(area, elapsed);
-        self.band.fade(self.faded);
+        // Only the animation on screen is carried forward. The other
+        // holds wherever it was left, which is what makes turning
+        // between them a turn rather than a restart.
+        match self.mode {
+            AttractMode::MovingBand => {
+                self.band.advance(area, elapsed);
+                self.band.fade(self.faded);
+            },
+            AttractMode::MovingText => {
+                self.text.advance(area, elapsed);
+                self.text.fade(self.faded);
+            },
+        }
         self.grid()
     }
 
@@ -387,7 +447,10 @@ impl Attract {
         let Some(backdrop) = self.monitor.current() else {
             return;
         };
-        self.band.render(area, backdrop, ground(), buffer);
+        match self.mode {
+            AttractMode::MovingBand => self.band.render(area, backdrop, ground(), buffer),
+            AttractMode::MovingText => self.text.render(area, backdrop, ground(), buffer),
+        }
     }
 }
 

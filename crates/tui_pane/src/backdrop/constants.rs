@@ -105,6 +105,41 @@ pub(super) const PIXEL_PRECISION: u32 = 256;
 /// The whole of something, as a percentage.
 pub(super) const WHOLE_PERCENT: u32 = 100;
 
+// attract text
+/// How far a line of the drifting text travels each second, in cells,
+/// before anything has sped it up or slowed it down.
+///
+/// Well under [`DEFAULT_BAND_SPEED`]: the band is one strip and the eye
+/// tracks it, while this fills the window, and a whole window of
+/// characters moving at the strip's speed is a texture nothing can be
+/// read out of.
+pub(super) const DEFAULT_TEXT_SPEED: u32 = 12;
+/// How far the lines' own speeds stand from the field's before anything
+/// has changed it, as a percentage of that speed either way, and the
+/// floor the spread is opened back to when the lines are sent apart.
+///
+/// Wide on purpose. This is the setting the reader is shown the first
+/// time they ask for lines at their own speeds, and a field of
+/// characters carries no landmark to measure one line against another
+/// by -- the difference has to be big enough to read as different
+/// speeds rather than as noise. At this width the fastest line covers
+/// better than five times what the slowest does, and the slowest is
+/// still plainly moving.
+pub(super) const DEFAULT_TEXT_SPREAD: u32 = 70;
+/// Fastest the text drifts. Lower than [`MAX_BAND_SPEED`] for the same
+/// reason the default is: every cell is drawn, so there is no empty
+/// grid for the eye to measure the travel against.
+pub(super) const MAX_TEXT_SPEED: u32 = 200;
+/// Widest the lines' speeds spread around the field's. At the top of
+/// the range the slowest line is stopped and the fastest is at twice
+/// the speed, which is as far apart as two lines can be sent without
+/// one of them ceasing to drift at all.
+pub(super) const MAX_TEXT_SPREAD: u32 = 100;
+/// Slowest the text drifts, and the floor every line's own speed is
+/// held above however wide the spread is opened: a line that never
+/// moves is one the reader cannot tell from a frozen display.
+pub(super) const MIN_TEXT_SPEED: u32 = 1;
+
 // capture
 /// How often the worker takes a fresh capture.
 ///
