@@ -123,7 +123,7 @@ impl OrderingOverlapScopeSet {
 /// Whether an edge was born with an acquisition or resolved a prior deferral.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum EdgeDeclaration {
+pub(crate) enum EdgeDeclaration {
     /// A claim or widen carried the ordering decision itself.
     Acquisition,
     /// A later `sequence` operation converted a deferral into an order.
@@ -153,11 +153,63 @@ pub(crate) struct OrderingEdge {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct IntegrationConstraintProjection {
     /// The journal generation from which every reservation and hold was rebuilt.
-    pub(crate) generation:   ProjectionGeneration,
+    pub(crate) generation:           ProjectionGeneration,
     /// The retained reservation facts required by a denial or board row.
-    pub(crate) reservations: Vec<IntegrationReservationFacts>,
+    pub(crate) reservations:         Vec<IntegrationReservationFacts>,
     /// Only relationships that currently hold at the accompanying repository snapshot.
-    pub(crate) holds:        Vec<IntegrationHold>,
+    pub(crate) holds:                Vec<IntegrationHold>,
+    /// Every durable ordering relationship with its state at this repository snapshot.
+    pub(crate) ordering_constraints: Vec<IntegrationOrderingConstraint>,
+    /// Every recorded deferral, including answers that a later sequence resolved.
+    pub(crate) deferrals:            Vec<IntegrationDeferralConstraint>,
+}
+
+/// One durable ordering relationship and its already-derived repository state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct IntegrationOrderingConstraint {
+    /// The stable relationship identity.
+    pub(crate) edge_id:              EdgeId,
+    /// The reservation whose protected work comes first.
+    pub(crate) predecessor:          ReservationId,
+    /// The reservation constrained by this relationship.
+    pub(crate) successor:            ReservationId,
+    /// The exact approved overlap scopes that justified this relationship.
+    pub(crate) scopes:               ReservationScopeSet,
+    /// Why the order was selected.
+    pub(crate) reason:               OrderingReason,
+    /// The settled-or-unsettled state derived once for this snapshot.
+    pub(crate) readiness:            EdgeReadiness,
+    /// Whether acquisition declared the edge or a sequence resolved a deferral.
+    pub(crate) declaration:          EdgeDeclaration,
+    /// The event that declared the edge.
+    pub(crate) declaration_event_id: EventId,
+}
+
+/// One durable symmetric deferral retained for current constraints and answer audit.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct IntegrationDeferralConstraint {
+    /// The event that recorded the deferral answer.
+    pub(crate) declaration_event_id: EventId,
+    /// The reservation whose acquisition carried the answer.
+    pub(crate) deferred:             ReservationId,
+    /// The exact counterpart named by the answer.
+    pub(crate) blocker:              ReservationId,
+    /// The exact approved overlap scopes.
+    pub(crate) scopes:               ReservationScopeSet,
+    /// Why direction was deferred.
+    pub(crate) reason:               OverlapAuthorizationReason,
+    /// Whether the symmetric hold still applies.
+    pub(crate) status:               IntegrationDeferralStatus,
+}
+
+/// Whether a recorded deferral still holds or has been answered by sequencing.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum IntegrationDeferralStatus {
+    /// Neither direction has been selected yet.
+    Unresolved,
+    /// A later sequence selected a direction and ended the symmetric hold.
+    Resolved,
 }
 
 /// Reservation material shared by the trunk gate and the later board renderer.

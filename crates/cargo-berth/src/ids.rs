@@ -344,6 +344,37 @@ impl RecordedAt {
             elapsed.subsec_millis()
         ))
     }
+
+    /// Return elapsed wall-clock time, saturating when clocks move backwards.
+    pub(crate) fn elapsed_until(&self, later: &Self) -> Duration {
+        let earlier_milliseconds = self.unix_milliseconds();
+        let later_milliseconds = later.unix_milliseconds();
+        let elapsed = later_milliseconds.saturating_sub(earlier_milliseconds);
+        Duration::from_millis(u64::try_from(elapsed).unwrap_or(u64::MAX))
+    }
+
+    fn unix_milliseconds(&self) -> i64 {
+        const MILLISECONDS_PER_DAY: i64 = 86_400_000;
+        const MILLISECONDS_PER_HOUR: i64 = 3_600_000;
+        const MILLISECONDS_PER_MINUTE: i64 = 60_000;
+        const MILLISECONDS_PER_SECOND: i64 = 1_000;
+
+        let parse =
+            |range: std::ops::Range<usize>| self.0[range].parse::<i64>().unwrap_or_default();
+        let year = parse(0..4);
+        let month = parse(5..7);
+        let day = parse(8..10);
+        let hour = parse(11..13);
+        let minute = parse(14..16);
+        let second = parse(17..19);
+        let millisecond = parse(20..23);
+        let days = unix_days_from_civil_date(year, month, day);
+        days.saturating_mul(MILLISECONDS_PER_DAY)
+            .saturating_add(hour.saturating_mul(MILLISECONDS_PER_HOUR))
+            .saturating_add(minute.saturating_mul(MILLISECONDS_PER_MINUTE))
+            .saturating_add(second.saturating_mul(MILLISECONDS_PER_SECOND))
+            .saturating_add(millisecond)
+    }
 }
 
 impl Display for RecordedAt {
@@ -448,6 +479,47 @@ const fn civil_date_from_unix_days(days_since_epoch: i64) -> (i64, i64, i64) {
     };
     let completed_year = if month <= 2 { year + 1 } else { year };
     (completed_year, month, day)
+}
+
+const fn unix_days_from_civil_date(mut year: i64, month: i64, day: i64) -> i64 {
+    const DAYS_TO_CIVIL_EPOCH: i64 = 719_468;
+    const DAYS_PER_400_YEAR_ERA: i64 = 146_097;
+    const DAYS_PER_YEAR: i64 = 365;
+    const MONTH_NUMERATOR_MULTIPLIER: i64 = 5;
+    const MONTH_NUMERATOR_OFFSET: i64 = 2;
+    const DAYS_PER_MONTH_CYCLE: i64 = 153;
+    const MARCH_MONTH_OFFSET: i64 = -3;
+    const JANUARY_MONTH_OFFSET: i64 = 9;
+    const LAST_MONTH_BEFORE_MARCH: i64 = 2;
+    const YEARS_PER_CENTURY: i64 = 100;
+    const YEARS_PER_ERA: i64 = 400;
+    const YEARS_PER_LEAP_CYCLE: i64 = 4;
+
+    year -= if month <= LAST_MONTH_BEFORE_MARCH {
+        1
+    } else {
+        0
+    };
+    let era = if year >= 0 {
+        year
+    } else {
+        year - (YEARS_PER_ERA - 1)
+    } / YEARS_PER_ERA;
+    let year_of_era = year - (era * YEARS_PER_ERA);
+    let shifted_month = month
+        + if month > LAST_MONTH_BEFORE_MARCH {
+            MARCH_MONTH_OFFSET
+        } else {
+            JANUARY_MONTH_OFFSET
+        };
+    let day_of_year = (DAYS_PER_MONTH_CYCLE * shifted_month + MONTH_NUMERATOR_OFFSET)
+        / MONTH_NUMERATOR_MULTIPLIER
+        + day
+        - 1;
+    let day_of_era = year_of_era * DAYS_PER_YEAR + (year_of_era / YEARS_PER_LEAP_CYCLE)
+        - (year_of_era / YEARS_PER_CENTURY)
+        + day_of_year;
+    era * DAYS_PER_400_YEAR_ERA + day_of_era - DAYS_TO_CIVIL_EPOCH
 }
 
 /// The immutable role of a worktree in its repository.

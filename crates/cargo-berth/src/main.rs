@@ -2,6 +2,7 @@
 
 mod alert;
 mod answer;
+mod board;
 mod cli;
 mod config;
 mod constants;

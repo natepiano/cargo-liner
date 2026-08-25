@@ -286,9 +286,15 @@ pub(crate) enum JournalOperation {
     /// Record an explicit escape-hatch bypass without changing edge state.
     Bypass {
         /// The action permitted outside normal ledger validation.
-        action: BypassedAction,
+        action:          BypassedAction,
         /// The typed release valve that permitted the action.
-        cause:  BypassCause,
+        cause:           BypassCause,
+        /// When the bypass occurred, kept distinct from a delayed marker import.
+        #[serde(default)]
+        occurrence_time: BypassOccurrenceTime,
+        /// Whether this record was written directly or recovered from one marker.
+        #[serde(default)]
+        recording:       BypassRecording,
     },
     /// Move a reservation's ownership to a replacement worktree.
     RebindWorktree {
@@ -918,7 +924,10 @@ pub(crate) enum BypassedAction {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum BypassCause {
     /// `CARGO_BERTH_BYPASS=1` was present before the hook read any ledger state.
-    EnvironmentOverride,
+    EnvironmentOverride {
+        /// The bypassed git integration whose reference transactions share one audit row.
+        bypassed_merge: BypassedMergeIdentity,
+    },
     /// A one-use forced-integration permit authorized exactly its recorded holds.
     ForcedIntegration {
         /// The permit consumed by the bypassed update.
@@ -926,6 +935,116 @@ pub(crate) enum BypassCause {
         /// The user's non-empty explanation retained with the permit.
         reason:    ForcedIntegrationReason,
     },
+}
+
+/// The write-time identity shared by every reference transaction from one bypassed merge.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct BypassedMergeIdentity(String);
+
+impl BypassedMergeIdentity {
+    /// Retain a hook-supplied merge token that needs no shell or JSON escaping.
+    pub(crate) fn from_hook_token(token: &str) -> Result<Self, InvalidBypassedMergeIdentity> {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(InvalidBypassedMergeIdentity::Empty);
+        }
+        if let Some(character) = token
+            .chars()
+            .find(|character| !bypassed_merge_identity_character_is_supported(*character))
+        {
+            return Err(InvalidBypassedMergeIdentity::UnsupportedCharacter(
+                character,
+            ));
+        }
+        Ok(Self(token.to_owned()))
+    }
+}
+
+impl From<CoordinationRunId> for BypassedMergeIdentity {
+    fn from(run_id: CoordinationRunId) -> Self {
+        let token = format!("direct-{run_id}");
+        debug_assert!(
+            token
+                .chars()
+                .all(bypassed_merge_identity_character_is_supported),
+            "coordination-run bypass identities must satisfy the hook token character set"
+        );
+        Self(token)
+    }
+}
+
+impl<'de> Deserialize<'de> for BypassedMergeIdentity {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: serde::Deserializer<'de>,
+    {
+        let token = String::deserialize(deserializer)?;
+        Self::from_hook_token(&token).map_err(serde::de::Error::custom)
+    }
+}
+
+const fn bypassed_merge_identity_character_is_supported(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+}
+
+/// Why a hook-supplied bypass merge identity was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InvalidBypassedMergeIdentity {
+    /// The token contained no characters after trimming.
+    Empty,
+    /// The token contained a character outside ASCII alphanumeric, hyphen, and underscore.
+    UnsupportedCharacter(char),
+}
+
+impl Display for InvalidBypassedMergeIdentity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("a bypassed merge identity cannot be empty"),
+            Self::UnsupportedCharacter(character) => write!(
+                formatter,
+                "a bypassed merge identity contains unsupported character {character:?}; use only ASCII letters, digits, hyphens, and underscores"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InvalidBypassedMergeIdentity {}
+
+/// The occurrence time retained for a directly written or recovered bypass.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum BypassOccurrenceTime {
+    /// The journal event time is also the bypass occurrence time.
+    #[default]
+    EventRecordedAt,
+    /// A pending marker retained the actual occurrence time.
+    Known { at: RecordedAt },
+    /// A fallback marker could not capture a parseable time.
+    Unavailable,
+}
+
+/// The durable source identity used to deduplicate recovered marker imports.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum BypassRecording {
+    /// The bypass reached the journal at the time it occurred.
+    #[default]
+    Direct,
+    /// Reconciliation imported one common-directory marker.
+    PendingMarker { marker_id: PendingBypassMarkerId },
+}
+
+/// A stable pending-bypass identity derived from its unique filename.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct PendingBypassMarkerId(String);
+
+impl PendingBypassMarkerId {
+    /// Retain a marker filename as its non-recycled import identity.
+    pub(crate) const fn from_file_name(file_name: String) -> Self { Self(file_name) }
 }
 
 /// One ordering relationship deliberately skipped by a forced integration.
@@ -1312,6 +1431,7 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use super::BypassedMergeIdentity;
     use super::CanonicalWorktreeRoot;
     use super::ClaimHeadCommit;
     use super::ClaimHeadSnapshot;
@@ -1321,6 +1441,7 @@ mod tests {
     use super::ForeignReservationIdSet;
     use super::FullRefName;
     use super::IncursionPathSet;
+    use super::InvalidBypassedMergeIdentity;
     use super::Journal;
     use super::JournalActor;
     use super::JournalEvent;
@@ -1357,6 +1478,21 @@ mod tests {
     use crate::ids::WorktreeId;
 
     const HOLDER_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
+
+    #[test]
+    fn bypassed_merge_identity_rejects_shell_and_json_metacharacters() {
+        assert!(matches!(
+            BypassedMergeIdentity::from_hook_token("merge-\"quoted"),
+            Err(InvalidBypassedMergeIdentity::UnsupportedCharacter('"'))
+        ));
+        assert!(matches!(
+            BypassedMergeIdentity::from_hook_token("merge-\\escaped"),
+            Err(InvalidBypassedMergeIdentity::UnsupportedCharacter('\\'))
+        ));
+
+        let generated = BypassedMergeIdentity::from(CoordinationRunId::new());
+        assert!(BypassedMergeIdentity::from_hook_token(&generated.0).is_ok());
+    }
 
     #[test]
     fn reservation_purpose_rejects_whitespace_and_stores_trimmed_text() {

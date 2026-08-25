@@ -120,6 +120,9 @@ impl RepositorySnapshot {
             .ok_or(MissingReadinessFact::Reservation(reservation_id))
     }
 
+    /// Borrow the one resolved-or-unknown trunk observation used for this snapshot.
+    pub(crate) const fn trunk(&self) -> &RepositoryTrunk { &self.trunk }
+
     /// Iterate the one grouped reachability result recorded per graph predecessor.
     pub(crate) fn predecessor_reachability(
         &self,

@@ -385,10 +385,11 @@ fn commit_forced_permit_audits(
                 };
                 ReconciliationValidation::Apply {
                     operations,
+                    recoverable_operations: Vec::new(),
                     action: (),
                 }
             },
-            |()| Ok::<(), Infallible>(()),
+            |(), _, _| Ok::<(), Infallible>(()),
         )
         .map_err(|error| match error {
             LedgerCommittedActionError::Transaction(error) => GateError::Transaction(error),
@@ -529,7 +530,11 @@ fn evaluate_locked(
                     Err(error) => return ReconciliationValidation::Reject(error),
                 };
                 let (operations, action) = prepared.into_action(operations, decision);
-                ReconciliationValidation::Apply { operations, action }
+                ReconciliationValidation::Apply {
+                    operations,
+                    recoverable_operations: Vec::new(),
+                    action,
+                }
             },
             reconcile::GateReconciliationAction::commit,
         )
@@ -708,11 +713,13 @@ fn decide_hook(
                         reservation_id: permit.reservation_id,
                     },
                     JournalOperation::Bypass {
-                        action: BypassedAction::Integration,
-                        cause:  BypassCause::ForcedIntegration {
+                        action:          BypassedAction::Integration,
+                        cause:           BypassCause::ForcedIntegration {
                             permit_id: permit.permit_id,
                             reason:    permit.reason.clone(),
                         },
+                        occurrence_time: crate::ledger::BypassOccurrenceTime::EventRecordedAt,
+                        recording:       crate::ledger::BypassRecording::Direct,
                     },
                 ]
             })

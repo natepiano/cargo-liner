@@ -69,6 +69,7 @@ use crate::reservation::OrphanRetirementReason;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::ScopeKind;
+use crate::verb::board;
 use crate::verb::check;
 use crate::verb::check::CheckRequest;
 use crate::verb::claim;
@@ -503,7 +504,7 @@ impl Command {
             Self::Init(init_arguments) => {
                 initialize_ledger(init_arguments.initialization_request())
             },
-            Self::Board(_) => OutputEnvelope::unimplemented(CommandVerb::Board),
+            Self::Board(_) => board::execute(),
             Self::Check(path_arguments) => match path_arguments.into_check_request() {
                 Ok(check_request) => check::execute(check_request),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Check, &error),

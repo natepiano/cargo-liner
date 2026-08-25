@@ -598,15 +598,16 @@ fn transact_classification(
                 context.observation.comparison,
             ) {
                 Ok(decision) => ReconciliationValidation::Apply {
-                    operations: decision.operations,
-                    action:     decision.report,
+                    operations:             decision.operations,
+                    recoverable_operations: Vec::new(),
+                    action:                 decision.report,
                 },
                 Err(error) => {
                     ReconciliationValidation::Reject(DriftTransactionRejection::Replay(error))
                 },
             }
         },
-        Ok::<DriftReport, Infallible>,
+        |report, _, _| Ok::<DriftReport, Infallible>(report),
     );
     match outcome {
         Ok(LedgerCommittedActionOutcome::Appended { output: report, .. }) => Ok(report),

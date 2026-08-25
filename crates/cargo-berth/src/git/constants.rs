@@ -19,6 +19,8 @@ pub(super) const GIT_WORKTREE_COMMAND: &str = "worktree";
 // flags
 /// Ask `cat-file` to classify one object per input line.
 pub(super) const GIT_BATCH_CHECK_ARG: &str = "--batch-check";
+/// Include excluded boundary commits so unrelated histories remain distinguishable.
+pub(super) const GIT_BOUNDARY_ARG: &str = "--boundary";
 /// Ask `rev-parse` for the shared administrative directory.
 pub(super) const GIT_COMMON_DIRECTORY_ARG: &str = "--git-common-dir";
 /// Prefix selecting commits on descendant paths from one protected tip.
@@ -29,6 +31,8 @@ pub(super) const GIT_EXISTS_ARG: &str = "-e";
 pub(super) const GIT_DELETE_REF_ARG: &str = "-d";
 /// Ask `merge-base` to test commit ancestry.
 pub(super) const GIT_IS_ANCESTOR_ARG: &str = "--is-ancestor";
+/// Prefix symmetric-difference commits by their left or right side.
+pub(super) const GIT_LEFT_RIGHT_ARG: &str = "--left-right";
 /// Disable git's optional locks for read-only calls.
 pub(super) const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
 /// Ask `rev-parse` to resolve its path result to an absolute path.

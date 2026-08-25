@@ -6,6 +6,7 @@ mod lifecycle;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::time::Duration;
 
 pub(crate) use evidence::PriorIntegrationStatus;
 pub(crate) use evidence::ProtectedReservationTip;
@@ -83,6 +84,17 @@ pub(crate) struct Reservation {
     edit_blocking_status:       EditBlockingStatus,
     worktree_root:              CanonicalWorktreeRoot,
     worktree_locator:           WorktreeAdministrativeLocator,
+    last_activity_at:           RecordedAt,
+}
+
+/// Whether a holder has explicitly demonstrated recent reservation activity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum ReservationFreshness {
+    /// A claim, widen, renew, or checkpoint occurred inside the freshness window.
+    Fresh { last_activity_at: RecordedAt },
+    /// No owner activity event occurred inside the freshness window.
+    Stale { last_activity_at: RecordedAt },
 }
 
 /// One incursion incident and its current replayed disposition.
@@ -149,6 +161,7 @@ struct ReplayedClaim<'event> {
     worktree_root:    &'event CanonicalWorktreeRoot,
     worktree_locator: &'event WorktreeAdministrativeLocator,
     authorization:    &'event ConflictAuthorization,
+    recorded_at:      &'event RecordedAt,
 }
 
 /// State-specific evidence exposed without an optional protected commit.
@@ -485,6 +498,11 @@ impl RetainedReservationSet {
             .filter(|incident| matches!(incident.status(), IncursionIncidentStatus::Outstanding))
     }
 
+    /// Iterate every retained incident for outstanding and resolved audit sections.
+    pub(crate) fn incursion_incidents(&self) -> impl Iterator<Item = &IncursionIncident> {
+        self.incursion_incidents.iter()
+    }
+
     /// Return whether the run still has another reservation in `Active`.
     pub(crate) fn has_other_active_reservation(
         &self,
@@ -498,6 +516,10 @@ impl RetainedReservationSet {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive operation match keeps replay dispatch visibly complete"
+    )]
     fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
         match &event.operation {
             JournalOperation::Claim {
@@ -524,6 +546,7 @@ impl RetainedReservationSet {
                 worktree_root,
                 worktree_locator: worktree_administrative_locator,
                 authorization,
+                recorded_at: event.recorded_at(),
             })?,
             JournalOperation::Widen {
                 reservation_id,
@@ -536,18 +559,26 @@ impl RetainedReservationSet {
                 added_scopes,
                 authorization,
                 *edit_blocking_status,
+                event.recorded_at(),
             )?,
             JournalOperation::Checkpoint {
                 reservation_id,
                 protected_tip,
                 trunk_snapshot,
-            } => self.apply_checkpoint(*reservation_id, protected_tip, trunk_snapshot)?,
+            } => self.apply_checkpoint(
+                *reservation_id,
+                protected_tip,
+                trunk_snapshot,
+                event.recorded_at(),
+            )?,
             JournalOperation::Resnapshot {
                 reservation_id,
                 snapshot,
             } => self.apply_resnapshot(*reservation_id, snapshot)?,
             JournalOperation::Renew { reservation_id } => {
-                self.find_mut(*reservation_id)?.advance_revision()?;
+                let reservation = self.find_mut(*reservation_id)?;
+                reservation.last_activity_at = event.recorded_at().clone();
+                reservation.advance_revision()?;
             },
             JournalOperation::Release {
                 reservation_id,
@@ -741,6 +772,7 @@ impl RetainedReservationSet {
             edit_blocking_status:       EditBlockingStatus::Blocking,
             worktree_root:              replayed_claim.worktree_root.clone(),
             worktree_locator:           replayed_claim.worktree_locator.clone(),
+            last_activity_at:           replayed_claim.recorded_at.clone(),
         });
         Ok(())
     }
@@ -751,6 +783,7 @@ impl RetainedReservationSet {
         added_scopes: &ReservationScopeAdditionSet,
         authorization: &ConflictAuthorization,
         edit_blocking_status: EditBlockingStatus,
+        recorded_at: &RecordedAt,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
         let mut scopes = reservation.scopes.as_slice().to_vec();
@@ -758,6 +791,7 @@ impl RetainedReservationSet {
         reservation.scopes = ReservationScopeSet::try_from(scopes)
             .map_err(|_| ReservationReplayError::EmptyScopeSet(reservation_id))?;
         reservation.edit_blocking_status = edit_blocking_status;
+        reservation.last_activity_at = recorded_at.clone();
         reservation.advance_revision()?;
         reservation.authorizations.push(authorization.clone());
         Ok(())
@@ -768,6 +802,7 @@ impl RetainedReservationSet {
         reservation_id: ReservationId,
         protected_tip: &ProtectedReservationTip,
         trunk_snapshot: &GitObjectId,
+        recorded_at: &RecordedAt,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
         reservation.lifecycle.checkpoint(protected_tip.clone())?;
@@ -776,6 +811,7 @@ impl RetainedReservationSet {
             IntegrationTrunkSnapshot::AtCheckpoint(trunk_snapshot.clone());
         reservation.integration_status = IntegrationEvidenceStatus::NotIntegrated;
         reservation.edit_blocking_status = EditBlockingStatus::Blocking;
+        reservation.last_activity_at = recorded_at.clone();
         reservation.advance_revision()
     }
 
@@ -1090,6 +1126,20 @@ impl Reservation {
     /// Return the materialized edit decision.
     pub(crate) const fn edit_blocking_status(&self) -> EditBlockingStatus {
         self.edit_blocking_status
+    }
+
+    /// Classify freshness from owner activity events, never unrelated journal traffic.
+    pub(crate) fn freshness(&self, observed_at: &RecordedAt) -> ReservationFreshness {
+        const STALE_AFTER: Duration = Duration::from_hours(24);
+        if self.last_activity_at.elapsed_until(observed_at) > STALE_AFTER {
+            ReservationFreshness::Stale {
+                last_activity_at: self.last_activity_at.clone(),
+            }
+        } else {
+            ReservationFreshness::Fresh {
+                last_activity_at: self.last_activity_at.clone(),
+            }
+        }
     }
 
     /// Return state-specific evidence without an optional protected tip.

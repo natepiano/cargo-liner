@@ -10,6 +10,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -21,18 +22,23 @@ use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ledger;
 use crate::ledger::BypassCause;
+use crate::ledger::BypassOccurrenceTime;
+use crate::ledger::BypassRecording;
 use crate::ledger::BypassedAction;
+use crate::ledger::BypassedMergeIdentity;
 use crate::ledger::EditAuthorization;
 use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
+use crate::ledger::PendingBypassMarkerId;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
 
 const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
 const BYPASS_ENVIRONMENT_ENABLED_VALUE: &str = "1";
+const BYPASSED_MERGE_IDENTITY_ENVIRONMENT: &str = "CARGO_BERTH_BYPASSED_MERGE_ID";
 pub(super) const PENDING_BYPASS_FILE_PREFIX: &str = "cargo-berth-pending-bypass-";
 pub(super) const PENDING_BYPASS_FILE_SUFFIX: &str = ".json";
 
@@ -60,26 +66,74 @@ pub(crate) enum EnvironmentBypassRetentionOutcome {
     Unrecorded,
 }
 
-/// The occurrence time retained with a pending environment-bypass marker.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-enum BypassOccurrenceTime {
-    /// The writer captured a timestamp accepted by `RecordedAt`.
-    Known {
-        /// The UTC time at which the override was taken.
-        at: RecordedAt,
-    },
-    /// The writer could not obtain a parseable UTC timestamp.
-    Unavailable,
-}
-
 /// The shared marker schema used when an environment bypass cannot reach the journal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct PendingEnvironmentBypass {
     /// Why ordinary integration validation was bypassed.
     cause:           BypassCause,
     /// Whether the marker writer retained the override's occurrence time.
+    occurrence_time: PendingEnvironmentBypassOccurrenceTime,
+}
+
+/// The only occurrence-time states a pending marker is permitted to record.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum PendingEnvironmentBypassOccurrenceTime {
+    /// The marker writer retained the actual occurrence time.
+    Known { at: RecordedAt },
+    /// The fallback writer could not obtain a parseable time.
+    Unavailable,
+}
+
+impl From<PendingEnvironmentBypassOccurrenceTime> for BypassOccurrenceTime {
+    fn from(occurrence_time: PendingEnvironmentBypassOccurrenceTime) -> Self {
+        match occurrence_time {
+            PendingEnvironmentBypassOccurrenceTime::Known { at } => Self::Known { at },
+            PendingEnvironmentBypassOccurrenceTime::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+/// Marker imports and marker alerts prepared from one locked journal replay.
+pub(crate) struct PendingBypassRecovery {
+    imports:                Vec<PendingBypassMarkerImport>,
+    completed_marker_paths: Vec<PathBuf>,
+    unrecorded_occurrences: Vec<BypassOccurrenceTime>,
+}
+
+/// One decoded marker whose audit operation is still absent from the journal.
+pub(crate) struct PendingBypassMarkerImport {
+    operation:       JournalOperation,
+    marker_path:     PathBuf,
     occurrence_time: BypassOccurrenceTime,
+}
+
+impl PendingBypassMarkerImport {
+    /// Borrow the idempotent operation attempted for this marker.
+    pub(crate) const fn operation(&self) -> &JournalOperation { &self.operation }
+
+    /// Borrow the marker path that can be deleted only after a successful append.
+    pub(crate) fn marker_path(&self) -> &Path { &self.marker_path }
+
+    /// Borrow the occurrence fact shown when this import still cannot be appended.
+    pub(crate) const fn occurrence_time(&self) -> &BypassOccurrenceTime { &self.occurrence_time }
+}
+
+impl PendingBypassRecovery {
+    /// Take decoded marker imports whose journal operations are still absent.
+    pub(crate) fn take_imports(&mut self) -> Vec<PendingBypassMarkerImport> {
+        std::mem::take(&mut self.imports)
+    }
+
+    /// Take marker paths safe to delete after all imports are durably appended.
+    pub(crate) fn take_completed_marker_paths(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.completed_marker_paths)
+    }
+
+    /// Take occurrence facts for markers that could not be decoded and journalled.
+    pub(crate) fn take_unrecorded_occurrences(&mut self) -> Vec<BypassOccurrenceTime> {
+        std::mem::take(&mut self.unrecorded_occurrences)
+    }
 }
 
 /// Return whether the unconditional release valve is active.
@@ -97,6 +151,9 @@ pub(crate) fn record_environment_bypass(
         return EnvironmentBypassRetentionOutcome::Unrecorded;
     };
     let coordination_run_id = coordination_run_id(&worktree_context);
+    let cause = BypassCause::EnvironmentOverride {
+        bypassed_merge: bypassed_merge_identity(),
+    };
     let journalled = Ledger::open(worktree_context.repository_root())
         .and_then(|ledger| {
             let worktree_identity = ledger::worktree_identity(
@@ -106,8 +163,10 @@ pub(crate) fn record_environment_bypass(
             ledger
                 .try_transact(worktree_identity.id, coordination_run_id, |_| {
                     TransactionValidation::<()>::Append(Box::new(JournalOperation::Bypass {
-                        action: BypassedAction::Integration,
-                        cause:  BypassCause::EnvironmentOverride,
+                        action:          BypassedAction::Integration,
+                        cause:           cause.clone(),
+                        occurrence_time: BypassOccurrenceTime::EventRecordedAt,
+                        recording:       BypassRecording::Direct,
                     }))
                 })
                 .map(|_| ())
@@ -123,11 +182,18 @@ pub(crate) fn record_environment_bypass(
     if journalled {
         return EnvironmentBypassRetentionOutcome::Journalled;
     }
-    if write_pending_marker(worktree_context.common_git_directory()).is_ok() {
+    if write_pending_marker(worktree_context.common_git_directory(), cause).is_ok() {
         EnvironmentBypassRetentionOutcome::PendingMarker
     } else {
         EnvironmentBypassRetentionOutcome::Unrecorded
     }
+}
+
+fn bypassed_merge_identity() -> BypassedMergeIdentity {
+    std::env::var(BYPASSED_MERGE_IDENTITY_ENVIRONMENT)
+        .ok()
+        .and_then(|token| BypassedMergeIdentity::from_hook_token(&token).ok())
+        .unwrap_or_else(|| CoordinationRunId::new().into())
 }
 
 fn coordination_run_id(worktree_context: &WorktreeContext) -> CoordinationRunId {
@@ -148,14 +214,17 @@ fn coordination_run_id(worktree_context: &WorktreeContext) -> CoordinationRunId 
     }
 }
 
-fn write_pending_marker(common_git_directory: &Path) -> Result<(), std::io::Error> {
+fn write_pending_marker(
+    common_git_directory: &Path,
+    cause: BypassCause,
+) -> Result<(), std::io::Error> {
     let marker_path = common_git_directory.join(format!(
         "{PENDING_BYPASS_FILE_PREFIX}{}{PENDING_BYPASS_FILE_SUFFIX}",
         Uuid::now_v7()
     ));
     let marker = PendingEnvironmentBypass {
-        cause:           BypassCause::EnvironmentOverride,
-        occurrence_time: BypassOccurrenceTime::Known {
+        cause,
+        occurrence_time: PendingEnvironmentBypassOccurrenceTime::Known {
             at: RecordedAt::now(),
         },
     };
@@ -184,6 +253,89 @@ pub(crate) fn pending_environment_bypass_count(
         })
         .count();
     u64::try_from(count).map_err(std::io::Error::other)
+}
+
+/// Prepare stable, idempotent imports for every pending bypass marker.
+pub(crate) fn prepare_pending_bypass_recovery(
+    common_git_directory: &Path,
+    events: &[JournalEvent],
+) -> Result<PendingBypassRecovery, std::io::Error> {
+    let mut imports = Vec::new();
+    let mut completed_marker_paths = Vec::new();
+    let mut unrecorded_occurrences = Vec::new();
+    for entry in fs::read_dir(common_git_directory)? {
+        let entry = entry?;
+        let Ok(file_name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !file_name.starts_with(PENDING_BYPASS_FILE_PREFIX)
+            || !file_name.ends_with(PENDING_BYPASS_FILE_SUFFIX)
+        {
+            continue;
+        }
+        let marker_path = entry.path();
+        let marker_result = fs::read(&marker_path)
+            .and_then(|contents| serde_json::from_slice(&contents).map_err(std::io::Error::other));
+        let Ok(marker): Result<PendingEnvironmentBypass, _> = marker_result else {
+            unrecorded_occurrences.push(BypassOccurrenceTime::Unavailable);
+            continue;
+        };
+        let marker_id = PendingBypassMarkerId::from_file_name(file_name);
+        let already_imported = events.iter().any(|event| {
+            matches!(
+                &event.operation,
+                JournalOperation::Bypass {
+                    recording: BypassRecording::PendingMarker {
+                        marker_id: imported_id,
+                    },
+                    ..
+                } if imported_id == &marker_id
+            )
+        });
+        if already_imported {
+            completed_marker_paths.push(marker_path);
+        } else {
+            let occurrence_time = BypassOccurrenceTime::from(marker.occurrence_time);
+            let operation = JournalOperation::Bypass {
+                action:          BypassedAction::Integration,
+                cause:           marker.cause,
+                occurrence_time: occurrence_time.clone(),
+                recording:       BypassRecording::PendingMarker { marker_id },
+            };
+            imports.push(PendingBypassMarkerImport {
+                operation,
+                marker_path,
+                occurrence_time,
+            });
+        }
+    }
+    Ok(PendingBypassRecovery {
+        imports,
+        completed_marker_paths,
+        unrecorded_occurrences,
+    })
+}
+
+/// Delete only markers whose matching journal operation is already durable.
+pub(crate) fn delete_recovered_bypass_markers(
+    marker_paths: &[PathBuf],
+) -> Result<(), std::io::Error> {
+    let mut changed_directories = HashSet::new();
+    for marker_path in marker_paths {
+        match fs::remove_file(marker_path) {
+            Ok(()) => {
+                if let Some(parent) = marker_path.parent() {
+                    changed_directories.insert(parent.to_path_buf());
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error),
+        }
+    }
+    for changed_directory in changed_directories {
+        fs::File::open(changed_directory)?.sync_all()?;
+    }
+    Ok(())
 }
 
 /// Replay permits and reject duplicate issuance, duplicate consumption, or mismatched use.
@@ -304,18 +456,23 @@ mod tests {
 
     use super::BYPASS_ENVIRONMENT;
     use super::BYPASS_ENVIRONMENT_ENABLED_VALUE;
-    use super::BypassOccurrenceTime;
     use super::PENDING_BYPASS_FILE_PREFIX;
     use super::PENDING_BYPASS_FILE_SUFFIX;
     use super::PendingEnvironmentBypass;
+    use super::PendingEnvironmentBypassOccurrenceTime;
     use super::write_pending_marker;
     use crate::gate::install::reference_transaction_hook_script_for_test;
     use crate::ledger::BypassCause;
+    use crate::ledger::BypassedMergeIdentity;
 
     #[test]
     fn both_marker_writers_share_the_typed_occurrence_time_schema() {
         let rust_directory = tempdir().expect("Rust marker directory should exist");
-        write_pending_marker(rust_directory.path()).expect("Rust marker should write");
+        write_pending_marker(
+            rust_directory.path(),
+            environment_bypass_cause("rust-writer"),
+        )
+        .expect("Rust marker should write");
         let rust_marker = read_pending_marker(rust_directory.path());
 
         let shell_known_directory = tempdir().expect("shell marker directory should exist");
@@ -328,19 +485,25 @@ mod tests {
         write_shell_marker(shell_unavailable_directory.path(), OsStr::new(""));
         let shell_unavailable_marker = read_pending_marker(shell_unavailable_directory.path());
 
-        assert_eq!(rust_marker.cause, BypassCause::EnvironmentOverride);
+        assert!(matches!(
+            rust_marker.cause,
+            BypassCause::EnvironmentOverride { .. }
+        ));
         assert!(matches!(
             rust_marker.occurrence_time,
-            BypassOccurrenceTime::Known { .. }
+            PendingEnvironmentBypassOccurrenceTime::Known { .. }
         ));
-        assert_eq!(shell_known_marker.cause, BypassCause::EnvironmentOverride);
+        assert!(matches!(
+            shell_known_marker.cause,
+            BypassCause::EnvironmentOverride { .. }
+        ));
         assert!(matches!(
             shell_known_marker.occurrence_time,
-            BypassOccurrenceTime::Known { .. }
+            PendingEnvironmentBypassOccurrenceTime::Known { .. }
         ));
         assert_eq!(
             shell_unavailable_marker.occurrence_time,
-            BypassOccurrenceTime::Unavailable
+            PendingEnvironmentBypassOccurrenceTime::Unavailable
         );
 
         let unavailable_json = serde_json::to_vec(&shell_unavailable_marker)
@@ -348,6 +511,33 @@ mod tests {
         let round_tripped = serde_json::from_slice::<PendingEnvironmentBypass>(&unavailable_json)
             .expect("unavailable occurrence time should deserialize");
         assert_eq!(round_tripped, shell_unavailable_marker);
+    }
+
+    #[test]
+    fn pending_marker_time_cannot_default_to_the_later_journal_event() {
+        let cause = serde_json::json!({
+            "cause": {
+                "kind": "environment_override",
+                "bypassed_merge": "schema-regression",
+            },
+        });
+        assert!(serde_json::from_value::<PendingEnvironmentBypass>(cause).is_err());
+
+        let event_recorded_at = serde_json::json!({
+            "cause": {
+                "kind": "environment_override",
+                "bypassed_merge": "schema-regression",
+            },
+            "occurrence_time": {"status": "event_recorded_at"},
+        });
+        assert!(serde_json::from_value::<PendingEnvironmentBypass>(event_recorded_at).is_err());
+    }
+
+    fn environment_bypass_cause(token: &str) -> BypassCause {
+        BypassCause::EnvironmentOverride {
+            bypassed_merge: BypassedMergeIdentity::from_hook_token(token)
+                .expect("test bypass identity should be non-empty"),
+        }
     }
 
     fn write_shell_marker(common_git_directory: &Path, path: &OsStr) {

@@ -30,7 +30,10 @@ use constants::PROJECTION_FILE_NAME;
 use constants::REPO_INSTANCE_ID_FILE_NAME;
 use constants::WORKTREE_ID_FILE_NAME;
 pub(crate) use journal::BypassCause;
+pub(crate) use journal::BypassOccurrenceTime;
+pub(crate) use journal::BypassRecording;
 pub(crate) use journal::BypassedAction;
+pub(crate) use journal::BypassedMergeIdentity;
 pub(crate) use journal::CanonicalWorktreeRoot;
 pub(crate) use journal::ClaimHeadCommit;
 pub(crate) use journal::ClaimHeadSnapshot;
@@ -50,6 +53,7 @@ pub(crate) use journal::JournalOperation;
 use journal::JournalReplay;
 pub(crate) use journal::NonEmptyReservationPurpose;
 pub(crate) use journal::OrderingDirection;
+pub(crate) use journal::PendingBypassMarkerId;
 pub(crate) use journal::ProtectedPhaseStartHead;
 pub(crate) use journal::ReservationPurpose;
 pub(crate) use journal::ReservationScope;
@@ -529,14 +533,7 @@ impl ReplayedLedgerState<'_> {
     pub(crate) const fn generation(&self) -> ProjectionGeneration { self.generation }
 
     /// Return the journal byte offset represented by the replay.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The claim engine inspects the replay point; no verb reaches it yet."
-        )
-    )]
-    const fn journal_end_offset(&self) -> JournalByteOffset { self.journal_end_offset }
+    pub(crate) const fn journal_end_offset(&self) -> JournalByteOffset { self.journal_end_offset }
 }
 
 /// The only two outcomes a transaction validator can authorize.
@@ -564,13 +561,27 @@ pub(crate) enum CommittedActionValidation<Rejection, CommittedAction> {
 pub(crate) enum ReconciliationValidation<Rejection, CommittedAction> {
     /// Append each operation, then execute the repair action under the same lock.
     Apply {
-        /// Journal operations computed from the locked replay.
-        operations: Vec<JournalOperation>,
+        /// Journal operations whose failure invalidates the entire reconciliation.
+        operations:             Vec<JournalOperation>,
+        /// Marker imports whose failure is reported without rejecting other reconciliation work.
+        recoverable_operations: Vec<JournalOperation>,
         /// Idempotent filesystem and git repairs authorized after the appends.
-        action:     CommittedAction,
+        action:                 CommittedAction,
     },
     /// Stop without changing journal or side-effect state.
     Reject(Rejection),
+}
+
+/// Marker imports that reconciliation could not append after repairing any partial tail.
+pub(crate) struct RecoverableReconciliationAppendFailures {
+    operations: Vec<JournalOperation>,
+}
+
+impl RecoverableReconciliationAppendFailures {
+    /// Return whether this exact recoverable operation failed to append.
+    pub(crate) fn contains(&self, operation: &JournalOperation) -> bool {
+        self.operations.contains(operation)
+    }
 }
 
 /// The durable result of a validation-controlled ledger transaction.
@@ -800,6 +811,8 @@ impl Ledger {
         ) -> ReconciliationValidation<Rejection, CommittedAction>,
         commit_action: impl FnOnce(
             CommittedAction,
+            &ReplayedLedgerState<'_>,
+            &RecoverableReconciliationAppendFailures,
         ) -> Result<CommittedActionOutput, CommittedActionError>,
     ) -> Result<
         LedgerCommittedActionOutcome<Rejection, CommittedActionOutput>,
@@ -815,7 +828,11 @@ impl Ledger {
             journal_end_offset: transaction.replay.end_offset,
         };
         match validate(replayed_state) {
-            ReconciliationValidation::Apply { operations, action } => {
+            ReconciliationValidation::Apply {
+                operations,
+                recoverable_operations,
+                action,
+            } => {
                 let mut session_mapping_publication =
                     session::SessionIdentityMappingPublication::Published;
                 for operation in operations {
@@ -825,7 +842,29 @@ impl Ledger {
                     session_mapping_publication = session_mapping_publication
                         .merge(journal_append.session_mapping_publication);
                 }
-                let action_output = commit_action(action);
+                let mut recoverable_failures = RecoverableReconciliationAppendFailures {
+                    operations: Vec::new(),
+                };
+                for operation in recoverable_operations {
+                    let retained_operation = operation.clone();
+                    if let Ok(journal_append) =
+                        transaction.append(worktree_id, coordination_run_id, operation)
+                    {
+                        session_mapping_publication = session_mapping_publication
+                            .merge(journal_append.session_mapping_publication);
+                    } else {
+                        transaction
+                            .recover_after_recoverable_append_failure()
+                            .map_err(LedgerCommittedActionError::Transaction)?;
+                        recoverable_failures.operations.push(retained_operation);
+                    }
+                }
+                let committed_state = ReplayedLedgerState {
+                    events:             &transaction.replay.events,
+                    generation:         transaction.replay.generation,
+                    journal_end_offset: transaction.replay.end_offset,
+                };
+                let action_output = commit_action(action, &committed_state, &recoverable_failures);
                 transaction
                     .publish(&self.paths)
                     .map_err(LedgerTransactionError::LedgerUnreadable)
@@ -1023,6 +1062,16 @@ impl LedgerTransaction {
             event,
             session_mapping_publication,
         })
+    }
+
+    fn recover_after_recoverable_append_failure(&mut self) -> Result<(), LedgerTransactionError> {
+        self.replay = self
+            .journal
+            .replay_repairing_tail()
+            .map_err(LedgerError::from)
+            .map_err(LedgerTransactionError::LedgerUnreadable)?;
+        validate_journal_repository(self.repo_instance_id, &self.replay)
+            .map_err(LedgerTransactionError::LedgerUnreadable)
     }
 
     fn publish(&self, paths: &LedgerPaths) -> Result<(), LedgerError> {
@@ -1851,14 +1900,16 @@ mod tests {
 
         let result = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
             TransactionValidation::<()>::Append(Box::new(JournalOperation::Bypass {
-                action: BypassedAction::Editing,
-                cause:  BypassCause::ForcedIntegration {
+                action:          BypassedAction::Editing,
+                cause:           BypassCause::ForcedIntegration {
                     permit_id: ForcedIntegrationPermitId::new(),
                     reason:    "x"
                         .repeat(super::MAXIMUM_JOURNAL_RECORD_BYTES)
                         .parse::<ForcedIntegrationReason>()
                         .expect("oversized reason should remain non-empty"),
                 },
+                occurrence_time: crate::ledger::BypassOccurrenceTime::EventRecordedAt,
+                recording:       crate::ledger::BypassRecording::Direct,
             }))
         });
 
@@ -1990,8 +2041,15 @@ mod tests {
                 assert_eq!(u64::from(state.generation()), 0);
                 assert_eq!(u64::from(state.journal_end_offset()), 0);
                 TransactionValidation::Append(Box::new(JournalOperation::Bypass {
-                    action: BypassedAction::Editing,
-                    cause:  BypassCause::EnvironmentOverride,
+                    action:          BypassedAction::Editing,
+                    cause:           BypassCause::EnvironmentOverride {
+                        bypassed_merge: crate::ledger::BypassedMergeIdentity::from_hook_token(
+                            "ledger-append-test",
+                        )
+                        .expect("test bypass identity should be non-empty"),
+                    },
+                    occurrence_time: crate::ledger::BypassOccurrenceTime::EventRecordedAt,
+                    recording:       crate::ledger::BypassRecording::Direct,
                 }))
             })
         }

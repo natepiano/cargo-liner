@@ -9,7 +9,10 @@ use std::fmt::Formatter;
 
 use super::EdgeDeclaration;
 use super::IntegrationConstraintProjection;
+use super::IntegrationDeferralConstraint;
+use super::IntegrationDeferralStatus;
 use super::IntegrationHold;
+use super::IntegrationOrderingConstraint;
 use super::IntegrationReservationFacts;
 use super::IntegrationSubject;
 use super::MissingReadinessFact;
@@ -185,8 +188,19 @@ impl OrderingGraph {
             })
             .collect::<Result<Vec<_>, MissingReadinessFact>>()?;
         let mut holds = Vec::new();
+        let mut ordering_constraints = Vec::new();
         for edge in &self.edges {
             let readiness = edge.readiness(repository_snapshot)?;
+            ordering_constraints.push(IntegrationOrderingConstraint {
+                edge_id: edge.edge_id,
+                predecessor: edge.before,
+                successor: edge.after,
+                scopes: edge.scopes.0.clone(),
+                reason: edge.reason.clone(),
+                readiness,
+                declaration: edge.declaration,
+                declaration_event_id: edge.declaration_event_id,
+            });
             if readiness.holds_successor() {
                 holds.push(IntegrationHold::OrderingEdge {
                     edge_id: edge.edge_id,
@@ -210,10 +224,27 @@ impl OrderingGraph {
                     reason:               deferral.reason.clone(),
                 }),
         );
+        let deferrals = self
+            .deferrals
+            .iter()
+            .map(|deferral| IntegrationDeferralConstraint {
+                declaration_event_id: deferral.declaration_event_id,
+                deferred:             deferral.deferred,
+                blocker:              deferral.blocker,
+                scopes:               deferral.scopes.0.clone(),
+                reason:               deferral.reason.clone(),
+                status:               match deferral.resolved {
+                    DeferralResolution::Pending => IntegrationDeferralStatus::Unresolved,
+                    DeferralResolution::Resolved => IntegrationDeferralStatus::Resolved,
+                },
+            })
+            .collect();
         Ok(IntegrationConstraintProjection {
             generation,
             reservations: reservation_facts,
             holds,
+            ordering_constraints,
+            deferrals,
         })
     }
 

@@ -22,17 +22,20 @@ use crate::edge::RepositoryReservationSnapshot;
 use crate::edge::RepositorySnapshot;
 use crate::edge::RepositoryTrunk;
 use crate::edge::SuccessorHeadReachability;
+use crate::gate::permit;
 use crate::git;
 use crate::git::CandidateHeadReachability;
 use crate::git::DescendantCommitQuery;
 use crate::git::GitError;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
+use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger;
+use crate::ledger::BypassOccurrenceTime;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
@@ -40,6 +43,7 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
+use crate::ledger::ReplayedLedgerState;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
@@ -62,11 +66,45 @@ use crate::worktree::liveness::WorktreeRegistryError;
 /// Alerts that remain after one complete reconciliation.
 pub(crate) struct ReconciliationReport {
     /// Durable alerts derived from retained journal state.
-    pub(crate) alerts:              Vec<Alert>,
+    pub(crate) alerts:                        Vec<Alert>,
     /// Integration conclusions appended by this reconciliation.
-    pub(crate) evidence:            Vec<ReconciledEvidence>,
+    pub(crate) evidence:                      Vec<ReconciledEvidence>,
     /// The one complete repository observation shared by edge and board consumers.
-    pub(crate) repository_snapshot: RepositorySnapshot,
+    pub(crate) repository_snapshot:           RepositorySnapshot,
+    /// Complete edge and answer state derived from the same committed locked replay.
+    pub(crate) constraints:                   IntegrationConstraintProjection,
+    /// The exact locked replay point from which board state is projected.
+    pub(crate) journal_snapshot:              ReconciledJournalSnapshot,
+    /// Pending bypass markers that could not yet become ordinary audit records.
+    pub(crate) unrecorded_bypass_occurrences: Vec<BypassOccurrenceTime>,
+    /// Git query dimensions observed while reconciliation assembled this report.
+    pub(crate) git_cost:                      ReconciliationGitCost,
+}
+
+/// Git query dimensions owned by reconciliation rather than board row projection.
+pub(crate) struct ReconciliationGitCost {
+    /// Calls that attempted to resolve the configured trunk.
+    pub(crate) trunk_resolution_calls:           u64,
+    /// Calls used to establish orphan recovery evidence.
+    pub(crate) orphan_recovery_evidence_queries: u64,
+}
+
+/// Complete journal truth retained from one reconciliation lock acquisition.
+pub(crate) struct ReconciledJournalSnapshot {
+    events:             Vec<crate::ledger::JournalEvent>,
+    generation:         ProjectionGeneration,
+    journal_end_offset: JournalByteOffset,
+}
+
+impl ReconciledJournalSnapshot {
+    /// Borrow every event visible at the reconciled replay point.
+    pub(crate) fn events(&self) -> &[crate::ledger::JournalEvent] { &self.events }
+
+    /// Return the projection generation shared by every board section.
+    pub(crate) const fn generation(&self) -> ProjectionGeneration { self.generation }
+
+    /// Return the journal byte offset shared by every board section.
+    pub(crate) const fn journal_end_offset(&self) -> JournalByteOffset { self.journal_end_offset }
 }
 
 /// One evidence conclusion appended before the requesting stateful verb ran.
@@ -104,14 +142,18 @@ struct ReconciliationChanges {
 }
 
 struct ReconciliationAction {
-    active_holders:      Vec<ActiveHolder>,
-    marker_contexts:     Vec<WorktreeContext>,
-    repository_root:     PathBuf,
-    retention_repairs:   Vec<RetentionRepair>,
-    retention_deletions: Vec<ReservationId>,
-    alert_subjects:      Vec<AlertSubject>,
-    evidence:            Vec<ReconciledEvidence>,
-    repository_snapshot: RepositorySnapshot,
+    active_holders:                Vec<ActiveHolder>,
+    marker_contexts:               Vec<WorktreeContext>,
+    repository_root:               PathBuf,
+    retention_repairs:             Vec<RetentionRepair>,
+    retention_deletions:           Vec<ReservationId>,
+    alert_subjects:                Vec<AlertSubject>,
+    evidence:                      Vec<ReconciledEvidence>,
+    repository_snapshot:           RepositorySnapshot,
+    recovered_bypass_marker_paths: Vec<PathBuf>,
+    pending_bypass_imports:        Vec<permit::PendingBypassMarkerImport>,
+    unrecorded_bypass_occurrences: Vec<BypassOccurrenceTime>,
+    trunk_resolution_calls:        u64,
 }
 
 #[derive(Clone, Copy)]
@@ -204,7 +246,7 @@ fn reconcile_with_scope(
                             );
                         },
                     };
-                match build_plan(
+                let mut reconciliation_plan = match build_plan(
                     &reservations,
                     &ordering_graph,
                     repository_observation_scope,
@@ -213,13 +255,38 @@ fn reconcile_with_scope(
                     &worktree_context,
                     &berth_config,
                 ) {
-                    Ok(reconciliation_plan) => ReconciliationValidation::Apply {
-                        operations: reconciliation_plan.operations,
-                        action:     reconciliation_plan.action,
+                    Ok(reconciliation_plan) => reconciliation_plan,
+                    Err(error) => {
+                        return ReconciliationValidation::Reject(
+                            ReconciliationPlanningError::Reservation(error),
+                        );
                     },
-                    Err(error) => ReconciliationValidation::Reject(
-                        ReconciliationPlanningError::Reservation(error),
-                    ),
+                };
+                let mut pending_bypasses = match permit::prepare_pending_bypass_recovery(
+                    worktree_context.common_git_directory(),
+                    state.events(),
+                ) {
+                    Ok(pending_bypasses) => pending_bypasses,
+                    Err(error) => {
+                        return ReconciliationValidation::Reject(
+                            ReconciliationPlanningError::PendingBypass(error),
+                        );
+                    },
+                };
+                let pending_bypass_imports = pending_bypasses.take_imports();
+                let recoverable_operations = pending_bypass_imports
+                    .iter()
+                    .map(|pending_import| pending_import.operation().clone())
+                    .collect();
+                reconciliation_plan.action.pending_bypass_imports = pending_bypass_imports;
+                reconciliation_plan.action.recovered_bypass_marker_paths =
+                    pending_bypasses.take_completed_marker_paths();
+                reconciliation_plan.action.unrecorded_bypass_occurrences =
+                    pending_bypasses.take_unrecorded_occurrences();
+                ReconciliationValidation::Apply {
+                    operations: reconciliation_plan.operations,
+                    recoverable_operations,
+                    action: reconciliation_plan.action,
                 }
             },
             ReconciliationAction::commit,
@@ -247,6 +314,8 @@ fn build_plan(
     let repository_root = worktree_context.repository_root();
     let mut changes = ReconciliationChanges::default();
     let mut alert_subjects = Vec::new();
+    let mut trunk_resolution_calls = 0;
+    trunk_resolution_calls += 1;
     let repository_trunk = reservation::current_trunk(repository_root, &berth_config.trunk)
         .map_or(RepositoryTrunk::ObjectUnknown, RepositoryTrunk::Resolved);
     let mut reservation_snapshots = Vec::new();
@@ -311,6 +380,10 @@ fn build_plan(
             alert_subjects,
             evidence: changes.evidence,
             repository_snapshot,
+            recovered_bypass_marker_paths: Vec::new(),
+            pending_bypass_imports: Vec::new(),
+            unrecorded_bypass_occurrences: Vec::new(),
+            trunk_resolution_calls,
         },
     })
 }
@@ -423,8 +496,12 @@ impl GateReconciliation {
 
 impl<Decision> GateReconciliationAction<Decision> {
     /// Commit reconciliation repairs while retaining the already validated gate decision.
-    pub(crate) fn commit(self) -> Result<(ReconciliationReport, Decision), ReconcileError> {
-        let report = self.reconciliation.commit()?;
+    pub(crate) fn commit(
+        self,
+        state: &ReplayedLedgerState<'_>,
+        recoverable_failures: &crate::ledger::RecoverableReconciliationAppendFailures,
+    ) -> Result<(ReconciliationReport, Decision), ReconcileError> {
+        let report = self.reconciliation.commit(state, recoverable_failures)?;
         Ok((report, self.decision))
     }
 }
@@ -704,7 +781,29 @@ fn predecessor_descendants(
 }
 
 impl ReconciliationAction {
-    fn commit(self) -> Result<ReconciliationReport, ReconcileError> {
+    fn commit(
+        mut self,
+        state: &ReplayedLedgerState<'_>,
+        recoverable_failures: &crate::ledger::RecoverableReconciliationAppendFailures,
+    ) -> Result<ReconciliationReport, ReconcileError> {
+        let reservations =
+            RetainedReservationSet::replay(state.events()).map_err(ReconcileError::Replay)?;
+        let ordering_graph =
+            OrderingGraph::replay(state.events()).map_err(ReconcileError::EdgeReplay)?;
+        let constraints = ordering_graph
+            .integration_constraints(&reservations, &self.repository_snapshot, state.generation())
+            .map_err(ReconcileError::MissingReadinessFact)?;
+        for pending_import in self.pending_bypass_imports {
+            if recoverable_failures.contains(pending_import.operation()) {
+                self.unrecorded_bypass_occurrences
+                    .push(pending_import.occurrence_time().clone());
+            } else {
+                self.recovered_bypass_marker_paths
+                    .push(pending_import.marker_path().to_path_buf());
+            }
+        }
+        permit::delete_recovered_bypass_markers(&self.recovered_bypass_marker_paths)
+            .map_err(LedgerError::Io)?;
         for reservation_id in self.retention_deletions {
             git::delete_reservation_retention_ref(&self.repository_root, reservation_id)?;
         }
@@ -740,10 +839,25 @@ impl ReconciliationAction {
                 alert_subject.worktree_liveness,
             )?);
         }
+        let orphan_recovery_evidence_queries = alerts
+            .iter()
+            .map(Alert::recovery_evidence_query_count)
+            .sum();
         Ok(ReconciliationReport {
             alerts,
             evidence: self.evidence,
             repository_snapshot: self.repository_snapshot,
+            constraints,
+            journal_snapshot: ReconciledJournalSnapshot {
+                events:             state.events().to_vec(),
+                generation:         state.generation(),
+                journal_end_offset: state.journal_end_offset(),
+            },
+            unrecorded_bypass_occurrences: self.unrecorded_bypass_occurrences,
+            git_cost: ReconciliationGitCost {
+                trunk_resolution_calls: self.trunk_resolution_calls,
+                orphan_recovery_evidence_queries,
+            },
         })
     }
 }
@@ -753,6 +867,7 @@ enum ReconciliationPlanningError {
     Reservation(ReservationReplayError),
     Edge(EdgeReplayError),
     WorktreeRegistry(WorktreeRegistryError),
+    PendingBypass(std::io::Error),
 }
 
 /// A reconciliation failure classified for command-boundary exit behavior.
@@ -763,6 +878,7 @@ pub(crate) enum ReconcileError {
     Ledger(LedgerError),
     Replay(ReservationReplayError),
     EdgeReplay(EdgeReplayError),
+    MissingReadinessFact(MissingReadinessFact),
     Transaction(LedgerTransactionError),
     WorktreeRegistry(WorktreeRegistryError),
 }
@@ -794,6 +910,9 @@ impl ReconcileError {
             Self::EdgeReplay(error) => {
                 OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
             },
+            Self::MissingReadinessFact(error) => {
+                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+            },
             Self::WorktreeRegistry(error) => {
                 OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
             },
@@ -809,6 +928,7 @@ impl Display for ReconcileError {
             Self::Ledger(error) => error.fmt(formatter),
             Self::Replay(error) => error.fmt(formatter),
             Self::EdgeReplay(error) => error.fmt(formatter),
+            Self::MissingReadinessFact(error) => error.fmt(formatter),
             Self::Transaction(error) => error.fmt(formatter),
             Self::WorktreeRegistry(error) => error.fmt(formatter),
         }
@@ -839,6 +959,9 @@ impl From<ReconciliationPlanningError> for ReconcileError {
             ReconciliationPlanningError::Reservation(error) => Self::Replay(error),
             ReconciliationPlanningError::Edge(error) => Self::EdgeReplay(error),
             ReconciliationPlanningError::WorktreeRegistry(error) => Self::WorktreeRegistry(error),
+            ReconciliationPlanningError::PendingBypass(error) => {
+                Self::Ledger(LedgerError::Io(error))
+            },
         }
     }
 }

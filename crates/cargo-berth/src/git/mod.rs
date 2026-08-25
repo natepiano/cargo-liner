@@ -18,6 +18,7 @@ use command::git_output_dynamic;
 use command::git_output_dynamic_with_input;
 use constants::GIT_ANCESTRY_PATH_ARG_PREFIX;
 use constants::GIT_BATCH_CHECK_ARG;
+use constants::GIT_BOUNDARY_ARG;
 use constants::GIT_CAT_FILE_COMMAND;
 use constants::GIT_COMMIT_PEEL_SUFFIX;
 use constants::GIT_COMMON_DIRECTORY_ARG;
@@ -26,6 +27,7 @@ use constants::GIT_EXISTS_ARG;
 use constants::GIT_HEAD_REVISION;
 use constants::GIT_HOOKS_PATH;
 use constants::GIT_IS_ANCESTOR_ARG;
+use constants::GIT_LEFT_RIGHT_ARG;
 use constants::GIT_LOCAL_BRANCH_REF_PREFIX;
 use constants::GIT_MERGE_BASE_COMMAND;
 use constants::GIT_MISSING_OBJECT_SUFFIX;
@@ -40,10 +42,24 @@ use constants::GIT_SHOW_TOPLEVEL_ARG;
 use constants::GIT_UPDATE_REF_COMMAND;
 use constants::GIT_WORKTREE_COMMAND;
 use constants::GIT_WORKTREE_LIST_ARG;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::ReservationId;
+
+/// A worktree's live relationship to the configured trunk.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum AheadBehind {
+    /// Both histories share ancestry and have these independent commit counts.
+    Counts { ahead: u64, behind: u64 },
+    /// Both objects resolve, but their histories have no common ancestor.
+    Unrelated,
+    /// Git or one required object could not produce a trustworthy comparison.
+    Unavailable,
+}
 
 /// Resolve the shared administrative directory for a repository worktree.
 pub(crate) fn common_directory(repository_root: &Path) -> Result<PathBuf, GitError> {
@@ -263,6 +279,52 @@ pub(crate) fn worktree_list_porcelain(repository_root: &Path) -> Result<Vec<u8>,
         });
     }
     Ok(output.stdout)
+}
+
+/// Compute one worktree head's live relationship to trunk with one git invocation.
+pub(crate) fn ahead_behind(
+    repository_root: &Path,
+    trunk: &GitObjectId,
+    worktree_head: &GitObjectId,
+) -> AheadBehind {
+    if trunk == worktree_head {
+        return AheadBehind::Counts {
+            ahead:  0,
+            behind: 0,
+        };
+    }
+    let symmetric_difference = format!("{trunk}...{worktree_head}");
+    let arguments = vec![
+        GIT_REV_LIST_COMMAND.to_owned(),
+        GIT_LEFT_RIGHT_ARG.to_owned(),
+        GIT_BOUNDARY_ARG.to_owned(),
+        symmetric_difference,
+    ];
+    let Ok(output) = git_output_dynamic(repository_root, &arguments) else {
+        return AheadBehind::Unavailable;
+    };
+    if !output.status.success() {
+        return AheadBehind::Unavailable;
+    }
+    let Ok(output) = String::from_utf8(output.stdout) else {
+        return AheadBehind::Unavailable;
+    };
+    let mut ahead = 0_u64;
+    let mut behind = 0_u64;
+    let mut common_boundary = false;
+    for line in output.lines() {
+        match line.as_bytes().first() {
+            Some(b'<') => behind = behind.saturating_add(1),
+            Some(b'>') => ahead = ahead.saturating_add(1),
+            Some(b'-') => common_boundary = true,
+            _ => return AheadBehind::Unavailable,
+        }
+    }
+    if common_boundary {
+        AheadBehind::Counts { ahead, behind }
+    } else {
+        AheadBehind::Unrelated
+    }
 }
 
 /// Determine whether one commit is an ancestor of another.

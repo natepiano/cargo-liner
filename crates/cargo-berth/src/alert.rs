@@ -35,6 +35,17 @@ impl Alert {
             Self::OrphanedOutstanding(alert) => alert.reservation_id,
         }
     }
+
+    /// Count the git queries that established this orphan recovery verdict.
+    pub(crate) const fn recovery_evidence_query_count(&self) -> u64 {
+        match self {
+            Self::OrphanedOutstanding(alert) => match alert.branch_ref_status {
+                BranchRefStatus::Present { .. } => 4,
+                BranchRefStatus::Missing { .. } => 3,
+                BranchRefStatus::Detached => 2,
+            },
+        }
+    }
 }
 
 impl Display for Alert {
@@ -71,10 +82,32 @@ pub(crate) struct OrphanedOutstandingAlert {
     recoverability:      RecoverabilityVerdict,
 }
 
+impl OrphanedOutstandingAlert {
+    /// Return the outstanding reservation that requires a disposition.
+    pub(crate) const fn reservation_id(&self) -> ReservationId { self.reservation_id }
+
+    /// Borrow the fixed checkpoint commit protected by this alert.
+    pub(crate) const fn protected_tip(&self) -> &ProtectedReservationTip { &self.protected_tip }
+
+    /// Borrow the acquisition-time branch observation.
+    pub(crate) const fn branch_ref_status(&self) -> &BranchRefStatus { &self.branch_ref_status }
+
+    /// Return whether git can read the protected commit.
+    pub(crate) const fn object_availability(&self) -> ObjectAvailability {
+        self.object_availability
+    }
+
+    /// Borrow the retention reference evidence relevant to recoverability.
+    pub(crate) const fn retention_ref_status(&self) -> &RetentionRefStatus { &self.retention_ref }
+
+    /// Return the recovery conclusion already established by reconciliation.
+    pub(crate) const fn recoverability(&self) -> RecoverabilityVerdict { self.recoverability }
+}
+
 /// Current status of the branch reference recorded at claim time.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-enum BranchRefStatus {
+pub(crate) enum BranchRefStatus {
     /// The full branch reference still resolves.
     Present {
         /// The full reference name.
@@ -101,7 +134,7 @@ impl Display for BranchRefStatus {
 /// Whether git can read the protected checkpoint commit.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ObjectAvailability {
+pub(crate) enum ObjectAvailability {
     /// Git can read the commit.
     Available,
     /// Git cannot read the commit.
@@ -120,7 +153,7 @@ impl Display for ObjectAvailability {
 /// Current status of the reservation's private retention reference.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-enum RetentionRefStatus {
+pub(crate) enum RetentionRefStatus {
     /// The retention ref points to the protected tip.
     Present { reference: String },
     /// No retention ref resolves for this reservation.
@@ -149,7 +182,7 @@ impl Display for RetentionRefStatus {
 /// The recovery conclusion current git evidence supports.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum RecoverabilityVerdict {
+pub(crate) enum RecoverabilityVerdict {
     /// The acquisition-time branch remains available.
     RecoverableFromBranch,
     /// The branch does not retain the tip, but the private retention ref does.

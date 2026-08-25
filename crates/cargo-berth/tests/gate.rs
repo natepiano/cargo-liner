@@ -21,6 +21,7 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 
 const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
+const BYPASSED_MERGE_IDENTITY_ENVIRONMENT: &str = "CARGO_BERTH_BYPASSED_MERGE_ID";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_BINARY: &str = "git";
@@ -534,12 +535,28 @@ fn managed_hook_fails_open_and_marks_a_bypass_for_an_unavailable_binary() {
     assert!(diagnostic.contains("permitting this ref transaction"));
     assert!(diagnostic.contains("Rerun cargo berth init"));
 
-    let bypassed = run_hook_script(repository.path(), "prepared", &input, ReleaseValve::Set);
+    let bypassed = run_hook_script_with_bypassed_merge_identity(
+        repository.path(),
+        "prepared",
+        &input,
+        ReleaseValve::Set,
+        "inherited-\"quoted\\identity",
+    );
     assert!(bypassed.status.success());
     let diagnostic = String::from_utf8_lossy(&bypassed.stderr);
     assert!(diagnostic.contains("executable is unavailable"));
     assert!(diagnostic.contains("Rerun cargo berth init"));
     assert_eq!(pending_bypass_count(repository.path()), 1);
+    let marker = pending_bypass_marker(repository.path());
+    let bypassed_merge = marker["cause"]["bypassed_merge"]
+        .as_str()
+        .expect("pending marker should carry a bypassed merge identity");
+    assert!(bypassed_merge.starts_with("git-process-"));
+    assert!(
+        bypassed_merge
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    );
 }
 
 #[test]
@@ -1002,6 +1019,7 @@ fn permit_consumption_waits_for_committed_and_aborted_does_not_spend_it() {
         "aborted",
         &format!("{base} {blocked_head} refs/heads/main\n"),
         ReleaseValve::Unset,
+        BypassedMergeIdentityEnvironment::Unset,
     );
     assert!(abort_phase.status.success());
     assert!(
@@ -1578,6 +1596,12 @@ enum ReleaseValve {
     Set,
 }
 
+#[derive(Clone, Copy)]
+enum BypassedMergeIdentityEnvironment<'environment> {
+    Inherited(&'environment str),
+    Unset,
+}
+
 fn update_main(
     repository_root: &Path,
     previous: &str,
@@ -1604,6 +1628,20 @@ fn pending_bypass_count(repository_root: &Path) -> usize {
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| name.starts_with(PENDING_BYPASS_PREFIX))
         .count()
+}
+
+fn pending_bypass_marker(repository_root: &Path) -> serde_json::Value {
+    let marker_path = fs::read_dir(repository_root.join(".git"))
+        .expect("common git directory should read")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(PENDING_BYPASS_PREFIX))
+        })
+        .expect("pending bypass marker should exist");
+    let marker = fs::read(marker_path).expect("pending bypass marker should read");
+    serde_json::from_slice(&marker).expect("pending bypass marker should contain valid JSON")
 }
 
 fn reference_exists(repository_root: &Path, reference: &str) -> bool {
@@ -1666,6 +1704,24 @@ fn run_hook_script(
         phase,
         input,
         release_valve,
+        BypassedMergeIdentityEnvironment::Unset,
+    )
+}
+
+fn run_hook_script_with_bypassed_merge_identity(
+    repository_root: &Path,
+    phase: &str,
+    input: &str,
+    release_valve: ReleaseValve,
+    bypassed_merge_identity: &str,
+) -> Output {
+    run_hook_at_path(
+        &repository_root.join(HOOK_PATH),
+        repository_root,
+        phase,
+        input,
+        release_valve,
+        BypassedMergeIdentityEnvironment::Inherited(bypassed_merge_identity),
     )
 }
 
@@ -1675,6 +1731,7 @@ fn run_hook_at_path(
     phase: &str,
     input: &str,
     release_valve: ReleaseValve,
+    bypassed_merge_identity_environment: BypassedMergeIdentityEnvironment<'_>,
 ) -> Output {
     let mut command = Command::new(hook_path);
     command
@@ -1687,6 +1744,14 @@ fn run_hook_at_path(
         command.env(BYPASS_ENVIRONMENT, "1");
     } else {
         command.env_remove(BYPASS_ENVIRONMENT);
+    }
+    match bypassed_merge_identity_environment {
+        BypassedMergeIdentityEnvironment::Inherited(bypassed_merge_identity) => {
+            command.env(BYPASSED_MERGE_IDENTITY_ENVIRONMENT, bypassed_merge_identity);
+        },
+        BypassedMergeIdentityEnvironment::Unset => {
+            command.env_remove(BYPASSED_MERGE_IDENTITY_ENVIRONMENT);
+        },
     }
     let mut child = command.spawn().expect("managed hook should start");
     child

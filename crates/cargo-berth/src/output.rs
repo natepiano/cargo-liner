@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::alert::Alert;
 use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
+use crate::board::BoardModel;
 use crate::config::InitializationState;
 use crate::drift::DriftEffect;
 use crate::drift::DriftReport;
@@ -47,6 +48,9 @@ use crate::session::SessionIdentityMappingPublication;
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.";
 const PROJECTION_REPAIRED_MESSAGE: &str =
     "Rebuilt reservations.json from journal truth without changing the journal.";
+const BOARD_READY_MESSAGE: &str =
+    "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
+#[cfg(test)]
 const UNIMPLEMENTED_MESSAGE: &str = "The reservation engine is not implemented.";
 
 /// One response from a `cargo-berth` verb.
@@ -108,6 +112,8 @@ pub(crate) enum PostCommitRendering {
 enum OutputStatus {
     /// The verb parsed, but no engine stands behind it yet.
     Unimplemented,
+    /// The headless board was projected from reconciled journal and repository facts.
+    BoardReady,
     /// Initialization created or verified the durable coordination resources.
     Initialized,
     /// Explicit repair rebuilt only the disposable journal projection.
@@ -191,8 +197,8 @@ enum OutputFacts {
     ProjectionRepair(ProjectionRepairPayload),
     /// Facts returned by confirmed journal reinitialization.
     Reinitialize(ReinitializationPayload),
-    /// Placeholder facts for an unimplemented board query.
-    Board(PendingPayload),
+    /// Facts returned by the headless reservation board.
+    Board(Box<BoardModel>),
     /// Facts returned by `check`.
     Check(CheckPayload),
     /// Facts returned by `claim`.
@@ -315,10 +321,6 @@ enum InitializationResource {
     /// This initialization call retained an existing resource unchanged.
     Existing,
 }
-
-/// A deliberately empty typed placeholder for a verb whose engine arrives later.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct PendingPayload {}
 
 /// Typed outcomes returned by the trunk integration gate.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -736,6 +738,7 @@ pub(crate) enum CoordinationRunMarkerRetirement {
 
 impl OutputEnvelope {
     /// Build the response for a verb that has no engine behind it yet.
+    #[cfg(test)]
     pub(crate) fn unimplemented(command_verb: CommandVerb) -> Self {
         Self {
             verb:         command_verb,
@@ -745,6 +748,20 @@ impl OutputEnvelope {
             blocked_by:   Vec::new(),
             message:      UNIMPLEMENTED_MESSAGE.to_owned(),
             payload:      OutputPayload::pending(command_verb),
+        }
+    }
+
+    /// Build a successful headless board response without requiring a terminal.
+    pub(crate) fn board(board: BoardModel) -> Self {
+        let reservations = board.reservation_ids();
+        Self {
+            verb: CommandVerb::Board,
+            status: OutputStatus::BoardReady,
+            exit_code: BerthExit::Clear,
+            reservations,
+            blocked_by: Vec::new(),
+            message: BOARD_READY_MESSAGE.to_owned(),
+            payload: OutputPayload::from_facts(OutputFacts::Board(Box::new(board))),
         }
     }
 
@@ -1391,11 +1408,11 @@ impl OutputPayload {
         }
     }
 
+    #[cfg(test)]
     const fn pending(command_verb: CommandVerb) -> Self {
-        let pending = PendingPayload {};
         let facts = match command_verb {
-            CommandVerb::Board => OutputFacts::Board(pending),
-            CommandVerb::Init
+            CommandVerb::Board
+            | CommandVerb::Init
             | CommandVerb::Check
             | CommandVerb::Claim
             | CommandVerb::Drift
