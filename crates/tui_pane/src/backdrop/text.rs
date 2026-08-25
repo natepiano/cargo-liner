@@ -18,7 +18,9 @@
 //! the lines need not travel together. [`TextDrift`] says whether they
 //! do, and while they do not, each line's own speed stands somewhere in
 //! a spread around the field's -- so lines that started flush come
-//! apart, and how fast they do is steerable.
+//! apart, and how fast they do is steerable. Where in that spread each
+//! line stands is not drawn line by line but dealt in lanes: see
+//! [`deal_variances`].
 //!
 //! Position is tracked in whole numbers throughout, for the same
 //! reason it is in the band: a line moving a fraction of a cell per
@@ -35,11 +37,17 @@ use super::Backdrop;
 use super::BandDirection;
 use super::constants::DEFAULT_TEXT_SPEED;
 use super::constants::DEFAULT_TEXT_SPREAD;
+use super::constants::LANE_FRACTION_UNIT;
 use super::constants::MAX_TEXT_SPEED;
 use super::constants::MAX_TEXT_SPREAD;
 use super::constants::MICROS_PER_SECOND;
 use super::constants::MIN_TEXT_SPEED;
 use super::constants::SUBCELLS_PER_CELL;
+use super::constants::TEXT_LANE_COLUMNS;
+use super::constants::TEXT_LANE_GIVE_PERCENT;
+use super::constants::TEXT_LANE_ROWS;
+use super::constants::TEXT_RIPPLE_LINES;
+use super::constants::TEXT_RIPPLE_PERCENT;
 use super::constants::WHOLE_PERCENT;
 use super::random::Xorshift;
 use super::random::random_glyph;
@@ -94,7 +102,10 @@ struct TextLine {
     /// How far into the next cell it has come, in sub-cells.
     fraction: u32,
     /// Where this line's own speed stands in the spread: zero is the
-    /// slow end of it and [`u8::MAX`] the fast one.
+    /// slow end of it and [`u8::MAX`] the fast one. Dealt in lanes --
+    /// see [`deal_variances`] -- so a line's neighbours are travelling
+    /// at close to the same speed and the display reads as bodies of
+    /// text rather than as separate lines.
     ///
     /// Drawn once, when the line is, and held from then on. Opening the
     /// spread stretches the range every line's speed is read off rather
@@ -380,11 +391,26 @@ impl DriftingText {
         }
     }
 
+    /// How many lines one lane of speeds covers, which is the target for
+    /// the axis the lines happen to lie on.
+    ///
+    /// Wider across columns than deep across rows, and by the ratio a
+    /// character cell stands at -- see [`TEXT_LANE_COLUMNS`]. A single
+    /// figure for both would give the same lane a thickness on screen
+    /// that changed with the direction key.
+    const fn lines_per_lane(&self) -> usize {
+        match self.direction {
+            BandDirection::Left | BandDirection::Right => TEXT_LANE_ROWS,
+            BandDirection::Up | BandDirection::Down => TEXT_LANE_COLUMNS,
+        }
+    }
+
     /// Draw a fresh set of lines for the area and the axis they cross
     /// it on, every one of them flush with the others.
     fn rebuild(&mut self) {
         let count = usize::from(self.line_count());
         let length = usize::from(self.line_length());
+        let variances = deal_variances(count, self.lines_per_lane(), &mut self.xorshift);
         let mut lines = Vec::with_capacity(count);
         for index in 0..count {
             let mut glyphs = Vec::with_capacity(length);
@@ -395,7 +421,7 @@ impl DriftingText {
                 glyphs,
                 drifted: 0,
                 fraction: 0,
-                variance: deal_variance(index, &mut self.xorshift),
+                variance: variances.get(index).copied().unwrap_or(u8::MAX / 2),
             });
         }
         self.lines = lines;
@@ -419,30 +445,195 @@ impl DriftingText {
     }
 }
 
-/// Where one line sits in the spread, dealt so that it lands at the
-/// opposite end of it from the line before.
+/// Where every line of the field sits in the spread, dealt as lanes.
 ///
-/// Neighbouring lines are the only ones the eye can compare. A field
-/// of characters carries no landmark to measure a line against
-/// anything further off, so what the reader sees of the spread is
-/// whichever pairs happen to be next to each other -- and two lines
-/// drawn independently land on much the same speed as often as not.
-/// Dealt that way the field is varied by the numbers and reads as
-/// uniform in patches, however wide the spread is opened.
+/// A speed drawn for each line on its own is varied by the numbers and
+/// reads as noise: neighbouring lines are the only ones the eye can
+/// compare, a field of characters carries no landmark to measure a line
+/// against anything further off, and independent draws leave the
+/// display without a single run of lines going anywhere together.
+/// Dealing alternate lines to opposite ends of the range answers that
+/// with a comb, which is legible but is a texture rather than motion.
 ///
-/// Alternate lines are therefore dealt from the slow and the fast
-/// third of the range, which leaves every adjacent pair two thirds of
-/// it apart at worst -- one of them always slower than the field and
-/// the other always faster. The middle third is what is given up, and
-/// each line still draws its own place inside its third, so the field
-/// is not a comb of two speeds.
-fn deal_variance(index: usize, xorshift: &mut Xorshift) -> u8 {
-    let third = xorshift.byte() / 3;
-    if index.is_multiple_of(2) {
-        third
-    } else {
-        u8::MAX - third
+/// Lanes are the answer to both. A speed is drawn every
+/// `lines_per_lane` lines down the field, and every line between two of
+/// those points takes a speed interpolated from the pair -- so a slow
+/// point holds the lines around it back while a fast one carries its own
+/// along, and the display reads as bodies of text travelling together
+/// rather than as a field of separate lines. The interpolation is a
+/// smoothstep, which is flat at each point and steep between them, so a
+/// lane has a body at one speed and gives way over the lines that part
+/// it from the next.
+///
+/// Three things are done around that. The drawn points are pushed toward
+/// the ends of the range by [`toward_the_ends`], so the lanes stand
+/// further apart from each other than the lines inside one stand from
+/// their neighbours -- which is what makes them read as a slow group and
+/// a fast group rather than as one long gradient. A second, finer run of
+/// points is then drawn the same way and read at
+/// [`TEXT_RIPPLE_PERCENT`] of its strength, which is what puts visible
+/// variation *inside* a lane: short runs of lines easing ahead of their
+/// group and falling back, without any of them leaving it. And every
+/// line is finally given [`TEXT_LANE_GIVE_PERCENT`] of the range to
+/// itself, because two lines dealt exactly one speed never come apart
+/// however varied the rest of the field is.
+fn deal_variances(count: usize, lines_per_lane: usize, xorshift: &mut Xorshift) -> Vec<u8> {
+    let lanes: Vec<u8> = draw_points(count, lines_per_lane, xorshift)
+        .into_iter()
+        .map(toward_the_ends)
+        .collect();
+    let ripple = draw_points(count, TEXT_RIPPLE_LINES, xorshift);
+    (0..count)
+        .map(|line| {
+            let carried = speed_at(&lanes, line, count);
+            let within = nudged(carried, speed_at(&ripple, line, count), TEXT_RIPPLE_PERCENT);
+            nudged(within, xorshift.byte(), TEXT_LANE_GIVE_PERCENT)
+        })
+        .collect()
+}
+
+/// A run of drawn speeds spaced one every `every` lines down a field of
+/// `count` of them, with a point at either end.
+///
+/// Spacing rather than a count of them, so the same call gives a lane
+/// the same thickness whatever size the field is -- a window twice as
+/// deep gets twice as many lanes rather than lanes twice as deep.
+/// Always at least one span, so a field shorter than one lane is still
+/// dealt something to interpolate across.
+///
+/// One point per slice of the range rather than each drawn freely, and
+/// then shuffled. Free draws leave a display with no fast lane on it
+/// whenever the numbers happen to come out low, which is an ordinary
+/// hand rather than a rare one and reads as a field that is simply
+/// slow -- and it is the very thing the lanes exist to avoid, since a
+/// reader with nothing quick on screen has nothing to measure the slow
+/// against. A point per slice makes a slow lane, a fast one and
+/// something in between certain whatever is drawn; the shuffle is what
+/// keeps them from arriving in order down the display.
+fn draw_points(count: usize, every: usize, xorshift: &mut Xorshift) -> Vec<u8> {
+    let whole = usize::from(u8::MAX).saturating_add(1);
+    let points = (count / every.max(1)).max(1).saturating_add(1);
+    let slice = (whole / points).max(1);
+    let mut drawn: Vec<u8> = (0..points)
+        .map(|index| {
+            let low = index.saturating_mul(whole) / points;
+            u8::try_from(low.saturating_add(xorshift.index(slice))).unwrap_or(u8::MAX)
+        })
+        .collect();
+    for index in (1..drawn.len()).rev() {
+        drawn.swap(index, xorshift.index(index.saturating_add(1)));
     }
+    drawn
+}
+
+/// The speed `points` carry `line` of `count` at, read off the two of
+/// them either side of it.
+///
+/// The weight between them is a smoothstep rather than the plain
+/// fraction, which is what gives a lane a body: the curve barely moves
+/// at either end and does the whole of its travel in the middle, so the
+/// lines nearest a point sit at very nearly its speed and the ones
+/// halfway between two are where the field changes hands.
+fn speed_at(points: &[u8], line: usize, count: usize) -> u8 {
+    let spans = points.len().saturating_sub(1);
+    let Some(first) = points.first().copied() else {
+        return u8::MAX / 2;
+    };
+    if spans == 0 || count == 0 {
+        return first;
+    }
+    let scaled = line.saturating_mul(spans);
+    let between = (scaled / count).min(spans.saturating_sub(1));
+    let into = scaled % count;
+    let fraction = u32::try_from(
+        into.saturating_mul(usize::try_from(LANE_FRACTION_UNIT).unwrap_or(usize::MAX)) / count,
+    )
+    .unwrap_or(0);
+    let weight = smoothstep(fraction);
+    let from = u32::from(points.get(between).copied().unwrap_or(first));
+    let to = u32::from(
+        points
+            .get(between.saturating_add(1))
+            .copied()
+            .unwrap_or(first),
+    );
+    let travelled = from.abs_diff(to).saturating_mul(weight) / LANE_FRACTION_UNIT;
+    let value = if to >= from {
+        from.saturating_add(travelled)
+    } else {
+        from.saturating_sub(travelled)
+    };
+    u8::try_from(value).unwrap_or(u8::MAX)
+}
+
+/// `value` moved `percent` of however far `toward` stands from the
+/// middle of the range, upward where that draw is above the middle and
+/// downward where it is below.
+///
+/// A draw read as an offset rather than blended into the value, which is
+/// the difference between varying a lane and diluting it: a blend pulls
+/// every line toward the middle of the range and would undo the work
+/// [`toward_the_ends`] does, while this leaves a slow lane slow and only
+/// says where in it the line sits.
+///
+/// An offset that would carry the line past an end of the range is
+/// turned back in instead of being clipped there. Clipping is what
+/// costs the field its variation exactly where it is wanted most: the
+/// lanes are pushed to the ends on purpose, so the slowest group sits
+/// against the floor and every downward offset in it would flatten to
+/// the same number -- a wide run of lines dealt one speed, which is what
+/// the lanes are for avoiding. Turning back keeps the offset varying
+/// line by line and keeps the line inside its own lane.
+fn nudged(value: u8, toward: u8, percent: u32) -> u8 {
+    let whole = u32::from(u8::MAX);
+    let middle = whole / 2;
+    let drawn = u32::from(toward);
+    let moved = drawn.abs_diff(middle).saturating_mul(percent) / WHOLE_PERCENT;
+    let standing = u32::from(value);
+    let landed = if drawn >= middle {
+        let raised = standing.saturating_add(moved);
+        if raised > whole {
+            whole.saturating_sub(raised.saturating_sub(whole))
+        } else {
+            raised
+        }
+    } else {
+        standing.abs_diff(moved)
+    };
+    u8::try_from(landed).unwrap_or(u8::MAX)
+}
+
+/// A drawn speed moved toward whichever end of the range it is already
+/// nearer, so two lanes drawn a little apart end up plainly apart.
+///
+/// The same smoothstep curve the interpolation uses, read as a curve
+/// over the range rather than over the distance between two lanes: it
+/// leaves the middle where it is and carries everything else outward,
+/// so a field of lanes still has a medium one while its slow and fast
+/// lanes are further from it than they were drawn.
+///
+/// Applied twice. Once is a curve the numbers can measure and the eye
+/// cannot: a field of characters gives nothing to compare a line
+/// against, so lanes a quarter of the range apart still read as one
+/// speed. Twice sends a slow draw to roughly a fifth of where one pass
+/// leaves it and a fast one nearly to the top, which is what turns the
+/// display into groups rather than a gradient. The middle is a fixed
+/// point of the curve, so no number of passes moves it.
+fn toward_the_ends(value: u8) -> u8 {
+    let whole = u32::from(u8::MAX);
+    let along = u32::from(value).saturating_mul(LANE_FRACTION_UNIT) / whole;
+    let eased = smoothstep(smoothstep(along));
+    u8::try_from(eased.saturating_mul(whole) / LANE_FRACTION_UNIT).unwrap_or(u8::MAX)
+}
+
+/// Smoothstep across [`LANE_FRACTION_UNIT`]: both ends where they were,
+/// and the travel between them slowest at either end and fastest in the
+/// middle.
+fn smoothstep(fraction: u32) -> u32 {
+    let unit = u64::from(LANE_FRACTION_UNIT);
+    let along = u64::from(fraction).min(unit);
+    let eased = along * along * (3 * unit - 2 * along) / (unit * unit);
+    u32::try_from(eased).unwrap_or(LANE_FRACTION_UNIT)
 }
 
 /// How fast one line drifts, given where its own variance stands in the
@@ -720,34 +911,156 @@ mod tests {
         assert_eq!(text.spread, DEFAULT_TEXT_SPREAD);
     }
 
-    /// Every neighbouring pair of lines straddles the field's own
-    /// speed, one slower and one faster. This is the whole of what the
-    /// reader sees of the spread: a field whose numbers are varied but
-    /// whose adjacent lines happen to match reads as one that is not
-    /// varied at all.
+    /// Lines the field has dealt, for the lane tests. Seeded rather
+    /// than clock-drawn: what is being asserted is how one draw is laid
+    /// out across the display, which is not a thing to read off
+    /// whichever numbers the clock happened to give.
+    const LANE_TEST_LINES: usize = 48;
+
+    /// Seeds the lane tests read, so a property is asserted of the
+    /// dealing rather than of one lucky draw.
+    const LANE_TEST_SEEDS: [u64; 8] = [1, 7, 19, 41, 97, 233, 1021, 65537];
+
+    /// A line travels at close to its neighbours' speed and nothing
+    /// like the speed of a line across the display from it. That is the
+    /// whole of what makes a lane: runs of text going somewhere
+    /// together, with a slower and a faster run either side.
+    ///
+    /// Measured against lines half the display apart rather than
+    /// against a fixed number, because the two are the same
+    /// distribution once the lanes are taken away -- so the ratio
+    /// between them is the correlation the lanes exist to create, and
+    /// a deal that lost it fails here whatever range it happens to
+    /// span.
     #[test]
-    fn neighbouring_lines_drift_to_either_side_of_the_field_speed() {
-        let mut text = DriftingText::new();
-        text.advance(AREA, Duration::ZERO);
-        assert_eq!(text.drift, TextDrift::Apart, "the field starts apart");
+    fn a_line_travels_at_close_to_its_neighbours_speed() {
+        let mut neighbours = 0_u32;
+        let mut across = 0_u32;
+        for seed in LANE_TEST_SEEDS {
+            let dealt =
+                deal_variances(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut Xorshift::seeded(seed));
+            neighbours += dealt
+                .windows(2)
+                .map(|pair| u32::from(pair[0].abs_diff(pair[1])))
+                .sum::<u32>();
+            let half = LANE_TEST_LINES / 2;
+            across += (0..half)
+                .map(|line| {
+                    u32::from(
+                        dealt
+                            .get(line)
+                            .expect("the line was dealt")
+                            .abs_diff(*dealt.get(line + half).expect("the line was dealt")),
+                    )
+                })
+                .sum::<u32>();
+        }
+        let neighbours = neighbours / u32::try_from(LANE_TEST_SEEDS.len()).expect("a small count");
+        let across = across / u32::try_from(LANE_TEST_SEEDS.len()).expect("a small count");
 
-        let speeds: Vec<u32> = text
-            .lines
-            .iter()
-            .map(|line| line_speed(text.speed, text.spread, false, line.variance))
-            .collect();
+        assert!(
+            neighbours * 3 < across,
+            "neighbouring lines total {neighbours} apart against {across} across the display",
+        );
+    }
 
-        assert!(speeds.len() > 1, "the area has lines to compare");
-        for (index, pair) in speeds.windows(2).enumerate() {
-            let slower = pair[0].min(pair[1]);
-            let faster = pair[0].max(pair[1]);
+    /// No lane is a block of lines dealt one speed between them. Two
+    /// lines at exactly one speed never come apart, so a lane with no
+    /// give in it would slide as a rigid sheet -- the one thing a field
+    /// of drifting text must not look like.
+    #[test]
+    fn the_lines_of_a_lane_are_not_dealt_one_speed() {
+        for seed in LANE_TEST_SEEDS {
+            let dealt =
+                deal_variances(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut Xorshift::seeded(seed));
+            let distinct: std::collections::BTreeSet<u8> = dealt.iter().copied().collect();
+
             assert!(
-                slower < text.speed && faster > text.speed,
-                "lines {index} and {} both sit at {pair:?} against a field at {}",
-                index + 1,
-                text.speed
+                distinct.len() > LANE_TEST_LINES / 2,
+                "seed {seed} dealt {} speeds across {LANE_TEST_LINES} lines",
+                distinct.len(),
             );
         }
+    }
+
+    /// A lane reads its thickness off the axis the lines lie on. That
+    /// the two figures differ, and which way round, is held by the
+    /// assertion beside them; what this catches is the arms of the match
+    /// being written the wrong way round, which would give the vertical
+    /// lanes the rows' figure and come out as narrow stripes.
+    #[test]
+    fn a_lane_is_wider_across_columns_than_it_is_deep_across_rows() {
+        let sideways = locked(BandDirection::Right);
+        let vertical = locked(BandDirection::Down);
+
+        assert_eq!(sideways.lines_per_lane(), TEXT_LANE_ROWS);
+        assert_eq!(vertical.lines_per_lane(), TEXT_LANE_COLUMNS);
+    }
+
+    /// Every deal holds a plainly slow lane and a plainly fast one. The
+    /// speeds are drawn one from each slice of the range for this
+    /// reason: a display where the numbers all came out low reads as a
+    /// field that is simply slow, and leaves the reader nothing to
+    /// measure the slow lines against.
+    #[test]
+    fn every_deal_holds_a_slow_lane_and_a_fast_one() {
+        let third = u8::MAX / 3;
+        for seed in LANE_TEST_SEEDS {
+            let dealt =
+                deal_variances(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut Xorshift::seeded(seed));
+            let slowest = dealt.iter().copied().min().expect("the field was dealt");
+            let fastest = dealt.iter().copied().max().expect("the field was dealt");
+
+            assert!(slowest < third, "seed {seed} dealt nothing slow: {slowest}");
+            assert!(
+                fastest > third * 2,
+                "seed {seed} dealt nothing fast: {fastest}"
+            );
+        }
+    }
+
+    /// A lane sitting against an end of the range still varies line by
+    /// line. The lanes are pushed to the ends on purpose, so clipping
+    /// the offsets there would flatten the slowest group into a wide run
+    /// of lines at one speed -- which is the rigid block the lanes exist
+    /// to avoid, arriving by the back door.
+    #[test]
+    fn a_lane_against_the_end_of_the_range_still_varies() {
+        let ends = [0, u8::MAX];
+        let offsets = [0, 40, 90, 127, 160, 210, u8::MAX];
+
+        for end in ends {
+            let landed: std::collections::BTreeSet<u8> = offsets
+                .into_iter()
+                .map(|offset| nudged(end, offset, TEXT_RIPPLE_PERCENT))
+                .collect();
+
+            assert!(
+                landed.len() > 1,
+                "a lane at {end} was dealt one speed across the ripple: {landed:?}",
+            );
+        }
+    }
+
+    /// A lane drawn a little off the middle ends up plainly off it, so
+    /// the display holds a slow group and a fast one rather than one
+    /// long gradient. The middle itself does not move, which is what
+    /// leaves room for a lane between the two.
+    #[test]
+    fn the_lanes_are_dealt_further_apart_than_they_were_drawn() {
+        let middle = u8::MAX / 2;
+
+        // Halfway to the end and back again, which one pass of the curve
+        // does not manage: it leaves a draw of 64 at 40, and 40 against
+        // 64 is a difference the numbers can see and the eye cannot.
+        assert!(toward_the_ends(64) < 32, "a slow lane is sent slower");
+        assert!(toward_the_ends(192) > 224, "a fast lane is sent faster");
+        assert!(
+            toward_the_ends(middle).abs_diff(middle) <= 2,
+            "the middle stays where it was drawn",
+        );
+        assert_eq!(toward_the_ends(0), 0, "the ends have nowhere further to go");
+        assert_eq!(toward_the_ends(u8::MAX), u8::MAX);
     }
 
     /// A spread already opened past the default survives being sent

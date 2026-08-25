@@ -123,9 +123,10 @@ pub(super) const DEFAULT_TEXT_SPEED: u32 = 12;
 /// characters carries no landmark to measure one line against another
 /// by -- the difference has to be big enough to read as different
 /// speeds rather than as noise. At this width the fastest line covers
-/// better than five times what the slowest does, and the slowest is
-/// still plainly moving.
-pub(super) const DEFAULT_TEXT_SPREAD: u32 = 70;
+/// nine times what the slowest does, and the slowest is still plainly
+/// moving: a cell every half second, which reads as slow rather than as
+/// stopped.
+pub(super) const DEFAULT_TEXT_SPREAD: u32 = 80;
 /// Fastest the text drifts. Lower than [`MAX_BAND_SPEED`] for the same
 /// reason the default is: every cell is drawn, so there is no empty
 /// grid for the eye to measure the travel against.
@@ -139,6 +140,63 @@ pub(super) const MAX_TEXT_SPREAD: u32 = 100;
 /// held above however wide the spread is opened: a line that never
 /// moves is one the reader cannot tell from a frozen display.
 pub(super) const MIN_TEXT_SPEED: u32 = 1;
+/// How many columns one lane of the field's speeds covers while the
+/// text drifts up or down.
+///
+/// Twice [`TEXT_LANE_ROWS`], because a character cell is about twice as
+/// tall as it is wide: a lane this many columns across stands about as
+/// thick on the screen as one that many rows deep, so the display reads
+/// the same either way round. A count of lanes was tried instead and is
+/// what makes a lane the same *fraction* of the display on both axes --
+/// which is the wrong answer, since a terminal is several times wider in
+/// columns than it is deep in rows and the lanes came out as blocks
+/// forty columns across.
+pub(super) const TEXT_LANE_COLUMNS: usize = 16;
+/// How many rows one lane of the field's speeds covers while the text
+/// drifts sideways.
+///
+/// Deep enough that a lane reads as one body of text travelling
+/// together, and shallow enough that an ordinary window holds a slow
+/// lane, a fast one, and something in between.
+pub(super) const TEXT_LANE_ROWS: usize = 8;
+const _: () = assert!(
+    TEXT_LANE_COLUMNS > TEXT_LANE_ROWS,
+    "a character cell is taller than it is wide, so a lane needs more \
+     columns than rows to stand the same thickness on screen"
+);
+/// How far a line's own speed may stand from what the lane and the
+/// ripple across it say, as a percentage of the whole range.
+///
+/// Small, and drawn per line rather than interpolated: what it is for is
+/// that two lines dealt exactly one speed never come apart, so any run
+/// with no give at all in it slides as a rigid block. Variation the
+/// reader can actually see is [`TEXT_RIPPLE_PERCENT`]'s job -- a single
+/// line drifting a little off its neighbours is below what the eye picks
+/// out of a field of characters.
+pub(super) const TEXT_LANE_GIVE_PERCENT: u32 = 4;
+/// How many lines one rise and fall of the ripple inside a lane covers.
+///
+/// A few, so the ripple carries a short run of lines together rather
+/// than dealing each of them separately. That is what makes it legible:
+/// three lines easing ahead of their lane is something the eye reads,
+/// and one line doing it is not.
+pub(super) const TEXT_RIPPLE_LINES: usize = 4;
+/// How much of the range the ripple inside a lane may move a line by, as
+/// a percentage of how far the ripple's own draw stands from the middle.
+///
+/// The second and finer of the two runs of drawn speeds the field is
+/// dealt from: the lanes say which group a line belongs to, and this
+/// says where in its group it sits. Large enough to be read as variation
+/// within a lane, small enough that it never carries a line into the
+/// lane next door.
+pub(super) const TEXT_RIPPLE_PERCENT: u32 = 26;
+/// Fixed-point unit the lane interpolation is worked out in.
+///
+/// A power of two, and large enough that a lane hundreds of lines deep
+/// still moves by more than one step per line. The interpolation is
+/// where a lane's edge becomes a gradient rather than a wall, so it is
+/// the one part of this that cannot be done in whole percentage points.
+pub(super) const LANE_FRACTION_UNIT: u32 = 4096;
 
 // capture
 /// How often the worker takes a fresh capture.

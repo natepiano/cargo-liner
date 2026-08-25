@@ -38,6 +38,18 @@ impl Default for Xorshift {
 }
 
 impl Xorshift {
+    /// The same generator started from a seed of the caller's choosing,
+    /// so a test can read the field a given draw produces rather than
+    /// whatever the clock happened to hand over.
+    #[cfg(test)]
+    pub(super) const fn seeded(seed: u64) -> Self {
+        Self(if seed == 0 {
+            XORSHIFT_FALLBACK_SEED
+        } else {
+            seed
+        })
+    }
+
     /// The next number in the sequence.
     pub(super) const fn roll(&mut self) -> u64 {
         self.0 ^= self.0 << XORSHIFT_FIRST;
