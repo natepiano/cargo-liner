@@ -411,7 +411,7 @@ fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
         &["add", "shared/entered.txt", "outside.txt"],
     );
 
-    let markerless = post_commit_drift(repository.path(), &[]);
+    let markerless = text_post_commit_drift(repository.path(), &[]);
     assert_eq!(markerless.status.code(), Some(1));
     let markerless_warning = String::from_utf8_lossy(&markerless.stderr);
     assert!(markerless_warning.contains("no coordination run was identified"));
@@ -455,7 +455,7 @@ fn post_commit_attribution_candidates_belong_to_the_identified_run() {
     )
     .expect("outside path should write");
 
-    let widened = post_commit_drift(repository.path(), &[]);
+    let widened = text_post_commit_drift(repository.path(), &[]);
 
     assert!(widened.status.success());
     assert!(String::from_utf8_lossy(&widened.stderr).contains(&selected_id));
@@ -484,6 +484,40 @@ fn post_commit_widens_the_only_active_reservation() {
         .collect::<Vec<_>>();
     assert_eq!(widen_events.len(), 1);
     assert_eq!(widen_events[0]["reservation_id"], reservation_id);
+}
+
+#[test]
+fn json_post_commit_reports_every_active_reservation_without_warning_rendering() {
+    let repository = initialized_repository();
+    let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
+    let second_id = claim(repository.path(), "file:second.txt", SECOND_RUN);
+    fs::write(
+        repository.path().join("outside.txt"),
+        "outside both scopes\n",
+    )
+    .expect("outside path should write");
+
+    let widened = post_commit_drift(repository.path(), &[]);
+    let envelope = json_output(&widened);
+
+    assert!(widened.status.success());
+    assert_eq!(envelope["status"], "widened");
+    assert_eq!(envelope["exit_code"], 0);
+    assert!(widened.stderr.is_empty());
+    let results = envelope["payload"]["data"]["results"]
+        .as_array()
+        .expect("drift results should be an array");
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .any(|result| result["reservation_id"] == first_id)
+    );
+    assert!(
+        results
+            .iter()
+            .any(|result| result["reservation_id"] == second_id)
+    );
 }
 
 #[test]
@@ -519,7 +553,7 @@ fn ambiguous_post_commit_keeps_changes_for_an_explicit_cheap_retry() {
     )
     .expect("outside path should write");
 
-    let ambiguous = post_commit_drift(repository.path(), &[]);
+    let ambiguous = text_post_commit_drift(repository.path(), &[]);
     assert_eq!(ambiguous.status.code(), Some(1));
     let warning = String::from_utf8_lossy(&ambiguous.stderr);
     assert!(warning.contains(&first_id));
@@ -1157,6 +1191,20 @@ fn post_commit_drift(repository_root: &Path, arguments: &[&str]) -> Output {
         .env(POST_COMMIT_ENVIRONMENT, "1")
         .output()
         .expect("post-commit drift should run")
+}
+
+fn text_post_commit_drift(repository_root: &Path, arguments: &[&str]) -> Output {
+    let mut command_arguments = vec!["drift", "--full"];
+    command_arguments.extend_from_slice(arguments);
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(command_arguments)
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(POST_COMMIT_ENVIRONMENT, "1")
+        .output()
+        .expect("text post-commit drift should run")
 }
 
 fn post_commit_drift_with_session(repository_root: &Path, session_id: &str) -> Output {

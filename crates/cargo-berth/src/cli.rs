@@ -268,12 +268,30 @@ enum EnvironmentBypassAuditBasis {
 }
 
 /// The output representation requested at the command line boundary.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CliOutputFormat {
     /// Print the frozen JSON envelope.
     Json,
     /// Print the envelope's message.
     Text,
+}
+
+/// Whether the installed post-commit hook requested all-reservation drift behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PostCommitHookRequest {
+    /// Use the post-commit hook's all-reservation drift behavior.
+    Requested,
+    /// Use the ordinary command-line drift behavior.
+    NotRequested,
+}
+
+/// How a completed command response is rendered for its caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandResponseRendering {
+    /// Emit the frozen response envelope in the requested representation.
+    OutputEnvelope(CliOutputFormat),
+    /// Emit only the installed post-commit hook warning.
+    PostCommitWarning,
 }
 
 impl From<bool> for CliOutputFormat {
@@ -519,10 +537,13 @@ impl Cli {
         match command.execute(output_format) {
             CommandExecution::Response(output_envelope) => {
                 let berth_exit = output_envelope.exit_code;
-                if post_commit_hook_requested() {
-                    emit_post_commit_response(&output_envelope);
-                } else {
-                    emit_response(output_format, &output_envelope);
+                match command_response_rendering(output_format, post_commit_hook_request()) {
+                    CommandResponseRendering::OutputEnvelope(output_format) => {
+                        emit_response(output_format, &output_envelope);
+                    },
+                    CommandResponseRendering::PostCommitWarning => {
+                        emit_post_commit_response(&output_envelope);
+                    },
                 }
                 berth_exit.into()
             },
@@ -805,18 +826,19 @@ impl DriftArguments {
         } else {
             DriftComparisonChoice::CheapDelta
         };
-        let reservation = if post_commit_hook_requested() {
-            DriftReservationSelection::EveryActiveForPostCommit {
-                widening: self.reservation.map_or(
-                    PostCommitWideningSelection::SessionMappingOrSingleCandidate,
-                    PostCommitWideningSelection::Explicit,
-                ),
-            }
-        } else {
-            self.reservation.map_or(
+        let reservation = match post_commit_hook_request() {
+            PostCommitHookRequest::Requested => {
+                DriftReservationSelection::EveryActiveForPostCommit {
+                    widening: self.reservation.map_or(
+                        PostCommitWideningSelection::SessionMappingOrSingleCandidate,
+                        PostCommitWideningSelection::Explicit,
+                    ),
+                }
+            },
+            PostCommitHookRequest::NotRequested => self.reservation.map_or(
                 DriftReservationSelection::SessionMappingOrSingleActive,
                 DriftReservationSelection::Explicit,
-            )
+            ),
         };
         DriftRequest {
             comparison,
@@ -1302,8 +1324,24 @@ fn emit_post_commit_response(output_envelope: &OutputEnvelope) {
     }
 }
 
-fn post_commit_hook_requested() -> bool {
-    env::var_os(POST_COMMIT_HOOK_ENVIRONMENT).is_some_and(|value| value == "1")
+const fn command_response_rendering(
+    output_format: CliOutputFormat,
+    post_commit_hook_request: PostCommitHookRequest,
+) -> CommandResponseRendering {
+    match (output_format, post_commit_hook_request) {
+        (CliOutputFormat::Text, PostCommitHookRequest::Requested) => {
+            CommandResponseRendering::PostCommitWarning
+        },
+        (output_format, _) => CommandResponseRendering::OutputEnvelope(output_format),
+    }
+}
+
+fn post_commit_hook_request() -> PostCommitHookRequest {
+    if env::var_os(POST_COMMIT_HOOK_ENVIRONMENT).is_some_and(|value| value == "1") {
+        PostCommitHookRequest::Requested
+    } else {
+        PostCommitHookRequest::NotRequested
+    }
 }
 
 fn write_line(mut rendered: String) {
@@ -1342,13 +1380,29 @@ mod tests {
     use super::BINARY_NAME;
     use super::CARGO_SUBCOMMAND_NAME;
     use super::Cli;
+    use super::CliOutputFormat;
+    use super::CommandResponseRendering;
     use super::CommandVerb;
+    use super::PostCommitHookRequest;
+    use super::command_response_rendering;
     use super::exit_for_parser_error;
     use super::without_subcommand_name;
     use crate::exit::BerthExit;
     use crate::verb::claim::ClaimRequest;
 
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+
+    #[test]
+    fn post_commit_request_renders_text_as_warning_and_json_as_envelope() {
+        assert_eq!(
+            command_response_rendering(CliOutputFormat::Text, PostCommitHookRequest::Requested,),
+            CommandResponseRendering::PostCommitWarning,
+        );
+        assert_eq!(
+            command_response_rendering(CliOutputFormat::Json, PostCommitHookRequest::Requested,),
+            CommandResponseRendering::OutputEnvelope(CliOutputFormat::Json),
+        );
+    }
 
     #[test]
     fn every_verb_parses_under_both_spellings() {
