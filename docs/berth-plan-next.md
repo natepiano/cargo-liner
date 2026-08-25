@@ -31,3 +31,9 @@
   - Why needed: `claim_state.py` hand-maintains `STATUS_PAYLOAD_KINDS` and `FIXED_STATUS_EXIT_CODES` as a mirror of the engine's `OutputStatus`/`BerthExit` pairings; adding a valid engine status currently makes the front end reject that reply until both tables are manually updated.
   - Completion condition: one versioned engine-owned contract supplies or mechanically verifies the Python pairing data, an engine status addition cannot pass engine tests while leaving the front end stale, and malformed status/payload/exit combinations remain rejected.
   - Revealed by: Phase 18
+
+- [ ] **Expose one named reservation's lifecycle and protected tip through a read-only query**
+  - Target: `cargo-berth` engine — `crates/cargo-berth/src/{cli,output}.rs`, `crates/cargo-berth/src/{board,reservation}/mod.rs`, and board integration tests.
+  - Why needed: The board deliberately omits lifecycle-bearing rows for a waiting successor and either endpoint of an unresolved overlap. After a lost release reply, `/plan:delegate` can therefore observe `ReservationPresentWithoutProtectedTip` but cannot prove whether that reservation is outstanding or released; a matching retention ref proves only commit reachability.
+  - Completion condition: `cargo-berth board --reservation <reservation-id> --json` returns a typed read-only `NamedReservationLifecycle::{Active, Outstanding { protected_tip }, ReleasedAfterCheckpoint { protected_tip, disposition }, ReleasedWithoutCheckpoint { disposition }}` result independent of board placement; an unknown id is a typed invalid-input result rather than `Option`, and waiting-successor plus deferred/blocker fixtures prove the selector while existing board JSON remains compatible.
+  - Revealed by: Phase 19
