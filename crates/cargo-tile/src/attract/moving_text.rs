@@ -7,8 +7,9 @@
 //! table. What they share is only what the reader's hands should not
 //! have to re-learn between them.
 //!
-//! The scope is only consulted while the attract screen has been asked
-//! for outright -- see [`Attract::keyed_mode`](super::Attract::keyed_mode).
+//! The scope is consulted while the attract screen is what the display
+//! is showing -- see [`Attract::keyed_mode`](super::Attract::keyed_mode)
+//! -- whether it was asked for or came on over an idle grid.
 
 use crossterm::event::KeyCode;
 use tui_pane::Bindings;
@@ -109,6 +110,30 @@ mod tests {
     use tui_pane::KeyBind;
 
     use super::*;
+
+    /// The arrows point the way the text drifts. Read out of the table
+    /// the keymap is actually built from, and asserted apart from the
+    /// character keys because they are the pair the grid underneath
+    /// also spends -- an arrow that failed to resolve here would move a
+    /// focus ring instead, which looks like a key doing nothing.
+    #[test]
+    fn the_arrows_point_the_way_the_text_drifts() {
+        let scope = MovingTextPane::defaults().into_scope_map();
+        let cases = [
+            (KeyCode::Left, MovingTextAction::TravelLeft),
+            (KeyCode::Right, MovingTextAction::TravelRight),
+            (KeyCode::Up, MovingTextAction::TravelUp),
+            (KeyCode::Down, MovingTextAction::TravelDown),
+        ];
+
+        for (key, action) in cases {
+            assert_eq!(
+                scope.action_for(&KeyBind::from(key)),
+                Some(action),
+                "{key:?} should steer the text",
+            );
+        }
+    }
 
     /// Every steering key resolves to the action it is meant to, read
     /// out of the table the keymap is actually built from.

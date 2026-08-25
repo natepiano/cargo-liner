@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-tile"
-version = "0.2.29-dev"
+version = "0.2.30-dev"
 dependencies = [
  "chrono",
  "clap",

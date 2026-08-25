@@ -6,10 +6,11 @@
 //! the same `+` to something else of its own, and `keymap.toml` gives
 //! each its own table.
 //!
-//! The scope is only consulted while the attract screen has been asked
-//! for outright -- see [`Attract::keyed_mode`](super::Attract::keyed_mode).
-//! Left to come on by itself over an idle grid, the animation is
-//! decoration and the ordinary keys keep their ordinary meanings.
+//! The scope is consulted while the attract screen is what the display
+//! is showing -- see [`Attract::keyed_mode`](super::Attract::keyed_mode)
+//! -- whether it was asked for or came on over an idle grid. Only the
+//! keys it binds are taken either way, so `s` still opens settings and
+//! `a` still gives the grid back.
 
 use crossterm::event::KeyCode;
 use tui_pane::Bindings;
@@ -119,6 +120,28 @@ mod tests {
     use tui_pane::KeyBind;
 
     use super::*;
+
+    /// The arrows point the way the band is sent, asserted apart from
+    /// the character keys because they are the pair the grid underneath
+    /// also spends.
+    #[test]
+    fn the_arrows_point_the_way_the_band_is_sent() {
+        let scope = MovingBandPane::defaults().into_scope_map();
+        let cases = [
+            (KeyCode::Left, MovingBandAction::TravelLeft),
+            (KeyCode::Right, MovingBandAction::TravelRight),
+            (KeyCode::Up, MovingBandAction::TravelUp),
+            (KeyCode::Down, MovingBandAction::TravelDown),
+        ];
+
+        for (key, action) in cases {
+            assert_eq!(
+                scope.action_for(&KeyBind::from(key)),
+                Some(action),
+                "{key:?} should send the band",
+            );
+        }
+    }
 
     /// Every steering key resolves to the action it is meant to, read
     /// out of the table the keymap is actually built from.

@@ -213,15 +213,26 @@ impl Attract {
     pub(crate) const fn asked_for(&self) -> bool { matches!(self.asked, Asked::For) }
 
     /// Which animation is taking the reader's keys, or [`None`] while
-    /// the screen is not being shown on purpose.
+    /// there is a grid on screen for them to mean what they usually do.
     ///
-    /// Only an attract screen that was asked for owns the keyboard. Left
-    /// to come on by itself over an idle grid it is decoration, and
-    /// decoration that quietly changed what `s` did would be worse than
-    /// no animation at all -- a developer who has stopped typing has not
-    /// stopped meaning "settings".
+    /// An attract screen that was asked for owns the keyboard from the
+    /// moment it is asked for, before it has finished arriving. One
+    /// that came on by itself owns it once it has arrived, which is
+    /// when there is nothing else on the screen: the animations fill
+    /// the window, so an arrow that reached the grid instead would move
+    /// a focus ring nobody can see, around cells that are empty -- an
+    /// idle grid is what brought the screen on in the first place.
+    ///
+    /// Never while it is arriving or leaving on its own account. A
+    /// screen going out is one work has just arrived under, and the
+    /// grid coming back is what the reader's keys are for.
+    ///
+    /// Only the keys an animation actually binds are taken either way,
+    /// so `s` still opens settings and `a` still gives the grid back --
+    /// a developer who has stopped typing has not stopped meaning
+    /// "settings".
     pub(crate) const fn keyed_mode(&self) -> Option<AttractMode> {
-        if matches!(self.asked, Asked::For) {
+        if matches!(self.asked, Asked::For) || self.faded == 0 {
             Some(self.mode)
         } else {
             None
@@ -516,6 +527,49 @@ mod tests {
             Grid::Full,
             "which is what gives the panes back"
         );
+    }
+
+    /// A screen that came on by itself takes the reader's keys once it
+    /// has arrived. The animations fill the window, so an arrow reaching
+    /// the grid instead would move a focus ring nobody can see around
+    /// cells with nothing in them -- an idle grid is what brought the
+    /// screen on in the first place.
+    #[test]
+    fn a_screen_that_came_on_by_itself_still_steers() {
+        let mut attract = Attract::new();
+        assert_eq!(attract.keyed_mode(), None, "nothing is on screen yet");
+
+        assert_eq!(settle(&mut attract, Work::Idle), 0, "it comes on by itself");
+
+        assert_eq!(attract.keyed_mode(), Some(attract.mode));
+        assert!(
+            !attract.asked_for(),
+            "and the status line still says it was not asked for"
+        );
+    }
+
+    /// A screen still arriving or leaving on its own account takes
+    /// nothing. One going out is one work has just arrived under, and
+    /// the grid coming back is what the reader's keys are for.
+    #[test]
+    fn a_screen_part_way_in_or_out_takes_no_keys() {
+        let mut attract = Attract::new();
+        attract.advance(AREA, Work::Idle, Updates::Live);
+
+        assert!(attract.faded > 0, "it has only started arriving");
+        assert_eq!(attract.keyed_mode(), None);
+    }
+
+    /// Asking for it hands the keys over at once, before it has
+    /// finished arriving: a reader who pressed `a` is already steering.
+    #[test]
+    fn asking_for_the_screen_takes_the_keys_before_it_arrives() {
+        let mut attract = Attract::new();
+
+        attract.toggle();
+
+        assert_eq!(attract.faded, u8::MAX, "it has not started arriving");
+        assert_eq!(attract.keyed_mode(), Some(attract.mode));
     }
 
     /// A dismissal is of the strip standing over an idle grid, so work

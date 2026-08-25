@@ -442,13 +442,14 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         dispatch_overlay_key(app, &keymap, overlay, bind);
         return;
     }
-    // An attract screen that was asked for owns the keyboard, and it
-    // owns it ahead of everything else: the keys that steer it are the
-    // arrows and `+` `-`, which the grid underneath spends on focus and
-    // on opening and closing a tile. A band that could not be steered
-    // because a grid nobody can see moved its focus ring would not be
-    // steerable at all. Only the keys it actually binds are taken --
-    // `q` still quits, `f` still freezes, and `a` gives the grid back.
+    // An attract screen that is what the display is showing owns the
+    // keyboard, and it owns it ahead of everything else: the keys that
+    // steer it are the arrows and `+` `-`, which the grid underneath
+    // spends on focus and on opening and closing a tile. A band that
+    // could not be steered because a grid nobody can see moved its
+    // focus ring would not be steerable at all. Only the keys it
+    // actually binds are taken -- `q` still quits, `f` still freezes,
+    // and `a` gives the grid back.
     if let Some(attract) = app.attract.keyed_mode()
         && keymap.dispatch_app_pane(AppPaneId::Attract(attract), &bind, app) == KeyOutcome::Consumed
     {

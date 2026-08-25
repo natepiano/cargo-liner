@@ -9,7 +9,7 @@ license.workspace    = true
 name                 = "cargo-tile"
 readme               = "README.md"
 repository.workspace = true
-version     = "0.2.29-dev"
+version     = "0.2.30-dev"
 
 [lints]
 workspace = true
