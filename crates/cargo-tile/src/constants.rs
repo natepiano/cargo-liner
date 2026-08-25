@@ -13,6 +13,18 @@ use ratatui::style::Modifier;
 /// hands rather than as a cut.
 pub(crate) const ATTRACT_FADE_STEP: u8 = 3;
 
+/// How long the grid has to stand empty before the attract screen
+/// comes back to it.
+///
+/// The screen leaves the moment a command turns up and does not turn
+/// back part way, so without this a command that starts and stops
+/// inside a couple of seconds would hand the terminal over and take it
+/// again, over and over. A command that finishes keeps its cell for the
+/// configured spell before it goes; this is the quiet after that, and
+/// it is long enough that a watcher firing every few seconds keeps the
+/// grid rather than trading it back and forth with the animation. The
+/// screen the reader asks for outright waits out none of it.
+pub(crate) const ATTRACT_RETURN_QUIET: Duration = Duration::from_secs(3);
 /// TOML table the moving band's keys are read from and written back to.
 /// Stable -- `keymap.toml` is hand-edited.
 pub(crate) const ATTRACT_MOVING_BAND_SCOPE: &str = "attract_moving_band";

@@ -60,6 +60,8 @@ use crate::iterm2;
 use crate::iterm2::ProfileSwitch;
 use crate::navigation::AppNavigation;
 use crate::probe;
+use crate::probe::Counted;
+use crate::probe::Phase;
 use crate::processes;
 use crate::processes::Scan;
 use crate::render;
@@ -71,7 +73,7 @@ use crate::theme;
 
 /// The terminal backend, with everything written to it counted on the
 /// way out. See [`probe::Counted`].
-type Backend = CrosstermBackend<probe::Counted<Stdout>>;
+type Backend = CrosstermBackend<Counted<Stdout>>;
 
 /// Load configuration, install the theme, build the keymap, and run the
 /// event loop with the terminal in the alternate screen.
@@ -181,7 +183,7 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
             // Re-borrowed every frame: rebinding a key in the keymap
             // overlay swaps the whole map out from under the loop.
             let keymap = Rc::clone(&app.keymap);
-            probe::timed(probe::Phase::Draw, || {
+            probe::timed(Phase::Draw, || {
                 terminal.draw(|frame| render::draw(frame, app, &keymap))
             })?;
             dirty = false;
@@ -272,7 +274,13 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
             // have nothing to repaint for. It asks for frames only
             // while it is on the screen, so an app with work in front
             // of it goes back to costing nothing.
-            if app.attract.showing() {
+            //
+            // And one more at the end of the quiet it waits out before
+            // coming back, which is time nothing else repaints for
+            // either: an empty grid standing still. Without that frame
+            // the screen would be due and nothing would be drawing to
+            // let it back on.
+            if app.attract.showing() || app.attract.due_back(Instant::now()) {
                 dirty = true;
             }
         }

@@ -1,6 +1,8 @@
 //! Frame rendering: the app's panes, the framework status line along the
 //! bottom, and whichever framework overlay is open above them.
 
+use std::time::Instant;
+
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -160,7 +162,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     // else. Between those two it draws over bare panes, which is what
     // it arrives over and leaves over. See [`Attract::advance`].
     let grid = probe::timed(probe::Phase::Advance, || {
-        app.attract.advance(area, work, updates)
+        app.attract.advance(area, work, updates, Instant::now())
     });
     probe::timed(probe::Phase::Panes, || match grid {
         Grid::Full => draw_panes(frame, app, body, Contents::Shown),

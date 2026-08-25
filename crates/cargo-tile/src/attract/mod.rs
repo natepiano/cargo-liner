@@ -9,7 +9,7 @@
 //! cut out of whatever the window is sitting on top of.
 //!
 //! The strip fades in when the roster empties and back out when
-//! something starts, which is why [`Attract::draw`] is called every
+//! something starts, which is why [`Attract::render`] is called every
 //! frame rather than only while idle -- the frames after work arrives
 //! are the ones that carry it off the screen.
 //!
@@ -62,12 +62,14 @@ use self::moving_text::MovingTextAction;
 pub(crate) use self::moving_text::MovingTextPane;
 use crate::app::Updates;
 use crate::constants::ATTRACT_FADE_STEP;
+use crate::constants::ATTRACT_RETURN_QUIET;
 use crate::constants::BAND_SPEED_STEP;
 use crate::constants::BAND_TAIL_SPEED_STEP;
 use crate::constants::BAND_WIDTH_STEP;
 use crate::constants::TEXT_SPEED_STEP;
 use crate::constants::TEXT_SPREAD_STEP;
 use crate::probe;
+use crate::probe::Phase;
 
 /// What [`crate::render`] should do with the tile grid this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -104,7 +106,7 @@ pub(crate) enum Work {
 /// them as one is what left `a` unable to put the strip away at
 /// exactly the moment it is being watched.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum Asked {
+enum Asked {
     /// Nothing either way, which leaves it to the roster.
     #[default]
     Nothing,
@@ -114,6 +116,33 @@ pub(crate) enum Asked {
     /// Against it, which sends it away over an idle grid, where the
     /// roster would otherwise be keeping it.
     Against,
+}
+
+/// Where the screen stands with the roster, which is not the same as
+/// where its fade stands.
+///
+/// The fade alone was not enough to say. Read frame by frame, a roster
+/// that empties and fills again inside the half-second the fade takes
+/// turned the screen around part way through and left it hanging over a
+/// grid that was drawing cells and moving them about -- neither the
+/// animation nor the display, for as long as the commands kept coming.
+/// So the hand-over is a decision the screen makes once and then keeps:
+/// work turns up, the screen goes, and it is the whole way gone before
+/// the roster is asked anything again.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Standing {
+    /// On the screen, or on its way on: the grid has nothing to show.
+    Showing,
+    /// On its way off, and not turning back whatever the grid does
+    /// before it gets there.
+    Leaving,
+    /// Off the screen, with something running.
+    Working,
+    /// Off the screen, with the grid quiet since the instant held. What
+    /// the screen waits out before coming back, so a command that starts
+    /// and stops inside a couple of seconds does not hand the terminal
+    /// over and take it again.
+    Settling(Instant),
 }
 
 /// Which animation the attract screen is drawing.
@@ -170,6 +199,9 @@ pub(crate) struct Attract {
     /// drawn, which is what says the gap since then is not travel the
     /// strip owes.
     held:        bool,
+    /// Where the screen stands with the roster, which is what keeps a
+    /// hand-over from turning around part way through it.
+    standing:    Standing,
 }
 
 impl Attract {
@@ -187,6 +219,7 @@ impl Attract {
             asked:       Asked::Nothing,
             covering:    false,
             held:        false,
+            standing:    Standing::Showing,
         }
     }
 
@@ -303,7 +336,7 @@ impl Attract {
     /// comes the rest of the way in. Leaving runs the same thing
     /// backwards: the panes come back bare under a strip still crossing
     /// them, and only fill once it has gone.
-    pub(crate) const fn grid(&self) -> Grid {
+    const fn grid(&self) -> Grid {
         if !self.covering {
             return Grid::Full;
         }
@@ -323,6 +356,22 @@ impl Attract {
     /// would draw one frame and stop. Fully faded out it wants nothing,
     /// which is what hands the idle app its quiet back.
     pub(crate) const fn showing(&self) -> bool { self.faded != u8::MAX }
+
+    /// Whether the screen is due back, which is the one frame the event
+    /// loop owes it while it is off the terminal.
+    ///
+    /// The quiet a screen waits out is time nothing else repaints for:
+    /// the grid is empty and standing still, and [`Self::showing`] has
+    /// gone quiet with it. So the loop is asked for a frame at the end
+    /// of the quiet rather than through it -- one draw, on which
+    /// [`Self::advance`] turns the screen back on and [`Self::showing`]
+    /// carries the frames from there.
+    pub(crate) fn due_back(&self, now: Instant) -> bool {
+        match self.standing {
+            Standing::Settling(since) => now.duration_since(since) >= ATTRACT_RETURN_QUIET,
+            Standing::Showing | Standing::Leaving | Standing::Working => false,
+        }
+    }
 
     /// Settle which of the emulator's windows this app is drawn in.
     ///
@@ -345,6 +394,58 @@ impl Attract {
         }
     }
 
+    /// Move the screen's standing with the roster on one frame, and
+    /// answer what the fade should do about it.
+    ///
+    /// The roster's own reading is taken once, at the top of a
+    /// hand-over, and not consulted again until the screen is the whole
+    /// way off: [`Standing::Leaving`] answers `Running` however empty
+    /// the grid goes in the meantime. What that buys is a hand-over that
+    /// finishes -- work turning up and going away inside the fade used
+    /// to turn the screen around part way through, and a run of
+    /// short-lived commands left it hanging over a grid that was busy
+    /// opening cells and shuffling them about.
+    ///
+    /// Coming back is the same decision the other way, and it is not
+    /// made on the first quiet frame. [`Standing::Settling`] holds when
+    /// the grid went quiet, and the screen returns once that has stood
+    /// for [`ATTRACT_RETURN_QUIET`] -- so a watcher firing every few
+    /// seconds keeps the display rather than trading it back and forth
+    /// with the animation.
+    fn stand(&mut self, work: Work, now: Instant) -> Work {
+        // A departure that has arrived is over, and this frame's reading
+        // of the roster is the first one to count since it began.
+        if matches!(self.standing, Standing::Leaving) && self.faded == u8::MAX {
+            self.standing = Standing::Working;
+        }
+        self.standing = match self.standing {
+            // Nothing reaches inside a departure still in flight.
+            Standing::Leaving => return Work::Running,
+            Standing::Showing => match work {
+                Work::Idle => Standing::Showing,
+                // Already gone, so there is no departure to make --
+                // which is the app opening onto a grid with work on it.
+                Work::Running if self.faded == u8::MAX => Standing::Working,
+                Work::Running => Standing::Leaving,
+            },
+            Standing::Working => match work {
+                Work::Running => Standing::Working,
+                Work::Idle => Standing::Settling(now),
+            },
+            Standing::Settling(since) => match work {
+                Work::Running => Standing::Working,
+                Work::Idle if now.duration_since(since) >= ATTRACT_RETURN_QUIET => {
+                    Standing::Showing
+                },
+                Work::Idle => Standing::Settling(since),
+            },
+        };
+        match self.standing {
+            Standing::Showing => Work::Idle,
+            Standing::Leaving | Standing::Working | Standing::Settling(_) => Work::Running,
+        }
+    }
+
     /// Carry the strip one frame further in or out of view, and say
     /// what the grid should do underneath it.
     ///
@@ -358,8 +459,17 @@ impl Attract {
     /// Stops asking for fresh captures once the strip has faded the
     /// whole way out: an app with work on the screen has no use for
     /// what is behind it.
-    pub(crate) fn advance(&mut self, area: Rect, work: Work, updates: Updates) -> Grid {
-        let now = Instant::now();
+    ///
+    /// `now` comes from the caller rather than the clock so a test can
+    /// walk the quiet in [`Standing::Settling`] without standing
+    /// through it.
+    pub(crate) fn advance(
+        &mut self,
+        area: Rect,
+        work: Work,
+        updates: Updates,
+        now: Instant,
+    ) -> Grid {
         // A freeze just let go of leaves a gap between this draw and
         // the one before it that the strip does not owe: the display
         // stood still, so the strip stood still with it. The gap is not
@@ -396,10 +506,14 @@ impl Attract {
         // is exactly when the strip is being watched, and handing the
         // answer back to a roster that reads idle as "come in" is what
         // left the key unable to put it away at all.
+        // Read every frame, whatever the reader has said, so the
+        // standing describes the roster rather than the last frame the
+        // roster had the answer.
+        let standing = self.stand(work, now);
         let work = match self.asked {
             Asked::For => Work::Idle,
             Asked::Against => Work::Running,
-            Asked::Nothing => work,
+            Asked::Nothing => standing,
         };
         self.faded = match work {
             Work::Idle => self.faded.saturating_sub(ATTRACT_FADE_STEP),
@@ -428,7 +542,7 @@ impl Attract {
             return self.grid();
         }
 
-        probe::timed(probe::Phase::Refresh, || self.monitor.refresh(area));
+        probe::timed(Phase::Refresh, || self.monitor.refresh(area));
         // Only the animation on screen is carried forward. The other
         // holds wherever it was left, which is what makes turning
         // between them a turn rather than a restart.
@@ -482,6 +596,7 @@ pub(crate) fn ground() -> Color {
 #[cfg(test)]
 mod tests {
     use ratatui::layout::Rect;
+    use tui_pane::FRAME_POLL_MILLIS;
 
     use super::*;
 
@@ -492,12 +607,19 @@ mod tests {
     /// Frames to run before giving up on a fade that should have
     /// finished. The whole range at a step per frame, and then some.
     const FRAMES: u32 = 1000;
+    /// The gap between two frames, which is what the tests here walk the
+    /// clock by. The event loop's own interval, so a run of `FRAMES`
+    /// covers several seconds -- long enough to outlast the quiet a
+    /// screen waits before coming back.
+    const POLL: Duration = Duration::from_millis(FRAME_POLL_MILLIS);
 
     /// Carry `attract` forward until the strip is the whole of what is
     /// on the screen, and answer how it went.
     fn settle(attract: &mut Attract, work: Work) -> u8 {
+        let mut now = Instant::now();
         for _ in 0..FRAMES {
-            attract.advance(AREA, work, Updates::Live);
+            now += POLL;
+            attract.advance(AREA, work, Updates::Live, now);
         }
         attract.faded
     }
@@ -554,7 +676,7 @@ mod tests {
     #[test]
     fn a_screen_part_way_in_or_out_takes_no_keys() {
         let mut attract = Attract::new();
-        attract.advance(AREA, Work::Idle, Updates::Live);
+        attract.advance(AREA, Work::Idle, Updates::Live, Instant::now());
 
         assert!(attract.faded > 0, "it has only started arriving");
         assert_eq!(attract.keyed_mode(), None);
@@ -584,12 +706,95 @@ mod tests {
         attract.toggle();
         settle(&mut attract, Work::Idle);
 
-        attract.advance(AREA, Work::Running, Updates::Live);
+        attract.advance(AREA, Work::Running, Updates::Live, Instant::now());
 
         assert_eq!(
             settle(&mut attract, Work::Idle),
             0,
             "the strip comes back by itself once the work is done"
+        );
+    }
+
+    /// Work that turns up and goes away again inside the fade does not
+    /// turn the screen around part way through it. Read frame by frame,
+    /// a roster that empties before the hand-over finishes used to send
+    /// the screen back in over a grid that was opening cells and moving
+    /// them about -- neither the animation nor the display, for as long
+    /// as short-lived commands kept arriving.
+    #[test]
+    fn work_that_comes_and_goes_does_not_turn_a_hand_over_around() {
+        let mut attract = Attract::new();
+        let mut now = Instant::now();
+        assert_eq!(settle(&mut attract, Work::Idle), 0, "the screen is on");
+
+        // One frame of work, then an empty grid for the rest of the
+        // fade: exactly the command that starts and stops too quickly.
+        now += POLL;
+        attract.advance(AREA, Work::Running, Updates::Live, now);
+        for _ in 0..FRAMES {
+            now += POLL;
+            attract.advance(AREA, Work::Idle, Updates::Live, now);
+            if attract.faded == u8::MAX {
+                break;
+            }
+            assert_ne!(
+                attract.faded, 0,
+                "the screen turned back rather than finishing its exit",
+            );
+        }
+
+        assert_eq!(attract.faded, u8::MAX, "and it goes the whole way off");
+        assert_eq!(attract.grid(), Grid::Full, "which gives the panes back");
+    }
+
+    /// Having gone, the screen waits out a quiet grid before coming
+    /// back. Returning on the first idle frame would put it in front of
+    /// the next command in the run and start the whole hand-over again.
+    #[test]
+    fn the_screen_waits_out_a_quiet_grid_before_coming_back() {
+        let mut attract = Attract::new();
+        let mut now = Instant::now();
+        settle(&mut attract, Work::Idle);
+        now += POLL;
+        attract.advance(AREA, Work::Running, Updates::Live, now);
+        while attract.faded != u8::MAX {
+            now += POLL;
+            attract.advance(AREA, Work::Idle, Updates::Live, now);
+        }
+
+        // Short of the quiet, the grid keeps the terminal.
+        now += ATTRACT_RETURN_QUIET / 2;
+        attract.advance(AREA, Work::Idle, Updates::Live, now);
+        assert_eq!(attract.faded, u8::MAX, "not back yet");
+        assert!(!attract.due_back(now), "and the loop is owed no frame");
+
+        now += ATTRACT_RETURN_QUIET;
+        assert!(attract.due_back(now), "past the quiet, one frame is owed");
+        assert_eq!(
+            settle(&mut attract, Work::Idle),
+            0,
+            "and the screen comes back on",
+        );
+    }
+
+    /// The reader outranks a hand-over the roster started. `a` pressed
+    /// while the screen is on its way off brings it straight back, and
+    /// waits out none of the quiet.
+    #[test]
+    fn asking_for_the_screen_outranks_a_hand_over_in_progress() {
+        let mut attract = Attract::new();
+        let mut now = Instant::now();
+        settle(&mut attract, Work::Idle);
+        now += POLL;
+        attract.advance(AREA, Work::Running, Updates::Live, now);
+        assert!(attract.faded > 0, "it has started leaving");
+
+        attract.toggle();
+
+        assert_eq!(
+            settle(&mut attract, Work::Running),
+            0,
+            "asked for, it comes back over a grid with work on it",
         );
     }
 }
