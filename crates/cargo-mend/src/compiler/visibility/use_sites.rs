@@ -881,6 +881,60 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         }
     }
 
+    /// Record every local module named on an import path as reached from
+    /// the importing scope.
+    ///
+    /// Every module a path names has to be visible from where the path is
+    /// written, whatever sits at the end of it, so recording them is
+    /// always sound. It is also the only thing that records them when the
+    /// item at the end is foreign: [`record_import_target`] reaches the
+    /// modules by walking up from the target, and a target in another
+    /// crate has no local parents to walk. A module whose whole content
+    /// is `pub(crate) use other_crate::THING;` is exactly that case --
+    /// nothing recorded it, so it read as reached only from its own
+    /// parent, and the overbroad-`pub(crate)` check took its visibility
+    /// away and left the crate not compiling.
+    ///
+    /// [`record_import_target`]: Self::record_import_target
+    fn record_path_modules<Resolution>(
+        &mut self,
+        path: &Path<'_, Resolution>,
+        visibility_scope: DefId,
+        reference: UseSiteReference,
+    ) {
+        let Some(owner) = self.current_module.as_local() else {
+            return;
+        };
+        let mut module = owner;
+        // The last segment is the item itself rather than a module on the
+        // way to it, and `record_import_target` has it already.
+        for segment in path.segments.iter().rev().skip(1).rev() {
+            match segment.ident.name.as_str() {
+                "self" => {},
+                "super" => module = self.tcx.parent_module_from_def_id(module).into(),
+                "crate" => module = CRATE_DEF_ID,
+                _ => {
+                    let Some(child) = self
+                        .tcx
+                        .module_children_local(module)
+                        .iter()
+                        .find(|child| child.ident.name == segment.ident.name)
+                    else {
+                        return;
+                    };
+                    let Res::Def(DefKind::Mod, def_id) = child.res else {
+                        return;
+                    };
+                    let Some(local) = def_id.as_local() else {
+                        return;
+                    };
+                    module = local;
+                },
+            }
+            self.push_site_from(module.to_def_id(), visibility_scope, reference);
+        }
+    }
+
     /// A path to an item also requires every module segment on the way to
     /// that item. Record those modules so a restricted module is never
     /// advised to become private while a caller still reaches a descendant
@@ -1394,6 +1448,7 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
             } else {
                 UseSiteReference::RestrictedImport
             };
+            self.record_path_modules(path, visibility_scope, reference);
             for resolution in path.res.present_items() {
                 if let Res::Def(_, target) = resolution {
                     self.record_import_target(target, visibility_scope, reference);

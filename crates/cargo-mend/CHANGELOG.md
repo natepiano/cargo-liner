@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Keep the `pub(crate)` on a module whose content is re-exported from another crate. A path to a foreign item still crosses local modules to reach it, but the check only found those modules by walking up from the target, and a target in another crate has no local parents to walk -- so the module read as reached only from its own parent and `--fix` took its visibility away, leaving the crate not compiling. Every module a path names is now recorded, which is sound whatever sits at the end of the path.
+
 ## [0.20.0] - 2026-08-21
 
 ### Fixed

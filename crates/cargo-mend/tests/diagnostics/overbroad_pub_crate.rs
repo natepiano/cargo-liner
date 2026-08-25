@@ -1278,3 +1278,93 @@ fn assert_human_report_advertises_warning_fix(manifest_path: &std::path::Path) {
         "the warning summary must count the annotation rewrite: {rendered}",
     );
 }
+
+#[test]
+fn a_module_of_foreign_reexports_keeps_the_pub_crate_its_callers_need() {
+    // A module whose whole content is `pub(crate) use other_crate::THING;`
+    // is reached from outside its parent through the re-export. The item
+    // at the end of that path lives in another crate, so walking up from
+    // the target finds no local module to record -- and without the
+    // modules the path itself names, this module read as reached only
+    // from its own parent and had its visibility taken away, leaving the
+    // crate not compiling.
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[workspace]
+members  = ["upstream", "app"]
+resolver = "3"
+"#,
+    )
+    .expect("write workspace manifest");
+
+    fs::create_dir_all(temp.path().join("upstream/src")).expect("create upstream src");
+    fs::write(
+        temp.path().join("upstream/Cargo.toml"),
+        r#"[package]
+name = "reexport_upstream_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write upstream manifest");
+    fs::write(
+        temp.path().join("upstream/src/lib.rs"),
+        "pub const DISCOVERY_INTERVAL: u32 = 5;\n",
+    )
+    .expect("write upstream lib");
+
+    fs::create_dir_all(temp.path().join("app/src/screens")).expect("create app src");
+    fs::write(
+        temp.path().join("app/Cargo.toml"),
+        r#"[package]
+name = "reexport_app_fixture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+reexport_upstream_fixture = { path = "../upstream" }
+"#,
+    )
+    .expect("write app manifest");
+    fs::write(
+        temp.path().join("app/src/lib.rs"),
+        "mod readiness;\nmod screens;\n",
+    )
+    .expect("write app lib");
+    fs::write(
+        temp.path().join("app/src/screens/mod.rs"),
+        "pub(crate) mod constants;\n",
+    )
+    .expect("write screens");
+    fs::write(
+        temp.path().join("app/src/screens/constants.rs"),
+        "pub(crate) use reexport_upstream_fixture::DISCOVERY_INTERVAL;\n",
+    )
+    .expect("write constants");
+    fs::write(
+        temp.path().join("app/src/readiness.rs"),
+        "use crate::screens::constants::DISCOVERY_INTERVAL;\n\npub(crate) fn go() -> u32 { \
+         DISCOVERY_INTERVAL }\n",
+    )
+    .expect("write readiness");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("app/Cargo.toml"))
+        .arg("--json")
+        .output()
+        .expect("run cargo-mend --json");
+    let report = parse_mend_json_output(&output.stdout);
+
+    let narrowed_the_module = report.findings.iter().any(|finding| {
+        finding.code == DiagnosticCode::OverbroadPubCrate
+            && finding.path.ends_with("screens/mod.rs")
+    });
+    assert!(
+        !narrowed_the_module,
+        "the re-export module is reached from outside `screens`: {report:#?}",
+    );
+}
