@@ -110,6 +110,11 @@ impl TileDemands {
 
     /// The identity of every group that gets a cell, in order.
     fn ids(&self) -> Vec<u32> { self.groups.iter().map(|demand| demand.id).collect() }
+
+    /// Whether this scan still carries `id`, which is what tells a cell
+    /// closing to make way for the order apart from one whose command
+    /// has finished.
+    fn holds(&self, id: u32) -> bool { self.groups.iter().any(|demand| demand.id == id) }
 }
 
 /// What a cell is showing.
@@ -407,9 +412,20 @@ impl TileGrid {
     ///
     /// A command arriving takes the first cell `+` opened and nothing has
     /// claimed, so a developer who made room in advance sees the build
-    /// land in it. With no empty cell waiting it opens one of its own at
-    /// the end. A command leaving closes its cell wherever that sat, and
-    /// the grid comes together over it.
+    /// land in it. With no empty cell waiting it opens one of its own. A
+    /// command leaving closes its cell wherever that sat, and the grid
+    /// comes together over it.
+    ///
+    /// The cells read in the order `ids` gives, which is the order every
+    /// table on the screen reads in: oldest work first. That order is not
+    /// fixed once a cell is open -- a driver's cell sorts by the earliest
+    /// work still under it, so the last of a queue finishing carries the
+    /// cell past whatever started in between. Reaching the new order by
+    /// moving cells drew the two of them travelling through each other,
+    /// which is the one motion the grid never makes. So a cell the order
+    /// has overtaken closes instead, and comes back in behind the cell
+    /// that passed it; every cell after it does the same, which is what
+    /// carries the change down the rest of the grid a cell at a time.
     ///
     /// The comparison is against where the grid is *headed* rather than
     /// where it stands, so a scan arriving mid-travel adds to the queue
@@ -420,24 +436,62 @@ impl TileGrid {
     /// that has taken on enough new invocations to want another unit of
     /// its column travels there the same way a cell opening does.
     pub(crate) fn sync(&mut self, demands: &TileDemands, initial_rows: usize) {
-        let ids = demands.ids();
         self.demands = demands.clone();
         let mut arrangement = self.target();
         let mut steps: Vec<Vec<Slot>> = Vec::new();
+        let live = demands.ids();
         while let Some(index) = arrangement.iter().position(|slot| match *slot {
-            Slot::Group(id) => !ids.contains(&id),
+            Slot::Group(id) => !live.contains(&id),
             Slot::Empty(_) => false,
         }) {
+            Self::close(&mut arrangement, index, &mut steps);
+        }
+        // Worked out against the cells the departed have already given
+        // back, so a command arriving in the same scan another leaves
+        // takes the room that leaving freed.
+        let ids = self.admitted(&arrangement, live, initial_rows);
+        // Every cell from the first one out of order onward goes, and
+        // the cells before it are the run the grid gets to keep.
+        let standing = kept(&arrangement, &ids);
+        let mut reopening: Vec<u32> = Vec::new();
+        while let Some((index, id)) =
+            arrangement
+                .iter()
+                .enumerate()
+                .find_map(|(index, slot)| match *slot {
+                    Slot::Group(id) if !ids.iter().take(standing).any(|held| *held == id) => {
+                        Some((index, id))
+                    },
+                    _ => None,
+                })
+        {
+            reopening.push(id);
             Self::close(&mut arrangement, index, &mut steps);
         }
         for id in ids.iter().copied() {
             if arrangement.contains(&Slot::Group(id)) {
                 continue;
             }
-            match arrangement
+            // Behind every cell already carrying a command, because the
+            // ones still standing are exactly the commands that sort
+            // ahead of this one. An empty cell keeps its place: it is a
+            // place the reader made, and only a command genuinely
+            // arriving claims one -- a cell that closed to let the order
+            // through brings its own back rather than eating it.
+            let behind = arrangement
                 .iter()
-                .position(|slot| matches!(*slot, Slot::Empty(_)))
-            {
+                .rposition(|slot| matches!(*slot, Slot::Group(_)))
+                .map_or(0, |index| index.saturating_add(1));
+            let claimed = if reopening.contains(&id) {
+                None
+            } else {
+                arrangement
+                    .iter()
+                    .skip(behind)
+                    .position(|slot| matches!(*slot, Slot::Empty(_)))
+                    .map(|offset| behind.saturating_add(offset))
+            };
+            match claimed {
                 Some(index) => {
                     arrangement[index] = Slot::Group(id);
                     steps.push(arrangement.clone());
@@ -445,35 +499,11 @@ impl TileGrid {
                 // Refusing beats a cell too small to read: the command
                 // is still in the summary, which is never crowded out.
                 None if self.fits(arrangement.len() + TABLE_CELL + 1, initial_rows) => {
-                    arrangement.push(Slot::Group(id));
+                    arrangement.insert(behind, Slot::Group(id));
                     steps.push(arrangement.clone());
                 },
                 None => (),
             }
-        }
-        // The cells read in the order `ids` gives, which is the order
-        // every table on the screen reads in: oldest work first. A cell
-        // is placed where there is room for it rather than where it
-        // belongs -- the first empty one, or the end -- and that is the
-        // order it would otherwise keep for as long as it lived, so a
-        // command that opened its cell early stands above one that
-        // started before it. Only the cells carrying commands move; an
-        // empty one is a place the reader made and stays where it was
-        // made.
-        let mut wanted = ids
-            .iter()
-            .copied()
-            .filter(|id| arrangement.contains(&Slot::Group(*id)));
-        let ordered: Vec<Slot> = arrangement
-            .iter()
-            .map(|slot| match *slot {
-                Slot::Group(_) => wanted.next().map_or(*slot, Slot::Group),
-                Slot::Empty(_) => *slot,
-            })
-            .collect();
-        if ordered != arrangement {
-            arrangement = ordered;
-            steps.push(arrangement.clone());
         }
         // Nothing moved, but the cells standing still may have changed
         // what they are asking for. Re-dividing the column is a step
@@ -483,6 +513,39 @@ impl TileGrid {
             steps.push(self.slots.clone());
         }
         self.queue(steps);
+    }
+
+    /// Which of `live` the grid can actually give a cell to: the ones
+    /// already holding one, plus as many of the rest as there is room
+    /// to open.
+    ///
+    /// Settled before anything closes, because a command the grid has
+    /// no room for is left out of the order entirely. Left in, it would
+    /// stop the order at its own place and send every cell behind it
+    /// through a close and an open to make way for a cell that never
+    /// opens.
+    fn admitted(&self, arrangement: &[Slot], live: Vec<u32>, initial_rows: usize) -> Vec<u32> {
+        let mut spare = arrangement
+            .iter()
+            .filter(|slot| matches!(**slot, Slot::Empty(_)))
+            .count();
+        let mut count = arrangement.len();
+        live.into_iter()
+            .filter(|id| {
+                if arrangement.contains(&Slot::Group(*id)) {
+                    return true;
+                }
+                if spare > 0 {
+                    spare -= 1;
+                    return true;
+                }
+                if self.fits(count + TABLE_CELL + 1, initial_rows) {
+                    count += 1;
+                    return true;
+                }
+                false
+            })
+            .collect()
     }
 
     /// Push the step that closes the cell at `index`.
@@ -646,11 +709,23 @@ impl TileGrid {
     /// empty one a command has just claimed. The developer opened that
     /// cell to watch for exactly this, so the ring stays on it; every
     /// other way a slot can vanish is the cell itself leaving.
+    ///
+    /// Except a cell that closed to let the order through, which is
+    /// coming back a step or two later. The command is still running
+    /// and still the one being watched, so the ring waits for it rather
+    /// than dropping to the summary and making the developer find it
+    /// again. [`Self::focused_cell`] already answers `None` while the
+    /// slot is off the grid, so nothing is drawn holding it meanwhile.
     fn settle_focus(&mut self, previous: &[Slot]) {
         let Focus::Cell(slot) = self.focus else {
             return;
         };
         if self.slots.contains(&slot) {
+            return;
+        }
+        if let Slot::Group(id) = slot
+            && self.demands.holds(id)
+        {
             return;
         }
         self.focus = previous
@@ -904,6 +979,32 @@ fn union(from: &[Slot], to: &[Slot]) -> Vec<Slot> {
     let mut out = to.to_vec();
     out.extend(from.iter().copied().filter(|slot| !to.contains(slot)));
     out
+}
+
+/// How many of `ids` can stand where they already do: the longest run
+/// from the front of the order that `arrangement` already holds in that
+/// same order.
+///
+/// Everything past that run is what closes. Counted from the front
+/// rather than as the largest run that happens to be in order anywhere,
+/// because a cell only ever comes back in *behind* the cells still
+/// standing -- so the ones that stay have to be the front of the order
+/// rather than a stretch out of its middle.
+fn kept(arrangement: &[Slot], ids: &[u32]) -> usize {
+    let mut cursor = 0_usize;
+    let mut count = 0_usize;
+    for id in ids {
+        let Some(offset) = arrangement
+            .iter()
+            .skip(cursor)
+            .position(|slot| *slot == Slot::Group(*id))
+        else {
+            break;
+        };
+        cursor = cursor.saturating_add(offset).saturating_add(1);
+        count = count.saturating_add(1);
+    }
+    count
 }
 
 /// One arrangement resolved against a rect: the rect every cell holds,
@@ -2240,6 +2341,175 @@ mod tests {
         assert!(
             grid.transition.is_none(),
             "and there is no second step for a hole to travel through"
+        );
+    }
+
+    /// The order a cell stands in is not settled once it is open. A
+    /// driver's cell sorts by the earliest work still under it, so the
+    /// last of a queue finishing carries the cell past whatever started
+    /// in between. Reaching the new order by moving the two cells drew
+    /// them travelling through each other; the overtaken one closes
+    /// instead and comes back in behind the cell that passed it.
+    #[test]
+    fn a_cell_the_order_overtakes_closes_and_comes_back_in_behind() {
+        let mut grid = seeded_grid();
+        grid.sync(&quiet(&[7, 8]), 4);
+        grid.settle();
+
+        grid.sync(&quiet(&[8, 7]), 4);
+        assert_eq!(
+            shown(&grid),
+            vec![TileContent::Group(8)],
+            "the overtaken cell closes on its own"
+        );
+        grid.advance();
+        assert_eq!(
+            shown(&grid),
+            vec![TileContent::Group(8), TileContent::Group(7)],
+            "and opens again behind the one that passed it"
+        );
+        grid.advance();
+        assert!(
+            grid.transition.is_none(),
+            "a close and an open, and nothing else"
+        );
+    }
+
+    /// A cell only ever comes back in behind the cells still standing,
+    /// so a change in the middle of the order carries down everything
+    /// after it: each cell behind the overtaken one closes too, and they
+    /// return in the order they now read in.
+    #[test]
+    fn the_order_changing_cascades_down_the_rest_of_the_grid() {
+        let mut grid = seeded_grid();
+        grid.sync(&quiet(&[7, 8, 9]), 4);
+        grid.settle();
+
+        grid.sync(&quiet(&[8, 7, 9]), 4);
+        assert_eq!(
+            shown(&grid),
+            vec![TileContent::Group(8), TileContent::Group(9)],
+            "the overtaken cell goes first"
+        );
+        grid.advance();
+        assert_eq!(
+            shown(&grid),
+            vec![TileContent::Group(8)],
+            "then the cell behind it, which has nowhere left to come back in"
+        );
+        grid.advance();
+        assert_eq!(
+            shown(&grid),
+            vec![TileContent::Group(8), TileContent::Group(7)],
+            "the overtaken cell returns behind the one that passed it"
+        );
+        grid.advance();
+        assert_eq!(
+            shown(&grid),
+            vec![
+                TileContent::Group(8),
+                TileContent::Group(7),
+                TileContent::Group(9),
+            ],
+            "and the last one behind that"
+        );
+    }
+
+    /// The complaint this answers: two cells exchanging places were
+    /// drawn each travelling through the other, borders crossing where
+    /// the eye was following one box. Every step of a reorder now adds
+    /// or takes away a single cell, so whatever survives a step stands
+    /// in the order it already stood in.
+    #[test]
+    fn no_step_of_a_reorder_draws_two_cells_crossing() {
+        let mut grid = seeded_grid();
+        grid.sync(&quiet(&[7, 8, 9, 10]), 4);
+        grid.settle();
+
+        grid.sync(&quiet(&[9, 7, 10, 8]), 4);
+        let mut crossed = Vec::new();
+        while let Some(transition) = grid.transition.as_ref() {
+            let (from, to) = (transition.from.clone(), grid.slots.clone());
+            let left: Vec<Slot> = from
+                .iter()
+                .copied()
+                .filter(|slot| to.contains(slot))
+                .collect();
+            let landed: Vec<Slot> = to
+                .iter()
+                .copied()
+                .filter(|slot| from.contains(slot))
+                .collect();
+            if left != landed {
+                crossed.push((from, to));
+            }
+            grid.advance();
+        }
+        assert!(crossed.is_empty(), "cells crossed: {crossed:?}");
+        assert_eq!(
+            shown(&grid),
+            vec![
+                TileContent::Group(9),
+                TileContent::Group(7),
+                TileContent::Group(10),
+                TileContent::Group(8),
+            ],
+            "and the grid still arrives at the order it was asked for"
+        );
+    }
+
+    /// A reorder takes no cell off the grid: whatever closed to let the
+    /// order through opens its own cell again rather than claiming the
+    /// one a reader made with `+`.
+    #[test]
+    fn a_reorder_leaves_the_cell_count_where_it_found_it() {
+        let mut grid = seeded_grid();
+        grid.sync(&quiet(&[7, 8]), 4);
+        grid.settle();
+        grid.add(4);
+        grid.settle();
+
+        grid.sync(&quiet(&[8, 7]), 4);
+        grid.settle();
+        let shown = shown(&grid);
+        assert_eq!(shown.len(), 3, "the grid is the size it was: {shown:?}");
+        assert_eq!(shown[0], TileContent::Group(8));
+        assert_eq!(shown[1], TileContent::Group(7));
+        assert!(
+            matches!(shown[2], TileContent::Empty(_)),
+            "and the reader's cell is still there: {shown:?}"
+        );
+    }
+
+    /// The ring waits for a cell that closed to let the order through.
+    /// Dropping it to the summary would make the developer find the
+    /// command again over a change they never asked for.
+    #[test]
+    fn focus_waits_for_a_cell_that_closed_to_let_the_order_through() {
+        let mut grid = seeded_grid();
+        grid.sync(&quiet(&[7, 8]), 4);
+        grid.settle();
+        grid.focus_step(Direction::Down, 4);
+        grid.settle();
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
+
+        grid.sync(&quiet(&[8, 7]), 4);
+        assert_eq!(
+            grid.focus,
+            Focus::Cell(Slot::Group(7)),
+            "the ring stays with the command while its cell is off the grid"
+        );
+        assert_eq!(
+            grid.focused_cell(),
+            None,
+            "and no cell is drawn holding it meanwhile"
+        );
+
+        grid.settle();
+        assert_eq!(
+            grid.focused_cell(),
+            Some(TABLE_CELL + 2),
+            "it comes back with the cell, one place further down"
         );
     }
 
