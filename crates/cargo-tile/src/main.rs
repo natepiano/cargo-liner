@@ -2,6 +2,7 @@
 //! framework.
 
 mod app;
+mod attract;
 mod cli;
 mod config;
 mod constants;

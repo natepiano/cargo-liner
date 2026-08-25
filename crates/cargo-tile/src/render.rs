@@ -55,12 +55,14 @@ use tui_pane::warning_color;
 
 use crate::app::App;
 use crate::app::Updates;
+use crate::attract::Work;
 use crate::constants::ANCESTRY_ELISION;
 use crate::constants::ANCESTRY_GAP_HEIGHT;
 use crate::constants::ANCESTRY_LEVEL_INDENT;
 use crate::constants::ANCESTRY_MIN_ELIDED_ROWS;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
+use crate::constants::ATTRACT_NOTE_LABEL;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::COMPILER_COLUMN;
 use crate::constants::COMPILER_SEPARATOR_WIDTH;
@@ -125,7 +127,35 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
             .areas(frame.area());
 
-    draw_panes(frame, app, body);
+    // Asked for, the attract screen replaces the grid rather than
+    // sharing the terminal with it: a strip of characters drawn across
+    // a grid of borders and tables reads as neither one thing nor the
+    // other. Left to come on by itself, it draws over whatever is
+    // there, which with nothing running is a summary cell and little
+    // else.
+    if !app.attract.covers_grid() {
+        draw_panes(frame, app, body);
+    }
+    // Over the grid rather than under it: the attract screen owns the
+    // whole terminal while nothing is running, and the status line goes
+    // back on top of it below.
+    // What gets a cell, not what the roster holds: a command held back
+    // by `commands.hidden_when_idle` keeps a summary line and draws no
+    // cell, and a screen with nothing but that on it is one the reader
+    // reads as idle. `groups` counts it and would keep the attract
+    // screen off for as long as a `cargo port` watcher sat there.
+    let work = if app
+        .roster
+        .tiled_ids(&app.loaded_config.config.commands.hidden_when_idle)
+        .is_empty()
+    {
+        Work::Idle
+    } else {
+        Work::Running
+    };
+    let area = frame.area();
+    let updates = app.updates;
+    app.attract.draw(frame.buffer_mut(), area, work, updates);
     draw_status_line(frame, app, keymap, status);
 
     match app.framework.overlay() {
@@ -1464,6 +1494,15 @@ fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Re
     if app.updates == Updates::Frozen {
         notes.push(StatusLineNote {
             label: FROZEN_NOTE_LABEL.to_string(),
+            value: String::new(),
+        });
+    }
+    // And a grid drawn over looks exactly like an empty one, which is
+    // the same problem: say that the work is behind the animation
+    // rather than absent.
+    if app.attract.asked_for() {
+        notes.push(StatusLineNote {
+            label: ATTRACT_NOTE_LABEL.to_string(),
             value: String::new(),
         });
     }

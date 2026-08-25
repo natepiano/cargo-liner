@@ -6,6 +6,8 @@
 
 mod activity;
 mod app_context;
+#[cfg(feature = "backdrop")]
+mod backdrop;
 mod bar;
 mod constants;
 mod copy;
@@ -17,6 +19,7 @@ mod keymap;
 mod layout;
 mod overlays;
 mod pane;
+mod process;
 mod settings_store;
 mod theme;
 mod toasts;
@@ -29,6 +32,12 @@ pub use activity::ACTIVITY_SPINNER;
 pub use activity::Icon;
 pub use app_context::AppContext;
 pub use app_context::NoToastAction;
+#[cfg(feature = "backdrop")]
+pub use backdrop::Backdrop;
+#[cfg(feature = "backdrop")]
+pub use backdrop::BackdropMonitor;
+#[cfg(feature = "backdrop")]
+pub use backdrop::TravelingBand;
 pub use bar::BarPalette;
 pub use bar::BarRegion;
 pub use bar::BarSlot;
@@ -186,6 +195,7 @@ pub use pane::selection_state;
 pub use pane::selection_state_for;
 pub use pane::selection_style;
 pub use pane::share_borders;
+pub use process::kernel_parent;
 pub use settings_store::LoadedSettings;
 pub use settings_store::SettingCodecs;
 pub use settings_store::SettingsError;

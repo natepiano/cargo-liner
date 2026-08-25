@@ -147,9 +147,11 @@ fi
 
 fifo=
 # What makes a finished log worth keeping: cargo's unit counter, or the
-# line it prints while it waits for the build-directory lock. These are
-# the two things the grid reads, spelled here as an ERE because the shim
-# cannot see the constants the reader uses.
+# line it prints while it waits for the lock on the directory it builds
+# into. These are the two things the grid reads, spelled here as an ERE
+# because the shim cannot see the constants the reader uses. The lock
+# line is matched short of the directory's name, which cargo has called
+# both the build directory and the artifact directory.
 worth_keeping='waiting for file lock|\] [0-9]+/[0-9]+:'
 cleanup() {
     rm -f "$pids/$$"
@@ -181,6 +183,27 @@ quote_command() {
     done
     printf '%s' "$quoted"
 }
+
+# Whether a caller is reading cargo's machine-readable output, which is
+# what makes stderr free to carry the status this capture is for. Both
+# spellings, since `--message-format json` is as valid as the joined
+# form, and only ahead of a `--`, past which the arguments are another
+# command's.
+json=0
+previous=
+for arg in "$@"; do
+    case $arg in
+        --) break ;;
+        --message-format=json*) json=1; break ;;
+        json*)
+            if [ "$previous" = --message-format ]; then
+                json=1
+                break
+            fi
+            ;;
+    esac
+    previous=$arg
+done
 
 # The two `script` implementations disagree about their arguments and
 # neither accepts the other's form, so which one is here has to be
@@ -214,6 +237,41 @@ if [ -t 0 ] && [ -t 1 ] && [ -t 2 ] && [ "$pty" != none ]; then
     fi
     status=$?
 else
+    # `--quiet` empties the log of the one thing a waiting run has to
+    # say. Under it cargo prints no status at all, so an invocation
+    # blocked on the artifact-directory lock says nothing for as long as
+    # it waits -- not the lock line, and not a counter either, because it
+    # has not started compiling. The log stays empty, the grid finds no
+    # capture at or above the pid, and a check stuck behind a build reads
+    # as idle rather than blocked. rust-analyzer passes `--quiet` on
+    # every check it issues, which is most of what a working editor puts
+    # through here.
+    #
+    # Dropping it puts the wait back on stderr and leaves stdout alone,
+    # which is where a `--message-format=json` caller reads and what it
+    # parses byte for byte. Only for those callers: a person who asked a
+    # build to be quiet is asking about the output in front of them, and
+    # that is theirs. Only past this branch, too -- a terminal run is a
+    # person's by definition.
+    #
+    # Arguments after `--` belong to whatever cargo is about to run, so
+    # the rewrite stops there.
+    if [ "$json" -eq 1 ]; then
+        remaining=$#
+        passthrough=0
+        while [ "$remaining" -gt 0 ]; do
+            arg=$1
+            shift
+            remaining=$((remaining - 1))
+            if [ "$passthrough" -eq 0 ]; then
+                case $arg in
+                    --) passthrough=1 ;;
+                    --quiet | -q) continue ;;
+                esac
+            fi
+            set -- "$@" "$arg"
+        done
+    fi
     # No terminal, so the bar has to be asked for -- and cargo rejects
     # `always` unless a width comes with it. stderr is what the bar is
     # drawn on; stdout is left alone so piped output stays byte for byte

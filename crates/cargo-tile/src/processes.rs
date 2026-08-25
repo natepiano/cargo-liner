@@ -37,6 +37,7 @@ use sysinfo::ProcessRefreshKind;
 use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
 use sysinfo::UpdateKind;
+use tui_pane::kernel_parent;
 
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DISPLAY_NAME;
@@ -1008,58 +1009,6 @@ fn cpu_label(cpu: f32) -> String {
 
 /// Whether a process only passed a command through rather than being
 /// what launched it, per [`TRANSPARENT_PROCESS_NAMES`].
-/// The pid standing above `pid`, asked of the kernel rather than of the
-/// scan.
-///
-/// sysinfo leaves a process's parent unset when it cannot read that
-/// process's BSD info, and on macOS that is every process another user
-/// owns. One of them stands in the middle of the chain this display is
-/// about: `/usr/bin/login` is root's, and it sits between a terminal
-/// and the shell running in it. A walk that stopped there answered
-/// "what started this command" with the shell and nothing above it,
-/// which is the one thing a chain block exists to say -- whether an
-/// editor, an agent or a person was behind the command.
-///
-/// `PROC_PIDT_SHORTBSDINFO` is the read macOS allows against a process
-/// the caller does not own, which is how `ps` answers this without
-/// privileges. A parent of zero is no parent: the kernel reports it for
-/// the init process, where a walk stops in any case.
-///
-/// Every other platform reads a parent out of `/proc` for any process
-/// at all, so sysinfo has already answered there and this never runs.
-#[cfg(target_os = "macos")]
-#[allow(
-    unsafe_code,
-    reason = "the kernel's own parent read has no safe binding"
-)]
-fn kernel_parent(pid: Pid) -> Option<Pid> {
-    let size = i32::try_from(std::mem::size_of::<libc::proc_bsdshortinfo>()).ok()?;
-    let mut info = std::mem::MaybeUninit::<libc::proc_bsdshortinfo>::zeroed();
-    // SAFETY: `proc_pidinfo` writes at most the byte count it is handed,
-    // and that count is the size of the very struct the pointer is to.
-    // It answers how many bytes it wrote, and the read below is claimed
-    // only on the whole struct having been written.
-    let written = unsafe {
-        libc::proc_pidinfo(
-            i32::try_from(pid.as_u32()).ok()?,
-            libc::PROC_PIDT_SHORTBSDINFO,
-            0,
-            info.as_mut_ptr().cast(),
-            size,
-        )
-    };
-    if written != size {
-        return None;
-    }
-    // SAFETY: the call above reported writing the whole struct.
-    let parent = unsafe { info.assume_init() }.pbsi_ppid;
-    (parent > 0).then(|| Pid::from_u32(parent))
-}
-
-/// The parent sysinfo has already read everywhere but macOS.
-#[cfg(not(target_os = "macos"))]
-const fn kernel_parent(_pid: Pid) -> Option<Pid> { None }
-
 fn is_transparent(name: &OsStr) -> bool {
     name.to_str()
         .is_some_and(|name| TRANSPARENT_PROCESS_NAMES.contains(&name))
@@ -1827,18 +1776,5 @@ mod tests {
 
         assert!(smoothing.settled.is_empty());
         assert!(smoothing.reported.is_empty());
-    }
-    /// The kernel answers a parent for a process sysinfo could not read
-    /// the BSD info of, which on macOS is every process another user
-    /// owns -- `/usr/bin/login` among them, standing between a terminal
-    /// and the shell in it.
-    ///
-    /// A parent of nought is the init process's, and reads as no parent
-    /// at all: [`ROOT_PROCESS_PID`] is where a walk stops in any case.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_kernel_answers_for_a_process_sysinfo_could_not_read() {
-        assert!(kernel_parent(Pid::from_u32(std::process::id())).is_some());
-        assert_eq!(kernel_parent(Pid::from_u32(ROOT_PROCESS_PID)), None);
     }
 }

@@ -226,6 +226,32 @@ impl TrackedGroup {
     /// close.
     fn is_expired(&self, now: Instant, fade: Duration) -> bool { self.lead.is_expired(now, fade) }
 
+    /// When the work this cell was opened for began, which is the order
+    /// the cells stand in.
+    ///
+    /// The lead's own start will not do for a driver. `cargo port` is
+    /// started once and sits there all day, so a cell ordered by that
+    /// stands above every build begun since, however recently the work
+    /// inside it arrived -- and the table in that cell meanwhile reads
+    /// in start order like every other, so the cell and its contents
+    /// disagree. What the cell is *for* is the table under the chain,
+    /// so the earliest row of that table is what it sorts by. For every
+    /// command that is not a driver the lead is that row already.
+    ///
+    /// Pid breaks a tie, the rule the tables break one by: a start time
+    /// is whole seconds, and macOS hands pids out in order.
+    fn began(&self, hidden_when_idle: &[String]) -> (u64, u32) {
+        let key = |row: &TrackedRow| (row.process.started, row.process.pid);
+        let tabled = if self.leads_as_ancestor(hidden_when_idle) {
+            self.rest.iter().map(key).min()
+        } else {
+            self.rows().map(key).min()
+        };
+        // A driver holds its cell while the last row under it fades,
+        // and a cell on the screen has to sort somewhere.
+        tabled.unwrap_or_else(|| key(&self.lead))
+    }
+
     /// Whether the grid gives this command a cell of its own.
     ///
     /// Every command does, except one whose subcommand
@@ -293,12 +319,20 @@ impl Roster {
     /// Identity only. How tall each of these cells wants to be is
     /// [`crate::render`]'s answer, because a command line wraps and
     /// only the table layout knows how far.
+    ///
+    /// Oldest work first, by [`TrackedGroup::began`] -- the order every
+    /// table on the screen already reads in. Left in roster order the
+    /// cells stand in the order each command was first *seen*, which
+    /// for a driver is when the driver was started rather than when
+    /// anything began running under it.
     pub(crate) fn tiled_ids(&self, hidden_when_idle: &[String]) -> Vec<u32> {
-        self.groups
+        let mut tiled: Vec<&TrackedGroup> = self
+            .groups
             .iter()
             .filter(|group| group.deserves_a_cell(hidden_when_idle))
-            .map(|group| group.id)
-            .collect()
+            .collect();
+        tiled.sort_by_key(|group| group.began(hidden_when_idle));
+        tiled.into_iter().map(|group| group.id).collect()
     }
 
     /// Fold one scan in, stamping whatever it no longer carries.
@@ -555,6 +589,16 @@ mod tests {
             .collect()
     }
 
+    /// The same group with start times stamped on it, lead first --
+    /// what the cells are ordered by.
+    fn started(mut group: CargoGroup, lead: u64, rest: &[u64]) -> CargoGroup {
+        group.lead.started = lead;
+        for (row, start) in group.rest.iter_mut().zip(rest) {
+            row.started = *start;
+        }
+        group
+    }
+
     /// The instant every test starts from.
     fn start() -> Instant { Instant::now() }
 
@@ -772,6 +816,43 @@ mod tests {
         assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
         roster.advance(now + Duration::from_secs(1), Duration::ZERO);
         assert!(roster.tiled_ids(&hidden_when_idle()).is_empty());
+    }
+
+    /// A driver's cell is ordered by the work inside it rather than by
+    /// when the driver was started. `cargo port` is opened once and
+    /// left running all day, so its own start puts it above everything
+    /// -- while the table in its cell reads in start order like every
+    /// other, which left the cell and its contents disagreeing.
+    #[test]
+    fn a_drivers_cell_is_ordered_by_the_work_under_it() {
+        let mut roster = Roster::new();
+        roster.observe(
+            vec![
+                started(hidden_group(10, &[11]), 0, &[200]),
+                started(group(20, &[]), 100, &[]),
+            ],
+            start(),
+        );
+
+        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![20, 10]);
+    }
+
+    /// And ordinary cells sort by start however the roster came to hold
+    /// them: seen first is not started first.
+    #[test]
+    fn cells_are_ordered_by_start_rather_than_by_arrival() {
+        let mut roster = Roster::new();
+        let now = start();
+        roster.observe(vec![started(group(10, &[]), 200, &[])], now);
+        roster.observe(
+            vec![
+                started(group(10, &[]), 200, &[]),
+                started(group(20, &[]), 100, &[]),
+            ],
+            now,
+        );
+
+        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![20, 10]);
     }
 
     #[test]

@@ -15,6 +15,10 @@ version              = "0.8.0-dev"
 workspace = true
 
 [features]
+# Capture of the desktop behind the terminal window, and the attract-mode
+# animation drawn from it. Off by default: it pulls in ScreenCaptureKit, and
+# only an app that draws an idle screen has any use for it.
+backdrop  = ["dep:objc2-core-graphics", "dep:screencapturekit"]
 clipboard = ["crossterm/osc52"]
 default   = ["clipboard"]
 
@@ -36,12 +40,32 @@ unicode-width      = { workspace = true }
 # Used for the IOKit GPU sampler and the P/E core cluster map. Every feature
 # but "CFData" is already in the tree via sysinfo.
 [target.'cfg(target_os = "macos")'.dependencies]
+# `kernel_parent` reads a process's parent straight from the kernel, which
+# sysinfo cannot do for a process another user owns -- `/usr/bin/login`, in
+# every terminal's chain.
+libc = { workspace = true }
 objc2-core-foundation = { workspace = true, features = [
+  "CFArray",
   "CFBase",
+  "CFCGTypes",
   "CFData",
   "CFDictionary",
   "CFNumber",
   "CFString",
   "std",
 ] }
+# Backs the `backdrop` feature alongside ScreenCaptureKit. Re-reading where the
+# window stands is the one window-server call made every frame, and asking
+# CoreGraphics about a single window by number is some five hundred times
+# cheaper than asking ScreenCaptureKit to describe every window on the machine.
+objc2-core-graphics = { workspace = true, optional = true, features = [
+  "CGGeometry",
+  "CGWindow",
+  "std",
+] }
 objc2-io-kit = { workspace = true, features = ["libc", "std"] }
+# Backs the `backdrop` feature. `macos_14_0` is what carries
+# `SCScreenshotManager`, the single-shot capture the backdrop takes.
+screencapturekit = { workspace = true, optional = true, features = [
+  "macos_14_0",
+] }

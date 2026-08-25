@@ -26,6 +26,7 @@ libc = "0.2.189"
 notify = "9.0.0-rc.2"
 nucleo-matcher = "0.3.1"
 objc2-core-foundation = { version = "0.3.2", default-features = false }
+objc2-core-graphics = { version = "0.3.2", default-features = false }
 objc2-io-kit = { version = "0.3.2", default-features = false }
 proc-macro2 = { version = "1.0", features = ["span-locations"] }
 processkit = { version = "3.3.4", default-features = false, features = [
@@ -39,6 +40,7 @@ regex = "1.13.1"
 reqwest = "0.13.4"
 rustc-hash = "2"
 rustix = "1.1.4"
+screencapturekit = "8.0.1"
 serde = "1"
 serde_json = "1"
 sha2 = "0.11.0"

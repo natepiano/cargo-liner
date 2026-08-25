@@ -158,6 +158,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
     let mut dirty = true;
     let mut repainted = Instant::now();
     while !app.framework.quit_requested() && !app.framework.restart_requested() {
+        let started = Instant::now();
         if dirty {
             // Re-borrowed every frame: rebinding a key in the keymap
             // overlay swaps the whole map out from under the loop.
@@ -165,7 +166,15 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             terminal.draw(|frame| render::draw(frame, app, &keymap))?;
             dirty = false;
         }
-        match input.recv_timeout(Duration::from_millis(FRAME_POLL_MILLIS)) {
+        // What is left of the frame after drawing it, rather than a
+        // fresh interval on top. Waiting the whole interval after a
+        // draw makes the period the draw plus the interval, which for
+        // an animation is both slower than the interval asks for and,
+        // because a draw is not the same length twice, uneven -- and
+        // uneven is what the eye reads as judder. A frame that has
+        // already overrun waits not at all and simply starts the next.
+        let remaining = Duration::from_millis(FRAME_POLL_MILLIS).saturating_sub(started.elapsed());
+        match input.recv_timeout(remaining) {
             Ok(event) => {
                 let mut resized = apply_event(app, &event);
                 // Drain the rest of the burst before drawing again: an
@@ -222,6 +231,14 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
             // which is the one thing here that draws without an event
             // behind it.
             if app.tiles.tick() {
+                dirty = true;
+            }
+            // The attract screen is the other: it runs while nothing is
+            // building, which is exactly when this loop would otherwise
+            // have nothing to repaint for. It asks for frames only
+            // while it is on the screen, so an app with work in front
+            // of it goes back to costing nothing.
+            if app.attract.showing() {
                 dirty = true;
             }
         }

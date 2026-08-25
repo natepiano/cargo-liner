@@ -2,6 +2,13 @@
 
 use ratatui::style::Modifier;
 
+// attract screen
+/// How far the attract screen's strip is carried toward or away from
+/// full strength each frame. At the frame poll's cadence this crosses
+/// the whole fade in a little under a second, which is long enough to
+/// read as the screen changing hands rather than as a cut.
+pub(crate) const ATTRACT_FADE_STEP: u8 = 6;
+
 // configuration
 /// Directory under the OS config root holding `config.toml`,
 /// `keymap.toml`, and `themes/`.
@@ -407,6 +414,11 @@ pub(crate) const SUMMARY_HIDDEN_COLUMNS: [usize; 3] =
 /// alone rather than labelling a value: there is nothing to report but
 /// that nothing is being reported.
 pub(crate) const FROZEN_NOTE_LABEL: &str = "frozen";
+/// What the status line says while the attract screen is being shown
+/// because it was asked for. Stands alone for the same reason
+/// [`FROZEN_NOTE_LABEL`] does, and says the same kind of thing: the
+/// grid is still there, it is being drawn over.
+pub(crate) const ATTRACT_NOTE_LABEL: &str = "attract";
 /// Rows the working-directory header above each group's table occupies.
 pub(crate) const GROUP_HEADER_HEIGHT: u16 = 1;
 /// Rows the column-label row at the top of the pane occupies. There is

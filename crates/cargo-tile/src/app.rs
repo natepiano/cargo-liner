@@ -14,6 +14,7 @@ use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
 
+use crate::attract::Attract;
 use crate::config;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
@@ -95,6 +96,8 @@ pub(crate) struct App {
     pub(crate) started:       Instant,
     /// Whether the display is taking new work in or being held still.
     pub(crate) updates:       Updates,
+    /// The attract screen shown over the grid while nothing is running.
+    pub(crate) attract:       Attract,
 }
 
 impl App {
@@ -116,6 +119,7 @@ impl App {
             inline_error: None,
             started: Instant::now(),
             updates: Updates::Live,
+            attract: Attract::new(),
         })
     }
 }

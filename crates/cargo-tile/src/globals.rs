@@ -9,9 +9,10 @@
 //! rest from the registration in [`crate::keymap`]: TOML loading, the
 //! status-line slots, and the rows in the keymap overlay.
 //!
-//! One of them is not about the grid at all: `f` holds the whole
+//! Two of them are not about the grid at all: `f` holds the whole
 //! display still, which is what makes a screen that repaints four times
-//! a second readable.
+//! a second readable, and `a` draws the attract screen over the grid
+//! whether or not anything is running.
 //!
 //! To add another, give the enum a variant, bind a default key in
 //! [`Globals::defaults`], and handle it in [`dispatch`].
@@ -34,6 +35,7 @@ tui_pane::action_enum! {
         FocusUp    => ("focus_up",    "Focus the tile above");
         FocusDown  => ("focus_down",  "Focus the tile below");
         Freeze     => ("freeze",      "Freeze the display");
+        Attract    => ("attract",     "Show the attract screen");
     }
 }
 
@@ -53,6 +55,7 @@ impl Globals<App> for AppGlobalAction {
             KeyCode::Up => Self::FocusUp,
             KeyCode::Down => Self::FocusDown,
             'f' => Self::Freeze,
+            'a' => Self::Attract,
         }
     }
 
@@ -70,5 +73,6 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::FocusUp => app.tiles.focus_step(Direction::Up, initial_rows),
         AppGlobalAction::FocusDown => app.tiles.focus_step(Direction::Down, initial_rows),
         AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
+        AppGlobalAction::Attract => app.attract.toggle(),
     }
 }

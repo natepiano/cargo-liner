@@ -8,3 +8,25 @@
 # cleared, so an accidental nightly feature fails there.
 [env]
 RUSTC_BOOTSTRAP = "1"
+
+# `screencapturekit` (behind tui_pane's `backdrop` feature) depends on
+# `apple-metal`, whose Swift bridge object needs two things a Rust link line
+# does not supply on its own. Swift's own driver adds both; rustc does not.
+#
+# The `-L` is for the Swift back-compat shims -- `swiftCompatibility56`,
+# `swiftCompatibilityConcurrency`. They ship in the toolchain's Swift library
+# directory, which the linker does not search on its own, and without it the
+# link fails on undefined `__swift_FORCE_LOAD_$_swiftCompatibility56`.
+#
+# The rpath is for `libswift_Concurrency.dylib`, which the bridge object
+# references as `@rpath/...` rather than by absolute path the way it does every
+# other Swift dylib. macOS keeps it in `/usr/lib/swift` (in the dyld shared
+# cache, so it does not appear in a directory listing). Without the rpath the
+# binary links but aborts at startup with `Library not loaded`.
+[target.'cfg(target_os = "macos")']
+rustflags = [
+  "-L",
+  "native=/Library/Developer/CommandLineTools/usr/lib/swift/macosx",
+  "-C",
+  "link-arg=-Wl,-rpath,/usr/lib/swift",
+]

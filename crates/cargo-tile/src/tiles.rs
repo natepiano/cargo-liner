@@ -430,7 +430,7 @@ impl TileGrid {
         }) {
             Self::close(&mut arrangement, index, &mut steps);
         }
-        for id in ids {
+        for id in ids.iter().copied() {
             if arrangement.contains(&Slot::Group(id)) {
                 continue;
             }
@@ -450,6 +450,30 @@ impl TileGrid {
                 },
                 None => (),
             }
+        }
+        // The cells read in the order `ids` gives, which is the order
+        // every table on the screen reads in: oldest work first. A cell
+        // is placed where there is room for it rather than where it
+        // belongs -- the first empty one, or the end -- and that is the
+        // order it would otherwise keep for as long as it lived, so a
+        // command that opened its cell early stands above one that
+        // started before it. Only the cells carrying commands move; an
+        // empty one is a place the reader made and stays where it was
+        // made.
+        let mut wanted = ids
+            .iter()
+            .copied()
+            .filter(|id| arrangement.contains(&Slot::Group(*id)));
+        let ordered: Vec<Slot> = arrangement
+            .iter()
+            .map(|slot| match *slot {
+                Slot::Group(_) => wanted.next().map_or(*slot, Slot::Group),
+                Slot::Empty(_) => *slot,
+            })
+            .collect();
+        if ordered != arrangement {
+            arrangement = ordered;
+            steps.push(arrangement.clone());
         }
         // Nothing moved, but the cells standing still may have changed
         // what they are asking for. Re-dividing the column is a step
@@ -2100,6 +2124,47 @@ mod tests {
         assert_eq!(shown(&grid).len(), 2, "no third cell opened");
         assert_eq!(shown(&grid)[0], TileContent::Group(7));
         assert_eq!(shown(&grid)[1], TileContent::Empty(3));
+    }
+
+    /// A cell is placed where there is room for it, which need not be
+    /// where it belongs. Whatever order the cells were placed in, they
+    /// end up standing in the order the demands name them -- otherwise
+    /// a command that opened its cell early sits above one that started
+    /// before it, for as long as both live.
+    #[test]
+    fn the_cells_stand_in_the_order_they_are_demanded_in() {
+        let mut grid = seeded_grid();
+        grid.sync(&quiet(&[8]), 4);
+        grid.settle();
+        grid.sync(&quiet(&[7, 8]), 4);
+        grid.settle();
+
+        assert_eq!(
+            shown(&grid),
+            vec![TileContent::Group(7), TileContent::Group(8),]
+        );
+    }
+
+    /// Only the cells carrying commands are re-ordered. An empty cell
+    /// is a place the reader made with `+`, and nothing shuffles
+    /// through it.
+    #[test]
+    fn re_ordering_leaves_an_empty_cell_where_it_was_made() {
+        let mut grid = seeded_grid();
+        grid.sync(&quiet(&[8]), 4);
+        grid.settle();
+        grid.add(4);
+        grid.add(4);
+        grid.sync(&quiet(&[7, 8]), 4);
+        grid.settle();
+
+        let shown = shown(&grid);
+        assert_eq!(shown[0], TileContent::Group(7));
+        assert_eq!(shown[1], TileContent::Group(8));
+        assert!(
+            matches!(shown[2], TileContent::Empty(_)),
+            "the empty cell stayed last: {shown:?}"
+        );
     }
 
     /// The cells after a departed one each move one place forward,
