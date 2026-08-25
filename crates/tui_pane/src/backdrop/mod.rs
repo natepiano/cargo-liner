@@ -31,6 +31,7 @@ mod desktop;
 mod monitor;
 
 pub use band::BandDirection;
+pub use band::BandFraying;
 pub use band::TravelingBand;
 use desktop::Desktop;
 use desktop::Placement;

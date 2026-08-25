@@ -39,6 +39,8 @@ pub use backdrop::BackdropMonitor;
 #[cfg(feature = "backdrop")]
 pub use backdrop::BandDirection;
 #[cfg(feature = "backdrop")]
+pub use backdrop::BandFraying;
+#[cfg(feature = "backdrop")]
 pub use backdrop::TravelingBand;
 pub use bar::BarPalette;
 pub use bar::BarRegion;

@@ -14,23 +14,30 @@ pub(super) const DEFAULT_BAND_SPEED: u32 = 30;
 /// depth is held in, per second, before anything has sped it up or
 /// slowed it down.
 ///
-/// The whole range takes a second to cross here, which is fast enough
-/// that the edge is visibly working at whatever the eye happens to be
-/// resting on rather than only where it is not.
-pub(super) const DEFAULT_TAIL_SPEED: u32 = 260;
+/// The whole range takes a little under two seconds to cross here, and
+/// the stand at each end is taken from that -- fast enough that the
+/// edges are visibly working, slow enough that what they are doing is
+/// something the eye can follow rather than a texture.
+pub(super) const DEFAULT_TAIL_SPEED: u32 = 150;
 /// Fastest the strip travels. Past this it crosses the grid inside a
 /// couple of frames, which reads as a flicker rather than as travel.
 pub(super) const MAX_BAND_SPEED: u32 = 400;
 /// How deep the strip stands before the grid it crosses is known,
 /// which is also where it starts.
 ///
-/// Once the grid is known it is the ceiling: the strip wraps, so at
-/// exactly the number of lines the grid has there is no gap left
-/// between the tail and the leading edge and the whole grid is lit at
-/// once, and past that there is nothing further to show. Starting here
-/// stands the strip across the whole window, since the first draw
-/// clamps it to whatever that turns out to be.
-pub(super) const MAX_BAND_WIDTH: u32 = 200;
+/// Only ever a stand-in: the first draw clamps it to
+/// [`MAX_BAND_WIDTH_PERCENT`] of the grid, so this has to be deeper
+/// than any grid and is otherwise not a number anything reads.
+pub(super) const MAX_BAND_WIDTH: u32 = 1000;
+/// How deep the strip may stand, as a percentage of the grid's extent
+/// along the axis it travels.
+///
+/// The grid's own extent, and no further. Past it the strip laps
+/// itself -- its tail meets its leading edge with grid still to cross
+/// -- and the offsets that have lapped light their whole line, which
+/// was tried at 125 and leaves too little of the grid empty to read
+/// the strip as a strip.
+pub(super) const MAX_BAND_WIDTH_PERCENT: u32 = 100;
 /// Fastest the trailing edge frays. Past this an offset crosses the
 /// whole range inside a few frames, and a trailing edge that arrives
 /// somewhere new every frame is the boiling the travel was there to
@@ -61,6 +68,21 @@ pub(super) const SUBCELLS_PER_CELL: u32 = 256;
 /// that, so a ragged trailing edge frays the strip rather than breaking
 /// it into pieces the eye reads as separate.
 pub(super) const VARIABLE_TAIL_FLOOR_PERCENT: u32 = 30;
+/// How far back the leading edge can stand from where the strip's
+/// travel says it is once that edge is fraying, as a percentage of the
+/// strip's width.
+///
+/// Under [`VARIABLE_TAIL_FLOOR_PERCENT`] on purpose, and the assertion
+/// below holds it there: the trailing edge never comes closer to the
+/// leading one than that floor, so a ceiling under it means the two
+/// can never meet however they are drawn, and the strip keeps a core
+/// at every offset rather than parting in the middle.
+pub(super) const VARIABLE_HEAD_CEILING_PERCENT: u32 = 20;
+const _: () = assert!(
+    VARIABLE_HEAD_CEILING_PERCENT < VARIABLE_TAIL_FLOOR_PERCENT,
+    "a leading edge allowed as far back as the trailing edge's floor \
+     would let the two meet and the strip vanish at that offset"
+);
 /// How long one offset across the strip stands at the depth it was last
 /// sent to, as a percentage of what crossing the whole range costs at
 /// the speed it is travelling.

@@ -14,10 +14,13 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
 use super::constants::BASE_POPUP_WIDTH;
+use super::constants::DESCRIPTION_KEY_GAP;
 use super::constants::KEYMAP_POPUP_HEIGHT_PERCENT;
 pub use super::constants::KEYMAP_POPUP_MAX_HEIGHT;
+use super::constants::OVERLAY_RIGHT_PADDING_WIDTH;
 use super::constants::PERCENT_DENOMINATOR;
 use super::constants::POPUP_BORDER_HEIGHT;
+use super::line_width;
 use crate::AppContext;
 use crate::FrameworkOverlayId;
 use crate::Keymap;
@@ -100,16 +103,22 @@ impl KeymapPane {
         let KeymapLines {
             lines,
             line_targets,
-        } = build_lines(&rows, ctx, is_capturing);
+        } = build_lines(&rows, ctx, is_capturing, description_width(&rows));
         let selectable_len = rows
             .iter()
             .filter(|r| r.row_kind != KeymapHelpRowKind::Header)
             .count();
-        let content_width = ctx.keymap_inline_error().map_or(BASE_POPUP_WIDTH, |msg| {
-            // 2 indent + 25 desc + msg len + 2 pad
-            let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
-            BASE_POPUP_WIDTH.max(needed)
-        });
+        // Measured off the lines that were actually built rather than
+        // reckoned up from the parts, so the popup fits whatever is in
+        // it -- the inline error that replaces a key while one is being
+        // captured included.
+        let content_width = lines
+            .iter()
+            .map(line_width)
+            .max()
+            .and_then(|width| u16::try_from(width.saturating_add(OVERLAY_RIGHT_PADDING_WIDTH)).ok())
+            .unwrap_or(BASE_POPUP_WIDTH)
+            .max(BASE_POPUP_WIDTH);
         KeymapOverlayInputs {
             lines,
             line_targets,
@@ -264,7 +273,28 @@ fn keymap_header_line(row: &KeymapHelpRow) -> Line<'static> {
     ])
 }
 
-fn build_lines<Ctx>(rows: &[KeymapHelpRow], ctx: &Ctx, is_capturing: bool) -> KeymapLines
+/// How wide the description column stands: the widest description
+/// there is to show, plus a gap before the keys.
+///
+/// Measured rather than fixed. Every description was padded to the
+/// same fixed width, and one longer than that pushed its own key right
+/// and nothing else's -- so the key column stopped being a column, and
+/// a long description ran straight into the key beside it.
+fn description_width(rows: &[KeymapHelpRow]) -> usize {
+    rows.iter()
+        .filter(|row| row.row_kind != KeymapHelpRowKind::Header)
+        .map(|row| line_width(&Line::from(row.description)))
+        .max()
+        .unwrap_or(0)
+        .saturating_add(DESCRIPTION_KEY_GAP)
+}
+
+fn build_lines<Ctx>(
+    rows: &[KeymapHelpRow],
+    ctx: &Ctx,
+    is_capturing: bool,
+    desc_width: usize,
+) -> KeymapLines
 where
     Ctx: KeymapUiContext + 'static,
 {
@@ -299,7 +329,6 @@ where
             })
         };
 
-        let desc_width = 25usize;
         let padded_desc = format!("{:<width$}", row.description, width = desc_width);
 
         let line = if selection != PaneSelectionState::Unselected
@@ -364,6 +393,54 @@ mod tests {
     const TALL_TERMINAL_HEIGHT: u16 = 80;
     const SHORT_TERMINAL_HEIGHT: u16 = 30;
     const COMPACT_ROWS: usize = 5;
+
+    /// A row long enough to overrun the fixed column the descriptions
+    /// used to be padded to.
+    const LONG: &str = "Cycle which of the band's edges fray";
+
+    fn action_row(description: &'static str) -> KeymapHelpRow {
+        KeymapHelpRow {
+            section: "Attract: Moving Band",
+            scope: "attract_moving_band",
+            action: "cycle_fraying",
+            description,
+            bind: None,
+            row_kind: KeymapHelpRowKind::Action,
+        }
+    }
+
+    /// The description column stands as wide as the widest description
+    /// there is, so every key starts in the same place.
+    ///
+    /// Padding to a fixed width instead let a longer description push
+    /// its own key right and nothing else's, which put the key hard
+    /// against the last word of the description and read as part of it.
+    #[test]
+    fn the_description_column_fits_the_widest_description() {
+        let rows = [action_row("Thin the band"), action_row(LONG)];
+
+        assert_eq!(
+            description_width(&rows),
+            LONG.len().saturating_add(DESCRIPTION_KEY_GAP),
+        );
+    }
+
+    /// Section headings are drawn on lines of their own with no key
+    /// beside them, so a long one is not the column's business.
+    #[test]
+    fn a_section_heading_does_not_widen_the_description_column() {
+        let short = action_row("Quit");
+        let heading = KeymapHelpRow {
+            row_kind: KeymapHelpRowKind::Header,
+            description: LONG,
+            ..action_row(LONG)
+        };
+
+        assert_eq!(
+            description_width(&[short, heading]),
+            "Quit".len().saturating_add(DESCRIPTION_KEY_GAP),
+        );
+    }
 
     #[test]
     fn keymap_popup_height_caps_to_eighty_percent_of_terminal_height() {

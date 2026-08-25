@@ -14,12 +14,12 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
 
 use super::constants::GLOBAL_SHORTCUTS_POPUP_MAX_HEIGHT;
 use super::constants::GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH;
-use super::constants::GLOBAL_SHORTCUTS_RIGHT_PADDING_WIDTH;
+use super::constants::OVERLAY_RIGHT_PADDING_WIDTH;
 use super::constants::SHORTCUT_DESCRIPTION_WIDTH;
+use super::line_width;
 use crate::Action;
 use crate::AppContext;
 use crate::BLOCK_BORDER_WIDTH;
@@ -200,7 +200,7 @@ fn render_inputs(
         .and_then(|width| {
             let width = width
                 .saturating_add(BLOCK_BORDER_WIDTH)
-                .saturating_add(GLOBAL_SHORTCUTS_RIGHT_PADDING_WIDTH);
+                .saturating_add(OVERLAY_RIGHT_PADDING_WIDTH);
             u16::try_from(width).ok()
         })
         .unwrap_or(GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH)
@@ -274,13 +274,6 @@ fn row_line<'a>(row: &GlobalShortcutRow, selection: PaneSelectionState) -> Line<
     ])
 }
 
-fn line_width(line: &Line<'_>) -> usize {
-    line.spans
-        .iter()
-        .map(|span| span.content.as_ref().width())
-        .sum()
-}
-
 fn popup_height(row_count: usize, area_height: u16) -> u16 {
     let content_height = u16::try_from(row_count).unwrap_or(u16::MAX);
     content_height
@@ -294,7 +287,7 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use super::GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH;
-    use super::GLOBAL_SHORTCUTS_RIGHT_PADDING_WIDTH;
+    use super::OVERLAY_RIGHT_PADDING_WIDTH;
     use super::SHORTCUT_DESCRIPTION_WIDTH;
     use super::line_width;
     use super::render_inputs;
@@ -338,7 +331,7 @@ mod tests {
         let longest_line = inputs.lines.iter().map(line_width).max().unwrap_or(0);
         let expected = longest_line
             .saturating_add(BLOCK_BORDER_WIDTH)
-            .saturating_add(GLOBAL_SHORTCUTS_RIGHT_PADDING_WIDTH)
+            .saturating_add(OVERLAY_RIGHT_PADDING_WIDTH)
             .max(usize::from(GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH));
 
         assert_eq!(usize::from(inputs.content_width), expected);

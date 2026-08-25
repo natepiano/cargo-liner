@@ -41,7 +41,7 @@ tui_pane::action_enum! {
         TravelDown  => ("travel_down",  "Send the band down");
         Faster      => ("faster",       "Speed the band up");
         Slower      => ("slower",       "Slow the band down");
-        VaryTail    => ("vary_tail",    "Vary how deep each line of the band stands");
+        CycleFraying => ("cycle_fraying", "Cycle which of the band's edges fray");
         TailSlower  => ("tail_slower",  "Fray the trailing edge slower");
         TailFaster  => ("tail_faster",  "Fray the trailing edge faster");
     }
@@ -88,7 +88,7 @@ impl Shortcuts<App> for MovingBandPane {
     /// meaning while the screen is up -- `f` still freezes, `s` still
     /// opens settings, `a` still gives the grid back. `[` and `]` are
     /// the third matched pair, and they slow and speed the fraying `v`
-    /// turns on, which is why they sit beside it in the listing.
+    /// cycles through, which is why they sit beside it in the listing.
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
             ['+', '='] => MovingBandAction::Wider,
@@ -99,7 +99,7 @@ impl Shortcuts<App> for MovingBandPane {
             KeyCode::Down => MovingBandAction::TravelDown,
             ['>', '.'] => MovingBandAction::Faster,
             ['<', ','] => MovingBandAction::Slower,
-            'v' => MovingBandAction::VaryTail,
+            'v' => MovingBandAction::CycleFraying,
             '[' => MovingBandAction::TailSlower,
             ']' => MovingBandAction::TailFaster,
         }
@@ -177,7 +177,7 @@ mod tests {
     fn the_steering_keys_resolve_to_their_actions() {
         let scope = MovingBandPane::defaults().into_scope_map();
         let cases = [
-            ('v', MovingBandAction::VaryTail),
+            ('v', MovingBandAction::CycleFraying),
             ('[', MovingBandAction::TailSlower),
             (']', MovingBandAction::TailFaster),
             ('+', MovingBandAction::Wider),

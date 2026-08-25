@@ -23,6 +23,21 @@ mod keymap_edit;
 mod keymap_ui;
 mod settings;
 
+/// How wide `line` draws, counting what each character actually
+/// occupies rather than how many there are.
+///
+/// What the overlays size their popups by. A popup measured in
+/// `char`s is too narrow wherever a description holds anything wide,
+/// and too wide wherever one holds a combining mark.
+fn line_width(line: &ratatui::text::Line<'_>) -> usize {
+    use unicode_width::UnicodeWidthStr as _;
+
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref().width())
+        .sum()
+}
+
 crate::action_enum! {
     /// Actions reachable on a framework overlay's local bar.
     ///

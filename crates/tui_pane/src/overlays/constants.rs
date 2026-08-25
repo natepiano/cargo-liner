@@ -1,8 +1,12 @@
 // tui_pane src overlays global_shortcuts
 pub(super) const GLOBAL_SHORTCUTS_POPUP_MAX_HEIGHT: u16 = 24;
 pub(super) const GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH: u16 = 48;
-pub(super) const GLOBAL_SHORTCUTS_RIGHT_PADDING_WIDTH: usize = 1;
+pub(super) const OVERLAY_RIGHT_PADDING_WIDTH: usize = 1;
 pub(super) const SHORTCUT_DESCRIPTION_WIDTH: usize = 34;
+/// Blank columns between the widest description and the key column,
+/// so a key reads as a key rather than as the last word of the
+/// description it sits beside.
+pub(super) const DESCRIPTION_KEY_GAP: usize = 2;
 
 // tui_pane src overlays keymap_ui
 pub(super) const BASE_POPUP_WIDTH: u16 = 52;

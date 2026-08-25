@@ -19,18 +19,18 @@
 //! stand, so without that the strip could only step from cell to cell,
 //! and stepping is what the eye reads as stop motion rather than travel.
 //!
-//! What gives the strip edges to read, then, is where it stops. The
-//! leading edge is flat across every line. The trailing edge is not:
-//! the strip runs back its own distance at every offset across itself,
-//! and those distances grow and shrink between a third of its width and
-//! all of it while it travels. How fast they do that is steerable, and
-//! [`TravelingBand::toggle_variable_tail`] turns the fraying off
-//! altogether for a trailing edge as flat as the leading one.
+//! What gives the strip edges to read, then, is where it stops -- and
+//! either edge can fray rather than standing flat across every line.
+//! A fraying edge runs back its own distance at every offset across the
+//! strip, and those distances grow and shrink while it travels.
+//! [`BandFraying`] names the four ways the two edges can be set, and
+//! how fast they fray is steerable on top of that.
 //!
-//! A strip that has not been steered sets off left to right, standing
-//! across the whole window: the leading edge is at one side while the
-//! tail is still leaving the other, so the fraying is the whole of what
-//! there is to watch until a key thins it.
+//! A strip that has not been steered sets off left to right with both
+//! of its edges fraying, standing across the whole window. What each
+//! offset across it stands on is its own two edges, so the lines it is
+//! made of end at different places rather than all together, and how
+//! much grid is left empty behind it changes while it travels.
 //!
 //! Position is tracked in whole numbers throughout. A strip that moves
 //! a fraction of a cell per frame wants sub-cell precision, and
@@ -53,6 +53,7 @@ use super::constants::DEFAULT_TAIL_SPEED;
 use super::constants::GLYPHS;
 use super::constants::MAX_BAND_SPEED;
 use super::constants::MAX_BAND_WIDTH;
+use super::constants::MAX_BAND_WIDTH_PERCENT;
 use super::constants::MAX_TAIL_SPEED;
 use super::constants::MICROS_PER_SECOND;
 use super::constants::MILLIS_PER_SECOND;
@@ -61,6 +62,7 @@ use super::constants::MIN_BAND_WIDTH;
 use super::constants::MIN_TAIL_SPEED;
 use super::constants::PIXEL_PRECISION;
 use super::constants::SUBCELLS_PER_CELL;
+use super::constants::VARIABLE_HEAD_CEILING_PERCENT;
 use super::constants::VARIABLE_TAIL_FLOOR_PERCENT;
 use super::constants::VARIABLE_TAIL_HOLD_PERCENT;
 use super::constants::WHOLE_PERCENT;
@@ -88,6 +90,57 @@ pub enum BandDirection {
     Up,
     /// Enters at the top edge and travels toward the bottom.
     Down,
+}
+
+/// Which of a [`TravelingBand`]'s two edges fray, rather than standing
+/// flat across every line.
+///
+/// An edge that frays runs back a different distance at every offset
+/// across the strip, and those distances grow and shrink while it
+/// travels. Which edge is doing it changes what the strip reads as: a
+/// flat leading edge is the one the eye tracks and a fraying trailing
+/// one is the strip coming apart behind it, and swapping the two puts
+/// the ragged end in front.
+///
+/// [`next`](Self::next) steps through all four, which is what one key
+/// cycling them walks along.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum BandFraying {
+    /// The trailing edge frays and the leading edge stays flat.
+    Trailing,
+    /// Both edges fray. Where a strip that has not been steered starts.
+    #[default]
+    Both,
+    /// The leading edge frays and the trailing edge stays flat.
+    Leading,
+    /// Neither frays: both edges are flat across every line.
+    Neither,
+}
+
+impl BandFraying {
+    /// The next of the four, wrapping back to the first.
+    ///
+    /// Ordered so that each step changes exactly one edge -- the
+    /// trailing edge alone, then both, then the leading edge alone,
+    /// then neither -- which is what makes what a press did readable
+    /// from the screen without being told. A strip starts partway
+    /// along the ring rather than at its head, so the first press
+    /// takes the leading edge on its own.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Trailing => Self::Both,
+            Self::Both => Self::Leading,
+            Self::Leading => Self::Neither,
+            Self::Neither => Self::Trailing,
+        }
+    }
+
+    /// Whether the leading edge frays.
+    const fn leading(self) -> bool { matches!(self, Self::Leading | Self::Both) }
+
+    /// Whether the trailing edge frays.
+    const fn trailing(self) -> bool { matches!(self, Self::Trailing | Self::Both) }
 }
 
 /// How much of the run of `length` starting at `start` falls inside
@@ -157,8 +210,8 @@ impl Xorshift {
     }
 }
 
-/// How far back the strip runs at one offset across itself, and where
-/// that is heading.
+/// How far back one of the strip's edges stands at one offset across
+/// it, and where that is heading.
 ///
 /// A depth drawn at random and taken up on the next frame would read as
 /// a trailing edge boiling rather than as one moving, so a fresh draw
@@ -167,7 +220,7 @@ impl Xorshift {
 /// from [`TravelingBand::tail_speed`], so one key governs the whole of
 /// how fast the trailing edge changes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TailRun {
+struct EdgeRun {
     /// How far back the strip runs here now, on the scale
     /// [`TravelingBand::tail_at`] reads.
     depth:   u8,
@@ -178,14 +231,17 @@ struct TailRun {
     holding: Duration,
 }
 
-impl TailRun {
-    /// An offset standing at the full width with nowhere to travel,
-    /// which is where every one of them starts: the strip sets off as
-    /// flat behind as it is in front and frays from there.
-    const fn full() -> Self {
+impl EdgeRun {
+    /// An offset standing at `depth` with nowhere to travel.
+    ///
+    /// Both edges start at the end of their range that is not frayed
+    /// at all -- the trailing edge at the full width, the leading one
+    /// flush with where the travel says it is -- so a strip sets off
+    /// as flat as it will ever be and frays outward from there.
+    const fn at(depth: u8) -> Self {
         Self {
-            depth:   u8::MAX,
-            target:  u8::MAX,
+            depth,
+            target: depth,
             holding: Duration::ZERO,
         }
     }
@@ -239,11 +295,11 @@ pub struct TravelingBand {
     /// The character each cell is drawing, row-major over
     /// `columns * rows`.
     glyphs:         Vec<char>,
-    /// How far back the strip runs at each offset across itself while
-    /// [`Self::variable_tail`] is on, read by [`Self::tail_at`]. Zero
-    /// is the shallowest it goes and [`u8::MAX`] is the full width, and
-    /// each of them is travelling between the two rather than sitting
-    /// still -- see [`TailRun`].
+    /// How far back the strip's trailing edge stands at each offset
+    /// across itself while it is fraying, read by [`Self::tail_at`].
+    /// Zero is the shallowest it goes and [`u8::MAX`] is the full
+    /// width, and each of them is travelling between the two rather
+    /// than sitting still -- see [`EdgeRun`].
     ///
     /// Across the strip rather than along it. A strip crossing sideways
     /// is a run of cells on every row, and it is how far back those
@@ -254,7 +310,13 @@ pub struct TravelingBand {
     ///
     /// Long enough for either axis, so turning the strip round costs
     /// nothing.
-    tails:          Vec<TailRun>,
+    tails:          Vec<EdgeRun>,
+    /// How far back the strip's leading edge stands from where its
+    /// travel says it is, at each offset across it, while that edge is
+    /// fraying. Read by [`Self::head_at`], on the same scale as
+    /// [`Self::tails`] but running the other way: zero is flush with
+    /// the travel and [`u8::MAX`] is as far back as that edge goes.
+    heads:          Vec<EdgeRun>,
     /// Cells across the area the strip was last sized to.
     columns:        u16,
     /// Cells down that same area.
@@ -274,7 +336,7 @@ pub struct TravelingBand {
     speed:          u32,
     /// How fast the trailing edge frays, on the [`u8`] scale one
     /// offset's depth is held in, per second. Governs both the walk
-    /// toward a fresh depth and the stand at it -- see [`TailRun`].
+    /// toward a fresh depth and the stand at it -- see [`EdgeRun`].
     tail_speed:     u32,
     /// How many lines the leading edge has re-rolled on this pass. A
     /// line is a column while the strip travels sideways and a row
@@ -286,11 +348,8 @@ pub struct TravelingBand {
     /// on, on the alpha scale [`blend_color`] reads: zero draws it at
     /// full strength, [`u8::MAX`] draws nothing.
     faded:          u8,
-    /// Whether how far the strip runs back varies across it, which is
-    /// what makes the trailing edge ragged. Off, it stands the full
-    /// width the whole way across and the trailing edge is as flat as
-    /// the leading one.
-    variable_tail:  bool,
+    /// Which of the strip's two edges fray.
+    fraying:        BandFraying,
 }
 
 impl Default for TravelingBand {
@@ -299,6 +358,7 @@ impl Default for TravelingBand {
             leading_edge:   0,
             glyphs:         Vec::new(),
             tails:          Vec::new(),
+            heads:          Vec::new(),
             columns:        0,
             rows:           0,
             direction:      BandDirection::default(),
@@ -312,7 +372,7 @@ impl Default for TravelingBand {
             rolled_through: 0,
             xorshift:       Xorshift::default(),
             faded:          0,
-            variable_tail:  true,
+            fraying:        BandFraying::default(),
         }
     }
 }
@@ -351,9 +411,7 @@ impl TravelingBand {
             self.leading_edge %= span;
             self.rolled_through = 0;
         }
-        if self.variable_tail {
-            self.advance_tails(elapsed);
-        }
+        self.advance_edges(elapsed);
         self.roll_reached_lines();
         self.churn();
     }
@@ -364,21 +422,27 @@ impl TravelingBand {
     /// draws nothing at all.
     pub const fn fade(&mut self, faded: u8) { self.faded = faded; }
 
-    /// Turn the ragged trailing edge off or back on. On is where a
-    /// strip that has not been steered starts.
+    /// Step to the next of the four ways the strip's edges can fray --
+    /// see [`BandFraying::next`].
     ///
-    /// On, the strip runs back its own distance at each offset across
-    /// itself -- every row of a strip crossing sideways, every column
-    /// of one crossing up or down -- and those distances grow and
-    /// shrink between a third of its width and the whole of it while it
-    /// travels. Each is a walk toward a depth drawn for it and a stand
-    /// of a couple of seconds once it arrives, so the trailing edge
-    /// moves rather than boiling.
+    /// A fraying edge runs back its own distance at each offset across
+    /// the strip -- every row of one crossing sideways, every column of
+    /// one crossing up or down -- and those distances grow and shrink
+    /// while it travels. Each is a walk toward a depth drawn for it and
+    /// a stand once it arrives, so an edge moves rather than boiling.
     ///
-    /// The leading edge stays flat either way: it is the edge the eye
-    /// tracks, and one that arrived at a different moment on every row
-    /// reads as noise rather than as travel.
-    pub const fn toggle_variable_tail(&mut self) { self.variable_tail = !self.variable_tail; }
+    /// An edge that has stopped fraying is put back flat, so the next
+    /// time round it starts from flat and frays outward rather than
+    /// snapping to wherever it was left.
+    pub fn cycle_fraying(&mut self) {
+        self.fraying = self.fraying.next();
+        if !self.fraying.trailing() {
+            self.tails.fill(EdgeRun::at(u8::MAX));
+        }
+        if !self.fraying.leading() {
+            self.heads.fill(EdgeRun::at(0));
+        }
+    }
 
     /// Send the strip a different way.
     ///
@@ -590,11 +654,16 @@ impl TravelingBand {
         if span == 0 {
             return None;
         }
-        let tail = self.tail_at(self.offset_of(column, row));
+        let offset = self.offset_of(column, row);
+        let head = self.head_at(offset);
+        let tail = self.tail_at(offset);
+        // What the strip actually stands on at this offset, once both
+        // of its edges have been asked where they are.
+        let depth = tail.saturating_sub(head);
         // A strip standing as deep as the grid has lines is the whole
         // ring: its tail has met its own leading edge, and there is no
         // line left anywhere for either edge to be part way across.
-        if tail >= span {
+        if depth >= span {
             return Some(u8::MAX);
         }
         let line = self.line_of(column, row);
@@ -606,7 +675,12 @@ impl TravelingBand {
         // at every width.
         let near = (self.leading_edge + span - u32::from(line) * SUBCELLS_PER_CELL) % span;
         let start = (near + span - SUBCELLS_PER_CELL) % span;
-        let covered = ring_overlap(start, SUBCELLS_PER_CELL, tail, span);
+        // Turning the ring back by `head` puts this offset's own
+        // leading edge at zero, so a strip that starts somewhere behind
+        // the travel is read by the same overlap as one that starts at
+        // it.
+        let shifted = (start + span - head % span) % span;
+        let covered = ring_overlap(shifted, SUBCELLS_PER_CELL, depth, span);
         if covered == 0 {
             return None;
         }
@@ -619,12 +693,12 @@ impl TravelingBand {
     /// How far back the strip runs at `offset` across itself, in
     /// sub-cells behind the leading edge.
     ///
-    /// The full width unless the trailing edge is varying, in which
+    /// The full width unless the trailing edge is fraying, in which
     /// case that offset's own draw carries it from the floor
-    /// [`VARIABLE_TAIL_FLOOR_DIVISOR`] sets up to that full width.
+    /// [`VARIABLE_TAIL_FLOOR_PERCENT`] sets up to that full width.
     fn tail_at(&self, offset: u16) -> u32 {
         let full = self.width * SUBCELLS_PER_CELL;
-        if !self.variable_tail {
+        if !self.fraying.trailing() {
             return full;
         }
         let floor = full * VARIABLE_TAIL_FLOOR_PERCENT / WHOLE_PERCENT;
@@ -633,6 +707,27 @@ impl TravelingBand {
             .get(usize::from(offset))
             .map_or(u8::MAX, |run| run.depth);
         floor + (full - floor) * u32::from(depth) / u32::from(u8::MAX)
+    }
+
+    /// How far behind the strip's travel its own leading edge stands
+    /// at `offset` across it, in sub-cells.
+    ///
+    /// Zero -- flush with the travel -- unless that edge is fraying, in
+    /// which case the offset's own draw carries it back as far as
+    /// [`VARIABLE_HEAD_CEILING_PERCENT`] of the width. That ceiling
+    /// sits under the trailing edge's floor, so however the two are
+    /// drawn the strip keeps a core at every offset.
+    fn head_at(&self, offset: u16) -> u32 {
+        if !self.fraying.leading() {
+            return 0;
+        }
+        let ceiling =
+            self.width * SUBCELLS_PER_CELL * VARIABLE_HEAD_CEILING_PERCENT / WHOLE_PERCENT;
+        let depth = self
+            .heads
+            .get(usize::from(offset))
+            .map_or(0, |run| run.depth);
+        ceiling * u32::from(depth) / u32::from(u8::MAX)
     }
 
     /// How far the leading edge travels before it is back where it
@@ -697,17 +792,19 @@ impl TravelingBand {
 
     /// Stand the strip `width` deep, clamped to what it is allowed.
     ///
-    /// Never deeper than the grid it crosses. At exactly that depth the
-    /// tail meets the leading edge and the whole grid is lit, which is
-    /// a reasonable place to be able to get to; past it the strip has
-    /// nothing further to show and the extra depth is only a number
-    /// that stops answering the key that changes it.
+    /// Never deeper than the grid it crosses -- see
+    /// [`MAX_BAND_WIDTH_PERCENT`]. At exactly that depth an offset
+    /// whose trailing edge is at full stretch has met its own leading
+    /// edge and lights its whole line, which is a reasonable place to
+    /// be able to get to; past it more and more offsets are in that
+    /// state at once and there is too little grid left empty to read
+    /// the strip against.
     fn set_width(&mut self, width: u32) {
         let lines = self.lines();
         let widest = if lines == 0 {
             MAX_BAND_WIDTH
         } else {
-            u32::from(lines)
+            u32::from(lines) * MAX_BAND_WIDTH_PERCENT / WHOLE_PERCENT
         };
         self.width = width.clamp(MIN_BAND_WIDTH, widest.max(MIN_BAND_WIDTH));
     }
@@ -754,26 +851,28 @@ impl TravelingBand {
         // Long enough for the longer of the two axes, so turning the
         // strip round needs no second draw: the offsets it runs over
         // are the rows one way and the columns the other.
-        self.tails = vec![TailRun::full(); usize::from(area.width.max(area.height))];
+        let offsets = usize::from(area.width.max(area.height));
+        self.tails = vec![EdgeRun::at(u8::MAX); offsets];
+        self.heads = vec![EdgeRun::at(0); offsets];
     }
 
-    /// Carry every offset across the strip one frame further along.
+    /// Carry every offset of every fraying edge one frame further
+    /// along.
     ///
     /// Each is travelling toward a depth of its own or standing at one,
-    /// so what the trailing edge does over a second is grow and shrink
-    /// rather than jump. One draw per offset is rolled up front,
-    /// whether or not the offset has run out of stand to use it.
-    fn advance_tails(&mut self, elapsed: Duration) {
+    /// so what an edge does over a second is grow and shrink rather
+    /// than jump. An edge that is not fraying is left where it stands.
+    fn advance_edges(&mut self, elapsed: Duration) {
         let elapsed_millis = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
         let travel =
             u8::try_from(elapsed_millis.saturating_mul(self.tail_speed) / MILLIS_PER_SECOND)
                 .unwrap_or(u8::MAX);
         let hold = self.tail_hold();
-        for index in 0..self.tails.len() {
-            let drawn = random_tail(&mut self.xorshift);
-            if let Some(run) = self.tails.get_mut(index) {
-                run.advance(elapsed, travel, hold, drawn);
-            }
+        if self.fraying.trailing() {
+            advance_runs(&mut self.tails, &mut self.xorshift, elapsed, travel, hold);
+        }
+        if self.fraying.leading() {
+            advance_runs(&mut self.heads, &mut self.xorshift, elapsed, travel, hold);
         }
     }
 
@@ -825,9 +924,28 @@ fn random_glyph(xorshift: &mut Xorshift) -> char {
     GLYPHS.get(index).copied().unwrap_or(' ')
 }
 
-/// One depth drawn at random, on the scale [`TravelingBand::tail_at`]
-/// reads. Where an offset across the strip is sent next.
-fn random_tail(xorshift: &mut Xorshift) -> u8 {
+/// Carry one edge's offsets a frame on. One draw per offset is rolled
+/// up front, whether or not the offset has run out of stand to use it,
+/// so the strip's one generator stays where the rest of its randomness
+/// comes from.
+fn advance_runs(
+    runs: &mut [EdgeRun],
+    xorshift: &mut Xorshift,
+    elapsed: Duration,
+    travel: u8,
+    hold: Duration,
+) {
+    for index in 0..runs.len() {
+        let drawn = random_depth(xorshift);
+        if let Some(run) = runs.get_mut(index) {
+            run.advance(elapsed, travel, hold, drawn);
+        }
+    }
+}
+
+/// One depth drawn at random, on the scale an [`EdgeRun`] holds. Where
+/// an offset across one of the strip's edges is sent next.
+fn random_depth(xorshift: &mut Xorshift) -> u8 {
     u8::try_from(xorshift.index(usize::from(u8::MAX) + 1)).unwrap_or(u8::MAX)
 }
 
@@ -856,9 +974,9 @@ mod tests {
     fn entered(direction: BandDirection) -> TravelingBand {
         let mut band = TravelingBand::new();
         // Where the strip stops is what these ask about, and a fraying
-        // trailing edge is a second thing moving it. The tests that
-        // want the fraying turn it back on.
-        band.toggle_variable_tail();
+        // edge is a second thing moving it. The tests that want the
+        // fraying ask for it.
+        band.fraying = BandFraying::Neither;
         band.narrow(u32::MAX);
         band.widen(NARROW - MIN_BAND_WIDTH);
         band.set_direction(direction);
@@ -914,13 +1032,9 @@ mod tests {
     #[test]
     fn a_strip_as_deep_as_the_grid_leaves_no_line_unlit() {
         let mut band = entered(BandDirection::Right);
-        band.widen(u32::MAX);
+        band.widen(u32::from(AREA.width) - NARROW);
 
-        assert_eq!(
-            band.width,
-            u32::from(AREA.width),
-            "the grid itself is as deep as the strip is allowed to stand"
-        );
+        assert_eq!(band.width, u32::from(AREA.width));
         for step in 0..8 {
             band.leading_edge = step * SUBCELLS_PER_CELL / 8;
             for column in 0..AREA.width {
@@ -1123,8 +1237,8 @@ mod tests {
     fn a_varying_trailing_edge_frays_the_tail_and_leaves_the_leading_edge_flat() {
         let mut band = entered(BandDirection::Right);
         let full = band.width * SUBCELLS_PER_CELL;
-        band.toggle_variable_tail();
-        band.tails = vec![TailRun::full(); usize::from(AREA.height)];
+        band.fraying = BandFraying::Trailing;
+        band.tails = vec![EdgeRun::at(u8::MAX); usize::from(AREA.height)];
         band.tails[0].depth = 0;
         let edge = u16::try_from(band.width.saturating_sub(1)).unwrap_or(u16::MAX);
 
@@ -1154,7 +1268,7 @@ mod tests {
             assert_eq!(drawn, unbroken, "row {row} should be one unbroken run");
         }
 
-        band.toggle_variable_tail();
+        band.fraying = BandFraying::Neither;
         assert_eq!(
             band.tail_at(0),
             full,
@@ -1177,7 +1291,7 @@ mod tests {
         )
         .unwrap_or(u8::MAX);
         let hold = TravelingBand::new().tail_hold();
-        let mut run = TailRun::full();
+        let mut run = EdgeRun::at(u8::MAX);
 
         // The first frame has nothing to stand out, so it draws.
         run.advance(frame, travel, hold, 0);
@@ -1318,8 +1432,8 @@ mod tests {
         assert_eq!(band.tail_speed, MIN_TAIL_SPEED);
     }
 
-    /// A strip nobody has steered sets off left to right, standing
-    /// across the whole window with its trailing edge already fraying.
+    /// A strip nobody has steered sets off left to right across the
+    /// whole window, with both of its edges already fraying.
     /// Everything the animation can do is on screen before a key is
     /// pressed.
     #[test]
@@ -1332,9 +1446,123 @@ mod tests {
         assert_eq!(
             band.width,
             u32::from(AREA.width),
-            "the strip should stand across every column there is"
+            "the strip should stand across every column there is",
         );
-        assert!(band.variable_tail, "and fray behind without being asked");
+        assert_eq!(
+            band.fraying,
+            BandFraying::Both,
+            "and fray at both ends without being asked"
+        );
+    }
+
+    /// One key walks all four ways the two edges can be set, and each
+    /// step changes exactly one of them -- so what a press did is
+    /// readable off the screen without being told.
+    #[test]
+    fn one_key_cycles_the_four_ways_the_edges_can_fray() {
+        let mut band = TravelingBand::new();
+        let mut seen = vec![band.fraying];
+
+        for _ in 0..3 {
+            band.cycle_fraying();
+            seen.push(band.fraying);
+        }
+
+        assert_eq!(
+            seen,
+            vec![
+                BandFraying::Both,
+                BandFraying::Leading,
+                BandFraying::Neither,
+                BandFraying::Trailing,
+            ]
+        );
+        assert!(
+            seen.windows(2).all(|pair| {
+                usize::from(pair[0].leading() != pair[1].leading())
+                    + usize::from(pair[0].trailing() != pair[1].trailing())
+                    == 1
+            }),
+            "each step should change exactly one edge: {seen:?}",
+        );
+        band.cycle_fraying();
+        assert_eq!(
+            band.fraying,
+            BandFraying::Both,
+            "and the fourth press comes back round"
+        );
+    }
+
+    /// A fraying leading edge stands back from where the strip's travel
+    /// says it is, at that offset and no other, and leaves the trailing
+    /// edge where it was. The two edges are separate: fraying one is
+    /// not a way of thinning the strip.
+    #[test]
+    fn a_fraying_leading_edge_stands_back_without_moving_the_tail() {
+        let mut band = entered(BandDirection::Right);
+        band.fraying = BandFraying::Leading;
+        band.heads = vec![EdgeRun::at(0); usize::from(AREA.height)];
+        band.heads[0].depth = u8::MAX;
+        let edge = u16::try_from(band.width.saturating_sub(1)).unwrap_or(u16::MAX);
+
+        assert!(
+            band.head_at(0) > 0,
+            "the drawn row's leading edge should have come back"
+        );
+        assert_eq!(band.head_at(1), 0, "and its neighbour's should not have");
+        assert!(
+            band.coverage(edge, 0) < band.coverage(edge, 1),
+            "so the leading line is lit less on the row that gave it up"
+        );
+        assert_eq!(
+            band.coverage(0, 0),
+            band.coverage(0, 1),
+            "while the far end of the tail is untouched on both",
+        );
+    }
+
+    /// Both edges at the far end of their ranges at once still leave a
+    /// core standing. The leading edge's ceiling is held under the
+    /// trailing edge's floor for exactly this: two edges free to meet
+    /// would put a row of the strip out altogether, and a strip with
+    /// rows missing from the middle reads as pieces rather than as one
+    /// thing.
+    #[test]
+    fn a_strip_frayed_at_both_ends_keeps_a_core_at_every_offset() {
+        let mut band = entered(BandDirection::Right);
+        band.fraying = BandFraying::Both;
+        band.heads = vec![EdgeRun::at(u8::MAX); usize::from(AREA.height)];
+        band.tails = vec![EdgeRun::at(0); usize::from(AREA.height)];
+
+        for row in 0..AREA.height {
+            let offset = band.offset_of(0, row);
+            assert!(
+                band.tail_at(offset) > band.head_at(offset),
+                "row {row} should keep a core with both edges at their limits",
+            );
+            assert!(
+                (0..AREA.width).any(|column| band.covers(column, row)),
+                "so row {row} should still be drawn somewhere",
+            );
+        }
+    }
+
+    /// An edge that has stopped fraying is put back flat, so the next
+    /// time round it starts flat and frays outward rather than snapping
+    /// to wherever it was left three presses ago.
+    #[test]
+    fn an_edge_that_stops_fraying_is_put_back_flat() {
+        let mut band = entered(BandDirection::Right);
+        band.fraying = BandFraying::Both;
+        band.tails = vec![EdgeRun::at(0); usize::from(AREA.height)];
+        band.heads = vec![EdgeRun::at(u8::MAX); usize::from(AREA.height)];
+
+        // Both -> Leading puts the trailing edge away, and the step
+        // after that puts the leading one away too.
+        band.cycle_fraying();
+        assert_eq!(band.tails[0].depth, u8::MAX, "the tail is flat again");
+        band.cycle_fraying();
+        assert_eq!(band.heads[0].depth, 0, "and so is the leading edge");
     }
 
     /// One key governs the whole of how fast the trailing edge changes:

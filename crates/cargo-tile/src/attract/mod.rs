@@ -226,7 +226,7 @@ impl Attract {
             MovingBandAction::TravelRight => self.band.set_direction(BandDirection::Right),
             MovingBandAction::TravelUp => self.band.set_direction(BandDirection::Up),
             MovingBandAction::TravelDown => self.band.set_direction(BandDirection::Down),
-            MovingBandAction::VaryTail => self.band.toggle_variable_tail(),
+            MovingBandAction::CycleFraying => self.band.cycle_fraying(),
             MovingBandAction::TailFaster => self.band.tail_faster(step * BAND_TAIL_SPEED_STEP),
             MovingBandAction::TailSlower => self.band.tail_slower(step * BAND_TAIL_SPEED_STEP),
         }
