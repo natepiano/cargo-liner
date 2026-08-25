@@ -38,13 +38,11 @@ use super::constants::CAPTURE_REFRESH;
 use super::constants::CAPTURE_RETRY;
 use super::constants::IDENTIFY_ATTEMPTS;
 use super::constants::IDENTIFY_MARKER;
+use super::desktop;
 use super::desktop::Desktop;
 use super::desktop::Frame;
 use super::desktop::Metrics;
 use super::desktop::Placement;
-use super::desktop::window_frame;
-use super::desktop::window_titled;
-use super::desktop::window_titles;
 
 /// A backdrop kept up to date on two worker threads.
 ///
@@ -176,7 +174,7 @@ impl BackdropMonitor {
         let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
         // What every window is titled now, so that the one found to be
         // wearing the marker can be given its own title back.
-        let titles = window_titles();
+        let titles = desktop::window_titles();
         if set_title(out, &marker).is_err() {
             return false;
         }
@@ -184,7 +182,7 @@ impl BackdropMonitor {
         // window server before it can be asked about, and none of that
         // is instant. Nothing paces the attempts because each one is
         // itself a long round trip.
-        let found = (0..IDENTIFY_ATTEMPTS).find_map(|_| window_titled(&marker));
+        let found = (0..IDENTIFY_ATTEMPTS).find_map(|_| desktop::window_titled(&marker));
         let restored = found
             .and_then(|window| titles.iter().find(|(id, _)| *id == window))
             .and_then(|(_, title)| title.as_deref());
@@ -309,7 +307,7 @@ fn set_title(out: &mut impl Write, title: &str) -> io::Result<()> {
 /// simply waits there rather than in the render loop.
 fn position_loop(watches: &Receiver<u32>, frames: &Sender<Option<Frame>>) {
     while let Ok(window) = watches.recv() {
-        if frames.send(window_frame(window)).is_err() {
+        if frames.send(desktop::window_frame(window)).is_err() {
             break;
         }
     }

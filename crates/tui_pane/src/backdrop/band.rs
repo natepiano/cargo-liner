@@ -63,9 +63,9 @@ use super::constants::VARIABLE_HEAD_CEILING_PERCENT;
 use super::constants::VARIABLE_TAIL_FLOOR_PERCENT;
 use super::constants::VARIABLE_TAIL_HOLD_PERCENT;
 use super::constants::WHOLE_PERCENT;
+use super::random;
 use super::random::Xorshift;
-use super::random::random_glyph;
-use crate::theme::blend_color;
+use crate::theme;
 
 /// Which way a [`TravelingBand`] crosses the grid.
 ///
@@ -556,7 +556,7 @@ impl TravelingBand {
                         u32::from(u8::MAX - self.faded) * u32::from(strength) / u32::from(u8::MAX);
                     let alpha = u8::MAX - u8::try_from(visible).unwrap_or(u8::MAX);
                     cell.set_char(glyph);
-                    cell.set_fg(blend_color(color, toward, alpha));
+                    cell.set_fg(theme::blend_color(color, toward, alpha));
                 }
             }
         }
@@ -797,7 +797,7 @@ impl TravelingBand {
         let cells = usize::from(area.width) * usize::from(area.height);
         let mut glyphs = Vec::with_capacity(cells);
         for _ in 0..cells {
-            glyphs.push(random_glyph(&mut self.xorshift));
+            glyphs.push(random::random_glyph(&mut self.xorshift));
         }
         self.glyphs = glyphs;
         // Long enough for the longer of the two axes, so turning the
@@ -848,7 +848,7 @@ impl TravelingBand {
             for offset in 0..self.cells_per_line() {
                 let (column, row) = self.cell_on_line(self.rolled_through, offset);
                 let index = self.cell_index(column, row);
-                let glyph = random_glyph(&mut self.xorshift);
+                let glyph = random::random_glyph(&mut self.xorshift);
                 if let Some(slot) = self.glyphs.get_mut(index) {
                     *slot = glyph;
                 }
@@ -862,7 +862,7 @@ impl TravelingBand {
     fn churn(&mut self) {
         for _ in 0..CHURN_CELLS_PER_FRAME {
             let index = self.xorshift.index(self.glyphs.len());
-            let glyph = random_glyph(&mut self.xorshift);
+            let glyph = random::random_glyph(&mut self.xorshift);
             if let Some(slot) = self.glyphs.get_mut(index) {
                 *slot = glyph;
             }

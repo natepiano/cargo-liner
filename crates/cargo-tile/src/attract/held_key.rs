@@ -23,7 +23,7 @@ use crate::constants::HELD_KEY_PRESSES_PER_STEP;
 /// per press the longer it is held, so crossing the whole range of
 /// widths or speeds does not cost sixty presses.
 #[derive(Debug)]
-pub(crate) struct HeldKey<A> {
+pub(super) struct HeldKey<A> {
     /// The action the run is made of, or [`None`] before the first
     /// press of the session.
     action:     Option<A>,
@@ -35,7 +35,7 @@ pub(crate) struct HeldKey<A> {
 
 impl<A: Copy + PartialEq> HeldKey<A> {
     /// A run that has not started.
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             action:     None,
             pressed_at: Instant::now(),
@@ -50,7 +50,7 @@ impl<A: Copy + PartialEq> HeldKey<A> {
     /// and never more than [`HELD_KEY_MAX_STEP`], so a key left down
     /// settles into a steady climb rather than running away from the
     /// reader.
-    pub(crate) fn step(&mut self, action: A, pressed_at: Instant) -> u32 {
+    pub(super) fn step(&mut self, action: A, pressed_at: Instant) -> u32 {
         let continuing = self.action == Some(action)
             && pressed_at.duration_since(self.pressed_at) <= HELD_KEY_GAP;
         self.presses = if continuing {
@@ -66,11 +66,13 @@ impl<A: Copy + PartialEq> HeldKey<A> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::attract::moving_band::MovingBandAction;
 
     /// A gap short enough to read as the same key still being held.
-    const HELD: std::time::Duration = HELD_KEY_GAP;
+    const HELD: Duration = HELD_KEY_GAP;
 
     #[test]
     fn a_single_press_is_worth_one_step() {

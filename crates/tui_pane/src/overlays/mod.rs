@@ -29,9 +29,7 @@ mod settings;
 /// What the overlays size their popups by. A popup measured in
 /// `char`s is too narrow wherever a description holds anything wide,
 /// and too wide wherever one holds a combining mark.
-fn line_width(line: &ratatui::text::Line<'_>) -> usize {
-    use unicode_width::UnicodeWidthStr as _;
-
+fn line_width(line: &Line<'_>) -> usize {
     line.spans
         .iter()
         .map(|span| span.content.as_ref().width())
@@ -65,6 +63,8 @@ pub use keymap_edit::save_keymap_to_disk;
 pub use keymap_ui::KEYMAP_POPUP_MAX_HEIGHT;
 pub use keymap_ui::KeymapOverlayInputs;
 pub use keymap_ui::KeymapUiContext;
+use ratatui::text::Line;
 pub use settings::SettingsCommand;
 pub use settings::SettingsPane;
 pub use settings::SettingsRenderOptions;
+use unicode_width::UnicodeWidthStr as _;

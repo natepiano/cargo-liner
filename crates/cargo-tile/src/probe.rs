@@ -15,7 +15,7 @@
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
 use std::io;
-use std::io::Write as _;
+use std::io::Write;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -82,7 +82,7 @@ fn target() -> Option<&'static str> {
 }
 
 /// Whether anything here does any work at all.
-pub(crate) fn on() -> bool { target().is_some() }
+fn on() -> bool { target().is_some() }
 
 /// Time `body` and record it as `phase`.
 pub(crate) fn timed<T>(phase: Phase, body: impl FnOnce() -> T) -> T {
@@ -119,7 +119,7 @@ impl<W> Counted<W> {
     pub(crate) const fn new(inner: W) -> Self { Self { inner } }
 }
 
-impl<W: io::Write> io::Write for Counted<W> {
+impl<W: Write> Write for Counted<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let written = self.inner.write(buf)?;
         if on() {

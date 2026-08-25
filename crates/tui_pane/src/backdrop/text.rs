@@ -49,9 +49,9 @@ use super::constants::TEXT_LANE_ROWS;
 use super::constants::TEXT_RIPPLE_LINES;
 use super::constants::TEXT_RIPPLE_PERCENT;
 use super::constants::WHOLE_PERCENT;
+use super::random;
 use super::random::Xorshift;
-use super::random::random_glyph;
-use crate::theme::blend_color;
+use crate::theme;
 
 /// Whether the lines of a [`DriftingText`] travel as one or at speeds
 /// of their own.
@@ -144,7 +144,7 @@ impl TextLine {
             // however far it has drifted, which is where the character
             // that just left the far end has come round to.
             let entering = usize::try_from((length - self.drifted) % length).unwrap_or(0);
-            let glyph = random_glyph(xorshift);
+            let glyph = random::random_glyph(xorshift);
             if let Some(slot) = self.glyphs.get_mut(entering) {
                 *slot = glyph;
             }
@@ -277,14 +277,15 @@ impl DriftingText {
         self.rebuild();
     }
 
-    /// Slow the field down by `cells_per_second`, never past
-    /// [`MIN_TEXT_SPEED`].
+    /// Slow the field down by `cells_per_second`, never past the
+    /// slowest the text is allowed to drift: a field stopped dead is
+    /// one the reader cannot tell from a frozen display.
     pub fn slow_down(&mut self, cells_per_second: u32) {
         self.set_speed(self.speed.saturating_sub(cells_per_second));
     }
 
-    /// Speed the field up by `cells_per_second`, never past
-    /// [`MAX_TEXT_SPEED`].
+    /// Speed the field up by `cells_per_second`, never past the
+    /// fastest the text is allowed to drift.
     pub fn speed_up(&mut self, cells_per_second: u32) {
         self.set_speed(self.speed.saturating_add(cells_per_second));
     }
@@ -300,7 +301,8 @@ impl DriftingText {
     }
 
     /// Send the lines' own speeds `percent` further from the field's,
-    /// never past [`MAX_TEXT_SPREAD`].
+    /// never past the width at which the slowest line would stop and
+    /// the fastest would run at twice the field's speed.
     pub fn spread_wider(&mut self, percent: u32) {
         self.spread = self.spread.saturating_add(percent).min(MAX_TEXT_SPREAD);
     }
@@ -336,7 +338,7 @@ impl DriftingText {
                         background => background,
                     };
                     cell.set_char(glyph);
-                    cell.set_fg(blend_color(color, toward, self.faded));
+                    cell.set_fg(theme::blend_color(color, toward, self.faded));
                 }
             }
         }
@@ -415,7 +417,7 @@ impl DriftingText {
         for index in 0..count {
             let mut glyphs = Vec::with_capacity(length);
             for _ in 0..length {
-                glyphs.push(random_glyph(&mut self.xorshift));
+                glyphs.push(random::random_glyph(&mut self.xorshift));
             }
             lines.push(TextLine {
                 glyphs,
@@ -661,6 +663,9 @@ fn line_speed(speed: u32, spread: u32, together: bool, variance: u8) -> u32 {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::ops::Range;
+
     use super::*;
 
     /// An area with different extents each way, so a test that reads
@@ -701,7 +706,7 @@ mod tests {
     /// [`DriftingText::advance`] has moved everything: a lazy read
     /// would answer with where the characters ended up rather than
     /// where they set out from.
-    fn row_glyphs(text: &DriftingText, columns: std::ops::Range<u16>) -> Vec<char> {
+    fn row_glyphs(text: &DriftingText, columns: Range<u16>) -> Vec<char> {
         columns
             .map(|column| text.glyph_at(column, 0).expect("the row is filled"))
             .collect()
@@ -973,7 +978,7 @@ mod tests {
         for seed in LANE_TEST_SEEDS {
             let dealt =
                 deal_variances(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut Xorshift::seeded(seed));
-            let distinct: std::collections::BTreeSet<u8> = dealt.iter().copied().collect();
+            let distinct: BTreeSet<u8> = dealt.iter().copied().collect();
 
             assert!(
                 distinct.len() > LANE_TEST_LINES / 2,
@@ -1030,7 +1035,7 @@ mod tests {
         let offsets = [0, 40, 90, 127, 160, 210, u8::MAX];
 
         for end in ends {
-            let landed: std::collections::BTreeSet<u8> = offsets
+            let landed: BTreeSet<u8> = offsets
                 .into_iter()
                 .map(|offset| nudged(end, offset, TEXT_RIPPLE_PERCENT))
                 .collect();

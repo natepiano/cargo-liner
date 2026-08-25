@@ -20,6 +20,8 @@
 //!   and runs every frame, so dragging the window slides the colours with it and nothing waits on a
 //!   capture.
 
+use std::fmt::Formatter;
+
 use crossterm::terminal;
 use ratatui::style::Color;
 
@@ -252,7 +254,7 @@ fn cell_index(cells: f64) -> Option<i32> { cells.is_finite().then(|| cells.round
 impl std::fmt::Debug for Desktop {
     /// Without the colours, which run to tens of thousands of entries
     /// and say nothing a reader of a debug line wants.
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Desktop")
             .field("window", &self.window)
@@ -293,12 +295,12 @@ mod platform {
     use sysinfo::ProcessesToUpdate;
     use sysinfo::System;
 
-    use super::super::constants::SAMPLES_PER_CELL;
     use super::Desktop;
     use super::Frame;
     use super::Metrics;
     use super::cell_index;
-    use crate::process::kernel_parent;
+    use crate::backdrop::constants::SAMPLES_PER_CELL;
+    use crate::process;
 
     /// How many bytes one pixel of the captured image occupies.
     const BYTES_PER_PIXEL: usize = 4;
@@ -692,7 +694,7 @@ mod platform {
             match system
                 .process(current)
                 .and_then(sysinfo::Process::parent)
-                .or_else(|| kernel_parent(current))
+                .or_else(|| process::kernel_parent(current))
             {
                 Some(parent) => current = parent,
                 None => break,
