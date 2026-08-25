@@ -58,6 +58,7 @@ use crate::app::Updates;
 use crate::attract::Grid;
 use crate::attract::Work;
 use crate::attract::ground;
+use crate::constants::ANCESTRY_DEMAND_PASSES;
 use crate::constants::ANCESTRY_ELISION;
 use crate::constants::ANCESTRY_GAP_HEIGHT;
 use crate::constants::ANCESTRY_LEVEL_INDENT;
@@ -101,9 +102,11 @@ use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::TILE_NUMBER_INDENT;
 use crate::constants::TILE_ROWS_CELL_LABEL;
+use crate::constants::TILE_ROWS_CELL_SEPARATOR;
 use crate::constants::TILE_ROWS_CONTENT_LABEL;
 use crate::constants::TILE_ROWS_READOUT_HEIGHT;
 use crate::constants::TILE_ROWS_RIGHT_INSET;
+use crate::constants::TILE_ROWS_WIDTH_LABEL;
 use crate::globals::AppGlobalAction;
 use crate::probe;
 use crate::processes::Ancestor;
@@ -254,6 +257,25 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
             TileContent::Group(id) => demands.rows_for(id),
             TileContent::Empty(_) => 0,
         };
+        // The width the demand above was measured at, which is read off
+        // the layout as it stood before `sync` -- the readout carries it
+        // beside the cell's own so a cell measured at one width and
+        // drawn at another says so rather than only looking wrong.
+        let demand_width = widths
+            .iter()
+            .find(|&&(content, _)| content == placement.content)
+            .map_or(0, |&(_, width)| width);
+        // The split behind that count, for the readout only: the summary
+        // has no block above its table, so its whole demand is the table.
+        let split = match placement.content {
+            TileContent::Group(id) => app
+                .roster
+                .groups()
+                .iter()
+                .find(|group| group.id == id)
+                .map(|group| group_height_parts(group, demand_width, hidden_when_idle)),
+            TileContent::Summary | TileContent::Empty(_) => None,
+        };
         if contents == Contents::Shown {
             draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
                 draw_contents(
@@ -264,7 +286,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
                     ground,
                     hidden_when_idle,
                 );
-                draw_rows_readout(buffer, inner, content_rows);
+                draw_rows_readout(buffer, inner, content_rows, demand_width, split);
             });
         }
         match placement.content {
@@ -349,6 +371,21 @@ fn tile_demands(
 /// given is the answer. A lead drawn as the foot of its own chain is
 /// left out of the table, the same as [`draw_group`] leaves it out.
 fn group_height(group: &TrackedGroup, width: u16, hidden_when_idle: &[String]) -> usize {
+    let (above, table) = group_height_parts(group, width, hidden_when_idle);
+    above.saturating_add(table)
+}
+
+/// [`group_height`] split into the block above the table and the table
+/// itself, which is what the readout along the cell's foot writes out.
+///
+/// The two are worth telling apart: they are measured by different code
+/// against different rules, and a cell asking for far more than it draws
+/// is asking it in one of them rather than in both.
+fn group_height_parts(
+    group: &TrackedGroup,
+    width: u16,
+    hidden_when_idle: &[String],
+) -> (usize, usize) {
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
     let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
     // The same steps [`draw_group`] draws, measured the same way: a
@@ -356,18 +393,67 @@ fn group_height(group: &TrackedGroup, width: u16, hidden_when_idle: &[String]) -
     // asking for one row a level would leave the block short of what it
     // would have drawn with the room.
     let ancestry = drawn_ancestry(group, leads_as_ancestor);
-    let chain: Vec<Option<&Ancestor>> = ancestry.iter().map(Some).collect();
-    let above = if chain.is_empty() {
-        0
-    } else {
-        ancestry_height(&chain, width).saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
-    };
-    above.saturating_add(table_height(
+    let table = table_height(
         &rows,
         TableKind::Command,
         width,
         Some(group.lead.process.path.as_str()),
-    ))
+    );
+    (
+        ancestry_demand(&ancestry, width, table, leads_as_ancestor),
+        table,
+    )
+}
+
+/// Rows the block above the table asks for: the ones
+/// [`draw_ancestry`] will actually put on screen, not the ones the
+/// whole chain would take.
+///
+/// The two are far apart. The block is given half the cell, and
+/// [`ancestry_fit`] then gives up whole levels until what is left fits
+/// -- so what it draws is neither the chain nor the budget, but wherever
+/// the last level to survive leaves it. Counting the chain asked for
+/// every row of every level the cell was always going to elide, which
+/// is how a cell drawing twelve rows came to ask for forty-five, then
+/// sat in a cell sized for the larger number with the difference blank.
+///
+/// The budget comes from the cell's height and the cell's height is what
+/// this is deciding, so it is solved rather than read: the whole chain
+/// is the ceiling, and each pass gives the block the budget its own last
+/// answer would have bought. See [`ANCESTRY_DEMAND_PASSES`] for why that
+/// settles.
+fn ancestry_demand(
+    ancestry: &[Ancestor],
+    width: u16,
+    table: usize,
+    foot_is_the_command: bool,
+) -> usize {
+    if ancestry.is_empty() {
+        return 0;
+    }
+    let gap = usize::from(ANCESTRY_GAP_HEIGHT);
+    let whole: Vec<Option<&Ancestor>> = ancestry.iter().map(Some).collect();
+    let mut above = ancestry_height(&whole, width).saturating_add(gap);
+    for _ in 0..ANCESTRY_DEMAND_PASSES {
+        let height = u16::try_from(above.saturating_add(table)).unwrap_or(u16::MAX);
+        let budget = ancestry_budget(height);
+        let levels = ancestry_fit(ancestry, budget, width, foot_is_the_command);
+        // The same rows [`draw_ancestry`] ends up with: the levels it
+        // settled on, cut to the budget where the one level it stops at
+        // outruns it on its own, and no gap at all where it drew nothing.
+        let drawn = if levels.is_empty() {
+            0
+        } else {
+            ancestry_height(&levels, width)
+                .min(budget.max(1))
+                .saturating_add(gap)
+        };
+        if drawn >= above {
+            break;
+        }
+        above = drawn;
+    }
+    above
 }
 
 /// Rows a table of `rows` lays out at `width`: the one column-label row
@@ -426,22 +512,55 @@ fn table_height(rows: &[&TrackedRow], kind: TableKind, width: u16, pinned: Optio
 /// cell actually has to draw into, which is one short of its allotment
 /// wherever it shares a border with the cell below. The count is
 /// written green while it fits and red once it does not.
-fn draw_rows_readout(buffer: &mut Buffer, inner: Rect, rows: usize) {
+///
+/// The cell's own rows and columns follow, and the width the demand was
+/// settled at is written between them only when the two widths differ.
+/// The demand is measured against the layout as it stood before
+/// [`Tiles::sync`] and the cell is drawn at whatever the layout became
+/// after it -- and a command line wraps, which makes a demand taken at
+/// half the width very nearly twice the rows. So the two widths
+/// agreeing is worth no room at all, while the two disagreeing is the
+/// whole of what separates a cell asking for too much from a cell
+/// asking against the wrong ruler, and is written red where it appears.
+fn draw_rows_readout(
+    buffer: &mut Buffer,
+    inner: Rect,
+    rows: usize,
+    measured_at: u16,
+    split: Option<(usize, usize)>,
+) {
     let asked = u16::try_from(rows).unwrap_or(u16::MAX);
     let reading = if asked <= inner.height {
         success_color()
     } else {
         error_color()
     };
-    let line = Line::from(vec![
+    let parts = split.map_or_else(String::new, |(above, table)| format!(" ({above}+{table})"));
+    let mut spans = vec![
         Span::styled(TILE_ROWS_CONTENT_LABEL, Style::default().fg(label_color())),
         Span::styled(rows.to_string(), Style::default().fg(reading)),
+        Span::styled(parts, Style::default().fg(label_color())),
+    ];
+    if measured_at != inner.width {
+        spans.push(Span::styled(
+            TILE_ROWS_WIDTH_LABEL,
+            Style::default().fg(label_color()),
+        ));
+        spans.push(Span::styled(
+            measured_at.to_string(),
+            Style::default().fg(error_color()),
+        ));
+    }
+    spans.extend([
         Span::styled(TILE_ROWS_CELL_LABEL, Style::default().fg(label_color())),
         Span::styled(
             inner.height.to_string(),
             Style::default().fg(text_default()),
         ),
+        Span::styled(TILE_ROWS_CELL_SEPARATOR, Style::default().fg(label_color())),
+        Span::styled(inner.width.to_string(), Style::default().fg(text_default())),
     ]);
+    let line = Line::from(spans);
     let Some(area) = readout_area(inner, u16::try_from(line.width()).unwrap_or(u16::MAX)) else {
         return;
     };
@@ -2210,16 +2329,132 @@ mod tests {
 
     /// A roster carrying one command, with `rest` running under it.
     fn roster_of(lead: CargoProcess, rest: Vec<CargoProcess>) -> Roster {
+        roster_with_ancestry(
+            lead,
+            rest,
+            vec![ancestor(6218, "zed"), shell(36744, "-zsh")],
+        )
+    }
+
+    /// The same, for the tests that care what stands above the command.
+    fn roster_with_ancestry(
+        lead: CargoProcess,
+        rest: Vec<CargoProcess>,
+        ancestry: Vec<Ancestor>,
+    ) -> Roster {
         let mut roster = Roster::new();
         roster.observe(
             vec![CargoGroup {
                 lead,
                 rest,
-                ancestry: vec![ancestor(6218, "zed"), shell(36744, "-zsh")],
+                ancestry,
             }],
             Instant::now(),
         );
         roster
+    }
+
+    /// Rows of `buffer` the draw put something in, counted from the top:
+    /// the last row carrying anything, and every row above it.
+    fn filled_rows(buffer: &Buffer) -> usize {
+        (0..buffer.area.height)
+            .rev()
+            .find(|&y| !buffer_line(buffer, y).is_empty())
+            .map_or(0, |y| usize::from(y).saturating_add(1))
+    }
+
+    /// A chain no cell of a readable width can draw whole: three steps
+    /// whose command lines each wrap several times over.
+    fn long_chain() -> Vec<Ancestor> {
+        vec![
+            ancestor(6218, "zed"),
+            ancestor(
+                18581,
+                &format!("node ~/.claude/local/claude {}", "--setting on ".repeat(8)),
+            ),
+            ancestor(
+                24101,
+                &format!(
+                    "zsh -c cargo nextest run {}",
+                    "--package tui_pane ".repeat(8)
+                ),
+            ),
+        ]
+    }
+
+    /// The rows a cell asks for are the rows it goes on to draw.
+    ///
+    /// The chain here is far too long for the half-cell the block is
+    /// given, so [`ancestry_fit`] gives up whole levels -- and a demand
+    /// counting the chain instead asked for every row of every level
+    /// the cell was always going to elide, then sat in a cell sized for
+    /// the larger number with the difference blank.
+    #[test]
+    fn a_cell_asks_for_the_rows_its_chain_actually_draws() {
+        let width = 60;
+        let hidden = hidden_when_idle();
+        let roster = roster_with_ancestry(
+            invocation(4100, &["build"]),
+            vec![invocation(4212, &["test"])],
+            long_chain(),
+        );
+        let group = roster.groups().first().unwrap();
+        let demand = group_height(group, width, &hidden);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, width, u16::try_from(demand).unwrap()));
+        let area = buffer.area;
+        draw_group(&mut buffer, &roster, 4100, area, Color::Reset, &hidden);
+
+        assert_eq!(
+            filled_rows(&buffer),
+            demand,
+            "a cell should be sized for the rows it draws, not for rows it elides",
+        );
+    }
+
+    /// And the same where nothing is elided: a chain the cell has room
+    /// for is asked for whole, so the fixed point is not simply the
+    /// smallest answer it can reach.
+    #[test]
+    fn a_cell_whose_chain_fits_asks_for_all_of_it() {
+        let width = 60;
+        let hidden = hidden_when_idle();
+        let roster = roster_of(
+            invocation(4100, &["build"]),
+            vec![invocation(4212, &["test"])],
+        );
+        let group = roster.groups().first().unwrap();
+        let demand = group_height(group, width, &hidden);
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, width, u16::try_from(demand).unwrap()));
+        let area = buffer.area;
+        draw_group(&mut buffer, &roster, 4100, area, Color::Reset, &hidden);
+
+        assert_eq!(filled_rows(&buffer), demand);
+        assert_eq!(
+            buffer_line(&buffer, 0),
+            " 6218 zed",
+            "the whole chain should be drawn",
+        );
+    }
+
+    /// The elision the demand is counting on: the cell really does draw
+    /// fewer levels than the chain has, which is what makes the two
+    /// counts capable of disagreeing at all.
+    #[test]
+    fn a_chain_too_long_for_its_cell_costs_far_less_than_the_chain() {
+        let width = 60;
+        let ancestry = long_chain();
+        let whole: Vec<Option<&Ancestor>> = ancestry.iter().map(Some).collect();
+        let table = 6;
+
+        let asked = ancestry_demand(&ancestry, width, table, false);
+
+        assert!(
+            asked < ancestry_height(&whole, width),
+            "a demand of {asked} should be under the {} rows the chain takes whole",
+            ancestry_height(&whole, width),
+        );
     }
 
     /// A command typed by hand has a shell at the foot of its chain and

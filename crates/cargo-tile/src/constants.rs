@@ -276,8 +276,17 @@ pub(crate) const TILE_NUMBER_INDENT: &str = " ";
 /// Ahead of what a cell's contents ask for, in the readout along the
 /// foot of every cell.
 pub(crate) const TILE_ROWS_CONTENT_LABEL: &str = "content rows: ";
-/// Ahead of what the cell was given, in the same readout.
-pub(crate) const TILE_ROWS_CELL_LABEL: &str = " cell rows: ";
+/// Ahead of the cell's own size in the same readout, written as rows
+/// over columns.
+pub(crate) const TILE_ROWS_CELL_LABEL: &str = "  r/c: ";
+/// Between those two numbers.
+pub(crate) const TILE_ROWS_CELL_SEPARATOR: &str = "/";
+/// Ahead of the width the demand was measured at, which is written only
+/// where it is not the width the cell was drawn at. The two agreeing is
+/// the ordinary case and says nothing; the two disagreeing is the one
+/// way the counts can differ without either being wrong on its own
+/// terms, and is worth the room it takes.
+pub(crate) const TILE_ROWS_WIDTH_LABEL: &str = " @ ";
 /// Kept between that readout and the cell's right border, so it is not
 /// flush against the line.
 pub(crate) const TILE_ROWS_RIGHT_INSET: u16 = 1;
@@ -330,6 +339,17 @@ pub(crate) const ANCESTRY_GAP_HEIGHT: u16 = 1;
 /// middle rather than off the end: one for the top-level parent, one
 /// for the elision, and one for the level nearest the command.
 pub(crate) const ANCESTRY_MIN_ELIDED_ROWS: usize = 3;
+/// How many times a cell's demand re-measures its ancestry block
+/// against the cell its own last answer would have bought.
+///
+/// The block is given half the cell, so what it draws depends on a
+/// height the demand is itself deciding. Each pass hands the block the
+/// budget the pass before it worked out, and each answer is no larger
+/// than the one before -- a smaller cell buys a smaller budget, which
+/// fits no more levels -- so the sequence settles, usually on the second
+/// pass. This bounds it anyway: a render path is no place to discover
+/// that an assumption about convergence was wrong.
+pub(crate) const ANCESTRY_DEMAND_PASSES: usize = 8;
 /// What stands in the ancestry block for the levels a short cell has no
 /// room to draw.
 pub(crate) const ANCESTRY_ELISION: &str = "\u{2026}";
