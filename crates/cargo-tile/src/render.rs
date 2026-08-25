@@ -351,14 +351,16 @@ fn tile_demands(
 fn group_height(group: &TrackedGroup, width: u16, hidden_when_idle: &[String]) -> usize {
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
     let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
-    let chain = group
-        .ancestry()
-        .len()
-        .saturating_add(usize::from(leads_as_ancestor));
-    let above = if chain == 0 {
+    // The same steps [`draw_group`] draws, measured the same way: a
+    // command wrapping down the cell wants the rows it wraps onto, and
+    // asking for one row a level would leave the block short of what it
+    // would have drawn with the room.
+    let ancestry = drawn_ancestry(group, leads_as_ancestor);
+    let chain: Vec<Option<&Ancestor>> = ancestry.iter().map(Some).collect();
+    let above = if chain.is_empty() {
         0
     } else {
-        chain.saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
+        ancestry_height(&chain, width).saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
     };
     above.saturating_add(table_height(
         &rows,
@@ -622,11 +624,7 @@ fn draw_group(
     };
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
     let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
-    let mut chain = group.ancestry().to_vec();
-    if leads_as_ancestor {
-        chain.push(as_ancestor(&group.lead.process));
-    }
-    let ancestry = carried(chain);
+    let ancestry = drawn_ancestry(group, leads_as_ancestor);
     // Where the driver stands at the foot of its own chain, that is
     // where its pid is written, and the rows pointing at it in the
     // table below need it in the colour they are pointing with.
@@ -663,6 +661,22 @@ fn draw_group(
         ground,
         Some(group.lead.process.path.as_str()),
     );
+}
+
+/// The steps `group`'s cell puts above its table: its chain, closed by
+/// the command itself where the command is a driver, with the steps
+/// that only passed something through taken out.
+///
+/// Read here rather than off [`crate::roster::TrackedGroup::ancestry`]
+/// directly so the cell's height is asked for against the steps it will
+/// actually draw. Counting the raw chain asked for rows that
+/// [`carried`] then dropped.
+fn drawn_ancestry(group: &TrackedGroup, leads_as_ancestor: bool) -> Vec<Ancestor> {
+    let mut chain = group.ancestry().to_vec();
+    if leads_as_ancestor {
+        chain.push(as_ancestor(&group.lead.process));
+    }
+    carried(chain)
 }
 
 /// A command as the last step of its own cell's chain: its pid, and the
@@ -730,29 +744,74 @@ fn draw_ancestry(
     foot: Option<Color>,
     foot_is_the_command: bool,
 ) -> u16 {
-    let levels = ancestry_levels(ancestry, ancestry_budget(area.height), foot_is_the_command);
+    let budget = ancestry_budget(area.height);
+    let levels = ancestry_fit(ancestry, budget, area.width, foot_is_the_command);
     if levels.is_empty() {
         return 0;
     }
     let pid = blend_color(text_default(), ground, faded);
     let command = blend_color(secondary_text_color(), ground, faded);
     let last = levels.len().saturating_sub(1);
-    let lines: Vec<Line<'static>> = levels
+    let mut lines: Vec<Line<'static>> = levels
         .iter()
         .enumerate()
-        .map(|(level, ancestor)| {
+        .flat_map(|(level, ancestor)| {
             let ink = match foot {
                 Some(color) if level == last => blend_color(color, ground, faded),
                 _ => pid,
             };
-            ancestry_line(*ancestor, level, area.width, ink, command)
+            ancestry_lines(*ancestor, level, area.width, ink, command)
         })
         .collect();
+    // Only ever reached by the single level [`ancestry_fit`] stops at,
+    // whose command outruns the whole budget on its own. The lines run
+    // head first, so what goes is the tail of that command rather than
+    // the pid that names it.
+    lines.truncate(budget.max(1));
     // `u16` because the count came out of a budget measured in rows of
     // this same area.
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     Paragraph::new(lines).render(Rect { height, ..area }, buffer);
     height.saturating_add(ANCESTRY_GAP_HEIGHT)
+}
+
+/// Which levels of `ancestry` the block draws once wrapping is counted.
+///
+/// [`ancestry_levels`] answers in levels, one row apiece, which is what
+/// the budget used to buy. A level whose command wraps costs more than
+/// the row it was budgeted, so the block asks for one fewer level and
+/// measures again. Giving a level up beats trimming the drawn lines,
+/// which would cut the foot of the chain -- the very pid the table's
+/// `parent` column points at.
+///
+/// It stops at one level rather than at none. A single command wide
+/// enough to outrun the whole budget on its own would otherwise take
+/// the block away entirely, and a pid with the head of its command is
+/// worth more than a blank half-cell. What that one level overruns by
+/// is what [`draw_ancestry`] cuts off the bottom.
+fn ancestry_fit(
+    ancestry: &[Ancestor],
+    budget: usize,
+    width: u16,
+    foot_is_the_command: bool,
+) -> Vec<Option<&Ancestor>> {
+    let mut asked = budget;
+    loop {
+        let levels = ancestry_levels(ancestry, asked, foot_is_the_command);
+        if levels.len() <= 1 || ancestry_height(&levels, width) <= budget {
+            return levels;
+        }
+        asked = asked.saturating_sub(1);
+    }
+}
+
+/// Rows `levels` take at `width`, every level's wrapping counted.
+fn ancestry_height(levels: &[Option<&Ancestor>], width: u16) -> usize {
+    levels
+        .iter()
+        .enumerate()
+        .map(|(level, ancestor)| ancestry_rows(*ancestor, level, width))
+        .sum()
 }
 
 /// Rows the ancestry block may take at a cell of `height`.
@@ -818,56 +877,107 @@ fn ancestry_levels(
         .collect()
 }
 
+/// What stands before a level's command: the indent its depth earns it
+/// and the pid, with the space that parts the two.
+///
+/// The cells this occupies are where the command starts, and where
+/// every line the command wraps onto is set to -- under the command
+/// rather than under the pid, so a wrapped line reads as more of the
+/// same command instead of as another step of the chain.
+fn ancestry_stem(ancestor: &Ancestor, level: usize) -> (String, String) {
+    let indent = format!(
+        "{SECTION_HEADER_INDENT}{}",
+        ANCESTRY_LEVEL_INDENT.repeat(level)
+    );
+    (indent, ancestor.pid.to_string())
+}
+
+/// Cells `level`'s command has to itself at `width`.
+fn ancestry_room(ancestor: &Ancestor, level: usize, width: u16) -> u16 {
+    let (indent, label) = ancestry_stem(ancestor, level);
+    let stem = indent
+        .chars()
+        .count()
+        .saturating_add(label.chars().count())
+        .saturating_add(1);
+    u16::try_from(usize::from(width).saturating_sub(stem)).unwrap_or(u16::MAX)
+}
+
+/// Rows `ancestor` takes at `width` once its command has wrapped: one
+/// for the pid and the head of the command, and one more for every line
+/// the command carried on to.
+///
+/// An elided level is a single character and never wraps.
+fn ancestry_rows(ancestor: Option<&Ancestor>, level: usize, width: u16) -> usize {
+    let Some(ancestor) = ancestor else {
+        return 1;
+    };
+    wrap::wrapped(
+        vec![Span::raw(ancestor.command.clone())],
+        ancestry_room(ancestor, level, width),
+    )
+    .height()
+    .max(1)
+}
+
 /// One level of the ancestry block: its pid and what the process is,
 /// set one space further in than the level above it.
 ///
-/// The command is cut at the cell's edge rather than wrapped. A row
-/// here identifies an ancestor rather than reporting it, and the head
-/// of a command line is what does that -- wrapping one would spend
-/// rows the table below is owed.
-fn ancestry_line(
+/// A command too long for the cell wraps rather than being cut at the
+/// edge, breaking at whitespace through [`wrap::wrapped`] -- the same
+/// break a command's own row in the table below takes -- and falling
+/// back to breaking mid-word only where no whitespace will do. Every
+/// line after the first is set to the column the command started at, so
+/// the block still reads as one step per pid.
+fn ancestry_lines(
     ancestor: Option<&Ancestor>,
     level: usize,
     width: u16,
     pid: Color,
     command: Color,
-) -> Line<'static> {
-    let indent = format!(
-        "{SECTION_HEADER_INDENT}{}",
-        ANCESTRY_LEVEL_INDENT.repeat(level)
-    );
+) -> Vec<Line<'static>> {
     let Some(ancestor) = ancestor else {
-        return Line::from(vec![
+        let indent = format!(
+            "{SECTION_HEADER_INDENT}{}",
+            ANCESTRY_LEVEL_INDENT.repeat(level)
+        );
+        return vec![Line::from(vec![
             Span::raw(indent),
             Span::styled(ANCESTRY_ELISION, Style::default().fg(pid)),
-        ]);
+        ])];
     };
-    let label = ancestor.pid.to_string();
-    let room = usize::from(width)
-        .saturating_sub(indent.chars().count())
-        .saturating_sub(label.chars().count())
-        .saturating_sub(1);
-    Line::from(vec![
-        Span::raw(indent),
-        Span::styled(label, Style::default().fg(pid)),
-        Span::raw(" "),
-        Span::styled(
-            truncated(&ancestor.command, room),
+    let (indent, label) = ancestry_stem(ancestor, level);
+    let hanging = " ".repeat(
+        indent
+            .chars()
+            .count()
+            .saturating_add(label.chars().count())
+            .saturating_add(1),
+    );
+    let wrapped = wrap::wrapped(
+        vec![Span::styled(
+            ancestor.command.clone(),
             Style::default().fg(command),
-        ),
-    ])
-}
-
-/// `text` cut to `cells`, the last cell kept for an ellipsis whenever
-/// anything was taken off.
-fn truncated(text: &str, cells: usize) -> String {
-    if text.chars().count() <= cells {
-        return text.to_string();
-    }
-    let kept = cells.saturating_sub(ANCESTRY_ELISION.chars().count());
-    let mut out: String = text.chars().take(kept).collect();
-    out.push_str(ANCESTRY_ELISION);
-    out
+        )],
+        ancestry_room(ancestor, level, width),
+    );
+    wrapped
+        .lines
+        .into_iter()
+        .enumerate()
+        .map(|(carried_on, line)| {
+            let stem = if carried_on == 0 {
+                vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(label.clone(), Style::default().fg(pid)),
+                    Span::raw(" "),
+                ]
+            } else {
+                vec![Span::raw(hanging.clone())]
+            };
+            Line::from([stem, line.spans].concat())
+        })
+        .collect()
 }
 
 /// A cell opened with `+` that no command has claimed: its number, on
@@ -1965,14 +2075,15 @@ mod tests {
         );
     }
 
-    /// A row here identifies an ancestor rather than reporting it, so
-    /// a long command line is cut at the cell's edge rather than
-    /// wrapped into rows the table below is owed.
+    /// A command too wide for the cell carries on down it rather than
+    /// being cut at the edge, and every line it carries on to lines up
+    /// under where the command started rather than under its pid -- so
+    /// the block still reads as one step per pid.
     #[test]
-    fn a_command_too_wide_for_the_cell_is_cut_rather_than_wrapped() {
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 6));
+    fn a_command_too_wide_for_the_cell_wraps_under_where_it_started() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 30, 12));
         let area = buffer.area;
-        let ancestry = vec![ancestor(6218, "node ~/.claude/local/claude")];
+        let ancestry = vec![ancestor(6218, "claude --remote-control hana_clerestory")];
 
         let used = draw_ancestry(
             &mut buffer,
@@ -1984,8 +2095,96 @@ mod tests {
             false,
         );
 
-        assert_eq!(used, 2);
-        assert_eq!(buffer_line(&buffer, 0), " 6218 node ~/.claud\u{2026}");
+        assert_eq!(buffer_line(&buffer, 0), " 6218 claude --remote-control");
+        assert_eq!(
+            buffer_line(&buffer, 1),
+            "      hana_clerestory",
+            "set to the column the command started at, not the pid's"
+        );
+        assert_eq!(used, 3, "both rows, and the blank one under them");
+    }
+
+    /// The break falls at whitespace wherever whitespace will do, and
+    /// mid-word only where no whitespace does -- the same wrap a
+    /// command's own row in the table below takes.
+    #[test]
+    fn a_word_no_wrap_could_break_carries_on_mid_word() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 12));
+        let area = buffer.area;
+        let ancestry = vec![ancestor(6218, "node ~/.claude/local/claude")];
+
+        let _ = draw_ancestry(
+            &mut buffer,
+            area,
+            &ancestry,
+            0,
+            pane_background(false),
+            None,
+            false,
+        );
+
+        assert_eq!(
+            buffer_line(&buffer, 0),
+            " 6218 node ~/.claude",
+            "the word that fits nowhere finishes the line it started on"
+        );
+        assert_eq!(buffer_line(&buffer, 1), "      /local/claude");
+    }
+
+    /// A command wide enough to outrun the whole budget on its own is
+    /// cut off at the bottom rather than taking the block away: a pid
+    /// with the head of its command says more than a blank half-cell.
+    #[test]
+    fn a_command_that_outruns_the_budget_keeps_its_pid() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 6));
+        let area = buffer.area;
+        let ancestry = vec![ancestor(
+            6218,
+            "node ~/.claude/local/claude --dangerously-skip-permissions",
+        )];
+
+        let used = draw_ancestry(
+            &mut buffer,
+            area,
+            &ancestry,
+            0,
+            pane_background(false),
+            None,
+            false,
+        );
+
+        assert_eq!(used, 3, "the two rows the budget bought, and the gap");
+        assert_eq!(buffer_line(&buffer, 0), " 6218 node ~/.claude");
+        assert_eq!(buffer_line(&buffer, 2), "", "and nothing past the budget");
+    }
+
+    /// Wrapping never costs the table the half of the cell it is owed:
+    /// the block gives a level up and measures again rather than
+    /// growing past the budget.
+    #[test]
+    fn a_wrapped_command_gives_up_a_level_rather_than_the_budget() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 12));
+        let area = buffer.area;
+        let ancestry = vec![
+            ancestor(1, "zed"),
+            ancestor(2, "claude --remote-control hana_clerestory_recovery"),
+            ancestor(3, "cargo nextest run"),
+        ];
+
+        let used = draw_ancestry(
+            &mut buffer,
+            area,
+            &ancestry,
+            0,
+            pane_background(false),
+            None,
+            false,
+        );
+
+        assert!(
+            used <= 6,
+            "the block and its gap stay inside half the cell: {used}"
+        );
     }
 
     /// A cargo process for a group the roster is to carry.
