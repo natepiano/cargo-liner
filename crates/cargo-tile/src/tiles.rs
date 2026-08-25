@@ -999,45 +999,39 @@ impl Grid {
 
 /// Rows in each column, left to right, for a grid of `count` cells.
 ///
-/// The grid grows in two regimes. Up to `initial_rows` squared, columns
-/// fill greedily: each one takes `initial_rows` cells before the next
-/// opens, so the first column reaches full height before the pane ever
-/// splits sideways. Past that the grid grows toward the next square --
-/// first every existing column gains a row, one column per cell added,
-/// then a new column opens and fills. That is what makes cell 17 at four
-/// initial rows rearrange into `[5, 4, 4, 4]` rather than appending to
-/// the right: the row count went up, and the cells snake back one place
-/// to fill it.
+/// Two regimes. Up to `initial_rows` the grid is a single column, one
+/// cell taller each time: three things on a display read down one
+/// column rather than spread across two. Past that the grid is the
+/// smallest square that holds them -- `ceil_sqrt` rows -- filled a
+/// column at a time, so every column but the last stands at full
+/// height.
+///
+/// Crossing into the second regime rearranges what is already on the
+/// screen rather than appending to it. At three initial rows the fourth
+/// cell turns a column of three into a two-by-two, and the tenth turns
+/// a full three-by-three into three columns of four. Between those
+/// points nothing moves at all: the cell arriving lands at the foot of
+/// the last column, or opens the next one.
+///
+/// Nothing here is remembered, so the grid comes back down through the
+/// arrangements it went up through -- take the fourth cell away at
+/// three initial rows and the two-by-two is a column of three again.
 fn columns(count: usize, initial_rows: usize) -> Vec<usize> {
     let rows = initial_rows.max(MIN_INITIAL_ROWS);
     if count == 0 {
         return Vec::new();
     }
-    if count <= rows * rows {
-        // Greedy: every column but the last holds `rows` cells.
-        let opened = count.div_ceil(rows);
-        let filled = opened.saturating_sub(1);
-        let mut widths = vec![rows; filled];
-        widths.push(count - rows * filled);
-        return widths;
-    }
-
-    // Past the initial square the grid heads for the next one. `side` is
-    // the square being filled, `prev` the one just completed -- which is
-    // also how many columns stood before this generation began.
-    let side = rows.max(ceil_sqrt(count));
-    let prev = side.saturating_sub(1);
-    if count <= prev * side {
-        // Rows growing: the leading columns have taken their extra row,
-        // the rest are still a row short.
-        let grown = count - prev * prev;
-        let mut widths = vec![side; grown];
-        widths.resize(prev, prev);
-        return widths;
-    }
-    // Every column stands at full height, so the new one is filling.
-    let mut widths = vec![side; prev];
-    widths.push(count - prev * side);
+    // The height every column but the last stands at: the whole grid
+    // while it is still growing to `initial_rows`, the side of the
+    // smallest square holding it once it is past them.
+    let tallest = if count <= rows {
+        count
+    } else {
+        ceil_sqrt(count)
+    };
+    let filled = count.div_ceil(tallest).saturating_sub(1);
+    let mut widths = vec![tallest; filled];
+    widths.push(count - tallest * filled);
     widths
 }
 
@@ -1525,25 +1519,57 @@ mod tests {
         assert_eq!(walk(4, 4), vec![vec![1], vec![2], vec![3], vec![4]]);
     }
 
+    /// The cell past the initial rows does not extend the column and
+    /// does not open a column of one beside it. It rearranges the whole
+    /// grid into the smallest square that holds the cells.
     #[test]
-    fn a_new_column_opens_at_full_height_with_one_cell() {
-        assert_eq!(columns(5, 4), vec![4, 1]);
-        assert_eq!(columns(6, 4), vec![4, 2]);
-        assert_eq!(columns(8, 4), vec![4, 4]);
-        assert_eq!(columns(9, 4), vec![4, 4, 1]);
-        assert_eq!(columns(13, 4), vec![4, 4, 4, 1]);
-        assert_eq!(columns(16, 4), vec![4, 4, 4, 4]);
+    fn the_cell_past_the_initial_rows_rearranges_the_whole_grid() {
+        assert_eq!(columns(4, 3), vec![2, 2]);
+        assert_eq!(columns(5, 4), vec![3, 2]);
+        assert_eq!(columns(9, 8), vec![3, 3, 3]);
     }
 
-    /// The case the two-regime rule exists for: cell 17 does not open a
-    /// fifth column, it makes every column a row taller, one column at a
-    /// time.
+    /// The whole walk at three initial rows: a column growing to three,
+    /// then the square it rearranges into and fills a column at a time.
     #[test]
-    fn past_the_initial_square_the_grid_grows_a_row_before_a_column() {
-        assert_eq!(columns(17, 4), vec![5, 4, 4, 4]);
-        assert_eq!(columns(18, 4), vec![5, 5, 4, 4]);
-        assert_eq!(columns(19, 4), vec![5, 5, 5, 4]);
-        assert_eq!(columns(20, 4), vec![5, 5, 5, 5]);
+    fn the_columns_fill_the_smallest_square_that_holds_them() {
+        assert_eq!(
+            walk(9, 3),
+            vec![
+                vec![1],
+                vec![2],
+                vec![3],
+                vec![2, 2],
+                vec![3, 2],
+                vec![3, 3],
+                vec![3, 3, 1],
+                vec![3, 3, 2],
+                vec![3, 3, 3],
+            ]
+        );
+    }
+
+    /// A full square rearranges again rather than opening a column
+    /// beside itself: the tenth cell at three initial rows makes every
+    /// column four tall instead of standing alone in a fourth column.
+    #[test]
+    fn a_full_square_grows_a_row_before_it_grows_a_column() {
+        assert_eq!(columns(10, 3), vec![4, 4, 2]);
+        assert_eq!(columns(12, 3), vec![4, 4, 4]);
+        assert_eq!(columns(13, 3), vec![4, 4, 4, 1]);
+        assert_eq!(columns(16, 3), vec![4, 4, 4, 4]);
+        assert_eq!(columns(17, 3), vec![5, 5, 5, 2]);
+    }
+
+    /// The grid comes back down through the arrangements it went up
+    /// through, because the answer is a function of the count and
+    /// nothing else. Taking the fourth cell away leaves a column of
+    /// three rather than a two-by-two with a hole in it.
+    #[test]
+    fn the_grid_comes_back_down_the_way_it_went_up() {
+        assert_eq!(columns(5, 3), vec![3, 2]);
+        assert_eq!(columns(4, 3), vec![2, 2]);
+        assert_eq!(columns(3, 3), vec![3]);
     }
 
     #[test]
@@ -1554,7 +1580,7 @@ mod tests {
 
     #[test]
     fn the_square_after_five_grows_the_same_way() {
-        assert_eq!(columns(26, 4), vec![6, 5, 5, 5, 5]);
+        assert_eq!(columns(26, 4), vec![6, 6, 6, 6, 2]);
         assert_eq!(columns(30, 4), vec![6, 6, 6, 6, 6]);
         assert_eq!(columns(31, 4), vec![6, 6, 6, 6, 6, 1]);
         assert_eq!(columns(36, 4), vec![6, 6, 6, 6, 6, 6]);
@@ -1573,42 +1599,31 @@ mod tests {
         }
     }
 
-    /// Adding one cell snakes the grid back by exactly one place: at
-    /// each boundary between columns the head of the right-hand column
-    /// drops to the foot of the one to its left, and nothing else
-    /// changes column. That is one move per boundary, never two at the
-    /// same one, which is what keeps the motion readable.
+    /// Between one rearrangement and the next, adding a cell moves
+    /// nothing already on the screen: it lands at the foot of the last
+    /// column or opens the next one. The rearrangements are the only
+    /// motion, which is what makes them worth watching.
     #[test]
-    fn one_more_cell_snakes_each_column_boundary_at_most_once() {
+    fn nothing_already_placed_moves_until_the_grid_rearranges() {
         for initial_rows in 1..=6 {
             for count in 1..60 {
                 let before = columns(count, initial_rows);
                 let after = columns(count + 1, initial_rows);
-                let mut left_by = vec![0_usize; before.len().max(after.len())];
+                // The first column stands at the height every column but
+                // the last is filled to, so a change there is the
+                // rearrangement itself.
+                if before.first() != after.first() {
+                    continue;
+                }
                 for index in 1..=count {
-                    let was = position(&before, index).map(|(column, _)| column);
-                    let now = position(&after, index).map(|(column, _)| column);
-                    if was == now {
-                        continue;
-                    }
-                    let (Some(was), Some(now)) = (was, now) else {
-                        continue;
-                    };
                     assert_eq!(
-                        was,
-                        now + 1,
-                        "cell {index} jumped from column {was} to {now} going from {count} to {} \
-                         at {initial_rows} initial rows",
+                        position(&before, index),
+                        position(&after, index),
+                        "cell {index} moved going from {count} to {} at {initial_rows} initial \
+                         rows",
                         count + 1
                     );
-                    left_by[was] += 1;
                 }
-                assert!(
-                    left_by.iter().all(|moved| *moved <= 1),
-                    "more than one cell left the same column going from {count} to {} at \
-                     {initial_rows} initial rows",
-                    count + 1
-                );
             }
         }
     }
@@ -1981,19 +1996,19 @@ mod tests {
     #[test]
     fn a_wrapping_cell_shares_its_column_edges_with_the_cells_that_stay() {
         let area = test_area();
-        let before = Grid::new(area, &even(9), 4);
-        let after = Grid::new(area, &even(8), 4);
-        assert_eq!(before.widths, vec![4, 4, 1]);
-        assert_eq!(after.widths, vec![4, 4], "the last column goes too");
+        let before = Grid::new(area, &even(7), 3);
+        let after = Grid::new(area, &even(6), 3);
+        assert_eq!(before.widths, vec![3, 3, 1]);
+        assert_eq!(after.widths, vec![3, 3], "the last column goes too");
         let half = PROGRESS_SCALE / 2;
 
-        // Cell five leaves the head of column two for the foot of
-        // column one, while cell six stays in column two throughout.
+        // Cell four leaves the head of column two for the foot of
+        // column one, while cell five stays in column two throughout.
         let mut wrapping = Vec::new();
         moving_cell(
             &before,
             &after,
-            (Some(5), Some(4)),
+            (Some(4), Some(3)),
             half,
             drawn(),
             &mut wrapping,
@@ -2002,7 +2017,7 @@ mod tests {
         moving_cell(
             &before,
             &after,
-            (Some(6), Some(5)),
+            (Some(5), Some(4)),
             half,
             drawn(),
             &mut staying,
@@ -2025,12 +2040,12 @@ mod tests {
     #[test]
     fn a_wrapping_cell_leaving_with_its_column_is_squeezed_off_the_edge() {
         let area = test_area();
-        let before = Grid::new(area, &even(9), 4);
-        let after = Grid::new(area, &even(8), 4);
+        let before = Grid::new(area, &even(7), 3);
+        let after = Grid::new(area, &even(6), 3);
         let half = PROGRESS_SCALE / 2;
 
         let mut out = Vec::new();
-        moving_cell(&before, &after, (Some(9), Some(8)), half, drawn(), &mut out);
+        moving_cell(&before, &after, (Some(7), Some(6)), half, drawn(), &mut out);
 
         let leaving = out[0].frame.rect();
         assert!(
@@ -2048,12 +2063,16 @@ mod tests {
     #[test]
     fn a_cell_taking_its_column_with_it_closes_off_the_right_edge() {
         let area = test_area();
-        let before = Grid::new(area, &even(9), 4);
-        let after = Grid::new(area, &even(8), 4);
-        assert_eq!(before.widths, vec![4, 4, 1], "cell nine is a column of one");
-        let from = before.cell(9).expect("cell nine is in the grid");
+        let before = Grid::new(area, &even(7), 3);
+        let after = Grid::new(area, &even(6), 3);
+        assert_eq!(
+            before.widths,
+            vec![3, 3, 1],
+            "cell seven is a column of one"
+        );
+        let from = before.cell(7).expect("cell seven is in the grid");
 
-        let closed = closing_rect(&before, &after, 9, from);
+        let closed = closing_rect(&before, &after, 7, from);
         assert_eq!(closed.width, 0, "it closes to nothing");
         assert_eq!(closed.x, area.right(), "against the right edge");
         assert_eq!(
@@ -2070,7 +2089,7 @@ mod tests {
         let area = test_area();
         let before = Grid::new(area, &even(6), 4);
         let after = Grid::new(area, &even(5), 4);
-        assert_eq!(before.widths, vec![4, 2], "cell six sits under cell five");
+        assert_eq!(before.widths, vec![3, 3], "cell six sits under cell five");
         let from = before.cell(6).expect("cell six is in the grid");
 
         let closed = closing_rect(&before, &after, 6, from);
@@ -2259,16 +2278,20 @@ mod tests {
     #[test]
     fn a_cell_riding_a_closing_column_makes_no_vertical_travel() {
         let area = test_area();
-        let before = Grid::new(area, &even(9), 4);
-        let after = Grid::new(area, &even(8), 4);
-        assert_eq!(before.widths, vec![4, 4, 1], "cell nine is a column of one");
-        assert_eq!(after.widths, vec![4, 4], "and that column is closing");
+        let before = Grid::new(area, &even(7), 3);
+        let after = Grid::new(area, &even(6), 3);
+        assert_eq!(
+            before.widths,
+            vec![3, 3, 1],
+            "cell seven is a column of one"
+        );
+        assert_eq!(after.widths, vec![3, 3], "and that column is closing");
 
         let mut out = Vec::new();
         moving_cell(
             &before,
             &after,
-            (Some(9), Some(8)),
+            (Some(7), Some(6)),
             PROGRESS_SCALE / 2,
             drawn(),
             &mut out,

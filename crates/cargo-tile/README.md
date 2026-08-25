@@ -239,9 +239,12 @@ stands for: one for a plain command, many for a manager. `+` opens an empty cell
 at the end and `-` closes one: the focused cell when `+` opened it, otherwise the
 last one still standing empty. Only an empty cell goes -- a cell carrying a
 command is the display itself, and the summary is not removable at all. A command
-arriving takes the first empty cell waiting, or opens its own. `initial_rows` sets
-how many rows a column fills before the next one opens, and the motion follows
-from that.
+arriving takes the first empty cell waiting, or opens its own. `initial_rows` is
+how tall the grid grows in a single column before it starts arranging itself into
+a square: at three, the fourth cell turns a column of three into a two-by-two,
+and from there the grid is always the smallest square that holds what is on it,
+filled a column at a time. Cells added between one rearrangement and the next
+move nothing already on the screen.
 
 ```toml
 [tiles]

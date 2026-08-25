@@ -120,8 +120,8 @@ pub(crate) const KEYMAP_TOML_HEADER: &str = "\
 pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 
 // tiles
-/// Rows the first column fills before a second column opens, when
-/// `config.toml` says nothing.
+/// Rows the grid grows to in a single column before it starts
+/// arranging itself into a square, when `config.toml` says nothing.
 pub(crate) const DEFAULT_INITIAL_ROWS: usize = 4;
 /// Ceiling the settings stepper walks `tiles.initial_rows` up to.
 pub(crate) const MAX_INITIAL_ROWS: usize = 8;
@@ -134,8 +134,9 @@ pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
 pub(crate) const MIN_FADE_SECONDS: u64 = 0;
 /// Ceiling the settings stepper walks `tiles.fade_seconds` up to.
 pub(crate) const MAX_FADE_SECONDS: u64 = 30;
-/// Floor on `tiles.initial_rows`. At one, a second cell opens a second
-/// column rather than stacking into a second row.
+/// Floor on `tiles.initial_rows`. At one there is no single-column
+/// stretch at all: the grid arranges itself into a square from the
+/// second cell on.
 pub(crate) const MIN_INITIAL_ROWS: usize = 1;
 /// Rows one cell standing alone needs: a border line, a line of
 /// content, and a border line. A cell with a neighbour below costs one

@@ -81,8 +81,9 @@ impl Default for CommandsConfig {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct TilesConfig {
-    /// Rows the first column fills before a second column opens. Read
-    /// through [`TilesConfig::initial_rows`], which enforces the floor.
+    /// Rows the grid grows to in a single column before it starts
+    /// arranging itself into a square. Read through
+    /// [`TilesConfig::initial_rows`], which enforces the floor.
     pub(crate) initial_rows: usize,
     /// Seconds a finished row stays on screen, greyed, before it and any
     /// cell it leaves empty go. Read through
@@ -100,7 +101,7 @@ impl Default for TilesConfig {
 }
 
 impl TilesConfig {
-    /// Rows before a second column opens, never below one.
+    /// Rows the single column grows to, never below one.
     ///
     /// Clamped on read rather than at load so a hand-edited zero in
     /// `config.toml` is corrected rather than rejected -- the file keeps
