@@ -39,21 +39,27 @@ use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
+use tui_pane::KeyOutcome;
 use tui_pane::Keymap;
+use tui_pane::Navigation;
 use tui_pane::OverlayAction;
 use tui_pane::matches_open_overlay_toggle;
 use tui_pane::overlay_is_in_text_mode;
 
 use crate::app::App;
+use crate::app::AppPaneId;
 use crate::app::Updates;
 use crate::config;
 use crate::constants::BINARY_NAME;
 use crate::constants::FULL_REPAINT_SECONDS;
+use crate::constants::PROBE_THRESHOLD;
 use crate::constants::REPAINT_SENTINEL;
 use crate::globals::AppGlobalAction;
 use crate::interaction;
 use crate::iterm2;
 use crate::iterm2::ProfileSwitch;
+use crate::navigation::AppNavigation;
+use crate::probe;
 use crate::processes;
 use crate::processes::Scan;
 use crate::render;
@@ -157,13 +163,18 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
     let (sccache_reads, sccache_replies) = mpsc::channel();
     let mut dirty = true;
     let mut repainted = Instant::now();
+    let mut previous = Instant::now();
     while !app.framework.quit_requested() && !app.framework.restart_requested() {
         let started = Instant::now();
+        probe::frame(started.duration_since(previous), PROBE_THRESHOLD);
+        previous = started;
         if dirty {
             // Re-borrowed every frame: rebinding a key in the keymap
             // overlay swaps the whole map out from under the loop.
             let keymap = Rc::clone(&app.keymap);
-            terminal.draw(|frame| render::draw(frame, app, &keymap))?;
+            probe::timed(probe::Phase::Draw, || {
+                terminal.draw(|frame| render::draw(frame, app, &keymap))
+            })?;
             dirty = false;
         }
         // What is left of the frame after drawing it, rather than a
@@ -399,6 +410,18 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         dispatch_overlay_key(app, &keymap, overlay, bind);
         return;
     }
+    // An attract screen that was asked for owns the keyboard, and it
+    // owns it ahead of everything else: the keys that steer it are the
+    // arrows and `+` `-`, which the grid underneath spends on focus and
+    // on opening and closing a tile. A band that could not be steered
+    // because a grid nobody can see moved its focus ring would not be
+    // steerable at all. Only the keys it actually binds are taken --
+    // `q` still quits, `f` still freezes, and `a` gives the grid back.
+    if let Some(attract) = app.attract.keyed_mode()
+        && keymap.dispatch_app_pane(AppPaneId::Attract(attract), &bind, app) == KeyOutcome::Consumed
+    {
+        return;
+    }
     if let Some(action) = keymap.framework_globals().action_for(&bind) {
         keymap.dispatch_framework_global(action, app);
         return;
@@ -461,6 +484,11 @@ fn dispatch_global_shortcuts_key(app: &mut App, keymap: &Keymap<App>, bind: KeyB
 
 /// Keys the settings overlay owns: move the selection, step the value.
 ///
+/// Movement comes from the navigation scope, so the keys that walk
+/// this list are the ones `keymap.toml` says they are. Enter and space
+/// stay here: they are this overlay's own way of saying "the next
+/// value", not a direction anyone would rebind.
+///
 /// Nothing here reaches [`tui_pane::SettingsPane::handle_key`]: that
 /// would put the pane into its text-edit state, which this binary has
 /// no commit path for.
@@ -469,12 +497,16 @@ fn dispatch_settings_key(app: &mut App, keymap: &Keymap<App>, bind: KeyBind) {
         keymap.dispatch_framework_global(GlobalAction::Dismiss, app);
         return;
     }
-    match bind.code {
-        KeyCode::Up => app.framework.settings_pane.viewport_mut().up(),
-        KeyCode::Down => app.framework.settings_pane.viewport_mut().down(),
-        KeyCode::Left => settings::cycle(app, Step::Prev),
-        KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => settings::cycle(app, Step::Next),
-        _ => (),
+    if let Some(action) = keymap
+        .navigation()
+        .and_then(|scope| scope.action_for(&bind))
+    {
+        let focused = *app.framework.focused();
+        AppNavigation::dispatcher()(action, focused, app);
+        return;
+    }
+    if matches!(bind.code, KeyCode::Enter | KeyCode::Char(' ')) {
+        settings::cycle(app, Step::Next);
     }
 }
 

@@ -65,6 +65,19 @@ impl Metrics {
     }
 }
 
+/// Where a window stands, in the window server's global point space.
+///
+/// A rectangle of four numbers rather than the platform's own type, so
+/// that the thread asking the window server where the terminal is can
+/// hand the answer back without any platform handle crossing with it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Frame {
+    /// The frame's top-left corner.
+    pub(super) origin: (f64, f64),
+    /// The frame's width and height.
+    pub(super) size:   (f64, f64),
+}
+
 /// Where this terminal's character grid sits on the display a
 /// [`Desktop`] covers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,17 +129,51 @@ impl Desktop {
     /// the animation this feeds is decoration.
     pub(super) fn capture(metrics: Metrics) -> Option<Self> { platform::capture(metrics) }
 
-    /// Where the terminal's grid sits on this display now.
+    /// The window this capture was taken for, as the window server
+    /// numbers it, so that its position can be asked for from a thread
+    /// that is not holding the capture.
+    pub(super) const fn window(&self) -> u32 { self.window }
+
+    /// Where the terminal's grid sits on this display, given the frame
+    /// its window was last seen standing at.
     ///
-    /// [`None`] where the window server no longer describes the window,
-    /// which is what a window closed since the capture leaves.
+    /// Arithmetic and nothing else. Asking the window server where the
+    /// window is costs a round trip that the render thread must not
+    /// pay -- see [`window_frame`] -- so the question and the answer
+    /// are kept apart: the frame arrives from elsewhere and this turns
+    /// it into a column and a row.
     ///
     /// A window carried onto a *different* display still answers, with
     /// an offset that runs off the end of this one -- every cell of it
     /// then falls outside [`color_at`](Self::color_at) and the drawing
     /// thins away to nothing while the next capture, of the display the
     /// window has arrived on, is on its way.
-    pub(super) fn placement(&self) -> Option<Placement> { platform::placement(self) }
+    pub(super) fn placement(&self, frame: Frame) -> Option<Placement> {
+        let (columns, rows) = self.metrics.cells;
+        let text_area = (
+            self.cell.0 * f64::from(columns),
+            self.cell.1 * f64::from(rows),
+        );
+        // The frame is the window; the grid is the text area inside it,
+        // short by whatever the emulator draws around it. Left and right
+        // are even, so half of what the width leaves over is the padding
+        // on one side.
+        //
+        // The height is measured up from the bottom rather than shared
+        // out evenly. A title bar, a tab bar, a status bar -- everything
+        // an emulator stacks around its grid sits above it, and every
+        // one of them can be switched on and off while this is running.
+        // Under the grid there is only padding, so the bottom edge is
+        // the one that holds still; anchor to it and the top may be
+        // whatever it likes.
+        let padding = (frame.size.0 - text_area.0) / 2.0;
+        let left = frame.origin.0 - self.origin.0 + padding;
+        let top = frame.origin.1 - self.origin.1 + (frame.size.1 - text_area.1 - padding).max(0.0);
+        Some(Placement {
+            column: cell_index(left / self.cell.0)?,
+            row:    cell_index(top / self.cell.1)?,
+        })
+    }
 
     /// What the terminal reported when this capture was reduced, for
     /// comparing against what it reports now.
@@ -147,6 +194,35 @@ impl Desktop {
         self.colors.get(index).copied()
     }
 }
+
+/// Where a window stands now, in the window server's global point
+/// space, or [`None`] where the window server no longer describes it --
+/// which is what a window closed since the capture leaves.
+///
+/// # Cost
+///
+/// A round trip to the window server: a few hundred microseconds when
+/// it is free, but tens of milliseconds when it is not, because the
+/// process's connection to it is serial and a capture in flight is
+/// ahead of this in the queue. That is why this is never called from
+/// the thread that is drawing.
+pub(super) fn window_frame(window: u32) -> Option<Frame> { platform::window_frame(window) }
+
+/// A distance measured in cells, as a whole number of them.
+///
+/// The window server measures in floating-point points, and a
+/// character cell is a font advance that divides into them evenly
+/// only by accident, so a cell index is arrived at as a float and
+/// has to be met as one somewhere. This is that place, and the
+/// rounding it does is the reason a window dragged by less than a
+/// cell does not change what is drawn.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "rounding points to whole cells is what this converts, and \
+              a float too large to be a cell index saturates to one no \
+              display can hold, which the bounds check rejects"
+)]
+fn cell_index(cells: f64) -> Option<i32> { cells.is_finite().then(|| cells.round() as i32) }
 
 impl std::fmt::Debug for Desktop {
     /// Without the colours, which run to tens of thousands of entries
@@ -180,7 +256,6 @@ mod platform {
     use ratatui::style::Color;
     use screencapturekit::cg::CGPoint;
     use screencapturekit::cg::CGRect;
-    use screencapturekit::cg::CGSize;
     use screencapturekit::screenshot_manager::CGImageExt;
     use screencapturekit::screenshot_manager::SCScreenshotManager;
     use screencapturekit::shareable_content::SCDisplay;
@@ -195,8 +270,9 @@ mod platform {
 
     use super::super::constants::SAMPLES_PER_CELL;
     use super::Desktop;
+    use super::Frame;
     use super::Metrics;
-    use super::Placement;
+    use super::cell_index;
     use crate::process::kernel_parent;
 
     /// How many bytes one pixel of the captured image occupies.
@@ -267,60 +343,22 @@ mod platform {
         })
     }
 
-    /// See [`Desktop::placement`].
-    pub(super) fn placement(desktop: &Desktop) -> Option<Placement> {
-        let frame = window_frame(desktop.window)?;
-        let (columns, rows) = desktop.metrics.cells;
-        let text_area = (
-            desktop.cell.0 * f64::from(columns),
-            desktop.cell.1 * f64::from(rows),
-        );
-        // The frame is the window; the grid is the text area inside it,
-        // short by whatever the emulator draws around it. Left and right
-        // are even, so half of what the width leaves over is the padding
-        // on one side.
-        //
-        // The height is measured up from the bottom rather than shared
-        // out evenly. A title bar, a tab bar, a status bar -- everything
-        // an emulator stacks around its grid sits above it, and every
-        // one of them can be switched on and off while this is running.
-        // Under the grid there is only padding, so the bottom edge is
-        // the one that holds still; anchor to it and the top may be
-        // whatever it likes.
-        let padding = (frame.size.width - text_area.0) / 2.0;
-        let left = frame.origin.x - desktop.origin.0 + padding;
-        let top = frame.origin.y - desktop.origin.1
-            + (frame.size.height - text_area.1 - padding).max(0.0);
-        Some(Placement {
-            column: cell_index(left / desktop.cell.0)?,
-            row:    cell_index(top / desktop.cell.1)?,
-        })
-    }
-
-    /// Where a window stands now, in the window server's global point
-    /// space.
+    /// See [`super::window_frame`].
     ///
-    /// This is the call the render thread makes every frame, and it is
-    /// here rather than in `ScreenCaptureKit` because of what the two
-    /// cost: `SCShareableContent::get` describes every window on the
-    /// machine and takes about seventy milliseconds -- four frames --
-    /// where asking CoreGraphics about one window by number takes about
-    /// a tenth of one. Both report the same rectangle, so nothing is
+    /// CoreGraphics rather than `ScreenCaptureKit` because of what the
+    /// two cost: `SCShareableContent::get` describes every window on
+    /// the machine and takes about seventy milliseconds, where asking
+    /// CoreGraphics about one window by number takes a few hundred
+    /// microseconds. Both report the same rectangle, so nothing is
     /// given up by asking the cheaper of them.
-    fn window_frame(window: u32) -> Option<CGRect> {
+    pub(super) fn window_frame(window: u32) -> Option<Frame> {
         let list = CGWindowListCopyWindowInfo(CGWindowListOption::OptionIncludingWindow, window)?;
         // Gone, if the window has been closed since the capture.
         let described = entry(&list, 0)?;
         let rect = bounds(described)?;
-        Some(CGRect {
-            origin: CGPoint {
-                x: rect.origin.x,
-                y: rect.origin.y,
-            },
-            size:   CGSize {
-                width:  rect.size.width,
-                height: rect.size.height,
-            },
+        Some(Frame {
+            origin: (rect.origin.x, rect.origin.y),
+            size:   (rect.size.width, rect.size.height),
         })
     }
 
@@ -412,22 +450,6 @@ mod platform {
         }
         .then_some(rect)
     }
-
-    /// A distance measured in cells, as a whole number of them.
-    ///
-    /// The window server measures in floating-point points, and a
-    /// character cell is a font advance that divides into them evenly
-    /// only by accident, so a cell index is arrived at as a float and
-    /// has to be met as one somewhere. This is that place, and the
-    /// rounding it does is the reason a window dragged by less than a
-    /// cell does not change what is drawn.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "rounding points to whole cells is what this converts, and \
-                  a float too large to be a cell index saturates to one no \
-                  display can hold, which the bounds check rejects"
-    )]
-    fn cell_index(cells: f64) -> Option<i32> { cells.is_finite().then(|| cells.round() as i32) }
 
     /// How many whole cells fit into a span of that many cells.
     ///
@@ -643,12 +665,12 @@ mod platform {
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use super::Desktop;
+    use super::Frame;
     use super::Metrics;
-    use super::Placement;
 
     /// No capture backend outside macOS, so nothing is drawn.
     pub(super) const fn capture(_: Metrics) -> Option<Desktop> { None }
 
-    /// Unreachable without a [`Desktop`], which only [`capture`] makes.
-    pub(super) const fn placement(_: &Desktop) -> Option<Placement> { None }
+    /// Nothing to ask, where there is no capture to ask about.
+    pub(super) const fn window_frame(_: u32) -> Option<Frame> { None }
 }

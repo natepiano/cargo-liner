@@ -11,6 +11,8 @@ mod hook;
 mod interaction;
 mod iterm2;
 mod keymap;
+mod navigation;
+mod probe;
 mod processes;
 mod progress;
 mod render;

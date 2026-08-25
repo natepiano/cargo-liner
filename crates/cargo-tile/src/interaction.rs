@@ -73,6 +73,9 @@ impl HitTestRegistry for App {
     fn pane(&self, id: AppPaneId) -> Option<&dyn Hittable<Picked>> {
         match id {
             AppPaneId::Main => Some(&self.tiles),
+            // The attract screen is drawn over everything and answers
+            // no click: its pane holds a keymap scope and nothing else.
+            AppPaneId::Attract(_) => None,
         }
     }
 

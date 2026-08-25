@@ -440,6 +440,19 @@ open_settings = ","
 Unknown entries are skipped rather than failing startup, so a keymap written
 against an older version still loads.
 
+The attract screen has a table of its own per animation, so two animations can
+bind the same key to different things. The one there is now is the moving band,
+under `[attract_moving_band]`: the arrow keys send it the way they point, `>`
+and `<` speed it up and slow it down (`.` and `,` do the same unshifted), and
+`+` and `-` widen and thin it, with `=` standing in for `+`. Holding a key moves
+the band further per press the longer it is held. `V` varies the trailing edge,
+after which every row of the band runs back its own distance, growing and
+shrinking between a third of its width and all of it while the leading edge
+stays flat. No lowercase letter is taken, so `f` still freezes
+and `a` still gives the grid back. Those keys are live only while
+the screen was asked for with `a` -- left to come on by itself over an idle grid
+the animation is decoration, and the arrows still move the grid's focus ring.
+
 Editing it by hand is optional: Enter on a row in the keymap overlay (or in the
 `?` overlay) captures the next keypress, checks it against every binding
 already in force, and writes this file. The framework runs that whole flow —

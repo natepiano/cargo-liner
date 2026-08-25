@@ -1,5 +1,7 @@
 //! Constants for `cargo-tile`.
 
+use std::time::Duration;
+
 use ratatui::style::Modifier;
 
 // attract screen
@@ -8,6 +10,26 @@ use ratatui::style::Modifier;
 /// the whole fade in a little under a second, which is long enough to
 /// read as the screen changing hands rather than as a cut.
 pub(crate) const ATTRACT_FADE_STEP: u8 = 6;
+/// TOML table the moving band's keys are read from and written back to.
+/// Stable -- `keymap.toml` is hand-edited.
+pub(crate) const ATTRACT_MOVING_BAND_SCOPE: &str = "attract_moving_band";
+/// Section heading the keymap overlay gives the moving band's keys.
+pub(crate) const ATTRACT_MOVING_BAND_SECTION: &str = "Attract: Moving Band";
+/// Cells per second one step of the faster / slower keys moves the
+/// band.
+pub(crate) const BAND_SPEED_STEP: u32 = 2;
+/// Cells one step of the wider / thinner keys moves the band.
+pub(crate) const BAND_WIDTH_STEP: u32 = 1;
+/// Longest gap between two presses of the same steering key that still
+/// reads as the key being held down. A terminal's own auto-repeat runs
+/// at roughly twice this rate once it gets going, and a reader tapping
+/// a key deliberately is slower than it.
+pub(crate) const HELD_KEY_GAP: Duration = Duration::from_millis(200);
+/// Most steps one press of a held steering key is ever worth.
+pub(crate) const HELD_KEY_MAX_STEP: u32 = 8;
+/// Presses a held steering key spends at each step size before it is
+/// worth one more.
+pub(crate) const HELD_KEY_PRESSES_PER_STEP: u32 = 4;
 
 // configuration
 /// Directory under the OS config root holding `config.toml`,
@@ -116,6 +138,8 @@ pub(crate) const KEYMAP_TOML_HEADER: &str = "\
 # Edit bindings below. Format: action = \"key\" or \"modifier-key\"\n\
 # Modifiers: ctrl, alt, shift.  Examples: \"ctrl-k\", \"shift-tab\", \"q\"\n\
 # Chord steps are space-separated, e.g. \"g g\".\n\n";
+/// Section heading the keymap overlay gives the navigation scope.
+pub(crate) const NAVIGATION_SECTION: &str = "Navigation";
 /// Rows the status line occupies along the bottom of the terminal.
 pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 
@@ -180,6 +204,14 @@ pub(crate) const REPAINT_SENTINEL: Modifier = Modifier::SLOW_BLINK
 /// enough apart to cost nothing while being well inside the time it
 /// takes to notice a smear.
 pub(crate) const FULL_REPAINT_SECONDS: u64 = 2;
+
+/// How long a frame has to have taken before [`crate::probe`] writes it
+/// down, where the probe is switched on at all.
+///
+/// A little over three frames at the poll interval, which is where a
+/// gap stops reading as one frame arriving late and starts reading as
+/// the display having stopped.
+pub(crate) const PROBE_THRESHOLD: Duration = Duration::from_millis(33);
 /// Fixed-point scale a transition's progress is measured on, so the
 /// animation needs no floating point.
 pub(crate) const PROGRESS_SCALE: u32 = 1000;

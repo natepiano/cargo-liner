@@ -15,6 +15,7 @@ use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
 
 use crate::attract::Attract;
+use crate::attract::AttractMode;
 use crate::config;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
@@ -26,7 +27,8 @@ use crate::tiles::TileGrid;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
 /// [`AppPaneId`] belongs here or its pane-local shortcuts go unlisted.
-const APP_PANE_DISPLAY_ORDER: [AppPaneId; 1] = [AppPaneId::Main];
+const APP_PANE_DISPLAY_ORDER: [AppPaneId; 2] =
+    [AppPaneId::Main, AppPaneId::Attract(AttractMode::MovingBand)];
 
 /// The panes this app supplies to the framework; one variant per
 /// app-side pane. A new TUI grows by adding variants here, giving each
@@ -36,6 +38,11 @@ const APP_PANE_DISPLAY_ORDER: [AppPaneId; 1] = [AppPaneId::Main];
 pub(crate) enum AppPaneId {
     /// The one content pane this template starts with.
     Main,
+    /// One per attract-screen animation. Not a pane in the sense of
+    /// having a rectangle -- [`crate::attract`] draws over the whole
+    /// terminal -- but a scope of its own, so each animation binds its
+    /// own keys and `keymap.toml` keeps a table for each.
+    Attract(AttractMode),
 }
 
 /// Whether the display takes new work in as it arrives or is being

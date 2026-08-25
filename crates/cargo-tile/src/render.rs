@@ -55,7 +55,9 @@ use tui_pane::warning_color;
 
 use crate::app::App;
 use crate::app::Updates;
+use crate::attract::Grid;
 use crate::attract::Work;
+use crate::attract::ground;
 use crate::constants::ANCESTRY_ELISION;
 use crate::constants::ANCESTRY_GAP_HEIGHT;
 use crate::constants::ANCESTRY_LEVEL_INDENT;
@@ -103,6 +105,7 @@ use crate::constants::TILE_ROWS_CONTENT_LABEL;
 use crate::constants::TILE_ROWS_READOUT_HEIGHT;
 use crate::constants::TILE_ROWS_RIGHT_INSET;
 use crate::globals::AppGlobalAction;
+use crate::probe;
 use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
 use crate::processes::ManifestPath;
@@ -127,18 +130,6 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
             .areas(frame.area());
 
-    // Asked for, the attract screen replaces the grid rather than
-    // sharing the terminal with it: a strip of characters drawn across
-    // a grid of borders and tables reads as neither one thing nor the
-    // other. Left to come on by itself, it draws over whatever is
-    // there, which with nothing running is a summary cell and little
-    // else.
-    if !app.attract.covers_grid() {
-        draw_panes(frame, app, body);
-    }
-    // Over the grid rather than under it: the attract screen owns the
-    // whole terminal while nothing is running, and the status line goes
-    // back on top of it below.
     // What gets a cell, not what the roster holds: a command held back
     // by `commands.hidden_when_idle` keeps a summary line and draws no
     // cell, and a screen with nothing but that on it is one the reader
@@ -155,7 +146,30 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     };
     let area = frame.area();
     let updates = app.updates;
-    app.attract.draw(frame.buffer_mut(), area, work, updates);
+    // Asked for, the attract screen replaces the grid rather than
+    // sharing the terminal with it: a strip of characters drawn across
+    // a grid of borders and tables reads as neither one thing nor the
+    // other. Left to come on by itself, it draws over whatever is
+    // there, which with nothing running is a summary cell and little
+    // else. Between those two it draws over bare panes, which is what
+    // it arrives over and leaves over. See [`Attract::advance`].
+    let grid = probe::timed(probe::Phase::Advance, || {
+        app.attract.advance(area, work, updates)
+    });
+    probe::timed(probe::Phase::Panes, || match grid {
+        Grid::Full => draw_panes(frame, app, body, Contents::Shown),
+        Grid::Empty(faded) => {
+            draw_panes(frame, app, body, Contents::Hidden);
+            fade_to_background(frame.buffer_mut(), body, faded);
+        },
+        Grid::Off => (),
+    });
+    // Over the grid rather than under it: the attract screen owns the
+    // whole terminal while nothing is running, and the status line goes
+    // back on top of it below.
+    probe::timed(probe::Phase::Band, || {
+        app.attract.render(frame.buffer_mut(), area);
+    });
     draw_status_line(frame, app, keymap, status);
 
     match app.framework.overlay() {
@@ -163,6 +177,43 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         Some(FrameworkOverlayId::Keymap) => draw_keymap(frame, app, keymap),
         Some(FrameworkOverlayId::GlobalShortcuts) => draw_global_shortcuts(frame, app, keymap),
         _ => (),
+    }
+}
+
+/// Whether the panes are drawn with what is in them.
+///
+/// Hidden leaves the frames, the borders and the titles and takes away
+/// the tables, the readouts and the cache figures -- everything that is
+/// a number rather than a place. It is what the grid looks like while
+/// the attract screen is arriving or leaving.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Contents {
+    /// Draw what each pane holds.
+    Shown,
+    /// Draw the panes and nothing in them.
+    Hidden,
+}
+
+/// Carry every cell of `area` `faded` of the way toward the colour it
+/// is painted on.
+///
+/// Each cell goes toward its own background rather than toward one
+/// colour picked for the grid, so a focused pane's contents settle into
+/// the focused pane's tint. [`ground`] stands in only where a cell is
+/// painted on nothing at all, which is what a transparent profile
+/// leaves behind.
+fn fade_to_background(buffer: &mut Buffer, area: Rect, faded: u8) {
+    let absent = ground();
+    for row in area.top()..area.bottom() {
+        for column in area.left()..area.right() {
+            if let Some(cell) = buffer.cell_mut((column, row)) {
+                let toward = match cell.bg {
+                    Color::Reset => absent,
+                    background => background,
+                };
+                cell.set_fg(blend_color(cell.fg, toward, faded));
+            }
+        }
     }
 }
 
@@ -181,7 +232,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// [`GridLines::add_titled`] for the same reason: a border a cell shares
 /// is drawn by the pass that owns it, so anything written there has to
 /// go in with it.
-fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
+fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) {
     let initial_rows = app.loaded_config.config.tiles.initial_rows();
     app.tiles.set_layout(area, initial_rows);
     let widths = app.tiles.content_widths(area, initial_rows);
@@ -203,22 +254,26 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect) {
             TileContent::Group(id) => demands.rows_for(id),
             TileContent::Empty(_) => 0,
         };
-        draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
-            draw_contents(
-                buffer,
-                &app.roster,
-                placement.content,
-                inner,
-                ground,
-                hidden_when_idle,
-            );
-            draw_rows_readout(buffer, inner, content_rows);
-        });
+        if contents == Contents::Shown {
+            draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
+                draw_contents(
+                    buffer,
+                    &app.roster,
+                    placement.content,
+                    inner,
+                    ground,
+                    hidden_when_idle,
+                );
+                draw_rows_readout(buffer, inner, content_rows);
+            });
+        }
         match placement.content {
             TileContent::Summary => {
                 grid_lines.add_titled(placement.frame, SUMMARY_CELL_TITLE);
-                for label in sccache_label(&app.sccache, placement.frame.rect()) {
-                    grid_lines.add_label(placement.frame, label);
+                if contents == Contents::Shown {
+                    for label in sccache_label(&app.sccache, placement.frame.rect()) {
+                        grid_lines.add_label(placement.frame, label);
+                    }
                 }
             },
             TileContent::Group(_) | TileContent::Empty(_) => {

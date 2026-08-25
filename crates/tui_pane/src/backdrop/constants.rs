@@ -3,22 +3,61 @@
 use std::time::Duration;
 
 // attract band
-/// How wide the lit strip stands, in columns. Its leading edge is at
-/// full strength and the tail this far behind it has faded out.
-pub(super) const BAND_COLUMNS: u32 = 20;
-/// How far the strip travels each second, in columns.
-pub(super) const BAND_COLUMNS_PER_SECOND: u32 = 30;
 /// How many cells are re-rolled to a new character each frame, on top
-/// of the whole column the leading edge re-rolls as it arrives. Enough
+/// of the whole line the leading edge re-rolls as it arrives. Enough
 /// to read as a shimmer without the strip looking like static.
 pub(super) const CHURN_CELLS_PER_FRAME: usize = 3;
-/// How finely the strip's position is tracked between two columns.
+/// How far the strip travels each second, in cells, before anything
+/// has sped it up or slowed it down.
+pub(super) const DEFAULT_BAND_SPEED: u32 = 30;
+/// How deep the lit strip stands, in cells along the axis it travels,
+/// before anything has widened or thinned it. Cells this far behind
+/// the leading edge are the last ones drawn.
+pub(super) const DEFAULT_BAND_WIDTH: u32 = 20;
+/// Fastest the strip travels. Past this it crosses the grid inside a
+/// couple of frames, which reads as a flicker rather than as travel.
+pub(super) const MAX_BAND_SPEED: u32 = 400;
+/// Widest the strip stands. The strip wraps, so past the number of
+/// lines the grid has there is no gap left between the tail and the
+/// leading edge and the whole grid is lit at once -- which is a
+/// reasonable place to be able to get to, and not a band.
+pub(super) const MAX_BAND_WIDTH: u32 = 200;
+/// Slowest the strip travels. Zero is not offered: a strip that never
+/// moves is one the reader cannot tell from a frozen display.
+pub(super) const MIN_BAND_SPEED: u32 = 1;
+/// Thinnest the strip stands: a single line at full strength with no
+/// tail behind it.
+pub(super) const MIN_BAND_WIDTH: u32 = 1;
+/// How finely the strip's position is tracked between one cell and the
+/// next.
 ///
-/// The strip has to move a fraction of a column per frame and its
+/// The strip has to move a fraction of a cell per frame and its
 /// trailing fade has to be smooth, and both are worked out in whole
 /// numbers -- a float would put a truncating cast in the middle of
 /// every cell's colour.
-pub(super) const SUBCOLUMNS_PER_COLUMN: u32 = 256;
+pub(super) const SUBCELLS_PER_CELL: u32 = 256;
+/// How shallow the strip can run back at one offset across itself once
+/// its trailing edge is varying, as a percentage of its width.
+///
+/// The strip keeps a core this deep everywhere and varies only behind
+/// that, so a ragged trailing edge frays the strip rather than breaking
+/// it into pieces the eye reads as separate.
+pub(super) const VARIABLE_TAIL_FLOOR_PERCENT: u32 = 30;
+/// How long one offset across the strip stands at the depth it was last
+/// sent to before a new one is drawn for it.
+///
+/// Long enough to be read as a depth the strip is holding rather than
+/// as a moment it passed through on the way somewhere else.
+pub(super) const VARIABLE_TAIL_HOLD: Duration = Duration::from_secs(2);
+/// How fast an offset travels toward the depth it was last sent to, on
+/// the [`u8`] scale that depth is held in, per second.
+///
+/// The whole range takes a little under three seconds to cross, so a
+/// varying trailing edge is something the eye follows rather than
+/// something that has already changed by the time it is looked at.
+pub(super) const VARIABLE_TAIL_TRAVEL_PER_SECOND: u32 = 90;
+/// The whole of something, as a percentage.
+pub(super) const WHOLE_PERCENT: u32 = 100;
 
 // capture
 /// How often the worker takes a fresh capture.
