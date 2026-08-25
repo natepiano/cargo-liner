@@ -129,6 +129,8 @@ const WHY_ARGUMENT: &str = "why";
 const WHY_VALUE_NAME: &str = "WHY";
 
 const ABANDON_LONG_ABOUT: &str = "Use this only when the reservation's work is intentionally discarded. It records an irreversible abandonment and releases its coordination hold; choosing it for recoverable work loses the trail that identifies where the work went. --why is required so later readers can distinguish a deliberate decision from a lost worktree.";
+const BOARD_LONG_ABOUT: &str = "Inspect current reservations and integration constraints. With both standard input and standard output attached to terminals, bare board opens the full-screen view; otherwise it prints a pointer to board --json. Use --json to emit board facts.";
+const CHECK_LONG_ABOUT: &str = "Check proposed paths against foreign reservations. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants.";
 const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work reached trunk through a squash, cherry-pick, or other rewritten integration that the tool cannot prove from its stored commit. This asserts the supplied trunk commit is evidence; choosing it without that evidence can incorrectly release an unresolved reservation.";
 const RECOVERED_LONG_ABOUT: &str = "Use this when the reservation's work is still present but now belongs to this replacement worktree. It records a new worktree identity; choosing it when the work was actually integrated or discarded leaves an inaccurate live reservation blocking other work.";
 const RETIRE_ORPHAN_LONG_ABOUT: &str = "Use this only after confirming an orphaned reservation can retire without classifying its work as deliberately discarded. It records a distinct orphan-retirement disposition and requires --why so later readers can audit that decision.";
@@ -157,9 +159,11 @@ pub(crate) enum CliInvocation {
 enum Command {
     /// Initialize the shared reservation ledger.
     Init(InitArguments),
-    /// Display the reservation board.
+    /// Inspect reservations and integration constraints.
+    #[command(long_about = BOARD_LONG_ABOUT)]
     Board(JsonOutput),
-    /// Check whether paths would be blocked.
+    /// Check exact files or explicitly prefixed trees for foreign reservations.
+    #[command(long_about = CHECK_LONG_ABOUT)]
     Check(PathArguments),
     /// Claim paths for a reservation.
     Claim(ClaimArguments),
@@ -242,7 +246,7 @@ impl JsonOutput {
 /// A command whose first argument is one or more repository paths.
 #[derive(Debug, Args)]
 struct PathArguments {
-    /// The repository paths the command concerns.
+    /// The paths to check; unprefixed paths are files, while `tree:` includes descendants.
     #[arg(required = true, value_name = PATH_VALUE_NAME)]
     paths:       Vec<PathBuf>,
     /// The output representation requested for this command.
@@ -380,7 +384,7 @@ struct SequenceArguments {
 struct IntegrateArguments {
     /// The reservation to integrate.
     reservation_id: ReservationId,
-    /// Permit integration past a held ordering edge.
+    /// Permit integration past held ordering edges and unresolved deferrals.
     #[arg(long = FORCE_ARGUMENT, requires = WHY_ARGUMENT)]
     force:          bool,
     /// Explain why forced integration is authorized.
@@ -1363,6 +1367,19 @@ mod tests {
             assert!(resolve_help.contains(required_text));
         }
         assert!(renew_help.contains("changes neither its scopes nor any ordering edge"));
+    }
+
+    #[test]
+    fn operational_help_explains_board_streams_check_defaults_and_force_scope() {
+        let board_help = help_for("board");
+        let check_help = help_for("check");
+        let integrate_help = help_for("integrate");
+
+        assert!(board_help.contains("both standard input and standard output"));
+        assert!(board_help.contains("Use --json to emit board facts"));
+        assert!(check_help.contains("An unprefixed path means one exact file"));
+        assert!(check_help.contains("tree: to include all component descendants"));
+        assert!(integrate_help.contains("held ordering edges and unresolved deferrals"));
     }
 
     #[test]

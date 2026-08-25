@@ -6,6 +6,8 @@ A fleet of cargo tools, and the terminal-UI framework they share.
 
 ## workspace members
 
+- [cargo-berth](crates/cargo-berth) — worktree path reservations and integration
+  ordering [![crates.io](https://img.shields.io/crates/v/cargo-berth.svg)](https://crates.io/crates/cargo-berth)
 - [cargo-mend](crates/cargo-mend) — opinionated visibility auditing for Rust
   crates and workspaces [![crates.io](https://img.shields.io/crates/v/cargo-mend.svg)](https://crates.io/crates/cargo-mend)
 - [cargo-port](crates/cargo-port) — a terminal dashboard for your Rust workspaces
