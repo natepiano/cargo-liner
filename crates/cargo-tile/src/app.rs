@@ -74,6 +74,38 @@ impl Updates {
     }
 }
 
+/// How much of each command a cell spells out.
+///
+/// The chain above a command and the table under it are the same tree,
+/// and either way what a row is worth reading for is the pid and the
+/// name of what runs. The arguments below that are where a cell spends
+/// most of its width -- a test suite driving cargo in a temporary
+/// directory per case gives every row a different absolute manifest
+/// path, which wraps three deep and says nothing the row's own pid does
+/// not. So [`Short`](Self::Short) is where the display starts, and the
+/// whole line is a key away.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ProcessTree {
+    /// The tree entire, with each of its commands named and nothing
+    /// more: `cargo mend` out of `cargo mend --manifest-path
+    /// /var/folders/T/x/Cargo.toml --json`.
+    #[default]
+    Short,
+    /// The same tree with every command line spelled out in full.
+    Long,
+}
+
+impl ProcessTree {
+    /// The other of the two, which is all the key that toggles it asks
+    /// for.
+    pub(crate) const fn toggled(self) -> Self {
+        match self {
+            Self::Short => Self::Long,
+            Self::Long => Self::Short,
+        }
+    }
+}
+
 /// Top-level application state.
 pub(crate) struct App {
     /// Framework state — overlays, panes, toasts, settings pane.
@@ -108,6 +140,8 @@ pub(crate) struct App {
     pub(crate) updates:       Updates,
     /// The attract screen shown over the grid while nothing is running.
     pub(crate) attract:       Attract,
+    /// How much of each command a cell spells out.
+    pub(crate) tree:          ProcessTree,
 }
 
 impl App {
@@ -130,6 +164,7 @@ impl App {
             started: Instant::now(),
             updates: Updates::Live,
             attract: Attract::new(),
+            tree: ProcessTree::default(),
         })
     }
 }

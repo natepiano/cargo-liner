@@ -9,10 +9,11 @@
 //! rest from the registration in [`crate::keymap`]: TOML loading, the
 //! status-line slots, and the rows in the keymap overlay.
 //!
-//! Two of them are not about the grid at all: `f` holds the whole
+//! Three of them are not about the grid at all: `f` holds the whole
 //! display still, which is what makes a screen that repaints four times
-//! a second readable, and `a` draws the attract screen over the grid
-//! whether or not anything is running.
+//! a second readable, `a` draws the attract screen over the grid whether
+//! or not anything is running, and `p` says how much of each command a
+//! cell spells out.
 //!
 //! To add another, give the enum a variant, bind a default key in
 //! [`Globals::defaults`], and handle it in [`dispatch`].
@@ -36,6 +37,7 @@ tui_pane::action_enum! {
         FocusDown  => ("focus_down",  "Focus the tile below");
         Freeze     => ("freeze",      "Freeze the display");
         Attract    => ("attract",     "Show the attract screen");
+        ProcessTree => ("process_tree", "Show whole command lines");
     }
 }
 
@@ -56,6 +58,7 @@ impl Globals<App> for AppGlobalAction {
             KeyCode::Down => Self::FocusDown,
             'f' => Self::Freeze,
             'a' => Self::Attract,
+            'p' => Self::ProcessTree,
         }
     }
 
@@ -74,5 +77,40 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::FocusDown => app.tiles.focus_step(Direction::Down, initial_rows),
         AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
         AppGlobalAction::Attract => app.attract.toggle(),
+        AppGlobalAction::ProcessTree => app.tree = app.tree.toggled(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tui_pane::KeyBind;
+
+    use super::*;
+    use crate::app::ProcessTree;
+
+    /// `p` reaches the process-tree toggle, read out of the table the
+    /// keymap is actually built from. It shares the scope with the four
+    /// arrows and with `+` and `-`, so a key added over one of those
+    /// would take a tile away instead.
+    #[test]
+    fn p_toggles_the_process_tree() {
+        let scope = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            scope.action_for(&KeyBind::from('p')),
+            Some(AppGlobalAction::ProcessTree),
+        );
+    }
+
+    /// The display starts short and the key walks between the two. A
+    /// grid opening on the whole chain spends half of every cell on
+    /// something that has not changed since the command began.
+    #[test]
+    fn the_tree_starts_short_and_the_key_walks_both_ways() {
+        let tree = ProcessTree::default();
+
+        assert_eq!(tree, ProcessTree::Short);
+        assert_eq!(tree.toggled(), ProcessTree::Long);
+        assert_eq!(tree.toggled().toggled(), ProcessTree::Short);
     }
 }

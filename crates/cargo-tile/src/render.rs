@@ -54,10 +54,11 @@ use tui_pane::title_color;
 use tui_pane::warning_color;
 
 use crate::app::App;
+use crate::app::ProcessTree;
 use crate::app::Updates;
+use crate::attract;
 use crate::attract::Grid;
 use crate::attract::Work;
-use crate::attract::ground;
 use crate::constants::ANCESTRY_DEMAND_PASSES;
 use crate::constants::ANCESTRY_ELISION;
 use crate::constants::ANCESTRY_GAP_HEIGHT;
@@ -80,6 +81,7 @@ use crate::constants::PARENT_COLUMN;
 use crate::constants::PID_COLUMN;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
+use crate::constants::PROCESS_TREE_NOTE_LABEL;
 use crate::constants::PROGRESS_HEADING_EMPTY;
 use crate::constants::PROGRESS_HEADING_FILLED;
 use crate::constants::PROGRESS_HEADING_MARGINS;
@@ -109,6 +111,7 @@ use crate::constants::TILE_ROWS_RIGHT_INSET;
 use crate::constants::TILE_ROWS_WIDTH_LABEL;
 use crate::globals::AppGlobalAction;
 use crate::probe;
+use crate::processes;
 use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
 use crate::processes::ManifestPath;
@@ -202,11 +205,11 @@ enum Contents {
 ///
 /// Each cell goes toward its own background rather than toward one
 /// colour picked for the grid, so a focused pane's contents settle into
-/// the focused pane's tint. [`ground`] stands in only where a cell is
-/// painted on nothing at all, which is what a transparent profile
-/// leaves behind.
+/// the focused pane's tint. [`attract::ground`] stands in only where a
+/// cell is painted on nothing at all, which is what a transparent
+/// profile leaves behind.
 fn fade_to_background(buffer: &mut Buffer, area: Rect, faded: u8) {
-    let absent = ground();
+    let absent = attract::ground();
     for row in area.top()..area.bottom() {
         for column in area.left()..area.right() {
             if let Some(cell) = buffer.cell_mut((column, row)) {
@@ -243,9 +246,11 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
         &app.roster,
         &widths,
         &app.loaded_config.config.commands.hidden_when_idle,
+        app.tree,
     );
     app.tiles.sync(&demands, initial_rows);
     let placements = app.tiles.placements(area, initial_rows);
+    let tree = app.tree;
     let mut grid_lines = GridLines::new(area);
     for placement in &placements {
         // The ground a fading row is carried toward is the one its own
@@ -273,7 +278,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
                 .groups()
                 .iter()
                 .find(|group| group.id == id)
-                .map(|group| group_height_parts(group, demand_width, hidden_when_idle)),
+                .map(|group| group_height_parts(group, demand_width, hidden_when_idle, tree)),
             TileContent::Summary | TileContent::Empty(_) => None,
         };
         if contents == Contents::Shown {
@@ -285,6 +290,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
                     inner,
                     ground,
                     hidden_when_idle,
+                    tree,
                 );
                 draw_rows_readout(buffer, inner, content_rows, demand_width, split);
             });
@@ -328,6 +334,7 @@ fn tile_demands(
     roster: &Roster,
     widths: &[(TileContent, u16)],
     hidden_when_idle: &[String],
+    tree: ProcessTree,
 ) -> TileDemands {
     let narrowest = widths
         .iter()
@@ -346,6 +353,7 @@ fn tile_demands(
             TableKind::Summary,
             width_of(TileContent::Summary),
             None,
+            tree,
         ),
         groups:  roster
             .tiled_ids(hidden_when_idle)
@@ -357,6 +365,7 @@ fn tile_demands(
                     group,
                     width_of(TileContent::Group(group.id)),
                     hidden_when_idle,
+                    tree,
                 ),
             })
             .collect(),
@@ -370,8 +379,13 @@ fn tile_demands(
 /// height has room for -- the ask is what the cell wants, and what it is
 /// given is the answer. A lead drawn as the foot of its own chain is
 /// left out of the table, the same as [`draw_group`] leaves it out.
-fn group_height(group: &TrackedGroup, width: u16, hidden_when_idle: &[String]) -> usize {
-    let (above, table) = group_height_parts(group, width, hidden_when_idle);
+fn group_height(
+    group: &TrackedGroup,
+    width: u16,
+    hidden_when_idle: &[String],
+    tree: ProcessTree,
+) -> usize {
+    let (above, table) = group_height_parts(group, width, hidden_when_idle, tree);
     above.saturating_add(table)
 }
 
@@ -385,6 +399,7 @@ fn group_height_parts(
     group: &TrackedGroup,
     width: u16,
     hidden_when_idle: &[String],
+    tree: ProcessTree,
 ) -> (usize, usize) {
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
     let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
@@ -392,12 +407,13 @@ fn group_height_parts(
     // command wrapping down the cell wants the rows it wraps onto, and
     // asking for one row a level would leave the block short of what it
     // would have drawn with the room.
-    let ancestry = drawn_ancestry(group, leads_as_ancestor);
+    let ancestry = drawn_ancestry(group, leads_as_ancestor, tree);
     let table = table_height(
         &rows,
         TableKind::Command,
         width,
         Some(group.lead.process.path.as_str()),
+        tree,
     );
     (
         ancestry_demand(&ancestry, width, table, leads_as_ancestor),
@@ -470,7 +486,13 @@ fn ancestry_demand(
 ///
 /// Only the gaps between directories count: [`draw_path_group`] advances
 /// past one after the last directory too, but nothing follows it there.
-fn table_height(rows: &[&TrackedRow], kind: TableKind, width: u16, pinned: Option<&str>) -> usize {
+fn table_height(
+    rows: &[&TrackedRow],
+    kind: TableKind,
+    width: u16,
+    pinned: Option<&str>,
+    tree: ProcessTree,
+) -> usize {
     if rows.is_empty() {
         return 0;
     }
@@ -480,7 +502,7 @@ fn table_height(rows: &[&TrackedRow], kind: TableKind, width: u16, pinned: Optio
         width,
         height: TABLE_HEADER_HEIGHT,
     };
-    let layout = TableLayout::of(rows, kind, area, pane_background(false));
+    let layout = TableLayout::of(rows, kind, area, pane_background(false), tree);
     let groups = group_by_path(rows, pinned);
     let gaps = groups
         .len()
@@ -516,7 +538,7 @@ fn table_height(rows: &[&TrackedRow], kind: TableKind, width: u16, pinned: Optio
 /// The cell's own rows and columns follow, and the width the demand was
 /// settled at is written between them only when the two widths differ.
 /// The demand is measured against the layout as it stood before
-/// [`Tiles::sync`] and the cell is drawn at whatever the layout became
+/// [`crate::tiles::TileGrid::sync`] and the cell is drawn at whatever the layout became
 /// after it -- and a command line wraps, which makes a demand taken at
 /// half the width very nearly twice the rows. So the two widths
 /// agreeing is worth no room at all, while the two disagreeing is the
@@ -589,7 +611,9 @@ fn readout_area(inner: Rect, width: u16) -> Option<Rect> {
 /// What a cell holds inside its borders. `ground` is the colour the
 /// cell is painted on, which a finished row's text fades toward, and
 /// `hidden_when_idle` is what settles whether a command's own cell
-/// draws it as a row or as the last step of its chain.
+/// draws it as a row or as the last step of its chain. `tree` says how
+/// much of what stands above the command goes over the table; the
+/// summary cell has no such block, so it never reads it.
 fn draw_contents(
     buffer: &mut Buffer,
     roster: &Roster,
@@ -597,11 +621,12 @@ fn draw_contents(
     inner: Rect,
     ground: Color,
     hidden_when_idle: &[String],
+    tree: ProcessTree,
 ) {
     match content {
-        TileContent::Summary => draw_summary(buffer, roster, inner, ground, hidden_when_idle),
+        TileContent::Summary => draw_summary(buffer, roster, inner, ground, hidden_when_idle, tree),
         TileContent::Group(id) => {
-            draw_group(buffer, roster, id, inner, ground, hidden_when_idle);
+            draw_group(buffer, roster, id, inner, ground, hidden_when_idle, tree);
         },
         TileContent::Empty(number) => draw_number(buffer, number, inner),
     }
@@ -622,6 +647,7 @@ fn draw_summary(
     inner: Rect,
     ground: Color,
     hidden_when_idle: &[String],
+    tree: ProcessTree,
 ) {
     draw_process_table(
         buffer,
@@ -630,6 +656,7 @@ fn draw_summary(
         TableKind::Summary,
         ground,
         None,
+        tree,
     );
 }
 
@@ -737,13 +764,14 @@ fn draw_group(
     inner: Rect,
     ground: Color,
     hidden_when_idle: &[String],
+    tree: ProcessTree,
 ) {
     let Some(group) = roster.groups().iter().find(|group| group.id == id) else {
         return;
     };
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
     let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
-    let ancestry = drawn_ancestry(group, leads_as_ancestor);
+    let ancestry = drawn_ancestry(group, leads_as_ancestor, tree);
     // Where the driver stands at the foot of its own chain, that is
     // where its pid is written, and the rows pointing at it in the
     // table below need it in the colour they are pointing with.
@@ -779,6 +807,7 @@ fn draw_group(
         TableKind::Command,
         ground,
         Some(group.lead.process.path.as_str()),
+        tree,
     );
 }
 
@@ -790,12 +819,37 @@ fn draw_group(
 /// directly so the cell's height is asked for against the steps it will
 /// actually draw. Counting the raw chain asked for rows that
 /// [`carried`] then dropped.
-fn drawn_ancestry(group: &TrackedGroup, leads_as_ancestor: bool) -> Vec<Ancestor> {
+///
+/// A [`ProcessTree::Short`] cell draws the same steps: what the setting
+/// takes off is the arguments on each of them, which is where the block
+/// spends most of its width and every row it wraps onto.
+fn drawn_ancestry(
+    group: &TrackedGroup,
+    leads_as_ancestor: bool,
+    tree: ProcessTree,
+) -> Vec<Ancestor> {
     let mut chain = group.ancestry().to_vec();
     if leads_as_ancestor {
         chain.push(as_ancestor(&group.lead.process));
     }
-    carried(chain)
+    let chain = carried(chain);
+    match tree {
+        ProcessTree::Long => chain,
+        // The block is there to say where the command came from, and
+        // the name of each step says that on its own. What the
+        // arguments add is the run's own detail, which the table below
+        // already carries a row of.
+        ProcessTree::Short => chain.iter().map(shortened).collect(),
+    }
+}
+
+/// One step of a chain with its arguments taken off.
+fn shortened(ancestor: &Ancestor) -> Ancestor {
+    Ancestor {
+        pid:            ancestor.pid,
+        command:        processes::command_name(&ancestor.command),
+        passes_through: ancestor.passes_through,
+    }
 }
 
 /// A command as the last step of its own cell's chain: its pid, and the
@@ -1159,6 +1213,9 @@ struct TableLayout {
     command_width: u16,
     /// Whether a row spells out `--manifest-path`.
     manifest:      ManifestPath,
+    /// Whether a row spells out its whole command line or only the
+    /// name of what runs.
+    tree:          ProcessTree,
     /// The colour the cell is painted on, which a finished row's text
     /// is carried toward as it fades.
     ground:        Color,
@@ -1167,7 +1224,13 @@ struct TableLayout {
 impl TableLayout {
     /// The layout for a cell of `kind` drawing `rows` into `area`, over
     /// a cell painted `ground`.
-    fn of(rows: &[&TrackedRow], kind: TableKind, area: Rect, ground: Color) -> Self {
+    fn of(
+        rows: &[&TrackedRow],
+        kind: TableKind,
+        area: Rect,
+        ground: Color,
+        tree: ProcessTree,
+    ) -> Self {
         let columns = visible_columns(rows, kind);
         let constraints = fitted_constraints(rows, &columns);
         Self {
@@ -1175,6 +1238,7 @@ impl TableLayout {
             constraints,
             columns,
             manifest: kind.manifest(),
+            tree,
             ground,
         }
     }
@@ -1211,6 +1275,7 @@ fn draw_process_table(
     kind: TableKind,
     ground: Color,
     pinned: Option<&str>,
+    tree: ProcessTree,
 ) {
     if rows.is_empty() {
         Paragraph::new(vec![
@@ -1227,7 +1292,7 @@ fn draw_process_table(
     // One column-label row for the whole cell. Every group's table is
     // laid out with the same constraints and the same indent, so the
     // labels stay over their columns without costing a row per group.
-    let layout = TableLayout::of(rows, kind, area, ground);
+    let layout = TableLayout::of(rows, kind, area, ground, tree);
     Table::new(Vec::<Row>::new(), layout.constraints.iter().copied())
         .header(column_header(&layout, heading_fade(rows)))
         .column_spacing(TABLE_COLUMN_SPACING)
@@ -1463,7 +1528,13 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
     let command = wrap::wrapped(
         vec![
             Span::styled(process.command.program.clone(), program),
-            Span::styled(process.command.line(layout.manifest), arguments),
+            Span::styled(
+                match layout.tree {
+                    ProcessTree::Long => process.command.line(layout.manifest),
+                    ProcessTree::Short => process.command.named(),
+                },
+                arguments,
+            ),
         ],
         layout.command_width,
     );
@@ -1790,6 +1861,16 @@ fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Re
             value: String::new(),
         });
     }
+    // The chain is half a cell that nothing on screen explains: the
+    // short setting is where the display starts, so a cell full of
+    // ancestry is a key that was pressed rather than a command with a
+    // long history. Say which.
+    if app.tree == ProcessTree::Long {
+        notes.push(StatusLineNote {
+            label: PROCESS_TREE_NOTE_LABEL.to_string(),
+            value: String::new(),
+        });
+    }
     let status = StatusLine::new(
         app.started.elapsed().as_secs(),
         ScanIndicator::Hidden,
@@ -1954,7 +2035,13 @@ mod tests {
             width,
             height: 1,
         };
-        let layout = TableLayout::of(&rows, TableKind::Command, area, pane_background(false));
+        let layout = TableLayout::of(
+            &rows,
+            TableKind::Command,
+            area,
+            pane_background(false),
+            ProcessTree::Long,
+        );
         let group = PathGroup {
             path: GAUGE_PATH,
             rows: rows.to_vec(),
@@ -2399,11 +2486,19 @@ mod tests {
             long_chain(),
         );
         let group = roster.groups().first().unwrap();
-        let demand = group_height(group, width, &hidden);
+        let demand = group_height(group, width, &hidden, ProcessTree::Long);
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, u16::try_from(demand).unwrap()));
         let area = buffer.area;
-        draw_group(&mut buffer, &roster, 4100, area, Color::Reset, &hidden);
+        draw_group(
+            &mut buffer,
+            &roster,
+            4100,
+            area,
+            Color::Reset,
+            &hidden,
+            ProcessTree::Long,
+        );
 
         assert_eq!(
             filled_rows(&buffer),
@@ -2424,11 +2519,19 @@ mod tests {
             vec![invocation(4212, &["test"])],
         );
         let group = roster.groups().first().unwrap();
-        let demand = group_height(group, width, &hidden);
+        let demand = group_height(group, width, &hidden, ProcessTree::Long);
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, u16::try_from(demand).unwrap()));
         let area = buffer.area;
-        draw_group(&mut buffer, &roster, 4100, area, Color::Reset, &hidden);
+        draw_group(
+            &mut buffer,
+            &roster,
+            4100,
+            area,
+            Color::Reset,
+            &hidden,
+            ProcessTree::Long,
+        );
 
         assert_eq!(filled_rows(&buffer), demand);
         assert_eq!(
@@ -2512,6 +2615,7 @@ mod tests {
             area,
             Color::Reset,
             &hidden_when_idle(),
+            ProcessTree::Long,
         );
 
         // The driver is the foot of the chain now, so the shell above
@@ -2524,6 +2628,124 @@ mod tests {
         assert!(
             !table.contains("4100"),
             "the driver is not a row too: {table}"
+        );
+    }
+
+    /// A short tree draws every step the long one does. What it takes
+    /// off is the arguments: a step reached as `zsh -c cargo nextest
+    /// run --package tui_pane ...` is a shell however it was called, and
+    /// the eight words saying which package are the run's business, not
+    /// the chain's.
+    #[test]
+    fn a_short_tree_keeps_the_chain_and_takes_its_arguments_off() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 14));
+        let area = buffer.area;
+        let roster = roster_with_ancestry(invocation(4100, &["build"]), Vec::new(), long_chain());
+
+        draw_group(
+            &mut buffer,
+            &roster,
+            4100,
+            area,
+            Color::Reset,
+            &hidden_when_idle(),
+            ProcessTree::Short,
+        );
+
+        let drawn: Vec<String> = (0..area.height).map(|y| buffer_line(&buffer, y)).collect();
+        let drawn = drawn.join("\n");
+        for pid in ["6218", "18581", "24101"] {
+            assert!(
+                drawn.contains(pid),
+                "step {pid} should still be drawn: {drawn}"
+            );
+        }
+        assert!(
+            !drawn.contains("--setting") && !drawn.contains("--package"),
+            "and none of them should carry arguments: {drawn}",
+        );
+    }
+
+    /// A row names what runs and stops there. `cargo build` is the
+    /// command; the flags saying which features and how many targets are
+    /// what the short setting is for, and they are what a cell spends
+    /// three wrapped rows on when the column is narrow.
+    #[test]
+    fn a_short_row_names_the_command_without_its_arguments() {
+        // Wide enough that the command column holds the whole name: the
+        // point here is what the row says, not where it wraps.
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 90, 14));
+        let area = buffer.area;
+        let roster = roster_of(
+            invocation(
+                4100,
+                &["build", "--features", "one,two,three", "--all-targets"],
+            ),
+            Vec::new(),
+        );
+
+        draw_group(
+            &mut buffer,
+            &roster,
+            4100,
+            area,
+            Color::Reset,
+            &hidden_when_idle(),
+            ProcessTree::Short,
+        );
+
+        let drawn: Vec<String> = (0..area.height).map(|y| buffer_line(&buffer, y)).collect();
+        let drawn = drawn.join("\n");
+        assert!(drawn.contains("cargo build"), "{drawn}");
+        assert!(
+            !drawn.contains("--features") && !drawn.contains("--all-targets"),
+            "the arguments should be off the row: {drawn}",
+        );
+    }
+
+    /// A cell asks for fewer rows with the tree short than with it long.
+    /// The demand and the draw are measured by different code, so a
+    /// setting that shortened what reached the screen without shortening
+    /// what was asked for would leave the cell sized for command lines
+    /// it no longer draws -- which is the defect the demand was rewritten
+    /// to fix, arriving again through a key.
+    #[test]
+    fn a_short_tree_asks_for_fewer_rows_than_a_long_one() {
+        let width = 60;
+        let hidden = hidden_when_idle();
+        let roster = roster_with_ancestry(
+            invocation(4100, &["build"]),
+            vec![invocation(
+                4212,
+                &["test", "--features", "one,two,three", "--all-targets"],
+            )],
+            long_chain(),
+        );
+        let group = roster.groups().first().unwrap();
+
+        let short = group_height(group, width, &hidden, ProcessTree::Short);
+        let long = group_height(group, width, &hidden, ProcessTree::Long);
+
+        assert!(
+            short < long,
+            "a cell drawing named commands asked for {short} rows against the {long} whole lines \
+             cost",
+        );
+        let mut buffer = Buffer::empty(Rect::new(0, 0, width, u16::try_from(short).unwrap()));
+        let area = buffer.area;
+        draw_group(
+            &mut buffer,
+            &roster,
+            4100,
+            area,
+            Color::Reset,
+            &hidden,
+            ProcessTree::Short,
+        );
+        assert_eq!(
+            filled_rows(&buffer),
+            short,
+            "and it should fill the cell that ask bought",
         );
     }
 
@@ -2542,6 +2764,7 @@ mod tests {
             area,
             Color::Reset,
             &hidden_when_idle(),
+            ProcessTree::Long,
         );
 
         // Nothing closes this chain, so its shell is the foot and stays.
@@ -2837,6 +3060,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             None,
+            ProcessTree::Long,
         );
 
         // The column labels are drawn once at the top of the cell, so
@@ -2880,6 +3104,7 @@ mod tests {
             TableKind::Command,
             Color::Reset,
             None,
+            ProcessTree::Long,
         );
 
         let header = buffer_line(&buffer, 0);

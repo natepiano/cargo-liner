@@ -12,6 +12,7 @@ use ratatui::style::Modifier;
 /// over half a second -- long enough to read as the screen changing
 /// hands rather than as a cut.
 pub(crate) const ATTRACT_FADE_STEP: u8 = 3;
+
 /// TOML table the moving band's keys are read from and written back to.
 /// Stable -- `keymap.toml` is hand-edited.
 pub(crate) const ATTRACT_MOVING_BAND_SCOPE: &str = "attract_moving_band";
@@ -422,6 +423,11 @@ pub(crate) const SUMMARY_HIDDEN_VALUED_FLAGS: [&str; 3] =
 /// Those arguments are the other program's, so the summary passes them
 /// through untouched however they are spelled.
 pub(crate) const ARGUMENT_SEPARATOR: &str = "--";
+/// What marks a word as an argument rather than as part of the name of
+/// what runs. The short display keeps words up to the first of these,
+/// which is where `cargo mend --manifest-path ... --json` becomes
+/// `cargo mend`.
+pub(crate) const FLAG_MARK: char = '-';
 /// Column headers, in table order. The working directory is not among
 /// them: it heads the group of invocations that share it rather than
 /// repeating on every row.
@@ -489,6 +495,12 @@ pub(crate) const FROZEN_NOTE_LABEL: &str = "frozen";
 /// [`FROZEN_NOTE_LABEL`] does, and says the same kind of thing: the
 /// grid is still there, it is being drawn over.
 pub(crate) const ATTRACT_NOTE_LABEL: &str = "attract";
+/// What the status line says while every cell is spelling out its
+/// command lines in full. Stands alone like the two above it, and says
+/// the thing the display cannot: a cell whose rows wrap three deep in
+/// manifest paths is doing it because it was asked to, not because the
+/// commands grew.
+pub(crate) const PROCESS_TREE_NOTE_LABEL: &str = "tree";
 /// Rows the working-directory header above each group's table occupies.
 pub(crate) const GROUP_HEADER_HEIGHT: u16 = 1;
 /// Rows the column-label row at the top of the pane occupies. There is

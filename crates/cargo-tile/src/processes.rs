@@ -47,6 +47,7 @@ use crate::constants::CARGO_TOOLCHAIN_SELECTOR;
 use crate::constants::COMPILER_PROCESS_NAMES;
 use crate::constants::CPU_REPORT_MILLIS;
 use crate::constants::CPU_SMOOTHING_SECONDS;
+use crate::constants::FLAG_MARK;
 use crate::constants::HOME_ALIAS;
 use crate::constants::PARENT_WALK_LIMIT;
 use crate::constants::PROCESS_POLL_MILLIS;
@@ -192,6 +193,23 @@ impl CommandText {
             .is_some_and(|subcommand| hidden_when_idle.iter().any(|hidden| hidden == subcommand))
     }
 
+    /// The arguments that still name what runs, with everything the
+    /// command was called *with* taken off: `mend` out of `mend
+    /// --manifest-path /tmp/x/Cargo.toml --json`, and `nextest run` out
+    /// of the whole of `nextest run --workspace --all-features`.
+    ///
+    /// Keeps the toolchain selector, which is part of what runs rather
+    /// than an argument to it -- `+nightly fmt` says something `fmt`
+    /// alone does not.
+    pub(crate) fn named(&self) -> String {
+        self.arguments
+            .iter()
+            .map(String::as_str)
+            .take_while(|word| names_the_command(word))
+            .collect::<Vec<&str>>()
+            .join(" ")
+    }
+
     /// The arguments as one line, the summary's own flags in or out.
     pub(crate) fn line(&self, manifest: ManifestPath) -> String {
         if manifest == ManifestPath::Shown {
@@ -232,6 +250,35 @@ impl CommandText {
         }
         kept.join(" ")
     }
+}
+
+/// One whole command line with its arguments taken off, for the steps
+/// of a chain, which are held as a line rather than split.
+///
+/// The first word is the program however it is spelled, path and all --
+/// a chain step is often reached by its path, and dropping that would
+/// leave a bare `node` or `sh` saying less than the row it heads.
+/// Everything after it is kept only while it still names what runs.
+pub(crate) fn command_name(line: &str) -> String {
+    let mut words = line.split_whitespace();
+    let Some(program) = words.next() else {
+        return String::new();
+    };
+    std::iter::once(program)
+        .chain(words.take_while(|word| names_the_command(word)))
+        .collect::<Vec<&str>>()
+        .join(" ")
+}
+
+/// Whether a word standing after the program still names the command
+/// rather than arguing with it.
+///
+/// Two answers rule a word out: a leading dash, which is a flag, and a
+/// path separator, which is a manifest or a target directory or a
+/// binary reached by its path. What survives is the subcommands and the
+/// toolchain selector, which is the name of what runs.
+fn names_the_command(word: &str) -> bool {
+    !word.starts_with(FLAG_MARK) && !word.contains(std::path::MAIN_SEPARATOR)
 }
 
 /// Whether an argument is the `--flag=<value>` spelling, which carries
@@ -1776,5 +1823,60 @@ mod tests {
 
         assert!(smoothing.settled.is_empty());
         assert!(smoothing.reported.is_empty());
+    }
+
+    /// The short display keeps the words that name what runs and stops
+    /// at the first argument. A manifest path is what makes these rows
+    /// unreadable -- every one of a test suite's cases carries a
+    /// different temporary directory, and none of them says anything the
+    /// row's own pid does not.
+    #[test]
+    fn a_named_command_stops_at_its_first_argument() {
+        let mend = CommandText::of(
+            "cargo",
+            &[
+                "mend",
+                "--manifest-path",
+                "/var/folders/T/x/Cargo.toml",
+                "--json",
+            ],
+        );
+
+        assert_eq!(mend.named(), "mend");
+        assert!(
+            mend.line(ManifestPath::Shown).contains("--json"),
+            "and the long line still carries every one of them",
+        );
+    }
+
+    /// A subcommand of a subcommand is still the name of what runs, so
+    /// `nextest run` keeps both words -- and the toolchain selector
+    /// keeps its place ahead of them, `+nightly fmt` saying something
+    /// `fmt` alone does not.
+    #[test]
+    fn a_named_command_keeps_its_subcommands_and_its_toolchain() {
+        assert_eq!(
+            CommandText::of("cargo", &["nextest", "run", "--workspace"]).named(),
+            "nextest run",
+        );
+        assert_eq!(
+            CommandText::of("cargo", &["+nightly", "fmt", "--all"]).named(),
+            "+nightly fmt",
+        );
+    }
+
+    /// A chain step is held as one line rather than split, and its
+    /// program is often reached by its path -- so the first word stands
+    /// however it is spelled, and only what follows is read for
+    /// arguments. A bare `node` would say less than the row it heads.
+    #[test]
+    fn a_named_chain_step_keeps_the_path_it_was_reached_by() {
+        assert_eq!(
+            command_name("~/.claude/local/claude --setting on --setting off"),
+            "~/.claude/local/claude",
+        );
+        assert_eq!(command_name("zsh -c cargo nextest run"), "zsh");
+        assert_eq!(command_name("zed"), "zed");
+        assert_eq!(command_name(""), "");
     }
 }
