@@ -26,6 +26,7 @@ use crate::answer::OverlapProposalToken;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::answer::PermissiveOverlapAuthorizationRequest;
 use crate::config::BerthConfig;
+use crate::config::Enrollment;
 use crate::constants::OVERLAP_WHY_ARGUMENT;
 use crate::constants::OVERLAP_WHY_ARGUMENT_ID;
 use crate::constants::OVERLAP_WHY_VALUE_NAME;
@@ -41,12 +42,14 @@ use crate::gate;
 use crate::gate::GateDecision;
 use crate::gate::GateError;
 use crate::gate::ReferenceTransactionPhase;
+use crate::gate::TrunkReferencePresence;
 use crate::git;
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
 use crate::ids::WorkPlanPhase;
 use crate::ledger::ClaimSource;
 use crate::ledger::ForcedIntegrationReason;
+use crate::ledger::FullRefName;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
@@ -223,6 +226,45 @@ struct ReferenceTransactionArguments {
     phase:           ReferenceTransactionPhase,
     /// The full configured trunk ref captured when the hook was installed.
     trunk_reference: crate::ledger::FullRefName,
+}
+
+/// Why git's reference-transaction input could not be classified.
+enum ReferenceTransactionInputError {
+    /// Standard input could not be read completely.
+    StandardInputUnreadable(std::io::Error),
+    /// The input did not satisfy git's reference-transaction record format.
+    MalformedHookInput(gate::ReferenceTransactionParseError),
+}
+
+impl std::fmt::Display for ReferenceTransactionInputError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StandardInputUnreadable(error) => {
+                write!(formatter, "standard input was unreadable: {error}")
+            },
+            Self::MalformedHookInput(error) => {
+                write!(formatter, "hook input was malformed: {error}")
+            },
+        }
+    }
+}
+
+/// How a bypassed transaction relates to the configured trunk reference.
+enum BypassTransactionTrunkRelation {
+    /// The parsed transaction names the trunk reference.
+    Named,
+    /// The parsed transaction demonstrably does not name the trunk reference.
+    NotNamed,
+    /// Input failure prevented the transaction from being classified.
+    Unconfirmed(ReferenceTransactionInputError),
+}
+
+/// Why this bypass invocation must attempt to retain an audit fact.
+enum EnvironmentBypassAuditBasis {
+    /// Parsed input confirmed that the transaction names the trunk reference.
+    ConfirmedTrunkReference,
+    /// Input failure means the transaction may name the trunk reference.
+    UnconfirmedTrunkReference(ReferenceTransactionInputError),
 }
 
 /// The output representation requested at the command line boundary.
@@ -881,11 +923,19 @@ fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnv
                                 Err(error) => return initialization_error(error),
                             };
                         let berth_config = match BerthConfig::read(&repository_root) {
-                            Ok(berth_config) => berth_config,
-                            Err(error) => {
-                                return OutputEnvelope::ledger_unreadable(
+                            Ok(Enrollment::Enrolled(berth_config)) => berth_config,
+                            Ok(Enrollment::Unconfigured {
+                                expected_configuration_path,
+                            }) => {
+                                return OutputEnvelope::unconfigured(
                                     CommandVerb::Init,
-                                    &error.to_string(),
+                                    &expected_configuration_path,
+                                );
+                            },
+                            Err(error) => {
+                                return OutputEnvelope::ledger_error(
+                                    CommandVerb::Init,
+                                    &LedgerError::Config(error),
                                 );
                             },
                         };
@@ -947,44 +997,23 @@ fn write_reference_transaction_diagnostic(arguments: std::fmt::Arguments<'_>) {
 
 fn run_reference_transaction(
     phase: ReferenceTransactionPhase,
-    trunk_reference: crate::ledger::FullRefName,
+    trunk_reference: FullRefName,
 ) -> ExitCode {
     const TOTAL_GATE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
     if gate::permit::environment_bypass_requested() {
-        if phase == ReferenceTransactionPhase::Prepared {
-            match env::current_dir() {
-                Ok(invocation_directory) => {
-                    match gate::permit::record_environment_bypass(&invocation_directory) {
-                        gate::permit::EnvironmentBypassRetentionOutcome::Journalled
-                        | gate::permit::EnvironmentBypassRetentionOutcome::PendingMarker => {},
-                        gate::permit::EnvironmentBypassRetentionOutcome::Unrecorded => {
-                            write_reference_transaction_diagnostic(format_args!(
-                                "cargo-berth took the CARGO_BERTH_BYPASS=1 override, but neither the journal nor a pending marker retained its audit fact. This ref transaction remains permitted. Restore repository write access, then rerun cargo berth init."
-                            ));
-                        },
-                    }
-                },
-                Err(error) => {
-                    write_reference_transaction_diagnostic(format_args!(
-                        "cargo-berth took the CARGO_BERTH_BYPASS=1 override but could not resolve its invocation directory: {error}. No audit fact was retained; this ref transaction remains permitted. Enter the repository from an existing directory, then rerun cargo berth init."
-                    ));
-                },
-            }
-        }
-        return BerthExit::Clear.into();
+        return run_environment_bypassed_reference_transaction(phase, &trunk_reference);
     }
     let started_at = std::time::Instant::now();
-    let mut input = String::new();
-    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
-        write_reference_transaction_diagnostic(format_args!(
-            "cargo-berth trunk gate could not read git's transaction: {error}. To proceed anyway, rerun the git command with CARGO_BERTH_BYPASS=1."
-        ));
-        return BerthExit::LedgerUnreadable.into();
-    }
-    let transaction = match gate::parse_reference_transaction(phase, &input) {
+    let transaction = match read_reference_transaction(phase) {
         Ok(transaction) => transaction,
-        Err(error) => {
+        Err(ReferenceTransactionInputError::StandardInputUnreadable(error)) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth trunk gate could not read git's transaction: {error}. To proceed anyway, rerun the git command with CARGO_BERTH_BYPASS=1."
+            ));
+            return BerthExit::LedgerUnreadable.into();
+        },
+        Err(ReferenceTransactionInputError::MalformedHookInput(error)) => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth trunk gate rejected malformed hook input: {error}. To proceed anyway, rerun the git command with CARGO_BERTH_BYPASS=1."
             ));
@@ -1033,6 +1062,115 @@ fn run_reference_transaction(
         return BerthExit::LedgerUnreadable.into();
     }
     exit_for_reference_transaction_results(results)
+}
+
+fn read_reference_transaction(
+    phase: ReferenceTransactionPhase,
+) -> Result<gate::ReferenceTransaction, ReferenceTransactionInputError> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(ReferenceTransactionInputError::StandardInputUnreadable)?;
+    gate::parse_reference_transaction(phase, &input)
+        .map_err(ReferenceTransactionInputError::MalformedHookInput)
+}
+
+fn run_environment_bypassed_reference_transaction(
+    phase: ReferenceTransactionPhase,
+    trunk_reference: &FullRefName,
+) -> ExitCode {
+    if phase != ReferenceTransactionPhase::Prepared {
+        return BerthExit::Clear.into();
+    }
+    match bypass_transaction_trunk_relation(phase, trunk_reference) {
+        BypassTransactionTrunkRelation::Named => {
+            retain_environment_bypass_audit(EnvironmentBypassAuditBasis::ConfirmedTrunkReference)
+        },
+        BypassTransactionTrunkRelation::NotNamed => BerthExit::Clear.into(),
+        BypassTransactionTrunkRelation::Unconfirmed(error) => retain_environment_bypass_audit(
+            EnvironmentBypassAuditBasis::UnconfirmedTrunkReference(error),
+        ),
+    }
+}
+
+fn bypass_transaction_trunk_relation(
+    phase: ReferenceTransactionPhase,
+    trunk_reference: &FullRefName,
+) -> BypassTransactionTrunkRelation {
+    match read_reference_transaction(phase) {
+        Ok(transaction) => match transaction.trunk_reference_presence(trunk_reference) {
+            TrunkReferencePresence::Named => BypassTransactionTrunkRelation::Named,
+            TrunkReferencePresence::NotNamed => BypassTransactionTrunkRelation::NotNamed,
+        },
+        Err(error) => BypassTransactionTrunkRelation::Unconfirmed(error),
+    }
+}
+
+fn retain_environment_bypass_audit(audit_basis: EnvironmentBypassAuditBasis) -> ExitCode {
+    let invocation_directory = match env::current_dir() {
+        Ok(invocation_directory) => invocation_directory,
+        Err(error) => {
+            match audit_basis {
+                EnvironmentBypassAuditBasis::ConfirmedTrunkReference => {
+                    write_reference_transaction_diagnostic(format_args!(
+                        "cargo-berth took the CARGO_BERTH_BYPASS=1 override but could not resolve its invocation directory: {error}. The override could not be recorded here; this ref transaction remains permitted, and a marker is being left to report it later. Enter the repository from an existing directory, then rerun cargo berth init."
+                    ));
+                },
+                EnvironmentBypassAuditBasis::UnconfirmedTrunkReference(input_error) => {
+                    write_reference_transaction_diagnostic(format_args!(
+                        "cargo-berth took the CARGO_BERTH_BYPASS=1 override but could not confirm whether the transaction named the trunk reference because {input_error}. It also could not resolve its invocation directory: {error}. The override could not be recorded here; this ref transaction remains permitted, and a marker is being left to report it later. Enter the repository from an existing directory, then rerun cargo berth init."
+                    ));
+                },
+            }
+            return BerthExit::LedgerUnreadable.into();
+        },
+    };
+    let retention = gate::permit::record_environment_bypass(&invocation_directory);
+    match (audit_basis, retention) {
+        (
+            EnvironmentBypassAuditBasis::ConfirmedTrunkReference,
+            gate::permit::EnvironmentBypassRetentionOutcome::Journalled
+            | gate::permit::EnvironmentBypassRetentionOutcome::PendingMarker
+            | gate::permit::EnvironmentBypassRetentionOutcome::Unenrolled,
+        ) => BerthExit::Clear.into(),
+        (
+            EnvironmentBypassAuditBasis::ConfirmedTrunkReference,
+            gate::permit::EnvironmentBypassRetentionOutcome::Unrecorded,
+        ) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth took the CARGO_BERTH_BYPASS=1 override, but neither the journal nor a pending marker retained its audit fact. This ref transaction remains permitted. Restore repository write access, then rerun cargo berth init."
+            ));
+            BerthExit::LedgerUnreadable.into()
+        },
+        (
+            EnvironmentBypassAuditBasis::UnconfirmedTrunkReference(input_error),
+            gate::permit::EnvironmentBypassRetentionOutcome::Journalled
+            | gate::permit::EnvironmentBypassRetentionOutcome::PendingMarker,
+        ) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth took the CARGO_BERTH_BYPASS=1 override but could not confirm whether the transaction named the trunk reference because {input_error}. The audit fact was retained without confirming the ref; this ref transaction remains permitted."
+            ));
+            BerthExit::Clear.into()
+        },
+        (
+            EnvironmentBypassAuditBasis::UnconfirmedTrunkReference(input_error),
+            gate::permit::EnvironmentBypassRetentionOutcome::Unenrolled,
+        ) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth took the CARGO_BERTH_BYPASS=1 override but could not confirm whether the transaction named the trunk reference because {input_error}. The repository is not enrolled, so no shared audit destination applies; this ref transaction remains permitted."
+            ));
+            BerthExit::Clear.into()
+        },
+        (
+            EnvironmentBypassAuditBasis::UnconfirmedTrunkReference(input_error),
+            gate::permit::EnvironmentBypassRetentionOutcome::Unrecorded,
+        ) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth took the CARGO_BERTH_BYPASS=1 override but could not confirm whether the transaction named the trunk reference because {input_error}, and neither the journal nor a pending marker retained the audit fact. The override could not be recorded here; this ref transaction remains permitted, and a marker is being left to report it later. Restore repository write access, then rerun cargo berth init."
+            ));
+            BerthExit::LedgerUnreadable.into()
+        },
+    }
 }
 
 fn exit_for_reference_transaction_results(results: Vec<gate::GateResult>) -> ExitCode {
@@ -1136,7 +1274,7 @@ fn initialization_error(error: LedgerError) -> OutputEnvelope {
             &LedgerTransactionError::LockContention.to_string(),
         ),
         LedgerTransactionError::LedgerUnreadable(error) => {
-            OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string())
+            OutputEnvelope::ledger_error(CommandVerb::Init, &error)
         },
         LedgerTransactionError::CorrectableInput(error) => {
             OutputEnvelope::invalid_input(CommandVerb::Init, &error.to_string())

@@ -21,6 +21,18 @@ const MAXIMUM_ORDERING_EDGES_KEY: &str = "maximum_ordering_edges";
 const MAXIMUM_RESERVATIONS_KEY: &str = "maximum_reservations";
 const TRUNK_KEY: &str = "trunk";
 
+/// A resource available only to a repository enrolled in berth coordination.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Enrollment<T> {
+    /// The repository is configured and participating.
+    Enrolled(T),
+    /// The repository has no configuration file, so it is not participating.
+    Unconfigured {
+        /// Where `cargo-berth init` would write the configuration.
+        expected_configuration_path: PathBuf,
+    },
+}
+
 /// Per-repository policy read by future reservation and gate verbs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BerthConfig {
@@ -72,7 +84,7 @@ impl BerthConfig {
             .join(CONFIGURATION_FILE)
     }
 
-    /// Create the default configuration without replacing an existing file.
+    /// Create the default configuration or validate an existing file without replacing it.
     pub(crate) fn initialize(repository_root: &Path) -> Result<InitializationState, ConfigError> {
         let configuration_path = Self::path(repository_root);
         let configuration_parent = configuration_path
@@ -87,6 +99,8 @@ impl BerthConfig {
         {
             Ok(configuration_file) => configuration_file,
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                let contents = fs::read_to_string(&configuration_path)?;
+                Self::from_toml(&contents)?;
                 return Ok(InitializationState::Existing);
             },
             Err(error) => return Err(ConfigError::Io(error)),
@@ -97,9 +111,18 @@ impl BerthConfig {
     }
 
     /// Read and validate this repository's configuration.
-    pub(crate) fn read(repository_root: &Path) -> Result<Self, ConfigError> {
-        let contents = fs::read_to_string(Self::path(repository_root))?;
-        Self::from_toml(&contents)
+    pub(crate) fn read(repository_root: &Path) -> Result<Enrollment<Self>, ConfigError> {
+        let configuration_path = Self::path(repository_root);
+        let contents = match fs::read_to_string(&configuration_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Ok(Enrollment::Unconfigured {
+                    expected_configuration_path: configuration_path,
+                });
+            },
+            Err(error) => return Err(ConfigError::Io(error)),
+        };
+        Self::from_toml(&contents).map(Enrollment::Enrolled)
     }
 
     fn to_toml(&self) -> String {
@@ -308,7 +331,14 @@ impl From<std::io::Error> for ConfigError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Error;
+    use std::io::ErrorKind;
+
+    use tempfile::tempdir;
+
     use super::BerthConfig;
+    use super::ConfigError;
+    use super::Enrollment;
     use super::GateMode;
 
     #[test]
@@ -349,5 +379,38 @@ mod tests {
             BerthConfig::from_toml("trunk = \"release#1\"")
                 .is_ok_and(|configuration| configuration.trunk == "release#1")
         );
+    }
+
+    #[test]
+    fn unconfigured_enrollment_carries_the_expected_path() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let repository = tempdir()?;
+        let expected_path = BerthConfig::path(repository.path());
+
+        match BerthConfig::read(repository.path()) {
+            Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            }) => assert_eq!(expected_configuration_path, expected_path),
+            result => {
+                return Err(
+                    format!("expected unconfigured enrollment, received {result:?}").into(),
+                );
+            },
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn io_error_conversion_preserves_the_error_kind() {
+        let config_error = ConfigError::from(Error::new(
+            ErrorKind::PermissionDenied,
+            "configuration access denied",
+        ));
+
+        assert!(matches!(
+            config_error,
+            ConfigError::Io(error) if error.kind() == ErrorKind::PermissionDenied
+        ));
     }
 }

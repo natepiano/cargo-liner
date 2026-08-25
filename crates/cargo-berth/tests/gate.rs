@@ -585,6 +585,77 @@ fn managed_hook_journals_an_environment_bypass_when_the_journal_is_writable() {
 }
 
 #[test]
+fn bypassed_non_trunk_transactions_leave_no_audit_fact() {
+    let repository = initialized_repository();
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    let input = format!("{base} {base} ORIG_HEAD\n{base} {base} refs/heads/topic\n");
+
+    let bypassed = run_hook_script(repository.path(), "prepared", &input, ReleaseValve::Set);
+
+    assert!(bypassed.status.success());
+    assert_eq!(environment_bypass_record_count(repository.path()), 0);
+    assert_eq!(pending_bypass_count(repository.path()), 0);
+    assert!(bypassed.stderr.is_empty());
+}
+
+#[test]
+fn one_trunk_transaction_among_merge_hook_invocations_records_one_audit_fact() {
+    let repository = initialized_repository();
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    let trunk_input = format!("{base} {base} refs/heads/main\n");
+
+    let trunk = run_hook_script(
+        repository.path(),
+        "prepared",
+        &trunk_input,
+        ReleaseValve::Set,
+    );
+
+    assert!(trunk.status.success());
+    assert_eq!(environment_bypass_record_count(repository.path()), 1);
+    let non_trunk_input = format!("{base} {base} ORIG_HEAD\n{base} {base} AUTO_MERGE\n");
+
+    let non_trunk = run_hook_script(
+        repository.path(),
+        "prepared",
+        &non_trunk_input,
+        ReleaseValve::Set,
+    );
+
+    assert!(non_trunk.status.success());
+    assert_eq!(environment_bypass_record_count(repository.path()), 1);
+    assert_eq!(pending_bypass_count(repository.path()), 0);
+    assert!(non_trunk.stderr.is_empty());
+}
+
+#[test]
+fn an_unconfigured_worktree_bypasses_without_writing_shared_audit_state() {
+    let repository = initialized_repository();
+    let configuration_path = repository.path().join(CONFIGURATION_PATH);
+    let saved_configuration = repository.path().join("berth.toml.saved");
+    fs::rename(&configuration_path, &saved_configuration).expect("configuration should move aside");
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    let input = format!("{base} {base} refs/heads/main\n");
+
+    let bypassed = run_hook_script(repository.path(), "prepared", &input, ReleaseValve::Set);
+
+    assert!(
+        bypassed.status.success(),
+        "bypass must never fail a ref transaction: {}",
+        String::from_utf8_lossy(&bypassed.stderr)
+    );
+    assert!(
+        !journal_text(repository.path())
+            .lines()
+            .filter_map(|record| serde_json::from_str::<serde_json::Value>(record).ok())
+            .any(|record| record["op"] == "bypass"),
+        "an unenrolled worktree must not append a bypass record"
+    );
+    assert_eq!(pending_bypass_count(repository.path()), 0);
+    assert!(bypassed.stderr.is_empty());
+}
+
+#[test]
 fn a_bypass_the_binary_cannot_record_still_leaves_a_marker() {
     let repository = initialized_repository();
     let hook_path = repository.path().join(HOOK_PATH);
@@ -618,17 +689,73 @@ fn a_bypass_the_binary_cannot_record_still_leaves_a_marker() {
 }
 
 #[test]
+fn a_trunk_bypass_without_an_invocation_directory_leaves_a_fallback_marker() {
+    let repository = initialized_repository();
+    let hook_path = repository.path().join(HOOK_PATH);
+    let installed = fs::read_to_string(&hook_path).expect("managed hook should read");
+    let policy_worktree_path =
+        fs::canonicalize(repository.path()).expect("policy worktree should resolve");
+    let policy_worktree = shell_single_quoted(&policy_worktree_path);
+    let unavailable_policy_worktree =
+        shell_single_quoted(&repository.path().join("unavailable-policy-worktree"));
+    let detached = installed.replace(&policy_worktree, &unavailable_policy_worktree);
+    assert_ne!(detached, installed);
+    fs::write(&hook_path, detached).expect("detached hook fixture should write");
+
+    let directory = tempdir().expect("temporary parent should exist");
+    let removed_directory = directory.path().join("removed");
+    fs::create_dir(&removed_directory).expect("removable directory should exist");
+    let command = format!(
+        "cd {} && rmdir {} && exec {} prepared",
+        shell_single_quoted(&removed_directory),
+        shell_single_quoted(&removed_directory),
+        shell_single_quoted(&hook_path),
+    );
+    let mut child = Command::new("sh")
+        .args(["-c", &command])
+        .env(BYPASS_ENVIRONMENT, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("managed hook should run from a removed directory");
+    child
+        .stdin
+        .take()
+        .expect("managed hook stdin should exist")
+        .write_all(
+            b"0000000000000000000000000000000000000000 0000000000000000000000000000000000000000 refs/heads/main\n",
+        )
+        .expect("reference transaction should write");
+
+    let bypassed = child
+        .wait_with_output()
+        .expect("managed hook should finish from a removed directory");
+
+    assert!(
+        bypassed.status.success(),
+        "bypass must never fail a ref transaction: {}",
+        String::from_utf8_lossy(&bypassed.stderr)
+    );
+    let diagnostic = String::from_utf8_lossy(&bypassed.stderr);
+    assert!(diagnostic.contains("could not resolve its invocation directory"));
+    assert!(diagnostic.contains("could not record this bypass"));
+    assert_eq!(pending_bypass_count(repository.path()), 1);
+}
+
+#[test]
 fn an_unrecorded_binary_bypass_warns_without_blocking_the_ref_update() {
     let non_repository = tempdir().expect("non-repository directory should exist");
 
-    let bypassed = run_berth_with_environment(
+    let bypassed = run_berth_with_input_and_environment(
         non_repository.path(),
         &["__reference-transaction", "prepared", "refs/heads/main"],
+        "one-field\n",
         BYPASS_ENVIRONMENT,
         "1",
     );
 
-    assert!(bypassed.status.success());
+    assert_eq!(bypassed.status.code(), Some(4));
     let diagnostic = String::from_utf8_lossy(&bypassed.stderr);
     assert!(diagnostic.contains("took the CARGO_BERTH_BYPASS=1 override"));
     assert!(diagnostic.contains("neither the journal nor a pending marker"));
@@ -649,23 +776,38 @@ fn a_bypass_without_an_invocation_directory_warns_without_blocking_the_ref_updat
         shell_single_quoted(executable),
     );
 
-    let bypassed = Command::new("sh")
+    let mut child = Command::new("sh")
         .args(["-c", &command])
         .env(BYPASS_ENVIRONMENT, "1")
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("private gate should run from a removed directory");
+    child
+        .stdin
+        .take()
+        .expect("private gate stdin should exist")
+        .write_all(
+            b"0000000000000000000000000000000000000000 0000000000000000000000000000000000000000 refs/heads/main\n",
+        )
+        .expect("reference transaction should write");
+    let bypassed = child
+        .wait_with_output()
+        .expect("private gate should finish from a removed directory");
 
-    assert!(bypassed.status.success());
+    assert_eq!(bypassed.status.code(), Some(4));
     let diagnostic = String::from_utf8_lossy(&bypassed.stderr);
     assert!(diagnostic.contains("took the CARGO_BERTH_BYPASS=1 override"));
     assert!(diagnostic.contains("could not resolve its invocation directory"));
-    assert!(diagnostic.contains("No audit fact was retained"));
+    assert!(diagnostic.contains("override could not be recorded here"));
+    assert!(diagnostic.contains("marker is being left to report it later"));
     assert!(diagnostic.contains("ref transaction remains permitted"));
     assert!(diagnostic.contains("rerun cargo berth init"));
 }
 
 #[test]
-fn non_trunk_updates_do_not_read_an_absent_configuration() {
+fn non_trunk_updates_and_an_unconfigured_trunk_gate_are_silent() {
     let repository = initialized_repository();
     let configuration_path = repository.path().join(CONFIGURATION_PATH);
     let saved_configuration = repository.path().join("berth.toml.saved");
@@ -694,11 +836,7 @@ fn non_trunk_updates_do_not_read_an_absent_configuration() {
     let main = git_stdout(repository.path(), &["rev-parse", "main"]);
     let possible_trunk = propose_trunk(repository.path(), &main, &branch_head);
     assert!(possible_trunk.status.success());
-    let warning = String::from_utf8_lossy(&possible_trunk.stderr);
-    assert!(warning.contains("could not read its configuration"));
-    assert!(warning.contains("Restore the configuration"));
-    assert!(!warning.contains("cargo berth drift"));
-    assert!(warning.contains("CARGO_BERTH_BYPASS=1"));
+    assert!(possible_trunk.stderr.is_empty());
 }
 
 #[test]
@@ -1630,6 +1768,14 @@ fn pending_bypass_count(repository_root: &Path) -> usize {
         .count()
 }
 
+fn environment_bypass_record_count(repository_root: &Path) -> usize {
+    journal_text(repository_root)
+        .lines()
+        .filter_map(|record| serde_json::from_str::<serde_json::Value>(record).ok())
+        .filter(|record| record["op"] == "bypass")
+        .count()
+}
+
 fn pending_bypass_marker(repository_root: &Path) -> serde_json::Value {
     let marker_path = fs::read_dir(repository_root.join(".git"))
         .expect("common git directory should read")
@@ -1837,6 +1983,34 @@ fn run_berth_with_environment(
         .env(name, value)
         .output()
         .expect("cargo-berth should run")
+}
+
+fn run_berth_with_input_and_environment(
+    repository_root: &Path,
+    arguments: &[&str],
+    input: &str,
+    name: &str,
+    value: &str,
+) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(name, value)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("cargo-berth should start");
+    child
+        .stdin
+        .take()
+        .expect("cargo-berth stdin should exist")
+        .write_all(input.as_bytes())
+        .expect("cargo-berth stdin should write");
+    child.wait_with_output().expect("cargo-berth should finish")
 }
 
 fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {

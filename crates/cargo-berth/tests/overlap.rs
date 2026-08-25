@@ -13,6 +13,7 @@ use std::process::Output;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
@@ -222,6 +223,77 @@ fn check_uses_run_identity_without_git_or_file_mutation() {
     assert_eq!(
         fs::read(repository.path().join(LOCK_PATH)).expect("lock should reread"),
         lock_before
+    );
+}
+
+#[test]
+fn check_reports_unconfigured_when_an_initialized_repository_loses_its_configuration() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let expected_configuration_path = repository.path().join(CONFIGURATION_PATH);
+    fs::remove_file(&expected_configuration_path).expect("configuration should be removed");
+
+    let check = run_berth(
+        repository.path(),
+        &["check", "file:unreserved.rs", "--json"],
+    );
+    let envelope = json_output(&check);
+
+    assert_eq!(check.status.code(), Some(4));
+    assert_eq!(envelope["exit_code"], 4);
+    assert_eq!(envelope["status"], "unconfigured");
+    assert_eq!(envelope["payload"]["kind"], "no_facts");
+    assert!(envelope["message"].as_str().is_some_and(|message| {
+        message.contains(&expected_configuration_path.display().to_string())
+    }));
+}
+
+#[test]
+fn check_does_not_replay_a_foreign_conflict_after_configuration_is_removed() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let claim = run_berth(
+        repository.path(),
+        &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
+    );
+    assert!(claim.status.success());
+    fs::remove_file(repository.path().join(CONFIGURATION_PATH))
+        .expect("configuration should be removed");
+
+    let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["check", "file:src/lib.rs", "--json"])
+        .current_dir(repository.path())
+        .env(RUN_ENVIRONMENT, SECOND_RUN)
+        .output()
+        .expect("cargo-berth check should run");
+    let envelope = json_output(&check);
+
+    assert_eq!(check.status.code(), Some(4));
+    assert_eq!(envelope["status"], "unconfigured");
+    assert_eq!(envelope["payload"]["kind"], "no_facts");
+    assert_ne!(envelope["status"], "blocked_by_overlap");
+}
+
+#[test]
+fn check_reports_malformed_present_configuration_as_ledger_unreadable() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    fs::write(
+        repository.path().join(CONFIGURATION_PATH),
+        "porthole = true\n",
+    )
+    .expect("malformed configuration should write");
+
+    let check = run_berth(
+        repository.path(),
+        &["check", "file:unreserved.rs", "--json"],
+    );
+    let envelope = json_output(&check);
+
+    assert_eq!(check.status.code(), Some(4));
+    assert_eq!(envelope["status"], "ledger_unreadable");
+    assert_eq!(envelope["payload"]["kind"], "no_facts");
+    assert!(
+        envelope["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("ledger configuration failed: "))
     );
 }
 

@@ -3,6 +3,7 @@
 use crate::board::BoardModel;
 use crate::board::tui;
 use crate::cli::CliOutputFormat;
+use crate::config::Enrollment;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
@@ -35,7 +36,15 @@ pub(crate) fn execute(output_format: CliOutputFormat) -> BoardDisplayOutcome {
     };
     let report = match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Report)
     {
-        Ok(report) => report,
+        Ok(Enrollment::Enrolled(report)) => report,
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => {
+            return BoardDisplayOutcome::FactsUnavailable(OutputEnvelope::unconfigured(
+                CommandVerb::Board,
+                &expected_configuration_path,
+            ));
+        },
         Err(error) => {
             return BoardDisplayOutcome::FactsUnavailable(error.into_output(CommandVerb::Board));
         },

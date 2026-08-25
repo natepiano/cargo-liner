@@ -8,6 +8,7 @@ use std::path::Path;
 
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::config::Enrollment;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingGraph;
 use crate::git;
@@ -94,11 +95,19 @@ pub(crate) fn resolve(resolve_request: ResolveRequest) -> OutputEnvelope {
     };
     let mut reconciliation_report =
         match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
-            Ok(reconciliation_report) => reconciliation_report,
+            Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
+            Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            }) => {
+                return OutputEnvelope::unconfigured(
+                    CommandVerb::Resolve,
+                    &expected_configuration_path,
+                );
+            },
             Err(error) => return error.into_output(CommandVerb::Resolve),
         };
     let output_envelope = match execute_resolution(resolve_request) {
-        Ok(resolve_payload) => {
+        Ok(Enrollment::Enrolled(resolve_payload)) => {
             if !matches!(resolve_payload, ResolvePayload::IncursionResolved { .. }) {
                 reconciliation_report
                     .alerts
@@ -106,6 +115,9 @@ pub(crate) fn resolve(resolve_request: ResolveRequest) -> OutputEnvelope {
             }
             OutputEnvelope::resolved(resolve_payload)
         },
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => OutputEnvelope::unconfigured(CommandVerb::Resolve, &expected_configuration_path),
         Err(error) => error.into_output(CommandVerb::Resolve),
     };
     output_envelope.with_alerts(reconciliation_report.alerts)
@@ -121,7 +133,15 @@ pub(crate) fn renew(renew_request: RenewRequest) -> OutputEnvelope {
     };
     let reconciliation_report =
         match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
-            Ok(reconciliation_report) => reconciliation_report,
+            Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
+            Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            }) => {
+                return OutputEnvelope::unconfigured(
+                    CommandVerb::Renew,
+                    &expected_configuration_path,
+                );
+            },
             Err(error) => return error.into_output(CommandVerb::Renew),
         };
     let output_envelope = match execute_renewal(renew_request) {
@@ -131,7 +151,9 @@ pub(crate) fn renew(renew_request: RenewRequest) -> OutputEnvelope {
     output_envelope.with_alerts(reconciliation_report.alerts)
 }
 
-fn execute_resolution(resolve_request: ResolveRequest) -> Result<ResolvePayload, RecoveryError> {
+fn execute_resolution(
+    resolve_request: ResolveRequest,
+) -> Result<Enrollment<ResolvePayload>, RecoveryError> {
     match resolve_request.decision {
         ResolveDecision::Reservation(recovery) => {
             execute_reservation_resolution(ReservationResolutionRequest {
@@ -141,6 +163,7 @@ fn execute_resolution(resolve_request: ResolveRequest) -> Result<ResolvePayload,
         },
         ResolveDecision::Incursion(incident_id) => {
             execute_incursion_resolution(resolve_request.reservation_id, incident_id)
+                .map(Enrollment::Enrolled)
         },
     }
 }
@@ -208,7 +231,7 @@ fn execute_incursion_resolution(
 
 fn execute_reservation_resolution(
     resolve_request: ReservationResolutionRequest,
-) -> Result<ResolvePayload, RecoveryError> {
+) -> Result<Enrollment<ResolvePayload>, RecoveryError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
     let worktree_identity = ledger::worktree_identity(
@@ -217,7 +240,16 @@ fn execute_reservation_resolution(
     )?;
     let coordination_run_id = mutation_run_id(&worktree_context);
     let repository_root = worktree_context.repository_root();
-    let berth_config = BerthConfig::read(repository_root)?;
+    let berth_config = match BerthConfig::read(repository_root)? {
+        Enrollment::Enrolled(berth_config) => berth_config,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            });
+        },
+    };
     let current_worktree_root = canonical_root(&worktree_context)?;
     let ledger = Ledger::open(repository_root)?;
     let outcome = ledger
@@ -294,11 +326,20 @@ fn execute_reservation_resolution(
             LedgerCommittedActionError::Transaction(error) => RecoveryError::Transaction(error),
             LedgerCommittedActionError::Action(error) => error,
         })?;
+    resolution_enrollment_from_outcome(outcome)
+}
+
+/// Convert one committed reservation-resolution transaction into its enrolled result.
+fn resolution_enrollment_from_outcome(
+    outcome: LedgerCommittedActionOutcome<RecoveryRejection, ResolvePayloadSeed>,
+) -> Result<Enrollment<ResolvePayload>, RecoveryError> {
     match outcome {
         LedgerCommittedActionOutcome::Appended {
             output: resolve_payload_seed,
             session_mapping_publication,
-        } => Ok(resolve_payload_seed.into_payload(session_mapping_publication)),
+        } => Ok(Enrollment::Enrolled(
+            resolve_payload_seed.into_payload(session_mapping_publication),
+        )),
         LedgerCommittedActionOutcome::Rejected(RecoveryRejection::Git(error)) => {
             Err(RecoveryError::Git(error))
         },
@@ -639,12 +680,12 @@ impl RecoveryError {
             },
             Self::Io(error) => OutputEnvelope::ledger_unreadable(command_verb, &error.to_string()),
             Self::Config(error) => {
-                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+                OutputEnvelope::ledger_error(command_verb, &LedgerError::Config(error))
             },
             Self::Git(error) => OutputEnvelope::ledger_unreadable(command_verb, &error.to_string()),
             Self::Ledger(error)
             | Self::Transaction(LedgerTransactionError::LedgerUnreadable(error)) => {
-                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+                OutputEnvelope::ledger_error(command_verb, &error)
             },
             Self::NonUtf8WorktreeRoot => OutputEnvelope::ledger_unreadable(
                 command_verb,

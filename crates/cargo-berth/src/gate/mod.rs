@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use crate::alert::Alert;
 use crate::config::BerthConfig;
+use crate::config::Enrollment;
 use crate::config::GateMode;
 use crate::edge::IntegrationConstraintProjection;
 use crate::edge::IntegrationHold;
@@ -78,6 +79,14 @@ pub(crate) struct ReferenceTransaction {
 enum ReferenceTransactionEntry {
     LocalBranch(ReferenceUpdate),
     OutsideLocalBranchNamespace,
+}
+
+/// Whether a parsed transaction names the configured trunk reference.
+pub(crate) enum TrunkReferencePresence {
+    /// At least one local-branch update names the trunk reference.
+    Named,
+    /// No local-branch update names the trunk reference.
+    NotNamed,
 }
 
 /// One parsed old-object, new-object, and full-reference update.
@@ -219,6 +228,26 @@ pub(crate) fn parse_reference_transaction(
     Ok(ReferenceTransaction { phase, entries })
 }
 
+impl ReferenceTransaction {
+    /// Classify whether this transaction includes the configured trunk reference.
+    pub(crate) fn trunk_reference_presence(
+        &self,
+        trunk_reference: &FullRefName,
+    ) -> TrunkReferencePresence {
+        if self.entries.iter().any(|entry| {
+            matches!(
+                entry,
+                ReferenceTransactionEntry::LocalBranch(update)
+                    if &update.reference == trunk_reference
+            )
+        }) {
+            TrunkReferencePresence::Named
+        } else {
+            TrunkReferencePresence::NotNamed
+        }
+    }
+}
+
 fn parse_reference_update(
     line_number: usize,
     line: &str,
@@ -291,7 +320,10 @@ pub(crate) fn evaluate_reference_transaction(
         return Ok(Vec::new());
     }
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
-    let berth_config = BerthConfig::read(worktree_context.repository_root())?;
+    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+        Enrollment::Enrolled(berth_config) => berth_config,
+        Enrollment::Unconfigured { .. } => return Ok(Vec::new()),
+    };
     let mut results = Vec::new();
     for update in trunk_updates {
         match update.gate_subject() {
@@ -303,13 +335,18 @@ pub(crate) fn evaluate_reference_transaction(
                     continue;
                 }
                 match transaction.phase {
-                    ReferenceTransactionPhase::Prepared => results.push(evaluate_locked(
-                        invocation_directory,
-                        &update,
-                        &GatePurpose::Hook {
-                            phase: ReferenceTransactionPhase::Prepared,
-                        },
-                    )?),
+                    ReferenceTransactionPhase::Prepared => {
+                        match evaluate_locked(
+                            invocation_directory,
+                            &update,
+                            &GatePurpose::Hook {
+                                phase: ReferenceTransactionPhase::Prepared,
+                            },
+                        )? {
+                            Enrollment::Enrolled(result) => results.push(result),
+                            Enrollment::Unconfigured { .. } => return Ok(Vec::new()),
+                        }
+                    },
                     ReferenceTransactionPhase::Committed => commit_forced_permit_audits(
                         invocation_directory,
                         &worktree_context,
@@ -408,7 +445,7 @@ pub(crate) fn evaluate_integration(
     request: IntegrationRequest,
     previous: GitObjectId,
     proposed: GitObjectId,
-) -> Result<GateResult, GateError> {
+) -> Result<Enrollment<GateResult>, GateError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
     let acting_run = ActingRun::resolve(&worktree_context);
     let update = ProposedMainMove {
@@ -474,9 +511,18 @@ fn evaluate_locked(
     invocation_directory: &Path,
     update: &ProposedMainMove,
     purpose: &GatePurpose,
-) -> Result<GateResult, GateError> {
+) -> Result<Enrollment<GateResult>, GateError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
-    let berth_config = BerthConfig::read(worktree_context.repository_root())?;
+    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+        Enrollment::Enrolled(berth_config) => berth_config,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            });
+        },
+    };
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let ledger_repository = ledger.repository_identity()?;
     let worktree_identity = ledger::worktree_identity(
@@ -546,10 +592,10 @@ fn evaluate_locked(
         LedgerCommittedActionOutcome::Appended {
             output: (report, decision),
             ..
-        } => Ok(GateResult {
+        } => Ok(Enrollment::Enrolled(GateResult {
             decision,
             alerts: report.alerts,
-        }),
+        })),
         LedgerCommittedActionOutcome::Rejected(rejection) => Err(rejection.into()),
     }
 }

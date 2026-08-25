@@ -16,6 +16,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::config::BerthConfig;
+use crate::config::Enrollment;
 use crate::ids::CoordinationRunId;
 use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::RecordedAt;
@@ -62,6 +64,8 @@ pub(crate) enum EnvironmentBypassRetentionOutcome {
     Journalled,
     /// The audit fact is durable as a marker for a later session to report.
     PendingMarker,
+    /// The repository is not enrolled, so no shared audit destination applies.
+    Unenrolled,
     /// The ref update was permitted, but neither durable audit destination accepted the fact.
     Unrecorded,
 }
@@ -164,12 +168,27 @@ pub(crate) fn environment_bypass_requested() -> bool {
 }
 
 /// Best-effort audit an already-authorized environment bypass without waiting for the lock.
+///
+/// Enrollment is a property of the repository here, not of the worktree the developer stands in.
+/// The managed `reference-transaction` hook changes to the policy worktree before invoking this
+/// binary, so `invocation_directory` names that checkout and the configuration read below asks
+/// whether the repository ever enrolled. That is the right granularity: a trunk update is a
+/// repository-wide event, and a gate a worktree could opt out of by deleting its own configuration
+/// would not be a gate. Only when the repository itself is unenrolled -- no configuration in the
+/// policy worktree, or no policy worktree left to change into -- is there no shared audit
+/// destination, and nothing is written.
 pub(crate) fn record_environment_bypass(
     invocation_directory: &Path,
 ) -> EnvironmentBypassRetentionOutcome {
     let Ok(worktree_context) = WorktreeContext::discover(invocation_directory) else {
         return EnvironmentBypassRetentionOutcome::Unrecorded;
     };
+    match BerthConfig::read(worktree_context.repository_root()) {
+        Ok(Enrollment::Unconfigured { .. }) => {
+            return EnvironmentBypassRetentionOutcome::Unenrolled;
+        },
+        Ok(Enrollment::Enrolled(_)) | Err(_) => {},
+    }
     let coordination_run_id = coordination_run_id(&worktree_context);
     let cause = BypassCause::EnvironmentOverride {
         bypassed_merge: bypassed_merge_identity(),

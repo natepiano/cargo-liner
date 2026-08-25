@@ -78,6 +78,7 @@ use uuid::Uuid;
 
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::config::Enrollment;
 use crate::config::InitializationState;
 use crate::git;
 use crate::git::GitError;
@@ -626,8 +627,6 @@ impl Ledger {
         fs::create_dir_all(&ledger.paths.directory)?;
         let transaction = ledger.begin_initialization()?;
         let configuration = BerthConfig::initialize(repository_root)?;
-        // Existing policy must parse before this transaction publishes the ledger.
-        BerthConfig::read(repository_root)?;
         transaction.publish(&ledger.paths)?;
         Ok(LedgerInitialization {
             ledger: transaction.journal_initialization,
@@ -635,7 +634,10 @@ impl Ledger {
         })
     }
 
-    /// Attach to an initialized ledger without creating any missing state.
+    /// Attach to an initialized ledger after the caller has resolved repository enrollment.
+    ///
+    /// Production callers must match [`Enrollment`] from [`BerthConfig::read`] before opening the
+    /// shared ledger.
     pub(crate) fn open(invocation_directory: &Path) -> Result<Self, LedgerError> {
         let repository_root = git::repository_root(invocation_directory)?;
         let ledger = Self::locate(&repository_root)?;
@@ -651,18 +653,28 @@ impl Ledger {
     /// Read validated journal truth without git, locking, repair, or publication.
     pub(crate) fn read_for_edit_check(
         invocation_directory: &Path,
-    ) -> Result<EditCheckLedgerSnapshot, LedgerError> {
+    ) -> Result<Enrollment<EditCheckLedgerSnapshot>, LedgerError> {
         let worktree_context = WorktreeContext::discover(invocation_directory)?;
+        match BerthConfig::read(worktree_context.repository_root())? {
+            Enrollment::Enrolled(_) => {},
+            Enrollment::Unconfigured {
+                expected_configuration_path,
+            } => {
+                return Ok(Enrollment::Unconfigured {
+                    expected_configuration_path,
+                });
+            },
+        }
         let ledger = Self::at_common_git_directory(worktree_context.common_git_directory());
         ledger.require_existing()?;
         let repo_instance_id = read_repo_instance_id(&ledger.paths.repo_instance_id)?;
         let replay = Journal::replay_read_only(&ledger.paths.journal)?;
         validate_journal_repository(repo_instance_id, &replay)?;
         read_validated(&ledger.paths.projection, repo_instance_id, &replay)?;
-        Ok(EditCheckLedgerSnapshot {
+        Ok(Enrollment::Enrolled(EditCheckLedgerSnapshot {
             events: replay.events,
             worktree_context,
-        })
+        }))
     }
 
     /// Validate against one locked replay and append only the approved operation.

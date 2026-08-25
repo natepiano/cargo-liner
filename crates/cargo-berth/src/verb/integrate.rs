@@ -1,12 +1,16 @@
 //! Stateful trunk integration through the same locked decision as the git hook.
 
+use std::path::Path;
+
 use crate::config::BerthConfig;
+use crate::config::Enrollment;
 use crate::gate;
 use crate::gate::GateDecision;
 use crate::gate::GateError;
 use crate::gate::IntegrationRequest;
 use crate::git;
 use crate::ids::ReservationId;
+use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::output::CommandVerb;
 use crate::output::IntegratedGateOutcome;
@@ -35,11 +39,9 @@ pub(crate) fn execute(integrate_request: IntegrateRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string());
         },
     };
-    let configuration = match BerthConfig::read(&repository_root) {
+    let configuration = match read_integration_configuration(&repository_root) {
         Ok(configuration) => configuration,
-        Err(error) => {
-            return OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string());
-        },
+        Err(output_envelope) => return *output_envelope,
     };
     let previous = match git::branch_object_id(&repository_root, &configuration.trunk) {
         Ok(previous) => previous,
@@ -60,7 +62,15 @@ pub(crate) fn execute(integrate_request: IntegrateRequest) -> OutputEnvelope {
         previous.clone(),
         proposed.clone(),
     ) {
-        Ok(result) => result,
+        Ok(Enrollment::Enrolled(result)) => result,
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => {
+            return OutputEnvelope::unconfigured(
+                CommandVerb::Integrate,
+                &expected_configuration_path,
+            );
+        },
         Err(error) => return gate_error(integrate_request.reservation_id, error),
     };
     let (generation, gate) = match result.decision {
@@ -119,6 +129,25 @@ pub(crate) fn execute(integrate_request: IntegrateRequest) -> OutputEnvelope {
     .with_alerts(result.alerts)
 }
 
+/// Read enrolled integration policy or build the exact fact-free failure response.
+fn read_integration_configuration(
+    repository_root: &Path,
+) -> Result<BerthConfig, Box<OutputEnvelope>> {
+    match BerthConfig::read(repository_root) {
+        Ok(Enrollment::Enrolled(berth_config)) => Ok(berth_config),
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => Err(Box::new(OutputEnvelope::unconfigured(
+            CommandVerb::Integrate,
+            &expected_configuration_path,
+        ))),
+        Err(error) => Err(Box::new(OutputEnvelope::ledger_error(
+            CommandVerb::Integrate,
+            &LedgerError::Config(error),
+        ))),
+    }
+}
+
 fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope {
     match error {
         GateError::Transaction(LedgerTransactionError::LockContention) => {
@@ -139,10 +168,14 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         | GateError::MissingSkippedHold => {
             OutputEnvelope::invalid_input(CommandVerb::Integrate, &error.to_string())
         },
-        GateError::Config(_)
-        | GateError::Ledger(_)
-        | GateError::Transaction(LedgerTransactionError::LedgerUnreadable(_))
-        | GateError::Reconciliation(_)
+        GateError::Config(error) => {
+            OutputEnvelope::ledger_error(CommandVerb::Integrate, &LedgerError::Config(error))
+        },
+        GateError::Ledger(error)
+        | GateError::Transaction(LedgerTransactionError::LedgerUnreadable(error)) => {
+            OutputEnvelope::ledger_error(CommandVerb::Integrate, &error)
+        },
+        GateError::Reconciliation(_)
         | GateError::Planning(_)
         | GateError::MissingConstraintFact(_)
         | GateError::UnsupportedSymbolicTrunkUpdate

@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::config::Enrollment;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingGraph;
 use crate::git;
@@ -70,7 +71,15 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
     };
     let mut reconciliation_report =
         match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
-            Ok(reconciliation_report) => reconciliation_report,
+            Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
+            Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            }) => {
+                return OutputEnvelope::unconfigured(
+                    CommandVerb::Release,
+                    &expected_configuration_path,
+                );
+            },
             Err(error) => return error.into_output(CommandVerb::Release),
         };
     for reconciled_evidence in &reconciliation_report.evidence {
@@ -84,7 +93,7 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
         }
     }
     let output_envelope = match execute_release(release_request) {
-        Ok(release_payload) => {
+        Ok(Enrollment::Enrolled(release_payload)) => {
             if matches!(&release_payload, ReleasePayload::Released { .. }) {
                 reconciliation_report
                     .alerts
@@ -92,6 +101,9 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             }
             OutputEnvelope::released(release_payload)
         },
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => OutputEnvelope::unconfigured(CommandVerb::Release, &expected_configuration_path),
         Err(ReleaseError::UnknownReservation(reservation_id)) => OutputEnvelope::invalid_input(
             CommandVerb::Release,
             &format!("reservation {reservation_id} does not exist"),
@@ -116,15 +128,23 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
                 OutputEnvelope::contention(CommandVerb::Release, &error.to_string())
             },
             LedgerTransactionError::LedgerUnreadable(error) => {
-                OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string())
+                OutputEnvelope::ledger_error(CommandVerb::Release, &error)
             },
+        },
+        Err(ReleaseError::Config(error)) => {
+            OutputEnvelope::ledger_error(CommandVerb::Release, &LedgerError::Config(error))
+        },
+        Err(ReleaseError::Ledger(error)) => {
+            OutputEnvelope::ledger_error(CommandVerb::Release, &error)
         },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string()),
     };
     output_envelope.with_alerts(reconciliation_report.alerts)
 }
 
-fn execute_release(release_request: ReleaseRequest) -> Result<ReleasePayload, ReleaseError> {
+fn execute_release(
+    release_request: ReleaseRequest,
+) -> Result<Enrollment<ReleasePayload>, ReleaseError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
     let worktree_identity = ledger::worktree_identity(
@@ -132,7 +152,16 @@ fn execute_release(release_request: ReleaseRequest) -> Result<ReleasePayload, Re
         worktree_context.worktree_kind(),
     )?;
     let coordination_run_id = mutation_run_id(&worktree_context);
-    let berth_config = BerthConfig::read(worktree_context.repository_root())?;
+    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+        Enrollment::Enrolled(berth_config) => berth_config,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            });
+        },
+    };
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let outcome = ledger
         .transact_with_committed_action(
@@ -161,7 +190,9 @@ fn execute_release(release_request: ReleaseRequest) -> Result<ReleasePayload, Re
         LedgerCommittedActionOutcome::Appended {
             output,
             session_mapping_publication,
-        } => Ok(output.into_payload(session_mapping_publication)),
+        } => Ok(Enrollment::Enrolled(
+            output.into_payload(session_mapping_publication),
+        )),
         LedgerCommittedActionOutcome::Rejected(ReleaseRejection::UnknownReservation) => Err(
             ReleaseError::UnknownReservation(release_request.reservation_id),
         ),

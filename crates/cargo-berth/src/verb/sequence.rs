@@ -7,6 +7,7 @@ use std::fmt::Formatter;
 
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::config::Enrollment;
 use crate::edge::EdgeDeclarationRejection;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingEdge;
@@ -55,16 +56,29 @@ pub(crate) fn execute(sequence_request: &SequenceRequest) -> OutputEnvelope {
         sequence_request.first,
         sequence_request.then,
     ) {
-        Ok(reconciliation_report) => reconciliation_report,
+        Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => {
+            return OutputEnvelope::unconfigured(
+                CommandVerb::Sequence,
+                &expected_configuration_path,
+            );
+        },
         Err(error) => return error.into_output(CommandVerb::Sequence),
     };
     let output_envelope = match execute_sequence(sequence_request) {
-        Ok(edge) => match edge.readiness(&reconciliation_report.repository_snapshot) {
-            Ok(readiness) => OutputEnvelope::sequenced(edge, readiness),
-            Err(error) => {
-                OutputEnvelope::ledger_unreadable(CommandVerb::Sequence, &error.to_string())
-            },
+        Ok(Enrollment::Enrolled(edge)) => {
+            match edge.readiness(&reconciliation_report.repository_snapshot) {
+                Ok(readiness) => OutputEnvelope::sequenced(edge, readiness),
+                Err(error) => {
+                    OutputEnvelope::ledger_unreadable(CommandVerb::Sequence, &error.to_string())
+                },
+            }
         },
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => OutputEnvelope::unconfigured(CommandVerb::Sequence, &expected_configuration_path),
         Err(SequenceError::Rejected(SequenceRejection::Declaration(rejection))) => {
             let kind = SequenceRejectionKind::from(rejection);
             OutputEnvelope::sequence_rejected(sequence_request.first, sequence_request.then, kind)
@@ -106,13 +120,18 @@ pub(crate) fn execute(sequence_request: &SequenceRequest) -> OutputEnvelope {
         Err(
             SequenceError::Ledger(error)
             | SequenceError::Transaction(LedgerTransactionError::LedgerUnreadable(error)),
-        ) => OutputEnvelope::ledger_unreadable(CommandVerb::Sequence, &error.to_string()),
+        ) => OutputEnvelope::ledger_error(CommandVerb::Sequence, &error),
+        Err(SequenceError::Config(error)) => {
+            OutputEnvelope::ledger_error(CommandVerb::Sequence, &LedgerError::Config(error))
+        },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Sequence, &error.to_string()),
     };
     output_envelope.with_alerts(reconciliation_report.alerts)
 }
 
-fn execute_sequence(sequence_request: &SequenceRequest) -> Result<OrderingEdge, SequenceError> {
+fn execute_sequence(
+    sequence_request: &SequenceRequest,
+) -> Result<Enrollment<OrderingEdge>, SequenceError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
     let worktree_identity = ledger::worktree_identity(
@@ -120,7 +139,16 @@ fn execute_sequence(sequence_request: &SequenceRequest) -> Result<OrderingEdge, 
         worktree_context.worktree_kind(),
     )?;
     let run_validation = SequenceRunValidation::resolve(&worktree_context);
-    let berth_config = BerthConfig::read(worktree_context.repository_root())?;
+    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+        Enrollment::Enrolled(berth_config) => berth_config,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            });
+        },
+    };
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let prepared_edge = RefCell::<PreparedEdgeState>::new(PreparedEdgeState::NotPrepared);
     let outcome = ledger.transact(
@@ -172,7 +200,7 @@ fn execute_sequence(sequence_request: &SequenceRequest) -> Result<OrderingEdge, 
             let PreparedEdgeState::Prepared(edge) = prepared_edge.into_inner() else {
                 return Err(SequenceError::MissingPreparedEdge);
             };
-            Ok(edge.into_edge(event.event_id()))
+            Ok(Enrollment::Enrolled(edge.into_edge(event.event_id())))
         },
         LedgerTransactionOutcome::Rejected(rejection) => Err(SequenceError::Rejected(rejection)),
     }

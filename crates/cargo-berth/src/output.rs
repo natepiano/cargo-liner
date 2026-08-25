@@ -5,6 +5,7 @@
 //! while newer consumers use `payload` instead of scraping `message`.
 
 use std::fmt::Write as _;
+use std::path::Path;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -33,6 +34,7 @@ use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
 use crate::ledger::IncursionIncidentId;
+use crate::ledger::LedgerError;
 use crate::ledger::LedgerInitialization;
 use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
@@ -122,6 +124,8 @@ enum OutputStatus {
     Reinitialized,
     /// The journal or its projection could not be safely read or published.
     LedgerUnreadable,
+    /// This repository has no berth configuration, so it is not participating in coordination.
+    Unconfigured,
     /// The board was handed a terminal and the terminal failed.
     TerminalViewFailed,
     /// An overlap-free edit check may proceed.
@@ -949,6 +953,30 @@ impl OutputEnvelope {
         }
     }
 
+    /// Build a response for a repository that is not participating in coordination.
+    pub(crate) fn unconfigured(
+        command_verb: CommandVerb,
+        expected_configuration_path: &Path,
+    ) -> Self {
+        Self {
+            verb:         command_verb,
+            status:       OutputStatus::Unconfigured,
+            exit_code:    BerthExit::LedgerUnreadable,
+            reservations: Vec::new(),
+            blocked_by:   Vec::new(),
+            message:      format!(
+                "this repository has no cargo-berth configuration at {}; run `cargo-berth init` to create it",
+                expected_configuration_path.display()
+            ),
+            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
+        }
+    }
+
+    /// Convert a ledger failure into the requesting verb's public response.
+    pub(crate) fn ledger_error(command_verb: CommandVerb, error: &LedgerError) -> Self {
+        Self::ledger_unreadable(command_verb, &error.to_string())
+    }
+
     /// Build the successful result for one appended claim.
     pub(crate) fn claimed(
         reservation_id: ReservationId,
@@ -1268,7 +1296,7 @@ impl OutputEnvelope {
     /// Convert a drift envelope into the commit hook's silent-or-warning behavior.
     pub(crate) fn post_commit_rendering(&self) -> PostCommitRendering {
         match self.status {
-            OutputStatus::Clear => PostCommitRendering::Silent,
+            OutputStatus::Clear | OutputStatus::Unconfigured => PostCommitRendering::Silent,
             OutputStatus::Widened | OutputStatus::Incursion | OutputStatus::DriftCollision => {
                 PostCommitRendering::Warning(self.message.clone())
             },
@@ -1902,10 +1930,15 @@ fn initialization_message(hooks: &[InitializedManagedHook]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::CommandVerb;
     use super::OutputEnvelope;
     use super::OutputStatus;
+    use super::PostCommitRendering;
+    use crate::config::ConfigError;
     use crate::config::InitializationState;
+    use crate::ledger::LedgerError;
     use crate::ledger::LedgerInitialization;
 
     #[test]
@@ -1965,6 +1998,60 @@ mod tests {
                 .contains("ledger")
                 && !payload.contains("configuration"))
         );
+    }
+
+    #[test]
+    fn unconfigured_and_unreadable_configuration_have_distinct_statuses_at_exit_four() {
+        let expected_configuration_path = PathBuf::from(".claude/config/berth.toml");
+        let malformed = LedgerError::Config(ConfigError::UnknownKey("porthole".to_owned()));
+
+        let unconfigured =
+            OutputEnvelope::unconfigured(CommandVerb::Drift, &expected_configuration_path);
+        let ledger_unreadable = OutputEnvelope::ledger_error(CommandVerb::Drift, &malformed);
+
+        assert_eq!(unconfigured.status, OutputStatus::Unconfigured);
+        assert_eq!(ledger_unreadable.status, OutputStatus::LedgerUnreadable);
+        assert_eq!(
+            unconfigured.exit_code,
+            crate::exit::BerthExit::LedgerUnreadable
+        );
+        assert_eq!(
+            ledger_unreadable.exit_code,
+            crate::exit::BerthExit::LedgerUnreadable
+        );
+        assert!(
+            unconfigured
+                .message
+                .contains(&expected_configuration_path.display().to_string())
+        );
+    }
+
+    #[test]
+    fn ledger_error_keeps_its_prefix_for_a_malformed_configuration() {
+        let malformed = LedgerError::Config(ConfigError::UnknownKey("porthole".to_owned()));
+
+        let unreadable = OutputEnvelope::ledger_error(CommandVerb::Init, &malformed);
+
+        assert_eq!(unreadable.status, OutputStatus::LedgerUnreadable);
+        assert!(unreadable.message.ends_with(&malformed.to_string()));
+        assert!(
+            unreadable
+                .message
+                .contains("ledger configuration failed: unknown berth configuration key: porthole")
+        );
+    }
+
+    #[test]
+    fn unconfigured_post_commit_rendering_is_silent() {
+        let output_envelope = OutputEnvelope::unconfigured(
+            CommandVerb::Drift,
+            &PathBuf::from(".claude/config/berth.toml"),
+        );
+
+        assert!(matches!(
+            output_envelope.post_commit_rendering(),
+            PostCommitRendering::Silent
+        ));
     }
 
     #[test]

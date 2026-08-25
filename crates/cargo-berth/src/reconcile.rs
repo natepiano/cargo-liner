@@ -12,6 +12,7 @@ use crate::alert;
 use crate::alert::Alert;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::config::Enrollment;
 use crate::edge::EdgeReplayError;
 use crate::edge::IntegrationConstraintProjection;
 use crate::edge::MissingReadinessFact;
@@ -197,7 +198,7 @@ enum RepositoryObservationScope {
 pub(crate) fn reconcile(
     invocation_directory: &Path,
     recovered_bypass_reporting: RecoveredBypassReporting,
-) -> Result<ReconciliationReport, ReconcileError> {
+) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
     reconcile_with_scope(
         invocation_directory,
         RepositoryObservationScope::CurrentOrderingGraph,
@@ -210,7 +211,7 @@ pub(crate) fn reconcile_for_sequence(
     invocation_directory: &Path,
     before: ReservationId,
     after: ReservationId,
-) -> Result<ReconciliationReport, ReconcileError> {
+) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
     reconcile_with_scope(
         invocation_directory,
         RepositoryObservationScope::RequestedOrderingEdge { before, after },
@@ -222,11 +223,33 @@ fn reconcile_with_scope(
     invocation_directory: &Path,
     repository_observation_scope: RepositoryObservationScope,
     recovered_bypass_reporting: RecoveredBypassReporting,
-) -> Result<ReconciliationReport, ReconcileError> {
+) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
+    match BerthConfig::read(worktree_context.repository_root())? {
+        Enrollment::Enrolled(berth_config) => reconcile_enrolled(
+            &worktree_context,
+            &berth_config,
+            repository_observation_scope,
+            recovered_bypass_reporting,
+        )
+        .map(Enrollment::Enrolled),
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }),
+    }
+}
+
+/// Reconcile only after [`BerthConfig::read`] proves that this worktree is enrolled.
+fn reconcile_enrolled(
+    worktree_context: &WorktreeContext,
+    berth_config: &BerthConfig,
+    repository_observation_scope: RepositoryObservationScope,
+    recovered_bypass_reporting: RecoveredBypassReporting,
+) -> Result<ReconciliationReport, ReconcileError> {
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let ledger_repository = ledger.repository_identity()?;
-    let berth_config = BerthConfig::read(worktree_context.repository_root())?;
     let worktree_identity = ledger::worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
@@ -268,8 +291,8 @@ fn reconcile_with_scope(
                     repository_observation_scope,
                     &worktree_registry,
                     ledger_repository,
-                    &worktree_context,
-                    &berth_config,
+                    worktree_context,
+                    berth_config,
                 ) {
                     Ok(reconciliation_plan) => reconciliation_plan,
                     Err(error) => {
@@ -922,12 +945,12 @@ impl ReconcileError {
                 OutputEnvelope::invalid_input(command_verb, &error.to_string())
             },
             Self::Config(error) => {
-                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+                OutputEnvelope::ledger_error(command_verb, &LedgerError::Config(error))
             },
             Self::Git(error) => OutputEnvelope::ledger_unreadable(command_verb, &error.to_string()),
             Self::Ledger(error)
             | Self::Transaction(LedgerTransactionError::LedgerUnreadable(error)) => {
-                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+                OutputEnvelope::ledger_error(command_verb, &error)
             },
             Self::Replay(error) => {
                 OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())

@@ -16,6 +16,7 @@ use std::str::FromStr;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::config::Enrollment;
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
@@ -461,11 +462,22 @@ pub(crate) fn execute(request: DriftRequest) -> OutputEnvelope {
     };
     let reconciliation_report =
         match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
-            Ok(reconciliation_report) => reconciliation_report,
+            Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
+            Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            }) => {
+                return OutputEnvelope::unconfigured(
+                    CommandVerb::Drift,
+                    &expected_configuration_path,
+                );
+            },
             Err(error) => return error.into_output(CommandVerb::Drift),
         };
     let output_envelope = match execute_inner(request, &invocation_directory) {
-        Ok(report) => OutputEnvelope::drift(report),
+        Ok(Enrollment::Enrolled(report)) => OutputEnvelope::drift(report),
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => OutputEnvelope::unconfigured(CommandVerb::Drift, &expected_configuration_path),
         Err(DriftExecutionError::Selection(error)) => {
             OutputEnvelope::invalid_input(CommandVerb::Drift, &error.to_string())
         },
@@ -478,9 +490,10 @@ pub(crate) fn execute(request: DriftRequest) -> OutputEnvelope {
         Err(DriftExecutionError::Transaction(LedgerTransactionError::CorrectableInput(error))) => {
             OutputEnvelope::invalid_input(CommandVerb::Drift, &error.to_string())
         },
-        Err(DriftExecutionError::Transaction(LedgerTransactionError::LedgerUnreadable(error))) => {
-            OutputEnvelope::ledger_unreadable(CommandVerb::Drift, &error.to_string())
-        },
+        Err(
+            DriftExecutionError::Ledger(error)
+            | DriftExecutionError::Transaction(LedgerTransactionError::LedgerUnreadable(error)),
+        ) => OutputEnvelope::ledger_error(CommandVerb::Drift, &error),
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Drift, &error.to_string()),
     };
     output_envelope.with_alerts(reconciliation_report.alerts)
@@ -489,8 +502,17 @@ pub(crate) fn execute(request: DriftRequest) -> OutputEnvelope {
 fn execute_inner(
     request: DriftRequest,
     invocation_directory: &Path,
-) -> Result<DriftReport, DriftExecutionError> {
-    let initial_snapshot = Ledger::read_for_edit_check(invocation_directory)?;
+) -> Result<Enrollment<DriftReport>, DriftExecutionError> {
+    let initial_snapshot = match Ledger::read_for_edit_check(invocation_directory)? {
+        Enrollment::Enrolled(initial_snapshot) => initial_snapshot,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            });
+        },
+    };
     let worktree_context = initial_snapshot.worktree_context().clone();
     let worktree_id =
         match ledger::read_worktree_identity(worktree_context.administrative_directory()) {
@@ -501,10 +523,10 @@ fn execute_inner(
                     DriftReservationSelection::EveryActiveForPostCommit { .. }
                 ) =>
             {
-                return Ok(DriftReport::unchanged(
+                return Ok(Enrollment::Enrolled(DriftReport::unchanged(
                     request.comparison.report_mode(),
                     &[],
-                ));
+                )));
             },
             Err(error) => return Err(DriftExecutionError::Ledger(error)),
         };
@@ -515,10 +537,10 @@ fn execute_inner(
         .reservation
         .resolve(&initial_reservations, acting_identity)?;
     if initial_subjects.reporting.is_empty() {
-        return Ok(DriftReport::unchanged(
+        return Ok(Enrollment::Enrolled(DriftReport::unchanged(
             request.comparison.report_mode(),
             &[],
-        ));
+        )));
     }
     let cache_path = fingerprint_cache_path(worktree_context.common_git_directory(), worktree_id);
     let observation = observe(
@@ -534,7 +556,7 @@ fn execute_inner(
     {
         publish_fingerprint(&cache_path, &observation.cache_value);
         let report = DriftReport::unchanged(observation.comparison, &initial_subjects.reporting);
-        return Ok(report);
+        return Ok(Enrollment::Enrolled(report));
     }
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let prior_classification = PriorClassification::build(
@@ -556,7 +578,7 @@ fn execute_inner(
     if !report.has_blocking_effect() {
         publish_fingerprint(&cache_path, &observation.cache_value);
     }
-    Ok(report)
+    Ok(Enrollment::Enrolled(report))
 }
 
 fn transact_classification(

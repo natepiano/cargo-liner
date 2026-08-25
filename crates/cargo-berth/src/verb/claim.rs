@@ -19,6 +19,7 @@ use crate::answer::PermissiveOverlapAuthorizationRequest;
 use crate::answer::RequesterCoordinationIdentity;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::config::Enrollment;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingGraph;
 use crate::ids::CoordinationRunId;
@@ -159,33 +160,46 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
     };
     let reconciliation_report =
         match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
-            Ok(reconciliation_report) => reconciliation_report,
+            Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
+            Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            }) => {
+                return OutputEnvelope::unconfigured(
+                    CommandVerb::Claim,
+                    &expected_configuration_path,
+                );
+            },
             Err(error) => return error.into_output(CommandVerb::Claim),
         };
     let output_envelope = match execute_claim(claim_request) {
-        Ok(ClaimExecution::Claimed {
+        Ok(Enrollment::Enrolled(ClaimExecution::Claimed {
             reservation_id,
             coordination_run_id,
             scopes,
             marker_publication,
             session_mapping_publication,
-        }) => OutputEnvelope::claimed(
+        })) => OutputEnvelope::claimed(
             reservation_id,
             coordination_run_id,
             scopes,
             marker_publication,
             session_mapping_publication,
         ),
-        Ok(ClaimExecution::Blocked(conflicts)) => OutputEnvelope::blocked_claim(conflicts),
-        Ok(ClaimExecution::AuthorizationRequired(escalation)) => {
+        Ok(Enrollment::Enrolled(ClaimExecution::Blocked(conflicts))) => {
+            OutputEnvelope::blocked_claim(conflicts)
+        },
+        Ok(Enrollment::Enrolled(ClaimExecution::AuthorizationRequired(escalation))) => {
             OutputEnvelope::claim_authorization_required(*escalation)
         },
-        Ok(ClaimExecution::ReservationLimitReached(maximum)) => {
+        Ok(Enrollment::Enrolled(ClaimExecution::ReservationLimitReached(maximum))) => {
             OutputEnvelope::reservation_limit_reached(maximum)
         },
-        Ok(ClaimExecution::OrderingEdgeLimitReached(maximum)) => {
+        Ok(Enrollment::Enrolled(ClaimExecution::OrderingEdgeLimitReached(maximum))) => {
             OutputEnvelope::claim_ordering_edge_limit_reached(maximum)
         },
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => OutputEnvelope::unconfigured(CommandVerb::Claim, &expected_configuration_path),
         Err(ClaimError::Transaction(error)) => match error {
             LedgerTransactionError::CorrectableInput(error) => {
                 OutputEnvelope::invalid_input(CommandVerb::Claim, &error.to_string())
@@ -194,7 +208,7 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
                 OutputEnvelope::contention(CommandVerb::Claim, &error.to_string())
             },
             LedgerTransactionError::LedgerUnreadable(error) => {
-                OutputEnvelope::ledger_unreadable(CommandVerb::Claim, &error.to_string())
+                OutputEnvelope::ledger_error(CommandVerb::Claim, &error)
             },
         },
         Err(ClaimError::InactiveMarkerRun(coordination_run_id)) => OutputEnvelope::invalid_input(
@@ -211,6 +225,10 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
                 ),
             )
         },
+        Err(ClaimError::Config(error)) => {
+            OutputEnvelope::ledger_error(CommandVerb::Claim, &LedgerError::Config(error))
+        },
+        Err(ClaimError::Ledger(error)) => OutputEnvelope::ledger_error(CommandVerb::Claim, &error),
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Claim, &error.to_string()),
     };
     output_envelope.with_alerts(reconciliation_report.alerts)
@@ -230,7 +248,7 @@ enum ClaimExecution {
     OrderingEdgeLimitReached(u32),
 }
 
-fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimError> {
+fn execute_claim(claim_request: ClaimRequest) -> Result<Enrollment<ClaimExecution>, ClaimError> {
     let ClaimRequest {
         declared_scopes,
         source,
@@ -252,7 +270,16 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
         },
         PhaseStartSelection::Protected(protected_phase_start_head) => protected_phase_start_head,
     };
-    let berth_config = BerthConfig::read(worktree_context.repository_root())?;
+    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+        Enrollment::Enrolled(berth_config) => berth_config,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            });
+        },
+    };
     let trunk_at_claim =
         read_trunk_commit(worktree_context.repository_root(), &berth_config.trunk)?;
     let worktree_identity = ledger::worktree_identity(
@@ -294,6 +321,7 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<ClaimExecution, ClaimErr
         )
     })?;
     claim_execution_from_outcome(outcome, reservation_id, scopes, &worktree_context)
+        .map(Enrollment::Enrolled)
 }
 
 fn claim_execution_from_outcome(

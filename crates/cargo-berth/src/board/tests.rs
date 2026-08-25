@@ -130,7 +130,12 @@ fn deferring_reconciliation_leaves_recovery_for_one_reporting_board() -> Fixture
     )?;
 
     let deferred =
-        reconcile::reconcile(fixture.repository.path(), RecoveredBypassReporting::Defer)?;
+        match reconcile::reconcile(fixture.repository.path(), RecoveredBypassReporting::Defer)? {
+            crate::config::Enrollment::Enrolled(deferred) => deferred,
+            crate::config::Enrollment::Unconfigured { .. } => {
+                return Err("initialized board fixture is not enrolled".into());
+            },
+        };
     assert!(deferred.recovered_bypass_markers.is_empty());
     assert!(marker_path.exists());
 
@@ -686,7 +691,12 @@ impl BoardFixture {
 
     fn model(&self) -> FixtureResult<BoardModel> {
         let report =
-            reconcile::reconcile(self.repository.path(), RecoveredBypassReporting::Report)?;
+            match reconcile::reconcile(self.repository.path(), RecoveredBypassReporting::Report)? {
+                crate::config::Enrollment::Enrolled(report) => report,
+                crate::config::Enrollment::Unconfigured { .. } => {
+                    return Err("initialized board fixture is not enrolled".into());
+                },
+            };
         Ok(BoardModel::build(self.repository.path(), &report)?)
     }
 }
