@@ -97,26 +97,46 @@ impl From<PendingEnvironmentBypassOccurrenceTime> for BypassOccurrenceTime {
 /// Marker imports and marker alerts prepared from one locked journal replay.
 pub(crate) struct PendingBypassRecovery {
     imports:                Vec<PendingBypassMarkerImport>,
-    completed_marker_paths: Vec<PathBuf>,
+    completed_markers:      Vec<RecoveredPendingBypassMarker>,
     unrecorded_occurrences: Vec<BypassOccurrenceTime>,
 }
 
 /// One decoded marker whose audit operation is still absent from the journal.
 pub(crate) struct PendingBypassMarkerImport {
     operation:       JournalOperation,
+    marker_id:       PendingBypassMarkerId,
     marker_path:     PathBuf,
     occurrence_time: BypassOccurrenceTime,
+}
+
+/// One pending marker whose audit fact is durable and whose file can be deleted.
+pub(crate) struct RecoveredPendingBypassMarker {
+    id:   PendingBypassMarkerId,
+    path: PathBuf,
 }
 
 impl PendingBypassMarkerImport {
     /// Borrow the idempotent operation attempted for this marker.
     pub(crate) const fn operation(&self) -> &JournalOperation { &self.operation }
 
-    /// Borrow the marker path that can be deleted only after a successful append.
-    pub(crate) fn marker_path(&self) -> &Path { &self.marker_path }
-
     /// Borrow the occurrence fact shown when this import still cannot be appended.
     pub(crate) const fn occurrence_time(&self) -> &BypassOccurrenceTime { &self.occurrence_time }
+
+    /// Convert a successful import into a completed marker recovery.
+    pub(crate) fn into_recovered_marker(self) -> RecoveredPendingBypassMarker {
+        RecoveredPendingBypassMarker {
+            id:   self.marker_id,
+            path: self.marker_path,
+        }
+    }
+}
+
+impl RecoveredPendingBypassMarker {
+    /// Borrow the durable marker identity reported for this invocation.
+    pub(crate) const fn id(&self) -> &PendingBypassMarkerId { &self.id }
+
+    /// Borrow the marker path removed after its audit fact became durable.
+    pub(crate) fn path(&self) -> &Path { &self.path }
 }
 
 impl PendingBypassRecovery {
@@ -125,9 +145,9 @@ impl PendingBypassRecovery {
         std::mem::take(&mut self.imports)
     }
 
-    /// Take marker paths safe to delete after all imports are durably appended.
-    pub(crate) fn take_completed_marker_paths(&mut self) -> Vec<PathBuf> {
-        std::mem::take(&mut self.completed_marker_paths)
+    /// Take markers safe to delete after all imports are durably appended.
+    pub(crate) fn take_completed_markers(&mut self) -> Vec<RecoveredPendingBypassMarker> {
+        std::mem::take(&mut self.completed_markers)
     }
 
     /// Take occurrence facts for markers that could not be decoded and journalled.
@@ -261,7 +281,7 @@ pub(crate) fn prepare_pending_bypass_recovery(
     events: &[JournalEvent],
 ) -> Result<PendingBypassRecovery, std::io::Error> {
     let mut imports = Vec::new();
-    let mut completed_marker_paths = Vec::new();
+    let mut completed_markers = Vec::new();
     let mut unrecorded_occurrences = Vec::new();
     for entry in fs::read_dir(common_git_directory)? {
         let entry = entry?;
@@ -293,17 +313,23 @@ pub(crate) fn prepare_pending_bypass_recovery(
             )
         });
         if already_imported {
-            completed_marker_paths.push(marker_path);
+            completed_markers.push(RecoveredPendingBypassMarker {
+                id:   marker_id,
+                path: marker_path,
+            });
         } else {
             let occurrence_time = BypassOccurrenceTime::from(marker.occurrence_time);
             let operation = JournalOperation::Bypass {
                 action:          BypassedAction::Integration,
                 cause:           marker.cause,
                 occurrence_time: occurrence_time.clone(),
-                recording:       BypassRecording::PendingMarker { marker_id },
+                recording:       BypassRecording::PendingMarker {
+                    marker_id: marker_id.clone(),
+                },
             };
             imports.push(PendingBypassMarkerImport {
                 operation,
+                marker_id,
                 marker_path,
                 occurrence_time,
             });
@@ -311,17 +337,18 @@ pub(crate) fn prepare_pending_bypass_recovery(
     }
     Ok(PendingBypassRecovery {
         imports,
-        completed_marker_paths,
+        completed_markers,
         unrecorded_occurrences,
     })
 }
 
 /// Delete only markers whose matching journal operation is already durable.
 pub(crate) fn delete_recovered_bypass_markers(
-    marker_paths: &[PathBuf],
+    recovered_markers: &[RecoveredPendingBypassMarker],
 ) -> Result<(), std::io::Error> {
     let mut changed_directories = HashSet::new();
-    for marker_path in marker_paths {
+    for recovered_marker in recovered_markers {
+        let marker_path = recovered_marker.path();
         match fs::remove_file(marker_path) {
             Ok(()) => {
                 if let Some(parent) = marker_path.parent() {

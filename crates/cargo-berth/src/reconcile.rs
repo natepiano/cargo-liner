@@ -63,6 +63,15 @@ use crate::worktree::WorktreeRegistry;
 use crate::worktree::WorktreeRelocation;
 use crate::worktree::liveness::WorktreeRegistryError;
 
+/// Whether this reconciliation caller will announce recovered bypass markers.
+#[derive(Clone, Copy)]
+pub(crate) enum RecoveredBypassReporting {
+    /// Retire recovered markers under the reconciliation lock and return their identities.
+    Report,
+    /// Leave recovered markers for a later reporting consumer and return no identities.
+    Defer,
+}
+
 /// Alerts that remain after one complete reconciliation.
 pub(crate) struct ReconciliationReport {
     /// Durable alerts derived from retained journal state.
@@ -77,6 +86,8 @@ pub(crate) struct ReconciliationReport {
     pub(crate) journal_snapshot:              ReconciledJournalSnapshot,
     /// Pending bypass markers that could not yet become ordinary audit records.
     pub(crate) unrecorded_bypass_occurrences: Vec<BypassOccurrenceTime>,
+    /// Pending bypass markers retired and claimed for reporting by this reconciliation.
+    pub(crate) recovered_bypass_markers:      Vec<permit::RecoveredPendingBypassMarker>,
     /// Git query dimensions observed while reconciliation assembled this report.
     pub(crate) git_cost:                      ReconciliationGitCost,
 }
@@ -150,7 +161,8 @@ struct ReconciliationAction {
     alert_subjects:                Vec<AlertSubject>,
     evidence:                      Vec<ReconciledEvidence>,
     repository_snapshot:           RepositorySnapshot,
-    recovered_bypass_marker_paths: Vec<PathBuf>,
+    recovered_bypass_reporting:    RecoveredBypassReporting,
+    recovered_bypass_markers:      Vec<permit::RecoveredPendingBypassMarker>,
     pending_bypass_imports:        Vec<permit::PendingBypassMarkerImport>,
     unrecorded_bypass_occurrences: Vec<BypassOccurrenceTime>,
     trunk_resolution_calls:        u64,
@@ -184,10 +196,12 @@ enum RepositoryObservationScope {
 /// Reconcile every retained reservation before a stateful command consumes it.
 pub(crate) fn reconcile(
     invocation_directory: &Path,
+    recovered_bypass_reporting: RecoveredBypassReporting,
 ) -> Result<ReconciliationReport, ReconcileError> {
     reconcile_with_scope(
         invocation_directory,
         RepositoryObservationScope::CurrentOrderingGraph,
+        recovered_bypass_reporting,
     )
 }
 
@@ -200,12 +214,14 @@ pub(crate) fn reconcile_for_sequence(
     reconcile_with_scope(
         invocation_directory,
         RepositoryObservationScope::RequestedOrderingEdge { before, after },
+        RecoveredBypassReporting::Defer,
     )
 }
 
 fn reconcile_with_scope(
     invocation_directory: &Path,
     repository_observation_scope: RepositoryObservationScope,
+    recovered_bypass_reporting: RecoveredBypassReporting,
 ) -> Result<ReconciliationReport, ReconcileError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
     let ledger = Ledger::open(worktree_context.repository_root())?;
@@ -279,8 +295,9 @@ fn reconcile_with_scope(
                     .map(|pending_import| pending_import.operation().clone())
                     .collect();
                 reconciliation_plan.action.pending_bypass_imports = pending_bypass_imports;
-                reconciliation_plan.action.recovered_bypass_marker_paths =
-                    pending_bypasses.take_completed_marker_paths();
+                reconciliation_plan.action.recovered_bypass_reporting = recovered_bypass_reporting;
+                reconciliation_plan.action.recovered_bypass_markers =
+                    pending_bypasses.take_completed_markers();
                 reconciliation_plan.action.unrecorded_bypass_occurrences =
                     pending_bypasses.take_unrecorded_occurrences();
                 ReconciliationValidation::Apply {
@@ -380,7 +397,8 @@ fn build_plan(
             alert_subjects,
             evidence: changes.evidence,
             repository_snapshot,
-            recovered_bypass_marker_paths: Vec::new(),
+            recovered_bypass_reporting: RecoveredBypassReporting::Defer,
+            recovered_bypass_markers: Vec::new(),
             pending_bypass_imports: Vec::new(),
             unrecorded_bypass_occurrences: Vec::new(),
             trunk_resolution_calls,
@@ -798,12 +816,10 @@ impl ReconciliationAction {
                 self.unrecorded_bypass_occurrences
                     .push(pending_import.occurrence_time().clone());
             } else {
-                self.recovered_bypass_marker_paths
-                    .push(pending_import.marker_path().to_path_buf());
+                self.recovered_bypass_markers
+                    .push(pending_import.into_recovered_marker());
             }
         }
-        permit::delete_recovered_bypass_markers(&self.recovered_bypass_marker_paths)
-            .map_err(LedgerError::Io)?;
         for reservation_id in self.retention_deletions {
             git::delete_reservation_retention_ref(&self.repository_root, reservation_id)?;
         }
@@ -843,6 +859,14 @@ impl ReconciliationAction {
             .iter()
             .map(Alert::recovery_evidence_query_count)
             .sum();
+        let recovered_bypass_markers = match self.recovered_bypass_reporting {
+            RecoveredBypassReporting::Report => {
+                permit::delete_recovered_bypass_markers(&self.recovered_bypass_markers)
+                    .map_err(LedgerError::Io)?;
+                self.recovered_bypass_markers
+            },
+            RecoveredBypassReporting::Defer => Vec::new(),
+        };
         Ok(ReconciliationReport {
             alerts,
             evidence: self.evidence,
@@ -854,6 +878,7 @@ impl ReconciliationAction {
                 journal_end_offset: state.journal_end_offset(),
             },
             unrecorded_bypass_occurrences: self.unrecorded_bypass_occurrences,
+            recovered_bypass_markers,
             git_cost: ReconciliationGitCost {
                 trunk_resolution_calls: self.trunk_resolution_calls,
                 orphan_recovery_evidence_queries,

@@ -35,6 +35,7 @@ use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::ResolvePayload;
 use crate::reconcile;
+use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
 use crate::reservation::AbandonmentReason;
 use crate::reservation::EditBlockingStatus;
@@ -91,10 +92,11 @@ pub(crate) fn resolve(resolve_request: ResolveRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Resolve, &error.to_string());
         },
     };
-    let mut reconciliation_report = match reconcile::reconcile(&invocation_directory) {
-        Ok(reconciliation_report) => reconciliation_report,
-        Err(error) => return error.into_output(CommandVerb::Resolve),
-    };
+    let mut reconciliation_report =
+        match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
+            Ok(reconciliation_report) => reconciliation_report,
+            Err(error) => return error.into_output(CommandVerb::Resolve),
+        };
     let output_envelope = match execute_resolution(resolve_request) {
         Ok(resolve_payload) => {
             if !matches!(resolve_payload, ResolvePayload::IncursionResolved { .. }) {
@@ -117,10 +119,11 @@ pub(crate) fn renew(renew_request: RenewRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Renew, &error.to_string());
         },
     };
-    let reconciliation_report = match reconcile::reconcile(&invocation_directory) {
-        Ok(reconciliation_report) => reconciliation_report,
-        Err(error) => return error.into_output(CommandVerb::Renew),
-    };
+    let reconciliation_report =
+        match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
+            Ok(reconciliation_report) => reconciliation_report,
+            Err(error) => return error.into_output(CommandVerb::Renew),
+        };
     let output_envelope = match execute_renewal(renew_request) {
         Ok(()) => OutputEnvelope::renewed(renew_request.reservation_id),
         Err(error) => error.into_output(CommandVerb::Renew),

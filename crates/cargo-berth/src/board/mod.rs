@@ -52,6 +52,7 @@ use crate::ledger::FullRefName;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::OrderingDirection;
+use crate::ledger::PendingBypassMarkerId;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::SkippedDeferral;
 use crate::ledger::SkippedIntegrationHoldSet;
@@ -75,21 +76,22 @@ use crate::worktree::WorktreeLiveness;
 /// One complete, terminal-independent board assembled from a coherent locked replay.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct BoardModel {
-    journal_position:             BoardJournalPosition,
-    integration_order:            IntegrationOrderDeclaration,
-    ready_now:                    BoardSection<ReadyReservation>,
-    waiting:                      BoardSection<WaitingConstraint>,
-    settled_ordering_constraints: BoardSection<SettledOrderingConstraint>,
-    unresolved_overlaps:          BoardSection<UnresolvedOverlap>,
-    recorded_overlap_answers:     BoardSection<RecordedAnswer>,
-    unconstrained_reservations:   BoardSection<ReservationRow>,
-    resolved:                     BoardSection<ReservationRow>,
-    available_forced_permits:     BoardSection<AvailableForcedPermit>,
-    bypass_audit:                 BoardSection<BypassAuditEntry>,
-    outstanding_incursions:       BoardSection<OutstandingIncursion>,
-    recorded_incursion_answers:   BoardSection<RecordedIncursionAnswer>,
-    alerts:                       BoardSection<BoardAlert>,
-    git_cost:                     BoardGitCost,
+    journal_position:                   BoardJournalPosition,
+    recovered_bypasses_this_invocation: RecoveredBypassesThisInvocation,
+    integration_order:                  IntegrationOrderDeclaration,
+    ready_now:                          BoardSection<ReadyReservation>,
+    waiting:                            BoardSection<WaitingConstraint>,
+    settled_ordering_constraints:       BoardSection<SettledOrderingConstraint>,
+    unresolved_overlaps:                BoardSection<UnresolvedOverlap>,
+    recorded_overlap_answers:           BoardSection<RecordedAnswer>,
+    unconstrained_reservations:         BoardSection<ReservationRow>,
+    resolved:                           BoardSection<ReservationRow>,
+    available_forced_permits:           BoardSection<AvailableForcedPermit>,
+    bypass_audit:                       BoardSection<BypassAuditEntry>,
+    outstanding_incursions:             BoardSection<OutstandingIncursion>,
+    recorded_incursion_answers:         BoardSection<RecordedIncursionAnswer>,
+    alerts:                             BoardSection<BoardAlert>,
+    git_cost:                           BoardGitCost,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -97,6 +99,11 @@ struct BoardJournalPosition {
     generation:          ProjectionGeneration,
     journal_byte_offset: JournalByteOffset,
 }
+
+/// Pending bypass markers whose durable recovery completed during this board invocation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+struct RecoveredBypassesThisInvocation(Vec<PendingBypassMarkerId>);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct BoardSection<Entry> {
@@ -280,7 +287,7 @@ enum RecordedAnswer {
         ordering_reason:       OrderingReason,
         consequence:           OrderingConsequence,
     },
-    RevalidatedWiden {
+    ExistingAnswersCoverEveryOverlap {
         reservation_id:          ReservationId,
         exact_existing_bindings: AuthorizedOverlapSet,
         added_scopes:            Vec<ReservationScope>,
@@ -421,6 +428,7 @@ enum BoardAlert {
     StaleReservation {
         reservation_id: ReservationId,
         freshness:      ReservationFreshness,
+        resolution:     StaleReservationResolutionAction,
     },
     UnrecordedBypasses {
         count:            u64,
@@ -466,6 +474,12 @@ enum BoardRetentionRefStatus {
 enum OrphanResolutionAction {
     Recover { flag: String },
     RetireOrAbandon { flags: Vec<String> },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum StaleReservationResolutionAction {
+    Renew { reservation_id: ReservationId },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -640,8 +654,16 @@ impl BoardModel {
         } else {
             IntegrationOrderDeclaration::ConstraintsRecorded
         };
+        let recovered_bypasses_this_invocation = RecoveredBypassesThisInvocation(
+            report
+                .recovered_bypass_markers
+                .iter()
+                .map(|marker| marker.id().clone())
+                .collect(),
+        );
         Ok(Self {
             journal_position: position,
+            recovered_bypasses_this_invocation,
             integration_order,
             ready_now: BoardSection::new(position, ready_now),
             waiting: BoardSection::new(position, waiting),
@@ -685,6 +707,14 @@ impl BoardModel {
             .collect::<Vec<_>>();
         reservation_ids.sort_by_key(ToString::to_string);
         reservation_ids
+    }
+
+    /// Borrow marker filenames claimed for one-time reporting by this board.
+    pub(crate) fn recovered_bypass_marker_names(&self) -> impl Iterator<Item = &str> {
+        self.recovered_bypasses_this_invocation
+            .0
+            .iter()
+            .map(PendingBypassMarkerId::file_name)
     }
 }
 
@@ -873,8 +903,8 @@ fn recorded_answers(
                     edit_blocking_status: *edit_blocking_status,
                 };
                 match authorization {
-                    ConflictAuthorization::Revalidated { overlaps } => {
-                        answers.push(RecordedAnswer::RevalidatedWiden {
+                    ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps } => {
+                        answers.push(RecordedAnswer::ExistingAnswersCoverEveryOverlap {
                             reservation_id: *reservation_id,
                             exact_existing_bindings: overlaps.clone(),
                             added_scopes: added_scopes.as_slice().to_vec(),
@@ -1023,7 +1053,7 @@ fn append_authorization_answer(
             consequence: OverrideConsequence::EditingAuthorizedWithoutIntegrationOrder,
         }),
         ConflictAuthorization::NoConflict
-        | ConflictAuthorization::Revalidated { .. }
+        | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. }
         | ConflictAuthorization::Defer { .. } => {},
     }
     Ok(())
@@ -1193,6 +1223,9 @@ fn board_alerts(
             Some(BoardAlert::StaleReservation {
                 reservation_id: row.reservation_id,
                 freshness:      row.freshness.clone(),
+                resolution:     StaleReservationResolutionAction::Renew {
+                    reservation_id: row.reservation_id,
+                },
             })
         },
         ReservationFreshness::Fresh { .. } | ReservationFreshness::Stale { .. } => None,

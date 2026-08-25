@@ -1392,6 +1392,14 @@ impl OutputEnvelope {
     /// Render the primary result followed by every durable alert as its own line.
     pub(crate) fn render_text(&self) -> String {
         let mut rendered = self.message.clone();
+        if let OutputFacts::Board(board) = &self.payload.facts {
+            for marker_name in board.recovered_bypass_marker_names() {
+                let _ = write!(
+                    rendered,
+                    "\nRecovered bypass marker {marker_name}: a bypass recorded earlier while the journal was unwritable has now been filed in the journal."
+                );
+            }
+        }
         for alert in &self.payload.alerts {
             rendered.push('\n');
             rendered.push_str(&alert.to_string());

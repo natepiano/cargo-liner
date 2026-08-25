@@ -48,6 +48,7 @@ use crate::output::CommandVerb;
 use crate::output::CoordinationRunMarkerPublication;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
+use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
@@ -156,10 +157,11 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Claim, &error.to_string());
         },
     };
-    let reconciliation_report = match reconcile::reconcile(&invocation_directory) {
-        Ok(reconciliation_report) => reconciliation_report,
-        Err(error) => return error.into_output(CommandVerb::Claim),
-    };
+    let reconciliation_report =
+        match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
+            Ok(reconciliation_report) => reconciliation_report,
+            Err(error) => return error.into_output(CommandVerb::Claim),
+        };
     let output_envelope = match execute_claim(claim_request) {
         Ok(ClaimExecution::Claimed {
             reservation_id,

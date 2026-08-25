@@ -10,14 +10,18 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 
 use super::AnswerAcquisition;
+use super::BoardAlert;
 use super::BoardIntegrationEvidence;
 use super::BoardModel;
+use super::BypassAuditEntry;
 use super::OrderingConsequence;
 use super::OverrideConsequence;
 use super::RecordedAnswer;
 use super::ReservationRow;
+use super::StaleReservationResolutionAction;
 use super::SymmetricDeferralConsequence;
 use super::WaitingAction;
+use super::board_alerts;
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapScopeSet;
 use crate::answer::AuthorizedOverlapSet;
@@ -52,16 +56,20 @@ use crate::ledger::TrunkCommitAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
 use crate::reconcile;
+use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::AbandonmentReason;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::OrphanRetirementReason;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
+use crate::reservation::ReservationFreshness;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const GIT_BINARY: &str = "git";
+const PENDING_BYPASS_NAME: &str =
+    "cargo-berth-pending-bypass-01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a99.json";
 const UNKNOWN_OBJECT_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 type FixtureResult<T> = Result<T, Box<dyn Error>>;
@@ -105,6 +113,78 @@ struct OrderedBoardFixture {
     predecessor_actor: TestActor,
     predecessor:       ReservationClaimFixture,
     successor:         ReservationClaimFixture,
+}
+
+#[test]
+fn deferring_reconciliation_leaves_recovery_for_one_reporting_board() -> FixtureResult<()> {
+    let fixture = BoardFixture::new()?;
+    let marker_path = fixture
+        .repository
+        .path()
+        .join(".git")
+        .join(PENDING_BYPASS_NAME);
+    fs::write(
+        &marker_path,
+        r#"{"cause":{"kind":"environment_override","bypassed_merge":"model-recovery"},"occurrence_time":{"status":"unavailable"}}
+"#,
+    )?;
+
+    let deferred =
+        reconcile::reconcile(fixture.repository.path(), RecoveredBypassReporting::Defer)?;
+    assert!(deferred.recovered_bypass_markers.is_empty());
+    assert!(marker_path.exists());
+
+    let recovered = fixture.model()?;
+    assert_eq!(
+        serde_json::to_value(&recovered.recovered_bypasses_this_invocation)?,
+        serde_json::json!([PENDING_BYPASS_NAME])
+    );
+    assert!(matches!(
+        recovered.bypass_audit.entries.as_slice(),
+        [BypassAuditEntry::EnvironmentOverride { .. }]
+    ));
+    assert!(!marker_path.exists());
+
+    let later_read = fixture.model()?;
+    assert_eq!(
+        serde_json::to_value(&later_read.recovered_bypasses_this_invocation)?,
+        serde_json::json!([])
+    );
+    assert!(matches!(
+        later_read.bypass_audit.entries.as_slice(),
+        [BypassAuditEntry::EnvironmentOverride { .. }]
+    ));
+    assert!(!marker_path.exists());
+    Ok(())
+}
+
+#[test]
+fn stale_reservation_alert_names_the_renew_resolution() -> FixtureResult<()> {
+    let fixture = BoardFixture::new()?;
+    let actor = fixture.main_actor();
+    let reservation = fixture.claim(&actor, "stale.rs", ConflictAuthorization::NoConflict)?;
+    let model = fixture.model()?;
+    let fresh_row = reservation_row(&model, reservation.reservation_id)?.clone();
+    assert!(board_alerts(&[], std::slice::from_ref(&fresh_row), &[])?.is_empty());
+
+    let mut stale_row = fresh_row;
+    let ReservationFreshness::Fresh { last_activity_at } = stale_row.freshness.clone() else {
+        return Err(io::Error::other("new reservation should be fresh").into());
+    };
+    stale_row.freshness = ReservationFreshness::Stale { last_activity_at };
+    let alerts = board_alerts(&[], &[stale_row], &[])?;
+    assert!(matches!(
+        alerts.as_slice(),
+        [BoardAlert::StaleReservation {
+            reservation_id,
+            resolution: StaleReservationResolutionAction::Renew {
+                reservation_id: action_reservation_id,
+            },
+            ..
+        }] if *reservation_id == reservation.reservation_id
+            && *action_reservation_id == reservation.reservation_id
+    ));
+    Ok(())
 }
 
 #[test]
@@ -605,7 +685,8 @@ impl BoardFixture {
     }
 
     fn model(&self) -> FixtureResult<BoardModel> {
-        let report = reconcile::reconcile(self.repository.path())?;
+        let report =
+            reconcile::reconcile(self.repository.path(), RecoveredBypassReporting::Report)?;
         Ok(BoardModel::build(self.repository.path(), &report)?)
     }
 }
@@ -732,7 +813,7 @@ fn recorded_answer(
                 reservation_id: candidate,
                 ..
             }
-            | RecordedAnswer::RevalidatedWiden {
+            | RecordedAnswer::ExistingAnswersCoverEveryOverlap {
                 reservation_id: candidate,
                 ..
             }

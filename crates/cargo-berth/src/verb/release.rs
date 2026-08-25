@@ -33,6 +33,7 @@ use crate::output::CoordinationRunMarkerRetirement;
 use crate::output::OutputEnvelope;
 use crate::output::ReleasePayload;
 use crate::reconcile;
+use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::PriorIntegrationStatus;
@@ -67,10 +68,11 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string());
         },
     };
-    let mut reconciliation_report = match reconcile::reconcile(&invocation_directory) {
-        Ok(reconciliation_report) => reconciliation_report,
-        Err(error) => return error.into_output(CommandVerb::Release),
-    };
+    let mut reconciliation_report =
+        match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
+            Ok(reconciliation_report) => reconciliation_report,
+            Err(error) => return error.into_output(CommandVerb::Release),
+        };
     for reconciled_evidence in &reconciliation_report.evidence {
         if reconciled_evidence.reservation_id == release_request.reservation_id {
             return OutputEnvelope::released(ReleasePayload::EvidenceRevalidated {

@@ -60,6 +60,12 @@ pub(crate) struct JournalEvent {
     pub(crate) operation:             JournalOperation,
 }
 
+/// The version field that determines whether this binary can decode a journal record.
+#[derive(Deserialize)]
+struct JournalSchemaHeader {
+    schema_version: SchemaVersion,
+}
+
 impl JournalEvent {
     /// Build a new v1 journal fact for one mutation transaction.
     pub(super) fn for_operation(
@@ -1045,6 +1051,9 @@ pub(crate) struct PendingBypassMarkerId(String);
 impl PendingBypassMarkerId {
     /// Retain a marker filename as its non-recycled import identity.
     pub(crate) const fn from_file_name(file_name: String) -> Self { Self(file_name) }
+
+    /// Borrow the filename that serves as this marker's durable identity.
+    pub(crate) fn file_name(&self) -> &str { &self.0 }
 }
 
 /// One ordering relationship deliberately skipped by a forced integration.
@@ -1302,16 +1311,25 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
                 line:  line_index + 1,
                 error: error.to_string(),
             })?;
+        let schema_header =
+            serde_json::from_str::<JournalSchemaHeader>(record).map_err(|error| {
+                JournalError::CorruptInteriorRecord {
+                    line:  line_index + 1,
+                    error: error.to_string(),
+                }
+            })?;
+        let supported_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
+        if schema_header.schema_version != supported_schema_version {
+            return Err(JournalError::UnsupportedSchemaVersion(
+                schema_header.schema_version,
+            ));
+        }
         let event = serde_json::from_str::<JournalEvent>(record).map_err(|error| {
             JournalError::CorruptInteriorRecord {
                 line:  line_index + 1,
                 error: error.to_string(),
             }
         })?;
-        let supported_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
-        if event.schema_version != supported_schema_version {
-            return Err(JournalError::UnsupportedSchemaVersion(event.schema_version));
-        }
         events.push(event);
     }
 
@@ -1444,6 +1462,7 @@ mod tests {
     use super::InvalidBypassedMergeIdentity;
     use super::Journal;
     use super::JournalActor;
+    use super::JournalError;
     use super::JournalEvent;
     use super::JournalOperation;
     use super::NonEmptyReservationPurpose;
@@ -1459,6 +1478,7 @@ mod tests {
     use super::WidenCause;
     use super::WorkPlanReference;
     use super::WorktreeAdministrativeLocator;
+    use super::replay_complete_records;
     use crate::answer::AuthorizedOverlap;
     use crate::answer::AuthorizedOverlapScopeSet;
     use crate::answer::AuthorizedOverlapSet;
@@ -1544,6 +1564,27 @@ mod tests {
         let (journal, _) = Journal::open_or_create(&journal_path).expect("journal should open");
 
         assert!(journal.replay_repairing_tail().is_err());
+    }
+
+    #[test]
+    fn an_unsupported_schema_precedes_version_specific_operation_decoding() {
+        let future_record = b"{\"schema_version\":2,\"op\":\"future_operation\"}\n";
+
+        assert!(matches!(
+            replay_complete_records(future_record),
+            Err(JournalError::UnsupportedSchemaVersion(version))
+                if version == SchemaVersion::from(2)
+        ));
+    }
+
+    #[test]
+    fn a_malformed_supported_schema_record_remains_corrupt() {
+        let malformed_v1_record = b"{\"schema_version\":1,\"op\":\"future_operation\"}\n";
+
+        assert!(matches!(
+            replay_complete_records(malformed_v1_record),
+            Err(JournalError::CorruptInteriorRecord { line: 1, .. })
+        ));
     }
 
     #[test]

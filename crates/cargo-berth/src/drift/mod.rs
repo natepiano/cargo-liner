@@ -39,6 +39,7 @@ use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
+use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::AuthorizedEditingIdentity;
 use crate::reservation::DriftBlockingCoverage;
 use crate::reservation::IncursionObservation;
@@ -458,10 +459,11 @@ pub(crate) fn execute(request: DriftRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Drift, &error.to_string());
         },
     };
-    let reconciliation_report = match reconcile::reconcile(&invocation_directory) {
-        Ok(reconciliation_report) => reconciliation_report,
-        Err(error) => return error.into_output(CommandVerb::Drift),
-    };
+    let reconciliation_report =
+        match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
+            Ok(reconciliation_report) => reconciliation_report,
+            Err(error) => return error.into_output(CommandVerb::Drift),
+        };
     let output_envelope = match execute_inner(request, &invocation_directory) {
         Ok(report) => OutputEnvelope::drift(report),
         Err(DriftExecutionError::Selection(error)) => {

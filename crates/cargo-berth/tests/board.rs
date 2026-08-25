@@ -103,6 +103,10 @@ fn resolved_deferral_moves_to_answer_audit_with_both_reasons() {
     let board = json_output(&run_berth(repository.path(), &["board", "--json"]));
     let data = &board["payload"]["data"];
     assert_eq!(
+        data["recovered_bypasses_this_invocation"],
+        serde_json::json!([])
+    );
+    assert_eq!(
         data["unresolved_overlaps"]["entries"],
         serde_json::json!([])
     );
@@ -693,7 +697,10 @@ fn renew_is_activity_but_unrelated_events_and_head_movement_are_not() {
         data["alerts"]["entries"]
             .as_array()
             .is_some_and(|alerts| alerts.iter().any(|alert| {
-                alert["kind"] == "stale_reservation" && alert["reservation_id"] == stale_id
+                alert["kind"] == "stale_reservation"
+                    && alert["reservation_id"] == stale_id
+                    && alert["resolution"]["action"] == "renew"
+                    && alert["resolution"]["reservation_id"] == stale_id
             }))
     );
 }
@@ -829,6 +836,10 @@ fn pending_environment_bypass_is_imported_once_and_unknown_time_stays_unknown() 
 
     let first = json_output(&run_berth(repository.path(), &["board", "--json"]));
     assert!(!marker_path.exists());
+    assert_eq!(
+        first["payload"]["data"]["recovered_bypasses_this_invocation"],
+        serde_json::json!([PENDING_BYPASS_NAME])
+    );
     let bypasses = first["payload"]["data"]["bypass_audit"]["entries"]
         .as_array()
         .expect("bypass audit should be an array");
@@ -839,11 +850,84 @@ fn pending_environment_bypass_is_imported_once_and_unknown_time_stays_unknown() 
 
     let second = json_output(&run_berth(repository.path(), &["board", "--json"]));
     assert_eq!(
+        second["payload"]["data"]["recovered_bypasses_this_invocation"],
+        serde_json::json!([])
+    );
+    assert_eq!(
         second["payload"]["data"]["bypass_audit"]["entries"]
             .as_array()
             .map(Vec::len),
         Some(1)
     );
+    assert_eq!(journal_operation_count(repository.path(), "bypass"), 1);
+}
+
+#[test]
+fn human_board_names_a_recovered_bypass_once() {
+    let repository = initialized_repository();
+    let marker_path = repository.path().join(".git").join(PENDING_BYPASS_NAME);
+    fs::write(
+        &marker_path,
+        r#"{"cause":{"kind":"environment_override","bypassed_merge":"human-recovery"},"occurrence_time":{"status":"unavailable"}}
+"#,
+    )
+    .expect("pending bypass marker should write");
+
+    let recovered = run_berth(repository.path(), &["board"]);
+    assert!(recovered.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&recovered.stdout).trim(),
+        format!(
+            "{BOARD_READY_MESSAGE}\nRecovered bypass marker {PENDING_BYPASS_NAME}: a bypass recorded earlier while the journal was unwritable has now been filed in the journal."
+        )
+    );
+    assert!(!marker_path.exists());
+
+    let later = run_berth(repository.path(), &["board"]);
+    assert!(later.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&later.stdout).trim(),
+        BOARD_READY_MESSAGE
+    );
+    assert_eq!(journal_operation_count(repository.path(), "bypass"), 1);
+}
+
+#[test]
+fn non_board_reconciliation_preserves_recovered_bypass_for_board() {
+    let repository = initialized_repository();
+    let claimed = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
+    assert!(claimed.status.success());
+    let marker_path = repository.path().join(".git").join(PENDING_BYPASS_NAME);
+    fs::write(
+        &marker_path,
+        r#"{"cause":{"kind":"environment_override","bypassed_merge":"non-board-recovery"},"occurrence_time":{"status":"unavailable"}}
+"#,
+    )
+    .expect("pending bypass marker should write");
+
+    let check = run_berth_with_run(
+        repository.path(),
+        &["check", "file:src/lib.rs", "--json"],
+        SECOND_RUN,
+    );
+    assert_eq!(check.status.code(), Some(1));
+    assert!(marker_path.exists());
+    assert_eq!(journal_operation_count(repository.path(), "bypass"), 1);
+
+    let reporting_board = board_data(repository.path());
+    assert_eq!(
+        reporting_board["recovered_bypasses_this_invocation"],
+        serde_json::json!([PENDING_BYPASS_NAME])
+    );
+    assert!(!marker_path.exists());
+    assert_eq!(journal_operation_count(repository.path(), "bypass"), 1);
+
+    let later_board = board_data(repository.path());
+    assert_eq!(
+        later_board["recovered_bypasses_this_invocation"],
+        serde_json::json!([])
+    );
+    assert!(!marker_path.exists());
     assert_eq!(journal_operation_count(repository.path(), "bypass"), 1);
 }
 
@@ -1091,6 +1175,10 @@ fn interrupted_marker_import_is_deduplicated_before_deletion() {
 
     let board = board_data(repository.path());
     assert!(!marker_path.exists());
+    assert_eq!(
+        board["recovered_bypasses_this_invocation"],
+        serde_json::json!([PENDING_BYPASS_NAME])
+    );
     assert_eq!(journal_operation_count(repository.path(), "bypass"), 1);
     assert_eq!(
         board["bypass_audit"]["entries"].as_array().map(Vec::len),
@@ -1123,6 +1211,10 @@ fn unappendable_decoded_marker_stays_visible_as_a_timed_alert() {
 
     let board = board_data(repository.path());
     assert!(marker_path.exists());
+    assert_eq!(
+        board["recovered_bypasses_this_invocation"],
+        serde_json::json!([])
+    );
     assert_eq!(journal_operation_count(repository.path(), "bypass"), 0);
     let alert = board["alerts"]["entries"]
         .as_array()
@@ -1223,7 +1315,7 @@ fn incursion_is_one_shared_incident_then_moves_to_answer_audit() {
 }
 
 #[test]
-fn drift_widen_audit_names_revalidated_bindings_without_new_ordering() {
+fn drift_widen_audit_names_existing_coverage_without_new_ordering() {
     let repository = initialized_repository();
     let holder = claim(repository.path(), "tree:shared", FIRST_RUN);
     let holder_id = reservation_id(&holder);
@@ -1251,7 +1343,7 @@ fn drift_widen_audit_names_revalidated_bindings_without_new_ordering() {
         .expect("answer audit should be an array");
     let widen = answers
         .iter()
-        .find(|answer| answer["answer"] == "revalidated_widen")
+        .find(|answer| answer["answer"] == "existing_answers_cover_every_overlap")
         .expect("drift widen should have its own audit row");
     assert_eq!(widen["reservation_id"], subject_id);
     assert_eq!(widen["cause"]["kind"], "drift");
@@ -1272,9 +1364,20 @@ fn drift_widen_audit_names_revalidated_bindings_without_new_ordering() {
     assert_eq!(
         answers
             .iter()
-            .filter(|answer| answer["answer"] == "revalidated_widen")
+            .filter(|answer| answer["answer"] == "existing_answers_cover_every_overlap")
             .count(),
         1
+    );
+    let journal =
+        fs::read_to_string(repository.path().join(JOURNAL_PATH)).expect("journal should read");
+    let widen_event = journal
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .find(|event| event["op"] == "widen" && event["reservation_id"] == subject_id)
+        .expect("drift widen should be journalled");
+    assert_eq!(
+        widen_event["authorization"]["kind"],
+        "existing_answers_cover_every_overlap"
     );
 }
 

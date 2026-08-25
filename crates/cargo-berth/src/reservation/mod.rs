@@ -351,7 +351,9 @@ impl RetainedReservationSet {
         AuthorizedOverlapSet::try_from(overlaps).map_or(
             WidenScopeBinding::Authorized(ConflictAuthorization::NoConflict),
             |overlaps| {
-                WidenScopeBinding::Authorized(ConflictAuthorization::Revalidated { overlaps })
+                WidenScopeBinding::Authorized(
+                    ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps },
+                )
             },
         )
     }

@@ -350,7 +350,7 @@ impl OrderingGraph {
         match authorization {
             ConflictAuthorization::NoConflict
             | ConflictAuthorization::Override { .. }
-            | ConflictAuthorization::Revalidated { .. } => Ok(()),
+            | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => Ok(()),
             ConflictAuthorization::Defer {
                 overlaps,
                 blocker,

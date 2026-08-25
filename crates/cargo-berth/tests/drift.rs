@@ -567,7 +567,7 @@ fn session_mapping_attributes_post_commit_widening_with_two_active_reservations(
 }
 
 #[test]
-fn drift_widen_revalidates_existing_scope_bound_answer() {
+fn drift_widen_records_existing_answer_coverage_for_a_scope_bound_answer() {
     let repository = initialized_repository();
     let holder_id = claim(repository.path(), "tree:shared", FIRST_RUN);
     let subject_id = claim_with_override(
@@ -590,7 +590,10 @@ fn drift_widen_revalidates_existing_scope_bound_answer() {
         .into_iter()
         .find(|event| event["op"] == "widen" && event["reservation_id"] == subject_id)
         .expect("drift should append a widen for the answered reservation");
-    assert_eq!(widen["authorization"]["kind"], "revalidated");
+    assert_eq!(
+        widen["authorization"]["kind"],
+        "existing_answers_cover_every_overlap"
+    );
     assert_eq!(
         widen["authorization"]["overlaps"][0]["reservation_id"],
         holder_id
