@@ -1,5 +1,7 @@
 //! Headless reservation-board projection and its machine-readable sections.
 
+pub(crate) mod tui;
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::error::Error;

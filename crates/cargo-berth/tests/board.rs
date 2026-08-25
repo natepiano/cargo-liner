@@ -31,6 +31,8 @@ const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
+const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
+const LEAVE_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ]; then
     command_name="$2"
@@ -65,6 +67,7 @@ fn empty_board_is_headless_and_declares_no_integration_order() {
     );
     assert_eq!(envelope["message"], BOARD_READY_MESSAGE);
     assert!(!envelope.to_string().contains("unimplemented"));
+    assert!(!String::from_utf8_lossy(&json.stdout).contains(ENTER_ALTERNATE_SCREEN));
 
     let text = run_berth(repository.path(), &["board"]);
     assert!(text.status.success());
@@ -72,7 +75,82 @@ fn empty_board_is_headless_and_declares_no_integration_order() {
         String::from_utf8_lossy(&text.stdout).trim(),
         BOARD_READY_MESSAGE
     );
+    assert!(String::from_utf8_lossy(&text.stdout).contains("--json"));
+    assert!(!String::from_utf8_lossy(&text.stdout).contains(ENTER_ALTERNATE_SCREEN));
     assert!(!String::from_utf8_lossy(&text.stdout).contains("ReservationRow"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn human_board_uses_and_restores_an_attached_terminal() {
+    let repository = initialized_repository();
+    let transcript = repository.path().join("terminal-transcript");
+    let mut child = Command::new("/usr/bin/script")
+        .args([
+            "-q",
+            transcript
+                .to_str()
+                .expect("terminal transcript path should be UTF-8"),
+            env!("CARGO_BIN_EXE_cargo-berth"),
+            "board",
+        ])
+        .current_dir(repository.path())
+        .env("COLUMNS", "100")
+        .env("LINES", "30")
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("terminal board should start under a pseudo-terminal");
+    child
+        .stdin
+        .take()
+        .expect("script input should be piped")
+        .write_all(b"q")
+        .expect("quit key should reach the pseudo-terminal");
+    let output = child
+        .wait_with_output()
+        .expect("terminal board should finish after quit");
+    assert!(
+        output.status.success(),
+        "terminal board failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = fs::read_to_string(transcript).expect("terminal transcript should read");
+    let entered = rendered
+        .find(ENTER_ALTERNATE_SCREEN)
+        .expect("terminal view should enter the alternate screen");
+    let restored = rendered
+        .rfind(LEAVE_ALTERNATE_SCREEN)
+        .expect("terminal view should leave the alternate screen");
+    assert!(restored > entered);
+    assert!(!rendered.contains(BOARD_READY_MESSAGE));
+}
+
+#[test]
+fn board_outside_a_git_worktree_reports_the_same_unreadable_facts_in_both_modes() {
+    let outside_repository = tempdir().expect("temporary directory should exist");
+    let json = run_berth(outside_repository.path(), &["board", "--json"]);
+    assert_eq!(json.status.code(), Some(4));
+    let envelope = json_output(&json);
+    assert_eq!(envelope["status"], "ledger_unreadable");
+    assert_eq!(envelope["exit_code"], 4);
+    assert_eq!(envelope["payload"]["kind"], "no_facts");
+    assert_eq!(envelope["reservations"], serde_json::json!([]));
+    assert_eq!(envelope["blocked_by"], serde_json::json!([]));
+
+    let human = run_berth(outside_repository.path(), &["board"]);
+    assert_eq!(human.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&human.stdout).trim(),
+        envelope["message"]
+            .as_str()
+            .expect("unreadable envelope should carry a message")
+    );
+    assert!(!String::from_utf8_lossy(&human.stdout).contains(ENTER_ALTERNATE_SCREEN));
 }
 
 #[test]

@@ -223,7 +223,7 @@ struct ReferenceTransactionArguments {
 
 /// The output representation requested at the command line boundary.
 #[derive(Clone, Copy)]
-enum CliOutputFormat {
+pub(crate) enum CliOutputFormat {
     /// Print the frozen JSON envelope.
     Json,
     /// Print the envelope's message.
@@ -470,14 +470,18 @@ impl Cli {
             command => command,
         };
         let output_format = command.output_format();
-        let output_envelope = command.execute();
-        let berth_exit = output_envelope.exit_code;
-        if post_commit_hook_requested() {
-            emit_post_commit_response(&output_envelope);
-        } else {
-            emit_response(output_format, &output_envelope);
+        match command.execute(output_format) {
+            CommandExecution::Response(output_envelope) => {
+                let berth_exit = output_envelope.exit_code;
+                if post_commit_hook_requested() {
+                    emit_post_commit_response(&output_envelope);
+                } else {
+                    emit_response(output_format, &output_envelope);
+                }
+                berth_exit.into()
+            },
+            CommandExecution::BoardTerminalRestored => BerthExit::Clear.into(),
         }
-        berth_exit.into()
     }
 }
 
@@ -498,13 +502,25 @@ impl CliInvocation {
 }
 
 impl Command {
-    /// Execute this command's available engine or return its typed placeholder.
-    fn execute(self) -> OutputEnvelope {
-        match self {
+    /// Execute this command after its output representation is resolved.
+    fn execute(self, output_format: CliOutputFormat) -> CommandExecution {
+        let output_envelope = match self {
             Self::Init(init_arguments) => {
                 initialize_ledger(init_arguments.initialization_request())
             },
-            Self::Board(_) => board::execute(),
+            Self::Board(_) => {
+                return match board::execute(output_format) {
+                    board::BoardDisplayOutcome::HeadlessResponse(output_envelope)
+                    | board::BoardDisplayOutcome::TerminalDidNotOpen(output_envelope)
+                    | board::BoardDisplayOutcome::TerminalFailedAfterOpening(output_envelope)
+                    | board::BoardDisplayOutcome::FactsUnavailable(output_envelope) => {
+                        CommandExecution::Response(Box::new(output_envelope))
+                    },
+                    board::BoardDisplayOutcome::TerminalRestored => {
+                        CommandExecution::BoardTerminalRestored
+                    },
+                };
+            },
             Self::Check(path_arguments) => match path_arguments.into_check_request() {
                 Ok(check_request) => check::execute(check_request),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Check, &error),
@@ -540,7 +556,8 @@ impl Command {
                 CommandVerb::Integrate,
                 "the private reference-transaction dispatch cannot use the public envelope path",
             ),
-        }
+        };
+        CommandExecution::Response(Box::new(output_envelope))
     }
 
     /// Return this command's requested output representation.
@@ -577,6 +594,14 @@ impl Command {
             Self::Renew(_) => CommandVerb::Renew,
         }
     }
+}
+
+/// Whether command execution produced an envelope or owned the terminal itself.
+enum CommandExecution {
+    /// Emit this response through the resolved output representation.
+    Response(Box<OutputEnvelope>),
+    /// The board TUI exited after restoring the terminal.
+    BoardTerminalRestored,
 }
 
 impl PathArguments {

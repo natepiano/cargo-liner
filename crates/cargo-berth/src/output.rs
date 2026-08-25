@@ -122,6 +122,8 @@ enum OutputStatus {
     Reinitialized,
     /// The journal or its projection could not be safely read or published.
     LedgerUnreadable,
+    /// The board was handed a terminal and the terminal failed.
+    TerminalViewFailed,
     /// An overlap-free edit check may proceed.
     Clear,
     /// A new reservation was appended and published.
@@ -762,6 +764,37 @@ impl OutputEnvelope {
             blocked_by: Vec::new(),
             message: BOARD_READY_MESSAGE.to_owned(),
             payload: OutputPayload::from_facts(OutputFacts::Board(Box::new(board))),
+        }
+    }
+
+    /// Build a successful board response after the terminal view could not open.
+    pub(crate) fn board_with_terminal_view_opening_failure(
+        board: BoardModel,
+        diagnostic: &str,
+    ) -> Self {
+        let mut output_envelope = Self::board(board);
+        output_envelope
+            .message
+            .push_str("\nThe terminal view could not open: ");
+        output_envelope.message.push_str(diagnostic);
+        output_envelope
+            .message
+            .push_str(". Run `cargo-berth board --json` instead.");
+        output_envelope
+    }
+
+    /// Build an internal-failure response after the terminal board was visible.
+    pub(crate) fn terminal_view_failed_after_board_opened(diagnostic: &str) -> Self {
+        Self {
+            verb:         CommandVerb::Board,
+            status:       OutputStatus::TerminalViewFailed,
+            exit_code:    BerthExit::TerminalViewFailed,
+            reservations: Vec::new(),
+            blocked_by:   Vec::new(),
+            message:      format!(
+                "The terminal view failed after it opened: {diagnostic}. Run `cargo-berth board --json` instead."
+            ),
+            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -1932,5 +1965,20 @@ mod tests {
                 .contains("ledger")
                 && !payload.contains("configuration"))
         );
+    }
+
+    #[test]
+    fn terminal_view_failure_has_its_own_status_and_exit_code() {
+        let output_envelope =
+            OutputEnvelope::terminal_view_failed_after_board_opened("terminal disconnected");
+
+        assert_eq!(output_envelope.status, OutputStatus::TerminalViewFailed);
+        assert_eq!(
+            output_envelope.exit_code,
+            crate::exit::BerthExit::TerminalViewFailed
+        );
+        assert_eq!(output_envelope.payload.facts, super::OutputFacts::NoFacts);
+        assert!(output_envelope.message.contains("terminal disconnected"));
+        assert!(output_envelope.message.contains("cargo-berth board --json"));
     }
 }

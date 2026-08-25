@@ -424,9 +424,13 @@ name = "cargo-berth"
 version = "0.1.0-dev"
 dependencies = [
  "clap",
+ "crossterm",
+ "ratatui",
  "serde",
  "serde_json",
  "tempfile",
+ "tui_pane",
+ "unicode-width",
  "uuid",
 ]
 
