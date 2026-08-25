@@ -25,3 +25,9 @@
   - Why needed: Phase 15 made the crate publish-ready and its README tells readers to run `cargo install cargo-berth`, but this plan intentionally publishes nothing; the versionless `tui_pane` release pin currently resolves to 0.7.0 while this workspace builds against `tui_pane 0.8.0-dev`.
   - Completion condition: Phase 21 is complete; `tui_pane 0.8.0` is published; `/release cargo-berth 0.1.0` completes its dry run and publish flow; and a fresh `cargo install cargo-berth` succeeds.
   - Revealed by: Phase 15
+
+- [ ] **Make the engine own the status, exit-code, and payload-kind contract consumed by `/sync`**
+  - Target: `cargo-berth` output contract and `/Users/natemccoy/.claude/scripts/berth/claim_state.py`.
+  - Why needed: `claim_state.py` hand-maintains `STATUS_PAYLOAD_KINDS` and `FIXED_STATUS_EXIT_CODES` as a mirror of the engine's `OutputStatus`/`BerthExit` pairings; adding a valid engine status currently makes the front end reject that reply until both tables are manually updated.
+  - Completion condition: one versioned engine-owned contract supplies or mechanically verifies the Python pairing data, an engine status addition cannot pass engine tests while leaving the front end stale, and malformed status/payload/exit combinations remain rejected.
+  - Revealed by: Phase 18

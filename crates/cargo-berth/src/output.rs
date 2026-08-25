@@ -354,6 +354,27 @@ pub(crate) enum IntegrationPayload {
         /// Every exact hold that prevented integration.
         violations:     Vec<IntegrationViolation>,
     },
+    /// Caller identity named a coordination run that no longer owns active work.
+    Rejected {
+        /// The semantic reason integration could not select active work.
+        reason: IntegrationRejectionKind,
+    },
+}
+
+/// A stable inactive-identity rejection returned by `integrate`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum IntegrationRejectionKind {
+    /// A harness session mapping no longer identifies its exact active reservation.
+    InactiveSessionMapping {
+        /// The stale coordination run named by that mapping.
+        coordination_run_id: CoordinationRunId,
+    },
+    /// A marker no longer identifies active work in the invoking worktree.
+    InactiveMarkerRun {
+        /// The stale coordination run named by that marker.
+        coordination_run_id: CoordinationRunId,
+    },
 }
 
 /// How a successful integration related to current gate policy.
@@ -1160,6 +1181,25 @@ impl OutputEnvelope {
                 then,
                 reason,
             })),
+        }
+    }
+
+    /// Build an integration rejection that retains the inactive identity source.
+    pub(crate) fn integration_rejected(
+        reservation_id: ReservationId,
+        reason: IntegrationRejectionKind,
+        diagnostic: &str,
+    ) -> Self {
+        Self {
+            verb:         CommandVerb::Integrate,
+            status:       OutputStatus::InvalidInput,
+            exit_code:    BerthExit::UsageError,
+            reservations: vec![reservation_id],
+            blocked_by:   Vec::new(),
+            message:      diagnostic.to_owned(),
+            payload:      OutputPayload::from_facts(OutputFacts::Integrate(
+                IntegrationPayload::Rejected { reason },
+            )),
         }
     }
 

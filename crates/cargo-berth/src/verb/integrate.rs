@@ -15,6 +15,7 @@ use crate::ledger::LedgerTransactionError;
 use crate::output::CommandVerb;
 use crate::output::IntegratedGateOutcome;
 use crate::output::IntegrationPayload;
+use crate::output::IntegrationRejectionKind;
 use crate::output::OutputEnvelope;
 
 /// One reservation and its inseparable normal-or-forced integration policy.
@@ -149,6 +150,7 @@ fn read_integration_configuration(
 }
 
 fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope {
+    let diagnostic = error.to_string();
     match error {
         GateError::Transaction(LedgerTransactionError::LockContention) => {
             OutputEnvelope::contention(
@@ -161,9 +163,23 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         GateError::Transaction(LedgerTransactionError::CorrectableInput(error)) => {
             OutputEnvelope::invalid_input(CommandVerb::Integrate, &error.to_string())
         },
-        GateError::InactiveSessionMapping(_)
-        | GateError::InactiveMarkerRun(_)
-        | GateError::ReservationNotEntering(_)
+        GateError::InactiveSessionMapping(coordination_run_id) => {
+            OutputEnvelope::integration_rejected(
+                reservation_id,
+                IntegrationRejectionKind::InactiveSessionMapping {
+                    coordination_run_id,
+                },
+                &diagnostic,
+            )
+        },
+        GateError::InactiveMarkerRun(coordination_run_id) => OutputEnvelope::integration_rejected(
+            reservation_id,
+            IntegrationRejectionKind::InactiveMarkerRun {
+                coordination_run_id,
+            },
+            &diagnostic,
+        ),
+        GateError::ReservationNotEntering(_)
         | GateError::NoHoldToForce(_)
         | GateError::MissingSkippedHold => {
             OutputEnvelope::invalid_input(CommandVerb::Integrate, &error.to_string())
@@ -183,5 +199,46 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         | GateError::PermitReplay(_) => {
             OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string())
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gate_error;
+    use crate::gate::GateError;
+    use crate::ids::CoordinationRunId;
+    use crate::ids::ReservationId;
+
+    #[test]
+    fn inactive_identity_errors_return_typed_integration_rejections() {
+        let reservation_id = ReservationId::new();
+        let coordination_run_id = CoordinationRunId::new();
+        let errors = [
+            (
+                GateError::InactiveSessionMapping(coordination_run_id),
+                "inactive_session_mapping",
+            ),
+            (
+                GateError::InactiveMarkerRun(coordination_run_id),
+                "inactive_marker_run",
+            ),
+        ];
+
+        for (error, reason_kind) in errors {
+            let diagnostic = error.to_string();
+            let output_envelope = gate_error(reservation_id, error);
+
+            assert!(serde_json::to_value(output_envelope).is_ok_and(|envelope| {
+                envelope["status"] == "invalid_input"
+                    && envelope["exit_code"] == 5
+                    && envelope["message"] == diagnostic
+                    && envelope["payload"]["kind"] == "integrate"
+                    && envelope["payload"]["data"]["status"] == "rejected"
+                    && envelope["payload"]["data"]["reason"]["kind"] == reason_kind
+                    && envelope["payload"]["data"]["reason"]["coordination_run_id"]
+                        == coordination_run_id.to_string()
+                    && envelope["reservations"] == serde_json::json!([reservation_id.to_string()])
+            }));
+        }
     }
 }
