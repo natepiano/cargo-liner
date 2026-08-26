@@ -1,0 +1,308 @@
+# cargo-berth JSON and journal contract
+
+The wire contract for tools that consume `cargo-berth` output: the envelope
+`cargo berth board --json` emits, and the journal records the ledger appends.
+Both are stable — additions arrive as new variants, not renamed fields.
+
+For what the tool is and how to use it, see the [README](../README.md).
+
+## The JSON envelope
+
+This is an actual first read from a scratch repository. It contains a live
+predecessor, a waiting edge with its user action, stale alerts with their
+`renew` actions, and one recovered bypass:
+
+```json
+{
+  "verb": "board",
+  "status": "board_ready",
+  "exit_code": 0,
+  "reservations": [
+    "01a036fa-b70a-7e72-89ae-0facf1976ed1",
+    "01a036fb-1629-7712-96b7-1672b64a151f"
+  ],
+  "blocked_by": [],
+  "message": "The reservation board was read. Use `cargo-berth board --json` to inspect it.",
+  "payload": {
+    "kind": "board",
+    "data": {
+      "journal_position": { "generation": 3, "journal_byte_offset": 2820 },
+      "recovered_bypasses_this_invocation": [
+        "cargo-berth-pending-bypass-readme-example.json"
+      ],
+      "integration_order": "constraints_recorded",
+      "ready_now": {
+        "journal_position": { "generation": 3, "journal_byte_offset": 2820 },
+        "entries": [{
+          "relation": "unordered",
+          "reservation": {
+            "reservation_id": "01a036fa-b70a-7e72-89ae-0facf1976ed1",
+            "holder": {
+              "worktree_id": "01a036fa-b6a0-7a03-b2fb-81799cb93e3a",
+              "worktree_root": "/private/tmp/cargo-berth-phase11-collision.ay9US3/worktrees/holder",
+              "branch": { "kind": "attached", "reference": "refs/heads/holder" },
+              "liveness": "live"
+            },
+            "source": { "kind": "work_plan", "plan": "docs/work.md", "phase": "holder" },
+            "purpose": { "kind": "explained", "explanation": "update the shared API" },
+            "scopes": [{ "path": "crates/shared", "kind": "tree" }],
+            "lifecycle": { "stage": "active" },
+            "integration_evidence": { "kind": "active_work" },
+            "edit_blocking_status": "blocking",
+            "visibility": "active_constraint",
+            "freshness": { "status": "stale", "last_activity_at": "2020-01-01T00:00:00.000Z" },
+            "ahead_behind_main": { "status": "counts", "ahead": 0, "behind": 0 }
+          }
+        }]
+      },
+      "waiting": {
+        "journal_position": { "generation": 3, "journal_byte_offset": 2820 },
+        "entries": [{
+          "edge_id": "01a036fb-1629-7712-96b7-168de72d8c2f",
+          "predecessor": "01a036fa-b70a-7e72-89ae-0facf1976ed1",
+          "successor": "01a036fb-1629-7712-96b7-1672b64a151f",
+          "scopes": [{ "path": "crates/shared", "kind": "tree" }],
+          "reason": "the holder API must land first",
+          "action": {
+            "reason": "predecessor_checkpoint",
+            "instruction": "wait for the predecessor to reach a checkpoint; nobody can act yet"
+          },
+          "provenance": "acquisition",
+          "declaration_event_id": "01a036fb-1629-7712-96b7-1699922daa50"
+        }]
+      },
+      "settled_ordering_constraints": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
+      "unresolved_overlaps": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
+      "recorded_overlap_answers": {
+        "journal_position": { "generation": 3, "journal_byte_offset": 2820 },
+        "entries": [{
+          "answer": "sequence",
+          "reservation_id": "01a036fb-1629-7712-96b7-1672b64a151f",
+          "blocker": "01a036fa-b70a-7e72-89ae-0facf1976ed1",
+          "direction": "holder_before_requester",
+          "exact_approved_scopes": [{
+            "reservation_id": "01a036fa-b70a-7e72-89ae-0facf1976ed1",
+            "scope_revision": [{ "path": "crates/shared", "kind": "tree" }],
+            "scopes": [{ "path": "crates/shared", "kind": "tree" }]
+          }],
+          "authorization_reason": "the holder API must land first",
+          "acquisition": { "origin": "claim" },
+          "consequence": {
+            "state": "holding",
+            "action": {
+              "reason": "predecessor_checkpoint",
+              "instruction": "wait for the predecessor to reach a checkpoint; nobody can act yet"
+            }
+          }
+        }]
+      },
+      "unconstrained_reservations": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
+      "resolved": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
+      "available_forced_permits": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
+      "bypass_audit": {
+        "journal_position": { "generation": 3, "journal_byte_offset": 2820 },
+        "entries": [{
+          "kind": "environment_override",
+          "override_name": "CARGO_BERTH_BYPASS=1",
+          "occurrences": [{ "status": "unknown" }],
+          "grouped_reference_transactions": 1,
+          "skipped_holds": "override_preceded_ledger_read"
+        }]
+      },
+      "outstanding_incursions": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
+      "recorded_incursion_answers": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
+      "alerts": {
+        "journal_position": { "generation": 3, "journal_byte_offset": 2820 },
+        "entries": [{
+          "kind": "stale_reservation",
+          "reservation_id": "01a036fa-b70a-7e72-89ae-0facf1976ed1",
+          "freshness": { "status": "stale", "last_activity_at": "2020-01-01T00:00:00.000Z" },
+          "resolution": { "action": "renew", "reservation_id": "01a036fa-b70a-7e72-89ae-0facf1976ed1" }
+        }, {
+          "kind": "stale_reservation",
+          "reservation_id": "01a036fb-1629-7712-96b7-1672b64a151f",
+          "freshness": { "status": "stale", "last_activity_at": "2020-01-01T00:00:00.000Z" },
+          "resolution": { "action": "renew", "reservation_id": "01a036fb-1629-7712-96b7-1672b64a151f" }
+        }]
+      },
+      "git_cost": {
+        "trunk_resolution_calls": 1,
+        "worktree_list_calls": 1,
+        "reservation_evidence_revalidations": 0,
+        "protected_predecessor_ancestry_queries": 0,
+        "worktree_ahead_behind_computations": 0,
+        "orphan_recovery_evidence_queries": 0
+      }
+    },
+    "alerts": []
+  }
+}
+```
+
+Every section carries the same `journal_position`; a consumer can reject a mix
+of generations or offsets. Reservation rows occur at
+`ready_now.entries[].reservation`, `unconstrained_reservations.entries[]`, and
+`resolved.entries[]`. Their complete tagged alternatives are:
+
+- `holder.branch.kind`: `attached` with `reference`, or `detached` with `head`.
+- `source.kind`: `work_plan` with `plan` and `phase`, or `explicit`.
+- `purpose.kind`: `explained` with `explanation`, or
+  `not_provided_by_caller`.
+- `lifecycle.stage`: `active`; `outstanding` with `protected_tip`; or `released`
+  with `disposition`. The disposition uses `kind = integrated`,
+  `rewritten_integration`, `abandoned`, or `retired_orphan`; the last three add
+  the scalar `evidence` field.
+- `integration_evidence.kind`: `active_work`; `released_without_checkpoint`; or
+  `current` with a nested `status`. That nested value has its own `status`
+  discriminator: `integration_evidence.status.status` is `not_integrated`;
+  `integrated` with `trunk_oid`; `trunk_rewritten`; or `object_unknown`.
+- `freshness.status`: `fresh` or `stale`, both with `last_activity_at`.
+- `ahead_behind_main.status`: `counts` with `ahead` and `behind`; `unrelated`;
+  or `unavailable`.
+
+The remaining row enums are scalar strings:
+`edit_blocking_status = blocking | clear`, `visibility = active_constraint |
+reblocked_active_constraint | resolved_audit`, and `holder.liveness = live |
+unavailable | orphan_candidate | orphaned | unknown`.
+
+The sections mean:
+
+- `ready_now`: non-resolved endpoints involved in any recorded ordering edge,
+  including an edge now listed under `settled_ordering_constraints`, except a
+  current waiting successor or either endpoint of an unresolved deferral. Each
+  entry wraps the row with `relation = "unordered"`. Non-resolved rows are
+  active, outstanding, or released rows whose evidence made them edit-blocking
+  again.
+- `waiting`: holding edges. Its action is `predecessor_checkpoint`,
+  `predecessor_not_integrated`, `trunk_evidence_rewritten`,
+  `predecessor_object_unknown`, or `successor_must_incorporate_predecessor`.
+  The actions respectively tell the user to wait for a checkpoint, wait for the
+  checkpoint to reach trunk, record rewritten evidence with the supplied
+  `resolve_flag`, restore the missing Git object, or incorporate the predecessor.
+- `settled_ordering_constraints`: cancelled, fulfilled, or inactive-successor
+  edges, tagged `cancelled_constraint_ended`,
+  `fulfilled_successor_contains_predecessor`, or
+  `successor_no_longer_active`.
+- `unresolved_overlaps`: deferred pairs that still require a `sequence` answer.
+- `recorded_overlap_answers`: durable `sequence`, `defer`, `override`,
+  `ordering_created_from_deferral`, `existing_answers_cover_every_overlap`, and
+  `widen_without_foreign_overlap` answers with their exact scopes and effects.
+- `unconstrained_reservations`: non-resolved rows not involved in a recorded
+  ordering edge or unresolved deferral. This can include `active`, `outstanding`,
+  and reblocked `released` rows.
+- `resolved`: released reservation audit history. Its four dispositions are
+  `integrated`, `rewritten_integration`, `abandoned`, and `retired_orphan`.
+  Orphan retirement remains distinct from deliberate abandonment.
+- `available_forced_permits`: unused force permits and the skipped holds they
+  can authorize.
+- `bypass_audit`: durable force and environment-override history. It remains
+  visible after any one-time notice is consumed.
+- `outstanding_incursions`: incidents awaiting the row's supplied `flag`, which
+  names `resolve <reservation-id> --incursion <incident-id>`.
+- `recorded_incursion_answers`: durable resolutions for those incidents.
+- `alerts`: orphan recovery evidence and its `recover` or
+  `retire_or_abandon` action; stale reservations and their
+  `resolution.action = "renew"`; or bypasses not yet recorded and an instruction
+  for restoring the journal audit path. The orphan action names either
+  `resolve --recovered` or the explicit retire/abandon flags; the stale action
+  names the reservation for `renew`; the bypass alert names the recovery step.
+- `git_cost`: exact Git-call counts used to build this board.
+
+`integration_order` is `undeclared` or `constraints_recorded`.
+`recovered_bypasses_this_invocation` is a
+`RecoveredBypassesThisInvocation` list of pending-bypass marker ids. It is a
+notice reported once by the read that imported the marker into the journal and
+deleted it; the next board read returns an empty list. The corresponding
+`bypass_audit` entry remains as durable history.
+
+Two similar answer tags are intentionally separate parts of the frozen schema.
+Journal, claim, and widen payloads use
+`authorization.kind = "existing_answers_cover_every_overlap"` for
+`ConflictAuthorization::ExistingAnswersCoverEveryOverlap`. Board JSON uses
+`recorded_overlap_answers.entries[].answer =
+"existing_answers_cover_every_overlap"` for
+`RecordedAnswer::ExistingAnswersCoverEveryOverlap`.
+
+## The journal record
+
+`.git/cargo-berth/journal.ndjson` contains one complete JSON object per line.
+Every v1 record has this envelope:
+
+- `schema_version`: the integer `1`.
+- `event_id`: the record's UUID-v7 string.
+- `actor`: `{ "repository": <uuid-v7>, "worktree": <uuid-v7>, "run":
+  <uuid-v7> }`.
+- `at`: an RFC 3339 UTC string with millisecond precision.
+- `projection_generation`: the integer generation published by this append.
+- `op`: the operation discriminator. Operation fields are flattened into the
+  same object as the envelope; there is no nested operation object.
+
+Reservation, event, incident, edge, permit, repository, worktree, and
+coordination-run ids are UUID-v7 strings. Pending-marker ids and bypassed-merge
+identities are opaque strings. Git object ids are full lowercase SHA-1 or
+SHA-256 hex strings. A `scope` is `{ "path": <repository-relative string>,
+"kind": "file" | "tree" }`; fields named `scopes`, `added_scopes`,
+`scope_revision`, and overlap `scopes` are arrays of that object. The v1
+operation union is:
+
+| `op` | Operation fields |
+| --- | --- |
+| `claim` | `reservation_id`, `scopes`, `source`, `purpose`, `trunk_at_claim`, `head_snapshot`, `phase_start_head`, `worktree_root`, `worktree_administrative_locator`, `authorization` |
+| `widen` | `reservation_id`, `added_scopes`, `cause`, `authorization`, `edit_blocking_status` |
+| `checkpoint` | `reservation_id`, `protected_tip`, `trunk_snapshot` |
+| `resnapshot` | `reservation_id`, `snapshot` |
+| `renew` | `reservation_id` |
+| `release` | `reservation_id`, `disposition` |
+| `replace_release_disposition` | `reservation_id`, `superseded`, `replacement` |
+| `evidence_revalidated` | `reservation_id`, `status`, `edit_blocking_status` |
+| `resolve_defer` | `deferred_reservation_id`, `blocker_reservation_id`, `edge_id`, `direction`, `reason` |
+| `incursion` | `incident_id`, `reservation_id`, `foreign_reservation_ids`, `paths` |
+| `resolve_incursion` | `incident_id` |
+| `forced_integration_permit` | `permit_id`, `reservation_id`, `reason`, `skipped_holds` |
+| `consume_forced_integration_permit` | `permit_id`, `reservation_id` |
+| `bypass` | `action`, `cause`, `occurrence_time`, `recording` |
+| `rebind_worktree` | `reservation_id`, `previous_worktree_id`, `current_worktree_id`, `current_worktree_root`, `current_worktree_administrative_locator` |
+| `relocate_worktree` | `reservation_id`, `worktree_id`, `previous_root`, `current_root` |
+
+These operation fields use the following tagged values:
+
+- `source` is `{ "kind": "explicit" }` or `{ "kind": "work_plan",
+  "plan": <string>, "phase": <string> }`.
+- `purpose` is `{ "kind": "not_provided_by_caller" }` or `{ "kind":
+  "explained", "explanation": <non-empty string> }`.
+- `head_snapshot` is `{ "kind": "branch", "full_ref": <refs/... string>,
+  "head": <oid> }` or `{ "kind": "detached", "head": <oid> }`.
+- `authorization.kind` is `no_conflict`; `sequence` with `overlaps`, `blocker`,
+  `direction`, `edge_id`, and `reason`; `defer` or `override` with `overlaps`,
+  `blocker`, and `reason`; or `existing_answers_cover_every_overlap` with
+  `overlaps`. `direction` is `requester_before_holder` or
+  `holder_before_requester`. Each `overlaps` entry is `{ "reservation_id":
+  <uuid-v7>, "scope_revision": [scope...], "scopes": [scope...] }`.
+- Widen `cause.kind` is `drift` or `explicit`; `explicit` adds `reason`.
+- `edit_blocking_status` is `blocking` or `clear`.
+- `snapshot.stage` is `active` with `claim_snapshot`, or `outstanding` with
+  `protected_tip` and `trunk_oid`.
+- A release disposition is `{ "kind": "integrated" }`, or has `kind` equal to
+  `rewritten_integration`, `abandoned`, or `retired_orphan` plus a scalar
+  `evidence` field containing the commit or reason. `superseded` and
+  `replacement` use the same format.
+- Integration evidence `status.status` is `not_integrated`; `integrated` with
+  `trunk_oid`; `trunk_rewritten`; or `object_unknown`.
+- Incursion `foreign_reservation_ids` and `paths` are non-empty arrays of
+  reservation-id strings and repository-relative path strings, respectively.
+- `skipped_holds.kind` is `ordering_edges` with non-empty `edges`; `deferrals`
+  with non-empty `deferrals`; or `ordering_edges_and_deferrals` with both.
+  An edge is `{ "edge_id": <uuid-v7>, "predecessor": <uuid-v7> }`; a
+  deferral is `{ "declaration_event_id": <uuid-v7>, "deferred": <uuid-v7>,
+  "blocker": <uuid-v7> }`.
+- Bypass `action` is `integration` or `editing`. `cause.kind` is
+  `environment_override` with `bypassed_merge`, or `forced_integration` with
+  `permit_id` and `reason`. `occurrence_time.status` is `event_recorded_at`,
+  `known` with `at`, or `unavailable`. `recording.kind` is `direct` or
+  `pending_marker` with `marker_id`.
+
+An unknown `schema_version` or `op`, an omitted required field, an empty field
+whose type is documented as non-empty, or an invalid tagged alternative makes
+the journal unreadable; an older binary never skips an operation it cannot
+replay.
+
