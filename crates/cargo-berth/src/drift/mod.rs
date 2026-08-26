@@ -46,16 +46,19 @@ use crate::reservation::AuthorizedEditingIdentity;
 use crate::reservation::DriftBlockingCoverage;
 use crate::reservation::IncursionObservation;
 use crate::reservation::Reservation;
+use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::WidenScopeBinding;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
+use crate::scope::PathCaseError;
 use crate::scope::ReservationScope;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::verb::claim;
+use crate::verb::claim::ClaimError;
 use crate::verb::claim::FirstTouchClaimExecution;
 use crate::verb::claim::FirstTouchClaimRequest;
 use crate::verb::claim::FirstTouchConflictHandling;
@@ -122,7 +125,7 @@ pub(crate) struct DriftRequest {
 /// The comparison algorithm that actually produced one report.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum DriftComparisonMode {
+enum DriftComparisonMode {
     /// A valid cache enabled the two-command delta.
     CheapDelta,
     /// The caller selected the complete phase-start comparison.
@@ -135,7 +138,7 @@ pub(crate) enum DriftComparisonMode {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct DriftReport {
     /// The comparison that actually ran.
-    pub(crate) comparison:       DriftComparisonMode,
+    comparison:                  DriftComparisonMode,
     /// How paths outside the acting run's reservations were attributed.
     #[serde(rename = "widening")]
     pub(crate) path_attribution: DriftPathAttributionOutcome,
@@ -168,7 +171,7 @@ pub(crate) enum DriftPathAttributionOutcome {
         /// The exact changed paths that could not be claimed after the write.
         paths:      UnattributedDriftPathSet,
         /// Every holder intersecting those changed paths.
-        conflicts:  Vec<crate::reservation::ReservationConflict>,
+        conflicts:  Vec<ReservationConflict>,
         /// Whether other paths from the same write received first-touch protection.
         protection: PostWriteFreePathProtection,
     },
@@ -1978,9 +1981,9 @@ enum DriftExecutionError {
     Replay(ReservationReplayError),
     Selection(DriftSelectionError),
     Fingerprint(DriftFingerprintError),
-    PathCase(crate::scope::PathCaseError),
+    PathCase(PathCaseError),
     Transaction(LedgerTransactionError),
-    Claim(claim::ClaimError),
+    Claim(ClaimError),
     ClaimRejected(String),
 }
 
@@ -2022,12 +2025,12 @@ impl From<DriftFingerprintError> for DriftExecutionError {
     fn from(error: DriftFingerprintError) -> Self { Self::Fingerprint(error) }
 }
 
-impl From<crate::scope::PathCaseError> for DriftExecutionError {
-    fn from(error: crate::scope::PathCaseError) -> Self { Self::PathCase(error) }
+impl From<PathCaseError> for DriftExecutionError {
+    fn from(error: PathCaseError) -> Self { Self::PathCase(error) }
 }
 
-impl From<claim::ClaimError> for DriftExecutionError {
-    fn from(error: claim::ClaimError) -> Self { Self::Claim(error) }
+impl From<ClaimError> for DriftExecutionError {
+    fn from(error: ClaimError) -> Self { Self::Claim(error) }
 }
 
 #[cfg(test)]

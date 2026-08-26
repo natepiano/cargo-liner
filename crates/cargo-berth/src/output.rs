@@ -28,9 +28,13 @@ use crate::edge::OrderingEdge;
 use crate::edge::UnintegratedPredecessorEvidence;
 use crate::exit::BerthExit;
 use crate::gate::IntegrationViolation;
+use crate::gate::install::ActiveManagedHookInstallation;
+use crate::gate::install::ManagedHookActivationOutcome;
+use crate::gate::install::ManagedHookInstallation;
 use crate::ids::CoordinationRunId;
 use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
+use crate::ids::ProjectionGeneration;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
@@ -344,7 +348,7 @@ pub(crate) enum IntegrationPayload {
         /// The new main object installed by the update.
         proposed:       GitObjectId,
         /// The journal generation validated under the decision lock.
-        generation:     crate::ids::ProjectionGeneration,
+        generation:     ProjectionGeneration,
         /// How gate policy treated the update.
         gate:           IntegratedGateOutcome,
     },
@@ -353,7 +357,7 @@ pub(crate) enum IntegrationPayload {
         /// The reservation the caller asked to integrate.
         reservation_id: ReservationId,
         /// The journal generation validated under the decision lock.
-        generation:     crate::ids::ProjectionGeneration,
+        generation:     ProjectionGeneration,
         /// Every exact hold that prevented integration.
         violations:     Vec<IntegrationViolation>,
     },
@@ -771,7 +775,7 @@ pub(crate) enum CoordinationRunMarkerRetirement {
 impl OutputEnvelope {
     /// Build the response for a verb that has no engine behind it yet.
     #[cfg(test)]
-    pub(crate) fn unimplemented(command_verb: CommandVerb) -> Self {
+    fn unimplemented(command_verb: CommandVerb) -> Self {
         Self {
             verb:         command_verb,
             status:       OutputStatus::Unimplemented,
@@ -831,7 +835,7 @@ impl OutputEnvelope {
     /// Build the successful response for completed initialization.
     pub(crate) fn initialized(
         initialization: LedgerInitialization,
-        hook_installations: &[crate::gate::install::ManagedHookInstallation],
+        hook_installations: &[ManagedHookInstallation],
     ) -> Self {
         let hooks = hook_installations
             .iter()
@@ -919,7 +923,7 @@ impl OutputEnvelope {
     /// Build an enforcing gate denial with complete reservation and recovery context.
     pub(crate) fn integration_blocked(
         reservation_id: ReservationId,
-        generation: crate::ids::ProjectionGeneration,
+        generation: ProjectionGeneration,
         violations: Vec<IntegrationViolation>,
     ) -> Self {
         let blocked_by = integration_blockers(&violations);
@@ -1965,8 +1969,8 @@ impl From<InitializationState> for InitializationResource {
     }
 }
 
-impl From<&crate::gate::install::ManagedHookInstallation> for InitializedManagedHook {
-    fn from(installation: &crate::gate::install::ManagedHookInstallation) -> Self {
+impl From<&ManagedHookInstallation> for InitializedManagedHook {
+    fn from(installation: &ManagedHookInstallation) -> Self {
         Self {
             name:       installation.name().to_owned(),
             activation: ManagedHookActivation::from(installation.activation()),
@@ -1974,28 +1978,24 @@ impl From<&crate::gate::install::ManagedHookInstallation> for InitializedManaged
     }
 }
 
-impl From<&crate::gate::install::ManagedHookActivationOutcome> for ManagedHookActivation {
-    fn from(activation: &crate::gate::install::ManagedHookActivationOutcome) -> Self {
+impl From<&ManagedHookActivationOutcome> for ManagedHookActivation {
+    fn from(activation: &ManagedHookActivationOutcome) -> Self {
         match activation {
-            crate::gate::install::ManagedHookActivationOutcome::Active { installation } => {
-                Self::Active {
-                    installation: ActiveHookInstallation::from(*installation),
-                }
+            ManagedHookActivationOutcome::Active { installation } => Self::Active {
+                installation: ActiveHookInstallation::from(*installation),
             },
-            crate::gate::install::ManagedHookActivationOutcome::Inactive { reason } => {
-                Self::Inactive {
-                    reason: ManagedHookInactivity::from(reason),
-                }
+            ManagedHookActivationOutcome::Inactive { reason } => Self::Inactive {
+                reason: ManagedHookInactivity::from(reason),
             },
         }
     }
 }
 
-impl From<crate::gate::install::ActiveManagedHookInstallation> for ActiveHookInstallation {
-    fn from(installation: crate::gate::install::ActiveManagedHookInstallation) -> Self {
+impl From<ActiveManagedHookInstallation> for ActiveHookInstallation {
+    fn from(installation: ActiveManagedHookInstallation) -> Self {
         match installation {
-            crate::gate::install::ActiveManagedHookInstallation::Installed => Self::Installed,
-            crate::gate::install::ActiveManagedHookInstallation::Current => Self::Current,
+            ActiveManagedHookInstallation::Installed => Self::Installed,
+            ActiveManagedHookInstallation::Current => Self::Current,
         }
     }
 }

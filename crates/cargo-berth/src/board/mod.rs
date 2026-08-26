@@ -25,13 +25,17 @@ use crate::answer::OverlapAuthorizationReason;
 use crate::edge::EdgeDeclaration;
 use crate::edge::EdgeHold;
 use crate::edge::EdgeReadiness;
+use crate::edge::EdgeReplayError;
 use crate::edge::IntegrationConstraintProjection;
 use crate::edge::IntegrationDeferralStatus;
+use crate::edge::MissingReadinessFact;
 use crate::edge::OrderingReason;
 use crate::edge::RepositoryReservationEvidence;
 use crate::edge::RepositorySnapshot;
 use crate::edge::RepositoryTrunk;
 use crate::edge::UnintegratedPredecessorEvidence;
+use crate::gate::permit;
+use crate::gate::permit::ForcedIntegrationPermitReplayError;
 use crate::git;
 use crate::git::AheadBehind;
 use crate::ids::EdgeId;
@@ -50,7 +54,9 @@ use crate::ledger::BypassedMergeIdentity;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
+use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::FullRefName;
+use crate::ledger::IncursionIncidentId;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::OrderingDirection;
@@ -60,10 +66,12 @@ use crate::ledger::SkippedDeferral;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::ledger::SkippedOrderingEdge;
 use crate::ledger::WidenCause;
+use crate::reconcile::ReconciliationGitCost;
 use crate::reconcile::ReconciliationReport;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::IncursionIncidentStatus;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationFreshness;
@@ -161,7 +169,7 @@ enum BoardIntegrationEvidence {
 /// Where one retained reservation belongs on the board.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum BoardReservationVisibility {
+enum BoardReservationVisibility {
     /// Live or outstanding work still participates in active constraints.
     ActiveConstraint,
     /// A released reservation became edit-blocking again after evidence changed.
@@ -340,7 +348,7 @@ enum RevalidationConsequence {
 struct AvailableForcedPermit {
     permit_id:      ForcedIntegrationPermitId,
     reservation_id: ReservationId,
-    reason:         crate::ledger::ForcedIntegrationReason,
+    reason:         ForcedIntegrationReason,
     skipped_holds:  SkippedIntegrationHoldSet,
     instruction:    String,
 }
@@ -350,19 +358,19 @@ struct AvailableForcedPermit {
 enum BypassAuditEntry {
     ForcedOrderingEdges {
         permit_id:     ForcedIntegrationPermitId,
-        reason:        crate::ledger::ForcedIntegrationReason,
+        reason:        ForcedIntegrationReason,
         skipped_edges: Vec<SkippedOrderingEdge>,
         occurrence:    BoardBypassTime,
     },
     ForcedUnresolvedDeferrals {
         permit_id:         ForcedIntegrationPermitId,
-        reason:            crate::ledger::ForcedIntegrationReason,
+        reason:            ForcedIntegrationReason,
         skipped_deferrals: Vec<SkippedDeferral>,
         occurrence:        BoardBypassTime,
     },
     ForcedEdgesAndDeferrals {
         permit_id:         ForcedIntegrationPermitId,
-        reason:            crate::ledger::ForcedIntegrationReason,
+        reason:            ForcedIntegrationReason,
         skipped_edges:     Vec<SkippedOrderingEdge>,
         skipped_deferrals: Vec<SkippedDeferral>,
         occurrence:        BoardBypassTime,
@@ -390,7 +398,7 @@ enum UnrecordedSkippedHolds {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct OutstandingIncursion {
-    incident_id:             crate::ledger::IncursionIncidentId,
+    incident_id:             IncursionIncidentId,
     straying_reservation_id: ReservationId,
     foreign_reservation_ids: Vec<ReservationId>,
     entered_paths:           Vec<ReservationScopePath>,
@@ -400,13 +408,13 @@ struct OutstandingIncursion {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct IncursionResolutionAction {
     reservation_id: ReservationId,
-    incident_id:    crate::ledger::IncursionIncidentId,
+    incident_id:    IncursionIncidentId,
     flag:           String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct RecordedIncursionAnswer {
-    incident_id:             crate::ledger::IncursionIncidentId,
+    incident_id:             IncursionIncidentId,
     straying_reservation_id: ReservationId,
     foreign_reservation_ids: Vec<ReservationId>,
     entered_paths:           Vec<ReservationScopePath>,
@@ -419,7 +427,7 @@ struct RecordedIncursionAnswer {
 enum BoardAlert {
     OrphanedOutstanding {
         reservation_id:       ReservationId,
-        protected_tip:        crate::reservation::ProtectedReservationTip,
+        protected_tip:        ProtectedReservationTip,
         branch:               BoardBranchRefStatus,
         object_availability:  ObjectAvailability,
         retention_ref:        BoardRetentionRefStatus,
@@ -1064,7 +1072,7 @@ fn append_authorization_answer(
 fn available_forced_permits(
     events: &[JournalEvent],
 ) -> Result<Vec<AvailableForcedPermit>, BoardError> {
-    crate::gate::permit::available_forced_integration_permits(events)
+    permit::available_forced_integration_permits(events)
         .map_err(BoardError::ForcedPermitReplay)
         .map(|permits| {
             permits
@@ -1331,7 +1339,7 @@ fn board_git_cost(
     constraints: &IntegrationConstraintProjection,
     snapshot: &RepositorySnapshot,
     ahead_behind_computations: u64,
-    reconciliation_git_cost: &crate::reconcile::ReconciliationGitCost,
+    reconciliation_git_cost: &ReconciliationGitCost,
 ) -> BoardGitCost {
     let reservation_evidence_revalidations = reservations
         .iter()
@@ -1393,13 +1401,13 @@ pub(crate) enum BoardError {
     /// Reservation replay failed.
     Reservation(ReservationReplayError),
     /// Ordering graph replay failed.
-    Edge(crate::edge::EdgeReplayError),
+    Edge(EdgeReplayError),
     /// A repository observation omitted a required edge fact.
-    MissingReadiness(crate::edge::MissingReadinessFact),
+    MissingReadiness(MissingReadinessFact),
     /// A recorded answer named an edge absent from the replayed graph.
     MissingOrderingEdge(EdgeId),
     /// Forced-permit replay found inconsistent issue or consumption records.
-    ForcedPermitReplay(crate::gate::permit::ForcedIntegrationPermitReplayError),
+    ForcedPermitReplay(ForcedIntegrationPermitReplayError),
     /// An orphan alert retained a branch reference that no longer satisfies its type.
     InvalidBranchReference(String),
     /// The projection and event replay did not describe the same committed generation.
@@ -1447,12 +1455,12 @@ impl From<ReservationReplayError> for BoardError {
     fn from(error: ReservationReplayError) -> Self { Self::Reservation(error) }
 }
 
-impl From<crate::edge::EdgeReplayError> for BoardError {
-    fn from(error: crate::edge::EdgeReplayError) -> Self { Self::Edge(error) }
+impl From<EdgeReplayError> for BoardError {
+    fn from(error: EdgeReplayError) -> Self { Self::Edge(error) }
 }
 
-impl From<crate::edge::MissingReadinessFact> for BoardError {
-    fn from(error: crate::edge::MissingReadinessFact) -> Self { Self::MissingReadiness(error) }
+impl From<MissingReadinessFact> for BoardError {
+    fn from(error: MissingReadinessFact) -> Self { Self::MissingReadiness(error) }
 }
 
 #[cfg(test)]

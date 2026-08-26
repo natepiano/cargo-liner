@@ -7,10 +7,15 @@
 use std::env;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::fmt::Arguments;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
 
 use clap::ArgGroup;
 use clap::Args;
@@ -41,8 +46,13 @@ use crate::exit::BerthExit;
 use crate::gate;
 use crate::gate::GateDecision;
 use crate::gate::GateError;
+use crate::gate::GateResult;
+use crate::gate::IntegrationRequest;
+use crate::gate::ReferenceTransaction;
+use crate::gate::ReferenceTransactionParseError;
 use crate::gate::ReferenceTransactionPhase;
 use crate::gate::TrunkReferencePresence;
+use crate::gate::permit::EnvironmentBypassRetentionOutcome;
 use crate::git;
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
@@ -73,6 +83,7 @@ use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::verb::board;
+use crate::verb::board::BoardDisplayOutcome;
 use crate::verb::check;
 use crate::verb::check::CheckRequest;
 use crate::verb::claim;
@@ -225,7 +236,7 @@ struct ReferenceTransactionArguments {
     /// The prepared, committed, or aborted reference-transaction phase.
     phase:           ReferenceTransactionPhase,
     /// The full configured trunk ref captured when the hook was installed.
-    trunk_reference: crate::ledger::FullRefName,
+    trunk_reference: FullRefName,
 }
 
 /// Why git's reference-transaction input could not be classified.
@@ -233,11 +244,11 @@ enum ReferenceTransactionInputError {
     /// Standard input could not be read completely.
     StandardInputUnreadable(std::io::Error),
     /// The input did not satisfy git's reference-transaction record format.
-    MalformedHookInput(gate::ReferenceTransactionParseError),
+    MalformedHookInput(ReferenceTransactionParseError),
 }
 
-impl std::fmt::Display for ReferenceTransactionInputError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for ReferenceTransactionInputError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::StandardInputUnreadable(error) => {
                 write!(formatter, "standard input was unreadable: {error}")
@@ -577,13 +588,13 @@ impl Command {
             },
             Self::Board(_) => {
                 return match board::execute(output_format) {
-                    board::BoardDisplayOutcome::HeadlessResponse(output_envelope)
-                    | board::BoardDisplayOutcome::TerminalDidNotOpen(output_envelope)
-                    | board::BoardDisplayOutcome::TerminalFailedAfterOpening(output_envelope)
-                    | board::BoardDisplayOutcome::FactsUnavailable(output_envelope) => {
+                    BoardDisplayOutcome::HeadlessResponse(output_envelope)
+                    | BoardDisplayOutcome::TerminalDidNotOpen(output_envelope)
+                    | BoardDisplayOutcome::TerminalFailedAfterOpening(output_envelope)
+                    | BoardDisplayOutcome::FactsUnavailable(output_envelope) => {
                         CommandExecution::Response(Box::new(output_envelope))
                     },
-                    board::BoardDisplayOutcome::TerminalRestored => {
+                    BoardDisplayOutcome::TerminalRestored => {
                         CommandExecution::BoardTerminalRestored
                     },
                 };
@@ -864,10 +875,10 @@ impl SequenceArguments {
 impl IntegrateArguments {
     fn into_integrate_request(self) -> Result<IntegrateRequest, String> {
         let integration = match (self.force, self.why) {
-            (false, None) => gate::IntegrationRequest::EnforceOrdering,
+            (false, None) => IntegrationRequest::EnforceOrdering,
             (true, Some(reason)) => reason
                 .parse::<ForcedIntegrationReason>()
-                .map(gate::IntegrationRequest::ForceOnce)
+                .map(IntegrationRequest::ForceOnce)
                 .map_err(|error| error.to_string())?,
             (true, None) | (false, Some(_)) => {
                 return Err("--force and --why must be supplied together".to_owned());
@@ -1013,7 +1024,7 @@ fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnv
 
 /// Writes a reference-transaction diagnostic as best effort so a stderr failure
 /// cannot change the gate's exit code.
-fn write_reference_transaction_diagnostic(arguments: std::fmt::Arguments<'_>) {
+fn write_reference_transaction_diagnostic(arguments: Arguments<'_>) {
     let _ = writeln!(std::io::stderr().lock(), "{arguments}");
 }
 
@@ -1021,7 +1032,7 @@ fn run_reference_transaction(
     phase: ReferenceTransactionPhase,
     trunk_reference: FullRefName,
 ) -> ExitCode {
-    const TOTAL_GATE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+    const TOTAL_GATE_DEADLINE: Duration = Duration::from_secs(10);
 
     if gate::permit::environment_bypass_requested() {
         return run_environment_bypassed_reference_transaction(phase, &trunk_reference);
@@ -1064,13 +1075,13 @@ fn run_reference_transaction(
     let results = match receiver.recv_timeout(remaining) {
         Ok(Ok(results)) => results,
         Ok(Err(error)) => return reference_transaction_error(&error),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+        Err(RecvTimeoutError::Timeout) => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth trunk gate exhausted its 10-second total deadline; no integration decision was made. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately."
             ));
             return BerthExit::BlockedByContention.into();
         },
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+        Err(RecvTimeoutError::Disconnected) => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth trunk gate stopped before making a decision. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately."
             ));
@@ -1088,7 +1099,7 @@ fn run_reference_transaction(
 
 fn read_reference_transaction(
     phase: ReferenceTransactionPhase,
-) -> Result<gate::ReferenceTransaction, ReferenceTransactionInputError> {
+) -> Result<ReferenceTransaction, ReferenceTransactionInputError> {
     let mut input = String::new();
     std::io::stdin()
         .read_to_string(&mut input)
@@ -1151,13 +1162,13 @@ fn retain_environment_bypass_audit(audit_basis: EnvironmentBypassAuditBasis) -> 
     match (audit_basis, retention) {
         (
             EnvironmentBypassAuditBasis::ConfirmedTrunkReference,
-            gate::permit::EnvironmentBypassRetentionOutcome::Journalled
-            | gate::permit::EnvironmentBypassRetentionOutcome::PendingMarker
-            | gate::permit::EnvironmentBypassRetentionOutcome::Unenrolled,
+            EnvironmentBypassRetentionOutcome::Journalled
+            | EnvironmentBypassRetentionOutcome::PendingMarker
+            | EnvironmentBypassRetentionOutcome::Unenrolled,
         ) => BerthExit::Clear.into(),
         (
             EnvironmentBypassAuditBasis::ConfirmedTrunkReference,
-            gate::permit::EnvironmentBypassRetentionOutcome::Unrecorded,
+            EnvironmentBypassRetentionOutcome::Unrecorded,
         ) => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth took the CARGO_BERTH_BYPASS=1 override, but neither the journal nor a pending marker retained its audit fact. This ref transaction remains permitted. Restore repository write access, then rerun cargo berth init."
@@ -1166,8 +1177,8 @@ fn retain_environment_bypass_audit(audit_basis: EnvironmentBypassAuditBasis) -> 
         },
         (
             EnvironmentBypassAuditBasis::UnconfirmedTrunkReference(input_error),
-            gate::permit::EnvironmentBypassRetentionOutcome::Journalled
-            | gate::permit::EnvironmentBypassRetentionOutcome::PendingMarker,
+            EnvironmentBypassRetentionOutcome::Journalled
+            | EnvironmentBypassRetentionOutcome::PendingMarker,
         ) => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth took the CARGO_BERTH_BYPASS=1 override but could not confirm whether the transaction named the trunk reference because {input_error}. The audit fact was retained without confirming the ref; this ref transaction remains permitted."
@@ -1176,7 +1187,7 @@ fn retain_environment_bypass_audit(audit_basis: EnvironmentBypassAuditBasis) -> 
         },
         (
             EnvironmentBypassAuditBasis::UnconfirmedTrunkReference(input_error),
-            gate::permit::EnvironmentBypassRetentionOutcome::Unenrolled,
+            EnvironmentBypassRetentionOutcome::Unenrolled,
         ) => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth took the CARGO_BERTH_BYPASS=1 override but could not confirm whether the transaction named the trunk reference because {input_error}. The repository is not enrolled, so no shared audit destination applies; this ref transaction remains permitted."
@@ -1185,7 +1196,7 @@ fn retain_environment_bypass_audit(audit_basis: EnvironmentBypassAuditBasis) -> 
         },
         (
             EnvironmentBypassAuditBasis::UnconfirmedTrunkReference(input_error),
-            gate::permit::EnvironmentBypassRetentionOutcome::Unrecorded,
+            EnvironmentBypassRetentionOutcome::Unrecorded,
         ) => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth took the CARGO_BERTH_BYPASS=1 override but could not confirm whether the transaction named the trunk reference because {input_error}, and neither the journal nor a pending marker retained the audit fact. The override could not be recorded here; this ref transaction remains permitted, and a marker is being left to report it later. Restore repository write access, then rerun cargo berth init."
@@ -1195,7 +1206,7 @@ fn retain_environment_bypass_audit(audit_basis: EnvironmentBypassAuditBasis) -> 
     }
 }
 
-fn exit_for_reference_transaction_results(results: Vec<gate::GateResult>) -> ExitCode {
+fn exit_for_reference_transaction_results(results: Vec<GateResult>) -> ExitCode {
     let mut blocked = false;
     for result in results {
         match result.decision {

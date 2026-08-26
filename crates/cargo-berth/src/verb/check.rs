@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use super::claim;
+use super::claim::ClaimError;
 use super::claim::FirstTouchClaimExecution;
 use super::claim::FirstTouchClaimRequest;
 use super::claim::FirstTouchConflictHandling;
@@ -143,7 +144,7 @@ fn reconcile_and_retry(
 
 fn acquire_first_touch(
     declared_scopes: DeclaredReservationScopeSet,
-) -> Result<Enrollment<FirstTouchClaimExecution>, claim::ClaimError> {
+) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     claim::acquire_first_touch(FirstTouchClaimRequest {
         declared_scopes,
         conflict_handling: FirstTouchConflictHandling::RefuseRequest,
@@ -151,7 +152,7 @@ fn acquire_first_touch(
 }
 
 fn render_acquisition(
-    acquisition: Result<Enrollment<FirstTouchClaimExecution>, claim::ClaimError>,
+    acquisition: Result<Enrollment<FirstTouchClaimExecution>, ClaimError>,
 ) -> OutputEnvelope {
     match acquisition {
         Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {

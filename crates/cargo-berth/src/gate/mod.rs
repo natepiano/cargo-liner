@@ -11,30 +11,37 @@ use std::fmt::Formatter;
 use std::path::Path;
 use std::str::FromStr;
 
+use permit::ForcedIntegrationPermitReplayError;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::alert::Alert;
 use crate::config::BerthConfig;
+use crate::config::ConfigError;
 use crate::config::Enrollment;
 use crate::config::GateMode;
 use crate::edge::IntegrationConstraintProjection;
 use crate::edge::IntegrationHold;
 use crate::edge::IntegrationReservationFacts;
+use crate::edge::IntegrationSubject;
 use crate::edge::MissingReadinessFact;
 use crate::git;
 use crate::git::GitError;
 use crate::ids::CoordinationRunId;
 use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
+use crate::ids::ProjectionGeneration;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::BypassCause;
+use crate::ledger::BypassOccurrenceTime;
+use crate::ledger::BypassRecording;
 use crate::ledger::BypassedAction;
 use crate::ledger::EditAuthorization;
 use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::FullRefName;
+use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
@@ -48,7 +55,9 @@ use crate::ledger::SkippedOrderingEdge;
 use crate::ledger::WorktreeContext;
 use crate::reconcile;
 use crate::reconcile::GateReconciliationError;
+use crate::reconcile::ReconcileError;
 use crate::reservation::ReservationLifecycle;
+use crate::reservation::RetainedReservationSet;
 
 const LOCAL_BRANCH_REFERENCE_PREFIX: &str = "refs/heads/";
 const SHA1_OBJECT_ID_CHARACTERS: usize = 40;
@@ -70,9 +79,9 @@ pub(crate) enum ReferenceTransactionPhase {
 #[derive(Clone)]
 pub(crate) struct ReferenceTransaction {
     /// The lifecycle point at which git invoked the hook.
-    pub(crate) phase: ReferenceTransactionPhase,
+    phase:   ReferenceTransactionPhase,
     /// Every line supplied on standard input, in git's transaction order.
-    entries:          Vec<ReferenceTransactionEntry>,
+    entries: Vec<ReferenceTransactionEntry>,
 }
 
 #[derive(Clone)]
@@ -91,7 +100,7 @@ pub(crate) enum TrunkReferencePresence {
 
 /// One parsed old-object, new-object, and full-reference update.
 #[derive(Clone)]
-pub(crate) struct ReferenceUpdate {
+struct ReferenceUpdate {
     /// The object currently named by the ref, or git's all-zero absence marker.
     previous:  ReferenceObject,
     /// The object the transaction proposes, or git's all-zero deletion marker.
@@ -145,26 +154,26 @@ pub(crate) enum GateDecision {
     /// No newly entering reservation is held.
     Clear {
         /// The exact replay generation validated under the mutation lock.
-        generation: crate::ids::ProjectionGeneration,
+        generation: ProjectionGeneration,
     },
     /// Observe-only policy found violations but permits the update.
     Observed {
         /// The exact replay generation validated under the mutation lock.
-        generation: crate::ids::ProjectionGeneration,
+        generation: ProjectionGeneration,
         /// Every violation that enforcing mode would reject.
         violations: Vec<IntegrationViolation>,
     },
     /// Enforcing policy rejects these violations.
     Blocked {
         /// The exact replay generation validated under the mutation lock.
-        generation: crate::ids::ProjectionGeneration,
+        generation: ProjectionGeneration,
         /// Every violation preventing this update.
         violations: Vec<IntegrationViolation>,
     },
     /// A forced integration journalled a permit for the next matching main update.
     PermitIssued {
         /// The exact replay generation validated under the mutation lock.
-        generation:          crate::ids::ProjectionGeneration,
+        generation:          ProjectionGeneration,
         /// The one-use semantic permit identity.
         permit_id:           ForcedIntegrationPermitId,
         /// The reservation the permit authorizes.
@@ -177,7 +186,7 @@ pub(crate) enum GateDecision {
     /// Matching one-use permits were consumed and their skipped holds stayed intact.
     Forced {
         /// The exact replay generation validated under the mutation lock.
-        generation: crate::ids::ProjectionGeneration,
+        generation: ProjectionGeneration,
     },
 }
 
@@ -611,22 +620,17 @@ fn entering_reservations(
             !matches!(reservation.lifecycle, ReservationLifecycle::Released { .. })
         })
         .filter_map(|reservation| match &reservation.subject {
-            crate::edge::IntegrationSubject::Commit { object_id }
-                if newly_reachable.contains(object_id) =>
-            {
+            IntegrationSubject::Commit { object_id } if newly_reachable.contains(object_id) => {
                 Some(reservation.reservation_id)
             },
-            crate::edge::IntegrationSubject::WorktreeHeadUnavailable => {
-                Some(reservation.reservation_id)
-            },
-            crate::edge::IntegrationSubject::Commit { .. }
-            | crate::edge::IntegrationSubject::NotApplicable => None,
+            IntegrationSubject::WorktreeHeadUnavailable => Some(reservation.reservation_id),
+            IntegrationSubject::Commit { .. } | IntegrationSubject::NotApplicable => None,
         })
         .collect()
 }
 
 fn decide(
-    events: &[crate::ledger::JournalEvent],
+    events: &[JournalEvent],
     constraints: &IntegrationConstraintProjection,
     entering: &[ReservationId],
     purpose: &GatePurpose,
@@ -716,8 +720,8 @@ fn blocking_reservations(
 }
 
 fn decide_hook(
-    events: &[crate::ledger::JournalEvent],
-    generation: crate::ids::ProjectionGeneration,
+    events: &[JournalEvent],
+    generation: ProjectionGeneration,
     violations: &[IntegrationViolation],
     gate_mode: GateMode,
     phase: ReferenceTransactionPhase,
@@ -764,8 +768,8 @@ fn decide_hook(
                             permit_id: permit.permit_id,
                             reason:    permit.reason.clone(),
                         },
-                        occurrence_time: crate::ledger::BypassOccurrenceTime::EventRecordedAt,
-                        recording:       crate::ledger::BypassRecording::Direct,
+                        occurrence_time: BypassOccurrenceTime::EventRecordedAt,
+                        recording:       BypassRecording::Direct,
                     },
                 ]
             })
@@ -786,7 +790,7 @@ fn decide_hook(
 }
 
 fn decide_integration(
-    generation: crate::ids::ProjectionGeneration,
+    generation: ProjectionGeneration,
     reservation_id: ReservationId,
     request: &IntegrationRequest,
     entering: &[ReservationId],
@@ -967,7 +971,7 @@ impl ActingRun {
 
     fn validate(
         self,
-        reservations: &crate::reservation::RetainedReservationSet,
+        reservations: &RetainedReservationSet,
     ) -> Result<(), GateTransactionRejection> {
         if let Self::ActiveSessionReservationRequired {
             coordination_run_id,
@@ -1076,7 +1080,7 @@ impl Error for ReferenceTransactionParseError {}
 enum GateTransactionRejection {
     Reconciliation(GateReconciliationError),
     Git(GitError),
-    PermitReplay(permit::ForcedIntegrationPermitReplayError),
+    PermitReplay(ForcedIntegrationPermitReplayError),
     InactiveSessionMapping(CoordinationRunId),
     InactiveMarkerRun(CoordinationRunId),
     ReservationNotEntering(ReservationId),
@@ -1088,13 +1092,13 @@ enum GateTransactionRejection {
 /// A gate decision failed before it could establish safe integration facts.
 #[derive(Debug)]
 pub(crate) enum GateError {
-    Config(crate::config::ConfigError),
+    Config(ConfigError),
     Ledger(LedgerError),
     Transaction(LedgerTransactionError),
-    Reconciliation(reconcile::ReconcileError),
+    Reconciliation(ReconcileError),
     Planning(GateReconciliationError),
     Git(GitError),
-    PermitReplay(permit::ForcedIntegrationPermitReplayError),
+    PermitReplay(ForcedIntegrationPermitReplayError),
     InactiveSessionMapping(CoordinationRunId),
     InactiveMarkerRun(CoordinationRunId),
     ReservationNotEntering(ReservationId),
@@ -1167,8 +1171,8 @@ impl From<GateTransactionRejection> for GateError {
     }
 }
 
-impl From<crate::config::ConfigError> for GateError {
-    fn from(error: crate::config::ConfigError) -> Self { Self::Config(error) }
+impl From<ConfigError> for GateError {
+    fn from(error: ConfigError) -> Self { Self::Config(error) }
 }
 
 impl From<LedgerError> for GateError {

@@ -2,6 +2,8 @@
 
 use crate::board::BoardModel;
 use crate::board::tui;
+use crate::board::tui::BoardTerminalViewRunFailure;
+use crate::board::tui::TerminalAttachment;
 use crate::cli::CliOutputFormat;
 use crate::config::Enrollment;
 use crate::output::CommandVerb;
@@ -64,12 +66,12 @@ pub(crate) fn execute(output_format: CliOutputFormat) -> BoardDisplayOutcome {
             BoardDisplayOutcome::HeadlessResponse(OutputEnvelope::board(board))
         },
         CliOutputFormat::Text => match tui::terminal_attachment() {
-            tui::TerminalAttachment::Detached => {
+            TerminalAttachment::Detached => {
                 BoardDisplayOutcome::TerminalDidNotOpen(OutputEnvelope::board(board))
             },
-            tui::TerminalAttachment::Attached => match tui::run(&board) {
+            TerminalAttachment::Attached => match tui::run(&board) {
                 Ok(()) => BoardDisplayOutcome::TerminalRestored,
-                Err(tui::BoardTerminalViewRunFailure::BeforeOpening(failure)) => {
+                Err(BoardTerminalViewRunFailure::BeforeOpening(failure)) => {
                     BoardDisplayOutcome::TerminalDidNotOpen(
                         OutputEnvelope::board_with_terminal_view_opening_failure(
                             board,
@@ -77,7 +79,7 @@ pub(crate) fn execute(output_format: CliOutputFormat) -> BoardDisplayOutcome {
                         ),
                     )
                 },
-                Err(tui::BoardTerminalViewRunFailure::AfterOpening(failure)) => {
+                Err(BoardTerminalViewRunFailure::AfterOpening(failure)) => {
                     BoardDisplayOutcome::TerminalFailedAfterOpening(
                         OutputEnvelope::terminal_view_failed_after_board_opened(
                             &failure.to_string(),

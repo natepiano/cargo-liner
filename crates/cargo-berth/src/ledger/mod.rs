@@ -87,9 +87,12 @@ use crate::ids::InvalidUuidV7;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
+use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ids::WorktreeKind;
 use crate::session;
+use crate::session::SessionIdentityLookup;
+use crate::session::SessionIdentityMappingPublication;
 
 /// The shared append-only ledger for one git common directory.
 pub(crate) struct Ledger {
@@ -171,7 +174,7 @@ pub(crate) enum EditAuthorization {
         /// The run recorded on the mapped reservation.
         coordination_run_id: CoordinationRunId,
         /// The reservation selected for this harness session.
-        reservation_id:      crate::ids::ReservationId,
+        reservation_id:      ReservationId,
         /// The worktree from which this mapping is being used.
         worktree_id:         WorktreeId,
     },
@@ -215,11 +218,11 @@ impl EditAuthorization {
     }
 
     fn resolve_from_sources(
-        session_identity: session::SessionIdentityLookup,
+        session_identity: SessionIdentityLookup,
         environment_run: Option<OsString>,
         worktree_administrative_directory: &Path,
     ) -> Self {
-        if let session::SessionIdentityLookup::Mapped(identity) = session_identity
+        if let SessionIdentityLookup::Mapped(identity) = session_identity
             && let Ok(worktree_id) = read_worktree_id(worktree_administrative_directory)
         {
             return Self::Session {
@@ -592,7 +595,7 @@ pub(crate) enum LedgerTransactionOutcome<Rejection> {
         /// The durable journal event.
         event:                       Box<JournalEvent>,
         /// Whether the event's session identity consequence was published.
-        session_mapping_publication: session::SessionIdentityMappingPublication,
+        session_mapping_publication: SessionIdentityMappingPublication,
     },
     /// Validation rejected the proposal before any append.
     Rejected(Rejection),
@@ -605,7 +608,7 @@ pub(crate) enum LedgerCommittedActionOutcome<Rejection, CommittedActionOutput> {
         /// The output produced by the committed action.
         output:                      CommittedActionOutput,
         /// Whether the event's session identity consequence was published.
-        session_mapping_publication: session::SessionIdentityMappingPublication,
+        session_mapping_publication: SessionIdentityMappingPublication,
     },
     /// Validation rejected the proposal before any append or side effect.
     Rejected(Rejection),
@@ -887,8 +890,7 @@ impl Ledger {
                 recoverable_operations,
                 action,
             } => {
-                let mut session_mapping_publication =
-                    session::SessionIdentityMappingPublication::Published;
+                let mut session_mapping_publication = SessionIdentityMappingPublication::Published;
                 for operation in operations {
                     let journal_append = transaction
                         .append(worktree_id, coordination_run_id, operation)
@@ -1154,7 +1156,7 @@ struct LedgerTransaction {
 
 struct JournalAppend {
     event:                       JournalEvent,
-    session_mapping_publication: session::SessionIdentityMappingPublication,
+    session_mapping_publication: SessionIdentityMappingPublication,
 }
 
 struct LedgerPaths {
@@ -1557,6 +1559,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::BypassCause;
+    use super::BypassOccurrenceTime;
+    use super::BypassRecording;
     use super::BypassedAction;
     use super::COORDINATION_RUN_MARKER_FILE_NAME;
     use super::CommittedActionValidation;
@@ -1962,8 +1966,8 @@ mod tests {
                         .parse::<ForcedIntegrationReason>()
                         .expect("oversized reason should remain non-empty"),
                 },
-                occurrence_time: crate::ledger::BypassOccurrenceTime::EventRecordedAt,
-                recording:       crate::ledger::BypassRecording::Direct,
+                occurrence_time: BypassOccurrenceTime::EventRecordedAt,
+                recording:       BypassRecording::Direct,
             }))
         });
 
@@ -2080,6 +2084,8 @@ mod tests {
         use crate::ids::CoordinationRunId;
         use crate::ids::WorktreeId;
         use crate::ledger::BypassCause;
+        use crate::ledger::BypassOccurrenceTime;
+        use crate::ledger::BypassRecording;
         use crate::ledger::BypassedAction;
         use crate::ledger::JournalOperation;
         use crate::ledger::Ledger;
@@ -2102,8 +2108,8 @@ mod tests {
                         )
                         .expect("test bypass identity should be non-empty"),
                     },
-                    occurrence_time: crate::ledger::BypassOccurrenceTime::EventRecordedAt,
-                    recording:       crate::ledger::BypassRecording::Direct,
+                    occurrence_time: BypassOccurrenceTime::EventRecordedAt,
+                    recording:       BypassRecording::Direct,
                 }))
             })
         }

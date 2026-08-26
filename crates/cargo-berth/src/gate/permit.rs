@@ -8,6 +8,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -33,6 +34,8 @@ use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
+use crate::ledger::LedgerError;
+use crate::ledger::LedgerTransactionError;
 use crate::ledger::PendingBypassMarkerId;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::ledger::TransactionValidation;
@@ -140,7 +143,7 @@ impl RecoveredPendingBypassMarker {
     pub(crate) const fn id(&self) -> &PendingBypassMarkerId { &self.id }
 
     /// Borrow the marker path removed after its audit fact became durable.
-    pub(crate) fn path(&self) -> &Path { &self.path }
+    fn path(&self) -> &Path { &self.path }
 }
 
 impl PendingBypassRecovery {
@@ -210,10 +213,10 @@ pub(crate) fn record_environment_bypass(
                 })
                 .map(|_| ())
                 .map_err(|error| match error {
-                    crate::ledger::LedgerTransactionError::LedgerUnreadable(error) => error,
-                    crate::ledger::LedgerTransactionError::LockContention
-                    | crate::ledger::LedgerTransactionError::CorrectableInput(_) => {
-                        crate::ledger::LedgerError::BypassAuditUnavailable
+                    LedgerTransactionError::LedgerUnreadable(error) => error,
+                    LedgerTransactionError::LockContention
+                    | LedgerTransactionError::CorrectableInput(_) => {
+                        LedgerError::BypassAuditUnavailable
                     },
                 })
         })
@@ -374,7 +377,7 @@ pub(crate) fn delete_recovered_bypass_markers(
                     changed_directories.insert(parent.to_path_buf());
                 }
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) if error.kind() == ErrorKind::NotFound => {},
             Err(error) => return Err(error),
         }
     }
@@ -507,7 +510,7 @@ mod tests {
     use super::PendingEnvironmentBypass;
     use super::PendingEnvironmentBypassOccurrenceTime;
     use super::write_pending_marker;
-    use crate::gate::install::reference_transaction_hook_script_for_test;
+    use crate::gate::install;
     use crate::ledger::BypassCause;
     use crate::ledger::BypassedMergeIdentity;
 
@@ -590,7 +593,7 @@ mod tests {
         let policy_worktree = common_git_directory.join("policy-worktree");
         fs::create_dir(&policy_worktree).expect("policy worktree should exist");
         let script_path = common_git_directory.join("reference-transaction");
-        let script = reference_transaction_hook_script_for_test(
+        let script = install::reference_transaction_hook_script_for_test(
             Path::new("/missing/cargo-berth"),
             common_git_directory,
             &policy_worktree,

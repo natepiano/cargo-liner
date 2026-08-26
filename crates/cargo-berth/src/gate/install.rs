@@ -13,6 +13,7 @@ use std::path::Path;
 use super::permit::PENDING_BYPASS_FILE_PREFIX;
 use super::permit::PENDING_BYPASS_FILE_SUFFIX;
 use crate::git;
+use crate::git::GitError;
 
 const EXECUTABLE_PERMISSIONS: u32 = 0o755;
 const POST_COMMIT_HOOK_NAME: &str = "post-commit";
@@ -258,11 +259,11 @@ fn shell_single_quoted(value: &str) -> String { format!("'{}'", value.replace('\
 
 /// A managed hook could not be inspected, written, or made executable.
 #[derive(Debug)]
-pub(crate) enum HookInstallationError {
+enum HookInstallationError {
     /// Filesystem access failed.
     Io(std::io::Error),
     /// Git could not resolve its effective hook directory.
-    Git(crate::git::GitError),
+    Git(GitError),
 }
 
 impl Display for HookInstallationError {
@@ -280,6 +281,6 @@ impl From<std::io::Error> for HookInstallationError {
     fn from(error: std::io::Error) -> Self { Self::Io(error) }
 }
 
-impl From<crate::git::GitError> for HookInstallationError {
-    fn from(error: crate::git::GitError) -> Self { Self::Git(error) }
+impl From<GitError> for HookInstallationError {
+    fn from(error: GitError) -> Self { Self::Git(error) }
 }

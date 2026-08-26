@@ -22,7 +22,7 @@ use crate::ledger::JournalOperation;
 /// One harness session identifier supplied to a single command invocation.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
-pub(crate) struct HarnessSessionId(String);
+struct HarnessSessionId(String);
 
 impl HarnessSessionId {
     const ENVIRONMENT: &'static str = "CARGO_BERTH_SESSION_ID";
@@ -143,7 +143,7 @@ pub(crate) enum SessionIdentityStoreError {
 
 /// A harness session id was empty, too long, or contained a control character.
 #[derive(Debug)]
-pub(crate) struct InvalidHarnessSessionId;
+struct InvalidHarnessSessionId;
 
 /// Resolve the current process's harness session from the mapping beside the journal.
 pub(crate) fn resolve(ledger_directory: &Path) -> SessionIdentityLookup {

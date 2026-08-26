@@ -28,6 +28,7 @@ use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapAuthorizationReason;
 use crate::answer::OverlapScopeRevision;
+use crate::config::Enrollment;
 use crate::ids::CoordinationRunId;
 use crate::ids::EdgeId;
 use crate::ids::GitObjectId;
@@ -131,8 +132,8 @@ fn deferring_reconciliation_leaves_recovery_for_one_reporting_board() -> Fixture
 
     let deferred =
         match reconcile::reconcile(fixture.repository.path(), RecoveredBypassReporting::Defer)? {
-            crate::config::Enrollment::Enrolled(deferred) => deferred,
-            crate::config::Enrollment::Unconfigured { .. } => {
+            Enrollment::Enrolled(deferred) => deferred,
+            Enrollment::Unconfigured { .. } => {
                 return Err("initialized board fixture is not enrolled".into());
             },
         };
@@ -692,8 +693,8 @@ impl BoardFixture {
     fn model(&self) -> FixtureResult<BoardModel> {
         let report =
             match reconcile::reconcile(self.repository.path(), RecoveredBypassReporting::Report)? {
-                crate::config::Enrollment::Enrolled(report) => report,
-                crate::config::Enrollment::Unconfigured { .. } => {
+                Enrollment::Enrolled(report) => report,
+                Enrollment::Unconfigured { .. } => {
                     return Err("initialized board fixture is not enrolled".into());
                 },
             };

@@ -24,6 +24,8 @@ use crate::edge::RepositorySnapshot;
 use crate::edge::RepositoryTrunk;
 use crate::edge::SuccessorHeadReachability;
 use crate::gate::permit;
+use crate::gate::permit::PendingBypassMarkerImport;
+use crate::gate::permit::RecoveredPendingBypassMarker;
 use crate::git;
 use crate::git::CandidateHeadReachability;
 use crate::git::DescendantCommitQuery;
@@ -37,6 +39,7 @@ use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::BypassOccurrenceTime;
+use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
@@ -44,6 +47,7 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
+use crate::ledger::RecoverableReconciliationAppendFailures;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
@@ -88,7 +92,7 @@ pub(crate) struct ReconciliationReport {
     /// Pending bypass markers that could not yet become ordinary audit records.
     pub(crate) unrecorded_bypass_occurrences: Vec<BypassOccurrenceTime>,
     /// Pending bypass markers retired and claimed for reporting by this reconciliation.
-    pub(crate) recovered_bypass_markers:      Vec<permit::RecoveredPendingBypassMarker>,
+    pub(crate) recovered_bypass_markers:      Vec<RecoveredPendingBypassMarker>,
     /// Git query dimensions observed while reconciliation assembled this report.
     pub(crate) git_cost:                      ReconciliationGitCost,
 }
@@ -103,14 +107,14 @@ pub(crate) struct ReconciliationGitCost {
 
 /// Complete journal truth retained from one reconciliation lock acquisition.
 pub(crate) struct ReconciledJournalSnapshot {
-    events:             Vec<crate::ledger::JournalEvent>,
+    events:             Vec<JournalEvent>,
     generation:         ProjectionGeneration,
     journal_end_offset: JournalByteOffset,
 }
 
 impl ReconciledJournalSnapshot {
     /// Borrow every event visible at the reconciled replay point.
-    pub(crate) fn events(&self) -> &[crate::ledger::JournalEvent] { &self.events }
+    pub(crate) fn events(&self) -> &[JournalEvent] { &self.events }
 
     /// Return the projection generation shared by every board section.
     pub(crate) const fn generation(&self) -> ProjectionGeneration { self.generation }
@@ -163,8 +167,8 @@ struct ReconciliationAction {
     evidence:                      Vec<ReconciledEvidence>,
     repository_snapshot:           RepositorySnapshot,
     recovered_bypass_reporting:    RecoveredBypassReporting,
-    recovered_bypass_markers:      Vec<permit::RecoveredPendingBypassMarker>,
-    pending_bypass_imports:        Vec<permit::PendingBypassMarkerImport>,
+    recovered_bypass_markers:      Vec<RecoveredPendingBypassMarker>,
+    pending_bypass_imports:        Vec<PendingBypassMarkerImport>,
     unrecorded_bypass_occurrences: Vec<BypassOccurrenceTime>,
     trunk_resolution_calls:        u64,
 }
@@ -436,7 +440,7 @@ fn build_plan(
 /// independent of the total retained-reservation count. The proposed-trunk view reuses those
 /// reachability facts and changes only trunk evidence.
 pub(crate) fn prepare_gate_reconciliation(
-    events: &[crate::ledger::JournalEvent],
+    events: &[JournalEvent],
     generation: ProjectionGeneration,
     worktree_context: &WorktreeContext,
     ledger_repository: RepoInstanceId,
@@ -540,7 +544,7 @@ impl<Decision> GateReconciliationAction<Decision> {
     pub(crate) fn commit(
         self,
         state: &ReplayedLedgerState<'_>,
-        recoverable_failures: &crate::ledger::RecoverableReconciliationAppendFailures,
+        recoverable_failures: &RecoverableReconciliationAppendFailures,
     ) -> Result<(ReconciliationReport, Decision), ReconcileError> {
         let report = self.reconciliation.commit(state, recoverable_failures)?;
         Ok((report, self.decision))
@@ -825,7 +829,7 @@ impl ReconciliationAction {
     fn commit(
         mut self,
         state: &ReplayedLedgerState<'_>,
-        recoverable_failures: &crate::ledger::RecoverableReconciliationAppendFailures,
+        recoverable_failures: &RecoverableReconciliationAppendFailures,
     ) -> Result<ReconciliationReport, ReconcileError> {
         let reservations =
             RetainedReservationSet::replay(state.events()).map_err(ReconcileError::Replay)?;

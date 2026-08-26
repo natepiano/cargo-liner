@@ -4,6 +4,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::num::ParseIntError;
+use std::ops::Range;
 use std::path::Component;
 use std::path::Path;
 use std::str::FromStr;
@@ -359,8 +360,7 @@ impl RecordedAt {
         const MILLISECONDS_PER_MINUTE: i64 = 60_000;
         const MILLISECONDS_PER_SECOND: i64 = 1_000;
 
-        let parse =
-            |range: std::ops::Range<usize>| self.0[range].parse::<i64>().unwrap_or_default();
+        let parse = |range: Range<usize>| self.0[range].parse::<i64>().unwrap_or_default();
         let year = parse(0..4);
         let month = parse(5..7);
         let day = parse(8..10);

@@ -157,7 +157,7 @@ pub(crate) struct IntegrationConstraintProjection {
     /// The retained reservation facts required by a denial or board row.
     pub(crate) reservations:         Vec<IntegrationReservationFacts>,
     /// Only relationships that currently hold at the accompanying repository snapshot.
-    pub(crate) holds:                Vec<IntegrationHold>,
+    holds:                           Vec<IntegrationHold>,
     /// Every durable ordering relationship with its state at this repository snapshot.
     pub(crate) ordering_constraints: Vec<IntegrationOrderingConstraint>,
     /// Every recorded deferral, including answers that a later sequence resolved.
@@ -218,7 +218,7 @@ pub(crate) struct IntegrationReservationFacts {
     /// The reservation these facts describe.
     pub(crate) reservation_id: ReservationId,
     /// The actor that acquired the reservation.
-    pub(crate) actor:          JournalActor,
+    actor:                     JournalActor,
     /// The plan-and-phase or explicit provenance supplied at acquisition.
     pub(crate) source:         ClaimSource,
     /// The caller's explanation of the protected work.
@@ -302,7 +302,7 @@ impl IntegrationConstraintProjection {
 
 impl IntegrationHold {
     /// Return whether this relationship currently blocks the supplied reservation.
-    pub(crate) fn blocks(&self, reservation_id: ReservationId) -> bool {
+    fn blocks(&self, reservation_id: ReservationId) -> bool {
         match self {
             Self::OrderingEdge { successor, .. } => *successor == reservation_id,
             Self::DeferredOverlap {

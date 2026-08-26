@@ -307,7 +307,7 @@ impl RetainedReservationSet {
     }
 
     /// Evaluate changed paths against edit-blocking reservations of another acting identity.
-    pub(crate) fn conflicts_for_drift(
+    fn conflicts_for_drift(
         &self,
         candidate: &ReservationScopeSet,
         acting_run_id: CoordinationRunId,

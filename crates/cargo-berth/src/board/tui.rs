@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use crossterm::event;
 use crossterm::event::Event;
+use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::execute;
 use crossterm::terminal::EnterAlternateScreen;
@@ -42,6 +43,7 @@ use tui_pane::GridLines;
 use tui_pane::KeyBind;
 use tui_pane::KeyOutcome;
 use tui_pane::Keymap;
+use tui_pane::KeymapError;
 use tui_pane::NavAction;
 use tui_pane::Navigation;
 use tui_pane::NoToastAction;
@@ -593,7 +595,7 @@ enum BoardTerminalViewInteractionOutcome {
     FailedAfterFirstFrame(io::Error),
 }
 
-fn handle_key(application: &mut BoardApplication, key: event::KeyEvent) {
+fn handle_key(application: &mut BoardApplication, key: KeyEvent) {
     let keymap = Rc::clone(&application.keymap);
     let binding = KeyBind::from(key);
     if let Some(action) = keymap.framework_globals().action_for(&binding) {
@@ -896,7 +898,7 @@ pub(crate) enum BoardTerminalViewOpeningFailure {
     /// A new model field has no deliberate terminal-pane assignment yet.
     UnassignedModelFields(Vec<String>),
     /// The registered pane or navigation keymap is internally inconsistent.
-    Keymap(tui_pane::KeymapError),
+    Keymap(KeymapError),
     /// Terminal setup failed before the first frame could be presented.
     TerminalSetup(BoardTerminalSetupFailure),
     /// The first board frame could not be presented.

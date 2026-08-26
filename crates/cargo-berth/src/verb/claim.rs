@@ -244,7 +244,7 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
     output_envelope.with_alerts(reconciliation_report.alerts)
 }
 
-pub(crate) enum ClaimExecution {
+enum ClaimExecution {
     Claimed {
         reservation_id:              ReservationId,
         coordination_run_id:         CoordinationRunId,
@@ -276,17 +276,17 @@ pub(crate) enum FirstTouchReservationAcquisitionKind {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct FirstTouchReservationAcquisition {
     /// How the transaction established coverage.
-    pub(crate) kind:                        FirstTouchReservationAcquisitionKind,
+    pub(crate) kind:             FirstTouchReservationAcquisitionKind,
     /// The reservation that protects the paths.
-    pub(crate) reservation_id:              ReservationId,
+    pub(crate) reservation_id:   ReservationId,
     /// The coordination run that owns the reservation.
-    pub(crate) coordination_run_id:         CoordinationRunId,
+    coordination_run_id:         CoordinationRunId,
     /// The original phase-start commit retained by the reservation.
-    pub(crate) phase_start_head:            ProtectedPhaseStartHead,
+    phase_start_head:            ProtectedPhaseStartHead,
     /// Whether the worktree marker records the coordination run.
-    pub(crate) marker_publication:          CoordinationRunMarkerPublication,
+    marker_publication:          CoordinationRunMarkerPublication,
     /// Whether the harness session mapping records the reservation.
-    pub(crate) session_mapping_publication: SessionIdentityMappingPublication,
+    session_mapping_publication: SessionIdentityMappingPublication,
 }
 
 /// Whether a first-touch transaction may protect the nonconflicting part of a post-write request.
@@ -371,9 +371,7 @@ enum FirstTouchClaimRejection {
     ReservationLimitReached(u32),
 }
 
-pub(crate) fn acquire(
-    claim_request: ClaimRequest,
-) -> Result<Enrollment<ClaimExecution>, ClaimError> {
+fn acquire(claim_request: ClaimRequest) -> Result<Enrollment<ClaimExecution>, ClaimError> {
     let ClaimRequest {
         declared_scopes,
         source,
