@@ -269,6 +269,26 @@ pub struct TravelingBand {
     /// [`Self::tails`] but running the other way: zero is flush with
     /// the travel and [`u8::MAX`] is as far back as that edge goes.
     heads:          Vec<EdgeRun>,
+    /// Where each offset across the strip carries its own leading edge,
+    /// as a share of one lap of the ring, read by [`Self::phase_at`].
+    ///
+    /// Without this the strip's two ends stand at the same place on
+    /// every offset, give or take how far the edges have frayed -- and
+    /// a strip standing less deep than the window is wide then leaves
+    /// the same run of grid empty on every one of them. That shared run
+    /// is a band of nothing down the screen, which is the one thing an
+    /// animation filling a window should not have.
+    ///
+    /// Held as a share rather than in sub-cells so that turning the
+    /// strip between the two axes, where a lap is a different length,
+    /// leaves every offset where it stood relative to the others.
+    /// Drawn once with the area, because an offset whose start moved
+    /// from frame to frame would not read as travelling at all.
+    ///
+    /// Only read while the leading edge frays: the other two settings
+    /// are the ones whose whole point is an edge the eye can track
+    /// across the window, and a staggered start is not one.
+    phases:         Vec<u8>,
     /// Cells across the area the strip was last sized to.
     columns:        u16,
     /// Cells down that same area.
@@ -311,6 +331,7 @@ impl Default for TravelingBand {
             glyphs:         Vec::new(),
             tails:          Vec::new(),
             heads:          Vec::new(),
+            phases:         Vec::new(),
             columns:        0,
             rows:           0,
             direction:      BandDirection::default(),
@@ -625,7 +646,8 @@ impl TravelingBand {
         // one end of it inside the strip's head and the other inside
         // its tail, and owning only the first is what left a line unlit
         // at every width.
-        let near = (self.leading_edge + span - u32::from(line) * SUBCELLS_PER_CELL) % span;
+        let leading = (self.leading_edge + self.phase_at(offset)) % span;
+        let near = (leading + span - u32::from(line) * SUBCELLS_PER_CELL) % span;
         let start = (near + span - SUBCELLS_PER_CELL) % span;
         // Turning the ring back by `head` puts this offset's own
         // leading edge at zero, so a strip that starts somewhere behind
@@ -680,6 +702,21 @@ impl TravelingBand {
             .get(usize::from(offset))
             .map_or(0, |run| run.depth);
         ceiling * u32::from(depth) / u32::from(u8::MAX)
+    }
+
+    /// How far round the ring `offset` carries its own leading edge,
+    /// in sub-cells.
+    ///
+    /// Zero unless that edge frays, which is the setting the stagger
+    /// belongs to: the other two are the ones the eye tracks a single
+    /// edge across, and there is no edge to track once every offset
+    /// starts somewhere else.
+    fn phase_at(&self, offset: u16) -> u32 {
+        if !self.fraying.leading() {
+            return 0;
+        }
+        let share = self.phases.get(usize::from(offset)).copied().unwrap_or(0);
+        self.span() * u32::from(share) / (u32::from(u8::MAX) + 1)
     }
 
     /// How far the leading edge travels before it is back where it
@@ -806,6 +843,7 @@ impl TravelingBand {
         let offsets = usize::from(area.width.max(area.height));
         self.tails = vec![EdgeRun::at(u8::MAX); offsets];
         self.heads = vec![EdgeRun::at(0); offsets];
+        self.phases = (0..offsets).map(|_| self.xorshift.byte()).collect();
     }
 
     /// Carry every offset of every fraying edge one frame further
@@ -1444,6 +1482,10 @@ mod tests {
         band.fraying = BandFraying::Leading;
         band.heads = vec![EdgeRun::at(0); usize::from(AREA.height)];
         band.heads[0].depth = u8::MAX;
+        // Every offset back on the one start, so what the two rows
+        // below differ by is the fraying this test is about and not
+        // the stagger.
+        band.phases.fill(0);
         let edge = u16::try_from(band.width.saturating_sub(1)).unwrap_or(u16::MAX);
 
         assert!(
@@ -1459,6 +1501,32 @@ mod tests {
             band.coverage(0, 0),
             band.coverage(0, 1),
             "while the far end of the tail is untouched on both",
+        );
+    }
+
+    /// Each offset carries its own start once the leading edge frays,
+    /// so the run of empty grid between where the strip ends and where
+    /// it begins again falls somewhere else on every one of them. On
+    /// one place across all of them it is a band of nothing down the
+    /// window, which is what a filled animation must not leave.
+    ///
+    /// The two settings with an edge the eye is meant to track keep
+    /// their single start: there is nothing to follow across a window
+    /// once every offset begins somewhere else.
+    #[test]
+    fn a_fraying_leading_edge_starts_each_offset_somewhere_else() {
+        let mut band = entered(BandDirection::Right);
+
+        band.fraying = BandFraying::Both;
+        assert!(
+            (1..AREA.height).any(|offset| band.phase_at(offset) != band.phase_at(0)),
+            "the offsets should not all start together"
+        );
+
+        band.fraying = BandFraying::Trailing;
+        assert!(
+            (0..AREA.height).all(|offset| band.phase_at(offset) == 0),
+            "an edge the eye tracks keeps its one start"
         );
     }
 
