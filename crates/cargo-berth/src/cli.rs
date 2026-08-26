@@ -233,7 +233,7 @@ struct InitArguments {
 /// Git's private hook lifecycle argument; update lines arrive on standard input.
 #[derive(Debug, Args)]
 struct ReferenceTransactionArguments {
-    /// The prepared, committed, or aborted reference-transaction phase.
+    /// The reference-transaction phase; a word berth does not know is permitted as a no-op.
     phase:           ReferenceTransactionPhase,
     /// The full configured trunk ref captured when the hook was installed.
     trunk_reference: FullRefName,

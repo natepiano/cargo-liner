@@ -73,6 +73,12 @@ pub(crate) enum ReferenceTransactionPhase {
     Committed,
     /// Git reports that an already-approved transaction aborted.
     Aborted,
+    /// A lifecycle word this version of berth does not know, such as git 2.55's `preparing`.
+    ///
+    /// The gate permits and stands aside whenever it cannot function, so an unknown phase
+    /// is a no-op. Failing to parse it would exit non-zero, which git reads as a rejection
+    /// and turns into an aborted ref update — a future phase would brick the repository.
+    Unrecognized,
 }
 
 /// One complete semantic reference transaction, including every proposed update.
@@ -362,7 +368,8 @@ pub(crate) fn evaluate_reference_transaction(
                         &berth_config,
                         &update,
                     )?,
-                    ReferenceTransactionPhase::Aborted => {},
+                    ReferenceTransactionPhase::Aborted
+                    | ReferenceTransactionPhase::Unrecognized => {},
                 }
             },
             ReferenceUpdateGateSubject::NotMainEntry => {},
@@ -774,7 +781,9 @@ fn decide_hook(
                 ]
             })
             .collect(),
-        ReferenceTransactionPhase::Prepared | ReferenceTransactionPhase::Aborted => Vec::new(),
+        ReferenceTransactionPhase::Prepared
+        | ReferenceTransactionPhase::Aborted
+        | ReferenceTransactionPhase::Unrecognized => Vec::new(),
     };
     if uncovered.is_empty() {
         Ok((GateDecision::Forced { generation }, operations))
@@ -941,9 +950,10 @@ impl ActingRun {
                 reservation_id,
                 worktree_id,
             },
-            EditAuthorization::Environment(coordination_run_id) => {
-                Self::Independent(coordination_run_id)
-            },
+            EditAuthorization::Environment {
+                coordination_run_id,
+                ..
+            } => Self::Independent(coordination_run_id),
             EditAuthorization::Marker {
                 coordination_run_id,
                 worktree_id,
@@ -1014,29 +1024,17 @@ impl ActingRun {
 }
 
 impl FromStr for ReferenceTransactionPhase {
-    type Err = InvalidReferenceTransactionPhase;
+    type Err = Infallible;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "prepared" => Ok(Self::Prepared),
             "committed" => Ok(Self::Committed),
             "aborted" => Ok(Self::Aborted),
-            _ => Err(InvalidReferenceTransactionPhase(value.to_owned())),
+            _ => Ok(Self::Unrecognized),
         }
     }
 }
-
-/// Git supplied an unsupported reference-transaction lifecycle word.
-#[derive(Debug)]
-pub(crate) struct InvalidReferenceTransactionPhase(String);
-
-impl Display for InvalidReferenceTransactionPhase {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        write!(formatter, "invalid reference-transaction phase: {}", self.0)
-    }
-}
-
-impl Error for InvalidReferenceTransactionPhase {}
 
 /// Git's reference-transaction input could not be converted into semantic updates.
 #[derive(Debug)]
@@ -1177,4 +1175,26 @@ impl From<ConfigError> for GateError {
 
 impl From<LedgerError> for GateError {
     fn from(error: LedgerError) -> Self { Self::Ledger(error) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReferenceTransactionPhase;
+
+    #[test]
+    fn an_unknown_reference_transaction_phase_parses_instead_of_aborting_the_update() {
+        for known in ["prepared", "committed", "aborted"] {
+            assert_ne!(
+                known.parse::<ReferenceTransactionPhase>(),
+                Ok(ReferenceTransactionPhase::Unrecognized)
+            );
+        }
+        for unknown in ["preparing", "a-phase-git-has-not-invented-yet"] {
+            assert_eq!(
+                unknown.parse::<ReferenceTransactionPhase>(),
+                Ok(ReferenceTransactionPhase::Unrecognized),
+                "a phase berth cannot parse exits non-zero, which git turns into an aborted update"
+            );
+        }
+    }
 }
