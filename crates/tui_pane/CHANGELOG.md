@@ -8,6 +8,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Fixed
+- The backdrop finds the emulator's windows by the name it puts in `TERM_PROGRAM` where the parent chain does not reach it, rather than settling for whichever application is in front. An emulator hosting its sessions in a server process is in nobody's parent chain, so the window this app was taken to be drawn in could belong to another application entirely -- and that window's display was captured and its movement drove the offset.
+- `BackdropMonitor::identify` is tried again on a pace until it settles rather than once only. Its marker title has to cross a pty the animation is already filling, and the single unpaced burst of lookups covered a few milliseconds where it needed hundreds, so the race was lost and the loss taken as final.
 - `BackdropMonitor` chooses and places its display by `CGDisplayBounds`, which answers in the same coordinate space window frames are read in. `SCDisplay::frame` does not, so a window standing on any display but the primary matched none of them and the primary was captured and placed against instead.
 - `BackdropMonitor` finds its own window by the number `identify` pinned to it rather than among the windows of whichever application is in front, so an emulator that is nowhere in this process's parent chain no longer captures another application's display when that application is opened over the terminal. The capture also leaves out every window standing in front of this one, which is not something this one is drawn over.
 

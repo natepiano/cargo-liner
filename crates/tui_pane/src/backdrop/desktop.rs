@@ -270,6 +270,7 @@ impl std::fmt::Debug for Desktop {
 #[cfg(target_os = "macos")]
 mod platform {
     use std::collections::HashSet;
+    use std::env;
     use std::ffi::c_void;
 
     use objc2_core_foundation::CFArray;
@@ -299,6 +300,8 @@ mod platform {
     use sysinfo::ProcessesToUpdate;
     use sysinfo::System;
 
+    use super::super::constants::EMULATOR_NAME_FLOOR;
+    use super::super::constants::TERM_PROGRAM_ENV;
     use super::Desktop;
     use super::Frame;
     use super::Metrics;
@@ -694,13 +697,78 @@ mod platform {
         // An emulator that hosts its sessions in a server process of its
         // own is nowhere in this app's parent chain: iTerm2's shell hangs
         // off `iTermServer`, and the process drawing the window is not an
-        // ancestor of anything running in it. The window this app is
-        // drawn in is then the one in front, because the attract screen
-        // only runs where somebody is looking at it.
+        // ancestor of anything running in it. Ask the emulator who it is
+        // instead -- it says so in the environment it handed down.
+        let named = named_emulator_windows(windows);
+        if !named.is_empty() {
+            return named;
+        }
+        // Nothing named the emulator, so the last resort is the window
+        // in front, on the reasoning that a screen nobody is looking at
+        // is not one this animation runs for. It is a poor answer and
+        // the reason this is the last of three: the application in
+        // front is very often not the terminal at all.
         let Some(front) = frontmost_owner(windows) else {
             return Vec::new();
         };
         owned_by(windows, |pid| pid == front)
+    }
+
+    /// Every on-screen window of the terminal emulator named by
+    /// `TERM_PROGRAM`.
+    ///
+    /// Every emulator worth the name sets this in the environment it
+    /// hands the shell -- `iTerm.app`, `Apple_Terminal`, `WezTerm`,
+    /// `ghostty` -- and it survives the walk down to this process
+    /// however many shells stand in between, which is exactly what the
+    /// parent chain does not. It names the application rather than the
+    /// window, so it cannot tell two windows of one emulator apart;
+    /// what it does rule out is choosing a window belonging to some
+    /// other application entirely, which is the way this went wrong.
+    ///
+    /// Empty where the variable is unset, where it names nothing on
+    /// screen, or where this is not a terminal at all.
+    fn named_emulator_windows(windows: &[SCWindow]) -> Vec<&SCWindow> {
+        let Ok(program) = env::var(TERM_PROGRAM_ENV) else {
+            return Vec::new();
+        };
+        let wanted = folded(&program);
+        if wanted.len() < EMULATOR_NAME_FLOOR {
+            return Vec::new();
+        }
+        windows
+            .iter()
+            .filter(|window| {
+                window.owning_application().is_some_and(|application| {
+                    names_agree(&wanted, &folded(&application.application_name()))
+                        || names_agree(&wanted, &folded(&application.bundle_identifier()))
+                })
+            })
+            .collect()
+    }
+
+    /// `text` with everything but its letters and digits taken out and
+    /// the rest put in lower case, so that the several ways one
+    /// emulator writes its own name can be compared.
+    ///
+    /// `TERM_PROGRAM` gives `iTerm.app`, the application calls itself
+    /// `iTerm2` and its bundle is `com.googlecode.iterm2`; folded, all
+    /// three carry `iterm`.
+    fn folded(text: &str) -> String {
+        text.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|character| character.to_ascii_lowercase())
+            .collect()
+    }
+
+    /// Whether two folded names are the same emulator.
+    ///
+    /// Either may be the longer: `appleterminal` holds `terminal`, and
+    /// `comgooglecodeiterm2` holds `iterm`. Both are held to
+    /// [`EMULATOR_NAME_FLOOR`] first, because a name of two or three
+    /// letters is inside half the bundle identifiers on the machine.
+    fn names_agree(wanted: &str, found: &str) -> bool {
+        found.len() >= EMULATOR_NAME_FLOOR && (found.contains(wanted) || wanted.contains(found))
     }
 
     /// Every window whose owning application's pid `wanted` accepts.

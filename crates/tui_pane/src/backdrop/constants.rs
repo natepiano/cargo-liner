@@ -228,15 +228,47 @@ pub(super) const CAPTURE_REFRESH: Duration = Duration::from_millis(1000);
 /// for a full capture every frame.
 pub(super) const CAPTURE_RETRY: Duration = Duration::from_millis(150);
 /// How many times the window server is asked which window is wearing
-/// the marker title before the attempt is given up on.
+/// the marker title within one pass, before that pass gives up and
+/// [`IDENTIFY_PASSES`] decides whether there is another.
 ///
-/// Nothing paces these: each one is a full round trip and the title
-/// has only to travel to the emulator and back out to the window
-/// server, so asking again is already asking later.
+/// These are not paced. A round trip is a fraction of a millisecond,
+/// so all of them together cover a few milliseconds at most -- nowhere
+/// near long enough for a title to reach the emulator, be drawn and
+/// reach the window server. Waiting for that is what the passes are
+/// for; this run is only there to catch a title that has already
+/// arrived.
 pub(super) const IDENTIFY_ATTEMPTS: u32 = 5;
+/// How many passes are made before the window is given up on and the
+/// size heuristic carries the run.
+///
+/// A pass fails for either of two reasons and they need opposite
+/// answers. A terminal that will not wear a title never will, and
+/// asking it again is waste. But a title also loses the race when the
+/// emulator is busy -- and the animation this feeds is what makes it
+/// busy, so the pass most likely to fail is the first one, taken while
+/// a screen's worth of frames is still queued ahead of the marker.
+/// Treating that as the settled answer is what leaves an app drawn
+/// against the desktop behind somebody else's window.
+pub(super) const IDENTIFY_PASSES: u32 = 10;
+/// How long the app waits before looking for its window again.
+///
+/// Long enough that a busy emulator has drained what was queued ahead
+/// of the marker, and short enough that ten of them are over inside
+/// the first few seconds of the animation.
+pub(super) const IDENTIFY_RETRY: Duration = Duration::from_millis(500);
 /// What the marker title this app briefly wears begins with, before
 /// the process id that makes it this process's alone.
 pub(super) const IDENTIFY_MARKER: &str = "tui-pane-window-";
+/// The environment variable a terminal emulator names itself in.
+pub(super) const TERM_PROGRAM_ENV: &str = "TERM_PROGRAM";
+/// How many letters a folded emulator name must carry before it is
+/// matched against another by containment.
+///
+/// Short names match far too much: `sh` is inside a dozen bundle
+/// identifiers on any machine. Five is past every accident and under
+/// every real emulator name -- `iterm`, `wezterm`, `ghostty`,
+/// `terminal`, `alacritty`.
+pub(super) const EMULATOR_NAME_FLOOR: usize = 5;
 /// How many pixels are captured across and down each character cell,
 /// which are then averaged into the cell's one colour.
 ///

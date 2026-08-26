@@ -202,6 +202,10 @@ pub(crate) struct Attract {
     /// Where the screen stands with the roster, which is what keeps a
     /// hand-over from turning around part way through it.
     standing:    Standing,
+    /// What the last pass at settling on a window answered, so the
+    /// probe notes the answer changing rather than every frame's
+    /// repeat of it. [`None`] until the first pass.
+    identified:  Option<bool>,
 }
 
 impl Attract {
@@ -220,6 +224,7 @@ impl Attract {
             covering:    false,
             held:        false,
             standing:    Standing::Showing,
+            identified:  None,
         }
     }
 
@@ -380,17 +385,18 @@ impl Attract {
     /// that never shows it never pays the round trips, and a terminal
     /// that will not wear a title is not asked twice.
     pub(crate) fn identify(&mut self) {
-        /// Whether the outcome has been written down, so it is noted
-        /// once rather than on every frame the strip is up.
-        static NOTED: OnceLock<()> = OnceLock::new();
-
         if !self.showing() {
             return;
         }
-        // Cheap after the first: the monitor asks the window server
-        // once and answers from what it settled on after that.
+        // Cheap once it has settled: the monitor answers from what it
+        // found and asks the window server nothing more.
         let settled = self.monitor.identify(&mut io::stdout());
-        if NOTED.set(()).is_ok() {
+        // Noted when the answer changes rather than on the first frame,
+        // because the first frame is the one most likely to say `false`
+        // and be overtaken -- a pass taken while the animation still
+        // has a screen of frames queued ahead of the marker.
+        if self.identified != Some(settled) {
+            self.identified = Some(settled);
             probe::note(&format!("identify: settled={settled}"));
         }
     }

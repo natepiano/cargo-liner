@@ -38,6 +38,8 @@ use super::constants::CAPTURE_REFRESH;
 use super::constants::CAPTURE_RETRY;
 use super::constants::IDENTIFY_ATTEMPTS;
 use super::constants::IDENTIFY_MARKER;
+use super::constants::IDENTIFY_PASSES;
+use super::constants::IDENTIFY_RETRY;
 use super::desktop;
 use super::desktop::Desktop;
 use super::desktop::Frame;
@@ -80,10 +82,14 @@ pub struct BackdropMonitor {
     /// The window this app was found to be drawn in, once
     /// [`identify`](Self::identify) has settled it.
     pinned:       Option<u32>,
-    /// Whether settling on a window has been tried, so that a terminal
-    /// which will not wear a title is asked once rather than once a
-    /// frame.
-    attempted:    bool,
+    /// How many passes at settling on a window have been made, so that
+    /// a terminal which will not wear a title is given up on rather
+    /// than asked once a frame for the length of the run.
+    attempts:     u32,
+    /// When the last pass was made, which is what paces them: a title
+    /// needs time to reach the emulator and the window server, and
+    /// asking again inside that time only loses the same race twice.
+    attempted_at: Option<Instant>,
 }
 
 /// One capture, as the worker is asked for it.
@@ -136,7 +142,8 @@ impl BackdropMonitor {
             requested_at: None,
             placement: None,
             pinned: None,
-            attempted: false,
+            attempts: 0,
+            attempted_at: None,
         }
     }
 
@@ -144,15 +151,18 @@ impl BackdropMonitor {
     /// having the terminal wear a title only this process knows for as
     /// long as it takes to ask the window server who is wearing it.
     ///
-    /// Answers whether a window has been settled on. Tried once and
-    /// once only: a terminal that will not wear a title will not wear
-    /// one on the second ask either, and the size heuristic behind
-    /// this is what carries the run then.
+    /// Answers whether a window has been settled on. Without one the
+    /// window is picked by size, and two windows of the same size
+    /// cannot be told apart that way: what arrives then is the desktop
+    /// behind a sibling window rather than behind this one.
     ///
-    /// Without this the window is picked by size, and two windows of
-    /// the same size cannot be told apart that way: what arrives then
-    /// is the desktop behind a sibling window rather than behind this
-    /// one.
+    /// Tried again on a pace, up to `IDENTIFY_PASSES`, rather than
+    /// once only. A pass fails for either of two reasons: a terminal
+    /// that will not wear a title will not wear one on the second ask
+    /// either, but a title that merely lost a race to a busy emulator
+    /// will be worn on a later pass. Only the passes tell the two
+    /// apart, and the size heuristic carries the run once they are
+    /// spent.
     ///
     /// # Cost
     ///
@@ -167,10 +177,24 @@ impl BackdropMonitor {
     /// escape sequence, and a sequence cut in half sets no title and
     /// leaves its tail on the screen.
     pub fn identify(&mut self, out: &mut impl Write) -> bool {
-        if self.attempted {
-            return self.pinned.is_some();
+        if self.pinned.is_some() {
+            return true;
         }
-        self.attempted = true;
+        if self.attempts >= IDENTIFY_PASSES {
+            return false;
+        }
+        // Paced rather than run back to back: what a pass is waiting on
+        // is the emulator draining whatever stands between it and the
+        // marker, and nothing about that is faster for being asked
+        // again immediately.
+        if self
+            .attempted_at
+            .is_some_and(|at| at.elapsed() < IDENTIFY_RETRY)
+        {
+            return false;
+        }
+        self.attempts += 1;
+        self.attempted_at = Some(Instant::now());
         let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
         // What every window is titled now, so that the one found to be
         // wearing the marker can be given its own title back.
