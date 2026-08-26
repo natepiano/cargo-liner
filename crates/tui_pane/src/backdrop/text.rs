@@ -36,7 +36,7 @@
 //! a spread around the field's -- so lines that started flush come
 //! apart, and how fast they do is steerable. Where in that spread each
 //! line stands is not drawn line by line but dealt in lanes: see
-//! [`deal_variances`].
+//! [`DriftingText::lanes`].
 //!
 //! Position is tracked in whole numbers throughout, for the same
 //! reason it is in the band: a line moving a fraction of a cell per
@@ -68,6 +68,7 @@ use super::constants::TEXT_LANE_GIVE_PERCENT;
 use super::constants::TEXT_LANE_ROWS;
 use super::constants::TEXT_RIPPLE_LINES;
 use super::constants::TEXT_RIPPLE_PERCENT;
+use super::constants::TEXT_WAVE_SUBLINES_PER_SECOND;
 use super::constants::WHOLE_PERCENT;
 use super::random::Xorshift;
 use crate::theme;
@@ -124,18 +125,18 @@ struct TextLine {
     drifted:  u32,
     /// How far into the next cell it has come, in sub-cells.
     fraction: u32,
-    /// Where this line's own speed stands in the spread: zero is the
-    /// slow end of it and [`u8::MAX`] the fast one. Dealt in lanes --
-    /// see [`deal_variances`] -- so a line's neighbours are travelling
-    /// at close to the same speed and the display reads as bodies of
-    /// text rather than as separate lines.
+    /// This line's own share of the range, on top of whatever the lanes
+    /// carry it at: see [`TEXT_LANE_GIVE_PERCENT`]. Two lines dealt
+    /// exactly one speed never come apart however varied the rest of
+    /// the field is, and the lanes hand neighbours very nearly the same
+    /// number by design.
     ///
-    /// Drawn once, when the line is, and held from then on. Opening the
-    /// spread stretches the range every line's speed is read off rather
-    /// than re-drawing where each of them sits in it, so widening and
-    /// narrowing it walks the same lines apart and back together
-    /// instead of dealing the field a fresh hand each press.
-    variance: u8,
+    /// Drawn once, when the line is, and held from then on. Where the
+    /// line sits among the lanes is worked out afresh every frame --
+    /// [`DriftingText::waved`] moves it -- but this is the one part of
+    /// its speed that must not, or the field would seethe rather than
+    /// drift.
+    give:     u8,
 }
 
 impl TextLine {
@@ -236,6 +237,43 @@ pub struct DriftingText {
     /// One entry per line, indexed the way
     /// [`line_of`](Self::line_of) counts them.
     lines:     Vec<TextLine>,
+    /// The drawn speeds the field's lanes are read off, one every
+    /// [`lines_per_lane`](Self::lines_per_lane) lines, pushed toward the
+    /// ends of the range by [`toward_the_ends`].
+    ///
+    /// A speed drawn for each line on its own is varied by the numbers
+    /// and reads as noise: neighbouring lines are the only ones the eye
+    /// can compare, a field of characters carries no landmark to measure
+    /// a line against anything further off, and independent draws leave
+    /// the display without a single run of lines going anywhere
+    /// together. Dealing alternate lines to opposite ends of the range
+    /// answers that with a comb, which is legible but is a texture
+    /// rather than motion.
+    ///
+    /// Lanes are the answer to both. Every line between two drawn points
+    /// takes a speed interpolated from the pair -- see [`speed_at`] --
+    /// so a slow point holds the lines around it back while a fast one
+    /// carries its own along, and the display reads as bodies of text
+    /// travelling together rather than as a field of separate lines.
+    /// Pushing the points outward is what makes them read as a slow
+    /// group and a fast group rather than as one long gradient.
+    lanes:     Vec<u8>,
+    /// A second, finer run of drawn speeds read at
+    /// [`TEXT_RIPPLE_PERCENT`] of its strength, which is what puts
+    /// visible variation *inside* a lane: short runs of lines easing
+    /// ahead of their group and falling back, without any of them
+    /// leaving it.
+    ripple:    Vec<u8>,
+    /// How far the lanes have travelled along the field, in
+    /// [`LANE_FRACTION_UNIT`] sub-lines, wrapping at its far end.
+    ///
+    /// The lanes are dealt once and this moves where each line reads
+    /// them, so the pattern slides along the field and a line is carried
+    /// from a slow group into a fast one and back. Dealing fresh
+    /// speeds instead would step the whole field at once; moving the
+    /// read point is what makes the change a wave crossing the lines
+    /// rather than a new hand.
+    waved:     u32,
     /// Source of the numbers each line is dealt and of where it sits in
     /// the spread.
     xorshift:  Xorshift,
@@ -257,6 +295,9 @@ impl Default for DriftingText {
             spread:    DEFAULT_TEXT_SPREAD,
             drift:     TextDrift::default(),
             lines:     Vec::new(),
+            lanes:     Vec::new(),
+            ripple:    Vec::new(),
+            waved:     0,
             xorshift:  Xorshift::default(),
             fill:      TextFill::default(),
             faded:     0,
@@ -281,9 +322,28 @@ impl DriftingText {
         let together = matches!(self.drift, TextDrift::Together);
         let speed = self.speed;
         let spread = self.spread;
+        let count = u32::try_from(self.lines.len()).unwrap_or(u32::MAX);
+        self.waved = waved_on(self.waved, count, elapsed_micros);
+        let waved = self.waved;
+        let lanes = &self.lanes;
+        let ripple = &self.ripple;
         let xorshift = &mut self.xorshift;
-        for line in &mut self.lines {
-            let own = line_speed(speed, spread, together, line.variance);
+        for (index, line) in self.lines.iter_mut().enumerate() {
+            // Where this line stands among the lanes now, which is its
+            // own place plus however far they have travelled since the
+            // field was dealt.
+            let at = u32::try_from(index)
+                .unwrap_or(u32::MAX)
+                .saturating_mul(LANE_FRACTION_UNIT)
+                .wrapping_add(waved);
+            let carried = speed_at(lanes, at, count);
+            let within = nudged(carried, speed_at(ripple, at, count), TEXT_RIPPLE_PERCENT);
+            let own = line_speed(
+                speed,
+                spread,
+                together,
+                nudged(within, line.give, TEXT_LANE_GIVE_PERCENT),
+            );
             line.advance(elapsed_micros, own, xorshift);
         }
     }
@@ -563,14 +623,21 @@ impl DriftingText {
     fn rebuild(&mut self) {
         let count = usize::from(self.line_count());
         let length = usize::from(self.line_length());
-        let variances = deal_variances(count, self.lines_per_lane(), &mut self.xorshift);
+        self.lanes = draw_points(count, self.lines_per_lane(), &mut self.xorshift)
+            .into_iter()
+            .map(toward_the_ends)
+            .collect();
+        self.ripple = draw_points(count, TEXT_RIPPLE_LINES, &mut self.xorshift);
+        // The lanes are a fresh hand, so how far the old one had
+        // travelled says nothing about this one.
+        self.waved = 0;
         let xorshift = &mut self.xorshift;
         self.lines = (0..count)
-            .map(|index| TextLine {
+            .map(|_| TextLine {
                 draws:    (0..length).map(|_| xorshift.byte()).collect(),
                 drifted:  0,
                 fraction: 0,
-                variance: variances.get(index).copied().unwrap_or(u8::MAX / 2),
+                give:     xorshift.byte(),
             })
             .collect();
     }
@@ -591,53 +658,6 @@ impl DriftingText {
     fn set_speed(&mut self, speed: u32) {
         self.speed = speed.clamp(MIN_TEXT_SPEED, MAX_TEXT_SPEED);
     }
-}
-
-/// Where every line of the field sits in the spread, dealt as lanes.
-///
-/// A speed drawn for each line on its own is varied by the numbers and
-/// reads as noise: neighbouring lines are the only ones the eye can
-/// compare, a field of characters carries no landmark to measure a line
-/// against anything further off, and independent draws leave the
-/// display without a single run of lines going anywhere together.
-/// Dealing alternate lines to opposite ends of the range answers that
-/// with a comb, which is legible but is a texture rather than motion.
-///
-/// Lanes are the answer to both. A speed is drawn every
-/// `lines_per_lane` lines down the field, and every line between two of
-/// those points takes a speed interpolated from the pair -- so a slow
-/// point holds the lines around it back while a fast one carries its own
-/// along, and the display reads as bodies of text travelling together
-/// rather than as a field of separate lines. The interpolation is a
-/// smoothstep, which is flat at each point and steep between them, so a
-/// lane has a body at one speed and gives way over the lines that part
-/// it from the next.
-///
-/// Three things are done around that. The drawn points are pushed toward
-/// the ends of the range by [`toward_the_ends`], so the lanes stand
-/// further apart from each other than the lines inside one stand from
-/// their neighbours -- which is what makes them read as a slow group and
-/// a fast group rather than as one long gradient. A second, finer run of
-/// points is then drawn the same way and read at
-/// [`TEXT_RIPPLE_PERCENT`] of its strength, which is what puts visible
-/// variation *inside* a lane: short runs of lines easing ahead of their
-/// group and falling back, without any of them leaving it. And every
-/// line is finally given [`TEXT_LANE_GIVE_PERCENT`] of the range to
-/// itself, because two lines dealt exactly one speed never come apart
-/// however varied the rest of the field is.
-fn deal_variances(count: usize, lines_per_lane: usize, xorshift: &mut Xorshift) -> Vec<u8> {
-    let lanes: Vec<u8> = draw_points(count, lines_per_lane, xorshift)
-        .into_iter()
-        .map(toward_the_ends)
-        .collect();
-    let ripple = draw_points(count, TEXT_RIPPLE_LINES, xorshift);
-    (0..count)
-        .map(|line| {
-            let carried = speed_at(&lanes, line, count);
-            let within = nudged(carried, speed_at(&ripple, line, count), TEXT_RIPPLE_PERCENT);
-            nudged(within, xorshift.byte(), TEXT_LANE_GIVE_PERCENT)
-        })
-        .collect()
 }
 
 /// A run of drawn speeds spaced one every `every` lines down a field of
@@ -674,34 +694,38 @@ fn draw_points(count: usize, every: usize, xorshift: &mut Xorshift) -> Vec<u8> {
     drawn
 }
 
-/// The speed `points` carry `line` of `count` at, read off the two of
-/// them either side of it.
+/// The speed `points` carry a line standing `at` sub-lines along a field
+/// of `count` of them, read off the two of them either side of it.
 ///
-/// The weight between them is a smoothstep rather than the plain
+/// Read as a ring: the last point runs back into the first, so the
+/// pattern has no end for [`DriftingText::waved`] to carry a line over.
+/// A run with two ends would hand every line a jump each time the wave
+/// came round.
+///
+/// The weight between two points is a smoothstep rather than the plain
 /// fraction, which is what gives a lane a body: the curve barely moves
 /// at either end and does the whole of its travel in the middle, so the
 /// lines nearest a point sit at very nearly its speed and the ones
 /// halfway between two are where the field changes hands.
-fn speed_at(points: &[u8], line: usize, count: usize) -> u8 {
-    let spans = points.len().saturating_sub(1);
+fn speed_at(points: &[u8], at: u32, count: u32) -> u8 {
     let Some(first) = points.first().copied() else {
         return u8::MAX / 2;
     };
-    if spans == 0 || count == 0 {
+    let spans = points.len();
+    let total = u64::from(count).saturating_mul(u64::from(LANE_FRACTION_UNIT));
+    if spans == 0 || total == 0 {
         return first;
     }
-    let scaled = line.saturating_mul(spans);
-    let between = (scaled / count).min(spans.saturating_sub(1));
-    let into = scaled % count;
-    let fraction = u32::try_from(
-        into.saturating_mul(usize::try_from(LANE_FRACTION_UNIT).unwrap_or(usize::MAX)) / count,
-    )
-    .unwrap_or(0);
+    let scaled = (u64::from(at) % total).saturating_mul(spans as u64);
+    let between = usize::try_from(scaled / total).unwrap_or(0) % spans;
+    let into = scaled % total;
+    let fraction =
+        u32::try_from(into.saturating_mul(u64::from(LANE_FRACTION_UNIT)) / total).unwrap_or(0);
     let weight = smoothstep(fraction);
     let from = u32::from(points.get(between).copied().unwrap_or(first));
     let to = u32::from(
         points
-            .get(between.saturating_add(1))
+            .get(between.saturating_add(1) % spans)
             .copied()
             .unwrap_or(first),
     );
@@ -712,6 +736,24 @@ fn speed_at(points: &[u8], line: usize, count: usize) -> u8 {
         from.saturating_sub(travelled)
     };
     u8::try_from(value).unwrap_or(u8::MAX)
+}
+
+/// [`DriftingText::waved`] carried `elapsed_micros` further along a
+/// field of `count` lines, wrapping at its far end.
+///
+/// Wrapped against the field rather than left to climb, so the value
+/// stays where [`speed_at`] can read it whatever the field has been
+/// sized to and however long the screen has been up.
+fn waved_on(waved: u32, count: u32, elapsed_micros: u64) -> u32 {
+    let total = count.saturating_mul(LANE_FRACTION_UNIT);
+    if total == 0 {
+        return 0;
+    }
+    let travelled = u32::try_from(
+        u64::from(TEXT_WAVE_SUBLINES_PER_SECOND).saturating_mul(elapsed_micros) / MICROS_PER_SECOND,
+    )
+    .unwrap_or(u32::MAX);
+    waved.wrapping_add(travelled) % total
 }
 
 /// `value` moved `percent` of however far `toward` stands from the
@@ -1186,8 +1228,7 @@ mod tests {
         let mut neighbours = 0_u32;
         let mut across = 0_u32;
         for seed in LANE_TEST_SEEDS {
-            let dealt =
-                deal_variances(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut Xorshift::seeded(seed));
+            let dealt = dealt_at_rest(LANE_TEST_LINES, TEXT_LANE_ROWS, seed);
             neighbours += dealt
                 .windows(2)
                 .map(|pair| u32::from(pair[0].abs_diff(pair[1])))
@@ -1213,6 +1254,78 @@ mod tests {
         );
     }
 
+    /// Where every line of a field of `count` sits in the spread before
+    /// the lanes have travelled at all, which is what
+    /// [`DriftingText::advance`] works out per frame at
+    /// [`DriftingText::waved`] of zero.
+    ///
+    /// The field itself deals this against a live area and a clock. The
+    /// assertions below are about the hand the lanes deal, so they read
+    /// it here from a seeded source instead.
+    fn dealt_at_rest(count: usize, per_lane: usize, seed: u64) -> Vec<u8> {
+        let mut xorshift = Xorshift::seeded(seed);
+        let lanes: Vec<u8> = draw_points(count, per_lane, &mut xorshift)
+            .into_iter()
+            .map(toward_the_ends)
+            .collect();
+        let ripple = draw_points(count, TEXT_RIPPLE_LINES, &mut xorshift);
+        let total = u32::try_from(count).expect("a small count");
+        (0..count)
+            .map(|line| {
+                let at = u32::try_from(line)
+                    .expect("a small count")
+                    .saturating_mul(LANE_FRACTION_UNIT);
+                let carried = speed_at(&lanes, at, total);
+                let within = nudged(carried, speed_at(&ripple, at, total), TEXT_RIPPLE_PERCENT);
+                nudged(within, xorshift.byte(), TEXT_LANE_GIVE_PERCENT)
+            })
+            .collect()
+    }
+
+    /// The lanes travel, so a line does not keep the speed it was dealt.
+    /// Standing still they would hand one line the same number for as
+    /// long as anybody watched, which is the thing the wave undoes:
+    /// reading one line at every phase of a full lap is the same as
+    /// watching it while the pattern goes by.
+    #[test]
+    fn the_lanes_carry_a_line_through_the_range_as_they_travel() {
+        let mut xorshift = Xorshift::seeded(LANE_TEST_SEEDS[0]);
+        let lanes: Vec<u8> = draw_points(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut xorshift)
+            .into_iter()
+            .map(toward_the_ends)
+            .collect();
+        let count = u32::try_from(LANE_TEST_LINES).expect("a small count");
+        let readings: Vec<u8> = (0..LANE_TEST_LINES)
+            .map(|step| {
+                let waved = u32::try_from(step)
+                    .expect("a small count")
+                    .saturating_mul(LANE_FRACTION_UNIT);
+                speed_at(&lanes, waved, count)
+            })
+            .collect();
+        let slowest = readings.iter().copied().min().expect("a reading per step");
+        let fastest = readings.iter().copied().max().expect("a reading per step");
+
+        assert!(
+            fastest.abs_diff(slowest) > u8::MAX / 2,
+            "one line read {slowest} to {fastest} over a whole lap of the lanes",
+        );
+    }
+
+    /// The wave wraps at the end of the field rather than climbing, so
+    /// a screen left up for a long time reads its lanes at a position
+    /// [`speed_at`] can still use.
+    #[test]
+    fn the_wave_wraps_at_the_end_of_the_field() {
+        let count = u32::try_from(LANE_TEST_LINES).expect("a small count");
+        let lap = count.saturating_mul(LANE_FRACTION_UNIT);
+        let second = MICROS_PER_SECOND;
+
+        assert_eq!(waved_on(0, count, second), TEXT_WAVE_SUBLINES_PER_SECOND);
+        assert!(waved_on(lap.saturating_sub(1), count, second) < lap);
+        assert_eq!(waved_on(0, 0, second), 0);
+    }
+
     /// No lane is a block of lines dealt one speed between them. Two
     /// lines at exactly one speed never come apart, so a lane with no
     /// give in it would slide as a rigid sheet -- the one thing a field
@@ -1220,8 +1333,7 @@ mod tests {
     #[test]
     fn the_lines_of_a_lane_are_not_dealt_one_speed() {
         for seed in LANE_TEST_SEEDS {
-            let dealt =
-                deal_variances(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut Xorshift::seeded(seed));
+            let dealt = dealt_at_rest(LANE_TEST_LINES, TEXT_LANE_ROWS, seed);
             let distinct: BTreeSet<u8> = dealt.iter().copied().collect();
 
             assert!(
@@ -1255,8 +1367,7 @@ mod tests {
     fn every_deal_holds_a_slow_lane_and_a_fast_one() {
         let third = u8::MAX / 3;
         for seed in LANE_TEST_SEEDS {
-            let dealt =
-                deal_variances(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut Xorshift::seeded(seed));
+            let dealt = dealt_at_rest(LANE_TEST_LINES, TEXT_LANE_ROWS, seed);
             let slowest = dealt.iter().copied().min().expect("the field was dealt");
             let fastest = dealt.iter().copied().max().expect("the field was dealt");
 

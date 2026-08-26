@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report the state of an invocation the lead command is driving, not just the lead's own. A nested cargo -- `cargo doc` under a `cargo port` lint run, say -- waiting on the build-directory lock now says `blocked` on its own row; before, every row but the lead was left blank. A row with no capture of its own stays blank rather than borrowing the reading from the row above it.
 
 ### Changed
+- The drifting attract screen's fast and slow runs of lines no longer stand where they were dealt: the pattern of speeds travels along the field at half a line a second, so a line drifts from a fast run into a slow one and back.
 - The attract screen's fade now takes about twice as long to cross, so `a` reads as the screen changing hands rather than as a cut.
 - The attract screen now arrives and leaves over bare panes. The grid keeps its frames and loses its contents for the length of the fade, and goes the rest of the way out as the band comes the rest of the way in -- so the band has a background to settle into instead of going dark over nothing, and no content is ever on screen under a band still crossing it.
 - `initial_rows` now says how tall the grid grows in a single column before it starts arranging itself into a square, rather than how many rows a column fills before the next one opens. At three, the fourth cell turns a column of three into a two-by-two and the tenth turns a full three-by-three into three columns of four.

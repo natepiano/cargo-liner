@@ -12,6 +12,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `BackdropMonitor` finds its own window by the number `identify` pinned to it rather than among the windows of whichever application is in front, so an emulator that is nowhere in this process's parent chain no longer captures another application's display when that application is opened over the terminal. The capture also leaves out every window standing in front of this one, which is not something this one is drawn over.
 
 ### Changed
+- `DriftingText`'s lane speeds travel along the field instead of standing where they were dealt: the drawn lanes stay put and each line reads them from a point moving half a line a second, so a line in a fast run drifts into a slow one and back. The lanes are read as a ring, so the travelling pattern has no edge to cross.
 - `DriftingText` deals each line a ring of numbers rather than of characters, and `TextFill` says whether they are drawn as characters or as how much of the cell is lit. Bars can be drawn part way into a cell, so the sub-cell travel the lines already tracked is no longer discarded. `set_direction` carries every cell's number into the new direction instead of re-dealing the field.
 - `TravelingBand` staggers where each offset across it begins its lap while the leading edge frays, so a strip standing less deep than the window no longer leaves the same run of grid empty on every offset.
 

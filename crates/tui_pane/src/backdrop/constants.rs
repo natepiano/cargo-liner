@@ -190,6 +190,18 @@ pub(super) const TEXT_RIPPLE_LINES: usize = 4;
 /// within a lane, small enough that it never carries a line into the
 /// lane next door.
 pub(super) const TEXT_RIPPLE_PERCENT: u32 = 26;
+/// How far the lanes travel along the field each second, in
+/// [`LANE_FRACTION_UNIT`] sub-lines.
+///
+/// The lanes are drawn once and then read at a point that moves, so a
+/// line does not keep the speed it was dealt: the pattern slides past it
+/// and carries it from a slow group into a fast one and back. Half a
+/// line a second, which is slow enough that the field never reads as
+/// scrolling -- the characters have their own travel and a second motion
+/// at a comparable rate would fight it -- and quick enough that a line
+/// crosses a whole lane in under a minute rather than holding one speed
+/// for as long as anybody watches.
+pub(super) const TEXT_WAVE_SUBLINES_PER_SECOND: u32 = LANE_FRACTION_UNIT / 2;
 /// Fixed-point unit the lane interpolation is worked out in.
 ///
 /// A power of two, and large enough that a lane hundreds of lines deep
