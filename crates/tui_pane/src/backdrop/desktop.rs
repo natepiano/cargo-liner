@@ -692,12 +692,20 @@ mod platform {
         CGDisplayBounds(display.display_id())
     }
 
-    /// How many whole cells fit into a span of that many cells.
+    /// How many cells a grid needs to cover a span of that many cells.
+    ///
+    /// Rounded up, because a display is rarely a whole number of cells
+    /// tall and the remainder is where the bottom row of a full-height
+    /// window sits. Rounded down it falls outside the grid, `color_at`
+    /// gives back nothing for it, and the last row of the window is
+    /// left unpainted. [`reduce`] shares the image out across whatever
+    /// count it is handed, so a grid reaching a little past the display
+    /// costs a fraction of a pixel per cell and nothing else.
     ///
     /// [`None`] where the answer is not a count a grid could have --
     /// nothing at all, or more cells than a `u16` holds.
     fn whole_cells(cells: f64) -> Option<u16> {
-        u16::try_from(cell_index(cells.floor())?)
+        u16::try_from(cell_index(cells.ceil())?)
             .ok()
             .filter(|count| *count > 0)
     }
@@ -1066,7 +1074,7 @@ mod tests {
     /// module's own is behind `cfg(target_os = "macos")`, and the
     /// arithmetic this checks is not.
     fn grid_cells(span: f64, cell: f64) -> u16 {
-        let cells = cell_index((span / cell).floor()).expect("a finite count of cells");
+        let cells = cell_index((span / cell).ceil()).expect("a finite count of cells");
         u16::try_from(cells).expect("a display holds fewer cells than a u16 counts")
     }
 
@@ -1104,12 +1112,37 @@ mod tests {
     }
 
     #[test]
+    fn the_reduce_grid_covers_every_cell_the_window_has() {
+        let cell = RETINA.cell_points(SCALE);
+        let desktop = Desktop {
+            window: 0,
+            metrics: RETINA,
+            origin: (0.0, 0.0),
+            cell,
+            columns: grid_cells(DISPLAY.0, cell.0),
+            rows: grid_cells(DISPLAY.1, cell.1),
+            colors: Vec::new(),
+        };
+        let placement = desktop
+            .placement(FRAME)
+            .expect("the window is on the display");
+        let last_column = placement.column + i32::from(RETINA.cells.0);
+        let last_row = placement.row + i32::from(RETINA.cells.1);
+        assert!(
+            last_column <= i32::from(desktop.columns) && last_row <= i32::from(desktop.rows),
+            "the grid the capture reduces to has to reach the far corner \
+             of the window, or `color_at` gives back nothing past the \
+             edge and the field dies where the grid stops"
+        );
+    }
+
+    #[test]
     fn an_undivided_report_leaves_the_grid_short() {
         let cell = RETINA.cell_points(1);
         assert!(
             grid_cells(DISPLAY.1, cell.1) < RETINA.cells.1,
             "this is the defect itself: a cell twice its height divides \
-             the display into 34 rows where the window alone needs 67, \
+             the display into 35 rows where the window alone needs 67, \
              which is the backdrop covering the full width and dying \
              just under halfway down"
         );
