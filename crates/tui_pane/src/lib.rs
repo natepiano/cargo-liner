@@ -43,6 +43,12 @@ pub use backdrop::BandFraying;
 #[cfg(feature = "backdrop")]
 pub use backdrop::DriftingText;
 #[cfg(feature = "backdrop")]
+pub use backdrop::PixelFill;
+#[cfg(feature = "backdrop")]
+pub use backdrop::PixelResolve;
+#[cfg(feature = "backdrop")]
+pub use backdrop::ResolvingPixels;
+#[cfg(feature = "backdrop")]
 pub use backdrop::TextDrift;
 #[cfg(feature = "backdrop")]
 pub use backdrop::TextFill;

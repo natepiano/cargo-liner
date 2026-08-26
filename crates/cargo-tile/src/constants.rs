@@ -35,6 +35,11 @@ pub(crate) const ATTRACT_MOVING_BAND_SECTION: &str = "Attract: Moving Band";
 pub(crate) const ATTRACT_MOVING_TEXT_SCOPE: &str = "attract_moving_text";
 /// Section heading the keymap overlay gives the drifting text's keys.
 pub(crate) const ATTRACT_MOVING_TEXT_SECTION: &str = "Attract: Moving Text";
+/// TOML table the pixelate screen's keys are read from and written back
+/// to. Stable -- `keymap.toml` is hand-edited.
+pub(crate) const ATTRACT_PIXELATE_SCOPE: &str = "attract_pixelate";
+/// Section heading the keymap overlay gives the pixelate screen's keys.
+pub(crate) const ATTRACT_PIXELATE_SECTION: &str = "Attract: Pixelate";
 /// Cells per second one step of the faster / slower keys moves the
 /// band.
 pub(crate) const BAND_SPEED_STEP: u32 = 2;
@@ -43,6 +48,19 @@ pub(crate) const BAND_SPEED_STEP: u32 = 2;
 pub(crate) const BAND_TAIL_SPEED_STEP: u32 = 24;
 /// Cells one step of the wider / thinner keys moves the band.
 pub(crate) const BAND_WIDTH_STEP: u32 = 1;
+/// Columns one step of the coarsen / sharpen keys moves the pixelate
+/// screen's blocks.
+///
+/// One, where the band's width step is also one: a block's rows are
+/// taken from its columns, so a step of two would carry a block a whole
+/// row deeper on every other press and the key would read as uneven.
+pub(crate) const PIXEL_BLOCK_STEP: u32 = 1;
+/// Cells per second one step of the faster / slower keys moves the
+/// pixelate screen's wave.
+pub(crate) const PIXEL_SPEED_STEP: u32 = 2;
+/// Percentage points one step of the wave keys moves how much of the
+/// field the pixelate screen's coarseness covers.
+pub(crate) const PIXEL_WAVE_STEP: u32 = 5;
 /// Cells per second one step of the faster / slower keys moves the
 /// drifting text. Smaller than the band's step because the range it
 /// walks is half as long.

@@ -440,18 +440,33 @@ open_settings = ","
 Unknown entries are skipped rather than failing startup, so a keymap written
 against an older version still loads.
 
-The attract screen has a table of its own per animation, so two animations can
-bind the same key to different things. The one there is now is the moving band,
-under `[attract_moving_band]`: the arrow keys send it the way they point, `>`
-and `<` speed it up and slow it down (`.` and `,` do the same unshifted), and
-`+` and `-` widen and thin it, with `=` standing in for `+`. Holding a key moves
-the band further per press the longer it is held. `V` varies the trailing edge,
-after which every row of the band runs back its own distance, growing and
-shrinking between a third of its width and all of it while the leading edge
-stays flat. No lowercase letter is taken, so `f` still freezes
-and `a` still gives the grid back. Those keys are live only while
-the screen was asked for with `a` -- left to come on by itself over an idle grid
-the animation is decoration, and the arrows still move the grid's focus ring.
+The attract screen has a table of its own per animation, so each can bind the
+same key to something different. There are three, and `1`, `2` and `3` turn
+between them from any of them.
+
+`[attract_moving_band]` is the strip of characters crossing the grid: the arrow
+keys send it the way they point, `>` and `<` speed it up and slow it down (`.`
+and `,` do the same unshifted), and `+` and `-` widen and thin it, with `=`
+standing in for `+`. `v` varies the trailing edge, after which every row of the
+band runs back its own distance, growing and shrinking between a third of its
+width and all of it while the leading edge stays flat.
+
+`[attract_moving_text]` fills the window with characters instead, every line
+drifting at a speed of its own. The arrows point the drift, `>` and `<` set the
+pace, `[` and `]` set how far the lines' speeds spread apart, `v` cycles what
+varies down the window and `t` cycles what the lines are made of.
+
+`[attract_pixelate]` draws the desktop as itself and sweeps a band of coarseness
+across it, which takes the picture to blocks and gives it back. The arrows point
+the sweep, `>` and `<` set its pace, `+` and `-` size the blocks, `[` and `]`
+narrow and widen the band, `v` cycles how a block hands its cells back and `t`
+cycles what a cell is drawn with.
+
+Holding a key steers further per press the longer it is held. No lowercase
+letter any of them takes is one the grid needs, so `f` still freezes and `a`
+still gives the grid back. These keys are live only while the screen was asked
+for with `a` -- left to come on by itself over an idle grid the animation is
+decoration, and the arrows still move the grid's focus ring.
 
 Editing it by hand is optional: Enter on a row in the keymap overlay (or in the
 `?` overlay) captures the next keypress, checks it against every binding

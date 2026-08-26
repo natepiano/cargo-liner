@@ -34,6 +34,26 @@ enum EditState {
     Conflict,
 }
 
+/// Where one selectable row of the keymap overlay was drawn.
+///
+/// The overlay lays its sections out in as many columns as the popup
+/// has room for, so one line of it carries a row per column and the
+/// line on its own no longer says which row a click landed on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct KeymapRowSpan {
+    /// Line of the popup's content the row was drawn on, counted
+    /// before any scrolling.
+    pub(crate) line:      usize,
+    /// First cell of the content the row occupies, counted from the
+    /// left of the popup's inside.
+    pub(crate) start:     u16,
+    /// How many cells wide it stands, the gap to the next column
+    /// included so a click between two of them still lands on one.
+    pub(crate) width:     u16,
+    /// Which selectable row of the overlay it is.
+    pub(crate) selection: usize,
+}
+
 /// Command produced by [`KeymapPane::handle_capture_key`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeymapCaptureCommand {
@@ -56,7 +76,7 @@ pub enum KeymapCaptureCommand {
 pub struct KeymapPane {
     edit_state:    EditState,
     editor_target: Option<PathBuf>,
-    line_targets:  Vec<Option<usize>>,
+    row_spans:     Vec<KeymapRowSpan>,
     viewport:      Viewport,
     /// Render-time focus snapshot stamped by the embedding crate's
     /// overlay dispatcher right before
@@ -73,7 +93,7 @@ impl KeymapPane {
         Self {
             edit_state:    EditState::Browse,
             editor_target: None,
-            line_targets:  Vec::new(),
+            row_spans:     Vec::new(),
             viewport:      Viewport::new(),
             focus:         crate::RenderFocus::inactive(),
         }
@@ -148,36 +168,57 @@ impl KeymapPane {
     /// Mutably borrow the framework-owned viewport state.
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
-    /// Replace the rendered-line to selectable-row map used for mouse hit-testing.
-    pub fn replace_line_targets(&mut self, targets: Vec<Option<usize>>) {
-        self.line_targets = targets;
+    /// Replace the map of where each selectable row was drawn, used for
+    /// mouse hit-testing.
+    pub(crate) fn replace_row_spans(&mut self, spans: Vec<KeymapRowSpan>) {
+        self.row_spans = spans;
     }
 
     /// Selectable row rendered at `line`, if the line is clickable.
+    ///
+    /// The leftmost of them where the overlay is drawn in columns and
+    /// the line carries one row per column.
     #[must_use]
     pub fn line_target(&self, line: usize) -> Option<usize> {
-        self.line_targets.get(line).copied().flatten()
+        self.row_spans
+            .iter()
+            .find(|span| span.line == line)
+            .map(|span| span.selection)
     }
 
     /// First rendered line for the given selectable row, if any.
     #[must_use]
     pub fn line_for_selection(&self, selection: usize) -> Option<usize> {
-        self.line_targets
+        self.row_spans
             .iter()
-            .position(|target| *target == Some(selection))
+            .find(|span| span.selection == selection)
+            .map(|span| span.line)
     }
 
     /// Selectable row at screen `pos`, or `None` if `pos` lies
     /// outside the rendered content area, the overlay is not
     /// rendered (zero-sized content area), or the line is inert.
+    ///
+    /// Both axes are asked. The overlay draws its sections in columns
+    /// where the popup has room, so a line holds a row per column and
+    /// reading `pos.y` alone would answer with the leftmost of them
+    /// whichever column was clicked.
     #[must_use]
     pub fn row_at(&self, pos: Position) -> Option<usize> {
         let inner = self.viewport.content_area();
         if inner.width == 0 || inner.height == 0 || !inner.contains(pos) {
             return None;
         }
-        let line_index = usize::from(pos.y.saturating_sub(inner.y)) + self.viewport.scroll_offset();
-        self.line_target(line_index)
+        let line = usize::from(pos.y.saturating_sub(inner.y)) + self.viewport.scroll_offset();
+        let across = pos.x.saturating_sub(inner.x);
+        self.row_spans
+            .iter()
+            .find(|span| {
+                span.line == line
+                    && across >= span.start
+                    && across < span.start.saturating_add(span.width)
+            })
+            .map(|span| span.selection)
     }
 
     /// Current input mode for the overlay.
@@ -230,7 +271,7 @@ impl KeymapPane {
         Self {
             edit_state: EditState::Awaiting,
             editor_target,
-            line_targets: Vec::new(),
+            row_spans: Vec::new(),
             viewport: Viewport::new(),
             focus: crate::RenderFocus::inactive(),
         }
@@ -242,7 +283,7 @@ impl KeymapPane {
         Self {
             edit_state: EditState::Conflict,
             editor_target,
-            line_targets: Vec::new(),
+            row_spans: Vec::new(),
             viewport: Viewport::new(),
             focus: crate::RenderFocus::inactive(),
         }

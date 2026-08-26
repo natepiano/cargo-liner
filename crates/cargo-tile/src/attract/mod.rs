@@ -17,8 +17,8 @@
 //! the keymap scope the reader's keys resolve against while the screen
 //! has been asked for: `+` widens the moving band rather than opening a
 //! tile, and the other mode binds the same key to whatever it wants --
-//! or, as it happens, to nothing. `1` and `2` turn between them. See
-//! [`moving_band`] and [`moving_text`].
+//! or, as it happens, to nothing. `1`, `2` and `3` turn between them.
+//! See [`moving_band`], [`moving_text`] and [`pixelate`].
 //!
 //! It can also be asked for outright, with the key bound to
 //! [`AppGlobalAction::Attract`](crate::globals::AppGlobalAction). A
@@ -40,6 +40,7 @@
 mod held_key;
 mod moving_band;
 mod moving_text;
+mod pixelate;
 
 use std::io;
 use std::sync::OnceLock;
@@ -52,6 +53,7 @@ use ratatui::style::Color;
 use tui_pane::BackdropMonitor;
 use tui_pane::BandDirection;
 use tui_pane::DriftingText;
+use tui_pane::ResolvingPixels;
 use tui_pane::TravelingBand;
 use tui_pane::pane_background;
 
@@ -60,12 +62,17 @@ use self::moving_band::MovingBandAction;
 pub(crate) use self::moving_band::MovingBandPane;
 use self::moving_text::MovingTextAction;
 pub(crate) use self::moving_text::MovingTextPane;
+use self::pixelate::PixelateAction;
+pub(crate) use self::pixelate::PixelatePane;
 use crate::app::Updates;
 use crate::constants::ATTRACT_FADE_STEP;
 use crate::constants::ATTRACT_RETURN_QUIET;
 use crate::constants::BAND_SPEED_STEP;
 use crate::constants::BAND_TAIL_SPEED_STEP;
 use crate::constants::BAND_WIDTH_STEP;
+use crate::constants::PIXEL_BLOCK_STEP;
+use crate::constants::PIXEL_SPEED_STEP;
+use crate::constants::PIXEL_WAVE_STEP;
 use crate::constants::TEXT_SPEED_STEP;
 use crate::constants::TEXT_SPREAD_STEP;
 use crate::probe;
@@ -160,6 +167,9 @@ pub(crate) enum AttractMode {
     /// them drifting at a speed of its own, in those same colours.
     #[default]
     MovingText,
+    /// The desktop drawn as itself, with a band of coarseness sweeping
+    /// across it that takes the picture to blocks and gives it back.
+    Pixelate,
 }
 
 /// The attract screen's state between frames.
@@ -173,6 +183,8 @@ pub(crate) struct Attract {
     band:        TravelingBand,
     /// The window of characters drifting line by line.
     text:        DriftingText,
+    /// The desktop drawn as itself, coarsening under a travelling wave.
+    pixels:      ResolvingPixels,
     /// How far into a run of presses of one of the band's steering keys
     /// the reader is, which is what lets a held key move it further per
     /// press.
@@ -181,6 +193,8 @@ pub(crate) struct Attract {
     /// between the animations does not hand the second whatever speed
     /// the first was climbing at.
     held_text:   HeldKey<MovingTextAction>,
+    /// And the same again for the pixelate screen's.
+    held_pixels: HeldKey<PixelateAction>,
     /// How far the strip is carried toward the ground it is drawn on,
     /// on the alpha scale [`tui_pane::blend_color`] reads. Starts at
     /// [`u8::MAX`] so the app opens with nothing over its grid.
@@ -216,8 +230,10 @@ impl Attract {
             mode:        AttractMode::default(),
             band:        TravelingBand::new(),
             text:        DriftingText::new(),
+            pixels:      ResolvingPixels::new(),
             held_band:   HeldKey::new(),
             held_text:   HeldKey::new(),
+            held_pixels: HeldKey::new(),
             faded:       u8::MAX,
             advanced_at: Instant::now(),
             asked:       Asked::Nothing,
@@ -300,6 +316,7 @@ impl Attract {
             MovingBandAction::TailSlower => self.band.tail_slower(step * BAND_TAIL_SPEED_STEP),
             MovingBandAction::ShowMovingBand => self.mode = AttractMode::MovingBand,
             MovingBandAction::ShowMovingText => self.mode = AttractMode::MovingText,
+            MovingBandAction::ShowPixelate => self.mode = AttractMode::Pixelate,
         }
     }
 
@@ -328,6 +345,35 @@ impl Attract {
             MovingTextAction::SpreadNarrower => self.text.spread_narrower(step * TEXT_SPREAD_STEP),
             MovingTextAction::ShowMovingBand => self.mode = AttractMode::MovingBand,
             MovingTextAction::ShowMovingText => self.mode = AttractMode::MovingText,
+            MovingTextAction::ShowPixelate => self.mode = AttractMode::Pixelate,
+        }
+    }
+
+    /// Steer the pixelate screen.
+    ///
+    /// The step comes from the screen's own [`HeldKey`], so the same
+    /// action does more per press the longer its key is held. Direction
+    /// is not stepped -- it is one of four answers -- and neither is
+    /// how a block gives its cells back or what a cell is drawn with,
+    /// each of which is a cycle rather than a range.
+    fn pixelate(&mut self, action: PixelateAction) {
+        let step = self.held_pixels.step(action, Instant::now());
+        match action {
+            PixelateAction::SweepLeft => self.pixels.set_direction(BandDirection::Left),
+            PixelateAction::SweepRight => self.pixels.set_direction(BandDirection::Right),
+            PixelateAction::SweepUp => self.pixels.set_direction(BandDirection::Up),
+            PixelateAction::SweepDown => self.pixels.set_direction(BandDirection::Down),
+            PixelateAction::Faster => self.pixels.speed_up(step * PIXEL_SPEED_STEP),
+            PixelateAction::Slower => self.pixels.slow_down(step * PIXEL_SPEED_STEP),
+            PixelateAction::Coarser => self.pixels.coarsen(step * PIXEL_BLOCK_STEP),
+            PixelateAction::Sharper => self.pixels.sharpen(step * PIXEL_BLOCK_STEP),
+            PixelateAction::WaveWider => self.pixels.wider(step * PIXEL_WAVE_STEP),
+            PixelateAction::WaveNarrower => self.pixels.narrower(step * PIXEL_WAVE_STEP),
+            PixelateAction::CycleResolve => self.pixels.cycle_resolve(),
+            PixelateAction::CycleFill => self.pixels.cycle_fill(),
+            PixelateAction::ShowMovingBand => self.mode = AttractMode::MovingBand,
+            PixelateAction::ShowMovingText => self.mode = AttractMode::MovingText,
+            PixelateAction::ShowPixelate => self.mode = AttractMode::Pixelate,
         }
     }
 
@@ -562,6 +608,10 @@ impl Attract {
                 self.text.advance(area, elapsed);
                 self.text.fade(self.faded);
             },
+            AttractMode::Pixelate => {
+                self.pixels.advance(area, elapsed);
+                self.pixels.fade(self.faded);
+            },
         }
         self.grid()
     }
@@ -582,6 +632,7 @@ impl Attract {
         match self.mode {
             AttractMode::MovingBand => self.band.render(area, backdrop, ground(), buffer),
             AttractMode::MovingText => self.text.render(area, backdrop, ground(), buffer),
+            AttractMode::Pixelate => self.pixels.render(area, backdrop, ground(), buffer),
         }
     }
 }

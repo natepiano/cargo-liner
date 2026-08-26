@@ -123,6 +123,92 @@ pub(super) const PIXEL_PRECISION: u32 = 256;
 /// The whole of something, as a percentage.
 pub(super) const WHOLE_PERCENT: u32 = 100;
 
+// attract pixels
+/// How many columns one block covers at its coarsest, before anything
+/// has coarsened or sharpened it.
+///
+/// Rows are taken from this and the cell's own measurements rather than
+/// steered separately, so a block reads square however tall the
+/// terminal's cell is. Ten columns is about six blocks across an
+/// ordinary window -- coarse enough that a block is plainly a block,
+/// and fine enough that the desktop is still recognisable through one.
+pub(super) const DEFAULT_BLOCK_COLUMNS: u32 = 10;
+/// How far the wave of coarseness travels each second, in cells, before
+/// anything has sped it up or slowed it down.
+///
+/// Between [`DEFAULT_BAND_SPEED`] and [`DEFAULT_TEXT_SPEED`], and for a
+/// reason neither of them has: what the reader is watching is a block
+/// coming apart, and that takes as long as the wave takes to cross the
+/// block. At this speed a default block resolves over about a second.
+pub(super) const DEFAULT_PIXEL_SPEED: u32 = 14;
+/// How much of the field the wave of coarseness covers, as a percentage
+/// of the grid's extent along the axis it sweeps, before anything has
+/// widened or narrowed it.
+///
+/// Under half, so there is always more sharp field than coarse: the
+/// wave is what the eye follows, and a wave covering most of the window
+/// leaves nothing for it to be read against.
+pub(super) const DEFAULT_PIXEL_WAVE_PERCENT: u32 = 40;
+/// Widest a block is drawn, in columns. Past this a block is most of a
+/// window's height and what crosses the screen reads as a colour
+/// changing rather than as a picture coarsening.
+pub(super) const MAX_BLOCK_COLUMNS: u32 = 48;
+/// Fastest the wave travels. Past this it crosses a block inside a few
+/// frames, so a block goes from sharp to coarse and back with nothing
+/// drawn in between.
+pub(super) const MAX_PIXEL_SPEED: u32 = 200;
+/// Widest the wave stands. The first hundred opens it out from nothing
+/// to the whole of the axis it sweeps; the second flattens the way its
+/// coarseness falls away from the middle, until at this value the field
+/// stands at one coarseness the whole way round and what is on the
+/// screen is the picture in blocks with no wave crossing it.
+///
+/// Stopping at the first hundred left a fall-off at either end that
+/// nothing could take out, so the one thing the screen could not be
+/// asked for was the whole of it at one size.
+pub(super) const MAX_PIXEL_WAVE_PERCENT: u32 = 200;
+/// Narrowest a block is drawn, in columns.
+///
+/// Two rather than one. A block one column across is one cell wide and,
+/// with its rows taken from the cell measurements, one cell deep -- so
+/// the coarsest the wave could make the field is the field it started
+/// from, and every key but this one would look broken.
+pub(super) const MIN_BLOCK_COLUMNS: u32 = 2;
+/// Slowest the wave travels. Zero is not offered, for the reason
+/// [`MIN_BAND_SPEED`] is not: a wave that never moves is one the reader
+/// cannot tell from a frozen display.
+pub(super) const MIN_PIXEL_SPEED: u32 = 1;
+/// Narrowest the wave stands, as a percentage of the axis it sweeps.
+/// Under this it is thinner than one block on an ordinary window, so it
+/// passes between two of them and coarsens neither.
+pub(super) const MIN_PIXEL_WAVE_PERCENT: u32 = 5;
+/// How far the colour behind a shading character is carried toward the
+/// background, against the character itself standing at the block's own
+/// colour.
+///
+/// The same correction [`TEXT_BEHIND_FADE`] makes, wanted here for the
+/// same reason: a shading character lights a fraction of its cell and
+/// the rest of it would otherwise stay at the background, so the
+/// darkest end of [`SHADES`] would draw the desktop through a tenth of
+/// the cell and the terminal's own colour through the rest.
+pub(super) const PIXEL_BEHIND_FADE: u8 = TEXT_BEHIND_FADE;
+/// How many sizes a block is drawn at while it resolves under
+/// [`PixelResolve::Step`](super::PixelResolve::Step): the whole block,
+/// then halves, then quarters, then its cells on their own.
+///
+/// Each is half the last, so a coarser size's boundaries are also the
+/// finer one's and a block never re-cuts itself under the colours as it
+/// steps. Four is what fits: an eighth of a default block is already
+/// one cell, so a fifth step would be the fourth drawn again.
+pub(super) const PIXEL_STEP_LEVELS: u32 = 4;
+/// The proportion of one lap the wave's centre is put at when the field
+/// is first sized, as a percentage.
+///
+/// Not the edge. The wave enters at the edge, so a field starting there
+/// opens with the whole window sharp and nothing to say what the screen
+/// is for until the wave has crossed a third of it.
+pub(super) const PIXEL_WAVE_START_PERCENT: u32 = 35;
+
 // attract text
 /// How far a line of the drifting text travels each second, in cells,
 /// before anything has sped it up or slowed it down.
@@ -410,6 +496,17 @@ pub(super) const BARS_UP: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', 
 /// How many steps those ramps hold, which is the scale a cell's fill is
 /// read on. One is the narrowest sliver and this is the whole cell.
 pub(super) const BAR_LEVELS: u32 = 8;
+
+// shades
+/// The characters [`PixelFill::Shades`](super::PixelFill::Shades) draws
+/// a cell with, from the sparsest to the whole of it.
+///
+/// Ordered, like [`BARS_ACROSS`], and read from how bright the cell is
+/// rather than from how far a line has travelled into it. What these
+/// buy over a solid cell is a texture the desktop's own light shows
+/// through: a picture drawn in four densities of the same character
+/// reads as a screen printed from it rather than as the screen itself.
+pub(super) const SHADES: &[char] = &['░', '▒', '▓', '█'];
 
 // time
 /// Microseconds in one second.

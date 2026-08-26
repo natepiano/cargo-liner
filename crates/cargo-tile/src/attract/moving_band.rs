@@ -41,6 +41,7 @@ tui_pane::action_enum! {
         TailFaster  => ("tail_faster",  "Fray the trailing edge faster");
         ShowMovingBand => ("show_moving_band", "Show the moving band");
         ShowMovingText => ("show_moving_text", "Show the moving text");
+        ShowPixelate   => ("show_pixelate",    "Show the pixelate screen");
     }
 }
 
@@ -87,10 +88,10 @@ impl Shortcuts<App> for MovingBandPane {
     /// the third matched pair, and they slow and speed the fraying `v`
     /// cycles through, which is why they sit beside it in the listing.
     ///
-    /// `1` and `2` name the animations in the order they were written.
-    /// Both scopes bind both, so either is reachable from the other and
-    /// neither is a door that only opens one way; pressing the one
-    /// already showing does nothing.
+    /// `1`, `2` and `3` name the animations in the order they were
+    /// written. Every scope binds all three, so each is reachable from
+    /// the others and none is a door that only opens one way; pressing
+    /// the one already showing does nothing.
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
             ['+', '='] => MovingBandAction::Wider,
@@ -106,6 +107,7 @@ impl Shortcuts<App> for MovingBandPane {
             ']' => MovingBandAction::TailFaster,
             '1' => MovingBandAction::ShowMovingBand,
             '2' => MovingBandAction::ShowMovingText,
+            '3' => MovingBandAction::ShowPixelate,
         }
     }
 
@@ -159,6 +161,7 @@ mod tests {
             ('<', MovingBandAction::Slower),
             ('1', MovingBandAction::ShowMovingBand),
             ('2', MovingBandAction::ShowMovingText),
+            ('3', MovingBandAction::ShowPixelate),
         ];
 
         for (key, action) in cases {

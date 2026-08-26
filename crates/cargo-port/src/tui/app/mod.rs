@@ -4147,8 +4147,15 @@ mod tests {
                     "Open finder",
                     "Open keymap viewer",
                     "Show global shortcuts",
-                    "Project List:",
                 ],
+            );
+            // Asserted apart from the run above rather than at the end
+            // of it: the overlay draws its sections in columns where
+            // the popup has room, so a section in the next column is
+            // read out of the buffer ahead of the foot of this one.
+            assert!(
+                text.contains("Project List:"),
+                "the app's own pane sections must still be listed",
             );
             assert!(
                 !text.contains("App Global Shortcuts:"),

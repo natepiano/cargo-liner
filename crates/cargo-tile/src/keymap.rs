@@ -30,6 +30,7 @@ use crate::app::App;
 use crate::app::AppPaneId;
 use crate::attract::MovingBandPane;
 use crate::attract::MovingTextPane;
+use crate::attract::PixelatePane;
 use crate::globals::AppGlobalAction;
 use crate::navigation::AppNavigation;
 
@@ -78,6 +79,7 @@ pub(crate) fn build_keymap(
         .register_pane::<MainPane>()
         .register(MovingBandPane)
         .register(MovingTextPane)
+        .register(PixelatePane)
         .build_into(framework)
 }
 
@@ -108,7 +110,11 @@ mod tests {
             keymap.navigation().is_some(),
             "the settings overlay moves on the navigation scope"
         );
-        for mode in [AttractMode::MovingBand, AttractMode::MovingText] {
+        for mode in [
+            AttractMode::MovingBand,
+            AttractMode::MovingText,
+            AttractMode::Pixelate,
+        ] {
             assert!(
                 keymap
                     .scope_toml_name_for(AppPaneId::Attract(mode))

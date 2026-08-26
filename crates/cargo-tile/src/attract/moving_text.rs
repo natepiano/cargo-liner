@@ -39,6 +39,7 @@ tui_pane::action_enum! {
         SpreadWider    => ("spread_wider",    "Send the lines' speeds apart");
         ShowMovingBand => ("show_moving_band", "Show the moving band");
         ShowMovingText => ("show_moving_text", "Show the moving text");
+        ShowPixelate   => ("show_pixelate",    "Show the pixelate screen");
     }
 }
 
@@ -80,10 +81,10 @@ impl Shortcuts<App> for MovingTextPane {
     /// mean -- and binding them to something invented for the sake of a
     /// full listing is worse than leaving them where they were.
     ///
-    /// `1` and `2` name the animations in the order they were written.
-    /// Both scopes bind both, so either is reachable from the other and
-    /// neither is a door that only opens one way; pressing the one
-    /// already showing does nothing.
+    /// `1`, `2` and `3` name the animations in the order they were
+    /// written. Every scope binds all three, so each is reachable from
+    /// the others and none is a door that only opens one way; pressing
+    /// the one already showing does nothing.
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
             KeyCode::Left => MovingTextAction::TravelLeft,
@@ -98,6 +99,7 @@ impl Shortcuts<App> for MovingTextPane {
             ']' => MovingTextAction::SpreadWider,
             '1' => MovingTextAction::ShowMovingBand,
             '2' => MovingTextAction::ShowMovingText,
+            '3' => MovingTextAction::ShowPixelate,
         }
     }
 
@@ -151,6 +153,7 @@ mod tests {
             ('<', MovingTextAction::Slower),
             ('1', MovingTextAction::ShowMovingBand),
             ('2', MovingTextAction::ShowMovingText),
+            ('3', MovingTextAction::ShowPixelate),
         ];
 
         for (key, action) in cases {

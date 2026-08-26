@@ -39,12 +39,12 @@
 
 use std::time::Duration;
 
-use crossterm::terminal;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use super::Backdrop;
+use super::cell_pixels;
 use super::constants::BAND_BEHIND_FADE;
 use super::constants::CHURN_CELLS_PER_FRAME;
 use super::constants::DEFAULT_BAND_SPEED;
@@ -58,7 +58,6 @@ use super::constants::MILLIS_PER_SECOND;
 use super::constants::MIN_BAND_SPEED;
 use super::constants::MIN_BAND_WIDTH;
 use super::constants::MIN_TAIL_SPEED;
-use super::constants::PIXEL_PRECISION;
 use super::constants::SUBCELLS_PER_CELL;
 use super::constants::VARIABLE_HEAD_CEILING_PERCENT;
 use super::constants::VARIABLE_TAIL_FLOOR_PERCENT;
@@ -818,16 +817,9 @@ impl TravelingBand {
     /// A terminal that will not say leaves the last answer standing, so
     /// a single refusal does not undo a size already learned.
     fn read_cell_pixels(&mut self) {
-        let Ok(size) = terminal::window_size() else {
-            return;
-        };
-        if size.width == 0 || size.height == 0 || size.columns == 0 || size.rows == 0 {
-            return;
+        if let Some(measured) = cell_pixels() {
+            self.cell_pixels = measured;
         }
-        self.cell_pixels = (
-            u32::from(size.width) * PIXEL_PRECISION / u32::from(size.columns),
-            u32::from(size.height) * PIXEL_PRECISION / u32::from(size.rows),
-        );
     }
 
     /// Re-size to `area`, drawing a fresh set of characters and putting

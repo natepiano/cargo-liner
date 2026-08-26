@@ -27,10 +27,11 @@ use crate::tiles::TileGrid;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
 /// [`AppPaneId`] belongs here or its pane-local shortcuts go unlisted.
-const APP_PANE_DISPLAY_ORDER: [AppPaneId; 3] = [
+const APP_PANE_DISPLAY_ORDER: [AppPaneId; 4] = [
     AppPaneId::Main,
     AppPaneId::Attract(AttractMode::MovingBand),
     AppPaneId::Attract(AttractMode::MovingText),
+    AppPaneId::Attract(AttractMode::Pixelate),
 ];
 
 /// The panes this app supplies to the framework; one variant per
