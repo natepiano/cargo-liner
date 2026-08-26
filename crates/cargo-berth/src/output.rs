@@ -18,6 +18,8 @@ use crate::config::InitializationState;
 use crate::drift::DriftEffect;
 use crate::drift::DriftPathAttributionOutcome;
 use crate::drift::DriftReport;
+use crate::drift::IncursionCommit;
+use crate::drift::IncursionCommitOrigin;
 use crate::drift::PostWriteFreePathProtection;
 use crate::drift::ReservationDriftResult;
 use crate::edge::EdgeDeclarationRejection;
@@ -1660,6 +1662,49 @@ fn result_has_effect(
     }
 }
 
+/// The abbreviated object-name length a reader can paste into a git command.
+const SHORT_OBJECT_ID_CHARACTERS: usize = 8;
+
+/// Name the commits behind an incursion's entered paths, or nothing when it has none.
+///
+/// A path that arrived on a commit and a path just written read identically otherwise,
+/// so the reader cannot tell a false incursion from a real one without rebuilding the
+/// phase range by hand.
+fn render_incursion_commits(commits: &[IncursionCommit]) -> String {
+    if commits.is_empty() {
+        return String::new();
+    }
+    let rendered = commits
+        .iter()
+        .map(|commit| {
+            format!(
+                "{} \"{}\" ({}) covering {}",
+                commit
+                    .commit
+                    .to_string()
+                    .chars()
+                    .take(SHORT_OBJECT_ID_CHARACTERS)
+                    .collect::<String>(),
+                commit.subject,
+                match commit.origin {
+                    IncursionCommitOrigin::PhaseAuthored => "this phase authored it",
+                    IncursionCommitOrigin::AlreadyOnTrunk =>
+                        "already on trunk, so this phase received it",
+                    IncursionCommitOrigin::Unknown => "origin undetermined",
+                },
+                commit
+                    .paths
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(" Committed by {rendered}.")
+}
+
 fn drift_message(report: &DriftReport) -> String {
     if !report.has_reportable_effect() {
         return if report.results.is_empty() {
@@ -1698,10 +1743,11 @@ fn drift_message(report: &DriftReport) -> String {
                     incident_id,
                     foreign_reservation_ids,
                     paths,
+                    commits,
                 } => {
                     let _ = write!(
                         message,
-                        "Incursion {incident_id}: reservation {reservation_id} entered {} held by foreign reservation(s) {}. Stop and resolve the overlap with `resolve {reservation_id} --incursion {incident_id}` before making more changes. If no coordination run was identified before first-touch attribution, CARGO_BERTH_RUN can select an existing run for later invocations.",
+                        "Incursion {incident_id}: reservation {reservation_id} entered {} held by foreign reservation(s) {}.{} Stop and resolve the overlap with `resolve {reservation_id} --incursion {incident_id}` before making more changes. If no coordination run was identified before first-touch attribution, CARGO_BERTH_RUN can select an existing run for later invocations.",
                         paths
                             .as_slice()
                             .iter()
@@ -1713,7 +1759,8 @@ fn drift_message(report: &DriftReport) -> String {
                             .iter()
                             .map(ToString::to_string)
                             .collect::<Vec<_>>()
-                            .join(", ")
+                            .join(", "),
+                        render_incursion_commits(commits)
                     );
                 },
                 DriftEffect::Collision {

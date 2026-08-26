@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::ordering;
+use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::CollisionPathSet;
@@ -247,6 +248,11 @@ pub(crate) enum DriftEffect {
         foreign_reservation_ids: ForeignReservationIdSet,
         /// The exact paths entered.
         paths:                   IncursionPathSet,
+        /// The commits that introduced the entered paths this phase committed.
+        ///
+        /// Empty for an incursion carrying only working-tree changes, where the write
+        /// that caused it is the one the reader just made.
+        commits:                 Vec<IncursionCommit>,
     },
     /// A path that was initially unheld gained a blocker before the widening lock.
     Collision {
@@ -257,6 +263,31 @@ pub(crate) enum DriftEffect {
     },
 }
 
+/// One commit in a reservation's phase range that introduced entered paths.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct IncursionCommit {
+    /// The commit that introduced the paths below.
+    pub(crate) commit:  GitObjectId,
+    /// The commit's subject line.
+    pub(crate) subject: String,
+    /// Whether this phase wrote the commit or received it.
+    pub(crate) origin:  IncursionCommitOrigin,
+    /// The entered paths this commit introduced.
+    pub(crate) paths:   Vec<ReservationScopePath>,
+}
+
+/// Where a commit behind an entered path came from.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum IncursionCommitOrigin {
+    /// Trunk does not carry the commit, so this phase authored it.
+    PhaseAuthored,
+    /// Trunk already carried the commit, so the phase received it rather than wrote it.
+    AlreadyOnTrunk,
+    /// Trunk could not be resolved, so the commit's origin was not decided.
+    Unknown,
+}
+
 /// A non-empty set of consequences for one reservation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -265,6 +296,9 @@ pub(crate) struct DriftEffectSet(Vec<DriftEffect>);
 impl DriftEffectSet {
     /// Borrow the effects without weakening the non-empty construction boundary.
     pub(crate) fn as_slice(&self) -> &[DriftEffect] { &self.0 }
+
+    /// Borrow the effects for in-place enrichment, which cannot empty the set.
+    pub(super) fn as_mut_slice(&mut self) -> &mut [DriftEffect] { &mut self.0 }
 }
 
 impl TryFrom<Vec<DriftEffect>> for DriftEffectSet {

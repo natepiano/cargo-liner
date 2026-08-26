@@ -14,6 +14,7 @@ use super::identity::DriftActingIdentity;
 use super::observation;
 use super::observation::FingerprintObservation;
 use super::observation::PostWriteClaimSubject;
+use super::provenance;
 use super::report::DriftPathAttributionOutcome;
 use super::report::DriftReport;
 use super::report::PostWriteFreePathProtection;
@@ -35,6 +36,7 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
+use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
@@ -138,28 +140,9 @@ fn execute_inner(
         },
     };
     let worktree_context = initial_snapshot.worktree_context().clone();
-    let worktree_id =
-        match ledger::read_worktree_identity(worktree_context.administrative_directory()) {
-            Ok(worktree_id) => worktree_id,
-            Err(_)
-                if matches!(
-                    request.reservation,
-                    DriftReservationSelection::EveryActiveForPostCommit { .. }
-                ) =>
-            {
-                return Ok(nothing_to_compare(request.comparison));
-            },
-            Err(error) => return Err(DriftExecutionError::Ledger(error)),
-        };
-    // Stand aside while git is still replaying commits onto a moved base. Every replayed
-    // commit runs `post-commit`, and nothing re-anchors the phase until the branch
-    // reference moves at the end, so a comparison taken here reads the new base's commits
-    // as this phase's work and acquires the paths they touch.
-    if git::rewrite_in_progress(worktree_context.repository_root())
-        .map_err(DriftExecutionError::Git)?
-    {
+    let Some(worktree_id) = comparable_worktree(&worktree_context, &request)? else {
         return Ok(nothing_to_compare(request.comparison));
-    }
+    };
     let initial_reservations = RetainedReservationSet::replay(initial_snapshot.events())?;
     let acting_identity =
         DriftActingIdentity::resolve(&worktree_context, worktree_id, &initial_reservations);
@@ -219,6 +202,12 @@ fn execute_inner(
         prior_classification: &prior_classification,
     };
     let mut report = transact_classification(&mutation_context)?;
+    provenance::name_incursion_commits(
+        worktree_context.repository_root(),
+        &initial_reservations,
+        &observation.changes,
+        &mut report,
+    )?;
     if matches!(
         initial_subjects.post_write_first_touch,
         PostWriteFirstTouchRequirement::Required
@@ -231,6 +220,38 @@ fn execute_inner(
         fingerprint::publish_fingerprint(&cache_path, &observation.cache_value);
     }
     Ok(Enrollment::Enrolled(report))
+}
+
+/// The worktree this run reports for, or nothing when it has no comparison to make.
+///
+/// A post-commit run stands aside for a worktree with no recorded identity, and every run
+/// stands aside while git is still replaying commits onto a moved base: git runs
+/// `post-commit` for each replayed commit, and nothing re-anchors the phase until the
+/// branch reference moves at the end, so a comparison taken now reads the new base's
+/// commits as this phase's work and acquires the paths they touch.
+fn comparable_worktree(
+    worktree_context: &WorktreeContext,
+    request: &DriftRequest,
+) -> Result<Option<WorktreeId>, DriftExecutionError> {
+    let worktree_id =
+        match ledger::read_worktree_identity(worktree_context.administrative_directory()) {
+            Ok(worktree_id) => worktree_id,
+            Err(_)
+                if matches!(
+                    request.reservation,
+                    DriftReservationSelection::EveryActiveForPostCommit { .. }
+                ) =>
+            {
+                return Ok(None);
+            },
+            Err(error) => return Err(DriftExecutionError::Ledger(error)),
+        };
+    if git::rewrite_in_progress(worktree_context.repository_root())
+        .map_err(DriftExecutionError::Git)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(worktree_id))
 }
 
 /// The report to give when no subject has a comparison worth making.

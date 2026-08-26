@@ -536,6 +536,135 @@ fn post_commit_uses_same_run_and_worktree_reservations_as_coverage() {
 }
 
 #[test]
+fn a_committed_incursion_names_the_commits_that_introduced_its_paths() {
+    let repository = initialized_repository();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "provenance");
+    let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
+    claim(repository.path(), "file:also-held.txt", FIRST_RUN);
+    let subject_id = claim(&foreign_root, "file:own.txt", SECOND_RUN);
+    fs::write(foreign_root.join("held.txt"), "entered holder scope\n")
+        .expect("held path should write");
+    git(&foreign_root, &["add", "held.txt"]);
+    git(
+        &foreign_root,
+        &["commit", "--quiet", "-m", "enter the holder scope"],
+    );
+    let entering_commit = git_stdout(&foreign_root, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    // A second held path entered but never committed, so the commit list must not claim it.
+    fs::write(foreign_root.join("also-held.txt"), "entered uncommitted\n")
+        .expect("second held path should write");
+
+    let reported = run_berth_with_run(
+        &foreign_root,
+        &["drift", "--full", "--reservation", &subject_id, "--json"],
+        SECOND_RUN,
+    );
+    let envelope = json_output(&reported);
+
+    assert_eq!(envelope["status"], "incursion");
+    let effect = envelope["payload"]["data"]["results"]
+        .as_array()
+        .expect("drift should report results")
+        .iter()
+        .find_map(|result| {
+            result["effects"]
+                .as_array()?
+                .iter()
+                .find(|effect| effect["kind"] == "incursion")
+        })
+        .expect("drift should report an incursion")
+        .clone();
+    assert!(
+        effect["paths"]
+            .as_array()
+            .is_some_and(|paths| paths.len() == 2),
+        "both held paths were entered: {effect}"
+    );
+    let commits = effect["commits"]
+        .as_array()
+        .expect("an incursion should carry a commit list");
+    assert_eq!(
+        commits.len(),
+        1,
+        "only the committed path came from a commit: {effect}"
+    );
+    assert_eq!(commits[0]["commit"], entering_commit);
+    assert_eq!(commits[0]["subject"], "enter the holder scope");
+    assert_eq!(
+        commits[0]["origin"], "phase_authored",
+        "trunk does not carry the entering commit"
+    );
+    assert_eq!(commits[0]["paths"][0], "held.txt");
+    assert_eq!(
+        commits[0]["paths"].as_array().map(Vec::len),
+        Some(1),
+        "the uncommitted path has no commit behind it"
+    );
+    let message = envelope["payload"]["message"]
+        .as_str()
+        .or_else(|| envelope["message"].as_str())
+        .unwrap_or_default()
+        .to_owned();
+    let rendered = format!("{message}{}", String::from_utf8_lossy(&reported.stderr));
+    assert!(
+        rendered.contains(&entering_commit[..8]) && rendered.contains("this phase authored it"),
+        "the incursion message should name the commit: {rendered}"
+    );
+    assert!(rendered.contains(&holder_id));
+}
+
+#[test]
+fn an_incursion_from_merged_trunk_work_says_the_phase_did_not_author_it() {
+    let repository = initialized_repository();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "receives-trunk");
+    let subject_id = claim(&foreign_root, "file:own.txt", SECOND_RUN);
+    let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
+    fs::write(repository.path().join("held.txt"), "trunk work\n").expect("held path should write");
+    git(repository.path(), &["add", "held.txt"]);
+    git(
+        repository.path(),
+        &["commit", "--quiet", "-m", "trunk work"],
+    );
+    let trunk_commit = git_stdout(repository.path(), &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    // Taking trunk's work into the phase puts a commit the phase never wrote inside
+    // <phase_start>..HEAD, which is the shape a false incursion arrives in.
+    git(&foreign_root, &["merge", "--quiet", "main"]);
+
+    let reported = run_berth_with_run(
+        &foreign_root,
+        &["drift", "--full", "--reservation", &subject_id, "--json"],
+        SECOND_RUN,
+    );
+    let envelope = json_output(&reported);
+
+    assert_eq!(envelope["status"], "incursion");
+    let effect = envelope["payload"]["data"]["results"]
+        .as_array()
+        .expect("drift should report results")
+        .iter()
+        .find_map(|result| {
+            result["effects"]
+                .as_array()?
+                .iter()
+                .find(|effect| effect["kind"] == "incursion")
+        })
+        .expect("drift should report an incursion")
+        .clone();
+    assert_eq!(effect["paths"][0], "held.txt");
+    assert_eq!(effect["commits"][0]["commit"], trunk_commit);
+    assert_eq!(
+        effect["commits"][0]["origin"], "already_on_trunk",
+        "the phase received this commit rather than writing it: {effect}"
+    );
+    assert_eq!(effect["commits"][0]["paths"][0], "held.txt");
+    assert_eq!(effect["foreign_reservation_ids"][0], holder_id);
+}
+
+#[test]
 fn post_commit_treats_only_another_worktree_as_foreign() {
     let repository = initialized_repository();
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "foreign");

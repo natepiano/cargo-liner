@@ -125,6 +125,17 @@ impl ObservedDriftChanges {
         }
     }
 
+    /// The paths a reservation's phase committed, which a working-tree path never is.
+    pub(super) fn committed_paths(&self, reservation_id: ReservationId) -> &[ReservationScopePath] {
+        match self {
+            Self::Cheap(_) => &[],
+            Self::Full(changes) => changes
+                .committed
+                .get(&reservation_id)
+                .map_or(&[], CommittedPhaseChanges::as_slice),
+        }
+    }
+
     pub(super) fn visit_paths(
         &self,
         reservation_id: ReservationId,

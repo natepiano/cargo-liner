@@ -170,6 +170,7 @@ impl DriftEffectBuilder {
                     incident_id,
                     foreign_reservation_ids,
                     paths,
+                    commits: Vec::new(),
                 });
             }
         }
