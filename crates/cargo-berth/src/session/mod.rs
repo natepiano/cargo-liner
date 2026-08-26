@@ -103,13 +103,13 @@ pub(crate) enum SessionIdentityLookup {
     Unavailable,
 }
 
-/// Whether an appended event's session identity consequence was published.
+/// Whether the current command's harness-session identity was published.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum SessionIdentityMappingPublication {
-    /// The mapping reflects the event, including when no harness session required an entry.
+    /// The mapping reflects the reservation, including when no harness session required an entry.
     Published,
-    /// The journal event is durable, but its disposable mapping update failed.
+    /// The reservation is durable, but its disposable mapping update failed.
     Unavailable {
         /// The mapping publication failure.
         diagnostic: String,
@@ -170,18 +170,13 @@ pub(crate) fn apply_journal_event(
 ) -> SessionIdentityMappingPublication {
     let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
     let publication = match &event.operation {
-        JournalOperation::Claim { reservation_id, .. } => {
-            let HarnessSessionIdentity::Available(harness_session_id) =
-                HarnessSessionId::from_environment()
-            else {
-                return SessionIdentityMappingPublication::Published;
-            };
-            let mut store = SessionIdentityStore::read_for_update(&mapping_path);
-            store.identities.insert(
-                harness_session_id,
-                SessionReservationIdentity::new(event.actor.run, *reservation_id),
+        JournalOperation::Claim { reservation_id, .. }
+        | JournalOperation::Widen { reservation_id, .. } => {
+            return publish_reservation_identity(
+                ledger_directory,
+                event.actor.run,
+                *reservation_id,
             );
-            store.publish(ledger_directory, &mapping_path)
         },
         JournalOperation::Checkpoint { reservation_id, .. }
         | JournalOperation::Release { reservation_id, .. } => {
@@ -194,6 +189,26 @@ pub(crate) fn apply_journal_event(
         _ => Ok(()),
     };
     publication.into()
+}
+
+/// Publish the current harness session's known coordination identity.
+pub(crate) fn publish_reservation_identity(
+    ledger_directory: &Path,
+    coordination_run_id: CoordinationRunId,
+    reservation_id: ReservationId,
+) -> SessionIdentityMappingPublication {
+    let HarnessSessionIdentity::Available(harness_session_id) =
+        HarnessSessionId::from_environment()
+    else {
+        return SessionIdentityMappingPublication::Published;
+    };
+    let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
+    let mut store = SessionIdentityStore::read_for_update(&mapping_path);
+    store.identities.insert(
+        harness_session_id,
+        SessionReservationIdentity::new(coordination_run_id, reservation_id),
+    );
+    store.publish(ledger_directory, &mapping_path).into()
 }
 
 impl SessionIdentityStore {

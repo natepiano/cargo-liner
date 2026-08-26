@@ -84,6 +84,7 @@ pub(crate) struct Reservation {
     edit_blocking_status:       EditBlockingStatus,
     worktree_root:              CanonicalWorktreeRoot,
     worktree_locator:           WorktreeAdministrativeLocator,
+    claimed_at:                 RecordedAt,
     last_activity_at:           RecordedAt,
 }
 
@@ -95,6 +96,25 @@ pub(crate) enum ReservationFreshness {
     Fresh { last_activity_at: RecordedAt },
     /// No owner activity event occurred inside the freshness window.
     Stale { last_activity_at: RecordedAt },
+}
+
+/// Whether a conflicting holder is still recording coordination activity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ReservationHolderActivity {
+    /// The holder recorded a claim, widen, renew, or checkpoint inside the freshness window.
+    Active { last_activity_at: RecordedAt },
+    /// The holder has gone quiet beyond the freshness window.
+    Quiet { last_activity_at: RecordedAt },
+}
+
+impl From<ReservationFreshness> for ReservationHolderActivity {
+    fn from(freshness: ReservationFreshness) -> Self {
+        match freshness {
+            ReservationFreshness::Fresh { last_activity_at } => Self::Active { last_activity_at },
+            ReservationFreshness::Stale { last_activity_at } => Self::Quiet { last_activity_at },
+        }
+    }
 }
 
 /// One incursion incident and its current replayed disposition.
@@ -214,12 +234,16 @@ pub(crate) struct ReservationConflict {
     pub(crate) holder_run_id:          CoordinationRunId,
     /// The holder's attached branch or detached commit.
     head_snapshot:                     ClaimHeadSnapshot,
-    /// The holder's typed plan provenance.
+    /// The holder's typed acquisition provenance.
     pub(crate) source:                 ClaimSource,
     /// The holder's typed reason for protecting the paths.
     pub(crate) purpose:                ReservationPurpose,
     /// The holder scopes that intersect the requested scopes.
     pub(crate) overlapping_scopes:     ReservationScopeSet,
+    /// When the holder acquired the reservation.
+    claimed_at:                        RecordedAt,
+    /// Whether the holder has recorded activity inside the freshness window.
+    activity:                          ReservationHolderActivity,
 }
 
 /// How current edit-blocking reservations cover one drift path.
@@ -774,6 +798,7 @@ impl RetainedReservationSet {
             edit_blocking_status:       EditBlockingStatus::Blocking,
             worktree_root:              replayed_claim.worktree_root.clone(),
             worktree_locator:           replayed_claim.worktree_locator.clone(),
+            claimed_at:                 replayed_claim.recorded_at.clone(),
             last_activity_at:           replayed_claim.recorded_at.clone(),
         });
         Ok(())
@@ -964,6 +989,7 @@ impl RetainedReservationSet {
         path_case: PathCase,
         holder_is_foreign: impl Fn(&Reservation) -> bool,
     ) -> Vec<(&Reservation, ReservationConflict)> {
+        let observed_at = RecordedAt::now();
         self.reservations
             .iter()
             .filter(|holder| holder.edit_blocking_status == EditBlockingStatus::Blocking)
@@ -1005,6 +1031,8 @@ impl RetainedReservationSet {
                                 purpose:                holder.purpose.clone(),
                                 overlapping_scopes:     overlapping_scopes
                                     .minimal_antichain(path_case),
+                                claimed_at:             holder.claimed_at.clone(),
+                                activity:               holder.freshness(&observed_at).into(),
                             },
                         )
                     })

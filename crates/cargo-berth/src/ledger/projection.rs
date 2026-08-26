@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::constants::CURRENT_SCHEMA_VERSION;
+use super::constants::MINIMUM_SUPPORTED_SCHEMA_VERSION;
 use super::constants::PROJECTION_TEMPORARY_FILE_NAME;
 use super::journal::JournalEvent;
 use super::journal::JournalFingerprint;
@@ -80,8 +81,11 @@ impl Projection {
         repo_instance_id: RepoInstanceId,
         replay: &JournalReplay,
     ) -> Result<(), ProjectionError> {
-        let expected_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
-        if self.schema_version != expected_schema_version {
+        let minimum_schema_version = SchemaVersion::from(MINIMUM_SUPPORTED_SCHEMA_VERSION);
+        let current_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
+        if self.schema_version < minimum_schema_version
+            || self.schema_version > current_schema_version
+        {
             return Err(ProjectionError::UnsupportedSchemaVersion(
                 self.schema_version,
             ));
@@ -101,6 +105,10 @@ impl Projection {
 
     fn has_newer_generation_than(&self, replay: &JournalReplay) -> bool {
         self.generation > replay.generation
+    }
+
+    fn uses_current_schema(&self) -> bool {
+        self.schema_version == SchemaVersion::from(CURRENT_SCHEMA_VERSION)
     }
 
     fn claims_more_journal_bytes_than(&self, replay: &JournalReplay) -> bool {
@@ -144,7 +152,7 @@ pub(super) fn read_validated(
     match read_once(projection_path)? {
         ProjectionRead::Present(projection) => {
             projection.validate_against(repo_instance_id, replay)?;
-            if projection.matches_replay_point(replay) {
+            if projection.matches_replay_point(replay) && projection.uses_current_schema() {
                 Ok(ProjectionSynchronization::Current)
             } else {
                 Ok(ProjectionSynchronization::RebuildRequired)

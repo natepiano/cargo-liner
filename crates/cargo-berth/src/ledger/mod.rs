@@ -645,6 +645,15 @@ impl Ledger {
         Ok(ledger)
     }
 
+    /// Attach using a worktree context already discovered from `.git` filesystem metadata.
+    pub(crate) fn open_from_discovered_worktree(
+        worktree_context: &WorktreeContext,
+    ) -> Result<Self, LedgerError> {
+        let ledger = Self::at_common_git_directory(worktree_context.common_git_directory());
+        ledger.require_existing()?;
+        Ok(ledger)
+    }
+
     /// Read the clone identity that owns this ledger.
     pub(crate) fn repository_identity(&self) -> Result<RepoInstanceId, LedgerError> {
         read_repo_instance_id(&self.paths.repo_instance_id)
@@ -769,6 +778,36 @@ impl Ledger {
         LedgerCommittedActionOutcome<Rejection, CommittedActionOutput>,
         LedgerCommittedActionError<CommittedActionError>,
     > {
+        self.transact_with_committed_action_and_consume_locked_outcome(
+            worktree_id,
+            coordination_run_id,
+            validate,
+            commit_action,
+            |outcome| outcome,
+        )
+    }
+
+    /// Consume a committed-action outcome before its mutation lock is released.
+    pub(crate) fn transact_with_committed_action_and_consume_locked_outcome<
+        Rejection,
+        CommittedAction,
+        CommittedActionOutput,
+        CommittedActionError,
+        LockedOutcome,
+    >(
+        &self,
+        worktree_id: WorktreeId,
+        coordination_run_id: CoordinationRunId,
+        validate: impl FnOnce(
+            ReplayedLedgerState<'_>,
+        ) -> CommittedActionValidation<Rejection, CommittedAction>,
+        commit_action: impl FnOnce(
+            CommittedAction,
+        ) -> Result<CommittedActionOutput, CommittedActionError>,
+        consume_locked_outcome: impl FnOnce(
+            LedgerCommittedActionOutcome<Rejection, CommittedActionOutput>,
+        ) -> LockedOutcome,
+    ) -> Result<LockedOutcome, LedgerCommittedActionError<CommittedActionError>> {
         let mut transaction = self
             .begin_mutation()
             .map_err(LedgerTransactionError::from)
@@ -778,7 +817,7 @@ impl Ledger {
             generation:         transaction.replay.generation,
             journal_end_offset: transaction.replay.end_offset,
         };
-        match validate(replayed_state) {
+        let outcome = match validate(replayed_state) {
             CommittedActionValidation::Append { operation, action } => {
                 let journal_append = transaction
                     .append(worktree_id, coordination_run_id, *operation)
@@ -796,16 +835,19 @@ impl Ledger {
                             session_mapping_publication: journal_append.session_mapping_publication,
                         })
                     },
-                )
+                )?
             },
             CommittedActionValidation::Reject(rejection) => {
                 transaction
                     .publish_if_rebuild_required(&self.paths)
                     .map_err(LedgerTransactionError::LedgerUnreadable)
                     .map_err(LedgerCommittedActionError::Transaction)?;
-                Ok(LedgerCommittedActionOutcome::Rejected(rejection))
+                LedgerCommittedActionOutcome::Rejected(rejection)
             },
-        }
+        };
+        let locked_outcome = consume_locked_outcome(outcome);
+        std::mem::drop(transaction);
+        Ok(locked_outcome)
     }
 
     /// Append reconciliation conclusions and run their repairs under one mutation lock.

@@ -6,9 +6,14 @@
 //! Built-binary tests for claim acquisition and mutation-free edit checks.
 
 use std::fs;
+use std::fs::File;
 use std::path::Path;
 use std::process::Command;
 use std::process::Output;
+use std::process::Stdio;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -18,9 +23,14 @@ const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
+const MUTATION_LOCK_READY_PATH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
+const READY_WAIT_INTERVAL: Duration = Duration::from_millis(10);
+const READY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 
 #[test]
@@ -172,7 +182,7 @@ fn ignore_case_blocks_component_case_variants() {
 }
 
 #[test]
-fn check_uses_run_identity_without_git_or_file_mutation() {
+fn check_reuses_its_runs_reservation_without_git_or_a_duplicate_append() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
     let claim = run_berth(
         repository.path(),
@@ -209,7 +219,12 @@ fn check_uses_run_identity_without_git_or_file_mutation() {
     let own_check = run_check_without_git(repository.path(), empty_path.path(), FIRST_RUN);
     let foreign_check = run_check_without_git(repository.path(), empty_path.path(), SECOND_RUN);
 
-    assert!(own_check.status.success());
+    assert!(
+        own_check.status.success(),
+        "own check failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&own_check.stdout),
+        String::from_utf8_lossy(&own_check.stderr)
+    );
     assert_eq!(foreign_check.status.code(), Some(1));
     assert_eq!(json_output(&foreign_check)["status"], "blocked_by_overlap");
     assert_eq!(
@@ -224,6 +239,286 @@ fn check_uses_run_identity_without_git_or_file_mutation() {
         fs::read(repository.path().join(LOCK_PATH)).expect("lock should reread"),
         lock_before
     );
+}
+
+#[test]
+fn clear_check_mints_then_widens_one_exact_file_reservation() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+
+    let first = run_berth(
+        repository.path(),
+        &["check", "tree:shared", "file:shared/child.rs", "--json"],
+    );
+    let first_envelope = json_output(&first);
+
+    assert!(first.status.success());
+    assert_eq!(first_envelope["status"], "clear");
+    assert_eq!(
+        first_envelope["payload"]["data"]["acquisition"]["kind"],
+        "appended"
+    );
+    let first_acquisition = &first_envelope["payload"]["data"]["acquisition"];
+    let coordination_run_id = first_acquisition["coordination_run_id"]
+        .as_str()
+        .expect("clear check should return its minted coordination run");
+    let reservation_id = first_acquisition["reservation_id"]
+        .as_str()
+        .expect("clear check should return its reservation");
+    let phase_start_head = first_acquisition["phase_start_head"].clone();
+    assert_eq!(
+        first_acquisition["marker_publication"]["status"],
+        "published"
+    );
+    assert_eq!(
+        first_acquisition["session_mapping_publication"]["status"],
+        "published"
+    );
+    assert_eq!(
+        fs::read_to_string(repository.path().join(MARKER_PATH))
+            .expect("first-touch marker should read")
+            .trim(),
+        coordination_run_id
+    );
+    let first_events = journal_events(repository.path());
+    assert_eq!(first_events.len(), 1);
+    assert_first_touch_claim_event(&first_events[0], coordination_run_id);
+
+    let second = run_berth_with_session(
+        repository.path(),
+        &["check", "tree:shared", "file:shared/child.rs", "--json"],
+        "already-held-first-touch",
+    );
+    assert!(second.status.success());
+    assert_eq!(
+        json_output(&second)["payload"]["data"]["acquisition"]["kind"],
+        "already_held"
+    );
+    let second_acquisition = json_output(&second)["payload"]["data"]["acquisition"].clone();
+    assert_eq!(second_acquisition["reservation_id"], reservation_id);
+    assert_eq!(
+        second_acquisition["coordination_run_id"],
+        coordination_run_id
+    );
+    assert_eq!(second_acquisition["phase_start_head"], phase_start_head);
+    assert_eq!(
+        second_acquisition["marker_publication"]["status"],
+        "published"
+    );
+    assert_eq!(
+        second_acquisition["session_mapping_publication"]["status"],
+        "published"
+    );
+    assert_session_mapping(
+        repository.path(),
+        "already-held-first-touch",
+        coordination_run_id,
+        reservation_id,
+    );
+    assert_eq!(journal_events(repository.path()), first_events);
+
+    fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
+        .expect("reuse session mapping should remove");
+    let widened = run_berth_with_session(
+        repository.path(),
+        &["check", "file:later.rs", "--json"],
+        "widened-first-touch",
+    );
+    let widened_envelope = json_output(&widened);
+    let widened_acquisition = &widened_envelope["payload"]["data"]["acquisition"];
+    assert!(widened.status.success());
+    assert_eq!(widened_acquisition["kind"], "widened");
+    assert_eq!(widened_acquisition["reservation_id"], reservation_id);
+    assert_eq!(
+        widened_acquisition["coordination_run_id"],
+        coordination_run_id
+    );
+    assert_eq!(widened_acquisition["phase_start_head"], phase_start_head);
+    assert_eq!(
+        widened_acquisition["session_mapping_publication"]["status"],
+        "published"
+    );
+    let widened_events = journal_events(repository.path());
+    assert_eq!(widened_events.len(), 2);
+    assert_first_touch_widen_event(&widened_events[1], reservation_id);
+    assert_session_mapping(
+        repository.path(),
+        "widened-first-touch",
+        coordination_run_id,
+        reservation_id,
+    );
+
+    assert_board_contains_every_claim_source(repository.path());
+}
+
+fn assert_first_touch_claim_event(event: &serde_json::Value, coordination_run_id: &str) {
+    assert_eq!(event["schema_version"], 2);
+    assert_eq!(event["op"], "claim");
+    assert_eq!(event["actor"]["run"], coordination_run_id);
+    assert_eq!(event["source"]["kind"], "first_touch");
+    assert_eq!(event["scopes"][0]["kind"], "file");
+    assert_eq!(event["scopes"][0]["path"], "shared");
+    assert_eq!(event["scopes"][1]["kind"], "file");
+    assert_eq!(event["scopes"][1]["path"], "shared/child.rs");
+}
+
+fn assert_first_touch_widen_event(event: &serde_json::Value, reservation_id: &str) {
+    assert_eq!(event["op"], "widen");
+    assert_eq!(event["reservation_id"], reservation_id);
+    assert_eq!(event["added_scopes"][0]["kind"], "file");
+    assert_eq!(event["added_scopes"][0]["path"], "later.rs");
+}
+
+fn assert_board_contains_every_claim_source(repository_root: &Path) {
+    assert!(
+        run_berth(repository_root, &["claim", "file:explicit.rs", "--json"])
+            .status
+            .success()
+    );
+    assert!(
+        run_berth(
+            repository_root,
+            &[
+                "claim",
+                "file:planned.rs",
+                "--plan",
+                "docs/plan.md",
+                "--phase",
+                "planned-phase",
+                "--json",
+            ]
+        )
+        .status
+        .success()
+    );
+    let board = json_output(&run_berth(repository_root, &["board", "--json"]));
+    let source_kinds = ["ready_now", "unconstrained_reservations", "resolved"]
+        .into_iter()
+        .flat_map(|section| {
+            board["payload"]["data"][section]["entries"]
+                .as_array()
+                .into_iter()
+                .flatten()
+        })
+        .map(|entry| entry.get("reservation").unwrap_or(entry))
+        .map(|reservation| reservation["source"]["kind"].clone())
+        .collect::<Vec<_>>();
+    assert!(source_kinds.contains(&serde_json::json!("first_touch")));
+    assert!(source_kinds.contains(&serde_json::json!("explicit")));
+    assert!(source_kinds.contains(&serde_json::json!("work_plan")));
+}
+
+#[test]
+fn blocked_check_returns_holder_decision_facts_without_appending() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let holder = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["check", "file:shared.rs", "--json"])
+        .current_dir(repository.path())
+        .env(RUN_ENVIRONMENT, FIRST_RUN)
+        .output()
+        .expect("first-touch holder check should run");
+    assert!(holder.status.success());
+    let journal_before = fs::read(repository.path().join(JOURNAL_PATH))
+        .expect("journal should read before blocked check");
+
+    let blocked = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["check", "file:shared.rs", "--json"])
+        .current_dir(repository.path())
+        .env(RUN_ENVIRONMENT, SECOND_RUN)
+        .output()
+        .expect("foreign check should run");
+    let envelope = json_output(&blocked);
+    let conflict = &envelope["payload"]["data"]["conflicts"][0];
+
+    assert_eq!(blocked.status.code(), Some(1));
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+    assert_eq!(conflict["holder_run_id"], FIRST_RUN);
+    assert_eq!(conflict["head_snapshot"]["full_ref"], "refs/heads/main");
+    assert_eq!(
+        conflict["source"],
+        serde_json::json!({ "kind": "first_touch" })
+    );
+    assert!(conflict["source"].get("phase").is_none());
+    assert!(conflict["claimed_at"].is_string());
+    assert_eq!(conflict["activity"]["status"], "active");
+    assert!(conflict["activity"]["last_activity_at"].is_string());
+    assert_eq!(
+        fs::read(repository.path().join(JOURNAL_PATH))
+            .expect("journal should reread after blocked check"),
+        journal_before
+    );
+}
+
+#[test]
+fn concurrent_first_touch_checks_choose_one_holder_under_the_mutation_lock() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let mutation_lock =
+        File::open(repository.path().join(LOCK_PATH)).expect("mutation lock should open");
+    mutation_lock
+        .lock()
+        .expect("test should hold mutation lock");
+    let first_ready_path = repository.path().join("first-lock-ready");
+    let second_ready_path = repository.path().join("second-lock-ready");
+    let first = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["check", "file:raced.rs", "--json"])
+        .current_dir(repository.path())
+        .env(RUN_ENVIRONMENT, FIRST_RUN)
+        .env(MUTATION_LOCK_READY_PATH_ENVIRONMENT, &first_ready_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("first concurrent check should start");
+    let second = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["check", "file:raced.rs", "--json"])
+        .current_dir(repository.path())
+        .env(RUN_ENVIRONMENT, SECOND_RUN)
+        .env(MUTATION_LOCK_READY_PATH_ENVIRONMENT, &second_ready_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("second concurrent check should start");
+
+    wait_for_lock_contenders(&[&first_ready_path, &second_ready_path]);
+    mutation_lock
+        .unlock()
+        .expect("test should release both waiting checks");
+    let first = first
+        .wait_with_output()
+        .expect("first concurrent check should finish");
+    let second = second
+        .wait_with_output()
+        .expect("second concurrent check should finish");
+    let outcomes = [first, second];
+    let status_codes = outcomes
+        .iter()
+        .map(|output| output.status.code())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|output| output.status.success())
+            .count(),
+        1,
+        "concurrent check status codes: {status_codes:?}"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|output| output.status.code() == Some(1))
+            .count(),
+        1,
+        "concurrent check status codes: {status_codes:?}"
+    );
+    let events = journal_events(repository.path());
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["op"], "claim");
+    assert_eq!(events[0]["source"]["kind"], "first_touch");
+    assert_eq!(events[0]["scopes"][0]["path"], "raced.rs");
+    let refused = outcomes
+        .iter()
+        .find(|output| !output.status.success())
+        .expect("one concurrent check should be refused");
+    assert_eq!(json_output(refused)["status"], "blocked_by_overlap");
 }
 
 #[test]
@@ -521,8 +816,53 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
         .output()
         .expect("cargo-berth should run")
+}
+
+fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(RUN_ENVIRONMENT)
+        .env(SESSION_ENVIRONMENT, session_id)
+        .output()
+        .expect("cargo-berth should run with a harness session")
+}
+
+fn assert_session_mapping(
+    repository_root: &Path,
+    session_id: &str,
+    coordination_run_id: &str,
+    reservation_id: &str,
+) {
+    let mapping: serde_json::Value = serde_json::from_slice(
+        &fs::read(repository_root.join(SESSION_MAPPING_PATH)).expect("session mapping should read"),
+    )
+    .expect("session mapping should decode");
+    let identity = &mapping["identities"][session_id];
+    assert_eq!(identity["coordination_run_id"], coordination_run_id);
+    assert_eq!(identity["reservation_id"], reservation_id);
+}
+
+fn wait_for_lock_contenders(ready_paths: &[&Path]) {
+    let deadline = Instant::now() + READY_WAIT_TIMEOUT;
+    while ready_paths.iter().any(|path| !path.is_file()) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for both checks to contend in MutationLock::acquire"
+        );
+        thread::sleep(READY_WAIT_INTERVAL);
+    }
+}
+
+fn journal_events(repository_root: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(repository_root.join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("journal event should decode"))
+        .collect()
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) {

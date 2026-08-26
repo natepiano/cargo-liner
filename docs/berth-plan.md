@@ -1,19 +1,19 @@
 # cargo-berth — worktree coordination
 
-> **Status: IMPLEMENTATION PLAN — phased, delegate-ready.** Builds `cargo-berth`, a git-worktree reservation engine, in the `cargo-liner` workspace, and wires it into the `hana` repo's Claude Code environment. This plan lives in `cargo-liner` because phases 1–15 build here; phases 16–21 run in `/Users/natemccoy/rust/hana`.
+> **Status: IMPLEMENTATION PLAN — phased, delegate-ready.** Builds `cargo-berth`, a git-worktree reservation engine, in the `cargo-liner` workspace, and wires it into the `hana` repo's Claude Code environment. This plan lives in `cargo-liner` because phases 1–15 and 20 build here; phases 16–19 and 21–22 run in `/Users/natemccoy/rust/hana`.
 
 > **As-built disposition: create**
 
 The design this builds is **in this file**, under `## Design` below, together with the
-69 review findings (R1–R69) and eight resolved decisions (D1–D8) that shaped it. Work
+69 review findings (R1–R69) and nine resolved decisions (D1–D9) that produced it. Work
 Orders cite it by section heading and finding id — everything a delegate needs is here.
 
 ## Delegation Context
 
 - **Project:**
 - **Project started:** 2026-08-23T13:34:54-04:00
-  - **Track A (engine, phases 1–15):** `cargo-berth` — new binary crate `crates/cargo-berth` in `/Users/natemccoy/rust/cargo-liner` (workspace members `cargo-mend`, `cargo-port`, `cargo-tile`, `tui_pane`). hana-blind. Publishes to crates.io.
-  - **Track B (wiring, phases 16–21):** `/Users/natemccoy/rust/hana` — Claude Code integration. Almost no Rust.
+  - **Track A (engine, phases 1–15, 20):** `cargo-berth` — new binary crate `crates/cargo-berth` in `/Users/natemccoy/rust/cargo-liner` (workspace members `cargo-mend`, `cargo-port`, `cargo-tile`, `tui_pane`). hana-blind. Publishes to crates.io.
+  - **Track B (wiring, phases 16–19, 21–22):** `/Users/natemccoy/rust/hana` — Claude Code integration. Almost no Rust.
 - **Stack:** Rust edition 2024, resolver 3. Workspace-inherited `[workspace.package]` and `[lints] workspace = true`. Deps used, all as `{ workspace = true }`: `clap 4.6.6` (derive), `serde 1` (derive), `serde_json 1`, `toml 1.1.4`, `anyhow 1` (binary), `thiserror 2` (error enums), `cargo_metadata 0.23.1` (tier 2, deferred), `ratatui 0.30.2`, `crossterm 0.29.0`, `tui_pane` (path), `chrono 0.4.45`, `uuid 1` (features `v7`, `serde`), `tempfile 3.27.0` (dev). Git access is `std::process::Command`, no git library. File locking is `std::fs::File::lock` — **no new dependency**. `uuid` **is** a new dependency, added by phase 2: R39/R51 require opaque non-recyclable UUID-v7 identity and std has no random source, so it cannot be avoided. Add it to the root `[workspace.dependencies]` before the crate inherits it.
 - **Layout:**
   ```
@@ -47,7 +47,7 @@ Orders cite it by section heading and finding id — everything a delegate needs
   - `/Users/natemccoy/rust/hana/.claude/config/release.toml`, `mirror.toml` — repo-scoped tool config precedent: plain TOML under `.claude/config/`, opening comment block explaining the tool and this repo's dialect, per-repo policy only.
   - `/Users/natemccoy/rust/hana/.claude/settings.local.json` — permissions + `outputStyle` only, **no `hooks` key**. Track B creates it.
   - `/Users/natemccoy/rust/hana/docs/hana/tool-graph.md` — 37 `**Files:**` blocks; 21 done, 19 todo, 20 Work Orders.
-  - `/Users/natemccoy/rust/hana/docs/hana_valence/arrangements.md` — 32 `**Files:**` blocks; 23 done, 9 todo, 9 Work Orders. 19 + 9 = the 28 to backfill.
+  - `/Users/natemccoy/rust/hana/docs/hana_valence/arrangements.md` — 32 `**Files:**` blocks; 23 done, 9 todo, 9 Work Orders.
   - A `**Files:**` block on disk (arrangements.md Phase 24) — bold label, blank line, `- ` bullets, backticked **repo-relative** path (brace expansion allowed), em-dash, description:
     ```markdown
     **Files:**
@@ -66,7 +66,7 @@ Orders cite it by section heading and finding id — everything a delegate needs
     means: open `docs/berth-plan.md` in the cargo-liner checkout and read it before writing code.
     Where a finding corrects an earlier one the later finding wins, and its title says so.
   - **Track-A phases run in the `cargo-liner` repository. Track-B phases run in the `hana` repository.** Track-A paths in this plan are repo-relative and resolve against whichever checkout the phase is dispatched into — this work runs in a worktree, not necessarily in `/Users/natemccoy/rust/cargo-liner` itself, and that main-branch checkout sits at a different commit with none of this work in it. Never resolve a track-A path against an absolute repository root. Every phase states its repo in its Goal. A track-A phase that has to explain a Work Order means the boundary is wrong.
-  - **Track-B phases contain no Rust implementation work and have no Rust `verify.sh` gate.** They verify by exercising the artifact: run the hook shim against a synthetic JSON payload on stdin and assert the decision, `taplo fmt --check` the TOML, JSON-validate the edited settings file, and confirm every backfilled `**Reservations:**` block parses and is lexically valid. Because phase 18 changed engine source after phase 17's artifact was installed, phases 19 and 21 each refresh the installed executable after the phase 18 checkpoint and before their first engine invocation by running `cargo install --path crates/cargo-berth` from `/Users/natemccoy/rust/cargo-berth-init`; each records the source `HEAD`, the absolute installed path, and `shasum -a 256 "$(command -v cargo-berth)"`. Phase 20 invokes no binary and compiles nothing.
+  - **Track-B phases contain no Rust implementation work and have no Rust `verify.sh` gate.** They verify by exercising the artifact: run the hook shim against a synthetic JSON payload on stdin and assert the decision, `taplo fmt --check` the TOML, and JSON-validate the edited settings file. A phase that ships engine behavior is track-A even when what it enables is read in `hana`; a phase that only renders what the engine already returns is track-B. Because engine source changes across the plan, every track-B phase refreshes the installed executable before its first engine invocation by running `cargo install --path crates/cargo-berth` from `/Users/natemccoy/rust/cargo-berth-init` after the most recent engine checkpoint, and records the source `HEAD`, the absolute installed path, and `shasum -a 256 "$(command -v cargo-berth)"`.
   - **The executable is named `cargo-berth`, and `berth` is not a command.** Cargo's subcommand convention means `cargo berth <verb>` and `cargo-berth <verb>` both work, and phase 1 shipped both spellings. Every script, hook shim, skill, and acceptance gate invokes `cargo-berth <verb>` directly; use `cargo berth <verb>` only where the surrounding text is deliberately showing the Cargo spelling to a reader.
   - **Every command that cannot read the ledger fails without facts.** It exits `4`, its payload is `no_facts`, its legacy reservation fields are empty, and its message says what is wrong. A read may still proceed on the caller's judgment; a mutation and an integration establish nothing. This is inherited by every verb — no phase restates it, and every phase's gate asserts it once for the verb it adds.
   - **The mutation lock is the only thing preventing interleaved writes.** The plan once assumed a journal record smaller than `PIPE_BUF` appends atomically. `PIPE_BUF` is 512 bytes on this filesystem, the record limit is 16 KiB, and `PIPE_BUF` governs pipes rather than regular files in any case. Every write goes through the locked transaction wrapper; there is no size below which a bare append is safe.
@@ -76,7 +76,7 @@ Orders cite it by section heading and finding id — everything a delegate needs
   - **The edit-hook path does no git subprocess work.** It replays the journal and validates the projection against what replay found — the projection alone is never the source of truth, even on the fast path — blocks solely on tier-1 foreign-branch overlap, and is silent otherwise. Reconciliation touches git and runs at SessionStart, before stateful verbs, and before checkpoint/integration — plus one retry when the cache already says block.
   - **`cargo-berth` never reads a Work Order or any hana-specific format.** No markdown parsing, no plan-doc awareness, no phase numbering. Its interface is paths and reservation ids.
   - **It publishes to crates.io**: a README for a stranger ships in v1; the crate keeps its own version and `CHANGELOG.md`; no path-only dep without a `[[publish_path_pins]]` entry.
-  - Ledger loss fails **open for editing, closed for integration**. Stale/orphaned reservations are flagged, never auto-removed. `Cargo.toml`, `Cargo.lock`, and individual `.claude/config` files take **ordinary exact exclusive reservations** for the phase's duration — R34 and final D3 withdrew the announce-not-claim rule, because announcing permits exactly the concurrent edit it names. Verify-only paths stay in `**Files:**` and out of `**Reservations:**` entirely. The trunk gate ships observe-only; `CARGO_BERTH_BYPASS=1` is evaluated before any ledger read.
+  - Ledger loss fails **open for editing, closed for integration**. Stale/orphaned reservations are flagged, never auto-removed. `Cargo.toml`, `Cargo.lock`, and individual `.claude/config` files take **ordinary exact exclusive reservations** for the phase's duration — R34 and final D3 withdrew the announce-not-claim rule, because announcing permits exactly the concurrent edit it names. Reservations are taken at first touch rather than declared (D9), so a verify-only path is simply never edited and never claimed. The trunk gate ships observe-only; `CARGO_BERTH_BYPASS=1` is evaluated before any ledger read.
   - `cargo-berth` does not coordinate its own construction, and the gate installs in hana last.
 
 ## Phases
@@ -116,9 +116,9 @@ Orders cite it by section heading and finding id — everything a delegate needs
 - Adding `uuid` here — nothing in this phase mints an id.
 - Declaring the eight extra dependencies the cargo-tile manifest shape suggested.
 - Per-verb envelopes replacing the frozen six fields — an additive typed-payload field is added instead, leaving the six untouched.
-- Making the edit hook deny an *unclaimed* Edit or Write — it blocks solely on tier-1 foreign-branch overlap; R38/D5's mandatory coverage is the dispatcher refusing a Work Order with no `**Reservations:**` block.
-- Renumbering phases 16–21 for R38's skill → backfill → dispatcher → hooks ordering — splitting hook construction from hook registration gives the same guarantee without rewriting every cross-reference.
-- A dry-run multi-candidate engine API — offline declaration comparison runs through the shared validator, while `cargo-berth check` tests one footprint against *live* reservations.
+- Making the edit hook deny an *unclaimed* Edit or Write — it blocks solely on tier-1 foreign-branch overlap. R38/D5's mandatory coverage is satisfied instead by the hook claiming on its clear path (D9), so an edit is never unclaimed by the time it executes.
+- Renumbering phases 16–22 for R38's skill → dispatcher → hooks ordering — splitting hook construction from hook registration gives the same guarantee without rewriting every cross-reference.
+- A dry-run multi-candidate engine API — `cargo-berth check` tests one footprint against *live* reservations, and under first-touch claiming (D9) it also acquires on the clear path, so there is no non-committing multi-candidate query and none is wanted.
 
 ### Phase 2 — Journal, projection, and the mutation lock  · status: done
 
@@ -467,7 +467,7 @@ Recorded scopes retain `ScopeKind`, are non-empty exact intersections keyed by `
 - `crates/cargo-berth/src/cli.rs`, `main.rs`, `output.rs`, `verb/mod.rs`, `ledger/mod.rs`, `answer/mod.rs` — surface and re-exports
 - `crates/cargo-berth/tests/drift.rs` — all four classification rows, the hook, the counted-call budgets
 
-**Binds later work:** Phase 11 builds on the incursion record and `EveryActiveForPostCommit`. Phase 12 renders the incursion record, the `Widen` record's `edit_blocking_status`, and `Revalidated`'s named bindings (creating no duplicate ordering edge), and must exclude the synthetic post-commit actor from its holder, liveness, and orphan sections. Phase 15 documents `drift`, both comparison modes, `--reservation`, the `post-commit` hook, and `CARGO_BERTH_BYPASS=1`. Phase 17's `PostToolUse` shim invokes `drift` with a named comparison selector, never a boolean, and reads structured payload fields. Phase 18's `/sync check` uses the full comparison. Phase 21 exercises incursions end to end.
+**Binds later work:** Phase 11 builds on the incursion record and `EveryActiveForPostCommit`. Phase 12 renders the incursion record, the `Widen` record's `edit_blocking_status`, and `Revalidated`'s named bindings (creating no duplicate ordering edge), and must exclude the synthetic post-commit actor from its holder, liveness, and orphan sections. Phase 15 documents `drift`, both comparison modes, `--reservation`, the `post-commit` hook, and `CARGO_BERTH_BYPASS=1`. Phase 17's `PostToolUse` shim invokes `drift` with a named comparison selector, never a boolean, and reads structured payload fields. Phase 18's `/sync check` uses the full comparison. The end-to-end proof exercises incursions and their answer.
 
 **Gotchas:**
 - Drift's foreign test and the edit gate's foreign test are deliberately different and must stay different. The edit gate asks whether a holder is a different coordination run (run only); drift asks whether a holder's claim covers the acting worktree (run **and** worktree), because the classification table keys its first row on *this worktree's* active reservation. Making them identical returns same-run/other-worktree holders to the "neither coverage nor blocker" bucket and auto-widens over them. The two predicates in `blocking_coverage_for_drift` are exact complements over the same `EditBlockingStatus::Blocking` set, so no holder falls into a third bucket.
@@ -1011,16 +1011,14 @@ across a durable boundary rather than in conversation.
   state entries, the validator call in `<ComposeWorkOrder/>`, and
   `<CheckpointCommit/>` steps 5 through 7. No file in any repository changed.
 
-**Binds later work:** Reservation coverage is a named workflow policy, not a
-property of a repository, but `phase_review.md:290` and `to_phased_plan.md:103`
-still derive it from `.claude/config/berth.toml` presence — three commands, two
-rules. The divergence is live wherever the plan's own repository is enrolled:
-`hana` carries that configuration, so its Work Orders validate at `required`
-while dispatch runs at `advisory`. The coordination boundary's four states,
-read-back rule, pre-checkpoint full drift comparison, release-only-after-commit
-ordering, and retain-on-every-unsuccessful-ending rule are the contract any
-end-to-end exercise runs against. An unenrolled checkout opts out silently
-whatever the policy says.
+**Binds later work:** The coordination boundary's tagged states, read-back rule,
+pre-checkpoint full drift comparison, release-only-after-commit ordering, and
+retain-on-every-unsuccessful-ending rule are the contract any end-to-end exercise
+runs against. An unenrolled checkout opts out silently. The reservation-coverage
+policy this phase named, and the advisory state that went with it, are retired by
+first-touch claiming (D9); `phase_review.md:290` and `to_phased_plan.md:103` still
+carried a second, contradicting derivation of it from `.claude/config/berth.toml`
+presence, and both are removed with it.
 
 **Gotchas:**
 
@@ -1069,44 +1067,95 @@ whatever the policy says.
 - Treating an unenrolled checkout as refusing under the required policy — the
   boundary answers `unconfigured` first and opts out silently.
 
-### Phase 20 — Backfill 28 Work Orders  · status: todo
+### Phase 20 — Claim on first touch  · status: done
+
+#### As-built
+
+A reservation comes into being when a worktree first edits a path. `check` is no longer mutation-free: when `decide` returns no conflicts it acquires an exclusive reservation over exactly the requested paths for the acting run and then permits the edit, inside the same locked transaction and against the same generation the decision was made on. A blocked check refuses and appends nothing. Nothing is declared ahead of the work, and silence means safe.
+
+Claims are always `file:` scoped, never widened to a containing directory; a tree reservation arises only from an explicit `claim`. An editor with no session mapping, no `CARGO_BERTH_RUN`, and no marker resolves to `Unidentified` and still claims — `ClaimCoordinationRunSelection::ContinueOrStart` mints its coordination run on the first edit. Permitting without claiming is the one outcome this phase eliminates.
+
+`ClaimSource::FirstTouch` joins `WorkPlan` and `Explicit`, carrying no plan and no phase. `FirstTouchReservationAcquisitionKind` reports `Appended`, `Widened`, or `AlreadyHeld`, and `FirstTouchReservationAcquisition` carries the reservation id, coordination run, protected phase-start head, and both publication results. The blocked-check envelope names, per conflict, the holding run, its branch, its plan and phase when it declared one, its claim time, and whether it is active or has gone quiet.
+
+The `PostToolUse` path mints rather than answering `NotNeeded` when a run holds nothing to widen. `DriftPathAttributionOutcome` gained `FirstTouchReserved` (wire tag `first_touch_claimed`) and `IncursionDetected` (wire tag `post_write_incursion`); the latter carries `PostWriteFreePathProtection`, which is `Acquired` with the free subset named or `NotAcquired` when every observed path had a foreign holder. A write into a foreign claim is detected after the fact, not prevented — that is the limit of a post-write hook.
+
+The declaration mechanism is gone. `**Reservations:**` left the Work Order grammar, along with the Files-to-Reservations agreement check, the `emit-reservations` and `compare` subcommands, the `--coverage` argument, the coverage policy in the three plan commands, and the `ReservationDeclarationMissingUnderAdvisory` contract state. The Work Order structure check — Goal, Spec, and Files present and well formed — survives.
+
+**Files:**
+- `crates/cargo-berth/src/verb/check.rs` — the clear branch acquires before permitting.
+- `crates/cargo-berth/src/verb/claim.rs` — the shared acquisition `check` calls, and the three acquisition kinds.
+- `crates/cargo-berth/src/ledger/journal.rs` — `ClaimSource::FirstTouch` and its schema handling.
+- `crates/cargo-berth/src/drift/mod.rs` — post-write attribution and its two typed outcomes.
+- `crates/cargo-berth/src/output.rs` — the clear-check envelope reports the reservation just taken; the blocked-check envelope carries the holder facts.
+- `crates/cargo-berth/src/session/mod.rs` — mapping publication carried through every acquisition kind.
+- `crates/cargo-berth/src/board/mod.rs` — first-touch locks are distinguishable from explicit ones.
+- `crates/cargo-berth/tests/{gate.rs,overlap.rs,drift.rs}` — acceptance coverage including the D5 race.
+- `~/.claude/scripts/berth/work_order.py` — the reservation grammar removed, the structure check kept.
+
+**Binds later work:** The clear-check envelope carries one reservation plus an `acquisition` record; a consumer asserting zero reservations on the clear path rejects every permitted edit. A `first_touch` source carries no `plan` and no `phase`, so a renderer must identify it rather than falling through to the explicit-claim wording or printing an empty field. `SessionIdentityMappingPublication::Unavailable` is degraded success, not failure: the reservation is durable but the disposable mapping did not update, and since that mapping is the primary edit-authorization path, later edits fall back to `CARGO_BERTH_RUN` or the worktree marker — surface it. The four overlap answers are flags on `claim` — `--before`, `--after`, `--defer`, `--override`, each with `--overlap-why` — through the neutral exit `1` / proposal exit `3` round trip; only `--before` and `--after` add an ordering edge. `sequence` takes two positional reservation ids and changes an answer already given.
+
+**Gotchas:** The D5 race test needs real interleaving, so `MutationLock::acquire` reads a test-only environment variable at one site; it is inert when unset and is deliberate scaffolding. `CARGO_BERTH_BYPASS=1` is read only by `gate/permit.rs` and the installed git hooks — no edit path reads it, so it cannot permit a blocked edit. A resnapshot requires retained git evidence and therefore applies to an outstanding reservation only; `lifecycle.rs` refuses it for an active one, so nothing re-establishes an active reservation's phase-start baseline. The ledger's supported compatibility direction is new-reader/old-ledger: deploy the schema-2 reader before any schema-2 writer. Adding a serialized enum variant without adding an `OutputStatus` leaves the Python status tables green while every hand-maintained `jq` validator in the hook shims silently rejects the new envelope.
+
+**Measured cost:** the complete `PostToolUse` Bash shim took 0.180 seconds for a typed automatic-widen notification with this phase's executable. A performance fact, not a gate.
+
+**Ruled out:** Deleting `/sync claim` — under first-touch claiming an explicit claim is the sole route to a tree or advance reservation. Widening a first-touch claim to a containing directory for convenience — narrow locks are the whole benefit over declaring. Adding a verb or flag for first-touch claiming — the verb set is frozen and this is a change to what `check` does, not to how it is called.
+
+---
+
+### Phase 21 — Deciding when two worktrees meet  · status: todo
 
 #### Work Order
 
-**Goal:** In `hana`: every live Work Order in both plans declares its reservations, so the two plans can be compared before either runs.
+**Goal:** In `hana`: a refusal tells the user who holds the path and what can be done about it, and the answer they pick is carried out.
 
-**Spec:** 28 `todo` Work Orders need a `**Reservations:**` block: `docs/hana/tool-graph.md` (19) and `docs/hana_valence/arrangements.md` (9). **`done` phases are not touched.**
+**Spec:** A refusal is the only moment this system asks a user for anything, so it is the entire user experience of the tool. Phase 20 made the blocked-check envelope carry who holds the path, on which branch, since when, why, and whether they are still active — plus a plan and phase when the holder declared one, which a first-touch holder never does. This phase renders it. Nothing here changes engine behavior: if a scenario wants a fact the envelope does not carry, that is a phase 20 defect and belongs there, not a field added from the front end.
 
-**Thirteen** Work Orders currently pass complete advisory validation and need only a generated and reviewed declaration: Tool Graph 61, 63–68, 72, 73, 75, and 78; and Arrangements 25 and 28. For each, take every backticked path from the existing `**Files:**` block, expand brace notation (`{lib,plugin}.rs`), classify as `file:` or `tree:`, and reduce to a minimal antichain. Paths are **repo-relative** — matching what is on disk, not absolute.
+Present the available answers at the refusal and carry out the chosen one. **All four are flags on `claim`, never separate verbs**, and each one grants the requested paths once approved:
 
-**Fifteen** require normalization before a declaration can be generated at all — not the three the plan originally predicted. Tool Graph 60 lacks **Goal**, **Spec**, and **Files**; 69 and 70 lack **Files**; 62, 71, 74, and 77 contain non-fully-backticked **Files** text, and 77 additionally repeats `crates/hana/src/hardware/camera.rs`, `crates/hana/src/video_plane/catalog_brp.rs`, and `crates/hana_catalyst/src/composite.rs`; 76 repeats an expanded path; Arrangements 24, 26, 29, 30, 31, and 32 contain malformed **Files** bullets; and 27 repeats `crates/hana/Cargo.toml`. Normalize only these todo Work Orders to the complete Work Order structure, preserving their behavior and leaving every `done` phase byte-identical, then generate and validate all 28 declarations. Phase 18's validator rejects a Work Order missing **Goal**, **Spec**, or **Files** (R35), so a backfill that added only reservations would leave all fifteen failing the very check this phase exists to satisfy.
+1. **Land before the holder** — `--before <blocker> --overlap-why <why>`. B takes the paths and records that it integrates first; A's merge to trunk is held until B is on trunk. The right answer when B's change is the one the other side will build on.
+2. **Land after the holder** — `--after <blocker> --overlap-why <why>`. B takes the paths and records that it integrates second; B's merge is held until A's protected tip is an ancestor of B's `HEAD` (R69). The right answer when both genuinely need the file and A's change is what B will build on.
+3. **Defer the order** — `--defer <blocker> --overlap-why <why>`. B takes the paths and both sides keep editing, but neither integration is ordered yet and the unresolved overlap stays visible on the board until someone sequences it. The right answer when the order is genuinely not decidable yet.
+4. **Override** — `--override <blocker> --overlap-why <why>`. B takes the paths with no ordering constraint at all; the answer and its reason are journaled and the board shows the overlap was overridden. Always available, never silent.
 
-Grammar, R35 in `docs/berth-plan.md` (this plan):
+A fifth answer takes no engine action at all: **leave it alone** — B works elsewhere in its plan and nothing is appended.
 
-```markdown
-**Reservations:**
+`CARGO_BERTH_BYPASS=1` is **not** one of these. It is the trunk-gate override read only by the installed git hooks and `gate/permit.rs`; no edit path reads it, and it cannot permit a blocked edit. A refusal that offers it as an answer is offering something that does nothing.
 
-- file: `Cargo.toml`
-- tree: `crates/hana/src/transport`
-```
+Only `--before` and `--after` add an ordering edge. `--defer` and `--override` leave the graph unchanged, so the board is the only place their overlap remains visible — say so at the refusal, because a user who picks one of them and sees no edge has not failed to record anything.
 
-Do not widen a claim to swallow a whole crate to save effort — rolling `crates/hana_*` up to `crates` eliminates all useful concurrency. Claim at the lowest necessary root.
+The refusal names every answer with enough context to choose between them: which run holds the path, on which branch, when it claimed, why, and whether the holder is still active or has gone quiet. A holder that claimed on first touch carries **no plan and no phase** — say what it is rather than printing an empty field or misreporting it as an explicit claim. A user who cannot tell whether the holder is a live session or an abandoned one cannot choose, so surface the activity record `renew` maintains.
 
-Once backfilled, **report every collision found** — the known one is Tool Graph 78 and Valence 27, which both name `crates/hana/src/main.rs` and both touch `crates/hana/src/input/`. Record the collisions; do not resolve them here.
+**The choice is the user's, and it is made once.** The agent presents; it does not pick. Phase 18 already owns the full **Blocked → Proposal awaiting approval → Claimed** sequence and its explicit token approval, and this phase renders that sequence rather than abbreviating it: an answer is never minted and spent in one turn. All four answers change what lands on trunk or record that nothing orders it, so they are recorded where the board can show them, not held in the conversation.
 
-Find them **offline, by comparing the 28 blocks against each other**, using phase 18's shared validator to parse each block and phase 4's overlap rule to compare each pair. Do **not** run `cargo-berth check`: `check` tests one footprint against reservations that are actually live in the ledger, and no phase in either plan has claimed anything yet, so it reports no collision however badly two Work Orders overlap. The question this phase answers is whether two *plans* can run concurrently, which is a pairwise comparison of declarations, not a query against live state.
+**Report degraded success rather than hiding it.** When a granted claim comes back with `session_mapping_publication.status = unavailable`, the reservation and journal are durable but the disposable session mapping did not update. That mapping is the primary edit-authorization path, so later edits in this session fall back to `CARGO_BERTH_RUN` or the worktree marker. Surface it as nonblocking degraded success — report the diagnostic, name the reservation id explicitly from then on, and do not treat it as a failure.
+
+Render it in both places a user meets a refusal: the `PreToolUse` shim's inline feedback, which is what an agent sees mid-edit, and `/sync`, which is where a user goes to ask what is going on. The two must not disagree about what is available.
 
 **Files:**
 
-- `/Users/natemccoy/rust/hana/docs/hana/tool-graph.md` — 19 todo Work Orders.
-- `/Users/natemccoy/rust/hana/docs/hana_valence/arrangements.md` — 9 todo Work Orders.
-- `~/.claude/scripts/berth/work_order.py` — read only; the shared validator this phase calls. It lives outside every repository and appears in no git status.
+- `/Users/natemccoy/rust/hana/.claude/commands/sync.md` — the refusal rendering and the four answers.
+- `~/.claude/scripts/berth/claim_state.py` — the classifier behind that rendering.
+- `/Users/natemccoy/rust/hana/.claude/hooks/berth_pre_edit.sh` — the inline refusal feedback.
+- `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/output.rs` — read only, and absolute because this phase runs from the `hana` checkout; the blocked-check envelope phase 20 shipped, which is the sole source of what the rendering may show.
+- `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/verb/claim.rs` — read only, absolute for the same reason; the four overlap answers and the neutral exit `1` / proposal exit `3` protocol behind all of them.
+- `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/session/mod.rs` — read only, absolute for the same reason; `SessionIdentityMappingPublication` and the mapping `session::resolve` reads, which is why a failed publication is user-visible rather than internal.
+- `/Users/natemccoy/rust/cargo-berth-init/docs/berth-plan.md` — this plan; absolute for the same reason.
 
-**Constraints from prior phases:** Phase 18's shared validator parses this grammar — the blocks must satisfy that one parser exactly, and this phase calls it rather than writing another. **Invoke only `PYTHONPATH="$HOME/.claude/scripts" python3 -m berth.work_order`.** Run `--repository-root /Users/natemccoy/rust/hana validate --document <plan> --phase <todo-phase> --coverage required` separately for all 28 todo phases; then run `compare --left-document <plan> --left-phase <phase> --right-document <plan> --right-phase <phase>` for all 378 unordered pairs. `compare` exit `0` means disjoint, exit `1` is a collision to record, and exit `2` is invalid input that blocks completion; do not parse Markdown, do not validate archived `done` Work Orders, and do not treat exit `1` as an execution failure. R33's plan and next-items scopes are appended only by `resolve`, so they correctly do not participate in these declaration comparisons. Phase 4's antichain reduction defines "minimal", and its validation is **lexical**: a declared path need not exist on disk, because a Work Order routinely claims the file it is about to create. `Cargo.toml` and `Cargo.lock` are ordinary exclusive reservations — a Work Order naming one holds it for that phase's duration, and a second Work Order naming it collides. Expect that collision to be common and report it like any other. Compile nothing, and invoke nothing: this phase edits markdown in `hana` and runs no binary at all, so it carries no artifact provenance. **Neither Hana plan may be dispatched until this phase checkpoints.** `phase_review.md:290` still selects required coverage from Hana's configuration while `delegate.md` dispatches under the named advisory policy, so a Tool Graph or Arrangements run started before the backfill lands implements its phase and then fails its own closeout on the very declarations this phase exists to write. Phase 21 reconciles the three commands; until it does, the sequencing is the guard. **This phase and phase 21 are dispatched from `/Users/natemccoy/rust/cargo-berth-init`, and their reservations are deliberately uncoordinated.** The plan doc lives here while the edited files live in `hana` and under `~/.claude`, so a run rooted in `hana` fails validation on a plan document outside its repository, and a run rooted here classifies every edited path `out_of_repository`. Under the named advisory policy the Work Order therefore declares no reservations, the coordination boundary persists `ReservationDeclarationMissingUnderAdvisory`, and dispatch proceeds without a claim — the same shape phases 16 through 19 already ran under. The checkpoint commit carries only this plan document. Do not add a `**Reservations:**` block to this Work Order to satisfy the required policy phase 21 turns on: a declaration over paths outside the repository is not coordinatable, and the backfilled Hana Work Orders are in-repository, which is why they can be required while this plan stays advisory.
+**Constraints from prior phases:** Phase 18 owns the proposal round trip and its explicit token approval; use it without abbreviating it. **The mechanism behind every answer is `claim`, not `sequence`.** `claim` carries `--before`/`--after`/`--defer`/`--override <blocker>` with `--overlap-why`, and its neutral exit `1` / approved exit `3` protocol is what the refusal renders. The `sequence` verb takes two positional reservation ids plus `--why` (`crates/cargo-berth/src/cli.rs:429`) and changes an ordering answer **already given**; it is not a refusal-time answer and has no proposal protocol of its own. This phase renders the choice, it does not reimplement either verb.
 
-**Acceptance gate:** No `verify.sh`. All 28 **complete** Work Orders pass phase 18's shared validator — the whole **Goal**/**Spec**/**Files**/**Reservations** structure, not the reservation blocks alone — including all fifteen normalized ones; the pairwise comparison is exercised against all four overlap rules — a sibling whose name merely prefixes another does not collide, a `file:` and a `tree:` over the same spelling collide only where the tree contains the file, a path that does not exist yet participates, and two blocks differing only in case collide because this repository sets `core.ignoreCase`; no block rolls up above the lowest necessary root; `done` phases are byte-identical; the collision report is produced by pairwise comparison of the 28 blocks and names TG78/Valence27 and any others, including every manifest and lockfile collision.
+**Phase 20 changed the check envelope, and the staged shim has not caught up.** A clear check now returns one reservation plus an `acquisition` record, so `berth_pre_edit.sh`'s clear-path assertion that the envelope carries zero reservations is wrong and rejects every permitted edit. Its `valid_source` accepts only `work_plan` and `explicit`, so a `first_touch` holder fails validation outright, and its holder rendering falls through to "explicit claim" and "not supplied" for a source that is neither. `acquisition.kind` is one of `appended`, `widened`, or `already_held`; a `first_touch` source carries no `plan` and no `phase` by construction. `~/.claude/scripts/berth/claim_state.py` already accepts all of this and rejects `plan`/`phase` on a `first_touch` source — the staged shim is the stale half, and the two must agree. Phase 9's bypass is option 3 and is already journaled with its reason; the board's bypass annotation is a recorded fact about a merge forced through and stays visibly separate from the derived status of the edge itself, which never reads as satisfied. Phase 13 separates the set a board read just adopted from the durable bypass audit history. Phase 14 gave `board` an interactive terminal view, so every scripted invocation passes `--json`; a bare `cargo-berth board` in a real terminal opens a full-screen view and waits for a keypress. Phase 20 made refusals the normal discovery path, so the rendering is on the common path and its cost is paid on every blocked edit. Phase 11 shipped `resolve <reservation-id> --incursion <incident-id>` for answering an incursion; that is a fifth situation, not a fifth option here — an incursion has already happened and is answered after the fact, while these four are chosen before the edit lands.
 
-### Phase 21 — End-to-end proof, then enforce  · status: todo
+**Acceptance gate:** No `verify.sh` — this phase ships no Rust. Refresh the installed executable from the phase 20 checkpoint first and record the digest. Both the shim and `/sync` render all four answers from the one blocked-check envelope, and neither invents an option the other does not offer nor a fact the envelope does not carry. Neither offers `CARGO_BERTH_BYPASS=1` as an answer to a blocked edit.
+
+The shim accepts a clear check carrying one reservation and an `acquisition` record, for **each** of `appended`, `widened`, and `already_held`, and permits the edit in all three. It accepts a `first_touch` holder in a blocked check and renders it explicitly as a first-touch claim with no plan and no phase — not as an explicit claim, and not with an empty field. `work_plan` and `explicit` holders still render as before.
+
+Each of answers 1 through 4 is exercised end to end from a real refusal in a fixture and reaches the state it promises: `--before` and `--after` each grant the paths and produce an ordering edge in the stated direction whose hold is visible on the board; `--defer` grants the paths, adds no edge, and leaves the overlap visible on the board as unresolved; `--override` grants the paths, adds no edge, and journals the answer with its reason where the board shows it. Every one of them is refused without the explicit token and the proposal round trip is not abbreviated in any of them. The fifth answer, leaving it alone, appends nothing.
+
+A granted claim whose `session_mapping_publication.status` is `unavailable` is reported as nonblocking degraded success in both renderings — the diagnostic is shown, the reservation id is named, and the flow continues. A refusal whose holder has gone quiet is rendered differently from one whose holder is active, since that difference is what decides between waiting and overriding.
+
+---
+
+### Phase 22 — End-to-end proof, then enforce  · status: todo
 
 #### Work Order
 
@@ -1114,26 +1163,27 @@ Find them **offline, by comparing the 28 blocks against each other**, using phas
 
 **Spec:** The end-to-end test is the gate on the gate.
 
-**First, activate the coordination surfaces.** Phase 17 built all three shims and tested them by hand but deliberately left `/Users/natemccoy/rust/hana/.claude/settings.local.json` untouched, so nothing invokes them yet. Add the `hooks` key registering the `PreToolUse` shim under the matcher `Edit|Write|NotebookEdit`, the `PostToolUse` incursion shim under the matcher `Bash`, and the `SessionStart` reconciliation shim with no matcher so it runs for every session, preserving the existing `permissions` and `outputStyle` values **byte for byte**. A fresh session receives a settings file with no `hooks` key at all, so take the structure from a working one rather than inventing it: `~/.claude/settings.json:63` carries the same three event names and the matcher-plus-command shape, and is a read-only precedent for this phase — this file is the user's own settings and the only allowed change is the added key. Phase 19 also installed missing-`Reservations` detection in advisory mode so phase 20 could run before the backfill existed. Now that phase 20 has validated every live Work Order, change that named coverage mode to **required** and prove a missing block refuses dispatch. Until both activations land, the scenarios below do not test the deployed workflow.
+**First, activate the coordination surfaces.** Phase 17 built all three shims and tested them by hand but deliberately left `/Users/natemccoy/rust/hana/.claude/settings.local.json` untouched, so nothing invokes them yet. Add the `hooks` key registering the `PreToolUse` shim under the matcher `Edit|Write|NotebookEdit`, the `PostToolUse` incursion shim under the matcher `Bash`, and the `SessionStart` reconciliation shim with no matcher so it runs for every session, preserving the existing `permissions` and `outputStyle` values **byte for byte**. A fresh session receives a settings file with no `hooks` key at all, so take the structure from a working one rather than inventing it: `~/.claude/settings.json:63` carries the same three event names and the matcher-plus-command form, and is a read-only precedent for this phase — this file is the user's own settings and the only allowed change is the added key. Until this activation lands, the scenarios below do not test the deployed workflow.
 
 Then create two real worktrees off `main` and prove, in this dependency order:
 
-1. A collision **blocks** — worktree B's `Edit` into a path worktree A claimed is refused by the `PreToolUse` hook, naming A's branch and phase.
-2. `CARGO_BERTH_BYPASS=1` **works when broken** — with `journal.ndjson` deliberately corrupted, editing still works and a bypassed merge succeeds.
-3. A `Bash` write into a foreign claim surfaces as an **incursion**.
-4. A `sequence` **holds** — start from the neutral exit-`1` block, take the user's `--after` answer and reason to obtain exit `3`, apply the exact token only after separate approval, then show both worktrees editing freely while B's merge to `main` is refused with A unmerged.
-5. Landing in order **releases the edge from scenario 4** — A merges, B's hold clears only after B has A's `protected_tip` as an ancestor of its `HEAD` (R69), and a rebase + resnapshot satisfies it.
-6. `--force` **lands and is visible** — create a fresh isolated edge, force the held merge, and show the board marking that edge bypassed with its reason and flagging the predecessor.
+1. A collision **blocks** — worktree B's `Edit` into a path worktree A claimed by touching it is refused by the `PreToolUse` hook, naming A's branch and identifying the holder as a first-touch claim. A path A claimed by touching it has no plan and no phase, so a scenario that asserts a phase in the refusal is asserting the declaration-era envelope and fails against what shipped.
+2. **Silence means safe** — B edits a path nobody holds, is permitted, and the journal shows B now holds exactly that path. Then A is refused on it. This is the invariant phase 20 exists to establish and it is proven by replay, not by exit codes.
+3. `CARGO_BERTH_BYPASS=1` **works when broken** — with `journal.ndjson` deliberately corrupted, editing still works and a bypassed merge succeeds.
+4. A `Bash` write into a foreign claim surfaces as an **incursion**, and a `Bash` write by a run holding nothing mints its reservation.
+5. A `sequence` **holds** — start from the neutral exit `1` block, take the user's `--after` answer and reason to obtain exit `3`, apply the exact token only after separate approval, then show both worktrees editing freely while B's merge to `main` is refused with A unmerged.
+6. Landing in order **releases the edge from scenario 5** — A merges, B's hold clears only after B has A's `protected_tip` as an ancestor of its `HEAD` (R69), and a rebase plus resnapshot satisfies it.
+7. `--force` **lands and is visible** — create a fresh isolated edge, force the held merge, and show the board marking that edge bypassed with its reason and flagging the predecessor.
 
-**Scenarios 4, 5, and 6 must record the ordering status at each step, not only whether the merge went through.** A merge outcome alone cannot tell a passing run from one that happened to permit for an unrelated reason, and the states the tool reports are exactly what a user reads when they are stuck. So the transcripts record: in scenario 4, the exact holding state before A lands, and again after A merges, where it must change to the distinct "the predecessor is on trunk but this worktree has not incorporated it" state rather than staying the same word; in scenario 5, that the edge reaches fulfilled only once B's current `HEAD` contains A's protected tip, and that it was `HEAD` ancestry that cleared it — the resnapshot updates B's own protected checkpoint and is a separate effect, so the transcript must not let one stand in for the other; and in scenario 6, that the bypass annotation on the board is a recorded fact about a merge that was forced through, kept visibly separate from the derived status of the edge itself, which never reads as satisfied.
+**Scenarios 5, 6, and 7 must record the ordering status at each step, not only whether the merge went through.** A merge outcome alone cannot tell a passing run from one that happened to permit for an unrelated reason, and the states the tool reports are exactly what a user reads when they are stuck. So the transcripts record: in scenario 5, the exact holding state before A lands, and again after A merges, where it must change to the distinct "the predecessor is on trunk but this worktree has not incorporated it" state rather than staying the same word; in scenario 6, that the edge reaches fulfilled only once B's current `HEAD` contains A's protected tip, and that it was `HEAD` ancestry that cleared it — the resnapshot updates B's own protected checkpoint and is a separate effect, so the transcript must not let one stand in for the other; and in scenario 7, that the bypass annotation on the board is a recorded fact about a merge that was forced through, kept visibly separate from the derived status of the edge itself, which never reads as satisfied.
 
-**Scenarios 4 and 6 cannot prove refusal or force behavior while the trunk gate is observe-only, and scenario 5 must follow the edge created by scenario 4.** In observe mode the gate reports its decision and then permits the merge, so run the proof accordingly:
+**Scenarios 5 and 7 cannot prove refusal or force behavior while the trunk gate is observe-only, and scenario 6 must follow the edge created by scenario 5.** In observe mode the gate reports its decision and then permits the merge, so run the proof accordingly:
 
-- Scenarios 1–3 run first against the observe-only gate. Record the gate's stated decision at each step, not merely the process outcome.
-- Scenario 2 deliberately corrupts `journal.ndjson`. Run it against a **disposable coordination domain** — a scratch ledger the scenario creates and deletes — not the repo's real ledger. If it must use the real one, repair the journal and verify it reads clean before enforcement is enabled.
-- Then flip `gate_mode` to `"enforce"` **temporarily** and run scenarios 4, 5, and 6 in that order. Scenarios 4 and 5 intentionally share one edge; scenario 6 must create its own. Flip straight back to `"observe"` if any of the three fails. The rollback is part of the proof, not a follow-up: a failed run must never leave the real repo enforcing a gate that has not been proven.
+- Scenarios 1–4 run first against the observe-only gate. Record the gate's stated decision at each step, not merely the process outcome.
+- Scenario 3 deliberately corrupts `journal.ndjson`. Run it against a **disposable coordination domain** — a scratch ledger the scenario creates and deletes — not the repo's real ledger. If it must use the real one, repair the journal and verify it reads clean before enforcement is enabled.
+- Then flip `gate_mode` to `"enforce"` **temporarily** and run scenarios 5, 6, and 7 in that order. Scenarios 5 and 6 intentionally share one edge; scenario 7 must create its own. Flip straight back to `"observe"` if any of the three fails. The rollback is part of the proof, not a follow-up: a failed run must never leave the real repo enforcing a gate that has not been proven.
 
-Only after all six pass, make `gate_mode = "enforce"` durable in `.claude/config/berth.toml`; if the temporary flip is still active, verify and retain it, otherwise perform the final flip then.
+Only after all seven pass, make `gate_mode = "enforce"` durable in `.claude/config/berth.toml`; if the temporary flip is still active, verify and retain it, otherwise perform the final flip then.
 
 Then clean up: remove the test worktrees, and record in this plan's status line that the design is built.
 
@@ -1142,21 +1192,41 @@ Then clean up: remove the test worktrees, and record in this plan's status line 
 - `/Users/natemccoy/rust/hana/.claude/settings.local.json` — add the `hooks` key; `permissions` and `outputStyle` unchanged.
 - **Every test worktree needs its own copy of that file.** It is untracked and ignored, so a linked worktree created from `main` receives no hooks at all and every scenario below would pass by measuring nothing. After the activation edit lands, copy it into each test worktree with `~/.claude/scripts/make_a_worktree/copy_settings_local.sh`, then start a session rooted in that worktree and confirm all three registered hooks actually fire before running a scenario in it.
 - `~/.claude/settings.json` — read only; the registration precedent named above, whose `hooks` key at line 63 gives the event names, the matcher form, and the command shape to copy.
-- `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/gate/mod.rs`, `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/output.rs`, `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/verb/integrate.rs`, `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/tests/gate.rs` — read only, and absolute because this phase runs from the `hana` checkout where a relative `crates/cargo-berth/...` path resolves to nothing; the inactive-identity path phase 18 typed, and the shipped gate assertions the scenarios must agree with.
-- `/Users/natemccoy/rust/hana/.claude/commands/sync.md`, `~/.claude/scripts/berth/claim_state.py` — read only; the two renderings and the classifier the scenarios exercise. Both live outside every repository.
-- `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/cli.rs`, `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/tests/drift.rs` — read only, in the engine checkout phase 17 recorded, and absolute for the same reason; `cli.rs:1327` is the rendering split that guarantees a `--json` post-commit invocation returns its typed envelope rather than the stderr warning, and `drift.rs:490` is the shipped assertion that it also reports every active reservation. The `PostToolUse` scenarios below depend on both.
+- `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/gate/mod.rs`, `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/output.rs`, `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/verb/integrate.rs`, `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/verb/check.rs`, `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/tests/gate.rs` — read only, and absolute because this phase runs from the `hana` checkout where a relative `crates/cargo-berth/...` path resolves to nothing; the inactive-identity path phase 18 typed, the first-touch claim path phase 20 shipped, and the gate assertions the scenarios must agree with.
+- `/Users/natemccoy/rust/hana/.claude/hooks/berth_post_bash.sh` — **editable.** Its `valid_effect` accepts only `widened`, `incursion`, and `collision`, so it rejects both effect kinds phase 20 added and every post-write envelope carrying one. Teach it `first_touch_claimed` and `post_write_incursion`, and render each.
+- `/Users/natemccoy/rust/hana/.claude/commands/sync.md`, `~/.claude/scripts/berth/claim_state.py` — read only; the two renderings and the classifier the scenarios exercise, as phase 21 left them. Both live outside every repository.
+- `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/cli.rs`, `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/tests/drift.rs` — read only, in the engine checkout, absolute for the same reason; `cli.rs:1327` is the rendering split that guarantees a `--json` post-commit invocation returns its typed envelope rather than the stderr warning, and `drift.rs:536` — `json_post_commit_reports_every_active_reservation_without_warning_rendering` — is the shipped assertion that it also reports every active reservation. The `PostToolUse` scenarios depend on both.
 - `/Users/natemccoy/rust/hana/.claude/config/berth.toml` — `gate_mode = "enforce"`.
-- `~/.claude/commands/plan/delegate.md` — change the named reservation-coverage mode from advisory to required after the backfill is verified. The state is `RESERVATION_COVERAGE_POLICY`; it is a workflow constant and repository configuration never selects it, so this is a one-value edit.
-- `~/.claude/commands/plan/phase_review.md` and `~/.claude/commands/plan/to_phased_plan.md` — reconcile both with that named policy. Each still derives `${RESERVATION_COVERAGE_MODE}` from the presence of `.claude/config/berth.toml` (`phase_review.md:290`, `to_phased_plan.md:103`), which is the rule phase 19 replaced. Leaving them is a second, contradicting rule.
 - `/Users/natemccoy/rust/cargo-berth-init/docs/berth-plan.md` — status line: built. **The path is absolute deliberately**: this phase runs from the `hana` checkout, where a relative `docs/berth-plan.md` resolves to a different repository's file or to nothing at all.
 
-**Constraints from prior phases:** Every prior phase is exercised here. Phase 9's observe-only default is what makes this safe to run against the real repo — do not flip it early, and do not leave it flipped after a failed scenario. Phase 16 established the ledger and the config; phase 17 built the three hook shims but left them unregistered, which is why this phase's first step is registering them. Phase 19 left reservation coverage advisory so phase 20 remained dispatchable; switch only that named policy to required after validating the backfill. **Phase 19 also made coverage a named workflow policy rather than a property of the repository**, and two sibling commands were not moved with it: `phase_review.md:290` and `to_phased_plan.md:103` each still choose `required` when the plan's repository carries `.claude/config/berth.toml`. That divergence is already live rather than latent — `hana` is enrolled, so a `/plan:delegate` run over a `hana` plan dispatches under advisory and is then blocked by its own phase-review validation at required, on exactly the Work Orders phase 20 exists to backfill. Flipping only `delegate.md` here leaves two rules in force; flip all three to the one named policy. Phase 19's coordination boundary is what this phase exercises end to end: a phase claims before its first dispatch, persists exactly one tagged `DelegatedPhaseReservationState` — `RepositoryNotEnrolled`, `ReservationDeclarationMissingUnderAdvisory`, or `Active` — reads that record back rather than remembering a reservation id, runs drift's full phase-start comparison before the checkpoint commit, and releases only after that commit succeeds. Every unsuccessful ending retains both the engine reservation and the durable record. Do not invoke release from an error, cancellation, or cleanup path. Apart from that activation, this phase changes only the settings hook key and gate mode. **Phase 18 changed engine source, so the phase 17 digest is no longer the artifact to select.** Before this phase's first engine invocation, confirm that `/Users/natemccoy/rust/cargo-berth-init`'s `HEAD` contains the phase 18 checkpoint, run `cargo install --path crates/cargo-berth` from that checkout unconditionally, and record the source `HEAD`, the absolute installed path, and the resulting SHA-256. Do not compare against, or reinstall toward, `efceb301d2c4f61ee2a835694b5d6563bcfcfa01446b292f90119cdc85be19d9`: it still matches what is installed, so that comparison passes while selecting a binary without the typed integrate rejection scenario 4 depends on. `cargo-berth --version` reports `0.1.0-dev` for every build and proves nothing. The acceptance transcript names the newly recorded digest.
+**Constraints from prior phases:** Every prior phase is exercised here. Phase 9's observe-only default is what makes this safe to run against the real repo — do not flip it early, and do not leave it flipped after a failed scenario. Phase 16 established the ledger and the config; phase 17 built the three hook shims but left them unregistered, which is why this phase's first step is registering them. **Phase 20 removed the reservation declaration entirely**, so there is no coverage policy to flip and no Work Order backfill to verify — a phase claims by editing. Phase 21 owns the refusal rendering the scenarios read; do not reimplement it here, and do not accept a scenario that asserts only the exit code where phase 21 promised a rendered choice. Phase 19's coordination boundary is what this phase exercises end to end: a phase persists exactly one tagged `DelegatedPhaseReservationState` — `RepositoryNotEnrolled`, `Active`, or the checkpoint-release state — reads that record back rather than remembering a reservation id, runs drift's full phase-start comparison before the checkpoint commit, and releases only after that commit succeeds. Every unsuccessful ending retains both the engine reservation and the durable record. Do not invoke release from an error, cancellation, or cleanup path. **Phase 20 changed engine source, so no earlier digest is the artifact to select.** Before this phase's first engine invocation, confirm that `/Users/natemccoy/rust/cargo-berth-init`'s `HEAD` contains the phase 20 checkpoint, run `cargo install --path crates/cargo-berth` from that checkout unconditionally, and record the source `HEAD`, the absolute installed path, and the resulting SHA-256. `cargo-berth --version` reports `0.1.0-dev` for every build and proves nothing. The acceptance transcript names the newly recorded digest.
 
-**Read the gate's real ordering rather than assuming it.** `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/gate/mod.rs:553-557` validates the acting run *before* the entering-reservation calculation, and `ReservationNotEntering` is raised later at line 796. A stale-identity fixture therefore has to satisfy the entering-reservation condition as well, or it is refused for the unrelated reason and never reaches the identity check at all. Phase 17 specifies and tests the pre-edit shim for `Edit`, `Write`, **and `NotebookEdit`**; register all three here and cover `NotebookEdit` in the end-to-end scenario. The `SessionStart` reconciliation and alert shim must also be registered, or phase 6's durable orphan alerts and phase 9's deferred bypass report reach no one. Phase 18 owns the full **Blocked → Proposal awaiting approval → Claimed** sequence; scenario 4 must use it without abbreviating the proposal round trip. Phase 3 owns `EditAuthorization` and its resolution, which phase 11 reordered — the session-keyed mapping first, then `CARGO_BERTH_RUN`, then the worktree marker file, failing closed to `Unidentified`. Read it; never re-derive it, and never pass a run id to `check`. Phase 4's `claim --run` is the one provenance boundary where a run id is an argument; phase 11's session mapping records that same value against the harness session. **Phase 6 changed what a marker-derived identity buys.** `EditAuthorization` is now source-preserving — `Environment(CoordinationRunId)`, `Marker { coordination_run_id, worktree_id }`, or `Unidentified` — and a `Marker` identity is honored only when replay shows that same run still holds an **active** reservation minted in that same worktree. An environment-supplied run is trusted as given. A stale marker left by a crashed run therefore no longer grants the holder's own exemption, which is exactly why phase 11's session-keyed mapping is the primary path and `CARGO_BERTH_RUN` and the marker file are the fallbacks behind it. **Preflight enrollment in every fixture that is meant to coordinate.** Phase 16 superseded the older rule that the configuration must be committed before any linked worktree is created: that ordering is not satisfiable retroactively and is no longer required, because an unenrolled checkout is now silently not enrolled rather than broken. `.claude/config/berth.toml` is repository content resolved per worktree through `git rev-parse --show-toplevel`, not a single file the common git directory shares, so a worktree whose own checkout lacks it reads no configuration and every verb there answers `unconfigured` at exit 4 — silently, and indistinguishably from a fixture that was never set up. That is the new hazard: a scenario can pass vacuously against a checkout that was never coordinating. So assert `cargo-berth board --json` returns `board_ready` in each such fixture **before** installing hooks, claiming, corrupting a ledger, or merging. **Keep the gate mode consistent in every worktree that runs `integrate`.** Configuration is read from the invoking worktree, so temporarily switching to enforcing in one checkout leaves every other checkout still observing. Either set the mode in every worktree that invokes `integrate` during a scenario, or run those invocations only from the policy checkout, and say which. **The scratch-ledger scenario needs its own repository.** The ledger's location is fixed under the repository's common git directory, so no worktree can create and delete an isolated ledger while its real coordination state survives — corrupting the ledger to exercise recovery corrupts the only ledger there is. Run the corruption scenario in a separate scratch repository or clone, initialized with the same installed binary, and exercise corruption, the bypass marker, confirmed reinitialization, and `SessionStart` recovery there. The claim that all six scenarios run in the same two worktrees is wrong and must not be repeated. That scenario also proves the marker drain is idempotent: interrupt the import between the journal append and the marker delete, then run it again, and assert one journal record and no marker. **It also proves the drain is announced exactly once.** Phase 13 separates the set a board read just adopted from the durable bypass audit history, and phase 17's `SessionStart` shim reports the first and not the second. So the same scenario runs `SessionStart` twice against that scratch repository: the first run names the recovered marker set, the second is silent about it, and the bypass itself stays visible on the board's audit history across both without being re-announced.
+**Read the gate's real ordering rather than assuming it.** `/Users/natemccoy/rust/cargo-berth-init/crates/cargo-berth/src/gate/mod.rs:553-557` validates the acting run *before* the entering-reservation calculation, and `ReservationNotEntering` is raised later at line 796. A stale-identity fixture therefore has to satisfy the entering-reservation condition as well, or it is refused for the unrelated reason and never reaches the identity check at all. Phase 17 specifies and tests the pre-edit shim for `Edit`, `Write`, **and `NotebookEdit`**; register all three here and cover `NotebookEdit` in the end-to-end scenario. The `SessionStart` reconciliation and alert shim must also be registered, or phase 6's durable orphan alerts and phase 9's deferred bypass report reach no one. Phase 18 owns the full **Blocked → Proposal awaiting approval → Claimed** sequence; scenario 5 must use it without abbreviating the proposal round trip. Phase 3 owns `EditAuthorization` and its resolution, which phase 11 reordered — the session-keyed mapping first, then `CARGO_BERTH_RUN`, then the worktree marker file, failing closed to `Unidentified`. Read it; never re-derive it, and never pass a run id to `check`. **Phase 20 made `Unidentified` mint a run rather than edit unclaimed**, so a scenario that expects an unidentified edit to leave the journal untouched is asserting the old behavior. Phase 4's `claim --run` is the one provenance boundary where a run id is an argument; phase 11's session mapping records that same value against the harness session. **Phase 6 changed what a marker-derived identity buys.** `EditAuthorization` is source-preserving — `Environment(CoordinationRunId)`, `Marker { coordination_run_id, worktree_id }`, or `Unidentified` — and a `Marker` identity is honored only when replay shows that same run still holds an **active** reservation minted in that same worktree. An environment-supplied run is trusted as given. A stale marker left by a crashed run therefore does not grant the holder's own exemption, which is why phase 11's session-keyed mapping is the primary path and `CARGO_BERTH_RUN` and the marker file are the fallbacks behind it.
 
+**Preflight enrollment in every fixture that is meant to coordinate.** Phase 16 superseded the older rule that the configuration must be committed before any linked worktree is created: that ordering is not satisfiable retroactively and is no longer required, because an unenrolled checkout is now silently not enrolled rather than broken. `.claude/config/berth.toml` is repository content resolved per worktree through `git rev-parse --show-toplevel`, not a single file the common git directory shares, so a worktree whose own checkout lacks it reads no configuration and every verb there answers `unconfigured` at exit 4 — silently, and indistinguishably from a fixture that was never set up. That is the hazard: a scenario can pass vacuously against a checkout that was never coordinating, and first-touch claiming makes this worse, because an unenrolled worktree now also silently claims nothing while appearing to work normally. So assert `cargo-berth board --json` returns `board_ready` in each such fixture **before** installing hooks, editing, corrupting a ledger, or merging.
+
+**Keep the gate mode consistent in every worktree that runs `integrate`.** Configuration is read from the invoking worktree, so temporarily switching to enforcing in one checkout leaves every other checkout still observing. Either set the mode in every worktree that invokes `integrate` during a scenario, or run those invocations only from the policy checkout, and say which.
+
+**The scratch-ledger scenario needs its own repository.** The ledger's location is fixed under the repository's common git directory, so no worktree can create and delete an isolated ledger while its real coordination state survives — corrupting the ledger to exercise recovery corrupts the only ledger there is. Run the corruption scenario in a separate scratch repository or clone, initialized with the same installed binary, and exercise corruption, the bypass marker, confirmed reinitialization, and `SessionStart` recovery there. That scenario also proves the marker drain is idempotent: interrupt the import between the journal append and the marker delete, then run it again, and assert one journal record and no marker. **It also proves the drain is announced exactly once.** Phase 13 separates the set a board read just adopted from the durable bypass audit history, and phase 17's `SessionStart` shim reports the first and not the second. So the same scenario runs `SessionStart` twice against that scratch repository: the first run names the recovered marker set, the second is silent about it, and the bypass itself stays visible on the board's audit history across both without being re-announced.
 
 **Phase 14 gave `board` an interactive terminal view, so every scripted invocation in these scenarios passes `--json`.** The enforce-mode scenario runs in a real terminal, and a bare `cargo-berth board` there opens a full-screen view and waits for a keypress rather than printing and exiting — which would hang the scenario. Use `--json` in every scripted step. One scenario may exercise the terminal view deliberately, driven through a pty with an explicit window size, because a pty with no size renders an empty frame.
-**Acceptance gate:** No `verify.sh`. The `hooks` key is present, registers all three shims, and the rest of `settings.local.json` is byte-identical to its prior contents; reservation coverage is required and all three commands select it from the one named policy rather than from repository configuration — `delegate.md`, `phase_review.md`, and `to_phased_plan.md` agree, and no remaining rule reads `.claude/config/berth.toml` to decide coverage; a Work Order with no `**Reservations:**` block now refuses before dispatch **in an enrolled repository**, and the refusal is shown to come from the named policy rather than from the presence of `.claude/config/berth.toml`; an unenrolled checkout keeps its silent opt-out unchanged — the coordination boundary answers `unconfigured` first and persists `RepositoryNotEnrolled` whatever the policy says, so asserting that it refuses identically would assert the opposite of what phase 19 shipped; the previously completed Phase 20 advisory-mode proof remains recorded; a session started against a ledger carrying an orphaned-outstanding alert surfaces it; all six scenarios pass with transcripts recorded — five against two real worktrees, and the ledger-corruption scenario against its own separate scratch repository or clone per the constraint above, never against the only ledger there is, each transcript naming the `gate_mode` in force when it ran; scenario 4 records exit `1`, exit `3`, explicit token approval, and the resulting edge before scenario 5 clears that same edge; the scenario 4, 5, and 6 transcripts each record the reported ordering status at every step, showing scenario 4's hold changing to the incorporate-the-predecessor state once A lands, scenario 5 reaching fulfilled only on `HEAD` ancestry and distinguishing that from the resnapshot, and scenario 6 keeping the bypass annotation separate from the edge's own derived status; the journal used by scenario 2 is either disposable or verified clean afterwards; the scratch-repository scenario runs `SessionStart` twice after a pending bypass marker is drained and asserts the recovered set is reported on the first run, absent on the second, and that the bypass remains in the board's audit history throughout; the failed-scenario rollback to observe mode is tested; `gate_mode = "enforce"`; an out-of-order merge to `main` is then refused in a real terminal, and `CARGO_BERTH_BYPASS=1` still lands it. Also: one scenario drives a real incursion end to end — a write in worktree A lands inside worktree B's blocking reservation, the registered `PostToolUse` shim surfaces it to A, the board and the `SessionStart` shim surface it to B, and it is then answered with `resolve <reservation-id> --incursion <incident-id>`, the command phase 11 shipped, after which no incident remains outstanding while the answered one still appears in the recorded-answer audit as resolved. Deleting the test worktrees is not a resolution and does not satisfy this item. Cleanup at the end of the run releases the scenario reservations, settles the ordering edges, and answers every incident it opened, and the board proves it: nothing remains outstanding. Resolved incidents are not removed — replay retains each as `Resolved { resolution_event_id, resolved_at }`, and an audit trail that survives is the point, so assert that they stay in the resolved audit rather than asserting the journal forgot them. Also, in the scratch policy checkout — not merely a linked worktree, because the managed hook changes into its installer checkout — remove `.claude/config/berth.toml` after installing an enforcing hook, then land a real ref update: the hook is proven to have run, the update lands, and stdout and stderr are both empty. Restore the configuration before any other scenario. This is the owned proof that a repository with no configuration produces an ordinary silent ref update rather than a diagnostic. Also: the registered `PostToolUse` proof covers both of its typed outcomes rather than one — an incursion produces the immediate-stop feedback, and an automatic widen inside the holder's own worktree produces the widening notification — asserted as two distinct rendered outcomes, since a shim that reported the stop correctly and rendered nothing for a widen would otherwise pass. Also: the ledger-corruption scenario exercises all three registered shims, adding the `PostToolUse` and `SessionStart` ledger-unreadable feedback to the `PreToolUse` refusal and the git bypass it already covers. Also: `/sync integrate` is exercised against two isolated stale-identity fixtures using the recorded post-phase-18 executable. `inactive_session_mapping` must produce `state.kind = inactive_session_mapping`, name the stale coordination run and the requested reservation, and direct the user to restart the run or name an active reservation; `inactive_marker_run` must produce `state.kind = inactive_marker_run`, name its run and requested reservation, and direct the user to remove or replace the marker. Assert that the kinds and the recoveries differ, that both envelopes carry `invalid_input` at exit `5` with an `integrate` payload whose `data.status` is `rejected` and the requested reservation named in `reservations`, and that the classification reads `reason.kind` rather than `message`. Also: the transcript records the complete elapsed time of a registered `PostToolUse` invocation; phase 17 measured 0.259 seconds against phase 15's published 0.20-second bound, and closing that gap is a next item rather than a condition of this phase, so record the number and do not gate on it.
+
+**Acceptance gate:** No `verify.sh`. The `hooks` key is present, registers all three shims, and the rest of `settings.local.json` is byte-identical to its prior contents. An unenrolled checkout keeps its silent opt-out unchanged — the coordination boundary answers `unconfigured` first and persists `RepositoryNotEnrolled`, claiming nothing. A session started against a ledger carrying an orphaned-outstanding alert surfaces it. All seven scenarios pass with transcripts recorded — six against two real worktrees, and the ledger-corruption scenario against its own separate scratch repository or clone per the constraint above, never against the only ledger there is, each transcript naming the `gate_mode` in force when it ran. Scenario 2 proves the silence-means-safe invariant by journal replay: a permitted edit leaves a reservation held by the editing run over exactly the edited path, and the next run is refused on it. Scenario 5 records exit `1`, exit `3`, explicit token approval, and the resulting edge before scenario 6 clears that same edge. The scenario 5, 6, and 7 transcripts each record the reported ordering status at every step, showing scenario 5's hold changing to the incorporate-the-predecessor state once A lands, scenario 6 reaching fulfilled only on `HEAD` ancestry and distinguishing that from the resnapshot, and scenario 7 keeping the bypass annotation separate from the edge's own derived status. The journal used by scenario 3 is either disposable or verified clean afterwards. The scratch-repository scenario runs `SessionStart` twice after a pending bypass marker is drained and asserts the recovered set is reported on the first run, absent on the second, and that the bypass remains in the board's audit history throughout. The failed-scenario rollback to observe mode is tested. `gate_mode = "enforce"`; an out-of-order merge to `main` is then refused in a real terminal, and `CARGO_BERTH_BYPASS=1` still lands it.
+
+Also: one scenario drives a real incursion end to end — a write in worktree A lands inside worktree B's reservation, the registered `PostToolUse` shim surfaces it to A, the board and the `SessionStart` shim surface it to B, and it is then answered with `resolve <reservation-id> --incursion <incident-id>`, the command phase 11 shipped, after which no incident remains outstanding while the answered one still appears in the recorded-answer audit as resolved. Deleting the test worktrees is not a resolution and does not satisfy this item. Cleanup at the end of the run releases the scenario reservations, settles the ordering edges, and answers every incident it opened, and the board proves it: nothing remains outstanding. Resolved incidents are not removed — replay retains each as `Resolved { resolution_event_id, resolved_at }`, and an audit trail that survives is the point, so assert that they stay in the resolved audit rather than asserting the journal forgot them.
+
+Also, in the scratch policy checkout — not merely a linked worktree, because the managed hook changes into its installer checkout — remove `.claude/config/berth.toml` after installing an enforcing hook, then land a real ref update: the hook is proven to have run, the update lands, and stdout and stderr are both empty. Restore the configuration before any other scenario. This is the owned proof that a repository with no configuration produces an ordinary silent ref update rather than a diagnostic.
+
+Also: the registered `PostToolUse` proof covers **all four** of its typed outcomes rather than one, asserted as four distinct rendered outcomes, since a shim that reported the stop correctly and rendered nothing for the others would otherwise pass:
+
+- an automatic widen inside the holder's own worktree produces the widening notification;
+- an incursion produces the immediate-stop feedback;
+- a write by a run holding nothing produces `widening.status = first_touch_claimed`, rendered as the reservation the write just acquired, naming the exact `file:` scopes and the `acquisition.kind`;
+- a write landing partly inside a foreign claim and partly on free paths produces `widening.status = post_write_incursion`, whose `protection.status` is asserted in **both** of its states — `acquired`, where the free subset is named along with the reservation that now protects it, and `not_acquired`, where every observed path had a foreign holder and nothing was reserved. A shim that renders the incursion and silently drops the protected free paths reports a user as unprotected when they are protected, so the exact free paths are asserted, not merely the status word. Also: the ledger-corruption scenario exercises all three registered shims, adding the `PostToolUse` and `SessionStart` ledger-unreadable feedback to the `PreToolUse` refusal and the git bypass it already covers.
+
+Also: `/sync integrate` is exercised against two isolated stale-identity fixtures using the recorded post-phase-20 executable. `inactive_session_mapping` must produce `state.kind = inactive_session_mapping`, name the stale coordination run and the requested reservation, and direct the user to restart the run or name an active reservation; `inactive_marker_run` must produce `state.kind = inactive_marker_run`, name its run and requested reservation, and direct the user to remove or replace the marker. Assert that the kinds and the recoveries differ, that both envelopes carry `invalid_input` at exit `5` with an `integrate` payload whose `data.status` is `rejected` and the requested reservation named in `reservations`, and that the classification reads `reason.kind` rather than `message`.
+
+Also: the transcript records the complete elapsed time of a registered `PostToolUse` invocation, and of a registered `PreToolUse` invocation now that it appends on the clear path. Phase 17 measured `PostToolUse` at 0.259 seconds against phase 15's published 0.20-second bound, and closing that gap is a next item rather than a condition of this phase, so record both numbers and do not gate on them.
 
 ---
 
@@ -1169,7 +1239,7 @@ finding id; it is part of this plan, not a separate document.
 Read it as three layers. **Design** — this section — is the committed shape.
 **Review findings** R1–R69 are three cycles of expert review that corrected it: a
 later finding supersedes an earlier one where they conflict, and each supersession
-is named in the finding's own title. **Decisions** D1–D8 are the eight the user
+is named in the finding's own title. **Decisions** D1–D9 are the nine the user
 ruled on directly.
 
 ### Goal
@@ -1227,11 +1297,13 @@ with `O_APPEND` cannot interleave destructively, so two sessions claiming at the
 moment cannot clobber each other. The failure mode is designed out rather than ruled
 against.
 
-#### The unit: lowest necessary tree root
+#### The unit: the exact path an edit touched
 
-A claim is a **repo-relative path** — the shallowest directory that covers what the
-phase will touch. `crates/hana_valence` when a phase owns the crate;
-`crates/hana/src/transport` when it owns one module.
+A claim is a **repo-relative path**. First-touch claiming acquires the exact `file:`
+paths an edit names, so an ordinary reservation covers files, not directories. A tree
+claim — `crates/hana_valence` for a whole crate, `crates/hana/src/transport` for one
+module — is still available and is reached only through an explicit `cargo berth claim`
+naming that tree.
 
 The conflict rule is one line:
 
@@ -1248,18 +1320,17 @@ A claim record:
  "phase":24,"why":"arrangement providers","at":"2026-08-23T11:02:00Z"}
 ```
 
-#### Claims are derived, not hand-written
+#### Claims are acquired on first touch, not declared
 
-Every Work Order produced by `/plan:to_phased_plan` already carries a `**Files:**`
-section listing the exact paths that phase touches. That is the footprint, already
-written, already reviewed. The `/sync` skill reads it (the tool never
-parses markdown) and rolls the file list up to its shallowest covering directories.
-**Measured 2026-08-23: `**Files:**` blocks on disk record repo-relative paths**, not
-absolute ones — no prefix stripping is needed, and a claim path is already in the form
-the ledger stores.
+A phase declares nothing in advance. The registered `PreToolUse` hook checks the exact
+paths an edit names, and when they are free the same locked transaction that found them
+free acquires them as a `first_touch` reservation before permitting the write. The
+reservation records `ClaimSource::FirstTouch` and carries no plan and no phase, because
+no plan named it.
 
-Nothing new for the user to maintain, and a claim cannot drift from the plan it came
-from without the plan changing first.
+Nothing new for the user to maintain, and a claim cannot drift from the work it covers,
+because the edit that touched the path is what created it. Silence means safe: a phase
+that is never warned is a phase whose paths nobody else holds.
 
 ### The check
 
@@ -1289,11 +1360,11 @@ recording it.
 
 #### The root manifest exception
 
-`Cargo.toml`, `Cargo.lock`, and `.claude/config/*` are shared by construction — every
-branch touches them, so exclusive claims on them would block everything. They are
-**announced, not claimed**: the check reports "3 branches will touch root
-`Cargo.toml`" as information and does not block. `Cargo.lock` remains
-regenerate-never-merge.
+`Cargo.toml`, `Cargo.lock`, and `.claude/config/*` are touched by every branch, so a
+collision on one of them is common. They carry no exception: a root file is reserved by
+the first edit that touches it and refuses the next worktree exactly like any other
+path, which is what makes the refusal the moment two worktrees discover each other.
+`Cargo.lock` remains regenerate-never-merge.
 
 #### Release, staleness, override
 
@@ -1368,10 +1439,10 @@ costs one `git worktree list --porcelain` plus at most `P` ancestor checks
 Duplicate edges are rejected and R4's limits extend to `V` and `E`. None of this runs
 on the hook path, which reads only the generation-validated projection (R31).
 
-**Ordering is conflict-time state.** A Work Order declares its reservations, never its
-expected order — the relationship exists only while two reservations are live, so
-putting it in the plan would duplicate something that is not knowable when the plan is
-written.
+**Ordering is conflict-time state.** Nothing is declared ahead of the work — neither a
+reservation nor an expected order. The relationship exists only while two reservations
+are live, so putting it in the plan would duplicate something that is not knowable when
+the plan is written.
 
 #### Self-healing
 
@@ -1515,7 +1586,7 @@ later.
 | --- | --- |
 | `board` | The picture: live claims, holders, ahead/behind vs `main`, stale flags |
 | `check` | All three tiers for a proposed footprint |
-| `claim` | Explicit validated paths (the skill resolves a Work Order to paths, not the tool); `--before`/`--after`/`--defer`/`--override <blocker> --why` answers an overlap in the same transaction |
+| `claim` | Explicit validated paths named on the command line, for an advance or tree reservation; ordinary file reservations arise on first touch instead. `--before`/`--after`/`--defer`/`--override <blocker> --overlap-why` answers an overlap in the same transaction |
 | `release` | At checkpoint |
 | `sequence` | `<first> <then> --why` — change an ordering answer already given |
 | `integrate` | The authoritative path to trunk: reconcile, check every incoming edge, then update `main`; `--force --why` mints a one-use permit past a held edge |
@@ -1558,15 +1629,13 @@ Almost none of the hana-specific part is Rust.
 | --- | --- |
 | `cargo-berth` | The whole engine, hana-blind: ledger, journal, claims, edges, cycle detection, the ref gate, the board. Its interface is paths and reservation ids. |
 | `.claude/config/berth.toml` (in hana) | The repo's dialect: trunk branch, the announce-not-claim list, R4's limits. Sits beside `mirror.toml` and `release.toml`. |
-| `~/.claude/` | The Claude Code integration: the `/sync` skill, thin `PreToolUse`/`PostToolUse` shims that shell out to `cargo-berth`, and `/plan:delegate` claiming at dispatch and releasing at checkpoint. |
-| Plan docs | The 28 Work Orders' `**Reservations:**` blocks. Content, not code. |
+| `~/.claude/` | The Claude Code integration: the `/sync` skill, thin `PreToolUse`/`PostToolUse` shims that shell out to `cargo-berth`, and `/plan:delegate` releasing at checkpoint. The `PreToolUse` shim claims on first touch; nothing claims at dispatch. |
 
-**This moves `--from-work-order` out of the tool.** Parsing `**Reservations:**` from a
-plan document is Claude-workflow territory: the skill extracts the paths and calls
-`cargo-berth claim <paths>`. The tool still validates them — exist, normalize, reduce to
-an antichain, check overlap under the lock — it just never reads markdown. That keeps
-`cargo-berth` general enough to publish, and lets the plan-doc format change without
-touching a released crate.
+**The tool never reads a plan document.** Its interface is paths: the hook passes the
+exact paths an edit names, and `claim` takes paths on the command line. The tool
+validates them — exist, normalize, reduce to an antichain, check overlap under the lock.
+That keeps `cargo-berth` general enough to publish, and lets the plan-doc format change
+without touching a released crate.
 
 #### The README is a deliverable
 
@@ -1605,7 +1674,7 @@ side needs — the engine spec and R1–R69 for one, the wiring for the other.
 | Track | Repo | Built by | Produces |
 | --- | --- | --- | --- |
 | **A — engine** | `~/rust/cargo-liner` | Its own agent, in that repo | `crates/cargo-berth`: ledger, journal, claims, edges, cycle detection, ref gate, board TUI, README, tests |
-| **B — wiring** | `~/rust/hana` | An agent here | `cargo-berth init`, hook shims and their `settings.json` entries, the `/sync` skill, `/plan:delegate` claim/release, `.claude/config/berth.toml`, 28 Work Order backfills |
+| **B — wiring** | `~/rust/hana` | An agent here | `cargo-berth init`, hook shims and their `settings.json` entries, the `/sync` skill, `/plan:delegate` coordination and release, `.claude/config/berth.toml` |
 
 Track A needs no hana knowledge at all — that is the test of whether the split in
 `### The split` is real. If a phase in track A has to explain a Work Order, the boundary
@@ -2420,6 +2489,41 @@ need the field before their plans can run** — Tool Graph 19, Valence 9; 25 see
 
 **D1 — RESOLVED by the user 2026-08-23.** Hook constrains what it can inspect; a post-write
 check observes what actually changed and notifies. See the D1 section below.
+
+**D9 — RESOLVED by the user 2026-08-25. Claims are taken at first touch, not declared in advance.
+(supersedes D4 and D7; re-grounds D5; withdraws R35's `Reservations` grammar and R34's declaration
+half)** The `Reservations` block was a second copy of the Work Order's own `Files` list: the shared
+validator required the two to cover each other exactly, and the declaration was generated from
+`Files` rather than authored. It carried no information and had to be kept in sync by hand. A
+reservation now comes into being when a worktree first edits a path — `check` acquires on its clear
+branch instead of answering mutation-free — and no Work Order declares anything.
+
+The user's reasoning, recorded: *"it's fine if the first one to edit gets a lock on it and anyone
+that comes after — we have to figure out how to then sequence its changes into main — or cross merge
+with each other — i didn't want to create a whole bunch of ceremony"*, and *"often we don't know
+until we're into something whether it's going to require a file change anyway — i just want to be
+able to work with the agent to decide what to do when we run into each other — and i want to assume
+that under most circumstances if we're not getting warned then we're safe."*
+
+**D5 survives and is strengthened, but its mechanism changes.** Claims remain mandatory for every
+covered write channel; what changes is when acquisition happens. D5 closed its race by having the
+editor already hold the path before its hook ran. First-touch claiming closes it by making the
+decision and the acquisition one locked transaction against one generation. Both are sound; a read
+that returns clear followed by a separate append is not, and is the one implementation mistake that
+would silently reintroduce the unsoundness D5 identified.
+
+**What this costs.** Two plans no longer discover their collisions offline before either starts. The
+measured example: comparing the 28 Hana Work Orders pairwise found 127 of 378 pairs would contend.
+Under first-touch that is learned when the second worktree reaches a contended path, having already
+done its uncontended work — partial rather than wasted, but later. The user accepted this
+explicitly, and it buys back exact locks over predicted ones, no backfill, and no grammar to drift.
+
+**What it requires.** Silence has to mean safe, so every write channel must claim: the `PreToolUse`
+path claims before permitting, the `PostToolUse` Bash path mints where it previously only widened,
+and an `Unidentified` editor mints a run rather than editing unclaimed. A channel that permits
+without claiming makes silence a lie, which is worse than the ceremony this removes.
+*Risk:* a refusal is now the normal way two plans meet rather than a rare event, so the refusal's
+rendering is primary user experience rather than an error path.
 
 ### D1 — RESOLVED by the user (2026-08-23): constrain what the hook can see, detect the rest, notify
 

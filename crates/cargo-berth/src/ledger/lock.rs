@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use super::constants::MUTATION_LOCK_INITIAL_RETRY_INTERVAL;
 use super::constants::MUTATION_LOCK_MAXIMUM_RETRY_INTERVAL;
+use super::constants::MUTATION_LOCK_READY_PATH_ENVIRONMENT;
 
 /// A held advisory lock whose descriptor releases automatically on process death.
 #[derive(Debug)]
@@ -38,6 +39,10 @@ impl MutationLock {
             match descriptor.try_lock() {
                 Ok(()) => return Ok(Self { descriptor }),
                 Err(TryLockError::WouldBlock) => {
+                    if let Some(ready_path) = std::env::var_os(MUTATION_LOCK_READY_PATH_ENVIRONMENT)
+                    {
+                        std::fs::write(ready_path, b"ready")?;
+                    }
                     let elapsed = started_at.elapsed();
                     if elapsed >= acquisition_timeout {
                         return Err(MutationLockError::AcquisitionTimedOut);

@@ -16,8 +16,9 @@ use crate::answer::PermissiveOverlapAnswer;
 use crate::board::BoardModel;
 use crate::config::InitializationState;
 use crate::drift::DriftEffect;
+use crate::drift::DriftPathAttributionOutcome;
 use crate::drift::DriftReport;
-use crate::drift::DriftWideningOutcome;
+use crate::drift::PostWriteFreePathProtection;
 use crate::drift::ReservationDriftResult;
 use crate::edge::EdgeDeclarationRejection;
 use crate::edge::EdgeHold;
@@ -46,6 +47,8 @@ use crate::reservation::ReservationConflict;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::session::SessionIdentityMappingPublication;
+use crate::verb::claim::FirstTouchReservationAcquisition;
+use crate::verb::claim::FirstTouchReservationAcquisitionKind;
 
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.";
 const PROJECTION_REPAIRED_MESSAGE: &str =
@@ -648,7 +651,9 @@ enum CheckPayload {
     /// No foreign live reservation overlaps the requested paths.
     Clear {
         /// The minimal exact-file antichain evaluated by the hook.
-        scopes: ReservationScopeSet,
+        scopes:      ReservationScopeSet,
+        /// The complete first-touch result that permits the edit.
+        acquisition: FirstTouchReservationAcquisition,
     },
     /// Foreign holders block one or more requested paths.
     Blocked {
@@ -1071,16 +1076,25 @@ impl OutputEnvelope {
                 matches!(effect, DriftEffect::Widened { .. })
             })
         });
-        let status = if has_incursion {
+        let status = if has_incursion
+            || matches!(
+                &report.path_attribution,
+                DriftPathAttributionOutcome::IncursionDetected { .. }
+            ) {
             OutputStatus::Incursion
         } else if has_collision {
             OutputStatus::DriftCollision
-        } else if has_widen {
+        } else if has_widen
+            || matches!(
+                &report.path_attribution,
+                DriftPathAttributionOutcome::FirstTouchReserved { .. }
+            )
+        {
             OutputStatus::Widened
         } else if matches!(
-            &report.widening,
-            DriftWideningOutcome::Ambiguous { .. }
-                | DriftWideningOutcome::CoordinationRunRequired { .. }
+            &report.path_attribution,
+            DriftPathAttributionOutcome::Ambiguous { .. }
+                | DriftPathAttributionOutcome::CoordinationRunRequired { .. }
         ) {
             OutputStatus::DriftAttributionRequired
         } else {
@@ -1282,17 +1296,33 @@ impl OutputEnvelope {
         }
     }
 
-    /// Build a successful mutation-free edit check.
-    pub(crate) fn clear_check(scopes: ReservationScopeSet) -> Self {
+    /// Build a successful edit check whose locked transaction established protection.
+    pub(crate) fn clear_check(
+        scopes: ReservationScopeSet,
+        acquisition: FirstTouchReservationAcquisition,
+    ) -> Self {
+        let message = match acquisition.kind {
+            FirstTouchReservationAcquisitionKind::Appended => {
+                "No foreign reservation overlaps the requested paths; a first-touch reservation was acquired."
+            },
+            FirstTouchReservationAcquisitionKind::Widened => {
+                "No foreign reservation overlaps the requested paths; the acting run's first-touch reservation was widened."
+            },
+            FirstTouchReservationAcquisitionKind::AlreadyHeld => {
+                "No foreign reservation overlaps the requested paths; the acting run already holds them."
+            },
+        };
+        let reservation_id = acquisition.reservation_id;
         Self {
             verb:         CommandVerb::Check,
             status:       OutputStatus::Clear,
             exit_code:    BerthExit::Clear,
-            reservations: Vec::new(),
+            reservations: vec![reservation_id],
             blocked_by:   Vec::new(),
-            message:      "No foreign reservation overlaps the requested paths.".to_owned(),
+            message:      message.to_owned(),
             payload:      OutputPayload::from_facts(OutputFacts::Check(CheckPayload::Clear {
                 scopes,
+                acquisition,
             })),
         }
     }
@@ -1606,7 +1636,7 @@ fn drift_message(report: &DriftReport) -> String {
             "No changed path fell outside the selected reservation coverage.".to_owned()
         };
     }
-    let mut message = drift_widening_message(&report.widening);
+    let mut message = drift_path_attribution_message(&report.path_attribution);
     for result in &report.results {
         let ReservationDriftResult::Changed {
             reservation_id,
@@ -1639,7 +1669,7 @@ fn drift_message(report: &DriftReport) -> String {
                 } => {
                     let _ = write!(
                         message,
-                        "Incursion {incident_id}: reservation {reservation_id} entered {} held by foreign reservation(s) {}. Stop and resolve the overlap with `resolve {reservation_id} --incursion {incident_id}` before making more changes.",
+                        "Incursion {incident_id}: reservation {reservation_id} entered {} held by foreign reservation(s) {}. Stop and resolve the overlap with `resolve {reservation_id} --incursion {incident_id}` before making more changes. If no coordination run was identified before first-touch attribution, CARGO_BERTH_RUN can select an existing run for later invocations.",
                         paths
                             .as_slice()
                             .iter()
@@ -1681,10 +1711,54 @@ fn drift_message(report: &DriftReport) -> String {
     message
 }
 
-fn drift_widening_message(widening: &DriftWideningOutcome) -> String {
-    match widening {
-        DriftWideningOutcome::NotNeeded | DriftWideningOutcome::Attributed { .. } => String::new(),
-        DriftWideningOutcome::Ambiguous { candidates, paths } => format!(
+fn drift_path_attribution_message(attribution: &DriftPathAttributionOutcome) -> String {
+    match attribution {
+        DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. } => {
+            String::new()
+        },
+        DriftPathAttributionOutcome::FirstTouchReserved { acquisition, .. } => {
+            format!(
+                "First-touch reservation {} now protects the changed paths.",
+                acquisition.reservation_id
+            )
+        },
+        DriftPathAttributionOutcome::IncursionDetected {
+            paths,
+            conflicts,
+            protection,
+        } => {
+            let incursion = format!(
+                "Post-write detection found changed paths {} inside foreign reservations {}. The write already happened; stop and resolve the incursion before making more changes.",
+                paths
+                    .as_slice()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                conflicts
+                    .iter()
+                    .map(|conflict| conflict.reservation_id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            match protection {
+                PostWriteFreePathProtection::NotAcquired => incursion,
+                PostWriteFreePathProtection::Acquired {
+                    acquisition,
+                    scopes,
+                } => format!(
+                    "{incursion} First-touch reservation {} now protects the free paths {}. If no coordination run was identified before this observation, one was started; CARGO_BERTH_RUN can select an existing run for later invocations.",
+                    acquisition.reservation_id,
+                    scopes
+                        .as_slice()
+                        .iter()
+                        .map(|scope| scope.path.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }
+        },
+        DriftPathAttributionOutcome::Ambiguous { candidates, paths } => format!(
             "Changed paths {} were not widened because attribution is ambiguous among reservations {}. Run drift --reservation <id> with one listed reservation.",
             paths
                 .as_slice()
@@ -1699,7 +1773,7 @@ fn drift_widening_message(widening: &DriftWideningOutcome) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        DriftWideningOutcome::CoordinationRunRequired { paths } => format!(
+        DriftPathAttributionOutcome::CoordinationRunRequired { paths } => format!(
             "Changed paths {} were not widened because no coordination run was identified. Set CARGO_BERTH_RUN to the run that owns the target reservation, then run drift --reservation <id>.",
             paths
                 .as_slice()
@@ -1851,6 +1925,7 @@ fn shell_double_quoted(value: &str) -> String { value.replace('\\', "\\\\").repl
 fn source_description(claim_source: &ClaimSource) -> String {
     match claim_source {
         ClaimSource::WorkPlan { plan, phase } => format!("plan {plan}, phase {phase}"),
+        ClaimSource::FirstTouch => "first-touch edit".to_owned(),
         ClaimSource::Explicit => "explicit claim".to_owned(),
     }
 }

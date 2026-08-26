@@ -54,6 +54,22 @@ impl PathCase {
 }
 
 impl DeclaredReservationScopeSet {
+    /// Build exact-file declarations from already validated repository paths.
+    pub(crate) fn from_file_paths(
+        paths: Vec<ReservationScopePath>,
+    ) -> Result<Self, DeclaredReservationScopeSetError> {
+        let scopes = paths
+            .into_iter()
+            .map(|path| ReservationScope {
+                path,
+                kind: ScopeKind::File,
+            })
+            .collect::<Vec<_>>();
+        ReservationScopeSet::try_from(scopes)
+            .map(Self)
+            .map_err(|_| DeclaredReservationScopeSetError::Empty)
+    }
+
     /// Parse path arguments and preserve their declared scope kinds.
     pub(crate) fn parse(
         paths: Vec<PathBuf>,
@@ -71,6 +87,21 @@ impl DeclaredReservationScopeSet {
     /// Reduce the declared scopes to a minimal component antichain.
     pub(crate) fn into_minimal_antichain(self, path_case: PathCase) -> ReservationScopeSet {
         antichain::reduce(self.0, path_case)
+    }
+
+    /// Replace every caller-supplied kind with exact-file meaning before antichain reduction.
+    pub(crate) fn into_exact_file_antichain(self, path_case: PathCase) -> ReservationScopeSet {
+        let scopes = self
+            .0
+            .as_slice()
+            .iter()
+            .map(|scope| ReservationScope {
+                path: scope.path.clone(),
+                kind: ScopeKind::File,
+            })
+            .collect::<Vec<_>>();
+        ReservationScopeSet::try_from(scopes)
+            .map_or_else(|_| self.0, |scopes| antichain::reduce(scopes, path_case))
     }
 }
 

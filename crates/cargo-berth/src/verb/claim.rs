@@ -1,12 +1,18 @@
 //! Atomic reservation acquisition.
 
+use std::convert::Infallible;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Command;
 use std::process::Output;
 use std::string::FromUtf8Error;
+
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapAuthorizationRequest;
@@ -32,17 +38,22 @@ use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadCommit;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
+use crate::ledger::CommittedActionValidation;
 use crate::ledger::EditAuthorization;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
+use crate::ledger::LedgerCommittedActionError;
+use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationPurpose;
+use crate::ledger::ReservationScopeAdditionSet;
 use crate::ledger::TransactionValidation;
 use crate::ledger::TrunkCommitAtClaim;
+use crate::ledger::WidenCause;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
@@ -50,13 +61,18 @@ use crate::output::CoordinationRunMarkerPublication;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
+use crate::reservation::EditBlockingStatus;
+use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
+use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
+use crate::reservation::WidenScopeBinding;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
 use crate::scope::PathCaseError;
 use crate::scope::ReservationScopeSet;
+use crate::session;
 use crate::session::SessionIdentityMappingPublication;
 
 const GIT_BINARY: &str = "git";
@@ -71,7 +87,7 @@ const HEADS_REF_PREFIX: &str = "refs/heads/";
 pub(crate) struct ClaimRequest {
     /// Lexically valid scopes before repository-case antichain reduction.
     pub(crate) declared_scopes:            DeclaredReservationScopeSet,
-    /// Work-plan or explicit provenance.
+    /// The acquisition origin retained in the audit trail.
     pub(crate) source:                     ClaimSource,
     /// The caller-supplied explanation state.
     pub(crate) purpose:                    ReservationPurpose,
@@ -128,6 +144,24 @@ struct ClaimRepositoryFacts {
     worktree_root: CanonicalWorktreeRoot,
 }
 
+#[derive(Clone, Copy)]
+struct SymbolicReferenceDepth(u8);
+
+impl SymbolicReferenceDepth {
+    const MAXIMUM: u8 = 32;
+    const ROOT: Self = Self(0);
+
+    fn descend(self, reference: &str) -> Result<Self, ClaimError> {
+        if self.0 >= Self::MAXIMUM {
+            return Err(ClaimError::SymbolicReferenceDepthExceeded {
+                reference: reference.to_owned(),
+                maximum:   Self::MAXIMUM,
+            });
+        }
+        Ok(Self(self.0 + 1))
+    }
+}
+
 struct PreparedClaim {
     reservation_id:                  ReservationId,
     scopes:                          ReservationScopeSet,
@@ -148,6 +182,11 @@ struct ClaimValidationContext {
     overlap_authorization:  OverlapAuthorizationRequest,
     maximum_reservations:   u32,
     maximum_ordering_edges: u32,
+}
+
+enum ClaimRunValidationError {
+    InactiveMarkerRun(CoordinationRunId),
+    InactiveSessionMapping(CoordinationRunId),
 }
 
 /// Acquire a reservation or return a typed conflict without appending.
@@ -171,7 +210,7 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
             },
             Err(error) => return error.into_output(CommandVerb::Claim),
         };
-    let output_envelope = match execute_claim(claim_request) {
+    let output_envelope = match acquire(claim_request) {
         Ok(Enrollment::Enrolled(ClaimExecution::Claimed {
             reservation_id,
             coordination_run_id,
@@ -185,7 +224,7 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
             marker_publication,
             session_mapping_publication,
         ),
-        Ok(Enrollment::Enrolled(ClaimExecution::Blocked(conflicts))) => {
+        Ok(Enrollment::Enrolled(ClaimExecution::Blocked { conflicts })) => {
             OutputEnvelope::blocked_claim(conflicts)
         },
         Ok(Enrollment::Enrolled(ClaimExecution::AuthorizationRequired(escalation))) => {
@@ -200,41 +239,12 @@ pub(crate) fn execute(claim_request: ClaimRequest) -> OutputEnvelope {
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
         }) => OutputEnvelope::unconfigured(CommandVerb::Claim, &expected_configuration_path),
-        Err(ClaimError::Transaction(error)) => match error {
-            LedgerTransactionError::CorrectableInput(error) => {
-                OutputEnvelope::invalid_input(CommandVerb::Claim, &error.to_string())
-            },
-            LedgerTransactionError::LockContention => {
-                OutputEnvelope::contention(CommandVerb::Claim, &error.to_string())
-            },
-            LedgerTransactionError::LedgerUnreadable(error) => {
-                OutputEnvelope::ledger_error(CommandVerb::Claim, &error)
-            },
-        },
-        Err(ClaimError::InactiveMarkerRun(coordination_run_id)) => OutputEnvelope::invalid_input(
-            CommandVerb::Claim,
-            &format!(
-                "coordination-run marker {coordination_run_id} no longer has an active reservation; retry the claim"
-            ),
-        ),
-        Err(ClaimError::InactiveSessionMapping(coordination_run_id)) => {
-            OutputEnvelope::invalid_input(
-                CommandVerb::Claim,
-                &format!(
-                    "harness session mapping for coordination run {coordination_run_id} no longer names an active reservation; retry the claim"
-                ),
-            )
-        },
-        Err(ClaimError::Config(error)) => {
-            OutputEnvelope::ledger_error(CommandVerb::Claim, &LedgerError::Config(error))
-        },
-        Err(ClaimError::Ledger(error)) => OutputEnvelope::ledger_error(CommandVerb::Claim, &error),
-        Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Claim, &error.to_string()),
+        Err(error) => error.into_output(CommandVerb::Claim),
     };
     output_envelope.with_alerts(reconciliation_report.alerts)
 }
 
-enum ClaimExecution {
+pub(crate) enum ClaimExecution {
     Claimed {
         reservation_id:              ReservationId,
         coordination_run_id:         CoordinationRunId,
@@ -242,13 +252,128 @@ enum ClaimExecution {
         marker_publication:          CoordinationRunMarkerPublication,
         session_mapping_publication: SessionIdentityMappingPublication,
     },
-    Blocked(Vec<ReservationConflict>),
+    Blocked {
+        conflicts: Vec<ReservationConflict>,
+    },
     AuthorizationRequired(Box<OverlapEscalationPayload>),
     ReservationLimitReached(u32),
     OrderingEdgeLimitReached(u32),
 }
 
-fn execute_claim(claim_request: ClaimRequest) -> Result<Enrollment<ClaimExecution>, ClaimError> {
+/// How one successful first-touch transaction established reservation coverage.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FirstTouchReservationAcquisitionKind {
+    /// The transaction appended a new first-touch reservation.
+    Appended,
+    /// The transaction enlarged the acting run's existing first-touch reservation.
+    Widened,
+    /// The existing first-touch reservation already covered every claimable path.
+    AlreadyHeld,
+}
+
+/// The complete durable identity and publication result of first-touch protection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct FirstTouchReservationAcquisition {
+    /// How the transaction established coverage.
+    pub(crate) kind:                        FirstTouchReservationAcquisitionKind,
+    /// The reservation that protects the paths.
+    pub(crate) reservation_id:              ReservationId,
+    /// The coordination run that owns the reservation.
+    pub(crate) coordination_run_id:         CoordinationRunId,
+    /// The original phase-start commit retained by the reservation.
+    pub(crate) phase_start_head:            ProtectedPhaseStartHead,
+    /// Whether the worktree marker records the coordination run.
+    pub(crate) marker_publication:          CoordinationRunMarkerPublication,
+    /// Whether the harness session mapping records the reservation.
+    pub(crate) session_mapping_publication: SessionIdentityMappingPublication,
+}
+
+/// Whether a first-touch transaction may protect the nonconflicting part of a post-write request.
+#[derive(Clone, Copy)]
+pub(crate) enum FirstTouchConflictHandling {
+    /// Refuse the complete request when any path has a foreign holder.
+    RefuseRequest,
+    /// Protect every free path and return the foreign-held subset for reporting.
+    ProtectFreePaths,
+}
+
+/// A first-touch request whose fixed source and authorization rule exclude permissive answers.
+pub(crate) struct FirstTouchClaimRequest {
+    /// Lexically valid paths before exact-file antichain reduction.
+    pub(crate) declared_scopes:   DeclaredReservationScopeSet,
+    /// How a post-write request handles a mixture of free and foreign-held paths.
+    pub(crate) conflict_handling: FirstTouchConflictHandling,
+}
+
+/// The foreign-held portion of a successful partial post-write acquisition.
+pub(crate) enum FirstTouchConflictOutcome {
+    /// Every requested path is protected by the acting run's reservation.
+    None,
+    /// The write already entered paths that a foreign reservation protects.
+    PostWriteIncursion {
+        /// The exact requested file scopes covered by foreign holders.
+        scopes:    ReservationScopeSet,
+        /// Only the foreign holders covering those scopes.
+        conflicts: Vec<ReservationConflict>,
+    },
+}
+
+/// The states a first-touch request can produce without permissive authorization.
+pub(crate) enum FirstTouchClaimExecution {
+    /// The acting run holds a first-touch reservation over every returned scope.
+    Acquired {
+        /// The durable reservation identity, baseline, and publication results.
+        acquisition: FirstTouchReservationAcquisition,
+        /// The exact requested file scopes now protected by the reservation.
+        scopes:      ReservationScopeSet,
+        /// Any foreign-held paths excluded from a post-write acquisition.
+        conflicts:   FirstTouchConflictOutcome,
+    },
+    /// A pre-write request was refused, or every post-write path had a foreign holder.
+    Blocked {
+        /// The exact requested file scopes refused by foreign holders.
+        scopes:    ReservationScopeSet,
+        /// Every holder covering at least one refused scope.
+        conflicts: Vec<ReservationConflict>,
+    },
+    /// A fresh reservation could not be appended under repository policy.
+    ReservationLimitReached(u32),
+}
+
+struct CommittedFirstTouchAcquisition {
+    kind:             FirstTouchReservationAcquisitionKind,
+    reservation_id:   ReservationId,
+    phase_start_head: ProtectedPhaseStartHead,
+    scopes:           ReservationScopeSet,
+    conflicts:        FirstTouchConflictOutcome,
+}
+
+#[derive(Clone, Copy)]
+struct FirstTouchValidationContext {
+    run_validation:       ClaimRunValidation,
+    coordination_run_id:  CoordinationRunId,
+    worktree_id:          WorktreeId,
+    path_case:            PathCase,
+    conflict_handling:    FirstTouchConflictHandling,
+    maximum_reservations: u32,
+}
+
+enum FirstTouchClaimRejection {
+    Blocked {
+        scopes:    ReservationScopeSet,
+        conflicts: Vec<ReservationConflict>,
+    },
+    AlreadyHeld(CommittedFirstTouchAcquisition),
+    Replay(ReservationReplayError),
+    InactiveMarkerRun(CoordinationRunId),
+    InactiveSessionMapping(CoordinationRunId),
+    ReservationLimitReached(u32),
+}
+
+pub(crate) fn acquire(
+    claim_request: ClaimRequest,
+) -> Result<Enrollment<ClaimExecution>, ClaimError> {
     let ClaimRequest {
         declared_scopes,
         source,
@@ -262,8 +387,13 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<Enrollment<ClaimExecutio
     let claim_run_validation = coordination_run_selection.resolve(&worktree_context);
     let actor_run_id = claim_run_validation.actor_run_id();
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
-    let scopes = declared_scopes.into_minimal_antichain(path_case);
-    let claim_repository_facts = ClaimRepositoryFacts::read(&worktree_context)?;
+    let scopes = match &source {
+        ClaimSource::FirstTouch => declared_scopes.into_exact_file_antichain(path_case),
+        ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => {
+            declared_scopes.into_minimal_antichain(path_case)
+        },
+    };
+    let claim_repository_facts = ClaimRepositoryFacts::read(&worktree_context, &source)?;
     let phase_start_head = match phase_start {
         PhaseStartSelection::CurrentHead => {
             ProtectedPhaseStartHead::from(claim_repository_facts.current_head.clone())
@@ -280,13 +410,17 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<Enrollment<ClaimExecutio
             });
         },
     };
-    let trunk_at_claim =
-        read_trunk_commit(worktree_context.repository_root(), &berth_config.trunk)?;
+    let trunk_at_claim = read_trunk_commit(&worktree_context, &berth_config.trunk, &source)?;
     let worktree_identity = ledger::worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
-    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let ledger = match &source {
+        ClaimSource::FirstTouch => Ledger::open_from_discovered_worktree(&worktree_context)?,
+        ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => {
+            Ledger::open(worktree_context.repository_root())?
+        },
+    };
     let reservation_id = ReservationId::new();
     let prepared_claim = PreparedClaim {
         reservation_id,
@@ -324,6 +458,170 @@ fn execute_claim(claim_request: ClaimRequest) -> Result<Enrollment<ClaimExecutio
         .map(Enrollment::Enrolled)
 }
 
+/// Acquire, widen, or reuse the acting run's one first-touch reservation.
+pub(crate) fn acquire_first_touch(
+    request: FirstTouchClaimRequest,
+) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
+    let FirstTouchClaimRequest {
+        declared_scopes,
+        conflict_handling,
+    } = request;
+    let invocation_directory = std::env::current_dir()?;
+    let worktree_context = WorktreeContext::discover(&invocation_directory)?;
+    let run_validation = ClaimCoordinationRunSelection::ContinueOrStart.resolve(&worktree_context);
+    let coordination_run_id = run_validation.actor_run_id();
+    let path_case = PathCase::read(worktree_context.common_git_directory())?;
+    let scopes = declared_scopes.into_exact_file_antichain(path_case);
+    let source = ClaimSource::FirstTouch;
+    let repository_facts = ClaimRepositoryFacts::read(&worktree_context, &source)?;
+    let phase_start_head = ProtectedPhaseStartHead::from(repository_facts.current_head.clone());
+    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+        Enrollment::Enrolled(berth_config) => berth_config,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            });
+        },
+    };
+    let trunk_at_claim = read_trunk_commit(&worktree_context, &berth_config.trunk, &source)?;
+    let worktree_identity = ledger::worktree_identity(
+        worktree_context.administrative_directory(),
+        worktree_context.worktree_kind(),
+    )?;
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+    let prepared_claim = PreparedClaim {
+        reservation_id: ReservationId::new(),
+        scopes,
+        source,
+        purpose: ReservationPurpose::NotProvidedByCaller,
+        trunk_at_claim,
+        head_snapshot: repository_facts.head_snapshot,
+        phase_start_head,
+        worktree_root: repository_facts.worktree_root,
+        worktree_administrative_locator: worktree_context.administrative_locator().clone(),
+    };
+    let execution = ledger.transact_with_committed_action_and_consume_locked_outcome(
+        worktree_identity.id,
+        coordination_run_id,
+        |state| {
+            validate_first_touch_transaction(
+                &state,
+                prepared_claim,
+                FirstTouchValidationContext {
+                    run_validation,
+                    coordination_run_id,
+                    worktree_id: worktree_identity.id,
+                    path_case,
+                    conflict_handling,
+                    maximum_reservations: berth_config.maximum_reservations,
+                },
+            )
+        },
+        Ok::<_, Infallible>,
+        |outcome| {
+            first_touch_execution_from_outcome(outcome, coordination_run_id, &worktree_context)
+        },
+    );
+    let execution = match execution {
+        Ok(execution) => execution,
+        Err(LedgerCommittedActionError::Transaction(error)) => {
+            return Err(ClaimError::Transaction(error));
+        },
+        Err(LedgerCommittedActionError::Action(error)) => match error {},
+    };
+    execution.map(Enrollment::Enrolled)
+}
+
+fn first_touch_execution_from_outcome(
+    outcome: LedgerCommittedActionOutcome<FirstTouchClaimRejection, CommittedFirstTouchAcquisition>,
+    coordination_run_id: CoordinationRunId,
+    worktree_context: &WorktreeContext,
+) -> Result<FirstTouchClaimExecution, ClaimError> {
+    match outcome {
+        LedgerCommittedActionOutcome::Appended {
+            output,
+            session_mapping_publication,
+        } => Ok(first_touch_acquired_execution(
+            output,
+            coordination_run_id,
+            publish_coordination_run_marker(worktree_context, coordination_run_id),
+            session_mapping_publication,
+        )),
+        LedgerCommittedActionOutcome::Rejected(FirstTouchClaimRejection::AlreadyHeld(output)) => {
+            let session_mapping_publication = session::publish_reservation_identity(
+                &worktree_context.ledger_directory(),
+                coordination_run_id,
+                output.reservation_id,
+            );
+            Ok(first_touch_acquired_execution(
+                output,
+                coordination_run_id,
+                publish_coordination_run_marker(worktree_context, coordination_run_id),
+                session_mapping_publication,
+            ))
+        },
+        LedgerCommittedActionOutcome::Rejected(FirstTouchClaimRejection::Blocked {
+            scopes,
+            conflicts,
+        }) => Ok(FirstTouchClaimExecution::Blocked { scopes, conflicts }),
+        LedgerCommittedActionOutcome::Rejected(FirstTouchClaimRejection::Replay(error)) => {
+            Err(ClaimError::ReservationReplay(error))
+        },
+        LedgerCommittedActionOutcome::Rejected(FirstTouchClaimRejection::InactiveMarkerRun(
+            coordination_run_id,
+        )) => Err(ClaimError::InactiveMarkerRun(coordination_run_id)),
+        LedgerCommittedActionOutcome::Rejected(
+            FirstTouchClaimRejection::InactiveSessionMapping(coordination_run_id),
+        ) => Err(ClaimError::InactiveSessionMapping(coordination_run_id)),
+        LedgerCommittedActionOutcome::Rejected(
+            FirstTouchClaimRejection::ReservationLimitReached(maximum),
+        ) => Ok(FirstTouchClaimExecution::ReservationLimitReached(maximum)),
+    }
+}
+
+fn first_touch_acquired_execution(
+    committed: CommittedFirstTouchAcquisition,
+    coordination_run_id: CoordinationRunId,
+    marker_publication: CoordinationRunMarkerPublication,
+    session_mapping_publication: SessionIdentityMappingPublication,
+) -> FirstTouchClaimExecution {
+    let CommittedFirstTouchAcquisition {
+        kind,
+        reservation_id,
+        phase_start_head,
+        scopes,
+        conflicts,
+    } = committed;
+    FirstTouchClaimExecution::Acquired {
+        acquisition: FirstTouchReservationAcquisition {
+            kind,
+            reservation_id,
+            coordination_run_id,
+            phase_start_head,
+            marker_publication,
+            session_mapping_publication,
+        },
+        scopes,
+        conflicts,
+    }
+}
+
+fn publish_coordination_run_marker(
+    worktree_context: &WorktreeContext,
+    coordination_run_id: CoordinationRunId,
+) -> CoordinationRunMarkerPublication {
+    worktree_context
+        .publish_coordination_run_marker(coordination_run_id)
+        .map_or_else(
+            |error| CoordinationRunMarkerPublication::Unavailable {
+                diagnostic: error.to_string(),
+            },
+            |()| CoordinationRunMarkerPublication::Published,
+        )
+}
+
 fn claim_execution_from_outcome(
     outcome: LedgerTransactionOutcome<ClaimRejection>,
     reservation_id: ReservationId,
@@ -336,14 +634,8 @@ fn claim_execution_from_outcome(
             session_mapping_publication,
         } => {
             let coordination_run_id = event.actor.run;
-            let marker_publication = worktree_context
-                .publish_coordination_run_marker(coordination_run_id)
-                .map_or_else(
-                    |error| CoordinationRunMarkerPublication::Unavailable {
-                        diagnostic: error.to_string(),
-                    },
-                    |()| CoordinationRunMarkerPublication::Published,
-                );
+            let marker_publication =
+                publish_coordination_run_marker(worktree_context, coordination_run_id);
             Ok(ClaimExecution::Claimed {
                 reservation_id,
                 coordination_run_id,
@@ -353,7 +645,7 @@ fn claim_execution_from_outcome(
             })
         },
         LedgerTransactionOutcome::Rejected(ClaimRejection::Conflict(conflicts)) => {
-            Ok(ClaimExecution::Blocked(conflicts))
+            Ok(ClaimExecution::Blocked { conflicts })
         },
         LedgerTransactionOutcome::Rejected(ClaimRejection::AuthorizationRequired(escalation)) => {
             Ok(ClaimExecution::AuthorizationRequired(escalation))
@@ -397,8 +689,8 @@ fn validate_claim_transaction(
         Ok(reservations) => reservations,
         Err(error) => return TransactionValidation::Reject(ClaimRejection::Replay(error)),
     };
-    if let Err(rejection) = run_validation.validate(&reservations) {
-        return TransactionValidation::Reject(rejection);
+    if let Err(error) = run_validation.validate(&reservations) {
+        return TransactionValidation::Reject(ClaimRejection::from(error));
     }
     if count_reaches_limit(reservations.nonterminal_count(), maximum_reservations) {
         return TransactionValidation::Reject(ClaimRejection::ReservationLimitReached(
@@ -429,6 +721,270 @@ fn validate_claim_transaction(
             prepared_claim,
             &ordering_graph,
             maximum_ordering_edges,
+        ),
+    }
+}
+
+fn validate_first_touch_transaction(
+    state: &ReplayedLedgerState<'_>,
+    mut prepared_claim: PreparedClaim,
+    context: FirstTouchValidationContext,
+) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedFirstTouchAcquisition> {
+    let FirstTouchValidationContext {
+        run_validation,
+        coordination_run_id,
+        worktree_id,
+        path_case,
+        conflict_handling,
+        maximum_reservations,
+    } = context;
+    let reservations = match RetainedReservationSet::replay(state.events()) {
+        Ok(reservations) => reservations,
+        Err(error) => {
+            return CommittedActionValidation::Reject(FirstTouchClaimRejection::Replay(error));
+        },
+    };
+    if let Err(rejection) = validate_first_touch_run(run_validation, &reservations) {
+        return CommittedActionValidation::Reject(rejection);
+    }
+    let requested_scopes = prepared_claim.scopes.clone();
+    let conflicts = reservations.conflicts_for_drift(
+        &requested_scopes,
+        coordination_run_id,
+        worktree_id,
+        path_case,
+    );
+    let (protected_scopes, conflict_outcome) = match split_first_touch_scopes(
+        &requested_scopes,
+        conflicts,
+        conflict_handling,
+        path_case,
+    ) {
+        FirstTouchScopeDecision::Protect { scopes, conflicts } => (scopes, conflicts),
+        FirstTouchScopeDecision::Block { scopes, conflicts } => {
+            return CommittedActionValidation::Reject(FirstTouchClaimRejection::Blocked {
+                scopes,
+                conflicts,
+            });
+        },
+    };
+    let (protected_scopes, conflict_outcome) = match reuse_first_touch_reservation(
+        &reservations,
+        requested_scopes,
+        protected_scopes,
+        conflict_outcome,
+        coordination_run_id,
+        worktree_id,
+        path_case,
+    ) {
+        FirstTouchReservationReuse::AppendRequired { scopes, conflicts } => (scopes, conflicts),
+        FirstTouchReservationReuse::Complete(validation) => return validation,
+    };
+    if count_reaches_limit(reservations.nonterminal_count(), maximum_reservations) {
+        return CommittedActionValidation::Reject(
+            FirstTouchClaimRejection::ReservationLimitReached(maximum_reservations),
+        );
+    }
+    prepared_claim.scopes = protected_scopes.clone();
+    let acquisition = CommittedFirstTouchAcquisition {
+        kind:             FirstTouchReservationAcquisitionKind::Appended,
+        reservation_id:   prepared_claim.reservation_id,
+        phase_start_head: prepared_claim.phase_start_head.clone(),
+        scopes:           protected_scopes,
+        conflicts:        conflict_outcome,
+    };
+    CommittedActionValidation::Append {
+        operation: Box::new(prepared_claim.into_operation(ConflictAuthorization::NoConflict)),
+        action:    acquisition,
+    }
+}
+
+enum FirstTouchReservationReuse {
+    AppendRequired {
+        scopes:    ReservationScopeSet,
+        conflicts: FirstTouchConflictOutcome,
+    },
+    Complete(CommittedActionValidation<FirstTouchClaimRejection, CommittedFirstTouchAcquisition>),
+}
+
+fn reuse_first_touch_reservation(
+    reservations: &RetainedReservationSet,
+    requested_scopes: ReservationScopeSet,
+    protected_scopes: ReservationScopeSet,
+    conflicts: FirstTouchConflictOutcome,
+    coordination_run_id: CoordinationRunId,
+    worktree_id: WorktreeId,
+    path_case: PathCase,
+) -> FirstTouchReservationReuse {
+    let own_active = |reservation: &&Reservation| {
+        is_own_active_blocking_reservation(reservation, coordination_run_id, worktree_id)
+    };
+    let covering = reservations.iter().filter(own_active).find(|reservation| {
+        protected_scopes.as_slice().iter().all(|candidate| {
+            reservation
+                .scopes()
+                .as_slice()
+                .iter()
+                .any(|held| held.contains(candidate, path_case))
+        })
+    });
+    if let Some(reservation) = covering {
+        return already_held_first_touch(reservation, protected_scopes, conflicts);
+    }
+    let existing = reservations
+        .iter()
+        .filter(own_active)
+        .find(|reservation| matches!(reservation.source(), ClaimSource::FirstTouch));
+    let Some(reservation) = existing else {
+        return FirstTouchReservationReuse::AppendRequired {
+            scopes: protected_scopes,
+            conflicts,
+        };
+    };
+    let added = protected_scopes
+        .as_slice()
+        .iter()
+        .filter(|candidate| {
+            !reservation
+                .scopes()
+                .as_slice()
+                .iter()
+                .any(|held| held.contains(candidate, path_case))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let Ok(added_scopes) = ReservationScopeAdditionSet::try_from(added) else {
+        return already_held_first_touch(reservation, protected_scopes, conflicts);
+    };
+    let validation = match reservations.bind_widened_scopes(reservation, &added_scopes, path_case) {
+        WidenScopeBinding::Authorized(authorization) => CommittedActionValidation::Append {
+            operation: Box::new(JournalOperation::Widen {
+                reservation_id: reservation.id(),
+                added_scopes,
+                cause: WidenCause::Drift,
+                authorization,
+                edit_blocking_status: reservation.edit_blocking_status(),
+            }),
+            action:    CommittedFirstTouchAcquisition {
+                kind: FirstTouchReservationAcquisitionKind::Widened,
+                reservation_id: reservation.id(),
+                phase_start_head: reservation.phase_start_head().clone(),
+                scopes: protected_scopes,
+                conflicts,
+            },
+        },
+        WidenScopeBinding::Blocked(conflicts) => {
+            CommittedActionValidation::Reject(FirstTouchClaimRejection::Blocked {
+                scopes: requested_scopes,
+                conflicts,
+            })
+        },
+    };
+    FirstTouchReservationReuse::Complete(validation)
+}
+
+fn already_held_first_touch(
+    reservation: &Reservation,
+    scopes: ReservationScopeSet,
+    conflicts: FirstTouchConflictOutcome,
+) -> FirstTouchReservationReuse {
+    FirstTouchReservationReuse::Complete(CommittedActionValidation::Reject(
+        FirstTouchClaimRejection::AlreadyHeld(CommittedFirstTouchAcquisition {
+            kind: FirstTouchReservationAcquisitionKind::AlreadyHeld,
+            reservation_id: reservation.id(),
+            phase_start_head: reservation.phase_start_head().clone(),
+            scopes,
+            conflicts,
+        }),
+    ))
+}
+
+fn is_own_active_blocking_reservation(
+    reservation: &Reservation,
+    coordination_run_id: CoordinationRunId,
+    worktree_id: WorktreeId,
+) -> bool {
+    reservation.actor().run == coordination_run_id
+        && reservation.actor().worktree == worktree_id
+        && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
+        && reservation.edit_blocking_status() == EditBlockingStatus::Blocking
+}
+
+enum FirstTouchScopeDecision {
+    Protect {
+        scopes:    ReservationScopeSet,
+        conflicts: FirstTouchConflictOutcome,
+    },
+    Block {
+        scopes:    ReservationScopeSet,
+        conflicts: Vec<ReservationConflict>,
+    },
+}
+
+fn split_first_touch_scopes(
+    requested_scopes: &ReservationScopeSet,
+    conflicts: Vec<ReservationConflict>,
+    conflict_handling: FirstTouchConflictHandling,
+    path_case: PathCase,
+) -> FirstTouchScopeDecision {
+    if conflicts.is_empty() {
+        return FirstTouchScopeDecision::Protect {
+            scopes:    requested_scopes.clone(),
+            conflicts: FirstTouchConflictOutcome::None,
+        };
+    }
+    if matches!(conflict_handling, FirstTouchConflictHandling::RefuseRequest) {
+        return FirstTouchScopeDecision::Block {
+            scopes: requested_scopes.clone(),
+            conflicts,
+        };
+    }
+    let (blocked, free): (Vec<_>, Vec<_>) =
+        requested_scopes
+            .as_slice()
+            .iter()
+            .cloned()
+            .partition(|candidate| {
+                conflicts.iter().any(|conflict| {
+                    conflict
+                        .overlapping_scopes
+                        .as_slice()
+                        .iter()
+                        .any(|held| held.overlaps(candidate, path_case))
+                })
+            });
+    let Ok(scopes) = ReservationScopeSet::try_from(free) else {
+        return FirstTouchScopeDecision::Block {
+            scopes: requested_scopes.clone(),
+            conflicts,
+        };
+    };
+    let Ok(blocked_scopes) = ReservationScopeSet::try_from(blocked) else {
+        return FirstTouchScopeDecision::Block {
+            scopes: requested_scopes.clone(),
+            conflicts,
+        };
+    };
+    FirstTouchScopeDecision::Protect {
+        scopes,
+        conflicts: FirstTouchConflictOutcome::PostWriteIncursion {
+            scopes: blocked_scopes,
+            conflicts,
+        },
+    }
+}
+
+fn validate_first_touch_run(
+    run_validation: ClaimRunValidation,
+    reservations: &RetainedReservationSet,
+) -> Result<(), FirstTouchClaimRejection> {
+    match run_validation.validate(reservations) {
+        Ok(()) => Ok(()),
+        Err(ClaimRunValidationError::InactiveMarkerRun(coordination_run_id)) => Err(
+            FirstTouchClaimRejection::InactiveMarkerRun(coordination_run_id),
+        ),
+        Err(ClaimRunValidationError::InactiveSessionMapping(coordination_run_id)) => Err(
+            FirstTouchClaimRejection::InactiveSessionMapping(coordination_run_id),
         ),
     }
 }
@@ -583,7 +1139,10 @@ impl ClaimRunValidation {
         }
     }
 
-    fn validate(self, reservations: &RetainedReservationSet) -> Result<(), ClaimRejection> {
+    fn validate(
+        self,
+        reservations: &RetainedReservationSet,
+    ) -> Result<(), ClaimRunValidationError> {
         if let Self::ActiveSessionReservationRequired {
             coordination_run_id,
             reservation_id,
@@ -601,7 +1160,9 @@ impl ClaimRunValidation {
             }) {
                 Ok(())
             } else {
-                Err(ClaimRejection::InactiveSessionMapping(coordination_run_id))
+                Err(ClaimRunValidationError::InactiveSessionMapping(
+                    coordination_run_id,
+                ))
             };
         }
         let Self::ActiveMarkerRequired {
@@ -621,17 +1182,40 @@ impl ClaimRunValidation {
         }) {
             Ok(())
         } else {
-            Err(ClaimRejection::InactiveMarkerRun(coordination_run_id))
+            Err(ClaimRunValidationError::InactiveMarkerRun(
+                coordination_run_id,
+            ))
+        }
+    }
+}
+
+impl From<ClaimRunValidationError> for ClaimRejection {
+    fn from(error: ClaimRunValidationError) -> Self {
+        match error {
+            ClaimRunValidationError::InactiveMarkerRun(coordination_run_id) => {
+                Self::InactiveMarkerRun(coordination_run_id)
+            },
+            ClaimRunValidationError::InactiveSessionMapping(coordination_run_id) => {
+                Self::InactiveSessionMapping(coordination_run_id)
+            },
         }
     }
 }
 
 impl ClaimRepositoryFacts {
-    fn read(worktree_context: &WorktreeContext) -> Result<Self, ClaimError> {
+    fn read(worktree_context: &WorktreeContext, source: &ClaimSource) -> Result<Self, ClaimError> {
         let repository_root = worktree_context.repository_root();
-        let current_head =
-            read_git_object_id(repository_root, &[GIT_REV_PARSE_COMMAND, GIT_HEAD_REVISION])?;
-        let head_snapshot = read_head_snapshot(repository_root, current_head.clone())?;
+        let (current_head, head_snapshot) = match source {
+            ClaimSource::FirstTouch => read_head_snapshot_from_files(worktree_context)?,
+            ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => {
+                let current_head = read_git_object_id(
+                    repository_root,
+                    &[GIT_REV_PARSE_COMMAND, GIT_HEAD_REVISION],
+                )?;
+                let head_snapshot = read_head_snapshot(repository_root, current_head.clone())?;
+                (current_head, head_snapshot)
+            },
+        };
         let worktree_root = worktree_context
             .repository_root()
             .to_str()
@@ -647,12 +1231,118 @@ impl ClaimRepositoryFacts {
 }
 
 fn read_trunk_commit(
-    repository_root: &Path,
+    worktree_context: &WorktreeContext,
     trunk: &str,
+    source: &ClaimSource,
 ) -> Result<TrunkCommitAtClaim, ClaimError> {
     let trunk_ref = format!("{HEADS_REF_PREFIX}{trunk}");
-    read_git_object_id(repository_root, &[GIT_REV_PARSE_COMMAND, &trunk_ref])
-        .map(TrunkCommitAtClaim::from)
+    match source {
+        ClaimSource::FirstTouch => {
+            read_reference_from_files(worktree_context.common_git_directory(), &trunk_ref)
+        },
+        ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => read_git_object_id(
+            worktree_context.repository_root(),
+            &[GIT_REV_PARSE_COMMAND, &trunk_ref],
+        ),
+    }
+    .map(TrunkCommitAtClaim::from)
+}
+
+fn read_head_snapshot_from_files(
+    worktree_context: &WorktreeContext,
+) -> Result<(GitObjectId, ClaimHeadSnapshot), ClaimError> {
+    let head = fs::read_to_string(worktree_context.administrative_directory().join("HEAD"))?;
+    let head = head.trim();
+    if let Some(reference) = head.strip_prefix("ref: ") {
+        let full_ref = reference
+            .parse()
+            .map_err(|_| ClaimError::InvalidHeadReference)?;
+        let current_head =
+            read_reference_from_files(worktree_context.common_git_directory(), reference)?;
+        return Ok((
+            current_head.clone(),
+            ClaimHeadSnapshot::Branch {
+                full_ref,
+                head: ClaimHeadCommit::from(current_head),
+            },
+        ));
+    }
+    let current_head: GitObjectId = head.parse().map_err(ClaimError::InvalidGitObjectId)?;
+    Ok((
+        current_head.clone(),
+        ClaimHeadSnapshot::Detached {
+            head: ClaimHeadCommit::from(current_head),
+        },
+    ))
+}
+
+fn read_reference_from_files(
+    common_git_directory: &Path,
+    reference: &str,
+) -> Result<GitObjectId, ClaimError> {
+    read_reference_from_files_at_depth(
+        common_git_directory,
+        reference,
+        SymbolicReferenceDepth::ROOT,
+    )
+}
+
+fn read_reference_from_files_at_depth(
+    common_git_directory: &Path,
+    reference: &str,
+    depth: SymbolicReferenceDepth,
+) -> Result<GitObjectId, ClaimError> {
+    match fs::read_to_string(common_git_directory.join(reference)) {
+        Ok(value) => parse_reference_value(common_git_directory, reference, &value, depth),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            read_packed_reference(common_git_directory, reference)
+        },
+        Err(error) => Err(ClaimError::Io(error)),
+    }
+}
+
+fn parse_reference_value(
+    common_git_directory: &Path,
+    reference: &str,
+    value: &str,
+    depth: SymbolicReferenceDepth,
+) -> Result<GitObjectId, ClaimError> {
+    let value = value.trim();
+    if let Some(target) = value.strip_prefix("ref: ") {
+        return read_reference_from_files_at_depth(
+            common_git_directory,
+            target,
+            depth.descend(reference)?,
+        );
+    }
+    value
+        .parse()
+        .map_err(|_| ClaimError::InvalidStoredReference(reference.to_owned()))
+}
+
+fn read_packed_reference(
+    common_git_directory: &Path,
+    reference: &str,
+) -> Result<GitObjectId, ClaimError> {
+    let packed_references = match fs::read_to_string(common_git_directory.join("packed-refs")) {
+        Ok(packed_references) => packed_references,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err(ClaimError::MissingReference(reference.to_owned()));
+        },
+        Err(error) => return Err(ClaimError::Io(error)),
+    };
+    let object_id = packed_references.lines().find_map(|line| {
+        let (object_id, name) = line.split_once(' ')?;
+        (name == reference).then_some(object_id)
+    });
+    object_id.map_or_else(
+        || Err(ClaimError::MissingReference(reference.to_owned())),
+        |object_id| {
+            object_id
+                .parse()
+                .map_err(|_| ClaimError::InvalidStoredReference(reference.to_owned()))
+        },
+    )
 }
 
 fn read_head_snapshot(
@@ -723,7 +1413,7 @@ enum ClaimRejection {
 }
 
 #[derive(Debug)]
-enum ClaimError {
+pub(crate) enum ClaimError {
     Io(std::io::Error),
     Config(ConfigError),
     Ledger(LedgerError),
@@ -737,6 +1427,9 @@ enum ClaimError {
     InvalidUtf8(FromUtf8Error),
     GitCommandFailed(String),
     InvalidHeadReference,
+    MissingReference(String),
+    InvalidStoredReference(String),
+    SymbolicReferenceDepthExceeded { reference: String, maximum: u8 },
     NonUtf8WorktreeRoot,
     InvalidCanonicalWorktreeRoot,
 }
@@ -767,6 +1460,19 @@ impl Display for ClaimError {
             Self::InvalidHeadReference => {
                 formatter.write_str("git returned an invalid full HEAD reference")
             },
+            Self::MissingReference(reference) => {
+                write!(formatter, "git reference {reference} does not exist")
+            },
+            Self::InvalidStoredReference(reference) => {
+                write!(
+                    formatter,
+                    "git reference {reference} does not contain a full object id"
+                )
+            },
+            Self::SymbolicReferenceDepthExceeded { reference, maximum } => write!(
+                formatter,
+                "git symbolic reference resolution reached its maximum depth of {maximum} at {reference}"
+            ),
             Self::NonUtf8WorktreeRoot => {
                 formatter.write_str("the canonical worktree root is not UTF-8")
             },
@@ -778,6 +1484,41 @@ impl Display for ClaimError {
 }
 
 impl std::error::Error for ClaimError {}
+
+impl ClaimError {
+    pub(crate) fn into_output(self, command_verb: CommandVerb) -> OutputEnvelope {
+        match self {
+            Self::Transaction(error) => match error {
+                LedgerTransactionError::CorrectableInput(error) => {
+                    OutputEnvelope::invalid_input(command_verb, &error.to_string())
+                },
+                LedgerTransactionError::LockContention => {
+                    OutputEnvelope::contention(command_verb, &error.to_string())
+                },
+                LedgerTransactionError::LedgerUnreadable(error) => {
+                    OutputEnvelope::ledger_error(command_verb, &error)
+                },
+            },
+            Self::InactiveMarkerRun(coordination_run_id) => OutputEnvelope::invalid_input(
+                command_verb,
+                &format!(
+                    "coordination-run marker {coordination_run_id} no longer has an active reservation; retry the command"
+                ),
+            ),
+            Self::InactiveSessionMapping(coordination_run_id) => OutputEnvelope::invalid_input(
+                command_verb,
+                &format!(
+                    "harness session mapping for coordination run {coordination_run_id} no longer names an active reservation; retry the command"
+                ),
+            ),
+            Self::Config(error) => {
+                OutputEnvelope::ledger_error(command_verb, &LedgerError::Config(error))
+            },
+            Self::Ledger(error) => OutputEnvelope::ledger_error(command_verb, &error),
+            error => OutputEnvelope::ledger_unreadable(command_verb, &error.to_string()),
+        }
+    }
+}
 
 impl From<std::io::Error> for ClaimError {
     fn from(error: std::io::Error) -> Self { Self::Io(error) }

@@ -22,6 +22,7 @@ use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
 use crate::ledger;
+use crate::ledger::ClaimSource;
 use crate::ledger::CollisionPathSet;
 use crate::ledger::EditAuthorization;
 use crate::ledger::ForeignReservationIdSet;
@@ -49,10 +50,17 @@ use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::WidenScopeBinding;
+use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
 use crate::scope::ReservationScope;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
+use crate::verb::claim;
+use crate::verb::claim::FirstTouchClaimExecution;
+use crate::verb::claim::FirstTouchClaimRequest;
+use crate::verb::claim::FirstTouchConflictHandling;
+use crate::verb::claim::FirstTouchConflictOutcome;
+use crate::verb::claim::FirstTouchReservationAcquisition;
 
 const DRIFT_CACHE_FILE_PREFIX: &str = "drift-fingerprint-";
 const DRIFT_CACHE_FILE_SUFFIX: &str = ".json";
@@ -127,23 +135,42 @@ pub(crate) enum DriftComparisonMode {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct DriftReport {
     /// The comparison that actually ran.
-    pub(crate) comparison: DriftComparisonMode,
-    /// How any unclaimed paths were or must be attributed.
-    pub(crate) widening:   DriftWideningOutcome,
+    pub(crate) comparison:       DriftComparisonMode,
+    /// How paths outside the acting run's reservations were attributed.
+    #[serde(rename = "widening")]
+    pub(crate) path_attribution: DriftPathAttributionOutcome,
     /// One result for every selected reservation.
-    pub(crate) results:    Vec<ReservationDriftResult>,
+    pub(crate) results:          Vec<ReservationDriftResult>,
 }
 
-/// The attribution result for paths not covered by any active reservation.
+/// The outcome of attributing changed paths outside the acting run's reservations.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-pub(crate) enum DriftWideningOutcome {
+pub(crate) enum DriftPathAttributionOutcome {
     /// This observation found no unclaimed path requiring attribution.
     NotNeeded,
     /// One reservation was selected for the widening attempt.
     Attributed {
         /// The only reservation permitted to receive unclaimed paths.
         reservation_id: ReservationId,
+    },
+    /// No reservation existed, so the post-write observation acquired one.
+    #[serde(rename = "first_touch_claimed")]
+    FirstTouchReserved {
+        /// The complete reservation identity, baseline, and publication results.
+        acquisition: FirstTouchReservationAcquisition,
+        /// The exact file scopes protected after the write.
+        scopes:      ReservationScopeSet,
+    },
+    /// The write already happened in paths a foreign reservation held.
+    #[serde(rename = "post_write_incursion")]
+    IncursionDetected {
+        /// The exact changed paths that could not be claimed after the write.
+        paths:      UnattributedDriftPathSet,
+        /// Every holder intersecting those changed paths.
+        conflicts:  Vec<crate::reservation::ReservationConflict>,
+        /// Whether other paths from the same write received first-touch protection.
+        protection: PostWriteFreePathProtection,
     },
     /// Several local reservations were candidates, so no widening was attempted.
     Ambiguous {
@@ -156,6 +183,21 @@ pub(crate) enum DriftWideningOutcome {
     CoordinationRunRequired {
         /// The exact paths left unassigned by this observation.
         paths: UnattributedDriftPathSet,
+    },
+}
+
+/// The protection result for free paths observed alongside a post-write incursion.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum PostWriteFreePathProtection {
+    /// Every observed path had a foreign holder, so no reservation changed.
+    NotAcquired,
+    /// The free subset is now protected by this first-touch reservation.
+    Acquired {
+        /// The complete reservation identity, baseline, and publication results.
+        acquisition: FirstTouchReservationAcquisition,
+        /// The exact file scopes protected after the write.
+        scopes:      ReservationScopeSet,
     },
 }
 
@@ -403,15 +445,26 @@ enum DriftMutationActorRun {
 }
 
 struct ResolvedDriftSubjects {
-    reporting: Vec<ReservationId>,
-    widening:  DriftWideningSelection,
+    reporting:              Vec<ReservationId>,
+    widening:               DriftWideningSelection,
+    post_write_first_touch: PostWriteFirstTouchRequirement,
+}
+
+#[derive(Clone, Copy)]
+enum PostWriteFirstTouchRequirement {
+    NotRequired,
+    Required,
+}
+
+struct PostWritePathAttribution {
+    outcome: DriftPathAttributionOutcome,
+    results: Vec<ReservationDriftResult>,
 }
 
 enum DriftWideningSelection {
     NotNeeded,
     Selected(ReservationId),
     Ambiguous(DriftAttributionCandidateSet),
-    CoordinationRunRequired,
 }
 
 enum WideningAttempt {
@@ -481,6 +534,10 @@ pub(crate) fn execute(request: DriftRequest) -> OutputEnvelope {
         Err(DriftExecutionError::Selection(error)) => {
             OutputEnvelope::invalid_input(CommandVerb::Drift, &error.to_string())
         },
+        Err(DriftExecutionError::ClaimRejected(diagnostic)) => {
+            OutputEnvelope::invalid_input(CommandVerb::Drift, &diagnostic)
+        },
+        Err(DriftExecutionError::Claim(error)) => error.into_output(CommandVerb::Drift),
         Err(DriftExecutionError::Transaction(LedgerTransactionError::LockContention)) => {
             OutputEnvelope::contention(
                 CommandVerb::Drift,
@@ -536,12 +593,6 @@ fn execute_inner(
     let initial_subjects = request
         .reservation
         .resolve(&initial_reservations, acting_identity)?;
-    if initial_subjects.reporting.is_empty() {
-        return Ok(Enrollment::Enrolled(DriftReport::unchanged(
-            request.comparison.report_mode(),
-            &[],
-        )));
-    }
     let cache_path = fingerprint_cache_path(worktree_context.common_git_directory(), worktree_id);
     let observation = observe(
         request.comparison,
@@ -554,8 +605,27 @@ fn execute_inner(
         .changes
         .has_changes_for(&initial_subjects.reporting)
     {
-        publish_fingerprint(&cache_path, &observation.cache_value);
+        if !initial_subjects.reporting.is_empty() {
+            publish_fingerprint(&cache_path, &observation.cache_value);
+        }
         let report = DriftReport::unchanged(observation.comparison, &initial_subjects.reporting);
+        return Ok(Enrollment::Enrolled(report));
+    }
+    if initial_subjects.reporting.is_empty()
+        && matches!(
+            initial_subjects.post_write_first_touch,
+            PostWriteFirstTouchRequirement::Required
+        )
+    {
+        let attribution = claim_post_write_paths(&observation)?;
+        let report = DriftReport {
+            comparison:       observation.comparison,
+            path_attribution: attribution.outcome,
+            results:          attribution.results,
+        };
+        if !report.has_blocking_effect() {
+            publish_fingerprint(&cache_path, &observation.cache_value);
+        }
         return Ok(Enrollment::Enrolled(report));
     }
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
@@ -574,11 +644,105 @@ fn execute_inner(
         observation: &observation,
         prior_classification: &prior_classification,
     };
-    let report = transact_classification(&mutation_context)?;
+    let mut report = transact_classification(&mutation_context)?;
+    if matches!(
+        initial_subjects.post_write_first_touch,
+        PostWriteFirstTouchRequirement::Required
+    ) {
+        let attribution = claim_post_write_paths(&observation)?;
+        report.path_attribution = attribution.outcome;
+        report.results.extend(attribution.results);
+    }
     if !report.has_blocking_effect() {
         publish_fingerprint(&cache_path, &observation.cache_value);
     }
     Ok(Enrollment::Enrolled(report))
+}
+
+fn claim_post_write_paths(
+    observation: &FingerprintObservation,
+) -> Result<PostWritePathAttribution, DriftExecutionError> {
+    let paths = observation.changes.observed_paths();
+    let declared_scopes = DeclaredReservationScopeSet::from_file_paths(paths)
+        .map_err(|error| DriftExecutionError::ClaimRejected(error.to_string()))?;
+    let acquisition = claim::acquire_first_touch(FirstTouchClaimRequest {
+        declared_scopes,
+        conflict_handling: FirstTouchConflictHandling::ProtectFreePaths,
+    })?;
+    match acquisition {
+        Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
+            acquisition,
+            scopes,
+            conflicts: FirstTouchConflictOutcome::None,
+        }) => {
+            let reservation_id = acquisition.reservation_id;
+            Ok(PostWritePathAttribution {
+                outcome: DriftPathAttributionOutcome::FirstTouchReserved {
+                    acquisition,
+                    scopes,
+                },
+                results: vec![ReservationDriftResult::Unchanged { reservation_id }],
+            })
+        },
+        Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
+            acquisition,
+            scopes,
+            conflicts:
+                FirstTouchConflictOutcome::PostWriteIncursion {
+                    scopes: conflicting_scopes,
+                    conflicts,
+                },
+        }) => {
+            let reservation_id = acquisition.reservation_id;
+            Ok(PostWritePathAttribution {
+                outcome: DriftPathAttributionOutcome::IncursionDetected {
+                    paths: paths_from_scopes(&conflicting_scopes)?,
+                    conflicts,
+                    protection: PostWriteFreePathProtection::Acquired {
+                        acquisition,
+                        scopes,
+                    },
+                },
+                results: vec![ReservationDriftResult::Unchanged { reservation_id }],
+            })
+        },
+        Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { scopes, conflicts }) => {
+            Ok(PostWritePathAttribution {
+                outcome: DriftPathAttributionOutcome::IncursionDetected {
+                    paths: paths_from_scopes(&scopes)?,
+                    conflicts,
+                    protection: PostWriteFreePathProtection::NotAcquired,
+                },
+                results: Vec::new(),
+            })
+        },
+        Enrollment::Enrolled(FirstTouchClaimExecution::ReservationLimitReached(maximum)) => {
+            Err(DriftExecutionError::ClaimRejected(format!(
+                "repository policy permits at most {maximum} live reservations"
+            )))
+        },
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => Err(DriftExecutionError::ClaimRejected(format!(
+            "repository enrollment disappeared while claiming; expected {}",
+            expected_configuration_path.display()
+        ))),
+    }
+}
+
+fn paths_from_scopes(
+    scopes: &ReservationScopeSet,
+) -> Result<UnattributedDriftPathSet, DriftExecutionError> {
+    UnattributedDriftPathSet::try_from(
+        scopes
+            .as_slice()
+            .iter()
+            .map(|scope| scope.path.clone())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|_| {
+        DriftExecutionError::ClaimRejected("the post-write claim had no changed path".to_owned())
+    })
 }
 
 fn transact_classification(
@@ -661,7 +825,7 @@ impl DriftReport {
     fn unchanged(comparison: DriftComparisonMode, reservation_ids: &[ReservationId]) -> Self {
         Self {
             comparison,
-            widening: DriftWideningOutcome::NotNeeded,
+            path_attribution: DriftPathAttributionOutcome::NotNeeded,
             results: reservation_ids
                 .iter()
                 .map(|reservation_id| ReservationDriftResult::Unchanged {
@@ -674,18 +838,21 @@ impl DriftReport {
     /// Return whether a blocking effect or unresolved attribution requires a stop.
     pub(crate) fn has_blocking_effect(&self) -> bool {
         matches!(
-            self.widening,
-            DriftWideningOutcome::Ambiguous { .. }
-                | DriftWideningOutcome::CoordinationRunRequired { .. }
+            self.path_attribution,
+            DriftPathAttributionOutcome::Ambiguous { .. }
+                | DriftPathAttributionOutcome::CoordinationRunRequired { .. }
+                | DriftPathAttributionOutcome::IncursionDetected { .. }
         ) || self.results.iter().any(ReservationDriftResult::blocks)
     }
 
     /// Return whether this report has a drift effect or unresolved attribution to render.
     pub(crate) fn has_reportable_effect(&self) -> bool {
         matches!(
-            self.widening,
-            DriftWideningOutcome::Ambiguous { .. }
-                | DriftWideningOutcome::CoordinationRunRequired { .. }
+            self.path_attribution,
+            DriftPathAttributionOutcome::FirstTouchReserved { .. }
+                | DriftPathAttributionOutcome::IncursionDetected { .. }
+                | DriftPathAttributionOutcome::Ambiguous { .. }
+                | DriftPathAttributionOutcome::CoordinationRunRequired { .. }
         ) || self
             .results
             .iter()
@@ -707,6 +874,11 @@ impl DriftReport {
             .iter()
             .flat_map(ReservationDriftResult::blocking_reservation_ids)
             .collect::<Vec<_>>();
+        if let DriftPathAttributionOutcome::IncursionDetected { conflicts, .. } =
+            &self.path_attribution
+        {
+            blocking.extend(conflicts.iter().map(|conflict| conflict.reservation_id));
+        }
         sort_and_deduplicate_reservation_ids(&mut blocking);
         blocking
     }
@@ -863,8 +1035,9 @@ impl DriftReservationSelection {
         match self {
             Self::Explicit(reservation_id) if candidates.contains(&reservation_id) => {
                 Ok(ResolvedDriftSubjects {
-                    reporting: vec![reservation_id],
-                    widening:  DriftWideningSelection::Selected(reservation_id),
+                    reporting:              vec![reservation_id],
+                    widening:               DriftWideningSelection::Selected(reservation_id),
+                    post_write_first_touch: PostWriteFirstTouchRequirement::NotRequired,
                 })
             },
             Self::Explicit(reservation_id) => Err(DriftSelectionError::ExplicitNotActive {
@@ -897,8 +1070,9 @@ impl DriftReservationSelection {
                     },
                 };
                 Ok(ResolvedDriftSubjects {
-                    reporting: vec![selected],
-                    widening:  DriftWideningSelection::Selected(selected),
+                    reporting:              vec![selected],
+                    widening:               DriftWideningSelection::Selected(selected),
+                    post_write_first_touch: PostWriteFirstTouchRequirement::NotRequired,
                 })
             },
             Self::EveryActiveForPostCommit { .. } => {
@@ -938,6 +1112,10 @@ impl PostCommitWideningSelection {
             DriftActingRun::Unidentified => Vec::new(),
         };
         sort_reservation_ids(&mut candidates);
+        let post_write_first_touch = match candidates.as_slice() {
+            [] => PostWriteFirstTouchRequirement::Required,
+            [_, ..] => PostWriteFirstTouchRequirement::NotRequired,
+        };
         let widening = match self {
             Self::Explicit(reservation_id) => {
                 let DriftActingRun::Identified(run) = acting_run else {
@@ -955,11 +1133,7 @@ impl PostCommitWideningSelection {
             Self::SessionMappingOrSingleCandidate
                 if matches!(acting_run, DriftActingRun::Unidentified) =>
             {
-                if reporting.is_empty() {
-                    DriftWideningSelection::NotNeeded
-                } else {
-                    DriftWideningSelection::CoordinationRunRequired
-                }
+                DriftWideningSelection::NotNeeded
             },
             Self::SessionMappingOrSingleCandidate => match acting_identity.session_reservation() {
                 DriftSessionReservation::Mapped(reservation_id)
@@ -982,6 +1156,7 @@ impl PostCommitWideningSelection {
         Ok(ResolvedDriftSubjects {
             reporting,
             widening,
+            post_write_first_touch,
         })
     }
 }
@@ -1003,6 +1178,28 @@ impl ObservedDriftChanges {
                     || !changes.untracked.as_slice().is_empty()
             },
         }
+    }
+
+    fn observed_paths(&self) -> Vec<ReservationScopePath> {
+        let mut paths = match self {
+            Self::Cheap(changes) => changes
+                .tracked
+                .0
+                .iter()
+                .chain(&changes.untracked.0)
+                .cloned()
+                .collect::<Vec<_>>(),
+            Self::Full(changes) => changes
+                .staged
+                .0
+                .iter()
+                .chain(&changes.unstaged.0)
+                .chain(&changes.untracked.0)
+                .cloned()
+                .collect::<Vec<_>>(),
+        };
+        normalize_paths(&mut paths);
+        paths
     }
 
     fn visit_paths(
@@ -1095,8 +1292,7 @@ fn classify_locked(
                     DriftWideningSelection::Selected(selected) if selected == reservation_id => {
                         builder.widened_paths.push(path.clone());
                     },
-                    DriftWideningSelection::Ambiguous(_)
-                    | DriftWideningSelection::CoordinationRunRequired => {
+                    DriftWideningSelection::Ambiguous(_) => {
                         unattributed_paths.push(path.clone());
                     },
                     DriftWideningSelection::NotNeeded | DriftWideningSelection::Selected(_) => {},
@@ -1105,7 +1301,27 @@ fn classify_locked(
                     let blockers = conflicts
                         .iter()
                         .map(|conflict| conflict.reservation_id)
+                        .filter(|blocker| match &subjects.widening {
+                            DriftWideningSelection::Selected(acting_reservation_id) => {
+                                *acting_reservation_id != *blocker
+                                    || *acting_reservation_id == *reservation_id
+                            },
+                            DriftWideningSelection::NotNeeded
+                            | DriftWideningSelection::Ambiguous(_) => true,
+                        })
                         .collect::<Vec<_>>();
+                    if blockers.is_empty()
+                        || matches!(reservation.source(), ClaimSource::FirstTouch)
+                            && outstanding_incursion_covers(
+                                reservations,
+                                &subjects.reporting,
+                                *reservation_id,
+                                path,
+                                &blockers,
+                            )
+                    {
+                        return;
+                    }
                     if prior.was_foreign(*reservation_id, path) {
                         builder.incursion_paths.push(path.clone());
                         builder.incursion_reservations.extend(blockers);
@@ -1125,40 +1341,56 @@ fn classify_locked(
         results.push(result);
     }
     normalize_paths(&mut unattributed_paths);
-    let widening = match (&subjects.widening, widening_attempt) {
+    let path_attribution = match (&subjects.widening, widening_attempt) {
         (DriftWideningSelection::Selected(reservation_id), WideningAttempt::Attributed) => {
-            DriftWideningOutcome::Attributed {
+            DriftPathAttributionOutcome::Attributed {
                 reservation_id: *reservation_id,
             }
         },
         (DriftWideningSelection::Ambiguous(candidates), _) => {
             UnattributedDriftPathSet::try_from(unattributed_paths).map_or(
-                DriftWideningOutcome::NotNeeded,
-                |paths| DriftWideningOutcome::Ambiguous {
+                DriftPathAttributionOutcome::NotNeeded,
+                |paths| DriftPathAttributionOutcome::Ambiguous {
                     candidates: candidates.clone(),
                     paths,
                 },
             )
         },
-        (DriftWideningSelection::CoordinationRunRequired, _) => {
-            UnattributedDriftPathSet::try_from(unattributed_paths)
-                .map_or(DriftWideningOutcome::NotNeeded, |paths| {
-                    DriftWideningOutcome::CoordinationRunRequired { paths }
-                })
-        },
         (DriftWideningSelection::NotNeeded, _)
         | (DriftWideningSelection::Selected(_), WideningAttempt::NotNeeded) => {
-            DriftWideningOutcome::NotNeeded
+            DriftPathAttributionOutcome::NotNeeded
         },
     };
     Ok(DriftTransactionDecision {
         operations,
         report: DriftReport {
             comparison,
-            widening,
+            path_attribution,
             results,
         },
     })
+}
+
+fn outstanding_incursion_covers(
+    reservations: &RetainedReservationSet,
+    reporting: &[ReservationId],
+    current_reservation_id: ReservationId,
+    path: &ReservationScopePath,
+    blockers: &[ReservationId],
+) -> bool {
+    reservations
+        .outstanding_incursion_incidents()
+        .any(|incident| {
+            incident.reservation_id() != current_reservation_id
+                && reporting.contains(&incident.reservation_id())
+                && incident.paths().as_slice().contains(path)
+                && blockers.iter().all(|blocker| {
+                    incident
+                        .foreign_reservation_ids()
+                        .as_slice()
+                        .contains(blocker)
+                })
+        })
 }
 
 impl DriftEffectBuilder {
@@ -1744,6 +1976,8 @@ enum DriftExecutionError {
     Fingerprint(DriftFingerprintError),
     PathCase(crate::scope::PathCaseError),
     Transaction(LedgerTransactionError),
+    Claim(claim::ClaimError),
+    ClaimRejected(String),
 }
 
 impl Display for DriftExecutionError {
@@ -1756,6 +1990,8 @@ impl Display for DriftExecutionError {
             Self::Fingerprint(error) => error.fmt(formatter),
             Self::PathCase(error) => error.fmt(formatter),
             Self::Transaction(error) => error.fmt(formatter),
+            Self::Claim(error) => error.fmt(formatter),
+            Self::ClaimRejected(diagnostic) => formatter.write_str(diagnostic),
         }
     }
 }
@@ -1784,6 +2020,10 @@ impl From<DriftFingerprintError> for DriftExecutionError {
 
 impl From<crate::scope::PathCaseError> for DriftExecutionError {
     fn from(error: crate::scope::PathCaseError) -> Self { Self::PathCase(error) }
+}
+
+impl From<claim::ClaimError> for DriftExecutionError {
+    fn from(error: claim::ClaimError) -> Self { Self::Claim(error) }
 }
 
 #[cfg(test)]

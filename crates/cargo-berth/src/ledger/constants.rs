@@ -19,6 +19,9 @@ pub(super) const COORDINATION_RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 pub(super) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(10);
 pub(super) const MUTATION_LOCK_INITIAL_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 pub(super) const MUTATION_LOCK_MAXIMUM_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+/// Test-only signal path that makes a waiting `MutationLock::acquire` observable.
+pub(super) const MUTATION_LOCK_READY_PATH_ENVIRONMENT: &str =
+    "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 
 // git reference validation
 pub(super) const DELETE_CONTROL_BYTE: u8 = 0x7f;
@@ -30,6 +33,7 @@ pub(super) const MAXIMUM_JOURNAL_RECORD_BYTES: usize = 16 * 1_024;
 pub(super) const LEDGER_DIRECTORY_NAME: &str = "cargo-berth";
 
 // wire format
-/// The one schema version the journal writes and the projection expects; the
-/// two must never drift apart.
-pub(super) const CURRENT_SCHEMA_VERSION: u32 = 1;
+/// The oldest journal and projection schema this binary can decode.
+pub(super) const MINIMUM_SUPPORTED_SCHEMA_VERSION: u32 = 1;
+/// The schema version written by new journal records and projections.
+pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;

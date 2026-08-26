@@ -19,6 +19,7 @@ use uuid::Uuid;
 use super::constants::CURRENT_SCHEMA_VERSION;
 use super::constants::DELETE_CONTROL_BYTE;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
+use super::constants::MINIMUM_SUPPORTED_SCHEMA_VERSION;
 use crate::answer::ConflictAuthorization;
 use crate::config::InitializationState;
 use crate::edge::OrderingReason;
@@ -339,6 +340,8 @@ pub(crate) enum ClaimSource {
         /// The plan-local opaque phase label.
         phase: WorkPlanPhase,
     },
+    /// A reservation acquired atomically when an edit first touched its paths.
+    FirstTouch,
     /// A direct caller-specified reservation.
     Explicit,
 }
@@ -1318,8 +1321,11 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
                     error: error.to_string(),
                 }
             })?;
-        let supported_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
-        if schema_header.schema_version != supported_schema_version {
+        let minimum_schema_version = SchemaVersion::from(MINIMUM_SUPPORTED_SCHEMA_VERSION);
+        let current_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
+        if schema_header.schema_version < minimum_schema_version
+            || schema_header.schema_version > current_schema_version
+        {
             return Err(JournalError::UnsupportedSchemaVersion(
                 schema_header.schema_version,
             ));
@@ -1568,13 +1574,23 @@ mod tests {
 
     #[test]
     fn an_unsupported_schema_precedes_version_specific_operation_decoding() {
-        let future_record = b"{\"schema_version\":2,\"op\":\"future_operation\"}\n";
+        let future_record = b"{\"schema_version\":3,\"op\":\"future_operation\"}\n";
 
         assert!(matches!(
             replay_complete_records(future_record),
             Err(JournalError::UnsupportedSchemaVersion(version))
-                if version == SchemaVersion::from(2)
+                if version == SchemaVersion::from(3)
         ));
+    }
+
+    #[test]
+    fn first_touch_source_round_trips_in_the_current_schema() {
+        let encoded = serde_json::to_string(&ClaimSource::FirstTouch)
+            .expect("first-touch source should encode");
+        let decoded = serde_json::from_str::<ClaimSource>(&encoded)
+            .expect("first-touch source should decode");
+
+        assert_eq!(decoded, ClaimSource::FirstTouch);
     }
 
     #[test]

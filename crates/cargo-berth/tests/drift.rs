@@ -109,6 +109,52 @@ fn full_classification_covers_silent_and_widen_rows() {
 }
 
 #[test]
+fn post_write_drift_mints_a_first_touch_reservation_when_none_exists() {
+    let repository = initialized_repository();
+    fs::write(repository.path().join("written-by-bash.rs"), "new\n")
+        .expect("post-write path should write");
+
+    let observed = post_commit_drift(repository.path(), &[]);
+    let envelope = json_output(&observed);
+
+    assert!(observed.status.success());
+    assert_eq!(envelope["status"], "widened");
+    let events = journal_events(repository.path());
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["op"], "claim");
+    assert_eq!(events[0]["source"]["kind"], "first_touch");
+    assert_eq!(events[0]["scopes"][0]["kind"], "file");
+    assert_eq!(events[0]["scopes"][0]["path"], "written-by-bash.rs");
+}
+
+#[test]
+fn post_write_drift_detects_but_cannot_prevent_a_foreign_incursion() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let foreign_root = add_worktree(repository.path(), worktrees.path(), "post-write-holder");
+    let foreign_id = claim(&foreign_root, "file:foreign-owned.rs", FIRST_RUN);
+    fs::write(
+        repository.path().join("foreign-owned.rs"),
+        "already written\n",
+    )
+    .expect("foreign path should be written before the post-write hook");
+    let journal_before = journal_events(repository.path());
+
+    let observed = post_commit_drift(repository.path(), &[]);
+    let envelope = json_output(&observed);
+
+    assert_eq!(observed.status.code(), Some(1));
+    assert_eq!(envelope["status"], "incursion");
+    assert_eq!(envelope["blocked_by"], serde_json::json!([foreign_id]));
+    assert!(
+        envelope["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("already happened"))
+    );
+    assert_eq!(journal_events(repository.path()), journal_before);
+}
+
+#[test]
 fn incursion_incident_round_trip_deduplicates_and_resolves() {
     let incursion_repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");

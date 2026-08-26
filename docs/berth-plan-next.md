@@ -4,9 +4,9 @@
 
 - [ ] **Split `drift/` into submodules and move its constants into `constants.rs`**
   - Target: `cargo-berth` crate implementation — `crates/cargo-berth/src/drift/mod.rs`
-  - Why needed: `drift/mod.rs` is 1,806 lines after phase 16 and still declares no production submodules. Its constants sit inline where `git/`, `ledger/`, and `worktree/` each use a `constants.rs`; phase 11 added `session/mod.rs` as another unsplit module-directory root, so drift is no longer the only one. Style rules 5, 15, 16, 18, 26, 30.
+  - Why needed: `drift/mod.rs` is 2,046 lines after Phase 20 and still declares no production submodules. Its constants sit inline where `git/`, `ledger/`, and `worktree/` each use a `constants.rs`; Phase 20 added first-touch post-write attribution to the same module. Style rules 5, 15, 16, 18, 26, 30.
   - Completion condition: `drift/mod.rs` declares production submodules and holds no inline constants; `verify.sh lint cargo-berth` stays green and the drift acceptance tests pass unchanged.
-  - Revealed by: Phase 10; evidence corrected after Phase 11, Phase 12, and Phase 16
+  - Revealed by: Phase 10; evidence corrected after Phases 11, 12, 16, and 20
 
 - [ ] **Rename the internal names that hide their semantic role**
   - Target: `cargo-berth` crate implementation — `crates/cargo-berth/src/drift/mod.rs`, `crates/cargo-berth/src/board/mod.rs`, `crates/cargo-berth/src/cli.rs`
@@ -14,23 +14,23 @@
   - Completion condition: rename them to `PreLockForeignPathClassification`, `BoardReservationState`, and `CommandOutputOwnership::{CallerRendersResponse, BoardPresentedAndTerminalRestored}`; serialized payloads remain unchanged, and `verify.sh test cargo-berth`, `verify.sh test cargo-berth board`, `verify.sh test cargo-berth drift`, and `verify.sh lint cargo-berth` stay green.
   - Revealed by: Phase 10; scope corrected after Phases 11–14 and Phase 17
 
-- [ ] **Restore the complete PostToolUse path to the published 0.20-second bound**
+- [ ] **Prove the complete PostToolUse path stays within the published 0.20-second bound**
   - Target: `cargo-berth` drift/reconciliation and `/Users/natemccoy/rust/hana/.claude/hooks/berth_post_bash.sh`.
-  - Why needed: Phase 17 measured the complete two-reservation PostToolUse call at 0.259 seconds, above Phase 15's published 0.20-second bound; this cost is paid after every Bash call in an enrolled repository.
-  - Completion condition: five consecutive complete registered-hook invocations in an enrolled two-reservation repository each finish within 0.20 seconds while preserving the typed clear, widen, incursion, collision, and attribution outcomes; the Phase 17 shim fixtures, `verify.sh test cargo-berth drift`, and `verify.sh lint cargo-berth` pass.
-  - Revealed by: Phase 17
+  - Why needed: Phase 17 measured the complete two-reservation PostToolUse call at 0.259 seconds. Phase 20 measured one automatic-widen invocation at 0.180 seconds, but one sample and one outcome do not satisfy the published bound; this cost is paid after every Bash call in an enrolled repository.
+  - Completion condition: after Phase 22 updates and registers the shim, five consecutive complete registered-hook invocations in an enrolled two-reservation repository each finish within 0.20 seconds while preserving the typed clear, ordinary widen, first-touch acquisition, incursion with both `protection.status` states, collision, and attribution outcomes; the Phase 17 shim fixtures, `verify.sh test cargo-berth drift`, and `verify.sh lint cargo-berth` pass.
+  - Revealed by: Phase 17; evidence updated after Phase 20
 
 - [ ] **Publish `cargo-berth` after the hana loop is proven and `tui_pane 0.8.0` is published**
   - Target: `cargo-berth` release flow and crates.io publication.
   - Why needed: Phase 15 made the crate publish-ready and its README tells readers to run `cargo install cargo-berth`, but this plan intentionally publishes nothing; the versionless `tui_pane` release pin currently resolves to 0.7.0 while this workspace builds against `tui_pane 0.8.0-dev`.
-  - Completion condition: Phase 21 is complete; `tui_pane 0.8.0` is published; `/release cargo-berth 0.1.0` completes its dry run and publish flow; and a fresh `cargo install cargo-berth` succeeds.
+  - Completion condition: Phase 22 is complete; `tui_pane 0.8.0` is published; `/release cargo-berth 0.1.0` completes its dry run and publish flow; and a fresh `cargo install cargo-berth` succeeds.
   - Revealed by: Phase 15
 
-- [ ] **Make the engine own the status, exit-code, and payload-kind contract consumed by `/sync`**
-  - Target: `cargo-berth` output contract and `/Users/natemccoy/.claude/scripts/berth/claim_state.py`.
-  - Why needed: `claim_state.py` hand-maintains `STATUS_PAYLOAD_KINDS` and `FIXED_STATUS_EXIT_CODES` as a mirror of the engine's `OutputStatus`/`BerthExit` pairings; adding a valid engine status currently makes the front end reject that reply until both tables are manually updated.
-  - Completion condition: one versioned engine-owned contract supplies or mechanically verifies the Python pairing data, an engine status addition cannot pass engine tests while leaving the front end stale, and malformed status/payload/exit combinations remain rejected.
-  - Revealed by: Phase 18
+- [ ] **Make the engine own the status, exit-code, and payload-tag contract consumed by `/sync` and the hook shims**
+  - Target: `cargo-berth` output contract, `/Users/natemccoy/.claude/scripts/berth/claim_state.py`, and `/Users/natemccoy/rust/hana/.claude/hooks/{berth_pre_edit.sh,berth_post_bash.sh,berth_session_start.sh}`.
+  - Why needed: `claim_state.py` hand-maintains `STATUS_PAYLOAD_KINDS` and `FIXED_STATUS_EXIT_CODES`, while the hook shims separately hand-maintain accepted payload tags and shapes in `jq`. Phase 20 added valid `first_touch`, `first_touch_claimed`, and `post_write_incursion` variants without adding an `OutputStatus`; the Python classifier was updated manually while the staged hook validators remained stale.
+  - Completion condition: one versioned engine-owned contract supplies or mechanically verifies the Python and hook status/exit pairings plus payload tags and required shapes; an engine status or serialized enum-variant addition cannot pass engine tests while leaving any front-end consumer stale, and malformed status/payload/exit combinations remain rejected.
+  - Revealed by: Phase 18; scope corrected after Phase 20
 
 - [ ] **Expose one named reservation's lifecycle and protected tip through a read-only query**
   - Target: `cargo-berth` engine — `crates/cargo-berth/src/{cli,output}.rs`, `crates/cargo-berth/src/{board,reservation}/mod.rs`, and board integration tests.
