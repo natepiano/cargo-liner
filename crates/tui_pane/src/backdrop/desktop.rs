@@ -32,18 +32,22 @@ use ratatui::style::Color;
 /// drawn -- which is what asks for a fresh capture.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct Metrics {
-    /// The tty's own text area in the window server's points, as
-    /// `TIOCGWINSZ` reports it.
+    /// The tty's own text area, as `TIOCGWINSZ` reports it, in the
+    /// display's pixels rather than the window server's points.
     ///
-    /// Points, despite every name the kernel gives these fields. A
-    /// terminal on a display with two pixels to the point reports the
-    /// same numbers the window server describes its window's frame
-    /// with, which is half what a capture of that display comes back
-    /// holding.
-    text_points: (u16, u16),
+    /// An emulator on macOS multiplies the view it hands the tty by the
+    /// backing scale factor of the window that view is drawn in, both
+    /// axes alike -- iTerm2 sets `ws_xpixel` and `ws_ypixel` from
+    /// `viewSize * scaleFactor` and has no path that treats the two
+    /// differently. Measured on a Retina panel: a window standing 864
+    /// by 1084 points, divided into 122 by 67 cells, reported as 1708
+    /// by 2144, which is 854 by 1072 points once the factor of two
+    /// comes out. Only [`cell_points`](Self::cell_points) may read
+    /// this, and only with the scale that converts it.
+    text_area: (u16, u16),
     /// How many character cells that text area is divided into, across
     /// and down.
-    cells:       (u16, u16),
+    cells:     (u16, u16),
 }
 
 impl Metrics {
@@ -60,36 +64,27 @@ impl Metrics {
         let size = terminal::window_size().ok()?;
         let reported = size.width > 0 && size.height > 0 && size.columns > 0 && size.rows > 0;
         reported.then_some(Self {
-            text_points: (size.width, size.height),
-            cells:       (size.columns, size.rows),
+            text_area: (size.width, size.height),
+            cells:     (size.columns, size.rows),
         })
     }
 
-    /// One character cell, in the window server's points.
+    /// One character cell, in the window server's points, given the
+    /// `scale` the display carries pixels to the point at.
     ///
-    /// Points rather than pixels because that is what the terminal
-    /// reports: on a display with two pixels to the point, the text
-    /// area it gives back is half the capture's width, and matches the
-    /// frame the window server describes the window with.
-    fn cell_points(self) -> (f64, f64) {
+    /// The terminal answers in pixels and everything the answer is
+    /// measured against -- window frames, display bounds, the capture
+    /// itself -- is in points, so the report is divided down before the
+    /// cells come out of it. Read undivided on a Retina panel the cell
+    /// is twice its size in both axes and the grid the capture reduces
+    /// to covers half the window. See
+    /// [`text_area`](Self#structfield.text_area) for the measurement.
+    fn cell_points(self, scale: u32) -> (f64, f64) {
+        let scale = f64::from(scale);
         (
-            f64::from(self.text_points.0) / f64::from(self.cells.0),
-            f64::from(self.text_points.1) / f64::from(self.cells.1),
+            f64::from(self.text_area.0) / scale / f64::from(self.cells.0),
+            f64::from(self.text_area.1) / scale / f64::from(self.cells.1),
         )
-    }
-
-    /// One character cell in the pixels a capture comes back in, on a
-    /// display carrying `scale` of them to the point.
-    ///
-    /// Scaled up from the cell in points, never down to it. That
-    /// direction is the whole of what once went wrong here: the
-    /// terminal reports points, so dividing them by the scale left
-    /// every cell half its size and the reduce grid twice as fine --
-    /// invisible on a display with one pixel to the point, and wrong
-    /// on every Retina panel.
-    fn cell_pixels(self, scale: f64) -> (f64, f64) {
-        let (width, height) = self.cell_points();
-        (width * scale, height * scale)
     }
 }
 
@@ -203,10 +198,9 @@ impl Desktop {
         let padding = (frame.size.0 - text_area.0) / 2.0;
         let left = frame.origin.0 - self.origin.0 + padding;
         let top = frame.origin.1 - self.origin.1 + (frame.size.1 - text_area.1 - padding).max(0.0);
-        Some(Placement {
-            column: cell_index(left / self.cell.0)?,
-            row:    cell_index(top / self.cell.1)?,
-        })
+        let column = cell_index(left / self.cell.0)?;
+        let row = cell_index(top / self.cell.1)?;
+        Some(Placement { column, row })
     }
 
     /// What the terminal reported when this capture was reduced, for
@@ -322,6 +316,8 @@ mod platform {
     use objc2_core_foundation::CFType;
     use objc2_core_foundation::CGRect as CoreGraphicsRect;
     use objc2_core_graphics::CGDisplayBounds;
+    use objc2_core_graphics::CGDisplayCopyDisplayMode;
+    use objc2_core_graphics::CGDisplayMode;
     use objc2_core_graphics::CGRectMakeWithDictionaryRepresentation;
     use objc2_core_graphics::CGWindowListCopyWindowInfo;
     use objc2_core_graphics::CGWindowListOption;
@@ -366,6 +362,7 @@ mod platform {
     pub(super) fn capture(metrics: Metrics, pinned: Option<u32>) -> Option<Desktop> {
         let content = SCShareableContent::get().ok()?;
         let windows = content.windows();
+        let displays = content.displays();
         let terminal_windows = terminal_windows(&windows);
         // The number `identify` pinned to this app's own window is
         // looked for across every window on the machine, not inside the
@@ -383,32 +380,24 @@ mod platform {
         // never took, and for the window closed since it did.
         let chosen = pinned
             .and_then(|pinned| windows.iter().find(|window| window.window_id() == pinned))
-            .or_else(|| frontmost_window(&terminal_windows, metrics.text_points))?;
+            .or_else(|| frontmost_window(&terminal_windows, &displays, metrics.text_area))?;
         let window = chosen.window_id();
 
-        let displays = content.displays();
         let display = display_under(&displays, chosen.frame())?;
         let display_frame = display_bounds(display);
-        // The display's points and its pixels are the same rectangle at
-        // two resolutions, and a cell has to be known in both: the
-        // capture arrives in pixels and is reduced against a cell in
-        // pixels, while a window's frame is in points and is placed
-        // against a cell in points.
+        // The capture is asked for at the display's own point size and
+        // comes back at it, so one cell in points serves both the grid
+        // the capture is reduced against and the frame the window is
+        // placed by. `SCDisplay` measures in points as `CGDisplayBounds`
+        // does, which is why there is no second unit here to convert to.
         //
-        // The terminal reports its text area in points, whatever the
-        // name of the field it arrives in suggests. On a Retina panel
-        // `TIOCGWINSZ` gives the very numbers the window server gives
-        // for the window's frame -- half the pixels the capture comes
-        // back with. So the cell the terminal yields is the one in
-        // points, and the pixel cell is scaled up from it rather than
-        // the other way about.
-        //
-        // Reading it backwards is invisible wherever a display has one
-        // pixel to the point and doubles every cell where it has two,
-        // which is why this only ever went wrong on a Retina panel.
-        let scale = f64::from(display.width()) / display_frame.size.width;
-        let cell = metrics.cell_points();
-        let cell_pixels = metrics.cell_pixels(scale);
+        // What the terminal reports is the one thing here that is not in
+        // points -- it answers in the display's pixels -- so the scale
+        // divides it before a cell comes out of it. The scale is asked
+        // of the display rather than worked out from the window, so
+        // which window was matched cannot change the size of a cell.
+        // See [`Metrics::cell_points`].
+        let cell = metrics.cell_points(backing_scale(display));
 
         // Every window the terminal owns comes out of the capture, and
         // so does every window standing in front of the one the app is
@@ -461,8 +450,8 @@ mod platform {
 
         let captured = SCScreenshotManager::capture_image(&filter, &configuration).ok()?;
         let pixels = captured.rgba_data().ok()?;
-        let columns = whole_cells(f64::from(image.0) / cell_pixels.0)?;
-        let rows = whole_cells(f64::from(image.1) / cell_pixels.1)?;
+        let columns = whole_cells(f64::from(image.0) / cell.0)?;
+        let rows = whole_cells(f64::from(image.1) / cell.1)?;
         let colors = reduce(&pixels, image, (columns, rows))?;
         Some(Desktop {
             window,
@@ -869,10 +858,10 @@ mod platform {
     ///
     /// An emulator commonly has several windows open, and every one of
     /// them answers to the same application. Size is what tells them
-    /// apart: `TIOCGWINSZ` reports this tty's own text area in points,
-    /// and the window that area belongs to is the one whose frame it
-    /// very nearly fills -- short by a title bar and whatever padding
-    /// the emulator draws, and no more.
+    /// apart: `TIOCGWINSZ` reports this tty's own text area, and the
+    /// window that area belongs to is the one whose frame it very
+    /// nearly fills -- short by a title bar and whatever padding the
+    /// emulator draws, and no more.
     ///
     /// Neither of the obvious answers works. The biggest window is
     /// whichever one happens to be biggest, and `is_active` is set on
@@ -881,30 +870,41 @@ mod platform {
     /// arrives then is the desktop behind something else.
     fn frontmost_window<'a>(
         windows: &'a [&'a SCWindow],
-        text_points: (u16, u16),
+        displays: &[SCDisplay],
+        text_pixels: (u16, u16),
     ) -> Option<&'a SCWindow> {
-        let width = f64::from(text_points.0);
-        let height = f64::from(text_points.1);
+        // Each candidate is scored against the scale of the display it
+        // stands on rather than one scale for all of them, since a
+        // machine with a Retina panel and an external monitor is
+        // carrying both at once.
+        let score = |window: &SCWindow| {
+            let frame = window.frame();
+            let scale = display_under(displays, frame).map_or(1, backing_scale);
+            mismatch(frame, text_pixels, scale)
+        };
         windows
             .iter()
             .filter(|window| window.is_on_screen())
-            .min_by(|left, right| {
-                mismatch(left.frame(), width, height).total_cmp(&mismatch(
-                    right.frame(),
-                    width,
-                    height,
-                ))
-            })
+            .min_by(|left, right| score(left).total_cmp(&score(right)))
             .copied()
     }
 
-    /// How far a window's frame is from holding a text area of `width`
-    /// by `height` points, for [`frontmost_window`] to sort on.
+    /// How far a window's frame is from holding a text area of
+    /// `text_pixels`, for [`frontmost_window`] to sort on.
     ///
     /// A frame narrower or shorter than the text area cannot be the one
     /// holding it, so falling short counts double and a frame that is
     /// merely larger by a title bar stays the nearest.
-    fn mismatch(frame: CGRect, width: f64, height: f64) -> f64 {
+    ///
+    /// The reported area is divided by the `scale` of the display this
+    /// candidate stands on before anything is compared. Scored as
+    /// reported, a text area on a Retina panel reads as twice the
+    /// window holding it, and every candidate on that panel is judged
+    /// short by the same doubled amount -- which is no ordering at all.
+    fn mismatch(frame: CGRect, text_pixels: (u16, u16), scale: u32) -> f64 {
+        let scale = f64::from(scale);
+        let width = f64::from(text_pixels.0) / scale;
+        let height = f64::from(text_pixels.1) / scale;
         let axis = |frame: f64, text: f64| {
             let difference = frame - text;
             if difference < 0.0 {
@@ -962,6 +962,31 @@ mod platform {
         pids
     }
 
+    /// How many pixels `display` carries to the point.
+    ///
+    /// Read off the display's own mode, which is the only place the
+    /// pixel count is available at all: `SCDisplay` and `CGDisplayBounds`
+    /// both measure in points. Asking the display rather than working
+    /// the ratio out from a window's frame keeps the cell size out of
+    /// reach of the window match, which can be wrong and has been --
+    /// a wrong match would otherwise carry its error into every cell.
+    ///
+    /// The framebuffer is a whole multiple of the point grid on every
+    /// mode macOS offers, so the ratio is taken in whole numbers. A
+    /// display that will not answer is read as one, which is what a
+    /// panel carrying one pixel to the point would have answered.
+    fn backing_scale(display: &SCDisplay) -> u32 {
+        let Some(mode) = CGDisplayCopyDisplayMode(display.display_id()) else {
+            return 1;
+        };
+        let points = CGDisplayMode::width(Some(&mode));
+        let pixels = CGDisplayMode::pixel_width(Some(&mode));
+        if points == 0 {
+            return 1;
+        }
+        u32::try_from(pixels / points).unwrap_or(1).max(1)
+    }
+
     /// The display holding the centre of `window_frame`.
     fn display_under(displays: &[SCDisplay], window_frame: CGRect) -> Option<&SCDisplay> {
         let center_x = window_frame.origin.x + window_frame.size.width / 2.0;
@@ -1002,65 +1027,91 @@ mod platform {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
 
-    /// The grid the probe read off a 16-inch panel: 245 columns and 67
-    /// rows over a text area the terminal reports as 1728 by 1084.
+    /// What the probe read off a 16-inch panel: a window divided into
+    /// 122 by 67 cells whose text area iTerm2 reports as 1708 by 2144.
+    /// Both numbers are in the display's pixels -- the emulator scales
+    /// the view it hands the tty by the window's backing scale factor,
+    /// and does it to both axes alike.
     const RETINA: Metrics = Metrics {
-        text_points: (1728, 1084),
-        cells:       (245, 67),
+        text_area: (1708, 2144),
+        cells:     (122, 67),
     };
+
+    /// Where that window stood, in points: the right half of the panel,
+    /// under the menu bar.
+    const FRAME: Frame = Frame {
+        origin: (864.0, 33.0),
+        size:   (864.0, 1084.0),
+    };
+
+    /// The display it stood on, in points.
+    const DISPLAY: (f64, f64) = (1728.0, 1117.0);
+
+    /// How many pixels that display carries to the point.
+    const SCALE: u32 = 2;
 
     /// Whether two lengths are the same to within what floating point
     /// can represent, which is all an exact division can be asked for.
     fn near(left: f64, right: f64) -> bool { (left - right).abs() < f64::EPSILON }
 
+    /// How many whole cells of `cell` points fit across `span`, which
+    /// is the division `capture` reduces the display by. The platform
+    /// module's own is behind `cfg(target_os = "macos")`, and the
+    /// arithmetic this checks is not.
+    fn grid_cells(span: f64, cell: f64) -> u16 {
+        let cells = cell_index((span / cell).floor()).expect("a finite count of cells");
+        u16::try_from(cells).expect("a display holds fewer cells than a u16 counts")
+    }
+
     #[test]
-    fn a_cell_in_points_comes_straight_off_what_the_terminal_reports() {
-        let (width, height) = RETINA.cell_points();
+    fn the_reported_text_area_is_divided_by_the_display_scale() {
+        let (width, height) = RETINA.cell_points(SCALE);
         assert!(
-            near(width, 1728.0 / 245.0) && near(height, 1084.0 / 67.0),
-            "a cell is the reported text area divided by the grid, and \
-             nothing else touches it"
+            near(width, 7.0) && near(height, 16.0),
+            "1708 by 2144 pixels over 122 by 67 cells is a cell of 14 \
+             by 32 pixels, which on a panel carrying two pixels to the \
+             point is 7 by 16 of them"
         );
     }
 
     #[test]
-    fn a_retina_cell_is_twice_as_many_pixels_as_it_is_points() {
-        let points = RETINA.cell_points();
-        let doubled = (points.0 * 2.0, points.1 * 2.0);
-        let pixels = RETINA.cell_pixels(2.0);
+    fn a_display_carrying_one_pixel_to_the_point_divides_by_nothing() {
+        let (width, height) = RETINA.cell_points(1);
         assert!(
-            near(pixels.0, doubled.0) && near(pixels.1, doubled.1),
-            "a display with two pixels to the point holds twice the \
-             pixels per cell -- scaling the other way is what left the \
-             backdrop drawn at half scale on a Retina panel"
+            near(width, 14.0) && near(height, 32.0),
+            "where a pixel is a point the report needs no converting, \
+             and the cell is exactly what the terminal said"
         );
     }
 
     #[test]
-    fn a_cell_is_the_same_in_both_units_at_one_pixel_to_the_point() {
-        let points = RETINA.cell_points();
-        let pixels = RETINA.cell_pixels(1.0);
+    fn the_converted_cell_fits_the_window_it_was_measured_in() {
+        let (width, height) = RETINA.cell_points(SCALE);
         assert!(
-            near(pixels.0, points.0) && near(pixels.1, points.1),
-            "points and pixels are the same rectangle on a 1x display, \
-             which is why reading the scale backwards stayed hidden on \
-             an external monitor"
+            width * f64::from(RETINA.cells.0) <= FRAME.size.0
+                && height * f64::from(RETINA.cells.1) <= FRAME.size.1,
+            "the grid has to fit inside the window holding it, which is \
+             the check that catches a report left in pixels -- 122 \
+             cells of 14 points stand 1708 wide in an 864 point window"
         );
     }
 
     #[test]
-    fn the_reduce_grid_covers_the_display_once() {
-        // The panel the probe read: 1728 points across at two pixels to
-        // the point, so 3456 pixels of capture.
-        let pixels = RETINA.cell_pixels(2.0);
-        let columns = 3456.0 / pixels.0;
+    fn an_undivided_report_leaves_the_grid_short() {
+        let cell = RETINA.cell_points(1);
         assert!(
-            (columns - 245.0).abs() < 1.0,
-            "the capture divided by the pixel cell should come back to \
-             the grid the terminal reported, not to twice it"
+            grid_cells(DISPLAY.1, cell.1) < RETINA.cells.1,
+            "this is the defect itself: a cell twice its height divides \
+             the display into 34 rows where the window alone needs 67, \
+             which is the backdrop covering the full width and dying \
+             just under halfway down"
         );
     }
 }
