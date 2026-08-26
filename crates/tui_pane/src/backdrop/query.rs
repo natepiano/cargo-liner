@@ -89,9 +89,9 @@ mod platform {
     use std::time::Duration;
     use std::time::Instant;
 
-    use super::super::constants::POSITION_REPLY_BYTES;
-    use super::super::constants::POSITION_REPLY_END;
-    use super::super::constants::POSITION_REPLY_WAIT;
+    use crate::backdrop::constants::POSITION_REPLY_BYTES;
+    use crate::backdrop::constants::POSITION_REPLY_END;
+    use crate::backdrop::constants::POSITION_REPLY_WAIT;
 
     /// Whatever the terminal sent back, up to and including the
     /// reply's terminator.

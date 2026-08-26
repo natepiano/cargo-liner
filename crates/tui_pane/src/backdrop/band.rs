@@ -534,7 +534,7 @@ impl TravelingBand {
     ///
     /// Both the character and the cell behind it are painted, from the
     /// one colour: the character at the desktop's own, the rest of the
-    /// cell carried [`BAND_BEHIND_FADE`] of the way toward the ground.
+    /// cell carried `BAND_BEHIND_FADE` of the way toward the ground.
     /// Painting the character alone is what left the desktop arriving
     /// through the ink and nothing else -- and a glyph's ink is not
     /// centred in its cell, so `_` put that cell's colour along the

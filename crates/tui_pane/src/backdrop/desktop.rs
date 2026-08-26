@@ -339,14 +339,14 @@ mod platform {
     use sysinfo::ProcessesToUpdate;
     use sysinfo::System;
 
-    use super::super::constants::EMULATOR_NAME_FLOOR;
-    use super::super::constants::POSITION_TOLERANCE;
-    use super::super::constants::TERM_PROGRAM_ENV;
     use super::Desktop;
     use super::Frame;
     use super::Metrics;
     use super::cell_index;
+    use crate::backdrop::constants::EMULATOR_NAME_FLOOR;
+    use crate::backdrop::constants::POSITION_TOLERANCE;
     use crate::backdrop::constants::SAMPLES_PER_CELL;
+    use crate::backdrop::constants::TERM_PROGRAM_ENV;
     use crate::process;
 
     /// How many bytes one pixel of the captured image occupies.

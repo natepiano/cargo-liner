@@ -40,18 +40,18 @@ enum EditState {
 /// has room for, so one line of it carries a row per column and the
 /// line on its own no longer says which row a click landed on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct KeymapRowSpan {
+pub(super) struct KeymapRowSpan {
     /// Line of the popup's content the row was drawn on, counted
     /// before any scrolling.
-    pub(crate) line:      usize,
+    pub(super) line:      usize,
     /// First cell of the content the row occupies, counted from the
     /// left of the popup's inside.
-    pub(crate) start:     u16,
+    pub(super) start:     u16,
     /// How many cells wide it stands, the gap to the next column
     /// included so a click between two of them still lands on one.
-    pub(crate) width:     u16,
+    pub(super) width:     u16,
     /// Which selectable row of the overlay it is.
-    pub(crate) selection: usize,
+    pub(super) selection: usize,
 }
 
 /// Command produced by [`KeymapPane::handle_capture_key`].
@@ -170,7 +170,7 @@ impl KeymapPane {
 
     /// Replace the map of where each selectable row was drawn, used for
     /// mouse hit-testing.
-    pub(crate) fn replace_row_spans(&mut self, spans: Vec<KeymapRowSpan>) {
+    pub(super) fn replace_row_spans(&mut self, spans: Vec<KeymapRowSpan>) {
         self.row_spans = spans;
     }
 

@@ -106,7 +106,7 @@ pub enum PixelResolve {
     #[default]
     Blend,
     /// The block halves, and halves again, through
-    /// [`PIXEL_STEP_LEVELS`] sizes before its cells stand on their own.
+    /// `PIXEL_STEP_LEVELS` sizes before its cells stand on their own.
     ///
     /// Nothing is mixed here -- a cell wears the average of whichever
     /// size of block it currently belongs to -- so what the reader
@@ -146,7 +146,7 @@ pub enum PixelFill {
     /// starts.
     #[default]
     Solid,
-    /// One of [`SHADES`], picked by how bright the cell is against the
+    /// One of `SHADES`, picked by how bright the cell is against the
     /// rest of the field.
     Shades,
 }
