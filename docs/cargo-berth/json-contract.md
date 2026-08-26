@@ -4,7 +4,7 @@ The wire contract for tools that consume `cargo-berth` output: the envelope
 `cargo berth board --json` emits, and the journal records the ledger appends.
 Both are stable — additions arrive as new variants, not renamed fields.
 
-For what the tool is and how to use it, see the [README](../README.md).
+For what the tool is and how to use it, see the [README](../../crates/cargo-berth/README.md).
 
 ## The JSON envelope
 

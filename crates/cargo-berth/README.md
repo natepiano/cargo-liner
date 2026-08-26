@@ -304,7 +304,7 @@ terminal and emitted no line. The corresponding `--json` run emitted the facts
 below.
 
 The full envelope schema — every payload variant and every journal record type —
-is in [docs/json-contract.md](docs/json-contract.md).
+is in [docs/cargo-berth/json-contract.md](../../docs/cargo-berth/json-contract.md).
 
 ## Configuration
 
@@ -329,7 +329,7 @@ and an unreadable file are configuration errors.
 ## Recovery and identity
 
 How edit authorization resolves, how bypasses are audited, and how to recover a
-damaged ledger are in [docs/operations.md](docs/operations.md).
+damaged ledger are in [docs/cargo-berth/operations.md](../../docs/cargo-berth/operations.md).
 
 ## Process exit codes
 
@@ -349,7 +349,7 @@ The meanings in this table are the executable's public contract:
 Every JSON response has the six common envelope fields `verb`, `status`,
 `exit_code`, `reservations`, `blocked_by`, and `message`, followed by a typed
 `payload`. The payload variants are in
-[docs/json-contract.md](docs/json-contract.md).
+[docs/cargo-berth/json-contract.md](../../docs/cargo-berth/json-contract.md).
 
 ## Deliberate omissions
 

@@ -75,8 +75,8 @@
   - `README.md` — `overbroad-pub-crate` anchor at `:194`, `forbidden-pub-in-crate` at `:258`, `suspicious-pub` at `:287`; config section ~`:70-99`
   - `CHANGELOG.md` — release / upgrade-contract bullets
   - `docs/style/diagnostic-lifecycle.md` — checklist for diagnostic changes (its own path list is stale: `src/config.rs` → `src/config/diagnostic_code.rs` + `src/config/constants.rs`; `src/diagnostics.rs` → `src/reporting/diagnostics.rs`; `src/runner.rs` → `src/fixes/runner/`)
-  - `docs/style/readme-diagnostic-section.md` — README section format (no change needed)
-  - `docs/plans/prelude-pub-mod-exemption.md` — the config-mechanics precedent
+  - `docs/cargo-mend/style/readme-diagnostic-section.md` — README section format (no change needed)
+  - `docs/cargo-mend/plans/prelude-pub-mod-exemption.md` — the config-mechanics precedent
   - `~/rust/nate_style/rust/use-narrowest-visibility.md` — external style guide to edit
   - `~/rust/nate_style/rust/name-submodules-after-anchor-types.md` — dictates the `annotation.rs` filename
   - `build.rs` — `rerun-if-changed` on `.git/HEAD`, `.git/refs/heads`, `build.rs` only
@@ -784,7 +784,7 @@ pub(crate) enum PubInPath {
 pub_in_path = "permitted"   # default
 ```
 
-`allow_prelude_pub_mod` (`docs/plans/prelude-pub-mod-exemption.md`, `src/config/prelude_pub_mod.rs`) supplies the mechanics — a field on `VisibilityConfig` (`config/loaded.rs:30`), a global-config key reconciled by the `toml_edit` pass, and inclusion in the fingerprint. It does **not** supply the ownership model: it is global-only *by design*, since `load_config` deliberately stamps the global value over the project-deserialized one (`config/loaded.rs:81-85`). A per-machine preference cannot pin a repo to `Required`, which Phase 12 requires — CI would fall back to the default and two developers on one commit could enforce different policies.
+`allow_prelude_pub_mod` (`docs/cargo-mend/plans/prelude-pub-mod-exemption.md`, `src/config/prelude_pub_mod.rs`) supplies the mechanics — a field on `VisibilityConfig` (`config/loaded.rs:30`), a global-config key reconciled by the `toml_edit` pass, and inclusion in the fingerprint. It does **not** supply the ownership model: it is global-only *by design*, since `load_config` deliberately stamps the global value over the project-deserialized one (`config/loaded.rs:81-85`). A per-machine preference cannot pin a repo to `Required`, which Phase 12 requires — CI would fall back to the default and two developers on one commit could enforce different policies.
 
 **Precedence: project `mend.toml` > global > `Permitted`.** Deserialize the project value as `Option<PubInPath>` so an absent key stays distinguishable from an explicit `"permitted"`; otherwise absence silently overrides a global `Forbidden`.
 
@@ -1092,7 +1092,7 @@ First, make the cross-target refinement keep each diagnostic's headline and help
 4. **Config section (~`:70-99`)** — document `pub_in_path`, its three values, the `permitted` default, and the project-overrides-global precedence, alongside `allow_pub_mod` / `allow_prelude_pub_mod`.
 5. **The visibility ladder (~`:184-190`)** — the numbered "prefer" list gains `pub(in crate::path)` as the rung between `pub(super)` and `pub(crate)`, with the one-line condition that gates it.
 
-`docs/style/readme-diagnostic-section.md` needs no change — the section format is unchanged.
+`docs/cargo-mend/style/readme-diagnostic-section.md` needs no change — the section format is unchanged.
 
 `~/rust/nate_style/rust/use-narrowest-visibility.md`:
 

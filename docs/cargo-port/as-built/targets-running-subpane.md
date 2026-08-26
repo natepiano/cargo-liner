@@ -4,7 +4,7 @@ Status: implemented.
 
 This document records the current Targets pane Running sub-pane behavior. It is
 an as-built summary, not the original phase plan. The process-outline and CPU
-smoothing details are covered in `docs/as-built/running-process-tree.md`.
+smoothing details are covered in `docs/cargo-port/as-built/running-process-tree.md`.
 
 Main implementation paths:
 

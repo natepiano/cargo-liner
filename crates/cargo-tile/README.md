@@ -53,7 +53,7 @@ whoever wrote the typo to fix.
 
 This crate is the workspace's TUI template — a complete `tui_pane` application
 with no application in it. The tag `app-template-v1` marks the commit to start
-from; `crates/tui_pane/docs/as-built/app-template.md` records what it contains
+from; `docs/tui_pane/as-built/app-template.md` records what it contains
 and what it deliberately leaves out.
 
 Rendering is demand-driven — a frame is painted only when an event arrives, so

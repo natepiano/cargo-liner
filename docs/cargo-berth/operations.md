@@ -4,7 +4,7 @@ Identity resolution, bypass auditing, and recovery from a damaged ledger.
 Reach for this when something has gone wrong or when wiring `cargo-berth` into
 a harness.
 
-For what the tool is and how to use it, see the [README](../README.md).
+For what the tool is and how to use it, see the [README](../../crates/cargo-berth/README.md).
 
 ## Harness identity
 
