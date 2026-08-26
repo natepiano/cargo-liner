@@ -291,6 +291,40 @@ pub(super) const TERM_PROGRAM_ENV: &str = "TERM_PROGRAM";
 /// every real emulator name -- `iterm`, `wezterm`, `ghostty`,
 /// `terminal`, `alacritty`.
 pub(super) const EMULATOR_NAME_FLOOR: usize = 5;
+/// What the terminal is asked when it is asked where its window
+/// stands: the xterm window-position report.
+///
+/// Answered with `CSI 3 ; x ; y t`. A terminal that does not know the
+/// query says nothing, which is why the wait for a reply is timed
+/// rather than open-ended.
+pub(super) const POSITION_QUERY: &str = "\u{1b}[13t";
+/// How long the terminal is given to answer the position query.
+///
+/// Generous by an order of magnitude. The query is flushed before this
+/// starts, so whatever output was queued ahead of it has already been
+/// drained by the emulator and the reply has only a pty to cross.
+pub(super) const POSITION_REPLY_WAIT: Duration = Duration::from_millis(100);
+/// How many bytes of a reply are read before the terminal is taken to
+/// be answering something with no end to it.
+///
+/// The longest reply a position can be is seventeen bytes, both
+/// coordinates negative and four digits each. The rest is room for a
+/// keystroke or two that beat the reply out of the queue.
+pub(super) const POSITION_REPLY_BYTES: usize = 32;
+/// The byte a position report ends on, which is what stops the read
+/// before it reaches anything the reader typed.
+pub(super) const POSITION_REPLY_END: u8 = b't';
+/// How far, in the window server's points, a window may stand from the
+/// position the terminal reported and still be taken for the one it
+/// reported.
+///
+/// Not zero, because the two are not measured from quite the same
+/// corner: an emulator may report the corner of the text area rather
+/// than of the window around it, and everything it stacks above the
+/// grid -- a title bar, a tab bar -- stands between them. Two hundred
+/// points clears all of that and is still far short of the distance
+/// between two windows the reader has put side by side.
+pub(super) const POSITION_TOLERANCE: f64 = 200.0;
 /// How many pixels are captured across and down each character cell,
 /// which are then averaged into the cell's one colour.
 ///

@@ -29,6 +29,7 @@ mod band;
 mod constants;
 mod desktop;
 mod monitor;
+mod query;
 mod random;
 mod text;
 

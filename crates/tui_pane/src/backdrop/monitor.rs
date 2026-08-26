@@ -45,6 +45,7 @@ use super::desktop::Desktop;
 use super::desktop::Frame;
 use super::desktop::Metrics;
 use super::desktop::Placement;
+use super::query;
 
 /// A backdrop kept up to date on two worker threads.
 ///
@@ -90,6 +91,16 @@ pub struct BackdropMonitor {
     /// needs time to reach the emulator and the window server, and
     /// asking again inside that time only loses the same race twice.
     attempted_at: Option<Instant>,
+    /// Whether the emulator has been asked outright where its window
+    /// stands.
+    ///
+    /// Asked once and no more, unlike the marker title. A title loses
+    /// races -- to a busy emulator, to a title the reader pinned --
+    /// and losing one says nothing about the next. The query races
+    /// nothing: it is flushed, so the emulator has it in hand before
+    /// the wait starts, and a terminal that did not answer it then
+    /// does not know it.
+    asked:        bool,
 }
 
 /// One capture, as the worker is asked for it.
@@ -144,38 +155,54 @@ impl BackdropMonitor {
             pinned: None,
             attempts: 0,
             attempted_at: None,
+            asked: false,
         }
     }
 
-    /// Settle which of the emulator's windows this app is drawn in, by
-    /// having the terminal wear a title only this process knows for as
-    /// long as it takes to ask the window server who is wearing it.
+    /// Settle which of the emulator's windows this app is drawn in.
     ///
     /// Answers whether a window has been settled on. Without one the
     /// window is picked by size, and two windows of the same size
     /// cannot be told apart that way: what arrives then is the desktop
     /// behind a sibling window rather than behind this one.
     ///
-    /// Tried again on a pace, up to `IDENTIFY_PASSES`, rather than
-    /// once only. A pass fails for either of two reasons: a terminal
-    /// that will not wear a title will not wear one on the second ask
-    /// either, but a title that merely lost a race to a busy emulator
-    /// will be worn on a later pass. Only the passes tell the two
-    /// apart, and the size heuristic carries the run once they are
-    /// spent.
+    /// Two ways of asking, in order of how much they can be trusted.
+    ///
+    /// The terminal is asked outright where its window stands, and the
+    /// window standing there is this app's. This is asked once: it
+    /// races nothing, so a terminal that did not answer does not know
+    /// the query.
+    ///
+    /// Failing that, the terminal is made to wear a title only this
+    /// process knows for as long as it takes to ask the window server
+    /// who is wearing it. This is tried again on a pace, up to
+    /// `IDENTIFY_PASSES`, because it does race: a terminal that will
+    /// not wear a title will not wear one on the second ask either,
+    /// but a title that merely lost a race to a busy emulator will be
+    /// worn on a later one, and only the passes tell the two apart.
+    /// The size heuristic carries the run once they are spent.
+    ///
+    /// A title is the weaker of the two for a reason the reader
+    /// supplies: it is the one piece of a window's state both they and
+    /// the emulator can pin, and a pinned title is never replaced by
+    /// the marker.
     ///
     /// # Cost
     ///
-    /// Several round trips to the window server, a few hundred
+    /// One round trip over the pty, then one to the window server. A
+    /// terminal that does not answer costs the wait for a reply and
+    /// several more round trips to the window server -- a few hundred
     /// milliseconds in all. It belongs where the backdrop is first
     /// wanted rather than in a frame that has to be drawn on time.
     ///
     /// # Invariants
     ///
     /// `out` must be the terminal this app is drawn on, and nothing
-    /// else may write to it while this runs: the title is set with an
-    /// escape sequence, and a sequence cut in half sets no title and
-    /// leaves its tail on the screen.
+    /// else may write to it or read from it while this runs. A title
+    /// is set with an escape sequence, and a sequence cut in half sets
+    /// no title and leaves its tail on the screen; the query is
+    /// answered on this app's own input, and a second reader takes the
+    /// bytes this one is waiting for.
     pub fn identify(&mut self, out: &mut impl Write) -> bool {
         if self.pinned.is_some() {
             return true;
@@ -195,6 +222,17 @@ impl BackdropMonitor {
         }
         self.attempts += 1;
         self.attempted_at = Some(Instant::now());
+        // Asking the emulator where it is comes first, and settles it
+        // outright where the emulator answers. Nothing below runs then
+        // -- no title is set, and the window server is asked once
+        // instead of half a dozen times.
+        if !self.asked {
+            self.asked = true;
+            self.pinned = query::window_origin(out).and_then(desktop::window_at);
+            if self.pinned.is_some() {
+                return true;
+            }
+        }
         let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
         // What every window is titled now, so that the one found to be
         // wearing the marker can be given its own title back.

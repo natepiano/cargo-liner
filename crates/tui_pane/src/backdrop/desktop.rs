@@ -235,6 +235,23 @@ pub(super) fn window_titles() -> Vec<(u32, Option<String>)> { platform::window_t
 /// one for as long as it takes to ask.
 pub(super) fn window_titled(marker: &str) -> Option<u32> { platform::window_titled(marker) }
 
+/// The emulator's window standing at `origin`, as the window server
+/// numbers it, or [`None`] where none of them stands near enough to it.
+///
+/// This is the other way of telling one of an emulator's windows from
+/// another, and the better one: rather than making the terminal wear a
+/// marker and asking the window server who is wearing it -- which a
+/// terminal may refuse, and which a title the reader has pinned
+/// overrides -- the emulator is asked outright where its window is.
+/// Position is the one thing that separates two windows the size
+/// heuristic cannot, because two windows cannot stand in the same
+/// place.
+///
+/// Near enough rather than exactly, by [`POSITION_TOLERANCE`]: an
+/// emulator may report the corner of its text area where the window
+/// server reports the corner of the window around it.
+pub(super) fn window_at(origin: (f64, f64)) -> Option<u32> { platform::window_at(origin) }
+
 /// A distance measured in cells, as a whole number of them.
 ///
 /// The window server measures in floating-point points, and a
@@ -301,6 +318,7 @@ mod platform {
     use sysinfo::System;
 
     use super::super::constants::EMULATOR_NAME_FLOOR;
+    use super::super::constants::POSITION_TOLERANCE;
     use super::super::constants::TERM_PROGRAM_ENV;
     use super::Desktop;
     use super::Frame;
@@ -437,6 +455,30 @@ mod platform {
             .into_iter()
             .find(|window| window.title().is_some_and(|title| title.contains(marker)))
             .map(SCWindow::window_id)
+    }
+
+    /// See [`super::window_at`].
+    pub(super) fn window_at(origin: (f64, f64)) -> Option<u32> {
+        let content = SCShareableContent::get().ok()?;
+        let windows = content.windows();
+        terminal_windows(&windows)
+            .into_iter()
+            .filter(|window| window.is_on_screen())
+            .map(|window| (window.window_id(), away(window.frame(), origin)))
+            .filter(|(_, away)| *away <= POSITION_TOLERANCE)
+            .min_by(|(_, left), (_, right)| left.total_cmp(right))
+            .map(|(window, _)| window)
+    }
+
+    /// How far a window's corner stands from `origin`, for
+    /// [`window_at`] to sort on.
+    ///
+    /// Along both axes added together rather than as a diagonal. The
+    /// question is which of a handful of windows is nearest, and every
+    /// ordering that answers it agrees; a square root would only cost
+    /// what it does not settle.
+    fn away(frame: CGRect, origin: (f64, f64)) -> f64 {
+        (frame.origin.x - origin.0).abs() + (frame.origin.y - origin.1).abs()
     }
 
     /// See [`super::window_frame`].
@@ -914,4 +956,7 @@ mod platform {
 
     /// Nothing wears the marker where nothing can be asked.
     pub(super) const fn window_titled(_: &str) -> Option<u32> { None }
+
+    /// Nothing stands anywhere where there are no windows to describe.
+    pub(super) const fn window_at(_: (f64, f64)) -> Option<u32> { None }
 }
