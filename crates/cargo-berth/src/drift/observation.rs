@@ -47,6 +47,12 @@ changed_path_set!(UntrackedWorkingTreeChanges);
 pub(super) struct CheapDeltaChanges {
     tracked:   CheapTrackedChanges,
     untracked: CheapUntrackedChanges,
+    /// The paths still modified when the comparison was taken.
+    ///
+    /// The symmetric difference above answers "which paths moved since the last
+    /// observation", so it names a path restored to its committed content alongside
+    /// one that was edited. Only this set separates the two.
+    modified:  HashSet<ReservationScopePath>,
 }
 
 pub(super) struct FullPhaseStartChanges {
@@ -100,6 +106,23 @@ impl ObservedDriftChanges {
         };
         ordering::normalize_paths(&mut paths);
         paths
+    }
+
+    /// Whether an observed path carries work the acting worktree could acquire.
+    ///
+    /// Widening is an acquisition, so it needs a path that carries work. Incursion and
+    /// collision classification do not: there "what moved since the last observation" is
+    /// the right question, and a path another worktree holds is worth reporting however
+    /// it moved.
+    ///
+    /// Every component of a full comparison is a positive statement about the present —
+    /// what this phase committed, what differs from `HEAD` now, what is untracked now.
+    /// None of them is a symmetric difference, so none can name a restored path.
+    pub(super) fn carries_work(&self, path: &ReservationScopePath) -> bool {
+        match self {
+            Self::Cheap(changes) => changes.modified.contains(path),
+            Self::Full(_) => true,
+        }
     }
 
     pub(super) fn visit_paths(
@@ -243,6 +266,7 @@ fn observe_cheap(
             &previous.untracked_paths,
             &current.untracked_paths,
         )),
+        modified:  current.modified_paths().into_iter().cloned().collect(),
     };
     Ok(FingerprintObservation {
         comparison:  DriftComparisonMode::CheapDelta,

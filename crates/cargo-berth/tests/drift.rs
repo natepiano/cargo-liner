@@ -188,6 +188,74 @@ fn post_write_drift_does_not_claim_a_path_the_edit_restored() {
 }
 
 #[test]
+fn drift_does_not_widen_onto_a_path_the_worktree_restored() {
+    let repository = initialized_repository();
+    fs::write(repository.path().join("design.md"), "original\n").expect("design path should write");
+    git(repository.path(), &["add", "design.md"]);
+    git(repository.path(), &["commit", "--quiet", "-m", "design"]);
+    let holder_id = claim(repository.path(), "file:design.md", FIRST_RUN);
+    fs::write(repository.path().join("design.md"), "edited\n").expect("design path should edit");
+    // Fingerprint the edit from inside a reservation that already covers it, so the
+    // cheap comparison has a previous observation naming design.md and nothing has
+    // widened onto it.
+    assert_eq!(
+        json_output(&cheap_post_commit_drift(repository.path()))["status"],
+        "clear"
+    );
+    let abandoned = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &holder_id,
+            "--abandon",
+            "--why",
+            "the design edit is deliberately discarded",
+            "--json",
+        ],
+    );
+    assert!(
+        abandoned.status.success(),
+        "abandon failed: {}",
+        String::from_utf8_lossy(&abandoned.stdout)
+    );
+    fs::write(repository.path().join("design.md"), "original\n")
+        .expect("design path should restore");
+    assert_eq!(
+        git_stdout(repository.path(), &["status", "--porcelain"]),
+        ""
+    );
+    let widening_id = claim(repository.path(), "file:claimed.txt", FIRST_RUN);
+
+    let restored = cheap_post_commit_drift(repository.path());
+    let envelope = json_output(&restored);
+
+    assert!(restored.status.success());
+    assert_eq!(envelope["payload"]["data"]["comparison"], "cheap_delta");
+    assert_eq!(
+        envelope["status"], "clear",
+        "a path back at its committed content carries no work to acquire"
+    );
+    assert_eq!(
+        envelope["payload"]["data"]["widening"]["status"],
+        "not_needed"
+    );
+    assert!(!journal_text(repository.path()).contains("\"op\":\"widen\""));
+
+    // The filter must not reach a path that does carry work.
+    fs::write(repository.path().join("other.md"), "new work\n").expect("other path should write");
+    let widened = cheap_post_commit_drift(repository.path());
+
+    assert!(widened.status.success());
+    assert_eq!(json_output(&widened)["status"], "widened");
+    let widen_event = journal_events(repository.path())
+        .into_iter()
+        .find(|event| event["op"] == "widen")
+        .expect("drift should widen onto the path that carries work");
+    assert_eq!(widen_event["reservation_id"], widening_id);
+    assert_eq!(widen_event["added_scopes"][0]["path"], "other.md");
+}
+
+#[test]
 fn post_write_drift_detects_but_cannot_prevent_a_foreign_incursion() {
     let repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");

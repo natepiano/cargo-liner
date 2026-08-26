@@ -219,14 +219,22 @@ pub(super) fn classify_locked(
             }
             match blocking_coverage(reservations, reservation, path, path_case) {
                 DriftBlockingCoverage::SameIdentity => {},
-                DriftBlockingCoverage::Unclaimed => match &subjects.widening {
-                    DriftWideningSelection::Selected(selected) if selected == reservation_id => {
-                        builder.widened_paths.push(path.clone());
-                    },
-                    DriftWideningSelection::Ambiguous(_) => {
-                        unattributed_paths.push(path.clone());
-                    },
-                    DriftWideningSelection::NotNeeded | DriftWideningSelection::Selected(_) => {},
+                DriftBlockingCoverage::Unclaimed => {
+                    if !changes.carries_work(path) {
+                        return;
+                    }
+                    match &subjects.widening {
+                        DriftWideningSelection::Selected(selected)
+                            if selected == reservation_id =>
+                        {
+                            builder.widened_paths.push(path.clone());
+                        },
+                        DriftWideningSelection::Ambiguous(_) => {
+                            unattributed_paths.push(path.clone());
+                        },
+                        DriftWideningSelection::NotNeeded | DriftWideningSelection::Selected(_) => {
+                        },
+                    }
                 },
                 DriftBlockingCoverage::Foreign(conflicts) => {
                     let blockers = conflicts
@@ -272,7 +280,25 @@ pub(super) fn classify_locked(
         results.push(result);
     }
     ordering::normalize_paths(&mut unattributed_paths);
-    let path_attribution = match (&subjects.widening, widening_attempt) {
+    let path_attribution =
+        attribute_paths(&subjects.widening, widening_attempt, unattributed_paths);
+    Ok(DriftTransactionDecision {
+        operations,
+        report: DriftReport {
+            comparison,
+            path_attribution,
+            results,
+        },
+    })
+}
+
+/// Name who the widening belongs to, or why nobody could be named.
+fn attribute_paths(
+    widening: &DriftWideningSelection,
+    attempt: WideningAttempt,
+    unattributed_paths: Vec<ReservationScopePath>,
+) -> DriftPathAttributionOutcome {
+    match (widening, attempt) {
         (DriftWideningSelection::Selected(reservation_id), WideningAttempt::Attributed) => {
             DriftPathAttributionOutcome::Attributed {
                 reservation_id: *reservation_id,
@@ -291,15 +317,7 @@ pub(super) fn classify_locked(
         | (DriftWideningSelection::Selected(_), WideningAttempt::NotNeeded) => {
             DriftPathAttributionOutcome::NotNeeded
         },
-    };
-    Ok(DriftTransactionDecision {
-        operations,
-        report: DriftReport {
-            comparison,
-            path_attribution,
-            results,
-        },
-    })
+    }
 }
 
 fn outstanding_incursion_covers(

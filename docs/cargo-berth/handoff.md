@@ -28,58 +28,33 @@ worktree-identity and incursion fixes, so the PostToolUse hook works again.
 
 ## Still open in `issue2.md`
 
-### §1 item 1 — re-anchor `phase_start_head` on a branch rewrite (the big one)
+### §1 item 1 — re-anchor `phase_start_head` on a branch rewrite — DONE (`832dd9f4`)
 
-**The machinery already exists and nothing triggers it.**
-`JournalOperation::Resnapshot { reservation_id, snapshot }` with
-`ReservationSnapshot::Active { claim_snapshot }` assigns
-`reservation.phase_start_head` during replay
-(`reservation/mod.rs`, `apply_resnapshot`). Its journal doc comment reads
-verbatim *"Replace the comparison points after a rebase or trunk rewrite."*
-Today only `verb/release.rs` emits `Resnapshot`, and only the `Outstanding`
-variant. Nothing ever emits `Active`.
+Closed. Two things were wrong, not one, and the second is not in `issue2.md`:
 
-**The signal is observable.** Probed against real git 2.55.0 — a `git rebase main`
-on a feature branch produces exactly one transaction on the concrete ref:
+1. Nothing emitted `JournalOperation::Resnapshot { Active }`, so a rebase left
+   the anchor describing a history the branch no longer had.
+2. Git runs `post-commit` for **every** replayed commit during a rebase. Even
+   with the re-anchor in place, drift ran on each of them and acquired the new
+   base's paths before the branch reference moved at the end. `drift` now
+   stands aside while `rebase-merge`/`rebase-apply` exists.
 
-```
-preparing / prepared / committed    77a60cb → 3307898    refs/heads/feature
-```
+**The anchor recommendation this file previously gave was wrong.** It proposed
+`proposed~N` (`N = rev-list --count phase_start_head..previous`) clamped so it
+is never an ancestor of `merge-base(proposed, trunk)`. A fixture in which the
+rebase drops a commit whose patch already reached the new base lands one commit
+too far back, and the clamp does not catch it, because the wrong answer sits
+*above* the merge-base.
 
-and sets `ORIG_HEAD` to the pre-rebase tip (`0000… → 77a60cb`) at the start.
-A rewrite is distinguishable from an ordinary commit because `previous` is **not**
-an ancestor of `proposed`.
-
-**A reservation knows its branch.** The claim records
-`head_snapshot: {"kind": "branch", "full_ref": "refs/heads/phase", "head": <oid>}`,
-so a rewritten `refs/heads/<name>` can be matched to the Active reservations on it.
-
-**The obstacle.** `evaluate_reference_transaction` only considers the configured
-trunk ref — non-trunk updates fall into `ReferenceUpdateGateSubject::NotMainEntry`
-and are dropped. Re-anchoring requires the hook to act on the *acting worktree's*
-branch too, which is a genuine widening of the gate's role. Note the generated
-hook `cd`s to `policy_worktree` (the main worktree) before running, so the acting
-worktree is **not** available from the process cwd — the ref name is the only
-handle on which worktree was rewritten. `issue2.md`'s own "Checked and not a
-defect" section confirms the `cd` is deliberate.
-
-**What the new anchor should be — undecided, and this is the one real design
-question.** Options considered, none yet chosen:
-
-- `merge-base(proposed, trunk)`. Correct for the reported case: after
-  `git rebase main` it is main's tip, so the range covers only the phase's replayed
-  commits. Wrong for two sequential phases on one branch, where it reaches back past
-  phase 1 and attributes phase 1's commits to phase 2.
-- `proposed~N` where `N = rev-list --count phase_start_head..previous`. Handles the
-  multi-phase case correctly, but goes too far back when a rebase drops commits as
-  already-applied, re-introducing the defect in smaller form.
-- **Recommended:** `proposed~N`, clamped so it is never an ancestor of
-  `merge-base(proposed, trunk)`; fall back to the merge-base when the count cannot
-  be computed. This is a recommendation, not a verified choice — prove it with a
-  fixture that rebases a two-phase branch before committing to it.
-
-Whatever is chosen, the issue requires the new anchor be journalled with the ref
-transaction that moved it, so the change is auditable rather than inferred.
+Counting cannot work, and neither can patch identity on its own: a dropped
+commit and a replayed commit both have upstream patch-equivalents, so
+`--left-only --cherry-pick` returned zero dropped commits on that fixture.
+Only **position** separates them — the replayed commits are contiguous at the
+tip. `git::rewritten_phase_anchor` takes the equivalent set from
+`rev-list --cherry-mark --left-right --no-merges <previous>...<proposed> ^<phase_start>`,
+walks `rev-list --first-parent` down from the new tip while each commit is in
+that set, and anchors beneath the last one. Exact on all three fixtures:
+single-phase, clean two-phase, and the drop case.
 
 ### §1 item 2 — do not widen onto a path the worktree did not change
 
@@ -98,7 +73,8 @@ Correct decomposition:
   difference, and widening onto it acquires a block on a restored file. That is the
   `256a04b8` rule and it is a real defect independent of any rebase.
 - Widening from the **committed** component cannot be fixed by working-tree state at
-  all. It is only correct once the anchor is correct, so it depends on item 1.
+  all. It is only correct once the anchor is correct — that dependency on item 1
+  is now discharged.
 
 ### §1 item 3 — name the commits an incursion came from
 
@@ -145,6 +121,7 @@ decided per path rather than by whole-set equality.
 ## Live state worth knowing
 
 Two incursion incidents are still outstanding in `/Users/natemccoy/rust/cargo-liner`
-and surface on every SessionStart. They are real records of the rebase defect, not
-noise from the fixed loop, and will stop being minted afresh now — but the existing
-ones still need a disposition, or they stay in the notice.
+(`01a03fce-f5a6-…` and `01a03fda-1948-…`) and surface on every SessionStart. They
+are real records of the rebase defect, not noise from the fixed loop, and will
+stop being minted afresh now that `832dd9f4` has landed — but the existing ones
+still need a disposition, or they stay in the notice.
