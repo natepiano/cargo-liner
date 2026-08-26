@@ -3,6 +3,24 @@
 use std::time::Duration;
 
 // attract band
+/// How far the colour behind the strip's character is carried toward
+/// the ground it is drawn on, against the character itself standing at
+/// the desktop's own colour.
+///
+/// The same correction [`TEXT_BEHIND_FADE`] makes for the drifting
+/// field, and it is wanted here for a reason the field does not have.
+/// A glyph's ink sits wherever that glyph puts it -- `_` along the
+/// bottom of the cell, `^` along the top, `.` in neither -- so a strip
+/// that painted the character alone dealt every cell's colour to a
+/// different corner of it, and the picture would not line up with
+/// itself however still the desktop underneath was held.
+///
+/// Matched to the field's own setting rather than drawn separately:
+/// the two animations are read one after the other on the same
+/// desktop, and a strip that showed it at a different strength would
+/// read as a different capture rather than as the same one drawn
+/// another way.
+pub(super) const BAND_BEHIND_FADE: u8 = TEXT_BEHIND_FADE;
 /// How many cells are re-rolled to a new character each frame, on top
 /// of the whole line the leading edge re-rolls as it arrives. Enough
 /// to read as a shimmer without the strip looking like static.

@@ -45,6 +45,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use super::Backdrop;
+use super::constants::BAND_BEHIND_FADE;
 use super::constants::CHURN_CELLS_PER_FRAME;
 use super::constants::DEFAULT_BAND_SPEED;
 use super::constants::DEFAULT_TAIL_SPEED;
@@ -532,6 +533,17 @@ impl TravelingBand {
     /// separates it from the rest of the grid is that it is drawn at
     /// all, and where it stops.
     ///
+    /// Both the character and the cell behind it are painted, from the
+    /// one colour: the character at the desktop's own, the rest of the
+    /// cell carried [`BAND_BEHIND_FADE`] of the way toward the ground.
+    /// Painting the character alone is what left the desktop arriving
+    /// through the ink and nothing else -- and a glyph's ink is not
+    /// centred in its cell, so `_` put that cell's colour along the
+    /// bottom, `^` along the top and `.` in neither, and a field of
+    /// punctuation dealt at random scattered every cell's colour to a
+    /// different corner of it. What the reader saw was a picture that
+    /// would not line up with itself.
+    ///
     /// Leaving is the one moment the strip is meant to stop being
     /// visible, and it goes toward whatever each cell is already
     /// painted on to do it -- `ground` only standing in where the cell
@@ -576,8 +588,10 @@ impl TravelingBand {
                     let visible =
                         u32::from(u8::MAX - self.faded) * u32::from(strength) / u32::from(u8::MAX);
                     let alpha = u8::MAX - u8::try_from(visible).unwrap_or(u8::MAX);
+                    let foreground = theme::blend_color(color, toward, alpha);
                     cell.set_char(glyph);
-                    cell.set_fg(theme::blend_color(color, toward, alpha));
+                    cell.set_fg(foreground);
+                    cell.set_bg(theme::blend_color(foreground, toward, BAND_BEHIND_FADE));
                 }
             }
         }

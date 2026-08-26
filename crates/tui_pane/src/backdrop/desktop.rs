@@ -811,7 +811,15 @@ mod platform {
         let Ok(program) = env::var(TERM_PROGRAM_ENV) else {
             return Vec::new();
         };
-        let wanted = folded(&program);
+        // `TERM_PROGRAM` names a bundle, extension and all: iTerm2 sets
+        // `iTerm.app`. Folding keeps every letter, so the extension
+        // survives it as `itermapp` -- which is inside neither the
+        // application's own name, `iterm2`, nor its bundle identifier,
+        // `comgooglecodeiterm2`. The containment test then fails in
+        // both directions and every window of the emulator is passed
+        // over, leaving whichever application stands in front to be
+        // taken for the terminal.
+        let wanted = folded(program.strip_suffix(".app").unwrap_or(&program));
         if wanted.len() < EMULATOR_NAME_FLOOR {
             return Vec::new();
         }
@@ -832,7 +840,10 @@ mod platform {
     ///
     /// `TERM_PROGRAM` gives `iTerm.app`, the application calls itself
     /// `iTerm2` and its bundle is `com.googlecode.iterm2`; folded, all
-    /// three carry `iterm`.
+    /// three carry `iterm` -- once the `.app` extension has been taken
+    /// off the first, which [`named_emulator_windows`] does before
+    /// folding it. This keeps letters and digits, so an extension left
+    /// on survives as part of the name.
     fn folded(text: &str) -> String {
         text.chars()
             .filter(char::is_ascii_alphanumeric)
@@ -995,20 +1006,114 @@ mod platform {
         u32::try_from(pixels / points).unwrap_or(1).max(1)
     }
 
+    /// The centre of `window_frame`, in the same points
+    /// [`display_bounds`] answers in.
+    fn window_center(window_frame: CGRect) -> (f64, f64) {
+        (
+            window_frame.origin.x + window_frame.size.width / 2.0,
+            window_frame.origin.y + window_frame.size.height / 2.0,
+        )
+    }
+
+    /// Whether `bounds` holds the point `center`.
+    fn holds(bounds: CoreGraphicsRect, center: (f64, f64)) -> bool {
+        center.0 >= bounds.origin.x
+            && center.0 < bounds.origin.x + bounds.size.width
+            && center.1 >= bounds.origin.y
+            && center.1 < bounds.origin.y + bounds.size.height
+    }
+
+    /// How far `center` sits from the middle of `bounds`, squared.
+    ///
+    /// Squared because only the ordering is wanted and the root would
+    /// not change it.
+    fn away_from(bounds: CoreGraphicsRect, center: (f64, f64)) -> f64 {
+        let x = bounds.origin.x + bounds.size.width / 2.0 - center.0;
+        let y = bounds.origin.y + bounds.size.height / 2.0 - center.1;
+        x.mul_add(x, y * y)
+    }
+
     /// The display holding the centre of `window_frame`.
+    ///
+    /// A centre that lands inside no display at all -- a window
+    /// straddling the gap between two panels, or hanging off an edge --
+    /// resolves to the display whose own centre is nearest. The first
+    /// display is the primary, and the primary is the one display a
+    /// window that is demonstrably somewhere else is least likely to be
+    /// on; answering with it names a whole different desktop and leaves
+    /// no sign that the containment test found nothing.
     fn display_under(displays: &[SCDisplay], window_frame: CGRect) -> Option<&SCDisplay> {
-        let center_x = window_frame.origin.x + window_frame.size.width / 2.0;
-        let center_y = window_frame.origin.y + window_frame.size.height / 2.0;
+        let center = window_center(window_frame);
         displays
             .iter()
-            .find(|display| {
-                let frame = display_bounds(display);
-                center_x >= frame.origin.x
-                    && center_x < frame.origin.x + frame.size.width
-                    && center_y >= frame.origin.y
-                    && center_y < frame.origin.y + frame.size.height
+            .find(|display| holds(display_bounds(display), center))
+            .or_else(|| {
+                displays.iter().min_by(|left, right| {
+                    away_from(display_bounds(left), center)
+                        .total_cmp(&away_from(display_bounds(right), center))
+                })
             })
-            .or_else(|| displays.first())
+    }
+
+    #[cfg(test)]
+    #[allow(
+        clippy::expect_used,
+        reason = "tests should panic on unexpected values"
+    )]
+    mod tests {
+        use super::folded;
+        use super::names_agree;
+
+        /// The three names iTerm2 answers to, as
+        /// [`named_emulator_windows`](super::named_emulator_windows)
+        /// meets them: `TERM_PROGRAM`, the application's own name, and
+        /// its bundle identifier.
+        const TERM_PROGRAM: &str = "iTerm.app";
+        /// What `SCRunningApplication` calls iTerm2.
+        const APPLICATION: &str = "iTerm2";
+        /// iTerm2's bundle identifier.
+        const BUNDLE: &str = "com.googlecode.iterm2";
+
+        #[test]
+        fn folding_keeps_an_extension_that_is_left_on() {
+            assert_eq!(folded(TERM_PROGRAM), "itermapp");
+        }
+
+        #[test]
+        fn folding_a_stripped_term_program_gives_the_bare_name() {
+            let stripped = TERM_PROGRAM.strip_suffix(".app").expect("names a bundle");
+            assert_eq!(folded(stripped), "iterm");
+        }
+
+        #[test]
+        fn an_extension_left_on_agrees_with_neither_name() {
+            let wanted = folded(TERM_PROGRAM);
+            assert!(!names_agree(&wanted, &folded(APPLICATION)));
+            assert!(!names_agree(&wanted, &folded(BUNDLE)));
+        }
+
+        #[test]
+        fn a_stripped_term_program_agrees_with_both_names() {
+            let stripped = TERM_PROGRAM.strip_suffix(".app").expect("names a bundle");
+            let wanted = folded(stripped);
+            assert!(names_agree(&wanted, &folded(APPLICATION)));
+            assert!(names_agree(&wanted, &folded(BUNDLE)));
+        }
+
+        #[test]
+        fn an_emulator_naming_no_bundle_is_unaffected() {
+            for (program, application) in [
+                ("Apple_Terminal", "Terminal"),
+                ("WezTerm", "WezTerm"),
+                ("ghostty", "Ghostty"),
+            ] {
+                let stripped = program.strip_suffix(".app").unwrap_or(program);
+                assert!(
+                    names_agree(&folded(stripped), &folded(application)),
+                    "{program} should agree with {application}"
+                );
+            }
+        }
     }
 }
 

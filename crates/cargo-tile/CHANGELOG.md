@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report test progress, not just build progress. `cargo nextest run` counts its tests the way cargo counts units, and the working-directory heading names which count is on screen: `building`, then `testing`. Runs with no terminal report too -- nextest draws no bar there, so the count is read from its per-test lines instead.
 
 ### Fixed
+- The attract screen finds iTerm2's windows again, so it draws the desktop of the display the terminal is on. `TERM_PROGRAM` names a bundle, `iTerm.app`, and the `.app` was being compared as part of the name -- matching nothing, which left the frontmost application's window standing in for the terminal's.
+- The attract screen falls back to the nearest display, not the primary, when the terminal's window centre lands on no display at all.
+- The moving-band attract screen draws the desktop across the whole of each cell rather than only through the character's ink, so the colours line up with the picture instead of scattering to whichever corner each glyph puts its ink in.
 - The attract screen draws at the right scale on a Retina display. The terminal reports its text area in the display's pixels while everything it is measured against is in points, so every cell came out twice its size -- the screen covered the window's full width but died just under halfway down it, with the desktop itself showing through the rest.
 - The attract screen no longer leaves its bottom row unpainted when the window stands the full height of the display.
 - The attract screen draws the desktop behind its own window rather than behind a sibling terminal window of the same size. Titling both windows yourself stopped the old marker from taking, and size alone cannot tell two equal windows apart.
