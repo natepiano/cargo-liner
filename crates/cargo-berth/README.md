@@ -304,7 +304,7 @@ terminal and emitted no line. The corresponding `--json` run emitted the facts
 below.
 
 The full envelope schema — every payload variant and every journal record type —
-is in [docs/cargo-berth/json-contract.md](../../docs/cargo-berth/json-contract.md).
+is in [JSON and journal contract](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/json-contract.md).
 
 ## Configuration
 
@@ -329,7 +329,7 @@ and an unreadable file are configuration errors.
 ## Recovery and identity
 
 How edit authorization resolves, how bypasses are audited, and how to recover a
-damaged ledger are in [docs/cargo-berth/operations.md](../../docs/cargo-berth/operations.md).
+damaged ledger are in [Operations](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/operations.md).
 
 ## Process exit codes
 
@@ -349,7 +349,18 @@ The meanings in this table are the executable's public contract:
 Every JSON response has the six common envelope fields `verb`, `status`,
 `exit_code`, `reservations`, `blocked_by`, and `message`, followed by a typed
 `payload`. The payload variants are in
-[docs/cargo-berth/json-contract.md](../../docs/cargo-berth/json-contract.md).
+[JSON and journal contract](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/json-contract.md).
+
+## Where the rest of the documentation lives
+
+This crate is one member of a workspace, and the longer references sit in the
+repository at `docs/cargo-berth/` rather than inside the published package. The
+links below are absolute so they resolve from crates.io as well as a checkout.
+
+- [JSON and journal contract](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/json-contract.md) — the envelope `--json`
+  emits, every payload variant, and every journal record type.
+- [Operations](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/operations.md) — how edit authorization resolves, how
+  bypasses are audited, and how to recover a damaged ledger.
 
 ## Deliberate omissions
 
