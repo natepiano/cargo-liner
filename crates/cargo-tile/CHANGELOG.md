@@ -69,6 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report the state of an invocation the lead command is driving, not just the lead's own. A nested cargo -- `cargo doc` under a `cargo port` lint run, say -- waiting on the build-directory lock now says `blocked` on its own row; before, every row but the lead was left blank. A row with no capture of its own stays blank rather than borrowing the reading from the row above it.
 
 ### Changed
+- The moving-text attract screen's fast and slow runs of lines now merge into one another instead of meeting at a hard edge. The speed change was concentrated into a narrow run of lines in the middle of each span, which read as a boundary between two blocks; it is spread across the whole span now.
+- The moving-text attract screen starts a quarter slower than it did.
+- The moving-text attract screen draws its bands at varying thicknesses rather than all one size, so the field reads as a field instead of a ruled grid.
 - The attract screens ask for thirty frames a second rather than one at every poll. A frame of them is every cell of the window and the terminal parses the whole screen for each, while neither animation has motion enough to tell a hundred and twenty-five of them a second apart.
 - The drifting attract screen's fast and slow runs of lines no longer stand where they were dealt: the pattern of speeds travels along the field at half a line a second, so a line drifts from a fast run into a slow one and back.
 - The attract screen's fade now takes about twice as long to cross, so `a` reads as the screen changing hands rather than as a cut.

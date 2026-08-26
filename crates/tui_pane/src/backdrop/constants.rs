@@ -130,8 +130,9 @@ pub(super) const WHOLE_PERCENT: u32 = 100;
 /// Well under [`DEFAULT_BAND_SPEED`]: the band is one strip and the eye
 /// tracks it, while this fills the window, and a whole window of
 /// characters moving at the strip's speed is a texture nothing can be
-/// read out of.
-pub(super) const DEFAULT_TEXT_SPEED: u32 = 12;
+/// read out of. Lowered a quarter from the twelve it opened at, which
+/// still read as quick enough to skim over rather than watch.
+pub(super) const DEFAULT_TEXT_SPEED: u32 = 9;
 /// How far the lines' own speeds stand from the field's before anything
 /// has changed it, as a percentage of that speed either way, and the
 /// floor the spread is opened back to when the lines are sent apart.
@@ -199,6 +200,33 @@ pub(super) const TEXT_LANE_COLUMNS: usize = 16;
 /// together, and shallow enough that an ordinary window holds a slow
 /// lane, a fast one, and something in between.
 pub(super) const TEXT_LANE_ROWS: usize = 8;
+/// How far a lane's thickness is drawn either side of the nominal, as a
+/// percentage of it.
+///
+/// The lanes were cut to one thickness apiece, and a field of bands all
+/// the same size reads as a ruled grid: the eye finds the repeat and
+/// then sees nothing else. A drawn thickness breaks the repeat without
+/// breaking what a lane is for. At this spread the thickest lane is
+/// about twice the thinnest -- plainly uneven, and still leaving every
+/// lane deep enough to read as one body of text travelling together.
+pub(super) const TEXT_LANE_SPREAD_PERCENT: u32 = 35;
+/// How much of the lane interpolation's curve is kept, as a percentage,
+/// against a straight ramp from one lane's speed to the next.
+///
+/// The curve gives a lane a flat body and does the whole handover in
+/// the middle of the span between two of them. That puts every bit of
+/// the speed change into a narrow run of lines -- and a narrow run
+/// where the speed changes is exactly what the eye reads as a boundary,
+/// with a block of fast lines above it and a block of slow ones below.
+/// A straight ramp spreads the same change across the whole span, so
+/// neighbouring lines are never far apart and one group merges into the
+/// next instead of meeting it at an edge.
+///
+/// Kept a little short of straight rather than at nothing: with no
+/// curve at all the field is one continuous gradient of speeds and the
+/// lines nearest a point stop reading as a group travelling together,
+/// which is what the lanes are for.
+pub(super) const TEXT_LANE_BODY_PERCENT: u32 = 25;
 const _: () = assert!(
     TEXT_LANE_COLUMNS > TEXT_LANE_ROWS,
     "a character cell is taller than it is wide, so a lane needs more \

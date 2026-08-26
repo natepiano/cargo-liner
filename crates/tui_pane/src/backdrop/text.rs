@@ -64,9 +64,11 @@ use super::constants::MICROS_PER_SECOND;
 use super::constants::MIN_TEXT_SPEED;
 use super::constants::SUBCELLS_PER_CELL;
 use super::constants::TEXT_BEHIND_FADE;
+use super::constants::TEXT_LANE_BODY_PERCENT;
 use super::constants::TEXT_LANE_COLUMNS;
 use super::constants::TEXT_LANE_GIVE_PERCENT;
 use super::constants::TEXT_LANE_ROWS;
+use super::constants::TEXT_LANE_SPREAD_PERCENT;
 use super::constants::TEXT_RIPPLE_LINES;
 use super::constants::TEXT_RIPPLE_PERCENT;
 use super::constants::TEXT_WAVE_SUBLINES_PER_SECOND;
@@ -258,13 +260,13 @@ pub struct DriftingText {
     /// travelling together rather than as a field of separate lines.
     /// Pushing the points outward is what makes them read as a slow
     /// group and a fast group rather than as one long gradient.
-    lanes:     Vec<u8>,
+    lanes:     Vec<LanePoint>,
     /// A second, finer run of drawn speeds read at
     /// [`TEXT_RIPPLE_PERCENT`] of its strength, which is what puts
     /// visible variation *inside* a lane: short runs of lines easing
     /// ahead of their group and falling back, without any of them
     /// leaving it.
-    ripple:    Vec<u8>,
+    ripple:    Vec<LanePoint>,
     /// How far the lanes have travelled along the field, in
     /// [`LANE_FRACTION_UNIT`] sub-lines, wrapping at its far end.
     ///
@@ -637,7 +639,7 @@ impl DriftingText {
         let length = usize::from(self.line_length());
         self.lanes = draw_points(count, self.lines_per_lane(), &mut self.xorshift)
             .into_iter()
-            .map(toward_the_ends)
+            .map(LanePoint::toward_the_ends)
             .collect();
         self.ripple = draw_points(count, TEXT_RIPPLE_LINES, &mut self.xorshift);
         // The lanes are a fresh hand, so how far the old one had
@@ -672,12 +674,58 @@ impl DriftingText {
     }
 }
 
+/// One of the field's drawn speeds, and how much of the field it holds.
+///
+/// The speeds were once read off slices of one thickness apiece, which
+/// draws every lane the same size -- and a field of bands all one size
+/// reads as a ruled grid, because the eye finds the repeat and then
+/// stops seeing anything else. Each point carries its own extent
+/// instead, drawn within [`TEXT_LANE_SPREAD_PERCENT`] of the nominal
+/// thickness, so no two lanes running together come out alike.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LanePoint {
+    /// The speed the lines nearest this point drift at.
+    speed:  u8,
+    /// How much of the field this point holds, against what its
+    /// neighbours were dealt. Nominally [`LANE_FRACTION_UNIT`].
+    extent: u32,
+}
+
+impl LanePoint {
+    /// This point with its speed pushed toward the ends of the range,
+    /// its extent untouched. See [`toward_the_ends`].
+    fn toward_the_ends(self) -> Self {
+        Self {
+            speed: toward_the_ends(self.speed),
+            ..self
+        }
+    }
+}
+
+/// How much of the field one lane holds, in [`LANE_FRACTION_UNIT`]s.
+///
+/// Nominally one unit, drawn within [`TEXT_LANE_SPREAD_PERCENT`] of it
+/// either way. Held to at least one: a lane drawn away to nothing would
+/// put two speeds side by side with no gradient between them, which is
+/// the wall the interpolation exists to avoid.
+fn draw_extent(xorshift: &mut Xorshift) -> u32 {
+    let spread = LANE_FRACTION_UNIT.saturating_mul(TEXT_LANE_SPREAD_PERCENT) / WHOLE_PERCENT;
+    let range = usize::try_from(spread.saturating_mul(2).saturating_add(1)).unwrap_or(1);
+    let drawn = u32::try_from(xorshift.index(range)).unwrap_or(0);
+    LANE_FRACTION_UNIT
+        .saturating_sub(spread)
+        .saturating_add(drawn)
+        .max(1)
+}
+
 /// A run of drawn speeds spaced one every `every` lines down a field of
 /// `count` of them, with a point at either end.
 ///
 /// Spacing rather than a count of them, so the same call gives a lane
-/// the same thickness whatever size the field is -- a window twice as
-/// deep gets twice as many lanes rather than lanes twice as deep.
+/// the same nominal thickness whatever size the field is -- a window
+/// twice as deep gets twice as many lanes rather than lanes twice as
+/// deep. Nominal because each point is then dealt its own extent
+/// either side of it: see [`LanePoint`].
 /// Always at least one span, so a field shorter than one lane is still
 /// dealt something to interpolate across.
 ///
@@ -690,20 +738,47 @@ impl DriftingText {
 /// against. A point per slice makes a slow lane, a fast one and
 /// something in between certain whatever is drawn; the shuffle is what
 /// keeps them from arriving in order down the display.
-fn draw_points(count: usize, every: usize, xorshift: &mut Xorshift) -> Vec<u8> {
+fn draw_points(count: usize, every: usize, xorshift: &mut Xorshift) -> Vec<LanePoint> {
     let whole = usize::from(u8::MAX).saturating_add(1);
     let points = (count / every.max(1)).max(1).saturating_add(1);
     let slice = (whole / points).max(1);
-    let mut drawn: Vec<u8> = (0..points)
+    let mut drawn: Vec<LanePoint> = (0..points)
         .map(|index| {
             let low = index.saturating_mul(whole) / points;
-            u8::try_from(low.saturating_add(xorshift.index(slice))).unwrap_or(u8::MAX)
+            LanePoint {
+                speed:  u8::try_from(low.saturating_add(xorshift.index(slice))).unwrap_or(u8::MAX),
+                extent: draw_extent(xorshift),
+            }
         })
         .collect();
     for index in (1..drawn.len()).rev() {
         drawn.swap(index, xorshift.index(index.saturating_add(1)));
     }
     drawn
+}
+
+/// Which lane `along` falls in, and how much extent the lanes ahead of
+/// it take up, so [`speed_at`] can read how far into its own lane a
+/// line stands.
+///
+/// Walked rather than divided: the lanes are dealt uneven extents, so
+/// there is no slice size to divide by. The run is short -- one point
+/// every [`TEXT_LANE_ROWS`] or [`TEXT_LANE_COLUMNS`] lines -- and this
+/// is read once per line per frame.
+///
+/// `along` is always inside the run, since [`speed_at`] scales it by
+/// the extents before calling. The first lane answers for a value that
+/// somehow is not, which is where a field with nothing dealt would land.
+fn span_at(points: &[LanePoint], along: u64) -> (usize, u64) {
+    let mut before: u64 = 0;
+    for (index, point) in points.iter().enumerate() {
+        let next = before.saturating_add(u64::from(point.extent));
+        if along < next {
+            return (index, before);
+        }
+        before = next;
+    }
+    (0, 0)
 }
 
 /// The speed `points` carry a line standing `at` sub-lines along a field
@@ -719,27 +794,38 @@ fn draw_points(count: usize, every: usize, xorshift: &mut Xorshift) -> Vec<u8> {
 /// at either end and does the whole of its travel in the middle, so the
 /// lines nearest a point sit at very nearly its speed and the ones
 /// halfway between two are where the field changes hands.
-fn speed_at(points: &[u8], at: u32, count: u32) -> u8 {
+fn speed_at(points: &[LanePoint], at: u32, count: u32) -> u8 {
     let Some(first) = points.first().copied() else {
         return u8::MAX / 2;
     };
     let spans = points.len();
     let total = u64::from(count).saturating_mul(u64::from(LANE_FRACTION_UNIT));
-    if spans == 0 || total == 0 {
-        return first;
+    let dealt: u64 = points.iter().map(|point| u64::from(point.extent)).sum();
+    if total == 0 || dealt == 0 {
+        return first.speed;
     }
-    let scaled = (u64::from(at) % total).saturating_mul(spans as u64);
-    let between = usize::try_from(scaled / total).unwrap_or(0) % spans;
-    let into = scaled % total;
-    let fraction =
-        u32::try_from(into.saturating_mul(u64::from(LANE_FRACTION_UNIT)) / total).unwrap_or(0);
-    let weight = smoothstep(fraction);
-    let from = u32::from(points.get(between).copied().unwrap_or(first));
+    // The lanes hold uneven shares of the field, so where a line stands
+    // among them is measured against the extents they were dealt rather
+    // than against equal slices of the whole.
+    let along = (u64::from(at) % total).saturating_mul(dealt) / total;
+    let (between, before) = span_at(points, along);
+    let held = points.get(between).copied().unwrap_or(first);
+    let fraction = u32::try_from(
+        along
+            .saturating_sub(before)
+            .saturating_mul(u64::from(LANE_FRACTION_UNIT))
+            / u64::from(held.extent).max(1),
+    )
+    .unwrap_or(0)
+    .min(LANE_FRACTION_UNIT);
+    let weight = merged(fraction);
+    let from = u32::from(held.speed);
     let to = u32::from(
         points
             .get(between.saturating_add(1) % spans)
             .copied()
-            .unwrap_or(first),
+            .unwrap_or(first)
+            .speed,
     );
     let travelled = from.abs_diff(to).saturating_mul(weight) / LANE_FRACTION_UNIT;
     let value = if to >= from {
@@ -826,6 +912,21 @@ fn toward_the_ends(value: u8) -> u8 {
     let along = u32::from(value).saturating_mul(LANE_FRACTION_UNIT) / whole;
     let eased = smoothstep(smoothstep(along));
     u8::try_from(eased.saturating_mul(whole) / LANE_FRACTION_UNIT).unwrap_or(u8::MAX)
+}
+
+/// The weight between two lanes' speeds at `fraction` of the way from
+/// one to the next.
+///
+/// [`smoothstep`] pulled back toward the straight ramp by
+/// [`TEXT_LANE_BODY_PERCENT`], which is what keeps two lanes from
+/// meeting at an edge. See that constant.
+fn merged(fraction: u32) -> u32 {
+    let along = u64::from(fraction.min(LANE_FRACTION_UNIT));
+    let eased = u64::from(smoothstep(fraction));
+    let body = u64::from(TEXT_LANE_BODY_PERCENT);
+    let whole = u64::from(WHOLE_PERCENT);
+    let blended = (eased * body + along * whole.saturating_sub(body)) / whole;
+    u32::try_from(blended).unwrap_or(LANE_FRACTION_UNIT)
 }
 
 /// Smoothstep across [`LANE_FRACTION_UNIT`]: both ends where they were,
@@ -1309,9 +1410,9 @@ mod tests {
     /// it here from a seeded source instead.
     fn dealt_at_rest(count: usize, per_lane: usize, seed: u64) -> Vec<u8> {
         let mut xorshift = Xorshift::seeded(seed);
-        let lanes: Vec<u8> = draw_points(count, per_lane, &mut xorshift)
+        let lanes: Vec<LanePoint> = draw_points(count, per_lane, &mut xorshift)
             .into_iter()
-            .map(toward_the_ends)
+            .map(LanePoint::toward_the_ends)
             .collect();
         let ripple = draw_points(count, TEXT_RIPPLE_LINES, &mut xorshift);
         let total = u32::try_from(count).expect("a small count");
@@ -1327,6 +1428,69 @@ mod tests {
             .collect()
     }
 
+    /// The lanes are not all one thickness. Slices of one size read as
+    /// a ruled grid -- the eye finds the repeat and then sees nothing
+    /// else -- so each point is dealt its own extent, and every extent
+    /// stays within [`TEXT_LANE_SPREAD_PERCENT`] of the nominal so a
+    /// lane still holds enough lines to read as one body of text.
+    #[test]
+    fn the_lanes_are_dealt_uneven_thicknesses() {
+        let mut xorshift = Xorshift::seeded(LANE_TEST_SEEDS[0]);
+        let points = draw_points(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut xorshift);
+        let spread = LANE_FRACTION_UNIT * TEXT_LANE_SPREAD_PERCENT / WHOLE_PERCENT;
+        let extents: Vec<u32> = points.iter().map(|point| point.extent).collect();
+        let thinnest = extents.iter().copied().min().expect("a lane was dealt");
+        let thickest = extents.iter().copied().max().expect("a lane was dealt");
+        assert!(
+            thinnest < thickest,
+            "every lane came out {thinnest} sub-lines thick"
+        );
+        assert!(
+            thinnest >= LANE_FRACTION_UNIT - spread,
+            "a lane of {thinnest} is thinner than the spread allows"
+        );
+        assert!(
+            thickest <= LANE_FRACTION_UNIT + spread,
+            "a lane of {thickest} is thicker than the spread allows"
+        );
+    }
+
+    /// One lane merges into the next rather than meeting it at an edge.
+    ///
+    /// Measured as how much of the range a curve crosses over the
+    /// middle fifth of a span. [`smoothstep`] holds both ends flat and
+    /// does the handover in the middle, so it crosses far more than its
+    /// share there -- and a narrow run of lines carrying most of the
+    /// speed change is the boundary the eye reads. [`merged`] pulls that
+    /// back toward a straight ramp, which crosses exactly its share.
+    #[test]
+    fn the_lanes_merge_rather_than_meeting_at_an_edge() {
+        let tenth = LANE_FRACTION_UNIT / 10;
+        let low = LANE_FRACTION_UNIT / 2 - tenth;
+        let high = LANE_FRACTION_UNIT / 2 + tenth;
+        let crossed = |curve: fn(u32) -> u32| curve(high).abs_diff(curve(low));
+        let ramp = crossed(merged);
+        let curve = crossed(smoothstep);
+        let straight = high - low;
+        assert!(
+            ramp < curve,
+            "the lanes cross {ramp} in the middle where the bare curve crosses {curve}"
+        );
+        assert!(
+            ramp >= straight,
+            "the lanes cross {ramp}, under the {straight} a straight ramp would"
+        );
+    }
+
+    /// Merging the curve back toward a ramp leaves both ends where they
+    /// were, so a line standing on a lane's own point still drifts at
+    /// that lane's speed.
+    #[test]
+    fn merging_leaves_the_ends_of_a_span_alone() {
+        assert_eq!(merged(0), 0);
+        assert_eq!(merged(LANE_FRACTION_UNIT), LANE_FRACTION_UNIT);
+    }
+
     /// The lanes travel, so a line does not keep the speed it was dealt.
     /// Standing still they would hand one line the same number for as
     /// long as anybody watched, which is the thing the wave undoes:
@@ -1335,9 +1499,9 @@ mod tests {
     #[test]
     fn the_lanes_carry_a_line_through_the_range_as_they_travel() {
         let mut xorshift = Xorshift::seeded(LANE_TEST_SEEDS[0]);
-        let lanes: Vec<u8> = draw_points(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut xorshift)
+        let lanes: Vec<LanePoint> = draw_points(LANE_TEST_LINES, TEXT_LANE_ROWS, &mut xorshift)
             .into_iter()
-            .map(toward_the_ends)
+            .map(LanePoint::toward_the_ends)
             .collect();
         let count = u32::try_from(LANE_TEST_LINES).expect("a small count");
         let readings: Vec<u8> = (0..LANE_TEST_LINES)
