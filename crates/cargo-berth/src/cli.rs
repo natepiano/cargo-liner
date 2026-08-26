@@ -1674,7 +1674,16 @@ mod tests {
     }
 
     fn help_for(verb: &str) -> String {
-        Cli::try_parse_from([BINARY_NAME, verb, "--help"])
-            .map_or_else(|error| error.render().to_string(), |_| String::new())
+        let rendered_help = Cli::try_parse_from([BINARY_NAME, verb, "--help"])
+            .map_or_else(|error| error.render().to_string(), |_| String::new());
+
+        normalize_help_whitespace(&rendered_help)
+    }
+
+    fn normalize_help_whitespace(rendered_help: &str) -> String {
+        rendered_help
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }

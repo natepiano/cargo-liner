@@ -275,6 +275,11 @@ pub(crate) enum AuthorizedEditingIdentity {
     },
     /// The process or validated marker identifies this coordination run.
     Run(CoordinationRunId),
+    /// A locked first-touch transaction identifies one run in one worktree.
+    WorktreeRun {
+        coordination_run_id: CoordinationRunId,
+        worktree_id:         WorktreeId,
+    },
     /// No coordination run can be proven for this edit.
     Unidentified,
 }
@@ -390,6 +395,33 @@ impl RetainedReservationSet {
         path_case: PathCase,
     ) -> Vec<ReservationConflict> {
         let authorized_editing_identity = self.resolve_editing_identity(edit_authorization);
+        self.conflicts_for_authorized_edit(candidate, authorized_editing_identity, path_case)
+    }
+
+    /// Evaluate a locked first-touch claim for one exact reservation actor.
+    pub(crate) fn conflicts_for_first_touch(
+        &self,
+        candidate: &ReservationScopeSet,
+        coordination_run_id: CoordinationRunId,
+        worktree_id: WorktreeId,
+        path_case: PathCase,
+    ) -> Vec<ReservationConflict> {
+        self.conflicts_for_authorized_edit(
+            candidate,
+            AuthorizedEditingIdentity::WorktreeRun {
+                coordination_run_id,
+                worktree_id,
+            },
+            path_case,
+        )
+    }
+
+    fn conflicts_for_authorized_edit(
+        &self,
+        candidate: &ReservationScopeSet,
+        authorized_editing_identity: AuthorizedEditingIdentity,
+        path_case: PathCase,
+    ) -> Vec<ReservationConflict> {
         let conflicts = self.conflicts_with_holders(candidate, path_case, |holder| {
             authorized_editing_identity.is_foreign(holder)
         });
@@ -1049,6 +1081,10 @@ impl AuthorizedEditingIdentity {
                 ..
             }
             | Self::Run(coordination_run_id) => holder.actor.run != coordination_run_id,
+            Self::WorktreeRun {
+                coordination_run_id,
+                worktree_id,
+            } => holder.actor.run != coordination_run_id || holder.actor.worktree != worktree_id,
             Self::Unidentified => true,
         }
     }
@@ -1084,6 +1120,13 @@ impl AuthorizedEditingIdentity {
                 ..
             }
             | Self::Run(coordination_run_id) => requester.actor.run == coordination_run_id,
+            Self::WorktreeRun {
+                coordination_run_id,
+                worktree_id,
+            } => {
+                requester.actor.run == coordination_run_id
+                    && requester.actor.worktree == worktree_id
+            },
             Self::Unidentified => false,
         }
     }

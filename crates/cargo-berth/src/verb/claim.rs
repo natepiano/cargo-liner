@@ -748,7 +748,7 @@ fn validate_first_touch_transaction(
         return CommittedActionValidation::Reject(rejection);
     }
     let requested_scopes = prepared_claim.scopes.clone();
-    let conflicts = reservations.conflicts_for_drift(
+    let conflicts = reservations.conflicts_for_first_touch(
         &requested_scopes,
         coordination_run_id,
         worktree_id,
@@ -807,6 +807,11 @@ enum FirstTouchReservationReuse {
     Complete(CommittedActionValidation<FirstTouchClaimRejection, CommittedFirstTouchAcquisition>),
 }
 
+enum FirstTouchProtectedScopeOwnership<'reservation> {
+    AlreadyHeld(&'reservation Reservation),
+    Residual(ReservationScopeSet),
+}
+
 fn reuse_first_touch_reservation(
     reservations: &RetainedReservationSet,
     requested_scopes: ReservationScopeSet,
@@ -816,26 +821,27 @@ fn reuse_first_touch_reservation(
     worktree_id: WorktreeId,
     path_case: PathCase,
 ) -> FirstTouchReservationReuse {
-    let own_active = |reservation: &&Reservation| {
-        is_own_active_blocking_reservation(reservation, coordination_run_id, worktree_id)
-    };
-    let covering = reservations.iter().filter(own_active).find(|reservation| {
-        protected_scopes.as_slice().iter().all(|candidate| {
-            reservation
-                .scopes()
-                .as_slice()
-                .iter()
-                .any(|held| held.contains(candidate, path_case))
-        })
-    });
-    if let Some(reservation) = covering {
-        return already_held_first_touch(reservation, protected_scopes, conflicts);
-    }
-    let existing = reservations
+    let own_active_reservations = reservations
         .iter()
-        .filter(own_active)
+        .filter(|reservation| {
+            is_own_active_blocking_reservation(reservation, coordination_run_id, worktree_id)
+        })
+        .collect::<Vec<_>>();
+    let protected_scopes = match partition_first_touch_protected_scopes(
+        &protected_scopes,
+        &own_active_reservations,
+        path_case,
+    ) {
+        FirstTouchProtectedScopeOwnership::AlreadyHeld(reservation) => {
+            return already_held_first_touch(reservation, protected_scopes, conflicts);
+        },
+        FirstTouchProtectedScopeOwnership::Residual(residual) => residual,
+    };
+    let own_first_touch_reservation = own_active_reservations
+        .iter()
+        .copied()
         .find(|reservation| matches!(reservation.source(), ClaimSource::FirstTouch));
-    let Some(reservation) = existing else {
+    let Some(reservation) = own_first_touch_reservation else {
         return FirstTouchReservationReuse::AppendRequired {
             scopes: protected_scopes,
             conflicts,
@@ -881,6 +887,40 @@ fn reuse_first_touch_reservation(
         },
     };
     FirstTouchReservationReuse::Complete(validation)
+}
+
+fn partition_first_touch_protected_scopes<'reservation>(
+    protected_scopes: &ReservationScopeSet,
+    own_active_reservations: &[&'reservation Reservation],
+    path_case: PathCase,
+) -> FirstTouchProtectedScopeOwnership<'reservation> {
+    let mut covering_reservations = Vec::new();
+    let mut residual = Vec::new();
+    for candidate in protected_scopes.as_slice() {
+        match own_active_reservations.iter().copied().find(|reservation| {
+            reservation
+                .scopes()
+                .as_slice()
+                .iter()
+                .any(|held| held.contains(candidate, path_case))
+        }) {
+            Some(reservation) => covering_reservations.push(reservation),
+            None => residual.push(candidate.clone()),
+        }
+    }
+    if let Ok(residual) = ReservationScopeSet::try_from(residual) {
+        return FirstTouchProtectedScopeOwnership::Residual(residual);
+    }
+
+    // Replay order breaks ties: use the first participating `FirstTouch` reservation,
+    // otherwise the first holder of the first protected scope in normalized set order.
+    let reporting_reservation = own_active_reservations
+        .iter()
+        .copied()
+        .filter(|reservation| matches!(reservation.source(), ClaimSource::FirstTouch))
+        .find(|reservation| covering_reservations.contains(reservation))
+        .unwrap_or(covering_reservations[0]);
+    FirstTouchProtectedScopeOwnership::AlreadyHeld(reporting_reservation)
 }
 
 fn already_held_first_touch(

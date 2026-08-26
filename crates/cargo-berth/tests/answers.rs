@@ -193,26 +193,171 @@ fn proposal_round_trip_records_separate_reasons_and_exact_file_scope() {
     );
 
     assert!(
-        check(repository.path(), "file:crates/a/lib.rs", FIRST_RUN)
+        check(repository.path(), &["file:crates/a/lib.rs"], FIRST_RUN)
             .status
             .success()
     );
     assert!(
-        check(repository.path(), "file:crates/a/lib.rs", SECOND_RUN)
+        check(repository.path(), &["file:crates/a/lib.rs"], SECOND_RUN)
             .status
             .success()
     );
     assert_eq!(
-        check(repository.path(), "file:crates/a/sibling.rs", SECOND_RUN)
+        check(repository.path(), &["file:crates/a/sibling.rs"], SECOND_RUN)
             .status
             .code(),
         Some(1)
     );
     assert_eq!(
-        check(repository.path(), "tree:crates/a", SECOND_RUN)
+        check(repository.path(), &["tree:crates/a"], SECOND_RUN)
             .status
             .code(),
         Some(1)
+    );
+}
+
+#[test]
+fn multi_path_first_touch_does_not_duplicate_answered_scopes() {
+    let repository = initialized_repository();
+    let holder = claim(
+        repository.path(),
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "docs/holder.md",
+        "phase-a",
+        "protect the holder file",
+    );
+    let holder_id = reservation_id(&holder);
+    let proposed = propose_answer(
+        repository.path(),
+        "file:src/lib.rs",
+        SECOND_RUN,
+        "--defer",
+        &holder_id,
+        AnswerReasons::new(
+            "protect the requester file",
+            "the integration order is not known yet",
+        ),
+    );
+    let proposal_envelope = json_output(&proposed);
+    assert_eq!(proposed.status.code(), Some(3));
+    let applied = apply_proposal(
+        repository.path(),
+        "file:src/lib.rs",
+        SECOND_RUN,
+        "--defer",
+        &holder_id,
+        AnswerReasons::new(
+            "protect the requester file",
+            "the integration order is not known yet",
+        ),
+        proposal_token(&proposal_envelope),
+    );
+    assert!(applied.status.success());
+    let answered_reservation_id = reservation_id(&applied);
+    let answered_claim = last_journal_event(repository.path());
+    assert_eq!(answered_claim["authorization"]["kind"], "defer");
+    assert_eq!(
+        answered_claim["scopes"],
+        serde_json::json!([{"kind": "file", "path": "src/lib.rs"}])
+    );
+
+    assert!(
+        check(
+            repository.path(),
+            &["file:src/lib.rs", "file:src/free.rs"],
+            SECOND_RUN,
+        )
+        .status
+        .success()
+    );
+    let first_touch_reservation_id = assert_first_touch_append(repository.path());
+    assert!(
+        check(repository.path(), &["file:src/lib.rs"], FIRST_RUN)
+            .status
+            .success()
+    );
+
+    assert!(
+        check(
+            repository.path(),
+            &["file:src/lib.rs", "file:src/other.rs"],
+            SECOND_RUN,
+        )
+        .status
+        .success()
+    );
+    assert_first_touch_widen(repository.path(), &first_touch_reservation_id);
+    assert!(
+        check(repository.path(), &["file:src/lib.rs"], FIRST_RUN)
+            .status
+            .success()
+    );
+
+    assert_only_answer_reservation_acquires_scope(repository.path(), &answered_reservation_id);
+    retire_answer_carrying_reservation(repository.path(), &answered_reservation_id);
+    let blocked = check(repository.path(), &["file:src/lib.rs"], SECOND_RUN);
+    assert_eq!(blocked.status.code(), Some(1));
+    assert_eq!(
+        json_output(&blocked)["blocked_by"],
+        serde_json::json!([holder_id])
+    );
+}
+
+#[test]
+fn checkpointed_first_touch_reservation_is_neither_reused_nor_widened() {
+    let repository = initialized_repository();
+
+    assert!(
+        check(repository.path(), &["file:src/lib.rs"], SECOND_RUN)
+            .status
+            .success()
+    );
+    let checkpointed_reservation_id = reservation_id_from_last_journal_event(repository.path());
+    assert!(
+        run_berth(
+            repository.path(),
+            ["release", &checkpointed_reservation_id, "--json"],
+        )
+        .status
+        .success()
+    );
+
+    assert!(
+        check(repository.path(), &["file:src/lib.rs"], SECOND_RUN)
+            .status
+            .success()
+    );
+    let replacement = last_journal_event(repository.path());
+    assert_eq!(replacement["op"], "claim");
+    assert_eq!(replacement["source"]["kind"], "first_touch");
+    assert_ne!(replacement["reservation_id"], checkpointed_reservation_id);
+    let replacement_reservation_id = replacement["reservation_id"]
+        .as_str()
+        .expect("replacement reservation identifier should be a string")
+        .to_owned();
+    assert!(
+        run_berth(
+            repository.path(),
+            ["release", &replacement_reservation_id, "--json"],
+        )
+        .status
+        .success()
+    );
+
+    assert!(
+        check(repository.path(), &["file:src/other.rs"], SECOND_RUN)
+            .status
+            .success()
+    );
+    let separate = last_journal_event(repository.path());
+    assert_eq!(separate["op"], "claim");
+    assert_eq!(separate["source"]["kind"], "first_touch");
+    assert_ne!(separate["reservation_id"], checkpointed_reservation_id);
+    assert_ne!(separate["reservation_id"], replacement_reservation_id);
+    assert_eq!(
+        separate["scopes"],
+        serde_json::json!([{"kind": "file", "path": "src/other.rs"}])
     );
 }
 
@@ -484,7 +629,7 @@ fn authorization_survives_holder_lifecycle_changes_but_not_scope_widening() {
             .success()
     );
     assert!(
-        check(repository.path(), "file:src/lib.rs", SECOND_RUN)
+        check(repository.path(), &["file:src/lib.rs"], SECOND_RUN)
             .status
             .success()
     );
@@ -496,7 +641,7 @@ fn authorization_survives_holder_lifecycle_changes_but_not_scope_widening() {
         "checkpointed"
     );
     assert!(
-        check(repository.path(), "file:src/lib.rs", SECOND_RUN)
+        check(repository.path(), &["file:src/lib.rs"], SECOND_RUN)
             .status
             .success()
     );
@@ -508,13 +653,13 @@ fn authorization_survives_holder_lifecycle_changes_but_not_scope_widening() {
         "evidence_revalidated"
     );
     assert!(
-        check(repository.path(), "file:src/lib.rs", SECOND_RUN)
+        check(repository.path(), &["file:src/lib.rs"], SECOND_RUN)
             .status
             .success()
     );
 
     append_widen(repository.path(), &holder_id, "docs/new.rs");
-    let reblocked = check(repository.path(), "file:src/lib.rs", SECOND_RUN);
+    let reblocked = check(repository.path(), &["file:src/lib.rs"], SECOND_RUN);
     assert_eq!(reblocked.status.code(), Some(1));
     assert_eq!(
         json_output(&reblocked)["blocked_by"],
@@ -1011,7 +1156,7 @@ fn answers_are_not_transitive_to_a_third_reservation() {
     );
     append_widen(repository.path(), &third_id, "crates/a/lib.rs");
 
-    let blocked_by_third = check(repository.path(), "file:crates/a/lib.rs", SECOND_RUN);
+    let blocked_by_third = check(repository.path(), &["file:crates/a/lib.rs"], SECOND_RUN);
     let blocked_envelope = json_output(&blocked_by_third);
     assert_eq!(blocked_by_third.status.code(), Some(1));
     assert_eq!(
@@ -1073,12 +1218,12 @@ fn defer_records_both_integration_holds_and_permits_both_editors() {
         holder_id
     );
     assert!(
-        check(defer_repository.path(), "file:src/lib.rs", FIRST_RUN)
+        check(defer_repository.path(), &["file:src/lib.rs"], FIRST_RUN)
             .status
             .success()
     );
     assert!(
-        check(defer_repository.path(), "file:src/lib.rs", SECOND_RUN)
+        check(defer_repository.path(), &["file:src/lib.rs"], SECOND_RUN)
             .status
             .success()
     );
@@ -1264,9 +1409,94 @@ fn apply_proposal_without_run(
     )
 }
 
-fn check(repository_root: &Path, scope: &str, run: &str) -> Output {
+fn assert_first_touch_append(repository_root: &Path) -> String {
+    let appended = last_journal_event(repository_root);
+    assert_eq!(appended["op"], "claim");
+    assert_eq!(appended["source"]["kind"], "first_touch");
+    assert_eq!(appended["authorization"]["kind"], "no_conflict");
+    assert_eq!(
+        appended["scopes"],
+        serde_json::json!([{"kind": "file", "path": "src/free.rs"}])
+    );
+    appended["reservation_id"]
+        .as_str()
+        .expect("first-touch reservation identifier should be a string")
+        .to_owned()
+}
+
+fn assert_first_touch_widen(repository_root: &Path, first_touch_reservation_id: &str) {
+    let widened = last_journal_event(repository_root);
+    assert_eq!(widened["op"], "widen");
+    assert_eq!(widened["reservation_id"], first_touch_reservation_id);
+    assert_eq!(widened["authorization"]["kind"], "no_conflict");
+    assert_eq!(
+        widened["added_scopes"],
+        serde_json::json!([{"kind": "file", "path": "src/other.rs"}])
+    );
+}
+
+fn reservation_id_from_last_journal_event(repository_root: &Path) -> String {
+    last_journal_event(repository_root)["reservation_id"]
+        .as_str()
+        .expect("reservation identifier should be a string")
+        .to_owned()
+}
+
+fn assert_only_answer_reservation_acquires_scope(
+    repository_root: &Path,
+    answered_reservation_id: &str,
+) {
+    let answered_scope_acquisitions = journal_events(repository_root)
+        .into_iter()
+        .filter(|event| event["actor"]["run"] == SECOND_RUN)
+        .filter(|event| {
+            event["scopes"]
+                .as_array()
+                .or_else(|| event["added_scopes"].as_array())
+                .is_some_and(|scopes| scopes.iter().any(|scope| scope["path"] == "src/lib.rs"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(answered_scope_acquisitions.len(), 1);
+    assert_eq!(
+        answered_scope_acquisitions[0]["reservation_id"],
+        answered_reservation_id
+    );
+    assert_eq!(
+        answered_scope_acquisitions[0]["authorization"]["kind"],
+        "defer"
+    );
+}
+
+fn retire_answer_carrying_reservation(repository_root: &Path, reservation_id: &str) {
+    assert!(
+        run_berth(repository_root, ["release", reservation_id, "--json"])
+            .status
+            .success()
+    );
+    let abandoned = run_berth(
+        repository_root,
+        [
+            "resolve",
+            reservation_id,
+            "--abandon",
+            "--why",
+            "retire the answer-carrying reservation",
+            "--json",
+        ],
+    );
+    assert!(abandoned.status.success());
+    assert_eq!(
+        json_output(&abandoned)["payload"]["data"]["disposition"]["kind"],
+        "abandoned"
+    );
+}
+
+fn check(repository_root: &Path, scopes: &[&str], run: &str) -> Output {
+    let arguments = std::iter::once("check")
+        .chain(scopes.iter().copied())
+        .chain(std::iter::once("--json"));
     Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(["check", scope, "--json"])
+        .args(arguments)
         .current_dir(repository_root)
         .env(RUN_ENVIRONMENT, run)
         .output()

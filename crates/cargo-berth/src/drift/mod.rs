@@ -950,6 +950,10 @@ impl DriftActingIdentity {
                 run,
                 worktree: current_worktree,
             },
+            AuthorizedEditingIdentity::WorktreeRun {
+                coordination_run_id: run,
+                worktree_id: worktree,
+            } => Self::Run { run, worktree },
             AuthorizedEditingIdentity::Unidentified => Self::Unidentified {
                 worktree: current_worktree,
             },
