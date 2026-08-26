@@ -2,13 +2,8 @@
 
 ## Items to consider
 
-- [ ] **Split `drift/` into submodules and move its constants into `constants.rs`**
-  - Target: `cargo-berth` crate implementation — `crates/cargo-berth/src/drift/mod.rs`
-  - Why needed: `drift/mod.rs` is the largest module in the crate and declares no production submodules. Its constants sit inline where `git/`, `ledger/`, and `worktree/` each use a `constants.rs`, and first-touch post-write attribution landed in the same module. Style rules 5, 15, 16, 18, 26, 30.
-  - Completion condition: `drift/mod.rs` declares production submodules and holds no inline constants; `verify.sh lint cargo-berth` stays green and the drift acceptance tests pass unchanged.
-
 - [ ] **Name internal semantic roles and contain external optionality at its boundary**
-  - Target: `cargo-berth` crate implementation — `crates/cargo-berth/src/drift/mod.rs`, `crates/cargo-berth/src/board/mod.rs`, `crates/cargo-berth/src/cli.rs`, and `crates/cargo-berth/src/ledger/mod.rs`
+  - Target: `cargo-berth` crate implementation — `crates/cargo-berth/src/drift/classification.rs`, `crates/cargo-berth/src/board/mod.rs`, `crates/cargo-berth/src/cli.rs`, and `crates/cargo-berth/src/ledger/mod.rs`
   - Why needed: `PriorClassification` does not name its pre-lock foreign-path role; `ReservationRow` names a display representation rather than retained reservation state; and `CommandExecution` does not state who owns presenting the result. In addition, `overlap_authorization_request` exposes six bare `Option<T>` parameters and `EditAuthorization::resolve_from_sources` accepts `Option<OsString>`, so readers must infer overlap-selection and environment-identity states from representation and control flow.
   - Completion condition: rename the three types to `PreLockForeignPathClassification`, `BoardReservationState`, and `CommandOutputOwnership::{CallerRendersResponse, BoardPresentedAndTerminalRestored}`; convert the overlap parser fields into one semantic overlap-selection type before an internal helper receives them; convert the environment lookup immediately into a semantic type distinguishing absent, invalid, and identified coordination-run state; leave bare `Option<T>` only in clap-owned fields and externally required trait signatures; keep serialized payloads unchanged; and keep the cargo-berth test, board, drift, and lint gates green.
 
@@ -43,7 +38,7 @@
   - Completion condition: in a session rooted in `hana`, a planted SessionStart notice appears, an edit to a foreign-held path is refused and prevented, an edit to a free path journals a first-touch claim, and a forced Bash write surfaces a PostToolUse incursion.
 
 - [ ] **Replace stale-identity retry loops with source-specific typed recovery**
-  - Target: `crates/cargo-berth/src/verb/{claim,check}.rs`, `crates/cargo-berth/src/drift/mod.rs`, `crates/cargo-berth/src/output.rs`, `/Users/natemccoy/.claude/scripts/berth/claim_state.py`, and the canonical PreToolUse and PostToolUse shims.
+  - Target: `crates/cargo-berth/src/verb/{claim,check}.rs`, `crates/cargo-berth/src/drift/execution.rs`, `crates/cargo-berth/src/output.rs`, `/Users/natemccoy/.claude/scripts/berth/claim_state.py`, and the canonical PreToolUse and PostToolUse shims.
   - Why needed: a stale session mapping or worktree marker survives an ordinary rerun, but `ClaimError::into_output` currently advises only "retry the command"; first-touch `check`, `claim`, and `drift` propagate that result, and PreToolUse can therefore repeat the same refusal indefinitely.
   - Completion condition: stale session mappings and stale marker runs are distinct typed claim/check/drift rejection reasons; the former directs the caller to restart the coordination run or name active work, the latter directs the caller to remove or replace the marker; every canonical consumer renders those recoveries without parsing `message`; and fixtures prove both paths and assert that neither recommends an unqualified rerun.
 
