@@ -40,16 +40,13 @@ impl DriftActingIdentity {
             AuthorizedEditingIdentity::SessionReservation {
                 coordination_run_id: run,
                 reservation_id: reservation,
+                worktree_id: worktree,
             } => Self::Session {
                 run,
                 reservation,
-                worktree: current_worktree,
+                worktree,
             },
-            AuthorizedEditingIdentity::Run(run) => Self::Run {
-                run,
-                worktree: current_worktree,
-            },
-            AuthorizedEditingIdentity::WorktreeRun {
+            AuthorizedEditingIdentity::Run {
                 coordination_run_id: run,
                 worktree_id: worktree,
             } => Self::Run { run, worktree },

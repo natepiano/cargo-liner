@@ -576,7 +576,10 @@ fn mutation_run_id(worktree_context: &WorktreeContext) -> CoordinationRunId {
             coordination_run_id,
             ..
         }
-        | EditAuthorization::Environment(coordination_run_id)
+        | EditAuthorization::Environment {
+            coordination_run_id,
+            ..
+        }
         | EditAuthorization::Marker {
             coordination_run_id,
             ..

@@ -141,10 +141,12 @@ pub(crate) enum IncursionIncidentStatus {
     },
 }
 
-/// Whether a drift observation matches an already-outstanding incident.
+/// Whether a drift observation matches an incident replay already carries.
 pub(crate) enum IncursionObservation {
     /// Replay already carries the same unanswered incident.
     AlreadyOutstanding(IncursionIncidentId),
+    /// A disposition already answered this exact overlap, which must not be raised again.
+    AlreadyAnswered,
     /// This observation requires a newly minted incident record.
     NewlyObserved(IncursionIncidentId),
 }
@@ -265,18 +267,22 @@ pub(crate) enum WidenScopeBinding {
     Blocked(Vec<ReservationConflict>),
 }
 
-/// The run identity permitted to receive its reservation-specific overlap answers.
+/// The actor identity permitted to receive its reservation-specific overlap answers.
+///
+/// Every identified variant names a worktree, because the worktree is the coordination
+/// unit. Two runs in one worktree share one filesystem, one index, and one branch, so
+/// they cannot produce the merge collision a reservation exists to prevent.
 #[derive(Clone, Copy)]
 pub(crate) enum AuthorizedEditingIdentity {
     /// A live session mapping identifies one exact reservation.
     SessionReservation {
         coordination_run_id: CoordinationRunId,
         reservation_id:      ReservationId,
+        worktree_id:         WorktreeId,
     },
-    /// The process or validated marker identifies this coordination run.
-    Run(CoordinationRunId),
-    /// A locked first-touch transaction identifies one run in one worktree.
-    WorktreeRun {
+    /// The environment, a validated marker, or a locked first-touch transaction
+    /// identifies this coordination run in this worktree.
+    Run {
         coordination_run_id: CoordinationRunId,
         worktree_id:         WorktreeId,
     },
@@ -294,28 +300,27 @@ impl RetainedReservationSet {
         Ok(reservations)
     }
 
-    /// Evaluate claim acquisition for one coordination run.
+    /// Evaluate claim acquisition for one acting worktree.
     pub(crate) fn conflicts_for_claim(
         &self,
         candidate: &ReservationScopeSet,
-        coordination_run_id: CoordinationRunId,
-        path_case: PathCase,
-    ) -> Vec<ReservationConflict> {
-        self.conflicts(candidate, path_case, |holder| {
-            holder.actor.run != coordination_run_id
-        })
-    }
-
-    /// Evaluate changed paths against edit-blocking reservations of another acting identity.
-    fn conflicts_for_drift(
-        &self,
-        candidate: &ReservationScopeSet,
-        acting_run_id: CoordinationRunId,
         acting_worktree_id: WorktreeId,
         path_case: PathCase,
     ) -> Vec<ReservationConflict> {
         self.conflicts(candidate, path_case, |holder| {
-            holder.actor.run != acting_run_id || holder.actor.worktree != acting_worktree_id
+            holder.actor.worktree != acting_worktree_id
+        })
+    }
+
+    /// Evaluate changed paths against edit-blocking reservations of another worktree.
+    fn conflicts_for_drift(
+        &self,
+        candidate: &ReservationScopeSet,
+        acting_worktree_id: WorktreeId,
+        path_case: PathCase,
+    ) -> Vec<ReservationConflict> {
+        self.conflicts(candidate, path_case, |holder| {
+            holder.actor.worktree != acting_worktree_id
         })
     }
 
@@ -323,20 +328,18 @@ impl RetainedReservationSet {
     pub(crate) fn blocking_coverage_for_drift(
         &self,
         candidate: &ReservationScopeSet,
-        acting_run_id: CoordinationRunId,
         acting_worktree_id: WorktreeId,
         path_case: PathCase,
     ) -> DriftBlockingCoverage {
         if !self
             .conflicts_with_holders(candidate, path_case, |holder| {
-                holder.actor.run == acting_run_id && holder.actor.worktree == acting_worktree_id
+                holder.actor.worktree == acting_worktree_id
             })
             .is_empty()
         {
             return DriftBlockingCoverage::SameIdentity;
         }
-        let conflicts =
-            self.conflicts_for_drift(candidate, acting_run_id, acting_worktree_id, path_case);
+        let conflicts = self.conflicts_for_drift(candidate, acting_worktree_id, path_case);
         if conflicts.is_empty() {
             DriftBlockingCoverage::Unclaimed
         } else {
@@ -408,7 +411,7 @@ impl RetainedReservationSet {
     ) -> Vec<ReservationConflict> {
         self.conflicts_for_authorized_edit(
             candidate,
-            AuthorizedEditingIdentity::WorktreeRun {
+            AuthorizedEditingIdentity::Run {
                 coordination_run_id,
                 worktree_id,
             },
@@ -460,7 +463,7 @@ impl RetainedReservationSet {
                     && reservation.actor.run == coordination_run_id
                     && reservation.actor.worktree == worktree_id
             }),
-            EditAuthorization::Environment(_)
+            EditAuthorization::Environment { .. }
             | EditAuthorization::Marker { .. }
             | EditAuthorization::Unidentified => false,
         };
@@ -474,25 +477,33 @@ impl RetainedReservationSet {
                     && reservation.actor.worktree == worktree_id
             }),
             EditAuthorization::Session { .. }
-            | EditAuthorization::Environment(_)
+            | EditAuthorization::Environment { .. }
             | EditAuthorization::Unidentified => false,
         };
         match edit_authorization {
             EditAuthorization::Session {
                 coordination_run_id,
                 reservation_id,
-                ..
+                worktree_id,
             } if session_is_active => AuthorizedEditingIdentity::SessionReservation {
                 coordination_run_id,
                 reservation_id,
+                worktree_id,
             },
-            EditAuthorization::Environment(coordination_run_id) => {
-                AuthorizedEditingIdentity::Run(coordination_run_id)
+            EditAuthorization::Environment {
+                coordination_run_id,
+                worktree_id,
+            } => AuthorizedEditingIdentity::Run {
+                coordination_run_id,
+                worktree_id,
             },
             EditAuthorization::Marker {
                 coordination_run_id,
-                ..
-            } if marker_is_active => AuthorizedEditingIdentity::Run(coordination_run_id),
+                worktree_id,
+            } if marker_is_active => AuthorizedEditingIdentity::Run {
+                coordination_run_id,
+                worktree_id,
+            },
             EditAuthorization::Session { .. }
             | EditAuthorization::Marker { .. }
             | EditAuthorization::Unidentified => AuthorizedEditingIdentity::Unidentified,
@@ -526,25 +537,36 @@ impl RetainedReservationSet {
             ))
     }
 
-    /// Classify an observed incursion against unanswered incidents from replay.
+    /// Classify an observed incursion against the incidents replay already carries.
+    ///
+    /// An answered incident silences the same overlap for good. The straying edit stays
+    /// on disk after a disposition is recorded, so re-raising it would hand the caller a
+    /// warning no answer can ever clear.
     pub(crate) fn observe_incursion(
         &self,
         reservation_id: ReservationId,
         foreign_reservation_ids: &ForeignReservationIdSet,
         paths: &IncursionPathSet,
     ) -> IncursionObservation {
-        self.incursion_incidents
-            .iter()
-            .find(|incident| {
-                incident.reservation_id() == reservation_id
-                    && incident.foreign_reservation_ids() == foreign_reservation_ids
-                    && incident.paths() == paths
-                    && matches!(incident.status(), IncursionIncidentStatus::Outstanding)
-            })
-            .map_or_else(
-                || IncursionObservation::NewlyObserved(IncursionIncidentId::new()),
-                |incident| IncursionObservation::AlreadyOutstanding(incident.id()),
-            )
+        let mut answered = false;
+        for incident in &self.incursion_incidents {
+            if incident.reservation_id() != reservation_id
+                || incident.foreign_reservation_ids() != foreign_reservation_ids
+                || incident.paths() != paths
+            {
+                continue;
+            }
+            match incident.status() {
+                IncursionIncidentStatus::Outstanding => {
+                    return IncursionObservation::AlreadyOutstanding(incident.id());
+                },
+                IncursionIncidentStatus::Resolved { .. } => answered = true,
+            }
+        }
+        if answered {
+            return IncursionObservation::AlreadyAnswered;
+        }
+        IncursionObservation::NewlyObserved(IncursionIncidentId::new())
     }
 
     /// Iterate over the incursion incidents that still require a disposition.
@@ -1074,17 +1096,17 @@ impl RetainedReservationSet {
 }
 
 impl AuthorizedEditingIdentity {
+    /// Whether this holder belongs to another worktree, the only foreignness that blocks.
+    ///
+    /// A holder in the caller's own worktree is never foreign, however many coordination
+    /// runs that worktree has minted. A run mismatch alone once blocked here, which let a
+    /// worktree block itself with a reservation an earlier session in the same checkout
+    /// had left behind.
     fn is_foreign(self, holder: &Reservation) -> bool {
         match self {
-            Self::SessionReservation {
-                coordination_run_id,
-                ..
-            }
-            | Self::Run(coordination_run_id) => holder.actor.run != coordination_run_id,
-            Self::WorktreeRun {
-                coordination_run_id,
-                worktree_id,
-            } => holder.actor.run != coordination_run_id || holder.actor.worktree != worktree_id,
+            Self::SessionReservation { worktree_id, .. } | Self::Run { worktree_id, .. } => {
+                holder.actor.worktree != worktree_id
+            },
             Self::Unidentified => true,
         }
     }
@@ -1113,19 +1135,14 @@ impl AuthorizedEditingIdentity {
             })
     }
 
+    /// Whether this reservation is one the caller's own worktree holds.
+    ///
+    /// Overlap answers bind the worktree that recorded them, so a later run in the same
+    /// worktree inherits them along with the reservations they were recorded against.
     fn identifies_requester(self, requester: &Reservation) -> bool {
         match self {
-            Self::SessionReservation {
-                coordination_run_id,
-                ..
-            }
-            | Self::Run(coordination_run_id) => requester.actor.run == coordination_run_id,
-            Self::WorktreeRun {
-                coordination_run_id,
-                worktree_id,
-            } => {
-                requester.actor.run == coordination_run_id
-                    && requester.actor.worktree == worktree_id
+            Self::SessionReservation { worktree_id, .. } | Self::Run { worktree_id, .. } => {
+                requester.actor.worktree == worktree_id
             },
             Self::Unidentified => false,
         }
@@ -1457,6 +1474,7 @@ mod tests {
     use serde_json::json;
 
     use super::DriftBlockingCoverage;
+    use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
     use super::ReservationEvidenceState;
     use super::RetainedReservationSet;
@@ -1469,10 +1487,11 @@ mod tests {
     use crate::scope::ReservationScopeSet;
     use crate::scope::ScopeKind;
 
+    const FOREIGN_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a22";
+    const INCIDENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a23";
     const PROTECTED_TIP: &str = "2222222222222222222222222222222222222222";
     const REPLACEMENT_TIP: &str = "3333333333333333333333333333333333333333";
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
-    const RUN_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
     const SECOND_RUN_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
     const TRUNK_OID: &str = "1111111111111111111111111111111111111111";
     const WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
@@ -1644,51 +1663,127 @@ mod tests {
     }
 
     #[test]
-    fn drift_blocking_coverage_requires_both_run_and_worktree_identity()
+    fn drift_blocking_coverage_follows_worktree_identity_and_ignores_the_run()
     -> Result<(), Box<dyn std::error::Error>> {
         let [claim, ..] = lifecycle_events()?;
         let reservations = RetainedReservationSet::replay(&[claim])?;
         let candidate = serde_json::from_value::<ReservationScopeSet>(json!([
             {"path": "src/lib.rs", "kind": "file"}
         ]))?;
-        let run_id = RUN_ID.parse::<CoordinationRunId>()?;
-        let second_run_id = SECOND_RUN_ID.parse::<CoordinationRunId>()?;
         let worktree_id = WORKTREE_ID.parse::<WorktreeId>()?;
         let second_worktree_id = SECOND_WORKTREE_ID.parse::<WorktreeId>()?;
 
         assert!(matches!(
-            reservations.blocking_coverage_for_drift(
-                &candidate,
-                run_id,
-                worktree_id,
-                PathCase::Sensitive,
-            ),
+            reservations.blocking_coverage_for_drift(&candidate, worktree_id, PathCase::Sensitive),
             DriftBlockingCoverage::SameIdentity
         ));
-        let DriftBlockingCoverage::Foreign(different_run) = reservations
-            .blocking_coverage_for_drift(
-                &candidate,
-                second_run_id,
-                worktree_id,
-                PathCase::Sensitive,
-            )
-        else {
-            return Err(std::io::Error::other("another run should be foreign").into());
-        };
-        assert_eq!(different_run[0].reservation_id.to_string(), RESERVATION_ID);
         let DriftBlockingCoverage::Foreign(different_worktree) = reservations
-            .blocking_coverage_for_drift(
-                &candidate,
-                run_id,
-                second_worktree_id,
-                PathCase::Sensitive,
-            )
+            .blocking_coverage_for_drift(&candidate, second_worktree_id, PathCase::Sensitive)
         else {
             return Err(std::io::Error::other("another worktree should be foreign").into());
         };
         assert_eq!(
             different_worktree[0].reservation_id.to_string(),
             RESERVATION_ID
+        );
+        Ok(())
+    }
+
+    /// A worktree must never block itself with a reservation it holds.
+    ///
+    /// A release whose integration proof is later lost returns to blocking, and the next
+    /// session in that checkout mints a new run id. Deciding foreignness by run made the
+    /// holder foreign to its own worktree, which offered the caller only the overlap menu
+    /// — a negotiation between two parties where there was one.
+    #[test]
+    fn a_reblocked_reservation_blocks_another_worktree_and_never_its_own()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let [claim, checkpoint, integrated, release, rewritten, _] = lifecycle_events()?;
+        let reservations =
+            RetainedReservationSet::replay(&[claim, checkpoint, integrated, release, rewritten])?;
+        let candidate = serde_json::from_value::<ReservationScopeSet>(json!([
+            {"path": "src/lib.rs", "kind": "file"}
+        ]))?;
+        let second_run_id = SECOND_RUN_ID.parse::<CoordinationRunId>()?;
+        let worktree_id = WORKTREE_ID.parse::<WorktreeId>()?;
+        let second_worktree_id = SECOND_WORKTREE_ID.parse::<WorktreeId>()?;
+        assert_eq!(
+            reservations
+                .reservation(RESERVATION_ID.parse::<ReservationId>()?)?
+                .edit_blocking_status,
+            EditBlockingStatus::Blocking
+        );
+
+        assert!(
+            reservations
+                .conflicts_for_first_touch(
+                    &candidate,
+                    second_run_id,
+                    worktree_id,
+                    PathCase::Sensitive,
+                )
+                .is_empty()
+        );
+        assert!(
+            reservations
+                .conflicts_for_claim(&candidate, worktree_id, PathCase::Sensitive)
+                .is_empty()
+        );
+        let foreign_first_touch = reservations.conflicts_for_first_touch(
+            &candidate,
+            second_run_id,
+            second_worktree_id,
+            PathCase::Sensitive,
+        );
+        assert_eq!(
+            foreign_first_touch[0].reservation_id.to_string(),
+            RESERVATION_ID
+        );
+        let foreign_claim =
+            reservations.conflicts_for_claim(&candidate, second_worktree_id, PathCase::Sensitive);
+        assert_eq!(foreign_claim[0].reservation_id.to_string(), RESERVATION_ID);
+        Ok(())
+    }
+
+    #[test]
+    fn an_answered_incursion_is_never_raised_again_for_the_same_overlap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let [claim, ..] = lifecycle_events()?;
+        let incursion = journal_event(
+            2,
+            &json!({
+                "op": "incursion",
+                "incident_id": INCIDENT_ID,
+                "reservation_id": RESERVATION_ID,
+                "foreign_reservation_ids": [FOREIGN_RESERVATION_ID],
+                "paths": ["src/lib.rs"],
+            }),
+        )?;
+        let resolution = journal_event(
+            3,
+            &json!({"op": "resolve_incursion", "incident_id": INCIDENT_ID}),
+        )?;
+
+        let outstanding = RetainedReservationSet::replay(&[claim.clone(), incursion.clone()])?;
+        let incident = outstanding
+            .incursion_incidents()
+            .next()
+            .ok_or("replay should retain the incursion")?;
+        let foreign_reservation_ids = incident.foreign_reservation_ids().clone();
+        let paths = incident.paths().clone();
+        assert!(matches!(
+            outstanding.observe_incursion(reservation_id, &foreign_reservation_ids, &paths),
+            IncursionObservation::AlreadyOutstanding(_)
+        ));
+
+        let answered = RetainedReservationSet::replay(&[claim, incursion, resolution])?;
+        assert!(
+            matches!(
+                answered.observe_incursion(reservation_id, &foreign_reservation_ids, &paths),
+                IncursionObservation::AlreadyAnswered
+            ),
+            "the straying edit stays on disk, so a fresh incident could never be cleared"
         );
         Ok(())
     }

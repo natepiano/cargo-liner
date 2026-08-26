@@ -112,7 +112,9 @@ pub(crate) enum EditAuthorization {
 
 `resolve_from_sources` consults the harness session mapping first, then `CARGO_BERTH_RUN`, then the on-disk coordination-run marker, and falls back to `Unidentified`. `session/mod.rs` keeps `session-identities.json` current: `apply_journal_event` publishes a mapping on `Claim` and `Widen`, and retires every entry pointing at the reservation on `Checkpoint` and `Release`. Marker removal reports `CoordinationRunMarkerRemoval::{Removed, AlreadyAbsent, PreservedDifferentRun, PreservedMalformed}` — a marker belonging to another run or one that cannot be parsed is left in place rather than deleted.
 
-Worktree identity is persistent, not derived from the environment. Two runs distinguished only by `CARGO_BERTH_RUN` inside the same worktree collapse into one actor once that variable is unset, because the on-disk marker files outlive it. A genuinely foreign holder requires a real `git worktree add`.
+Worktree identity is persistent, not derived from the environment. Every identified `EditAuthorization` variant therefore carries the worktree id alongside the run, minted on first use by `mint_or_read_worktree_id` so an invocation that precedes any claim still resolves it.
+
+The worktree, not the coordination run, is the coordination unit. Edit blocking compares worktree identity alone: `AuthorizedEditingIdentity::is_foreign` and `identifies_requester`, `conflicts_for_claim`, `conflicts_for_drift`, and `blocking_coverage_for_drift` all ignore the run. Two runs inside one worktree share one filesystem, one index, and one branch, so they cannot produce the merge collision a reservation exists to prevent; blocking them was a defect that made a worktree block itself. A genuinely foreign holder requires a real `git worktree add`, which is what the integration tests build through their `foreign_worktree` fixture.
 
 ### Claiming and the first-touch path
 

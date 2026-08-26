@@ -240,9 +240,10 @@ impl SequenceRunValidation {
                 reservation_id,
                 worktree_id,
             },
-            EditAuthorization::Environment(coordination_run_id) => {
-                Self::Independent(coordination_run_id)
-            },
+            EditAuthorization::Environment {
+                coordination_run_id,
+                ..
+            } => Self::Independent(coordination_run_id),
             EditAuthorization::Marker {
                 coordination_run_id,
                 worktree_id,

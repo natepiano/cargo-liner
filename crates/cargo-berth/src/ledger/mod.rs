@@ -179,7 +179,12 @@ pub(crate) enum EditAuthorization {
         worktree_id:         WorktreeId,
     },
     /// The process environment explicitly supplied the coordination run.
-    Environment(CoordinationRunId),
+    Environment {
+        /// The run named by `CARGO_BERTH_RUN`.
+        coordination_run_id: CoordinationRunId,
+        /// The worktree the invocation runs in, which decides the same-worktree exemption.
+        worktree_id:         WorktreeId,
+    },
     /// The worktree marker supplied a run paired with its minted worktree identity.
     Marker {
         /// The run named by the marker.
@@ -223,7 +228,7 @@ impl EditAuthorization {
         worktree_administrative_directory: &Path,
     ) -> Self {
         if let SessionIdentityLookup::Mapped(identity) = session_identity
-            && let Ok(worktree_id) = read_worktree_id(worktree_administrative_directory)
+            && let Ok(worktree_id) = mint_or_read_worktree_id(worktree_administrative_directory)
         {
             return Self::Session {
                 coordination_run_id: identity.coordination_run_id(),
@@ -234,7 +239,14 @@ impl EditAuthorization {
         if let Some(environment) = environment_run
             .and_then(|value| value.into_string().ok())
             .and_then(|value| value.parse().ok())
-            .map(Self::Environment)
+            .and_then(|coordination_run_id| {
+                mint_or_read_worktree_id(worktree_administrative_directory)
+                    .ok()
+                    .map(|worktree_id| Self::Environment {
+                        coordination_run_id,
+                        worktree_id,
+                    })
+            })
         {
             return environment;
         }
@@ -243,7 +255,7 @@ impl EditAuthorization {
             .ok()
             .and_then(|value| value.trim().parse().ok())
             .and_then(|coordination_run_id| {
-                read_worktree_id(worktree_administrative_directory)
+                mint_or_read_worktree_id(worktree_administrative_directory)
                     .ok()
                     .map(|worktree_id| Self::Marker {
                         coordination_run_id,
@@ -1219,12 +1231,20 @@ pub(crate) fn worktree_identity(
     administrative_directory: &Path,
     kind: WorktreeKind,
 ) -> Result<WorktreeIdentity, LedgerError> {
+    Ok(WorktreeIdentity {
+        id: mint_or_read_worktree_id(administrative_directory)?,
+        kind,
+    })
+}
+
+/// Mint the worktree's identity on first use and read it on every later one.
+fn mint_or_read_worktree_id(administrative_directory: &Path) -> Result<WorktreeId, LedgerError> {
     let identity_path = administrative_directory.join(WORKTREE_ID_FILE_NAME);
-    let id = match fs::read_to_string(&identity_path) {
+    match fs::read_to_string(&identity_path) {
         Ok(identifier) => identifier
             .trim()
             .parse()
-            .map_err(LedgerError::InvalidWorktreeId)?,
+            .map_err(LedgerError::InvalidWorktreeId),
         Err(error) if error.kind() == ErrorKind::NotFound => {
             let new_id = WorktreeId::new();
             let mut identity_file = match OpenOptions::new()
@@ -1234,17 +1254,16 @@ pub(crate) fn worktree_identity(
             {
                 Ok(identity_file) => identity_file,
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    return worktree_identity(administrative_directory, kind);
+                    return mint_or_read_worktree_id(administrative_directory);
                 },
                 Err(error) => return Err(LedgerError::Io(error)),
             };
             identity_file.write_all(format!("{new_id}\n").as_bytes())?;
             identity_file.sync_all()?;
-            new_id
+            Ok(new_id)
         },
-        Err(error) => return Err(LedgerError::Io(error)),
-    };
-    Ok(WorktreeIdentity { id, kind })
+        Err(error) => Err(LedgerError::Io(error)),
+    }
 }
 
 /// Read an existing worktree identity without minting a replacement.
@@ -1863,7 +1882,7 @@ mod tests {
         let marker_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c"
             .parse::<CoordinationRunId>()
             .expect("marker run should parse");
-        let marker_worktree =
+        let administrative_worktree =
             worktree_identity(administrative_directory.path(), WorktreeKind::Linked)
                 .expect("marker worktree identity should mint")
                 .id;
@@ -1881,7 +1900,10 @@ mod tests {
                 Some(environment_run.to_string().into()),
                 administrative_directory.path(),
             ),
-            EditAuthorization::Environment(environment_run)
+            EditAuthorization::Environment {
+                coordination_run_id: environment_run,
+                worktree_id:         administrative_worktree,
+            }
         );
 
         let session_run = CoordinationRunId::new();
@@ -1900,7 +1922,7 @@ mod tests {
             EditAuthorization::Session {
                 coordination_run_id: session_run,
                 reservation_id:      session_reservation,
-                worktree_id:         marker_worktree,
+                worktree_id:         administrative_worktree,
             }
         );
 
@@ -1912,7 +1934,7 @@ mod tests {
             ),
             EditAuthorization::Marker {
                 coordination_run_id: marker_run,
-                worktree_id:         marker_worktree,
+                worktree_id:         administrative_worktree,
             }
         );
 
@@ -1928,7 +1950,10 @@ mod tests {
                 Some(environment_run.to_string().into()),
                 administrative_directory.path(),
             ),
-            EditAuthorization::Environment(environment_run)
+            EditAuthorization::Environment {
+                coordination_run_id: environment_run,
+                worktree_id:         administrative_worktree,
+            }
         );
         assert_eq!(
             EditAuthorization::resolve_from_sources(
@@ -1944,7 +1969,7 @@ mod tests {
                 &administrative_directory.path().join(LEDGER_DIRECTORY_NAME),
             ),
             EditAuthorization::Session { .. }
-                | EditAuthorization::Environment(_)
+                | EditAuthorization::Environment { .. }
                 | EditAuthorization::Marker { .. }
                 | EditAuthorization::Unidentified
         ));

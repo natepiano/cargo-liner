@@ -8,6 +8,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Child;
 use std::process::Command;
 use std::process::Output;
@@ -18,6 +19,7 @@ use std::time::Instant;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const INITIAL_COMMIT_TAG: &str = "initial-state";
@@ -131,6 +133,7 @@ fn resolve_reports_failed_session_mapping_retirement() {
 #[test]
 fn integrated_evidence_returns_to_blocking_after_trunk_rewrite_without_git_on_check() {
     let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
@@ -170,7 +173,7 @@ fn integrated_evidence_returns_to_blocking_after_trunk_rewrite_without_git_on_ch
     let empty_path = tempdir().expect("empty PATH should exist");
     let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
-        .current_dir(repository.path())
+        .current_dir(&second_root)
         .env("PATH", empty_path.path())
         .env(RUN_ENVIRONMENT, SECOND_RUN)
         .output()
@@ -395,6 +398,7 @@ fn failed_journal_append_does_not_move_the_retention_ref() {
 #[test]
 fn unresolvable_trunk_materializes_object_unknown_for_git_free_checks() {
     let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
@@ -435,7 +439,7 @@ fn unresolvable_trunk_materializes_object_unknown_for_git_free_checks() {
     let empty_path = tempdir().expect("empty PATH should exist");
     let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
-        .current_dir(repository.path())
+        .current_dir(&second_root)
         .env("PATH", empty_path.path())
         .env(RUN_ENVIRONMENT, SECOND_RUN)
         .output()
@@ -540,6 +544,35 @@ fn lock_contention_is_retryable_while_corrupt_journal_is_unreadable() {
     assert_eq!(unreadable_json["exit_code"], 4);
     assert_eq!(unreadable_json["status"], "ledger_unreadable");
     assert_eq!(unreadable_json["payload"]["kind"], "no_facts");
+}
+
+/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+///
+/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
+/// no longer names a second party. The returned directory owns the worktree and
+/// must outlive its use.
+fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
+    let directory = tempdir().expect("foreign worktree parent should exist");
+    let root = directory.path().join(name);
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            name,
+            root.to_str()
+                .expect("foreign worktree path should be UTF-8"),
+        ],
+    );
+    let configuration = root.join(CONFIGURATION_PATH);
+    if let Some(parent) = configuration.parent() {
+        fs::create_dir_all(parent).expect("foreign worktree configuration should have a directory");
+    }
+    fs::copy(repository.path().join(CONFIGURATION_PATH), configuration)
+        .expect("foreign worktree should share the repository configuration");
+    (directory, root)
 }
 
 fn initialized_repository() -> TempDir {

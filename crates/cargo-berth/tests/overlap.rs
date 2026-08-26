@@ -8,6 +8,7 @@
 use std::fs;
 use std::fs::File;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
@@ -64,18 +65,13 @@ fn blocked_claim_names_holder_provenance_and_appends_nothing() {
         ],
     );
     assert!(sibling_claim.status.success());
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let journal_before = fs::read(repository.path().join(JOURNAL_PATH))
         .expect("journal should read before rejection");
 
     let blocked = run_berth(
-        repository.path(),
-        &[
-            "claim",
-            "file:crates/hana_kana/src/lib.rs",
-            "--run",
-            THIRD_RUN,
-            "--json",
-        ],
+        &second_root,
+        &["claim", "file:crates/hana_kana/src/lib.rs", "--json"],
     );
     let envelope = json_output(&blocked);
 
@@ -118,16 +114,11 @@ fn file_and_tree_scopes_differ_for_descendants() {
         .status
         .success()
     );
+    let (_file_second_directory, file_second_root) = foreign_worktree(&file_repository, "second");
     assert!(
         run_berth(
-            file_repository.path(),
-            &[
-                "claim",
-                "file:generated/child.rs",
-                "--run",
-                SECOND_RUN,
-                "--json"
-            ]
+            &file_second_root,
+            &["claim", "file:generated/child.rs", "--json"]
         )
         .status
         .success()
@@ -142,15 +133,10 @@ fn file_and_tree_scopes_differ_for_descendants() {
         .status
         .success()
     );
+    let (_tree_second_directory, tree_second_root) = foreign_worktree(&tree_repository, "second");
     let blocked = run_berth(
-        tree_repository.path(),
-        &[
-            "claim",
-            "file:generated/child.rs",
-            "--run",
-            SECOND_RUN,
-            "--json",
-        ],
+        &tree_second_root,
+        &["claim", "file:generated/child.rs", "--json"],
     );
     assert_eq!(blocked.status.code(), Some(1));
 }
@@ -167,15 +153,10 @@ fn ignore_case_blocks_component_case_variants() {
         .success()
     );
 
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let blocked = run_berth(
-        repository.path(),
-        &[
-            "claim",
-            "file:crates/hana/src/lib.rs",
-            "--run",
-            SECOND_RUN,
-            "--json",
-        ],
+        &second_root,
+        &["claim", "file:crates/hana/src/lib.rs", "--json"],
     );
 
     assert_eq!(blocked.status.code(), Some(1));
@@ -215,9 +196,10 @@ fn check_reuses_its_runs_reservation_without_git_or_a_duplicate_append() {
     let lock_before =
         fs::read(repository.path().join(LOCK_PATH)).expect("lock should read before check");
     let empty_path = tempdir().expect("empty PATH directory should exist");
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
 
-    let own_check = run_check_without_git(repository.path(), empty_path.path(), FIRST_RUN);
-    let foreign_check = run_check_without_git(repository.path(), empty_path.path(), SECOND_RUN);
+    let own_check = run_check_without_git(repository.path(), empty_path.path(), Some(FIRST_RUN));
+    let foreign_check = run_check_without_git(&second_root, empty_path.path(), None);
 
     assert!(
         own_check.status.success(),
@@ -417,13 +399,14 @@ fn blocked_check_returns_holder_decision_facts_without_appending() {
         .output()
         .expect("first-touch holder check should run");
     assert!(holder.status.success());
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let journal_before = fs::read(repository.path().join(JOURNAL_PATH))
         .expect("journal should read before blocked check");
 
     let blocked = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:shared.rs", "--json"])
-        .current_dir(repository.path())
-        .env(RUN_ENVIRONMENT, SECOND_RUN)
+        .current_dir(&second_root)
+        .env_remove(RUN_ENVIRONMENT)
         .output()
         .expect("foreign check should run");
     let envelope = json_output(&blocked);
@@ -456,6 +439,7 @@ fn concurrent_first_touch_checks_choose_one_holder_under_the_mutation_lock() {
     mutation_lock
         .lock()
         .expect("test should hold mutation lock");
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let first_ready_path = repository.path().join("first-lock-ready");
     let second_ready_path = repository.path().join("second-lock-ready");
     let first = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
@@ -469,8 +453,8 @@ fn concurrent_first_touch_checks_choose_one_holder_under_the_mutation_lock() {
         .expect("first concurrent check should start");
     let second = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:raced.rs", "--json"])
-        .current_dir(repository.path())
-        .env(RUN_ENVIRONMENT, SECOND_RUN)
+        .current_dir(&second_root)
+        .env_remove(RUN_ENVIRONMENT)
         .env(MUTATION_LOCK_READY_PATH_ENVIRONMENT, &second_ready_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -550,13 +534,13 @@ fn check_does_not_replay_a_foreign_conflict_after_configuration_is_removed() {
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
     );
     assert!(claim.status.success());
-    fs::remove_file(repository.path().join(CONFIGURATION_PATH))
-        .expect("configuration should be removed");
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    fs::remove_file(second_root.join(CONFIGURATION_PATH)).expect("configuration should be removed");
 
     let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
-        .current_dir(repository.path())
-        .env(RUN_ENVIRONMENT, SECOND_RUN)
+        .current_dir(&second_root)
+        .env_remove(RUN_ENVIRONMENT)
         .output()
         .expect("cargo-berth check should run");
     let envelope = json_output(&check);
@@ -661,10 +645,8 @@ fn blocked_message_names_every_holder() {
         );
     }
 
-    let blocked = run_berth(
-        repository.path(),
-        &["claim", "file:src/lib.rs", "--run", SECOND_RUN, "--json"],
-    );
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let blocked = run_berth(&second_root, &["claim", "file:src/lib.rs", "--json"]);
 
     assert_eq!(blocked.status.code(), Some(1));
     let envelope = json_output(&blocked);
@@ -695,10 +677,8 @@ fn a_first_touch_holder_block_names_the_verbs_that_clear_it() {
             .expect("a clear check should mint a first-touch reservation")
             .to_owned();
 
-    let blocked = run_berth(
-        repository.path(),
-        &["claim", "file:touched.rs", "--run", SECOND_RUN, "--json"],
-    );
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let blocked = run_berth(&second_root, &["claim", "file:touched.rs", "--json"]);
 
     assert_eq!(blocked.status.code(), Some(1));
     let envelope = json_output(&blocked);
@@ -778,16 +758,14 @@ fn unpaired_plan_flags_are_usage_errors_and_rejection_sweeps_stale_marker() {
         .status
         .success()
     );
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     fs::write(
         repository.path().join(MARKER_PATH),
         format!("{THIRD_RUN}\n"),
     )
     .expect("newer marker should write");
 
-    let rejected = run_berth(
-        repository.path(),
-        &["claim", "file:Cargo.toml", "--run", SECOND_RUN, "--json"],
-    );
+    let rejected = run_berth(&second_root, &["claim", "file:Cargo.toml", "--json"]);
 
     assert_eq!(rejected.status.code(), Some(1));
     assert!(
@@ -835,12 +813,46 @@ fn initialized_repository(path_case_setting: PathCaseSetting) -> TempDir {
     repository
 }
 
-fn run_check_without_git(repository_root: &Path, path: &Path, run: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+///
+/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
+/// no longer simulates a second party. The returned directory owns the worktree and
+/// must outlive its use.
+fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
+    let directory = tempdir().expect("foreign worktree parent should exist");
+    let root = directory.path().join(name);
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            name,
+            root.to_str()
+                .expect("foreign worktree path should be UTF-8"),
+        ],
+    );
+    let configuration = root.join(CONFIGURATION_PATH);
+    if let Some(parent) = configuration.parent() {
+        fs::create_dir_all(parent).expect("foreign worktree configuration should have a directory");
+    }
+    fs::copy(repository.path().join(CONFIGURATION_PATH), configuration)
+        .expect("foreign worktree should share the repository configuration");
+    (directory, root)
+}
+
+fn run_check_without_git(worktree_root: &Path, path: &Path, run: Option<&str>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-berth"));
+    command
         .args(["check", "file:src/lib.rs", "--json"])
-        .current_dir(repository_root)
-        .env("PATH", path)
-        .env(RUN_ENVIRONMENT, run)
+        .current_dir(worktree_root)
+        .env("PATH", path);
+    match run {
+        Some(run) => command.env(RUN_ENVIRONMENT, run),
+        None => command.env_remove(RUN_ENVIRONMENT),
+    };
+    command
         .output()
         .expect("cargo-berth check should run without git")
 }

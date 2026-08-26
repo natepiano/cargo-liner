@@ -247,7 +247,10 @@ fn coordination_run_id(worktree_context: &WorktreeContext) -> CoordinationRunId 
             coordination_run_id: run,
             ..
         }
-        | EditAuthorization::Environment(run)
+        | EditAuthorization::Environment {
+            coordination_run_id: run,
+            ..
+        }
         | EditAuthorization::Marker {
             coordination_run_id: run,
             ..

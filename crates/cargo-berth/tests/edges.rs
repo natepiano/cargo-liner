@@ -16,6 +16,7 @@ use std::thread;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const ALERT_BRANCH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_ALERT_BRANCH";
 const EXECUTABLE_PERMISSIONS: u32 = 0o755;
 const FIFTH_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
@@ -55,7 +56,8 @@ fn claim_time_directions_keep_the_embedded_edge_and_claim_event_id() {
 #[test]
 fn deferred_ordering_is_replayable_and_duplicate_or_reverse_resolution_is_rejected() {
     let repository = initialized_repository();
-    let (holder_id, requester_id) = deferred_pair(repository.path());
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
 
     let sequenced = sequence(
         repository.path(),
@@ -124,7 +126,8 @@ fn deferred_ordering_is_replayable_and_duplicate_or_reverse_resolution_is_reject
 fn sequence_rejects_a_stale_post_reconciliation_marker_and_carries_alerts() {
     let repository = initialized_repository();
     commit_configuration(repository.path());
-    let (holder_id, requester_id) = deferred_pair(repository.path());
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
     let worktrees = tempdir().expect("worktree parent should exist");
     let orphan_root = add_worktree(repository.path(), worktrees.path(), "orphan-alert");
     fs::write(orphan_root.join("orphan.txt"), "orphan work\n").expect("orphan source should write");
@@ -180,10 +183,12 @@ fn sequence_rejects_a_stale_post_reconciliation_marker_and_carries_alerts() {
 #[test]
 fn sequence_reports_an_inactive_session_mapping_without_a_marker_diagnostic() {
     let repository = initialized_repository();
-    let (holder_id, requester_id) = deferred_pair(repository.path());
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
     let session_id = "stale-sequence-session";
     let mapped_claim = run_berth_with_session(
-        repository.path(),
+        &third_root,
         &[
             "claim",
             "file:session-sequence",
@@ -200,12 +205,9 @@ fn sequence_reports_an_inactive_session_mapping_without_a_marker_diagnostic() {
     let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
     let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
     assert!(
-        run_berth(
-            repository.path(),
-            &["release", &mapped_reservation_id, "--json"],
-        )
-        .status
-        .success()
+        run_berth(&third_root, &["release", &mapped_reservation_id, "--json"])
+            .status
+            .success()
     );
     fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
 
@@ -239,7 +241,8 @@ fn sequence_reports_an_inactive_session_mapping_without_a_marker_diagnostic() {
 #[test]
 fn concurrent_opposite_resolutions_append_exactly_one_edge() {
     let repository = initialized_repository();
-    let (holder_id, requester_id) = deferred_pair(repository.path());
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
     let repository_root = repository.path().to_path_buf();
     let first_holder = holder_id.clone();
     let first_requester = requester_id.clone();
@@ -285,7 +288,8 @@ fn reservation_and_ordering_edge_limits_have_distinct_typed_outcomes() {
     );
 
     let edge_repository = initialized_repository();
-    let (holder_id, requester_id) = deferred_pair(edge_repository.path());
+    let (_edge_second_directory, edge_second_root) = foreign_worktree(&edge_repository, "second");
+    let (holder_id, requester_id) = deferred_pair(edge_repository.path(), &edge_second_root);
     set_config_limit(edge_repository.path(), "maximum_ordering_edges", 0);
     let over_limit = sequence(
         edge_repository.path(),
@@ -857,10 +861,11 @@ fn unavailable_predecessor_object_holds_instead_of_satisfying_the_edge() {
 
 fn assert_claim_time_direction(flag: &str, direction: &str) {
     let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let holder = claim(repository.path(), "tree:src", FIRST_RUN);
     let holder_id = reservation_id(&holder);
     let proposal = run_berth(
-        repository.path(),
+        &second_root,
         &[
             "claim",
             "file:src/lib.rs",
@@ -877,7 +882,7 @@ fn assert_claim_time_direction(flag: &str, direction: &str) {
     );
     let proposal_token = proposal_token(&proposal);
     let applied = run_berth(
-        repository.path(),
+        &second_root,
         &[
             "claim",
             "file:src/lib.rs",
@@ -905,11 +910,11 @@ fn assert_claim_time_direction(flag: &str, direction: &str) {
     );
 }
 
-fn deferred_pair(repository_root: &Path) -> (String, String) {
-    let holder = claim(repository_root, "tree:src", FIRST_RUN);
+fn deferred_pair(holder_root: &Path, requester_root: &Path) -> (String, String) {
+    let holder = claim(holder_root, "tree:src", FIRST_RUN);
     let holder_id = reservation_id(&holder);
     let proposal = run_berth(
-        repository_root,
+        requester_root,
         &[
             "claim",
             "file:src/lib.rs",
@@ -926,7 +931,7 @@ fn deferred_pair(repository_root: &Path) -> (String, String) {
     );
     let proposal_token = proposal_token(&proposal);
     let requester = run_berth(
-        repository_root,
+        requester_root,
         &[
             "claim",
             "file:src/lib.rs",
@@ -1145,6 +1150,35 @@ fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
         .expect("git output should be UTF-8")
         .trim()
         .to_owned()
+}
+
+/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+///
+/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
+/// no longer names a second party. The returned directory owns the worktree and
+/// must outlive its use.
+fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
+    let directory = tempdir().expect("foreign worktree parent should exist");
+    let root = directory.path().join(name);
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            name,
+            root.to_str()
+                .expect("foreign worktree path should be UTF-8"),
+        ],
+    );
+    let configuration = root.join(CONFIGURATION_PATH);
+    if let Some(parent) = configuration.parent() {
+        fs::create_dir_all(parent).expect("foreign worktree configuration should have a directory");
+    }
+    fs::copy(repository.path().join(CONFIGURATION_PATH), configuration)
+        .expect("foreign worktree should share the repository configuration");
+    (directory, root)
 }
 
 fn initialized_repository() -> TempDir {

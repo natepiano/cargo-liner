@@ -151,7 +151,8 @@ impl DriftEffectBuilder {
                 &foreign_reservation_ids,
                 &paths,
             ) {
-                IncursionObservation::AlreadyOutstanding(incident_id) => incident_id,
+                IncursionObservation::AlreadyAnswered => None,
+                IncursionObservation::AlreadyOutstanding(incident_id) => Some(incident_id),
                 IncursionObservation::NewlyObserved(incident_id) => {
                     operations.push(JournalOperation::Incursion {
                         incident_id,
@@ -159,14 +160,16 @@ impl DriftEffectBuilder {
                         foreign_reservation_ids: foreign_reservation_ids.clone(),
                         paths: paths.clone(),
                     });
-                    incident_id
+                    Some(incident_id)
                 },
             };
-            effects.push(DriftEffect::Incursion {
-                incident_id,
-                foreign_reservation_ids,
-                paths,
-            });
+            if let Some(incident_id) = incident_id {
+                effects.push(DriftEffect::Incursion {
+                    incident_id,
+                    foreign_reservation_ids,
+                    paths,
+                });
+            }
         }
         if let (Ok(foreign_reservation_ids), Ok(paths)) = (
             ForeignReservationIdSet::try_from(self.collision_reservations),
@@ -347,10 +350,5 @@ fn blocking_coverage(
     }]) else {
         return DriftBlockingCoverage::Unclaimed;
     };
-    reservations.blocking_coverage_for_drift(
-        &candidate,
-        subject.actor().run,
-        subject.actor().worktree,
-        path_case,
-    )
+    reservations.blocking_coverage_for_drift(&candidate, subject.actor().worktree, path_case)
 }

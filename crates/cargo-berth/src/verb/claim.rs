@@ -176,7 +176,7 @@ struct PreparedClaim {
 
 struct ClaimValidationContext {
     run_validation:         ClaimRunValidation,
-    coordination_run_id:    CoordinationRunId,
+    worktree_id:            WorktreeId,
     path_case:              PathCase,
     requester:              OverlapRequester,
     overlap_authorization:  OverlapAuthorizationRequest,
@@ -443,7 +443,7 @@ fn acquire(claim_request: ClaimRequest) -> Result<Enrollment<ClaimExecution>, Cl
             prepared_claim,
             ClaimValidationContext {
                 run_validation: claim_run_validation,
-                coordination_run_id: actor_run_id,
+                worktree_id: worktree_identity.id,
                 path_case,
                 requester,
                 overlap_authorization,
@@ -676,7 +676,7 @@ fn validate_claim_transaction(
 ) -> TransactionValidation<ClaimRejection> {
     let ClaimValidationContext {
         run_validation,
-        coordination_run_id,
+        worktree_id,
         path_case,
         requester,
         overlap_authorization,
@@ -702,7 +702,7 @@ fn validate_claim_transaction(
         },
     };
     let conflicts =
-        reservations.conflicts_for_claim(&prepared_claim.scopes, coordination_run_id, path_case);
+        reservations.conflicts_for_claim(&prepared_claim.scopes, worktree_id, path_case);
     match overlap_authorization {
         OverlapAuthorizationRequest::Absent if conflicts.is_empty() => {
             TransactionValidation::Append(Box::new(
@@ -1121,9 +1121,10 @@ impl ClaimCoordinationRunSelection {
                         reservation_id,
                         worktree_id,
                     },
-                    EditAuthorization::Environment(coordination_run_id) => {
-                        ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id)
-                    },
+                    EditAuthorization::Environment {
+                        coordination_run_id,
+                        ..
+                    } => ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id),
                     EditAuthorization::Marker {
                         coordination_run_id,
                         worktree_id,

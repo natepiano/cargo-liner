@@ -73,6 +73,7 @@ fn full_classification_covers_silent_and_widen_rows() {
     assert!(!journal_text(covered_repository.path()).contains("\"op\":\"widen\""));
 
     let widened_repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&widened_repository, "second");
     let widened_id = claim(widened_repository.path(), "file:claimed.txt", FIRST_RUN);
     fs::write(widened_repository.path().join("untracked.txt"), "new\n")
         .expect("untracked path should write");
@@ -101,7 +102,7 @@ fn full_classification_covers_silent_and_widen_rows() {
     fs::remove_file(widened_repository.path().join(MARKER_PATH))
         .expect("coordination marker should remove");
     let replayed_block = run_berth_with_run(
-        widened_repository.path(),
+        &second_root,
         &["check", "file:untracked.txt", "--json"],
         SECOND_RUN,
     );
@@ -312,10 +313,11 @@ fn incursion_incident_round_trip_deduplicates_and_resolves() {
         1
     );
 
-    assert_new_incident_after_resolution(&incursion_repository, &subject_id, &incident_id);
+    assert_resolution_silences_the_same_overlap(&incursion_repository, &subject_id, &incident_id);
 }
 
-fn assert_new_incident_after_resolution(
+/// The straying edit stays on disk, so a disposition has to settle the overlap for good.
+fn assert_resolution_silences_the_same_overlap(
     incursion_repository: &TempDir,
     subject_id: &str,
     original_incident_id: &str,
@@ -324,7 +326,7 @@ fn assert_new_incident_after_resolution(
         incursion_repository.path(),
         &["--full", "--reservation", subject_id],
     );
-    assert_eq!(observed_after_resolution.status.code(), Some(1));
+    assert_eq!(observed_after_resolution.status.code(), Some(0));
     let incident_ids = journal_events(incursion_repository.path())
         .into_iter()
         .filter(|event| event["op"] == "incursion")
@@ -335,9 +337,11 @@ fn assert_new_incident_after_resolution(
                 .to_owned()
         })
         .collect::<Vec<_>>();
-    assert_eq!(incident_ids.len(), 2);
-    assert_eq!(incident_ids[0], original_incident_id);
-    assert_ne!(incident_ids[0], incident_ids[1]);
+    assert_eq!(
+        incident_ids,
+        vec![original_incident_id.to_owned()],
+        "an answered incursion must not be raised again for the same overlap"
+    );
 }
 
 #[test]
@@ -464,29 +468,48 @@ fn post_commit_uses_same_run_and_worktree_reservations_as_coverage() {
 }
 
 #[test]
-fn post_commit_treats_another_run_in_the_same_worktree_as_foreign() {
+fn post_commit_treats_only_another_worktree_as_foreign() {
     let repository = initialized_repository();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "foreign");
     let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
-    let subject_id = claim(repository.path(), "file:subject.txt", SECOND_RUN);
+    claim(repository.path(), "file:subject.txt", SECOND_RUN);
     fs::write(repository.path().join("held.txt"), "entered holder scope\n")
         .expect("holder path should write");
     git(repository.path(), &["add", "held.txt"]);
 
-    let committed = git_output(repository.path(), &["commit", "-m", "enter other run"]);
-    let warning = String::from_utf8_lossy(&committed.stderr);
+    let same_worktree = git_output(repository.path(), &["commit", "-m", "enter the other run"]);
 
-    assert!(committed.status.success());
+    assert!(same_worktree.status.success());
+    assert!(
+        !String::from_utf8_lossy(&same_worktree.stderr).contains("Incursion"),
+        "a second run in the holder's own worktree is the same actor"
+    );
+    assert!(
+        journal_events(repository.path())
+            .iter()
+            .all(|event| event["op"] != "incursion")
+    );
+
+    let foreign_id = claim(&foreign_root, "file:foreign.txt", THIRD_RUN);
+    fs::write(foreign_root.join("held.txt"), "entered holder scope\n")
+        .expect("foreign path should write");
+    git(&foreign_root, &["add", "held.txt"]);
+
+    let foreign = git_output(&foreign_root, &["commit", "-m", "enter the holder scope"]);
+    let warning = String::from_utf8_lossy(&foreign.stderr);
+
+    assert!(foreign.status.success());
     assert!(warning.contains("Incursion"));
     assert!(warning.contains(&holder_id));
-    assert!(warning.contains(&subject_id));
+    assert!(warning.contains(&foreign_id));
     let incursion = journal_events(repository.path())
         .into_iter()
-        .find(|event| event["op"] == "incursion" && event["reservation_id"] == subject_id)
-        .expect("the other run should record an incursion");
+        .find(|event| event["op"] == "incursion" && event["reservation_id"] == foreign_id)
+        .expect("the foreign worktree should record an incursion");
     let incident_id = incursion["incident_id"]
         .as_str()
         .expect("incursion should carry an incident id");
-    assert!(warning.contains(&format!("resolve {subject_id} --incursion {incident_id}")));
+    assert!(warning.contains(&format!("resolve {foreign_id} --incursion {incident_id}")));
     assert_eq!(
         incursion["foreign_reservation_ids"],
         serde_json::json!([holder_id])
@@ -708,18 +731,18 @@ fn session_mapping_attributes_post_commit_widening_with_two_active_reservations(
 #[test]
 fn drift_widen_records_existing_answer_coverage_for_a_scope_bound_answer() {
     let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let holder_id = claim(repository.path(), "tree:shared", FIRST_RUN);
     let subject_id = claim_with_override(
-        repository.path(),
+        &second_root,
         "file:shared/approved.txt",
         SECOND_RUN,
         &holder_id,
     );
-    fs::write(repository.path().join("outside.txt"), "new scope\n")
-        .expect("new scope path should write");
+    fs::write(second_root.join("outside.txt"), "new scope\n").expect("new scope path should write");
 
     let widened = run_berth_with_run(
-        repository.path(),
+        &second_root,
         &["drift", "--full", "--reservation", &subject_id, "--json"],
         SECOND_RUN,
     );
@@ -1148,6 +1171,35 @@ fn traced_drift(repository_root: &Path, arguments: &[&str]) -> TracedDrift {
 fn assert_no_expensive_or_metadata_command(commands: &[String]) {
     assert!(!commands.iter().any(|command| command == "rev-list"));
     assert!(!commands.iter().any(|command| command == "metadata"));
+}
+
+/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+///
+/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
+/// no longer names a second party. The returned directory owns the worktree and
+/// must outlive its use.
+fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
+    let directory = tempdir().expect("foreign worktree parent should exist");
+    let root = directory.path().join(name);
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            name,
+            root.to_str()
+                .expect("foreign worktree path should be UTF-8"),
+        ],
+    );
+    let configuration = root.join(CONFIGURATION_PATH);
+    if let Some(parent) = configuration.parent() {
+        fs::create_dir_all(parent).expect("foreign worktree configuration should have a directory");
+    }
+    fs::copy(repository.path().join(CONFIGURATION_PATH), configuration)
+        .expect("foreign worktree should share the repository configuration");
+    (directory, root)
 }
 
 fn initialized_repository() -> TempDir {

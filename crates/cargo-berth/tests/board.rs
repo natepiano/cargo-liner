@@ -21,6 +21,7 @@ use std::time::Instant;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const BOARD_LOCKED_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_BINARY: &str = "git";
@@ -158,14 +159,10 @@ fn board_outside_a_git_worktree_reports_the_same_unreadable_facts_in_both_modes(
 #[test]
 fn resolved_deferral_moves_to_answer_audit_with_both_reasons() {
     let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let predecessor = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
-    let deferred = defer_claim(
-        repository.path(),
-        "file:src/lib.rs",
-        SECOND_RUN,
-        &predecessor_id,
-    );
+    let deferred = defer_claim(&second_root, "file:src/lib.rs", SECOND_RUN, &predecessor_id);
     let deferred_id = reservation_id(&deferred);
     let sequenced = run_berth(
         repository.path(),
@@ -352,10 +349,11 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
         ),
     ] {
         let repository = initialized_repository();
+        let (_second_directory, second_root) = foreign_worktree(&repository, "second");
         let blocker = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
         let blocker_id = reservation_id(&blocker);
         let answered = answered_claim(
-            repository.path(),
+            &second_root,
             "file:src/lib.rs",
             SECOND_RUN,
             answer_flag,
@@ -416,10 +414,11 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
 #[test]
 fn independent_ready_reservations_are_an_unnumbered_tie() {
     let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let first = claim(repository.path(), "file:first.rs", FIRST_RUN);
     let first_id = reservation_id(&first);
     let second = answered_claim(
-        repository.path(),
+        &second_root,
         "file:first.rs",
         SECOND_RUN,
         "--after",
@@ -428,12 +427,13 @@ fn independent_ready_reservations_are_an_unnumbered_tie() {
     );
     assert!(second.status.success());
 
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
     let third_run = uuid::Uuid::now_v7().to_string();
     let fourth_run = uuid::Uuid::now_v7().to_string();
     let third = claim(repository.path(), "file:third.rs", &third_run);
     let third_id = reservation_id(&third);
     let fourth = answered_claim(
-        repository.path(),
+        &third_root,
         "file:third.rs",
         &fourth_run,
         "--after",
@@ -975,6 +975,7 @@ fn human_board_names_a_recovered_bypass_once() {
 #[test]
 fn non_board_reconciliation_preserves_recovered_bypass_for_board() {
     let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let claimed = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
     assert!(claimed.status.success());
     let marker_path = repository.path().join(".git").join(PENDING_BYPASS_NAME);
@@ -986,7 +987,7 @@ fn non_board_reconciliation_preserves_recovered_bypass_for_board() {
     .expect("pending bypass marker should write");
 
     let check = run_berth_with_run(
-        repository.path(),
+        &second_root,
         &["check", "file:src/lib.rs", "--json"],
         SECOND_RUN,
     );
@@ -1397,10 +1398,11 @@ fn incursion_is_one_shared_incident_then_moves_to_answer_audit() {
 #[test]
 fn drift_widen_audit_names_existing_coverage_without_new_ordering() {
     let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let holder = claim(repository.path(), "tree:shared", FIRST_RUN);
     let holder_id = reservation_id(&holder);
     let subject = answered_claim(
-        repository.path(),
+        &second_root,
         "file:shared/approved.txt",
         SECOND_RUN,
         "--override",
@@ -1411,7 +1413,7 @@ fn drift_widen_audit_names_existing_coverage_without_new_ordering() {
     fs::write(repository.path().join("outside.txt"), "new scope\n")
         .expect("new scope should write");
     let widened = run_berth_with_run(
-        repository.path(),
+        &second_root,
         &["drift", "--full", "--reservation", &subject_id, "--json"],
         SECOND_RUN,
     );
@@ -1882,6 +1884,35 @@ fn run_board_with_git_trace(repository_root: &Path) -> TracedBoard {
         trace_path,
         _directory: directory,
     }
+}
+
+/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+///
+/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
+/// no longer names a second party. The returned directory owns the worktree and
+/// must outlive its use.
+fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
+    let directory = tempdir().expect("foreign worktree parent should exist");
+    let root = directory.path().join(name);
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            name,
+            root.to_str()
+                .expect("foreign worktree path should be UTF-8"),
+        ],
+    );
+    let configuration = root.join(CONFIGURATION_PATH);
+    if let Some(parent) = configuration.parent() {
+        fs::create_dir_all(parent).expect("foreign worktree configuration should have a directory");
+    }
+    fs::copy(repository.path().join(CONFIGURATION_PATH), configuration)
+        .expect("foreign worktree should share the repository configuration");
+    (directory, root)
 }
 
 fn initialized_repository() -> TempDir {
