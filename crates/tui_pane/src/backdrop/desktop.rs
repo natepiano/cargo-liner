@@ -79,6 +79,7 @@ impl Metrics {
     /// is twice its size in both axes and the grid the capture reduces
     /// to covers half the window. See
     /// [`text_area`](Self#structfield.text_area) for the measurement.
+    #[cfg(any(target_os = "macos", test))]
     fn cell_points(self, scale: u32) -> (f64, f64) {
         let scale = f64::from(scale);
         (

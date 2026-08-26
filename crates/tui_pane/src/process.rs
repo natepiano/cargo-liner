@@ -55,7 +55,10 @@ pub fn kernel_parent(pid: Pid) -> Option<Pid> {
 #[must_use]
 pub const fn kernel_parent(_pid: Pid) -> Option<Pid> { None }
 
-#[cfg(test)]
+/// The one test here reads the kernel's answer for a process this
+/// user does not own, which is a macOS arrangement; anywhere else
+/// the module holds nothing.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
@@ -70,7 +73,6 @@ mod tests {
     ///
     /// A parent of nought is the init process's, and reads as no parent
     /// at all: [`ROOT_PROCESS_PID`] is where a walk stops in any case.
-    #[cfg(target_os = "macos")]
     #[test]
     fn the_kernel_answers_for_a_process_sysinfo_could_not_read() {
         assert!(kernel_parent(Pid::from_u32(std::process::id())).is_some());
