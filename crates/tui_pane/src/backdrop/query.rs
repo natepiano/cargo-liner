@@ -166,7 +166,7 @@ mod platform {
 
 /// Nothing answers the query where there are no windows to ask about.
 #[cfg(not(target_os = "macos"))]
-fn reply() -> Vec<u8> { Vec::new() }
+const fn reply() -> Vec<u8> { Vec::new() }
 
 #[cfg(test)]
 mod tests {

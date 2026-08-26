@@ -414,6 +414,7 @@ pub(super) const IDENTIFY_RETRY: Duration = Duration::from_millis(500);
 /// the process id that makes it this process's alone.
 pub(super) const IDENTIFY_MARKER: &str = "tui-pane-window-";
 /// The environment variable a terminal emulator names itself in.
+#[cfg(target_os = "macos")]
 pub(super) const TERM_PROGRAM_ENV: &str = "TERM_PROGRAM";
 /// How many letters a folded emulator name must carry before it is
 /// matched against another by containment.
@@ -422,6 +423,7 @@ pub(super) const TERM_PROGRAM_ENV: &str = "TERM_PROGRAM";
 /// identifiers on any machine. Five is past every accident and under
 /// every real emulator name -- `iterm`, `wezterm`, `ghostty`,
 /// `terminal`, `alacritty`.
+#[cfg(target_os = "macos")]
 pub(super) const EMULATOR_NAME_FLOOR: usize = 5;
 /// What the terminal is asked when it is asked where its window
 /// stands: the xterm window-position report.
@@ -435,6 +437,7 @@ pub(super) const POSITION_QUERY: &str = "\u{1b}[13t";
 /// Generous by an order of magnitude. The query is flushed before this
 /// starts, so whatever output was queued ahead of it has already been
 /// drained by the emulator and the reply has only a pty to cross.
+#[cfg(target_os = "macos")]
 pub(super) const POSITION_REPLY_WAIT: Duration = Duration::from_millis(100);
 /// How many bytes of a reply are read before the terminal is taken to
 /// be answering something with no end to it.
@@ -442,9 +445,11 @@ pub(super) const POSITION_REPLY_WAIT: Duration = Duration::from_millis(100);
 /// The longest reply a position can be is seventeen bytes, both
 /// coordinates negative and four digits each. The rest is room for a
 /// keystroke or two that beat the reply out of the queue.
+#[cfg(target_os = "macos")]
 pub(super) const POSITION_REPLY_BYTES: usize = 32;
 /// The byte a position report ends on, which is what stops the read
 /// before it reaches anything the reader typed.
+#[cfg(target_os = "macos")]
 pub(super) const POSITION_REPLY_END: u8 = b't';
 /// How far, in the window server's points, a window may stand from the
 /// position the terminal reported and still be taken for the one it
@@ -456,6 +461,7 @@ pub(super) const POSITION_REPLY_END: u8 = b't';
 /// grid -- a title bar, a tab bar -- stands between them. Two hundred
 /// points clears all of that and is still far short of the distance
 /// between two windows the reader has put side by side.
+#[cfg(target_os = "macos")]
 pub(super) const POSITION_TOLERANCE: f64 = 200.0;
 /// How many pixels are captured across and down each character cell,
 /// which are then averaged into the cell's one colour.
@@ -465,6 +471,7 @@ pub(super) const POSITION_TOLERANCE: f64 = 200.0;
 /// reading four texels out of a fifteen-pixel cell gives a noisy
 /// answer. Capturing a small block per cell and averaging it here is
 /// the same box filter every time.
+#[cfg(target_os = "macos")]
 pub(super) const SAMPLES_PER_CELL: u32 = 4;
 
 // glyphs

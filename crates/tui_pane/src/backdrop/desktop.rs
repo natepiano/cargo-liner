@@ -154,6 +154,14 @@ impl Desktop {
     /// where [`window_titled`] settled it. Without one the window is
     /// picked by size alone, which cannot tell two windows of the same
     /// size apart.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        allow(
+            clippy::missing_const_for_fn,
+            reason = "const only where `platform` is the do-nothing stub; the \
+                  macOS module this delegates to calls the window server"
+        )
+    )]
     pub(super) fn capture(metrics: Metrics, pinned: Option<u32>) -> Option<Self> {
         platform::capture(metrics, pinned)
     }
@@ -234,6 +242,14 @@ impl Desktop {
 /// process's connection to it is serial and a capture in flight is
 /// ahead of this in the queue. That is why this is never called from
 /// the thread that is drawing.
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        clippy::missing_const_for_fn,
+        reason = "const only where `platform` is the do-nothing stub; the \
+                  macOS module this delegates to calls the window server"
+    )
+)]
 pub(super) fn window_frame(window: u32) -> Option<Frame> { platform::window_frame(window) }
 
 /// Every window the emulator has open, as the window server numbers
@@ -242,6 +258,14 @@ pub(super) fn window_frame(window: u32) -> Option<Frame> { platform::window_fram
 /// Read before the terminal is asked to wear a marker title, so that
 /// whatever it was wearing can be put back once the marker has done
 /// its work.
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        clippy::missing_const_for_fn,
+        reason = "const only where `platform` is the do-nothing stub; the \
+                  macOS module this delegates to calls the window server"
+    )
+)]
 pub(super) fn window_titles() -> Vec<(u32, Option<String>)> { platform::window_titles() }
 
 /// The emulator's window whose title holds `marker`, or [`None`] while
@@ -253,6 +277,14 @@ pub(super) fn window_titles() -> Vec<(u32, Option<String>)> { platform::window_t
 /// window of the emulator answers to the same application. A title
 /// only this process knows is unambiguous, and the terminal will wear
 /// one for as long as it takes to ask.
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        clippy::missing_const_for_fn,
+        reason = "const only where `platform` is the do-nothing stub; the \
+                  macOS module this delegates to calls the window server"
+    )
+)]
 pub(super) fn window_titled(marker: &str) -> Option<u32> { platform::window_titled(marker) }
 
 /// The emulator's window standing at `origin`, as the window server
@@ -270,6 +302,14 @@ pub(super) fn window_titled(marker: &str) -> Option<u32> { platform::window_titl
 /// Near enough rather than exactly, by [`POSITION_TOLERANCE`]: an
 /// emulator may report the corner of its text area where the window
 /// server reports the corner of the window around it.
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        clippy::missing_const_for_fn,
+        reason = "const only where `platform` is the do-nothing stub; the \
+                  macOS module this delegates to calls the window server"
+    )
+)]
 pub(super) fn window_at(origin: (f64, f64)) -> Option<u32> { platform::window_at(origin) }
 
 /// A distance measured in cells, as a whole number of them.
