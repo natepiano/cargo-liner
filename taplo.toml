@@ -7,8 +7,11 @@ reorder_arrays = true
 reorder_keys   = true
 
 
+# `rustflags` is an ordered argument list, not a set: each flag is followed by
+# its value, so sorting the array splits every pair from the flag it belongs to
+# and cargo passes rustc nonsense.
 [[rule]]
-include = ["bacon.toml"]
+include = [".cargo/config.toml", "bacon.toml"]
 
 [rule.formatting]
 reorder_arrays = false
