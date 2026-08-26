@@ -15,9 +15,9 @@
   - Revealed by: Phase 10; scope corrected after Phases 11–14 and Phase 17
 
 - [ ] **Prove the complete PostToolUse path stays within the published 0.20-second bound**
-  - Target: `cargo-berth` drift/reconciliation and `/Users/natemccoy/rust/hana/.claude/hooks/berth_post_bash.sh`.
+  - Target: `cargo-berth` drift/reconciliation and the canonical PostToolUse shim at `/Users/natemccoy/.claude/scripts/berth/install/hooks/berth_post_bash.sh`.
   - Why needed: Phase 17 measured the complete two-reservation PostToolUse call at 0.259 seconds. Phase 20 measured one automatic-widen invocation at 0.180 seconds, but one sample and one outcome do not satisfy the published bound; this cost is paid after every Bash call in an enrolled repository.
-  - Completion condition: after Phase 22 updates and registers the shim, five consecutive complete registered-hook invocations in an enrolled two-reservation repository each finish within 0.20 seconds while preserving the typed clear, ordinary widen, first-touch acquisition, incursion with both `protection.status` states, collision, and attribution outcomes; the Phase 17 shim fixtures, `verify.sh test cargo-berth drift`, and `verify.sh lint cargo-berth` pass.
+  - Completion condition: after Phase 22 updates the canonical shim and registers an exact copy in an enrolled repository, five consecutive complete registered-hook invocations in an enrolled two-reservation repository each finish within 0.20 seconds while preserving the typed clear, ordinary widen, first-touch acquisition, incursion with both `protection.status` states, collision, and attribution outcomes; the Phase 17 shim fixtures, `verify.sh test cargo-berth drift`, and `verify.sh lint cargo-berth` pass.
   - Revealed by: Phase 17; evidence updated after Phase 20
 
 - [ ] **Publish `cargo-berth` after the hana loop is proven and `tui_pane 0.8.0` is published**
@@ -27,9 +27,9 @@
   - Revealed by: Phase 15
 
 - [ ] **Make the engine own the status, exit-code, and payload-tag contract consumed by `/sync` and the hook shims**
-  - Target: `cargo-berth` output contract, `/Users/natemccoy/.claude/scripts/berth/claim_state.py`, and `/Users/natemccoy/rust/hana/.claude/hooks/{berth_pre_edit.sh,berth_post_bash.sh,berth_session_start.sh}`.
-  - Why needed: `claim_state.py` hand-maintains `STATUS_PAYLOAD_KINDS` and `FIXED_STATUS_EXIT_CODES`, while the hook shims separately hand-maintain accepted payload tags and shapes in `jq`. Phase 20 added valid `first_touch`, `first_touch_claimed`, and `post_write_incursion` variants without adding an `OutputStatus`; the Python classifier was updated manually while the staged hook validators remained stale.
-  - Completion condition: one versioned engine-owned contract supplies or mechanically verifies the Python and hook status/exit pairings plus payload tags and required shapes; an engine status or serialized enum-variant addition cannot pass engine tests while leaving any front-end consumer stale, and malformed status/payload/exit combinations remain rejected.
+  - Target: `cargo-berth` output contract, `/Users/natemccoy/.claude/scripts/berth/claim_state.py`, and `/Users/natemccoy/.claude/scripts/berth/install/hooks/{berth_pre_edit.sh,berth_post_bash.sh,berth_session_start.sh}`.
+  - Why needed: `claim_state.py` hand-maintains `STATUS_PAYLOAD_KINDS` and `FIXED_STATUS_EXIT_CODES`, while the canonical hook shims separately hand-maintain accepted payload tags and required fields in `jq`. Phase 20 added valid `first_touch`, `first_touch_claimed`, and `post_write_incursion` variants without adding an `OutputStatus`; the Python classifier was updated manually while the canonical hook validators remained stale.
+  - Completion condition: one versioned engine-owned contract supplies or mechanically verifies the Python and canonical hook status/exit pairings plus payload tags and required fields; an engine status or serialized enum-variant addition cannot pass engine tests while leaving any front-end consumer stale, and malformed status/payload/exit combinations remain rejected.
   - Revealed by: Phase 18; scope corrected after Phase 20
 
 - [ ] **Expose one named reservation's lifecycle and protected tip through a read-only query**
@@ -37,3 +37,8 @@
   - Why needed: The board deliberately omits lifecycle-bearing rows for a waiting successor and either endpoint of an unresolved overlap. After a lost release reply, `/plan:delegate` can therefore observe `ReservationPresentWithoutProtectedTip` but cannot prove whether that reservation is outstanding or released; a matching retention ref proves only commit reachability.
   - Completion condition: `cargo-berth board --reservation <reservation-id> --json` returns a typed read-only `NamedReservationLifecycle::{Active, Outstanding { protected_tip }, ReleasedAfterCheckpoint { protected_tip, disposition }, ReleasedWithoutCheckpoint { disposition }}` result independent of board placement; an unknown id is a typed invalid-input result rather than `Option`, and waiting-successor plus deferred/blocker fixtures prove the selector while existing board JSON remains compatible.
   - Revealed by: Phase 19
+- [ ] **Give the coordinator's classifier surface a semantic return type**
+  - Target: `/Users/natemccoy/.claude/scripts/berth/claim_state.py`.
+  - Why needed: `classify_claim`, `classify_check`, `render_board`, `_validate_board`, and `_generic_state` all return `dict[str, object]` and reach it through `cast`, so every tagged union the coordinator builds is erased at the one boundary a reader inspects. `ProposalAwaitingApprovalStateValue.proposal` is a bare `dict[str, object]` for the same reason. The weakness predates the coordinator phases — `classify_claim` returned `dict[str, Any]` at `831e34a` — and repairing only one symbol would leave an inconsistent surface.
+  - Completion condition: the coordinator's state classifiers return a tagged union rather than `dict[str, object]`, the locked proposal carries a semantic type validated at envelope conversion, no `cast` stands between a tagged value and its return, and basedpyright reports zero errors and zero warnings.
+  - Revealed by: Phase 21
