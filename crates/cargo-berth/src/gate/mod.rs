@@ -67,13 +67,22 @@ const SYMBOLIC_REFERENCE_VALUE_PREFIX: &str = "ref:";
 /// Git's reference-transaction phase, converted at the hidden CLI boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReferenceTransactionPhase {
+    /// Git is assembling the transaction, one phase ahead of `Prepared`.
+    ///
+    /// Added in git 2.55, this opens every transaction and carries the same update lines
+    /// on standard input. The gate stands aside here and decides at `Prepared` instead,
+    /// where the proposed transaction is complete and its references are resolved: an
+    /// unborn branch arrives as `HEAD` while preparing and as its concrete ref once
+    /// prepared. A non-zero exit does abort the transaction in this phase, so standing
+    /// aside is a decision rather than a formality.
+    Preparing,
     /// Git is asking hooks to approve the complete proposed transaction.
     Prepared,
     /// Git reports that an already-approved transaction committed.
     Committed,
     /// Git reports that an already-approved transaction aborted.
     Aborted,
-    /// A lifecycle word this version of berth does not know, such as git 2.55's `preparing`.
+    /// A lifecycle word this version of berth does not know.
     ///
     /// The gate permits and stands aside whenever it cannot function, so an unknown phase
     /// is a no-op. Failing to parse it would exit non-zero, which git reads as a rejection
@@ -319,7 +328,15 @@ pub(crate) fn evaluate_reference_transaction(
     transaction: &ReferenceTransaction,
     trunk_reference: &FullRefName,
 ) -> Result<Vec<GateResult>, GateError> {
-    if transaction.phase == ReferenceTransactionPhase::Aborted {
+    // Stand aside before reading any configuration or ledger. Git 2.55 opens every
+    // transaction with `preparing`, so the gate would otherwise pay for the whole
+    // evaluation twice per ref update to reach a no-op both times.
+    if matches!(
+        transaction.phase,
+        ReferenceTransactionPhase::Preparing
+            | ReferenceTransactionPhase::Aborted
+            | ReferenceTransactionPhase::Unrecognized
+    ) {
         return Ok(Vec::new());
     }
     let trunk_updates = transaction
@@ -368,7 +385,8 @@ pub(crate) fn evaluate_reference_transaction(
                         &berth_config,
                         &update,
                     )?,
-                    ReferenceTransactionPhase::Aborted
+                    ReferenceTransactionPhase::Preparing
+                    | ReferenceTransactionPhase::Aborted
                     | ReferenceTransactionPhase::Unrecognized => {},
                 }
             },
@@ -781,7 +799,8 @@ fn decide_hook(
                 ]
             })
             .collect(),
-        ReferenceTransactionPhase::Prepared
+        ReferenceTransactionPhase::Preparing
+        | ReferenceTransactionPhase::Prepared
         | ReferenceTransactionPhase::Aborted
         | ReferenceTransactionPhase::Unrecognized => Vec::new(),
     };
@@ -1031,6 +1050,7 @@ impl FromStr for ReferenceTransactionPhase {
             "prepared" => Ok(Self::Prepared),
             "committed" => Ok(Self::Committed),
             "aborted" => Ok(Self::Aborted),
+            "preparing" => Ok(Self::Preparing),
             _ => Ok(Self::Unrecognized),
         }
     }
@@ -1183,18 +1203,26 @@ mod tests {
 
     #[test]
     fn an_unknown_reference_transaction_phase_parses_instead_of_aborting_the_update() {
-        for known in ["prepared", "committed", "aborted"] {
+        for known in ["prepared", "committed", "aborted", "preparing"] {
             assert_ne!(
                 known.parse::<ReferenceTransactionPhase>(),
                 Ok(ReferenceTransactionPhase::Unrecognized)
             );
         }
-        for unknown in ["preparing", "a-phase-git-has-not-invented-yet"] {
-            assert_eq!(
-                unknown.parse::<ReferenceTransactionPhase>(),
-                Ok(ReferenceTransactionPhase::Unrecognized),
-                "a phase berth cannot parse exits non-zero, which git turns into an aborted update"
-            );
-        }
+        assert_eq!(
+            "a-phase-git-has-not-invented-yet".parse::<ReferenceTransactionPhase>(),
+            Ok(ReferenceTransactionPhase::Unrecognized),
+            "a phase berth cannot parse exits non-zero, which git turns into an aborted update"
+        );
+    }
+
+    /// Git 2.55 opens every transaction with this phase, and rejecting there aborts it.
+    #[test]
+    fn the_preparing_phase_is_named_rather_than_merely_tolerated() {
+        assert_eq!(
+            "preparing".parse::<ReferenceTransactionPhase>(),
+            Ok(ReferenceTransactionPhase::Preparing),
+            "berth decides at prepared, where the transaction is complete and refs resolved"
+        );
     }
 }
