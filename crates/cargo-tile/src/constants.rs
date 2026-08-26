@@ -234,6 +234,20 @@ pub(crate) const REPAINT_SENTINEL: Modifier = Modifier::SLOW_BLINK
 /// enough apart to cost nothing while being well inside the time it
 /// takes to notice a smear.
 pub(crate) const FULL_REPAINT_SECONDS: u64 = 2;
+/// How often the attract screen asks for a frame while it is showing.
+///
+/// It draws at every poll otherwise, which is 125 frames a second now
+/// that a frame of it is small enough for the terminal to take them
+/// that fast. Nothing it animates needs the rate: the drifting text
+/// travels a dozen cells a second and the band thirty, so 30 frames a
+/// second is already more than either has motion for.
+///
+/// What the other ninety-five cost is the emulator's, not ours. Every
+/// frame of the attract screen is every cell of the window, so the
+/// terminal parses a whole screen of colour changes for each one
+/// whether or not the picture moved enough between two of them to be
+/// told apart -- and that parsing is where the CPU goes.
+pub(crate) const ATTRACT_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 /// How long a frame has to have taken before [`crate::probe`] writes it
 /// down, where the probe is switched on at all.

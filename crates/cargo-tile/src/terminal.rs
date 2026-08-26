@@ -50,6 +50,7 @@ use crate::app::App;
 use crate::app::AppPaneId;
 use crate::app::Updates;
 use crate::config;
+use crate::constants::ATTRACT_FRAME_INTERVAL;
 use crate::constants::BINARY_NAME;
 use crate::constants::FULL_REPAINT_SECONDS;
 use crate::constants::PROBE_THRESHOLD;
@@ -168,6 +169,7 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
     let mut dirty = true;
     let mut repainted = Instant::now();
     let mut previous = Instant::now();
+    let mut attracted = Instant::now();
     let period = Duration::from_millis(FRAME_POLL_MILLIS);
     let mut deadline = Instant::now() + period;
     while !app.framework.quit_requested() && !app.framework.restart_requested() {
@@ -280,7 +282,16 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
             // either: an empty grid standing still. Without that frame
             // the screen would be due and nothing would be drawing to
             // let it back on.
-            if app.attract.showing() || app.attract.due_back(Instant::now()) {
+            //
+            // Asked for on its own cadence rather than at every poll:
+            // a frame of it is every cell of the window, and the
+            // terminal parses the whole screen for each one. See
+            // [`ATTRACT_FRAME_INTERVAL`].
+            if app.attract.showing() && attracted.elapsed() >= ATTRACT_FRAME_INTERVAL {
+                attracted = Instant::now();
+                dirty = true;
+            }
+            if app.attract.due_back(Instant::now()) {
                 dirty = true;
             }
         }
