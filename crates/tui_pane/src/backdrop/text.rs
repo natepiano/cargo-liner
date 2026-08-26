@@ -63,6 +63,7 @@ use super::constants::MAX_TEXT_SPREAD;
 use super::constants::MICROS_PER_SECOND;
 use super::constants::MIN_TEXT_SPEED;
 use super::constants::SUBCELLS_PER_CELL;
+use super::constants::TEXT_BEHIND_FADE;
 use super::constants::TEXT_LANE_COLUMNS;
 use super::constants::TEXT_LANE_GIVE_PERCENT;
 use super::constants::TEXT_LANE_ROWS;
@@ -465,6 +466,15 @@ impl DriftingText {
     /// what keeps the desktop legible while they move. A cell the
     /// backdrop has no colour for is skipped, so whatever the terminal
     /// shows through stays visible.
+    ///
+    /// Both the character and the cell behind it are painted, from the
+    /// one colour: the character at the desktop's own, the rest of the
+    /// cell carried `TEXT_BEHIND_FADE` of the way toward the
+    /// background. Painting only the character left every cell's
+    /// remainder at the background, so the desktop arrived through the
+    /// ink alone -- an eighth of the cell at the narrowest bar -- and
+    /// what the reader saw was a pinstripe over the desktop instead of
+    /// the desktop.
     pub fn render(&self, area: Rect, backdrop: &Backdrop, ground: Color, buffer: &mut Buffer) {
         if self.faded == u8::MAX {
             return;
@@ -482,8 +492,10 @@ impl DriftingText {
                         Color::Reset => ground,
                         background => background,
                     };
+                    let foreground = theme::blend_color(color, toward, self.faded);
                     cell.set_char(drawn);
-                    cell.set_fg(theme::blend_color(color, toward, self.faded));
+                    cell.set_fg(foreground);
+                    cell.set_bg(theme::blend_color(foreground, toward, TEXT_BEHIND_FADE));
                 }
             }
         }
@@ -1115,6 +1127,39 @@ mod tests {
                 assert_eq!(cell.fg, color, "{column}, {row} should wear the desktop");
             }
         }
+    }
+
+    /// The cell behind the character wears the desktop too, dimmed.
+    /// Painting only the character left the rest of every cell at the
+    /// background, and since no cell is ever blank and the bars all
+    /// fill from one edge, that background showed as a rule down every
+    /// cell boundary rather than as the display.
+    #[test]
+    fn every_cell_is_backed_by_the_colour_behind_it() {
+        let color = Color::Rgb(200, 100, 50);
+        let ground = Color::Black;
+        let text = locked(BandDirection::Right);
+        let backdrop = Backdrop::flat(AREA, color);
+        let mut buffer = Buffer::empty(AREA);
+
+        text.render(AREA, &backdrop, ground, &mut buffer);
+
+        let behind = theme::blend_color(color, ground, TEXT_BEHIND_FADE);
+        for row in 0..AREA.height {
+            for column in 0..AREA.width {
+                let cell = buffer
+                    .cell((AREA.x + column, AREA.y + row))
+                    .expect("the area covers the field");
+                assert_eq!(
+                    cell.bg, behind,
+                    "{column}, {row} should be backed by the desktop, dimmed"
+                );
+            }
+        }
+        assert_ne!(
+            behind, color,
+            "the cell behind the character has to part from the character, or the field is a flat capture"
+        );
     }
 
     /// A field carried the whole way toward the ground draws nothing at

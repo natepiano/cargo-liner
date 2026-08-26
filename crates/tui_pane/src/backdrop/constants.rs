@@ -140,6 +140,28 @@ pub(super) const MAX_TEXT_SPREAD: u32 = 100;
 /// held above however wide the spread is opened: a line that never
 /// moves is one the reader cannot tell from a frozen display.
 pub(super) const MIN_TEXT_SPEED: u32 = 1;
+/// How far the colour behind the character is carried toward the
+/// background, against the character itself standing at the desktop's
+/// own colour.
+///
+/// Every cell of the field draws something and nothing used to paint
+/// behind it, so the desktop reached the screen only through the ink
+/// and the rest of every cell stayed at the background. Bars are the
+/// worst of it: [`BARS_ACROSS`] fills from one edge and `level_at`
+/// never returns a level below one, so every cell's first sliver is
+/// lit, those slivers line up down the column, and what the reader
+/// sees is a rule at every cell boundary rather than the desktop.
+/// Characters are the same defect spread thinner -- ink over a
+/// background, with the desktop only where the ink is.
+///
+/// Carrying the rest of the cell part way back gives the whole of it
+/// the desktop's colour and leaves the character standing brighter
+/// within it. Halfway is the setting that shows the desktop while
+/// still parting the two: at zero the character is the same colour as
+/// what surrounds it and the field is a flat capture, at [`u8::MAX`]
+/// the cell behind the character is the background again, which is
+/// where this started.
+pub(super) const TEXT_BEHIND_FADE: u8 = 128;
 /// How many columns one lane of the field's speeds covers while the
 /// text drifts up or down.
 ///
