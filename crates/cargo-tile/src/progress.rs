@@ -159,6 +159,28 @@ impl RunState {
     }
 }
 
+/// Whether the process a registered run was captured under is still
+/// there.
+///
+/// The shim clears its own file out of `<root>/state/pids` as it
+/// exits, but a run killed outright never reaches that, and the file
+/// then stands for a process that is gone. [`Capture::take`] is handed
+/// this so a finished run stops counting as one in flight: which pids
+/// are running is something [`crate::processes`] has just read off the
+/// process table, so the answer is already to hand where it is asked
+/// for.
+pub(crate) enum RunLiveness {
+    /// The pid is in the process table the caller read.
+    Running,
+    /// The pid is not, so the file registering it is stale and
+    /// [`live_runs`] clears it away.
+    Ended,
+}
+
+impl From<bool> for RunLiveness {
+    fn from(running: bool) -> Self { if running { Self::Running } else { Self::Ended } }
+}
+
 /// The captured runs progress can currently be read from, keyed by the
 /// pid of the shim that captured each one.
 ///
@@ -180,12 +202,20 @@ impl Capture {
     /// every run since the last reboot, and matching against a live pid
     /// is what keeps a finished run's log from being read as a running
     /// one that happens to have inherited its pid.
-    pub(crate) fn take() -> Self { Self::take_from(&root()) }
+    ///
+    /// `liveness` answers for each pid registered under `state/pids`.
+    /// A registration outliving its process would otherwise stand as a
+    /// live run for as long as the directory does, and one of those is
+    /// enough to have every log in the capture directory read on every
+    /// scan -- see [`RunLiveness`].
+    pub(crate) fn take(liveness: impl Fn(u32) -> RunLiveness) -> Self {
+        Self::take_from(&root(), liveness)
+    }
 
     /// [`Capture::take`] against a given directory, which is what makes
     /// the directory layout testable without moving the real one.
-    pub(crate) fn take_from(root: &Path) -> Self {
-        let live = live_runs(root);
+    pub(crate) fn take_from(root: &Path, liveness: impl Fn(u32) -> RunLiveness) -> Self {
+        let live = live_runs(root, liveness);
         if live.is_empty() {
             return Self::default();
         }
@@ -216,15 +246,31 @@ fn root() -> PathBuf {
     env::var_os(CAPTURE_ROOT_ENV).map_or_else(|| PathBuf::from(CAPTURE_ROOT), PathBuf::from)
 }
 
-/// The shim pids with a run still in flight, one file each, removed by
-/// the shim as it exits.
-fn live_runs(root: &Path) -> HashSet<u32> {
+/// The shim pids with a run still in flight, one file each, which the
+/// shim removes as it exits and this clears away when it did not.
+///
+/// A run killed outright leaves its file behind, and a file standing
+/// for a process that is gone reads as a run in flight for as long as
+/// the directory does. One of those is all it takes to have
+/// [`Capture::take_from`] read the whole capture directory -- which
+/// holds every run since the last reboot -- several times a second,
+/// for the rest of the session.
+fn live_runs(root: &Path, liveness: impl Fn(u32) -> RunLiveness) -> HashSet<u32> {
     let Ok(entries) = fs::read_dir(root.join(CAPTURE_LIVE_RUNS_DIR)) else {
         return HashSet::new();
     };
     entries
         .flatten()
-        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .filter_map(|entry| {
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            match liveness(pid) {
+                RunLiveness::Running => Some(pid),
+                RunLiveness::Ended => {
+                    let _ = fs::remove_file(entry.path());
+                    None
+                },
+            }
+        })
         .collect()
 }
 
@@ -457,7 +503,7 @@ mod tests {
         let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[33395]);
 
         assert_eq!(
-            Capture::take_from(root.path()).read(33395),
+            Capture::take_from(root.path(), |_| RunLiveness::Running).read(33395),
             Some(compiling(149, 403))
         );
     }
@@ -468,14 +514,17 @@ mod tests {
     fn a_finished_runs_log_is_not_read_once_its_marker_is_gone() {
         let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[]);
 
-        assert_eq!(Capture::take_from(root.path()).read(33395), None);
+        assert_eq!(
+            Capture::take_from(root.path(), |_| RunLiveness::Running).read(33395),
+            None
+        );
     }
 
     #[test]
     fn each_live_run_reports_its_own_log_and_an_uncaptured_pid_reports_none() {
         let other = "\u{1b}[1m    Building\u{1b}[0m [==>    ] 12/48: serde\r";
         let root = capture_root(&[(33395, CAPTURED_REDRAW), (33396, other)], &[33395, 33396]);
-        let capture = Capture::take_from(root.path());
+        let capture = Capture::take_from(root.path(), |_| RunLiveness::Running);
 
         assert_eq!(
             capture
@@ -494,13 +543,29 @@ mod tests {
         assert_eq!(capture.read(70001), None);
     }
 
+    /// A run killed before it could clear its own registration leaves
+    /// the file standing, and every scan after that would read the
+    /// whole capture directory on the strength of it.
+    #[test]
+    fn a_registration_outliving_its_process_is_cleared_away() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[33395]);
+        let registration = root.path().join(CAPTURE_LIVE_RUNS_DIR).join("33395");
+
+        assert_eq!(
+            Capture::take_from(root.path(), |_| RunLiveness::Ended).read(33395),
+            None
+        );
+        assert!(!registration.exists());
+    }
+
     /// The ordinary state of a machine that never switched capture on.
     #[test]
     fn a_missing_capture_directory_reports_nothing_rather_than_failing() {
         let root = tempdir().unwrap();
 
         assert_eq!(
-            Capture::take_from(&root.path().join("never-created")).read(33395),
+            Capture::take_from(&root.path().join("never-created"), |_| RunLiveness::Running)
+                .read(33395),
             None
         );
     }

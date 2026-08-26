@@ -437,7 +437,15 @@ fn scan(
     let attributed = census.attribute(smoothing, now);
     Scan {
         sccache: census.sccache(),
-        groups:  census.groups(system, &attributed, home, &Capture::take()),
+        // Phase one refreshed every process, so whether a registered
+        // run is still going is a lookup rather than a fresh read of
+        // the process table.
+        groups:  census.groups(
+            system,
+            &attributed,
+            home,
+            &Capture::take(|pid| system.process(Pid::from_u32(pid)).is_some().into()),
+        ),
     }
 }
 
@@ -1263,6 +1271,7 @@ mod tests {
     use crate::constants::RUN_LOG_PREFIX;
     use crate::constants::RUN_LOG_SUFFIX;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
+    use crate::progress::RunLiveness;
 
     /// A capture directory holding one live run's log per entry.
     fn capture_root(runs: &[(u32, &str)]) -> TempDir {
@@ -1363,7 +1372,7 @@ mod tests {
             "    Blocking waiting for file lock on build directory",
         )]);
         let census = census_of(&[(76847, 76846), (76846, 64432)]);
-        let capture = Capture::take_from(root.path());
+        let capture = Capture::take_from(root.path(), |_| RunLiveness::Running);
 
         assert_eq!(
             census.captured_run(&capture, Pid::from_u32(76847)),
@@ -1383,7 +1392,7 @@ mod tests {
             "    Blocking waiting for file lock on build directory",
         )]);
         let census = census_of(&[(76847, 64432), (64432, 64431)]);
-        let capture = Capture::take_from(root.path());
+        let capture = Capture::take_from(root.path(), |_| RunLiveness::Running);
 
         assert_eq!(
             census.captured_run(&capture, Pid::from_u32(76847)),
