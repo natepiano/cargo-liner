@@ -146,24 +146,26 @@ impl DriftEffectBuilder {
             ForeignReservationIdSet::try_from(self.incursion_reservations),
             IncursionPathSet::try_from(self.incursion_paths),
         ) {
-            let incident_id = match reservations.observe_incursion(
+            let reportable = match reservations.observe_incursion(
                 reservation_id,
                 &foreign_reservation_ids,
                 &paths,
             ) {
                 IncursionObservation::AlreadyAnswered => None,
-                IncursionObservation::AlreadyOutstanding(incident_id) => Some(incident_id),
-                IncursionObservation::NewlyObserved(incident_id) => {
+                IncursionObservation::AlreadyOutstanding { incident_id, paths } => {
+                    Some((incident_id, paths))
+                },
+                IncursionObservation::NewlyObserved { incident_id, paths } => {
                     operations.push(JournalOperation::Incursion {
                         incident_id,
                         reservation_id,
                         foreign_reservation_ids: foreign_reservation_ids.clone(),
                         paths: paths.clone(),
                     });
-                    Some(incident_id)
+                    Some((incident_id, paths))
                 },
             };
-            if let Some(incident_id) = incident_id {
+            if let Some((incident_id, paths)) = reportable {
                 effects.push(DriftEffect::Incursion {
                     incident_id,
                     foreign_reservation_ids,
