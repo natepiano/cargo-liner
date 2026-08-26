@@ -274,15 +274,19 @@ mod platform {
 
     use objc2_core_foundation::CFArray;
     use objc2_core_foundation::CFDictionary;
+    use objc2_core_foundation::CFNumber;
     use objc2_core_foundation::CFType;
     use objc2_core_foundation::CGRect as CoreGraphicsRect;
+    use objc2_core_graphics::CGDisplayBounds;
     use objc2_core_graphics::CGRectMakeWithDictionaryRepresentation;
     use objc2_core_graphics::CGWindowListCopyWindowInfo;
     use objc2_core_graphics::CGWindowListOption;
     use objc2_core_graphics::kCGWindowBounds;
+    use objc2_core_graphics::kCGWindowNumber;
     use ratatui::style::Color;
     use screencapturekit::cg::CGPoint;
     use screencapturekit::cg::CGRect;
+    use screencapturekit::cg::CGSize;
     use screencapturekit::screenshot_manager::CGImageExt;
     use screencapturekit::screenshot_manager::SCScreenshotManager;
     use screencapturekit::shareable_content::SCDisplay;
@@ -316,21 +320,28 @@ mod platform {
         let content = SCShareableContent::get().ok()?;
         let windows = content.windows();
         let terminal_windows = terminal_windows(&windows);
+        // The number `identify` pinned to this app's own window is
+        // looked for across every window on the machine, not inside the
+        // set the terminal is thought to own. Which windows those are
+        // is a question that can be answered wrongly: an emulator
+        // hosting its sessions in a server process is nowhere in this
+        // app's parent chain, so the answer there is whichever
+        // application is in front -- which stops being this one the
+        // moment anything is opened over it. Searching the pinned
+        // number inside that set loses this window exactly when another
+        // application has taken the front, and what is chosen instead
+        // is one of *its* windows, on whichever display it sits on.
+        //
         // Falling back to size is for the run where the marker title
         // never took, and for the window closed since it did.
         let chosen = pinned
-            .and_then(|pinned| {
-                terminal_windows
-                    .iter()
-                    .find(|window| window.window_id() == pinned)
-                    .copied()
-            })
+            .and_then(|pinned| windows.iter().find(|window| window.window_id() == pinned))
             .or_else(|| frontmost_window(&terminal_windows, metrics.text_pixels))?;
         let window = chosen.window_id();
 
         let displays = content.displays();
         let display = display_under(&displays, chosen.frame())?;
-        let display_frame = display.frame();
+        let display_frame = display_bounds(display);
         // The display's points and its pixels are the same rectangle at
         // two resolutions, and the capture is asked for in points but
         // arrives in pixels, so a cell has to be known in both.
@@ -338,15 +349,36 @@ mod platform {
         let cell_pixels = metrics.cell_pixels();
         let cell = (cell_pixels.0 / scale, cell_pixels.1 / scale);
 
-        // Every window the terminal owns comes out of the capture, so
-        // what is left is what this window is drawn over. That is the
+        // Every window the terminal owns comes out of the capture, and
+        // so does every window standing in front of the one the app is
+        // drawn in -- another application's window on top of this one
+        // is not something this one is drawn over, and a capture that
+        // keeps it shows the terminal whatever is covering it.
+        //
+        // What is left is what this window is drawn over. That is the
         // whole reason the capture can outlive a move: excluding a
         // window does not leave a hole where it stood, it composites
         // the display as though the window were not there at all, and
         // that answer does not depend on where the window is.
+        let above = windows_above(window);
+        // Asked of the application that owns the window this app is
+        // drawn in, rather than of whichever one is in front, for the
+        // same reason the window itself is.
+        let owned = chosen
+            .owning_application()
+            .map(|application| application.process_id())
+            .map_or_else(Vec::new, |owner| owned_by(&windows, |pid| pid == owner));
+        let excluded: Vec<&SCWindow> = owned
+            .into_iter()
+            .chain(
+                windows
+                    .iter()
+                    .filter(|window| above.contains(&window.window_id())),
+            )
+            .collect();
         let filter = SCContentFilter::create()
             .with_display(display)
-            .with_excluding_windows(&terminal_windows)
+            .with_excluding_windows(&excluded)
             .build();
         // The whole display, asked for at its own pixel size. Nothing is
         // scaled on the way out, which is what keeps a cell's share of
@@ -358,7 +390,10 @@ mod platform {
         let configuration = SCStreamConfiguration::new()
             .with_source_rect(CGRect {
                 origin: CGPoint { x: 0.0, y: 0.0 },
-                size:   display_frame.size,
+                size:   CGSize {
+                    width:  display_frame.size.width,
+                    height: display_frame.size.height,
+                },
             })
             .with_width(image.0)
             .with_height(image.1);
@@ -420,6 +455,26 @@ mod platform {
         })
     }
 
+    /// Every window standing in front of `window` on screen, by
+    /// number.
+    ///
+    /// CoreGraphics for the same reason [`window_frame`] uses it, and
+    /// for a second one: this is the question CoreGraphics answers
+    /// directly. `SCShareableContent` describes every window on the
+    /// machine and says nothing about which of them is in front of
+    /// which, so the same answer taken from there would rest on the
+    /// order its list happens to arrive in.
+    fn windows_above(window: u32) -> Vec<u32> {
+        let Some(list) =
+            CGWindowListCopyWindowInfo(CGWindowListOption::OptionOnScreenAboveWindow, window)
+        else {
+            return Vec::new();
+        };
+        (0..list.count())
+            .filter_map(|index| number(entry(&list, index)?))
+            .collect()
+    }
+
     /// The dictionary describing one window of a `CGWindowList` answer.
     ///
     /// # Invariants
@@ -459,6 +514,45 @@ mod platform {
         // than assumed: `downcast_ref` compares `CFGetTypeID` and hands
         // back `None` for anything else.
         value.downcast_ref::<CFDictionary>()
+    }
+
+    /// A window's own number, out of the dictionary describing it.
+    ///
+    /// # Invariants
+    ///
+    /// `described` must be one of [`entry`]'s dictionaries, and so must
+    /// hold Core Foundation objects for the same reason its array does.
+    #[allow(
+        unsafe_code,
+        reason = "CoreFoundation collections have no safe binding: their \
+                  accessors hand back untyped pointers, and the caller \
+                  carries the invariant above in their place"
+    )]
+    fn number(described: &CFDictionary) -> Option<u32> {
+        // SAFETY: reading an `extern` static is unchecked because
+        // nothing on this side knows the symbol was ever initialised.
+        // This one is a `CFString` constant CoreGraphics builds as the
+        // framework loads -- which is before any code that could reach
+        // this line -- and keeps for the life of the process, so the
+        // reference read out is live and the pointer taken to it cannot
+        // dangle while the call below runs.
+        let key = unsafe { std::ptr::from_ref(&**kCGWindowNumber) }.cast::<c_void>();
+        // SAFETY: `CFDictionaryGetValue` wants a valid key pointer,
+        // which is what `key` was just made, and a dictionary whose
+        // generic matches its contents, which an untyped `CFDictionary`
+        // has no way to fail. It answers null for a key the dictionary
+        // does not hold.
+        let value = unsafe { described.value(key) };
+        // SAFETY: the value is a Core Foundation object by this
+        // function's invariant, so a non-null pointer to one points at a
+        // live `CFType`, and `as_ref` answers `None` for the null.
+        // `described` holds a reference to it and outlives this call.
+        let value = unsafe { value.cast::<CFType>().as_ref() }?;
+        // Documented to be a number, and asked rather than assumed for
+        // the same reason the bounds are. A window number is a `u32`
+        // that CoreGraphics reports as a signed one.
+        let number = value.downcast_ref::<CFNumber>()?.as_i32()?;
+        u32::try_from(number).ok()
     }
 
     /// A window's bounds, out of the dictionary describing it.
@@ -507,6 +601,21 @@ mod platform {
             CGRectMakeWithDictionaryRepresentation(Some(value), std::ptr::from_mut(&mut rect))
         }
         .then_some(rect)
+    }
+
+    /// Where a display stands in the coordinate space every window is
+    /// placed in, and how big it is there.
+    ///
+    /// CoreGraphics rather than `SCDisplay::frame`, which does not
+    /// answer in that space. Measured against it, a window standing on
+    /// any display but the primary one fell inside none of them at all,
+    /// and the search below then settled for the first display it was
+    /// given -- the primary -- so the terminal drew the desktop of a
+    /// screen it was not on. `CGDisplayBounds` is read in the space
+    /// window frames already are, so the two can be compared, and the
+    /// same rectangle is what the capture is placed by afterwards.
+    fn display_bounds(display: &SCDisplay) -> CoreGraphicsRect {
+        CGDisplayBounds(display.display_id())
     }
 
     /// How many whole cells fit into a span of that many cells.
@@ -710,7 +819,7 @@ mod platform {
         displays
             .iter()
             .find(|display| {
-                let frame = display.frame();
+                let frame = display_bounds(display);
                 center_x >= frame.origin.x
                     && center_x < frame.origin.x + frame.size.width
                     && center_y >= frame.origin.y

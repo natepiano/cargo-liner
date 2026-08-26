@@ -59,6 +59,7 @@ objc2-core-foundation = { workspace = true, features = [
 # CoreGraphics about a single window by number is some five hundred times
 # cheaper than asking ScreenCaptureKit to describe every window on the machine.
 objc2-core-graphics = { workspace = true, optional = true, features = [
+  "CGDirectDisplay",
   "CGGeometry",
   "CGWindow",
   "std",
