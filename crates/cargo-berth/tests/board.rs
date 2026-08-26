@@ -33,6 +33,7 @@ const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
 const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
+#[cfg(target_os = "macos")]
 const LEAVE_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ]; then
