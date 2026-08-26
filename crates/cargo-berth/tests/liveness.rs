@@ -43,7 +43,7 @@ if [ "$CARGO_BERTH_TEST_GIT_PAUSE" = "head" ] && [ "$1" = "--no-optional-locks" 
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
-const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(5);
+const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 

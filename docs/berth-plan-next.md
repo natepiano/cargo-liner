@@ -51,8 +51,3 @@
   - Target: `/Users/natemccoy/.claude/scripts/berth/install/README.md` and the hook-registration example it governs.
   - Why needed: `hana` registers the three canonical absolute hook paths directly, while the README instructs consumers to copy the scripts into a repository and remove them afterward; following that procedure permits copies to drift and can leave settings naming deleted files.
   - Completion condition: the README instructs consumers to register the three canonical absolute hook paths directly, explains that each linked worktree needs its own ignored `settings.local.json`, removes the copy-then-delete procedure, and makes uninstallation remove registrations without deleting the canonical scripts; its example matches `hana`'s active settings.
-
-- [ ] **Raise the remaining load-sensitive test deadlines**
-  - Target: `crates/cargo-berth/tests/{liveness.rs,answers.rs,lifecycle.rs,board.rs}`.
-  - Why needed: four sibling setup deadlines still allow five seconds for spawned processes to reach their synchronization point. The equivalent deadline in `overlap.rs` failed under a full-workspace run and was raised to sixty seconds; these four are the same class and have simply not lost the race yet.
-  - Completion condition: each of the four setup deadlines allows enough time to survive a loaded full-workspace run, with the assertions themselves unchanged.

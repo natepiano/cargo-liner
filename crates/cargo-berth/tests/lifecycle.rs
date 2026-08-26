@@ -19,7 +19,7 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-const GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(5);
+const GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const INITIAL_COMMIT_TAG: &str = "initial-state";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";

@@ -21,6 +21,7 @@ use std::time::Instant;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+const BOARD_LOCKED_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_BINARY: &str = "git";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
@@ -250,7 +251,7 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("board should spawn");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + BOARD_LOCKED_READ_TIMEOUT;
     while !signal_path.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
