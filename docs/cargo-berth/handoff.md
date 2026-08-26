@@ -1,11 +1,13 @@
-# Handoff — issue2 remaining work
+# Handoff — issue2, closed
 
-Branch `refactor/cargo-berth-drift-split`. Everything below `b51e3f8f` is
-committed and green: `cargo nextest run --workspace` passes 2836 tests and
+Branch `refactor/cargo-berth-drift-split`. Everything through `234469fe` is
+committed and green: `cargo nextest run --workspace` passes 2842 tests and
 `cargo clippy --all-targets --all-features -- -D warnings` is clean, both under
 **git 2.55.0**.
 
-Delete this file when the work below is picked up.
+Every `issue2.md` item is closed. What remains here is the record of two
+findings a future reader would otherwise re-derive, and one live disposition
+the user still owes. Delete this file once that disposition is recorded.
 
 ## Environment changed this session
 
@@ -26,66 +28,42 @@ worktree-identity and incursion fixes, so the PostToolUse hook works again.
 - `hook-phase-issue.md` — both parts. Deleted.
 - `issue2.md` §2 item 1 — incursion dedup. See the divergence note below.
 
-## Still open in `issue2.md`
+## Closed since — every `issue2.md` item
 
-### §1 item 1 — re-anchor `phase_start_head` on a branch rewrite — DONE (`832dd9f4`)
+- **§1 item 1 — re-anchor `phase_start_head` on a branch rewrite** (`832dd9f4`).
+  Two defects, not one. Nothing emitted `Resnapshot { Active }`, and git runs
+  `post-commit` for **every** commit a rebase replays, so even with the
+  re-anchor in place drift acquired the new base's paths before the branch
+  reference moved at the end. Drift now stands aside while `rebase-merge` or
+  `rebase-apply` exists.
 
-Closed. Two things were wrong, not one, and the second is not in `issue2.md`:
+  **The anchor formula this file recommended was wrong.** It proposed
+  `proposed~N` (`N = rev-list --count phase_start_head..previous`) clamped
+  against `merge-base(proposed, trunk)`. A fixture where the rebase drops a
+  commit whose patch already reached the new base lands one commit too far
+  back, and the clamp does not catch it because the wrong answer sits *above*
+  the merge-base. Counting cannot work and neither can patch identity alone: a
+  dropped commit and a replayed commit both have upstream equivalents, so
+  `--left-only --cherry-pick` reported zero dropped commits on that fixture.
+  Only position separates them, and `git::rewritten_phase_anchor` uses it.
 
-1. Nothing emitted `JournalOperation::Resnapshot { Active }`, so a rebase left
-   the anchor describing a history the branch no longer had.
-2. Git runs `post-commit` for **every** replayed commit during a rebase. Even
-   with the re-anchor in place, drift ran on each of them and acquired the new
-   base's paths before the branch reference moved at the end. `drift` now
-   stands aside while `rebase-merge`/`rebase-apply` exists.
+- **§1 item 2 — do not widen onto a path the worktree did not change**
+  (`1c2ec0d6`). `ObservedDriftChanges::carries_work` gates the widening arm
+  only; incursion and collision keep the unfiltered set. A full comparison
+  answers unconditionally, because each of its components is a positive
+  statement about the present and so cannot name a restored path.
 
-**The anchor recommendation this file previously gave was wrong.** It proposed
-`proposed~N` (`N = rev-list --count phase_start_head..previous`) clamped so it
-is never an ancestor of `merge-base(proposed, trunk)`. A fixture in which the
-rebase drops a commit whose patch already reached the new base lands one commit
-too far back, and the clamp does not catch it, because the wrong answer sits
-*above* the merge-base.
+- **§1 item 3 — name the commits an incursion came from** (`a46e2719`).
+  `DriftEffect::Incursion` carries an `IncursionCommit` per commit, with an
+  origin of `phase_authored`, `already_on_trunk`, or `unknown`. Resolved after
+  the transaction commits, so no git call runs under the mutation lock.
 
-Counting cannot work, and neither can patch identity on its own: a dropped
-commit and a replayed commit both have upstream patch-equivalents, so
-`--left-only --cherry-pick` returned zero dropped commits on that fixture.
-Only **position** separates them — the replayed commits are contiguous at the
-tip. `git::rewritten_phase_anchor` takes the equivalent set from
-`rev-list --cherry-mark --left-right --no-merges <previous>...<proposed> ^<phase_start>`,
-walks `rev-list --first-parent` down from the new tip while each commit is in
-that set, and anchors beneath the last one. Exact on all three fixtures:
-single-phase, clean two-phase, and the drop case.
+- **§2 item 2 — say how many outstanding incidents a notice stands for**
+  (`234469fe`). Needed more than a count: no disposition cleared a *set*, so
+  `resolve <id> --every-incursion` is new.
 
-### §1 item 2 — do not widen onto a path the worktree did not change
-
-**Do not implement this as a straight copy of `256a04b8`.** That commit filtered
-the post-write first-touch claim through `cache_value.modified_paths()`, the
-working-tree fingerprint. Applying the same filter to widening would break
-legitimate widening from the **committed** component: a phase that commits work and
-leaves a clean tree must still widen onto what it committed, and `issue2.md`'s own
-completion condition demands that ("a widening driven by real uncommitted **or
-committed** work in the worktree is unchanged").
-
-Correct decomposition:
-
-- Widening from the cheap/working-tree components **should** intersect with
-  `modified_paths()`. A path that went dirty→clean appears in the cheap symmetric
-  difference, and widening onto it acquires a block on a restored file. That is the
-  `256a04b8` rule and it is a real defect independent of any rebase.
-- Widening from the **committed** component cannot be fixed by working-tree state at
-  all. It is only correct once the anchor is correct — that dependency on item 1
-  is now discharged.
-
-### §1 item 3 — name the commits an incursion came from
-
-Not started. Target `drift/report.rs`, `output.rs`, and the PostToolUse shim's
-`post_write_incursion` rendering.
-
-### §2 item 2 — say how many outstanding incidents a notice stands for
-
-Not started, and small. `outstanding_incursion_incidents` already exists on
-`RetainedReservationSet` (`reservation/mod.rs`). The notice names one incident id
-and reads as though answering it ends the matter.
+`issue2.md` is untracked and its reporter may add more items; it was left in
+place rather than deleted.
 
 ## Divergence from the issue's diagnosis — §2 item 1
 
