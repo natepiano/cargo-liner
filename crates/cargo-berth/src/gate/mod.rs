@@ -27,6 +27,7 @@ use crate::edge::IntegrationSubject;
 use crate::edge::MissingReadinessFact;
 use crate::git;
 use crate::git::GitError;
+use crate::git::Reachability;
 use crate::ids::CoordinationRunId;
 use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
@@ -449,12 +450,12 @@ fn branch_rewrites(
             continue;
         }
         match git::reachability(invocation_directory, previous, proposed).map_err(GateError::Git)? {
-            git::Reachability::NotAncestor => rewrites.push(BranchRewrite {
+            Reachability::NotAncestor => rewrites.push(BranchRewrite {
                 reference: update.reference.clone(),
                 previous:  previous.clone(),
                 proposed:  proposed.clone(),
             }),
-            git::Reachability::Ancestor | git::Reachability::ObjectUnknown => {},
+            Reachability::Ancestor | Reachability::ObjectUnknown => {},
         }
     }
     Ok(rewrites)
