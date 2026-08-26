@@ -402,6 +402,11 @@ struct OutstandingIncursion {
     straying_reservation_id: ReservationId,
     foreign_reservation_ids: Vec<ReservationId>,
     entered_paths:           Vec<ReservationScopePath>,
+    /// How many incidents stand outstanding for the straying reservation, this one included.
+    ///
+    /// A notice naming one incident reads as though answering it ends the matter, and a
+    /// backlog accumulated before the dedup landed stays invisible without this.
+    outstanding_count:       usize,
     resolution:              IncursionResolutionAction,
 }
 
@@ -410,6 +415,8 @@ struct IncursionResolutionAction {
     reservation_id: ReservationId,
     incident_id:    IncursionIncidentId,
     flag:           String,
+    /// The disposition that clears the reservation's whole outstanding set.
+    every_flag:     String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1184,6 +1191,12 @@ fn incursion_sections(
 ) -> (Vec<OutstandingIncursion>, Vec<RecordedIncursionAnswer>) {
     let mut outstanding = Vec::new();
     let mut recorded = Vec::new();
+    let mut outstanding_counts: HashMap<ReservationId, usize> = HashMap::new();
+    for incident in reservations.outstanding_incursion_incidents() {
+        *outstanding_counts
+            .entry(incident.reservation_id())
+            .or_default() += 1;
+    }
     for incident in reservations.incursion_incidents() {
         match incident.status() {
             IncursionIncidentStatus::Outstanding => outstanding.push(OutstandingIncursion {
@@ -1191,6 +1204,10 @@ fn incursion_sections(
                 straying_reservation_id: incident.reservation_id(),
                 foreign_reservation_ids: incident.foreign_reservation_ids().as_slice().to_vec(),
                 entered_paths:           incident.paths().as_slice().to_vec(),
+                outstanding_count:       outstanding_counts
+                    .get(&incident.reservation_id())
+                    .copied()
+                    .unwrap_or(1),
                 resolution:              IncursionResolutionAction {
                     reservation_id: incident.reservation_id(),
                     incident_id:    incident.id(),
@@ -1198,6 +1215,10 @@ fn incursion_sections(
                         "resolve {} --incursion {}",
                         incident.reservation_id(),
                         incident.id()
+                    ),
+                    every_flag:     format!(
+                        "resolve {} --every-incursion",
+                        incident.reservation_id()
                     ),
                 },
             }),

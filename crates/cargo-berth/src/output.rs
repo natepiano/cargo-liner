@@ -419,6 +419,13 @@ pub(crate) enum ResolvePayload {
         /// The incident answered by the appended disposition.
         incident_id:    IncursionIncidentId,
     },
+    /// A user disposition answered every incident outstanding for one reservation.
+    EveryIncursionResolved {
+        /// The reservation whose drift produced the incidents.
+        reservation_id: ReservationId,
+        /// Every incident answered by the appended dispositions.
+        incident_ids:   Vec<IncursionIncidentId>,
+    },
     /// Surviving work moved to a replacement worktree identity.
     Recovered {
         /// The reservation whose holder changed.
@@ -1466,6 +1473,21 @@ impl OutputEnvelope {
                 *reservation_id,
                 OutputStatus::IncursionResolved,
                 format!("Incursion incident {incident_id} is resolved."),
+            ),
+            ResolvePayload::EveryIncursionResolved {
+                reservation_id,
+                incident_ids,
+            } => (
+                *reservation_id,
+                OutputStatus::IncursionResolved,
+                format!(
+                    "Every incursion incident outstanding for reservation {reservation_id} is resolved: {}.",
+                    incident_ids
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             ),
             ResolvePayload::Recovered {
                 reservation_id,

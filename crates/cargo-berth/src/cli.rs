@@ -73,6 +73,7 @@ use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::PostCommitRendering;
 use crate::recovery;
+use crate::recovery::IncursionAnswerScope;
 use crate::recovery::RenewRequest;
 use crate::recovery::ReservationRecoveryDecision;
 use crate::recovery::ResolveDecision;
@@ -115,7 +116,9 @@ const HEAD_ARGUMENT: &str = "head";
 const HEAD_VALUE_NAME: &str = "OID";
 const INTEGRATED_AS_ARGUMENT: &str = "integrated-as";
 const INTEGRATED_AS_ARGUMENT_ID: &str = "integrated_as";
+const EVERY_INCURSION_ARGUMENT: &str = "every-incursion";
 const INCURSION_ARGUMENT: &str = "incursion";
+const EVERY_INCURSION_ARGUMENT_ID: &str = "every_incursion";
 const INCURSION_VALUE_NAME: &str = "INCIDENT_ID";
 const INIT_OPERATION_GROUP: &str = "init-operation";
 const JSON_ARGUMENT: &str = "json";
@@ -149,6 +152,7 @@ const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work rea
 const RECOVERED_LONG_ABOUT: &str = "Use this when the reservation's work is still present but now belongs to this replacement worktree. It records a new worktree identity; choosing it when the work was actually integrated or discarded leaves an inaccurate live reservation blocking other work.";
 const RETIRE_ORPHAN_LONG_ABOUT: &str = "Use this only after confirming an orphaned reservation can retire without classifying its work as deliberately discarded. It records a distinct orphan-retirement disposition and requires --why so later readers can audit that decision.";
 const RENEW_LONG_ABOUT: &str = "Record that this still-live reservation remains active after inspection. Renewal changes neither its scopes nor any ordering edge; using it to hide abandoned work delays the user-confirmed recovery or abandonment decision that must eventually resolve it.";
+const EVERY_INCURSION_LONG_ABOUT: &str = "Answer every incursion incident outstanding for this reservation in one disposition. A backlog reports one notice per incident, and answering a single member leaves the rest standing, so the notice keeps firing until the set is empty.";
 const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation recovery or an incursion incident. Choose exactly one disposition: --incursion <INCIDENT_ID> for an outstanding incident; --recovered when work survives in this replacement worktree; --integrated-as <TRUNK_OID> when work reached trunk in a form the tool could not prove; --abandon --why <WHY> only when work is deliberately discarded; or --retire-orphan --why <WHY> after confirming an orphan may retire without classifying its work as discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
 
 /// `cargo-berth`, as the command line sees it.
@@ -467,6 +471,10 @@ struct IntegrateArguments {
 }
 
 /// A user-confirmed recovery decision for a stuck reservation.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one mutually exclusive disposition clap must parse separately"
+)]
 #[derive(Debug, Args)]
 #[command(group(
     ArgGroup::new(RESOLVE_DISPOSITION_GROUP)
@@ -476,6 +484,7 @@ struct IntegrateArguments {
             ABANDON_ARGUMENT,
             RETIRE_ORPHAN_ARGUMENT_ID,
             INCURSION_ARGUMENT,
+            EVERY_INCURSION_ARGUMENT_ID,
         ])
         .required(true)
         .multiple(false)
@@ -487,44 +496,47 @@ struct IntegrateArguments {
 ))]
 struct ResolveArguments {
     /// The stuck reservation to resolve.
-    reservation_id: ReservationId,
+    reservation_id:  ReservationId,
     /// Answer this outstanding incursion incident.
     #[arg(long = INCURSION_ARGUMENT, value_name = INCURSION_VALUE_NAME)]
-    incursion:      Option<IncursionIncidentId>,
+    incursion:       Option<IncursionIncidentId>,
+    /// Answer every incursion incident outstanding for the reservation.
+    #[arg(long = EVERY_INCURSION_ARGUMENT, long_help = EVERY_INCURSION_LONG_ABOUT)]
+    every_incursion: bool,
     /// Record this worktree as the recovered holder of surviving work.
     #[arg(long = RECOVERED_ARGUMENT, long_help = RECOVERED_LONG_ABOUT)]
-    recovered:      bool,
+    recovered:       bool,
     /// Assert a trunk commit proves rewritten integration.
     #[arg(
         long = INTEGRATED_AS_ARGUMENT,
         value_name = TRUNK_OID_VALUE_NAME,
         long_help = INTEGRATED_AS_LONG_ABOUT
     )]
-    integrated_as:  Option<RewrittenIntegrationTrunkCommit>,
+    integrated_as:   Option<RewrittenIntegrationTrunkCommit>,
     /// Permanently discard this reservation's work and coordination hold.
     #[arg(
         long = ABANDON_ARGUMENT,
         requires = WHY_ARGUMENT,
         long_help = ABANDON_LONG_ABOUT
     )]
-    abandon:        bool,
+    abandon:         bool,
     /// Retire this confirmed orphan without classifying it as deliberate abandonment.
     #[arg(
         long = RETIRE_ORPHAN_ARGUMENT,
         requires = WHY_ARGUMENT,
         long_help = RETIRE_ORPHAN_LONG_ABOUT
     )]
-    retire_orphan:  bool,
+    retire_orphan:   bool,
     /// Explain the deliberate abandonment or orphan-retirement decision.
     #[arg(
         long = WHY_ARGUMENT,
         value_name = WHY_VALUE_NAME,
         requires = RESOLVE_REASONED_DISPOSITION_GROUP
     )]
-    why:            Option<String>,
+    why:             Option<String>,
     /// The output representation requested for this command.
     #[command(flatten)]
-    json_output:    JsonOutput,
+    json_output:     JsonOutput,
 }
 
 impl Cli {
@@ -896,6 +908,7 @@ impl ResolveArguments {
         let Self {
             reservation_id,
             incursion,
+            every_incursion,
             recovered,
             integrated_as,
             abandon,
@@ -905,27 +918,33 @@ impl ResolveArguments {
         } = self;
         let decision = match (
             incursion,
+            every_incursion,
             recovered,
             integrated_as,
             abandon,
             retire_orphan,
             why,
         ) {
-            (Some(incident_id), false, None, false, false, None) => {
-                ResolveDecision::Incursion(incident_id)
+            (Some(incident_id), false, false, None, false, false, None) => {
+                ResolveDecision::Incursion(IncursionAnswerScope::One(incident_id))
             },
-            (None, true, None, false, false, None) => {
+            (None, true, false, None, false, false, None) => {
+                ResolveDecision::Incursion(IncursionAnswerScope::Every)
+            },
+            (None, false, true, None, false, false, None) => {
                 ResolveDecision::Reservation(ReservationRecoveryDecision::Recovered)
             },
-            (None, false, Some(trunk_commit), false, false, None) => ResolveDecision::Reservation(
-                ReservationRecoveryDecision::IntegratedAs(trunk_commit),
-            ),
-            (None, false, None, true, false, Some(reason)) => reason
+            (None, false, false, Some(trunk_commit), false, false, None) => {
+                ResolveDecision::Reservation(ReservationRecoveryDecision::IntegratedAs(
+                    trunk_commit,
+                ))
+            },
+            (None, false, false, None, true, false, Some(reason)) => reason
                 .parse::<AbandonmentReason>()
                 .map(ReservationRecoveryDecision::Abandon)
                 .map(ResolveDecision::Reservation)
                 .map_err(|error| error.to_string())?,
-            (None, false, None, false, true, Some(reason)) => reason
+            (None, false, false, None, false, true, Some(reason)) => reason
                 .parse::<OrphanRetirementReason>()
                 .map(ReservationRecoveryDecision::RetireOrphan)
                 .map(ResolveDecision::Reservation)

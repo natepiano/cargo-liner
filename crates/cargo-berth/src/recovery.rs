@@ -1,5 +1,6 @@
 //! User-confirmed orphan recovery, rewritten integration, retirement, and renewal.
 
+use std::convert::Infallible;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -29,6 +30,7 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
+use crate::ledger::ReconciliationValidation;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
@@ -40,6 +42,7 @@ use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
 use crate::reservation::AbandonmentReason;
 use crate::reservation::EditBlockingStatus;
+use crate::reservation::IncursionIncident;
 use crate::reservation::OrphanRetirementReason;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::Reservation;
@@ -61,8 +64,21 @@ pub(crate) struct ResolveRequest {
 pub(crate) enum ResolveDecision {
     /// Apply one recovery decision to the named reservation.
     Reservation(ReservationRecoveryDecision),
-    /// Answer one outstanding incursion incident.
-    Incursion(IncursionIncidentId),
+    /// Answer the reservation's outstanding incursion incidents.
+    Incursion(IncursionAnswerScope),
+}
+
+/// Which of a reservation's outstanding incursion incidents a disposition answers.
+///
+/// Answering one member of a backlog leaves the rest standing, and the notice that
+/// reported them keeps firing, so clearing the set is its own disposition rather than
+/// a loop the reader has to run by hand.
+#[derive(Clone, Copy)]
+pub(crate) enum IncursionAnswerScope {
+    /// The single named incident.
+    One(IncursionIncidentId),
+    /// Every incident outstanding for the reservation.
+    Every,
 }
 
 /// The mutually exclusive reservation recovery decisions.
@@ -161,8 +177,8 @@ fn execute_resolution(
                 recovery,
             })
         },
-        ResolveDecision::Incursion(incident_id) => {
-            execute_incursion_resolution(resolve_request.reservation_id, incident_id)
+        ResolveDecision::Incursion(scope) => {
+            execute_incursion_resolution(resolve_request.reservation_id, scope)
                 .map(Enrollment::Enrolled)
         },
     }
@@ -174,6 +190,78 @@ struct ReservationResolutionRequest {
 }
 
 fn execute_incursion_resolution(
+    reservation_id: ReservationId,
+    scope: IncursionAnswerScope,
+) -> Result<ResolvePayload, RecoveryError> {
+    match scope {
+        IncursionAnswerScope::One(incident_id) => {
+            execute_one_incursion_resolution(reservation_id, incident_id)
+        },
+        IncursionAnswerScope::Every => execute_every_incursion_resolution(reservation_id),
+    }
+}
+
+/// Answer every incident outstanding for one reservation in a single disposition.
+fn execute_every_incursion_resolution(
+    reservation_id: ReservationId,
+) -> Result<ResolvePayload, RecoveryError> {
+    let invocation_directory = std::env::current_dir()?;
+    let worktree_context = WorktreeContext::discover(&invocation_directory)?;
+    let worktree_identity = ledger::worktree_identity(
+        worktree_context.administrative_directory(),
+        worktree_context.worktree_kind(),
+    )?;
+    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let outcome = ledger.transact_reconciliation(
+        worktree_identity.id,
+        mutation_run_id(&worktree_context),
+        |state| {
+            let reservations = match RetainedReservationSet::replay(state.events()) {
+                Ok(reservations) => reservations,
+                Err(error) => {
+                    return ReconciliationValidation::Reject(RecoveryRejection::Replay(error));
+                },
+            };
+            let incident_ids = reservations
+                .outstanding_incursion_incidents()
+                .filter(|incident| incident.reservation_id() == reservation_id)
+                .map(IncursionIncident::id)
+                .collect::<Vec<_>>();
+            if incident_ids.is_empty() {
+                return ReconciliationValidation::Reject(
+                    RecoveryRejection::NoOutstandingIncursion(reservation_id),
+                );
+            }
+            ReconciliationValidation::Apply {
+                operations:             incident_ids
+                    .iter()
+                    .map(|incident_id| JournalOperation::ResolveIncursion {
+                        incident_id: *incident_id,
+                    })
+                    .collect(),
+                recoverable_operations: Vec::new(),
+                action:                 incident_ids,
+            }
+        },
+        |incident_ids, _, _| Ok::<Vec<IncursionIncidentId>, Infallible>(incident_ids),
+    );
+    match outcome {
+        Ok(LedgerCommittedActionOutcome::Appended {
+            output: incident_ids,
+            ..
+        }) => Ok(ResolvePayload::EveryIncursionResolved {
+            reservation_id,
+            incident_ids,
+        }),
+        Ok(LedgerCommittedActionOutcome::Rejected(rejection)) => {
+            Err(RecoveryError::Rejected(rejection))
+        },
+        Err(LedgerCommittedActionError::Transaction(error)) => Err(error.into()),
+        Err(LedgerCommittedActionError::Action(error)) => match error {},
+    }
+}
+
+fn execute_one_incursion_resolution(
     reservation_id: ReservationId,
     incident_id: IncursionIncidentId,
 ) -> Result<ResolvePayload, RecoveryError> {
@@ -639,6 +727,7 @@ enum RecoveryRejection {
         incident_id:    IncursionIncidentId,
         reservation_id: ReservationId,
     },
+    NoOutstandingIncursion(ReservationId),
     Replay(ReservationReplayError),
     CheckpointRequired,
     AlreadyResolved,
@@ -718,6 +807,10 @@ impl Display for RecoveryRejection {
             } => write!(
                 formatter,
                 "incursion incident {incident_id} does not belong to reservation {reservation_id}"
+            ),
+            Self::NoOutstandingIncursion(reservation_id) => write!(
+                formatter,
+                "reservation {reservation_id} has no outstanding incursion incident"
             ),
             Self::Replay(error) => error.fmt(formatter),
             Self::CheckpointRequired => formatter.write_str(

@@ -413,6 +413,96 @@ fn assert_resolution_silences_the_same_overlap(
 }
 
 #[test]
+fn a_backlog_of_incursions_reports_its_size_and_clears_in_one_disposition() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let foreign_root = add_worktree(repository.path(), worktrees.path(), "backlog-holder");
+    let subject_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
+    let first_holder = claim(&foreign_root, "file:first-held.txt", SECOND_RUN);
+    let second_holder = claim(&foreign_root, "file:second-held.txt", THIRD_RUN);
+    fs::write(repository.path().join("first-held.txt"), "entered\n")
+        .expect("first held path should write");
+    let first = drift(repository.path(), &["--full", "--reservation", &subject_id]);
+    assert_eq!(json_output(&first)["status"], "incursion");
+    fs::write(repository.path().join("second-held.txt"), "entered\n")
+        .expect("second held path should write");
+    let second = drift(repository.path(), &["--full", "--reservation", &subject_id]);
+    assert_eq!(json_output(&second)["status"], "incursion");
+
+    let board = run_berth(repository.path(), &["board", "--json"]);
+    let entries = json_output(&board)["payload"]["data"]["outstanding_incursions"]["entries"]
+        .as_array()
+        .expect("the board should list outstanding incursions")
+        .clone();
+
+    let straying = entries
+        .iter()
+        .filter(|entry| entry["straying_reservation_id"] == subject_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        straying.len(),
+        2,
+        "two incidents stand outstanding: {board:?}"
+    );
+    for entry in &straying {
+        assert_eq!(
+            entry["outstanding_count"], 2,
+            "a notice must say how many it stands for"
+        );
+        assert_eq!(
+            entry["resolution"]["every_flag"],
+            format!("resolve {subject_id} --every-incursion")
+        );
+    }
+    assert!(
+        entries
+            .iter()
+            .filter(|entry| entry["straying_reservation_id"] != subject_id.as_str())
+            .all(|entry| entry["outstanding_count"] == 1),
+        "the count is per reservation, not a total"
+    );
+
+    let cleared = run_berth(
+        repository.path(),
+        &["resolve", &subject_id, "--every-incursion", "--json"],
+    );
+
+    assert!(
+        cleared.status.success(),
+        "every-incursion failed: {}",
+        String::from_utf8_lossy(&cleared.stdout)
+    );
+    let cleared_envelope = json_output(&cleared);
+    assert_eq!(cleared_envelope["status"], "incursion_resolved");
+    assert_eq!(
+        cleared_envelope["payload"]["data"]["incident_ids"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    let after = run_berth(repository.path(), &["board", "--json"]);
+    assert!(
+        json_output(&after)["payload"]["data"]["outstanding_incursions"]["entries"]
+            .as_array()
+            .expect("the board should list outstanding incursions")
+            .iter()
+            .all(|entry| entry["straying_reservation_id"] != subject_id.as_str()),
+        "one disposition clears the whole set"
+    );
+    let named_holders = straying
+        .iter()
+        .filter_map(|entry| entry["foreign_reservation_ids"].as_array())
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(
+        named_holders.contains(&first_holder.as_str())
+            && named_holders.contains(&second_holder.as_str()),
+        "the backlog stands against both holders: {named_holders:?}"
+    );
+}
+
+#[test]
 fn resolve_rejects_an_unknown_incursion_incident() {
     let repository = initialized_repository();
     let reservation_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
