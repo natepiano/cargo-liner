@@ -45,6 +45,8 @@ pub use backdrop::DriftingText;
 #[cfg(feature = "backdrop")]
 pub use backdrop::TextDrift;
 #[cfg(feature = "backdrop")]
+pub use backdrop::TextFill;
+#[cfg(feature = "backdrop")]
 pub use backdrop::TravelingBand;
 pub use bar::BarPalette;
 pub use bar::BarRegion;

@@ -318,6 +318,7 @@ impl Attract {
             MovingTextAction::Faster => self.text.speed_up(step * TEXT_SPEED_STEP),
             MovingTextAction::Slower => self.text.slow_down(step * TEXT_SPEED_STEP),
             MovingTextAction::CycleDrift => self.text.cycle_drift(),
+            MovingTextAction::CycleFill => self.text.cycle_fill(),
             MovingTextAction::SpreadWider => self.text.spread_wider(step * TEXT_SPREAD_STEP),
             MovingTextAction::SpreadNarrower => self.text.spread_narrower(step * TEXT_SPREAD_STEP),
             MovingTextAction::ShowMovingBand => self.mode = AttractMode::MovingBand,

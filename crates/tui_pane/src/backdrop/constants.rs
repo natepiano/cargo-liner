@@ -245,6 +245,26 @@ pub(super) const GLYPHS: &[char] = &[
     ';', '"', '\'', '`', '(', ')', '[', ']', '{', '}',
 ];
 
+// bars
+/// The bar a cell of the drifting field draws, from the narrowest
+/// sliver to the whole of the cell, filling across it.
+///
+/// Ordered, where [`GLYPHS`] is a bag to draw from: the index is how
+/// much of the cell is lit, and that is what lets a line be drawn part
+/// way into a cell rather than only on whole ones. Eighths are as fine
+/// as the block elements go, and the ramp fills from the left because
+/// that is the only side Unicode carries the whole run from.
+pub(super) const BARS_ACROSS: &[char] = &['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
+/// The same ramp filling up the cell rather than across it.
+///
+/// A cell is only subdivided along the axis its line travels on -- a
+/// bar that grows sideways says nothing about a line drifting
+/// downward -- so the direction picks which of the two ramps is drawn.
+pub(super) const BARS_UP: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+/// How many steps those ramps hold, which is the scale a cell's fill is
+/// read on. One is the narrowest sliver and this is the whole cell.
+pub(super) const BAR_LEVELS: u32 = 8;
+
 // time
 /// Microseconds in one second.
 ///

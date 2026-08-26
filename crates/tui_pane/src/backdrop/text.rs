@@ -1,18 +1,34 @@
 //! The other attract-mode animation: the whole window filled with
-//! characters, drifting line by line in the colours of the desktop
-//! behind it.
+//! bars, drifting line by line in the colours of the desktop behind
+//! it.
 //!
 //! Where a [`TravelingBand`](super::TravelingBand) is one strip with
 //! two edges and empty grid either side of it, this leaves no cell
-//! undrawn. What there is to look at is not where the characters stop
-//! but what they are wearing: every cell takes the colour the
-//! [`Backdrop`] has for it, so the desktop reads through a window of
-//! moving text rather than through a strip crossing it.
+//! undrawn. Every cell takes the colour the [`Backdrop`] has for it, so
+//! the desktop reads through a window that is entirely filled rather
+//! than through a strip crossing it.
 //!
-//! A line is a row while the text drifts sideways and a column while it
-//! drifts up or down, and every line is a ring: a character leaving one
-//! edge is replaced by a fresh one entering at the other, so the field
-//! never runs out and never repeats.
+//! Every cell keeps the colour of whatever it is over, always. What
+//! travels is only the pattern drawn on top of it: each line is dealt a
+//! ring of numbers, and the ring turns. Nothing about the desktop moves,
+//! because moving it is the one thing that would stop it being the
+//! desktop -- a cell wearing one place's colour and another place's
+//! pattern reads as smoke rather than as a window.
+//!
+//! [`TextFill`] says how that number is drawn. As a character it is the
+//! animation this started as. As a bar it is how much of the cell is
+//! lit, which is the reading that can be drawn part way.
+//!
+//! A line is a row while the field drifts sideways and a column while
+//! it drifts up or down, and every line is a ring: what leaves one edge
+//! comes round at the other, so the field never runs out.
+//!
+//! The bars are what let a line be drawn where it actually is. Eight
+//! steps of fill are eight positions inside one cell, so the ring is
+//! read between two of its numbers rather than at one of them. Drawn on
+//! whole cells only -- which is all a character can do -- a line at a
+//! few cells a second holds still and then jumps, and the eye reads
+//! that as stepping rather than as travel.
 //!
 //! What keeps it from reading as one rigid sheet sliding past is that
 //! the lines need not travel together. [`TextDrift`] says whether they
@@ -35,8 +51,12 @@ use ratatui::style::Color;
 
 use super::Backdrop;
 use super::BandDirection;
+use super::constants::BAR_LEVELS;
+use super::constants::BARS_ACROSS;
+use super::constants::BARS_UP;
 use super::constants::DEFAULT_TEXT_SPEED;
 use super::constants::DEFAULT_TEXT_SPREAD;
+use super::constants::GLYPHS;
 use super::constants::LANE_FRACTION_UNIT;
 use super::constants::MAX_TEXT_SPEED;
 use super::constants::MAX_TEXT_SPREAD;
@@ -49,7 +69,6 @@ use super::constants::TEXT_LANE_ROWS;
 use super::constants::TEXT_RIPPLE_LINES;
 use super::constants::TEXT_RIPPLE_PERCENT;
 use super::constants::WHOLE_PERCENT;
-use super::random;
 use super::random::Xorshift;
 use crate::theme;
 
@@ -91,11 +110,15 @@ impl TextDrift {
 /// and where its own speed stands in the spread.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TextLine {
-    /// The characters on this line, as a ring. Index zero is the cell
-    /// the line entered by before it had drifted at all, and
-    /// [`DriftingText::glyph_at`] turns the ring by how far it has come
-    /// since.
-    glyphs:   Vec<char>,
+    /// The number each cell of this line was dealt, as a ring. Index
+    /// zero is the cell the line entered by before it had drifted at
+    /// all, and [`DriftingText::draw_at`] turns the ring by how far it
+    /// has come since.
+    ///
+    /// One ring for both readings: a character and a fill are two ways
+    /// of drawing the same number, so switching between them leaves
+    /// every line exactly where it stood.
+    draws:    Vec<u8>,
     /// How many whole cells the line has drifted, modulo its own
     /// length.
     drifted:  u32,
@@ -117,10 +140,10 @@ struct TextLine {
 
 impl TextLine {
     /// Carry the line `elapsed_micros` further at `speed` cells a
-    /// second, drawing a fresh character for each whole cell it has
+    /// second, dealing a fresh number for each whole cell it has
     /// entered by.
     fn advance(&mut self, elapsed_micros: u64, speed: u32, xorshift: &mut Xorshift) {
-        let Ok(length) = u32::try_from(self.glyphs.len()) else {
+        let Ok(length) = u32::try_from(self.draws.len()) else {
             return;
         };
         if length == 0 {
@@ -131,9 +154,9 @@ impl TextLine {
             .saturating_mul(elapsed_micros)
             / MICROS_PER_SECOND;
         // A frame long enough to carry the line a whole lap has already
-        // replaced every character on it, and one carrying it further
-        // would only replace them again. Stopping the travel there is
-        // what keeps the loop below bounded by the line's own length.
+        // dealt every cell on it afresh, and one carrying it further
+        // would only deal them again. Stopping the travel there is what
+        // keeps the loop below bounded by the line's own length.
         let lap = length.saturating_mul(SUBCELLS_PER_CELL);
         let travel = u32::try_from(travel).unwrap_or(u32::MAX).min(lap);
         let crossed = self.fraction.saturating_add(travel);
@@ -141,13 +164,42 @@ impl TextLine {
         for _ in 0..(crossed / SUBCELLS_PER_CELL) {
             self.drifted = (self.drifted + 1) % length;
             // The cell the line enters by is index zero turned back by
-            // however far it has drifted, which is where the character
+            // however far it has drifted, which is where the number
             // that just left the far end has come round to.
             let entering = usize::try_from((length - self.drifted) % length).unwrap_or(0);
-            let glyph = random::random_glyph(xorshift);
-            if let Some(slot) = self.glyphs.get_mut(entering) {
-                *slot = glyph;
+            let drawn = xorshift.byte();
+            if let Some(slot) = self.draws.get_mut(entering) {
+                *slot = drawn;
             }
+        }
+    }
+}
+
+/// What a [`DriftingText`] draws with the number each of its cells was
+/// dealt.
+///
+/// The same ring either way, read two ways: as an index into the
+/// characters, or as how much of the cell is lit. Bars are where the
+/// display starts, because only they can be drawn part way into a cell
+/// -- see the module docs.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum TextFill {
+    /// How much of the cell is lit, on eighths.
+    #[default]
+    Bars,
+    /// One character out of the field's own set, which is the
+    /// animation this started as.
+    Glyphs,
+}
+
+impl TextFill {
+    /// The other of the two, which is all the key that toggles them
+    /// asks for.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Bars => Self::Glyphs,
+            Self::Glyphs => Self::Bars,
         }
     }
 }
@@ -184,9 +236,11 @@ pub struct DriftingText {
     /// One entry per line, indexed the way
     /// [`line_of`](Self::line_of) counts them.
     lines:     Vec<TextLine>,
-    /// Source of the characters and of where each line sits in the
-    /// spread.
+    /// Source of the numbers each line is dealt and of where it sits in
+    /// the spread.
     xorshift:  Xorshift,
+    /// What those numbers are drawn as.
+    fill:      TextFill,
     /// How far the whole field is carried toward the ground it is drawn
     /// on, on the alpha scale [`blend_color`] reads: zero draws it at
     /// full strength, [`u8::MAX`] draws nothing.
@@ -204,6 +258,7 @@ impl Default for DriftingText {
             drift:     TextDrift::default(),
             lines:     Vec::new(),
             xorshift:  Xorshift::default(),
+            fill:      TextFill::default(),
             faded:     0,
         }
     }
@@ -237,6 +292,14 @@ impl DriftingText {
     /// Zero draws it at full strength and [`u8::MAX`] draws nothing.
     pub const fn fade(&mut self, faded: u8) { self.faded = faded; }
 
+    /// Draw the field as bars or as characters, whichever it is not
+    /// drawing now.
+    ///
+    /// Costs the field nothing: the numbers are already dealt and this
+    /// only changes how they are read, so every line carries on from
+    /// exactly where it stood.
+    pub const fn cycle_fill(&mut self) { self.fill = self.fill.next(); }
+
     /// Turn the lines' speeds together or send them apart again.
     ///
     /// Together is the lines moving as one, which they cannot do from
@@ -265,16 +328,38 @@ impl DriftingText {
     ///
     /// Sideways a line is a row and up or down it is a column, so a
     /// turn between the two axes is a different set of lines
-    /// altogether. The field is re-drawn on any change rather than only
-    /// on a turn: reversing along the axis it already crosses leaves
-    /// every cell reading a different place in its own ring, which is a
-    /// fresh field of characters whether or not it is drawn as one.
+    /// altogether. Every cell keeps what it was drawing across the
+    /// turn, dealt back into whichever new line now runs through it.
+    /// Re-dealing instead would replace the whole field in one frame,
+    /// and a field of numbers replaced at once averages out -- the
+    /// reader sees the picture wash pale for as long as the new numbers
+    /// take to travel, which reads as a fault rather than as a turn.
     pub fn set_direction(&mut self, direction: BandDirection) {
         if self.direction == direction {
             return;
         }
+        let carried: Vec<(u16, u16, u8)> = (0..self.rows)
+            .flat_map(|row| (0..self.columns).map(move |column| (column, row)))
+            .filter_map(|(column, row)| {
+                self.draw_at(column, row, 0)
+                    .map(|drawn| (column, row, drawn))
+            })
+            .collect();
         self.direction = direction;
         self.rebuild();
+        // rebuild leaves every line un-drifted, so a cell's own number
+        // belongs at the index it sits at along its new line.
+        for (column, row, drawn) in carried {
+            let line = usize::from(self.line_of(column, row));
+            let at = usize::from(self.along(column, row));
+            if let Some(slot) = self
+                .lines
+                .get_mut(line)
+                .and_then(|line| line.draws.get_mut(at))
+            {
+                *slot = drawn;
+            }
+        }
     }
 
     /// Slow the field down by `cells_per_second`, never past the
@@ -329,7 +414,7 @@ impl DriftingText {
                 let Some(color) = backdrop.color_at(column, row) else {
                     continue;
                 };
-                let Some(glyph) = self.glyph_at(column, row) else {
+                let Some(drawn) = self.drawn_at(column, row) else {
                     continue;
                 };
                 if let Some(cell) = buffer.cell_mut((area.x + column, area.y + row)) {
@@ -337,10 +422,43 @@ impl DriftingText {
                         Color::Reset => ground,
                         background => background,
                     };
-                    cell.set_char(glyph);
+                    cell.set_char(drawn);
                     cell.set_fg(theme::blend_color(color, toward, self.faded));
                 }
             }
+        }
+    }
+
+    /// What the cell at `column`, `row` draws this frame, or [`None`]
+    /// where the field has no line running through it.
+    ///
+    /// The ramp this field's cells are filled from: the one that
+    /// subdivides a cell along the axis its lines travel on.
+    const fn bars(&self) -> &'static [char] {
+        match self.direction {
+            BandDirection::Left | BandDirection::Right => BARS_ACROSS,
+            BandDirection::Up | BandDirection::Down => BARS_UP,
+        }
+    }
+
+    /// The darkest and the brightest the desktop is anywhere the field
+    /// covers.
+    ///
+    /// The bars are drawn across that rather than across the whole of
+    /// what a colour could be. A desktop of dark greys occupies a
+    /// narrow band near the bottom of the absolute scale, and read
+    /// against the absolute scale every cell of it rounds to the same
+    /// sliver -- so the picture that is there goes undrawn. Stretched,
+    /// the same desktop fills the ramp.
+    fn drawn_at(&self, column: u16, row: u16) -> Option<char> {
+        match self.fill {
+            TextFill::Bars => {
+                let level = self.level_at(column, row)?;
+                self.bars()
+                    .get(usize::from(level).saturating_sub(1))
+                    .copied()
+            },
+            TextFill::Glyphs => self.glyph_at(column, row),
         }
     }
 
@@ -355,16 +473,49 @@ impl DriftingText {
         }
     }
 
-    /// The character standing on the cell at `column`, `row` this
-    /// frame, or [`None`] where the field has no line for it.
+    /// How much of the cell at `column`, `row` is lit this frame, on
+    /// the one-to-[`BAR_LEVELS`] scale a bar is drawn from, or [`None`]
+    /// where the field has no line running through it.
+    ///
+    /// Between the number standing here and the one due to arrive next
+    /// the two are mixed by how far into the cell the line has come,
+    /// and that mix is what puts the travel on eighths of a cell rather
+    /// than on whole ones. Reading the ring at one index only -- all a
+    /// character can do -- is the same journey taken in jumps.
+    fn level_at(&self, column: u16, row: u16) -> Option<u8> {
+        let fraction = self
+            .lines
+            .get(usize::from(self.line_of(column, row)))?
+            .fraction;
+        let here = u32::from(self.draw_at(column, row, 0)?);
+        let next = u32::from(self.draw_at(column, row, 1)?);
+        let mixed = (here * (SUBCELLS_PER_CELL - fraction) + next * fraction) / SUBCELLS_PER_CELL;
+        // A byte spread over the levels, from one so that no cell is
+        // ever left blank: this is the animation whose subject is the
+        // desktop, and an empty cell is a piece of it missing.
+        let level = mixed * BAR_LEVELS / (u32::from(u8::MAX) + 1) + 1;
+        u8::try_from(level).ok()
+    }
+
+    /// Which of [`GLYPHS`] the cell at `column`, `row` draws, or
+    /// [`None`] where the field has no line running through it.
     fn glyph_at(&self, column: u16, row: u16) -> Option<char> {
+        let drawn = self.draw_at(column, row, 0)?;
+        GLYPHS.get(usize::from(drawn) % GLYPHS.len()).copied()
+    }
+
+    /// The number standing at the cell at `column`, `row`, or the one
+    /// `back` places further along the ring behind it -- which is the
+    /// number due to arrive here in another `back` cells of travel.
+    fn draw_at(&self, column: u16, row: u16, back: u32) -> Option<u8> {
         let line = self.lines.get(usize::from(self.line_of(column, row)))?;
-        let length = u32::try_from(line.glyphs.len()).ok()?;
+        let length = u32::try_from(line.draws.len()).ok()?;
         if length == 0 {
             return None;
         }
-        let index = (u32::from(self.along(column, row)) + length - line.drifted % length) % length;
-        line.glyphs.get(usize::try_from(index).ok()?).copied()
+        let here = (u32::from(self.along(column, row)) + length - line.drifted % length) % length;
+        let at = (here + length - back % length) % length;
+        line.draws.get(usize::try_from(at).ok()?).copied()
     }
 
     /// How many lines the field is made of: its rows while the text
@@ -413,20 +564,15 @@ impl DriftingText {
         let count = usize::from(self.line_count());
         let length = usize::from(self.line_length());
         let variances = deal_variances(count, self.lines_per_lane(), &mut self.xorshift);
-        let mut lines = Vec::with_capacity(count);
-        for index in 0..count {
-            let mut glyphs = Vec::with_capacity(length);
-            for _ in 0..length {
-                glyphs.push(random::random_glyph(&mut self.xorshift));
-            }
-            lines.push(TextLine {
-                glyphs,
-                drifted: 0,
+        let xorshift = &mut self.xorshift;
+        self.lines = (0..count)
+            .map(|index| TextLine {
+                draws:    (0..length).map(|_| xorshift.byte()).collect(),
+                drifted:  0,
                 fraction: 0,
                 variance: variances.get(index).copied().unwrap_or(u8::MAX / 2),
-            });
-        }
-        self.lines = lines;
+            })
+            .collect();
     }
 
     /// Re-size to `area`, drawing a fresh set of lines. Does nothing
@@ -699,16 +845,16 @@ mod tests {
         Duration::from_micros(u64::from(cells) * MICROS_PER_SECOND / u64::from(speed) + 1)
     }
 
-    /// The characters standing across `columns` of row zero.
+    /// How much of each cell across `columns` of row zero is lit.
     ///
     /// Read into a [`Vec`] rather than handed back as an iterator
     /// because every caller compares it against the same row *after*
     /// [`DriftingText::advance`] has moved everything: a lazy read
-    /// would answer with where the characters ended up rather than
-    /// where they set out from.
-    fn row_glyphs(text: &DriftingText, columns: Range<u16>) -> Vec<char> {
+    /// would answer with where the light ended up rather than where it
+    /// set out from.
+    fn row_levels(text: &DriftingText, columns: Range<u16>) -> Vec<u8> {
         columns
-            .map(|column| text.glyph_at(column, 0).expect("the row is filled"))
+            .map(|column| text.level_at(column, 0).expect("the row is filled"))
             .collect()
     }
 
@@ -722,23 +868,29 @@ mod tests {
         let vertical = locked(BandDirection::Down);
 
         assert_eq!(sideways.lines.len(), usize::from(AREA.height));
-        assert_eq!(sideways.lines[0].glyphs.len(), usize::from(AREA.width));
+        assert_eq!(sideways.line_length(), AREA.width);
         assert_eq!(vertical.lines.len(), usize::from(AREA.width));
-        assert_eq!(vertical.lines[0].glyphs.len(), usize::from(AREA.height));
+        assert_eq!(vertical.line_length(), AREA.height);
     }
 
-    /// Every cell of the area carries a character. What separates this
-    /// animation from the band is that it leaves nothing out, so a hole
-    /// anywhere in it is the whole point missed.
+    /// Every cell of the area carries a bar, and never one of nothing.
+    /// What separates this animation from the band is that it leaves
+    /// nothing out, so a hole anywhere in it is the whole point missed
+    /// -- and a desktop dark enough to read as nothing is exactly where
+    /// a scale starting at zero would put holes.
     #[test]
-    fn every_cell_of_the_area_carries_a_character() {
+    fn every_cell_of_the_area_carries_a_bar() {
         let text = locked(BandDirection::Right);
 
         for row in 0..AREA.height {
             for column in 0..AREA.width {
+                let level = text
+                    .level_at(column, row)
+                    .expect("the field covers the area");
+                assert!(level >= 1, "nothing lit at {column}, {row}");
                 assert!(
-                    text.glyph_at(column, row).is_some(),
-                    "no character at {column}, {row}"
+                    u32::from(level) <= BAR_LEVELS,
+                    "more than a cell lit at {column}, {row}"
                 );
             }
         }
@@ -747,66 +899,158 @@ mod tests {
     /// A field with no area yet draws nothing, rather than reading its
     /// own emptiness as a line of length zero.
     #[test]
-    fn an_unsized_field_has_no_characters() {
-        assert_eq!(DriftingText::new().glyph_at(0, 0), None);
+    fn an_unsized_field_lights_nothing() {
+        assert_eq!(DriftingText::new().level_at(0, 0), None);
     }
 
-    /// A character stands one cell further along its line for every
-    /// cell the line has drifted, which is the whole of what makes the
-    /// text move.
+    /// The light stands one cell further along its line for every cell
+    /// the line has drifted, which is the whole of what makes the field
+    /// move.
     #[test]
-    fn a_character_travels_along_its_line_as_the_line_drifts() {
+    fn light_travels_along_its_line_as_the_line_drifts() {
         let mut text = locked(BandDirection::Right);
-        let before = row_glyphs(&text, 0..AREA.width - 1);
+        let before = row_levels(&text, 0..AREA.width - 1);
 
         text.advance(AREA, crossing(1, DEFAULT_TEXT_SPEED));
 
-        for (column, glyph) in before.into_iter().enumerate() {
+        for (column, level) in before.into_iter().enumerate() {
             let moved = u16::try_from(column).expect("the area is narrow") + 1;
             assert_eq!(
-                text.glyph_at(moved, 0),
-                Some(glyph),
-                "the character at {column} should have moved one cell right"
+                text.level_at(moved, 0),
+                Some(level),
+                "the light at {column} should have moved one cell right"
             );
         }
     }
 
-    /// Drifting left, a character travels toward the left edge instead.
+    /// Travel worth less than a whole cell still changes what is drawn.
+    ///
+    /// This is what the bars are for. Drawn on whole cells only, a line
+    /// at the default speed holds the same picture for a twelfth of a
+    /// second and then jumps a cell, which reads as stepping rather
+    /// than as travel.
+    #[test]
+    fn a_line_moving_less_than_a_cell_still_changes_what_is_drawn() {
+        let mut text = locked(BandDirection::Right);
+        let before = row_levels(&text, 0..AREA.width);
+
+        // Half a cell at the field's own speed, so no line has crossed
+        // a boundary and the whole-cell reading is untouched.
+        text.advance(
+            AREA,
+            Duration::from_micros(MICROS_PER_SECOND / u64::from(DEFAULT_TEXT_SPEED) / 2),
+        );
+
+        assert!(
+            text.lines.iter().all(|line| line.drifted == 0),
+            "the test should not have crossed a cell boundary"
+        );
+        assert_ne!(
+            row_levels(&text, 0..AREA.width),
+            before,
+            "half a cell of travel should show"
+        );
+    }
+
+    /// Drifting left, the light travels toward the left edge instead.
     /// The ring is turned the same way whichever direction it is read
     /// in -- what changes is which end of the line is counted from.
     #[test]
-    fn drifting_left_carries_the_characters_the_other_way() {
+    fn drifting_left_carries_the_light_the_other_way() {
         let mut text = locked(BandDirection::Left);
-        let before = row_glyphs(&text, 1..AREA.width);
+        let before = row_levels(&text, 1..AREA.width);
 
         text.advance(AREA, crossing(1, DEFAULT_TEXT_SPEED));
 
-        for (index, glyph) in before.into_iter().enumerate() {
+        for (index, level) in before.into_iter().enumerate() {
             let moved = u16::try_from(index).expect("the area is narrow");
             assert_eq!(
-                text.glyph_at(moved, 0),
-                Some(glyph),
-                "the character at {} should have moved one cell left",
+                text.level_at(moved, 0),
+                Some(level),
+                "the light at {} should have moved one cell left",
                 moved + 1
             );
         }
     }
 
-    /// The line never runs out: the cell at the edge it drifts from
-    /// holds a character that was not on the line before, rather than
-    /// the one that just left the far end coming round again.
+    /// A line is a ring, so a whole lap brings it back to where it set
+    /// off from -- but a fresh number was dealt at the entering edge
+    /// for every cell it crossed on the way, so what it draws there is
+    /// a new hand rather than the one it started with.
     #[test]
-    fn a_fresh_character_enters_at_the_edge_the_line_drifts_from() {
+    fn a_whole_lap_deals_a_line_a_fresh_hand() {
         let mut text = locked(BandDirection::Right);
-        let lap = crossing(u32::from(AREA.width), DEFAULT_TEXT_SPEED);
-        let before: Vec<char> = text.lines[0].glyphs.clone();
+        let before = row_levels(&text, 0..AREA.width);
 
-        text.advance(AREA, lap);
+        text.advance(AREA, crossing(u32::from(AREA.width), DEFAULT_TEXT_SPEED));
 
-        assert_ne!(
-            text.lines[0].glyphs, before,
-            "a whole lap should have replaced the line rather than turning it"
+        assert_eq!(text.lines[0].drifted, 0, "a lap should come round");
+        assert_ne!(row_levels(&text, 0..AREA.width), before);
+    }
+
+    /// Both fills read the same ring, so the key that swaps them moves
+    /// nothing: the field the reader was looking at is the field they
+    /// keep, drawn another way.
+    #[test]
+    fn swapping_the_fill_leaves_every_line_where_it_stood() {
+        let mut text = locked(BandDirection::Right);
+        text.advance(AREA, crossing(3, DEFAULT_TEXT_SPEED));
+        let before: Vec<Vec<u8>> = text.lines.iter().map(|line| line.draws.clone()).collect();
+        let drifted: Vec<u32> = text.lines.iter().map(|line| line.drifted).collect();
+
+        text.cycle_fill();
+
+        assert_eq!(text.fill, TextFill::Glyphs);
+        assert!(text.glyph_at(0, 0).is_some(), "the glyphs should draw");
+        assert_eq!(
+            text.lines
+                .iter()
+                .map(|line| line.draws.clone())
+                .collect::<Vec<_>>(),
+            before
         );
+        assert_eq!(
+            text.lines
+                .iter()
+                .map(|line| line.drifted)
+                .collect::<Vec<_>>(),
+            drifted
+        );
+    }
+
+    /// A turn keeps every cell drawing what it was drawing, and only
+    /// changes which way that travels from here. Dealing the field
+    /// afresh instead replaces every cell at once, and a field of
+    /// numbers replaced at once averages out -- the picture washes pale
+    /// for as long as the new numbers take to travel.
+    #[test]
+    fn turning_carries_every_cell_into_the_new_direction() {
+        let mut text = locked(BandDirection::Right);
+        text.advance(AREA, crossing(2, DEFAULT_TEXT_SPEED));
+        let before: Vec<Vec<Option<u8>>> = (0..AREA.height)
+            .map(|row| {
+                (0..AREA.width)
+                    .map(|column| text.draw_at(column, row, 0))
+                    .collect()
+            })
+            .collect();
+
+        text.set_direction(BandDirection::Down);
+
+        // Read back by reference: the numbers have to be off the field
+        // before the turn, and a lazy read would answer with what the
+        // cells hold after it.
+        for (row, drawn) in before.iter().enumerate() {
+            for (column, number) in drawn.iter().enumerate() {
+                let column = u16::try_from(column).expect("the area is narrow");
+                let row = u16::try_from(row).expect("the area is short");
+                assert_eq!(
+                    text.draw_at(column, row, 0),
+                    *number,
+                    "{column}, {row} should have kept its number through the turn"
+                );
+            }
+        }
     }
 
     /// Every covered cell wears the colour the backdrop has for it. The

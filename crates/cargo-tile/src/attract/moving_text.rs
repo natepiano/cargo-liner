@@ -34,6 +34,7 @@ tui_pane::action_enum! {
         Faster         => ("faster",          "Speed the text up");
         Slower         => ("slower",          "Slow the text down");
         CycleDrift     => ("cycle_drift",     "Drift the lines as one, or apart");
+        CycleFill      => ("cycle_fill",      "Fill the cells with bars, or with characters");
         SpreadNarrower => ("spread_narrower", "Draw the lines' speeds together");
         SpreadWider    => ("spread_wider",    "Send the lines' speeds apart");
         ShowMovingBand => ("show_moving_band", "Show the moving band");
@@ -92,6 +93,7 @@ impl Shortcuts<App> for MovingTextPane {
             ['>', '.'] => MovingTextAction::Faster,
             ['<', ','] => MovingTextAction::Slower,
             'v' => MovingTextAction::CycleDrift,
+            't' => MovingTextAction::CycleFill,
             '[' => MovingTextAction::SpreadNarrower,
             ']' => MovingTextAction::SpreadWider,
             '1' => MovingTextAction::ShowMovingBand,
@@ -142,6 +144,7 @@ mod tests {
         let scope = MovingTextPane::defaults().into_scope_map();
         let cases = [
             ('v', MovingTextAction::CycleDrift),
+            ('t', MovingTextAction::CycleFill),
             ('[', MovingTextAction::SpreadNarrower),
             (']', MovingTextAction::SpreadWider),
             ('>', MovingTextAction::Faster),

@@ -42,6 +42,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 pub use text::DriftingText;
 pub use text::TextDrift;
+pub use text::TextFill;
 
 /// One captured colour per character cell over some rectangle of the
 /// terminal grid.
