@@ -16,29 +16,40 @@ use std::string::FromUtf8Error;
 use command::git_output;
 use command::git_output_dynamic;
 use command::git_output_dynamic_with_input;
+use constants::GIT_ANCESTOR_RANGE_INFIX;
 use constants::GIT_ANCESTRY_PATH_ARG_PREFIX;
 use constants::GIT_BATCH_CHECK_ARG;
 use constants::GIT_BOUNDARY_ARG;
 use constants::GIT_CAT_FILE_COMMAND;
+use constants::GIT_CHERRY_MARK_ARG;
 use constants::GIT_COMMIT_PEEL_SUFFIX;
 use constants::GIT_COMMON_DIRECTORY_ARG;
+use constants::GIT_COUNT_ARG;
+use constants::GIT_EQUIVALENT_COMMIT_MARK;
 use constants::GIT_EXCLUDE_REVISION_PREFIX;
 use constants::GIT_EXISTS_ARG;
+use constants::GIT_FIRST_PARENT_ANCESTOR_INFIX;
+use constants::GIT_FIRST_PARENT_ARG;
 use constants::GIT_HEAD_REVISION;
 use constants::GIT_HOOKS_PATH;
 use constants::GIT_IS_ANCESTOR_ARG;
 use constants::GIT_LEFT_RIGHT_ARG;
 use constants::GIT_LOCAL_BRANCH_REF_PREFIX;
+use constants::GIT_MAX_COUNT_ARG_PREFIX;
 use constants::GIT_MERGE_BASE_COMMAND;
 use constants::GIT_MISSING_OBJECT_SUFFIX;
+use constants::GIT_NO_MERGES_ARG;
 use constants::GIT_NOT_ANCESTOR_EXIT_CODE;
 use constants::GIT_NUL_TERMINATED_ARG;
 use constants::GIT_PATH_ARG;
 use constants::GIT_PATH_FORMAT_ABSOLUTE_ARG;
 use constants::GIT_PORCELAIN_ARG;
+use constants::GIT_REBASE_APPLY_STATE_PATH;
+use constants::GIT_REBASE_MERGE_STATE_PATH;
 use constants::GIT_REV_LIST_COMMAND;
 use constants::GIT_REV_PARSE_COMMAND;
 use constants::GIT_SHOW_TOPLEVEL_ARG;
+use constants::GIT_SYMMETRIC_RANGE_INFIX;
 use constants::GIT_UPDATE_REF_COMMAND;
 use constants::GIT_WORKTREE_COMMAND;
 use constants::GIT_WORKTREE_LIST_ARG;
@@ -165,6 +176,155 @@ pub(crate) fn newly_reachable_commits(
         .lines()
         .map(|line| line.parse().map_err(GitError::InvalidObjectId))
         .collect()
+}
+
+/// Report whether git is part-way through replaying commits onto a moved base.
+///
+/// A rebase moves the worktree onto its new base and replays each commit from there, and
+/// git runs `post-commit` for every one of them. Until the branch reference moves at the
+/// end, the phase's anchor still describes the history the branch is being lifted off, so
+/// a comparison taken now reads the new base's commits as this phase's work. There is no
+/// drift answer worth giving about a history that is still being written.
+pub(crate) fn rewrite_in_progress(repository_root: &Path) -> Result<bool, GitError> {
+    for state_path in [GIT_REBASE_MERGE_STATE_PATH, GIT_REBASE_APPLY_STATE_PATH] {
+        if repository_path(repository_root, state_path)?.exists() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Resolve one of git's administrative paths for the invoking worktree.
+fn repository_path(repository_root: &Path, name: &str) -> Result<PathBuf, GitError> {
+    let output = git_output(
+        repository_root,
+        [
+            GIT_REV_PARSE_COMMAND,
+            GIT_PATH_FORMAT_ABSOLUTE_ARG,
+            GIT_PATH_ARG,
+            name,
+        ],
+    )?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_PARSE_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(PathBuf::from(
+        String::from_utf8(output.stdout)
+            .map_err(GitError::InvalidOutput)?
+            .trim(),
+    ))
+}
+
+/// Locate a rewritten branch's replayed phase commits and return the commit beneath them.
+///
+/// A rebase leaves `phase_start` describing a history the branch no longer has, so
+/// `<phase_start>..HEAD` stops meaning "the commits this phase authored" and starts
+/// including everything the new base brought in. The phase's own commits survive the
+/// rewrite as patch-equivalents sitting at the tip, so the replacement anchor is the
+/// commit directly beneath the last of them.
+///
+/// Counting the phase's commits is not enough, and neither is testing patch identity on
+/// its own. A rebase drops a commit whose patch already reached the new base, and the
+/// upstream commit carrying that same patch is itself an equivalent, so both a count and
+/// a bare equivalence test read a dropped commit exactly like a replayed one. Position
+/// separates them: only the replayed commits are contiguous at the tip.
+pub(crate) fn rewritten_phase_anchor(
+    repository_root: &Path,
+    phase_start: &GitObjectId,
+    previous_tip: &GitObjectId,
+    proposed_tip: &GitObjectId,
+) -> Result<GitObjectId, GitError> {
+    let phase_commit_count = commit_count(
+        repository_root,
+        &format!("{phase_start}{GIT_ANCESTOR_RANGE_INFIX}{previous_tip}"),
+    )?;
+    if phase_commit_count == 0 {
+        return Ok(proposed_tip.clone());
+    }
+    let equivalents =
+        phase_equivalent_commits(repository_root, phase_start, previous_tip, proposed_tip)?;
+    let replayed = first_parent_commits(repository_root, proposed_tip, phase_commit_count)?
+        .iter()
+        .take_while(|commit| equivalents.contains(commit))
+        .count();
+    object_id(
+        repository_root,
+        &format!("{proposed_tip}{GIT_FIRST_PARENT_ANCESTOR_INFIX}{replayed}"),
+    )
+}
+
+/// Count the commits selected by one revision range.
+fn commit_count(repository_root: &Path, range: &str) -> Result<usize, GitError> {
+    let arguments = vec![
+        GIT_REV_LIST_COMMAND.to_owned(),
+        GIT_COUNT_ARG.to_owned(),
+        range.to_owned(),
+    ];
+    let output = rev_list(repository_root, &arguments)?;
+    output
+        .trim()
+        .parse()
+        .map_err(|_| GitError::UncountableCommitRange {
+            range: range.to_owned(),
+        })
+}
+
+/// Collect the commits on either side of the rewrite that carry a phase commit's patch.
+///
+/// Excluding `phase_start` keeps the comparison to this phase's own commits, so an
+/// earlier phase sharing the branch is never mistaken for part of this one.
+fn phase_equivalent_commits(
+    repository_root: &Path,
+    phase_start: &GitObjectId,
+    previous_tip: &GitObjectId,
+    proposed_tip: &GitObjectId,
+) -> Result<Vec<GitObjectId>, GitError> {
+    let arguments = vec![
+        GIT_REV_LIST_COMMAND.to_owned(),
+        GIT_CHERRY_MARK_ARG.to_owned(),
+        GIT_LEFT_RIGHT_ARG.to_owned(),
+        GIT_NO_MERGES_ARG.to_owned(),
+        format!("{previous_tip}{GIT_SYMMETRIC_RANGE_INFIX}{proposed_tip}"),
+        format!("{GIT_EXCLUDE_REVISION_PREFIX}{phase_start}"),
+    ];
+    rev_list(repository_root, &arguments)?
+        .lines()
+        .filter_map(|line| line.strip_prefix(GIT_EQUIVALENT_COMMIT_MARK))
+        .map(|commit| commit.parse().map_err(GitError::InvalidObjectId))
+        .collect()
+}
+
+/// Walk one commit's own line of descent from the tip, taking at most `limit` commits.
+fn first_parent_commits(
+    repository_root: &Path,
+    tip: &GitObjectId,
+    limit: usize,
+) -> Result<Vec<GitObjectId>, GitError> {
+    let arguments = vec![
+        GIT_REV_LIST_COMMAND.to_owned(),
+        GIT_FIRST_PARENT_ARG.to_owned(),
+        format!("{GIT_MAX_COUNT_ARG_PREFIX}{limit}"),
+        tip.to_string(),
+    ];
+    rev_list(repository_root, &arguments)?
+        .lines()
+        .map(|commit| commit.parse().map_err(GitError::InvalidObjectId))
+        .collect()
+}
+
+/// Run one `rev-list` invocation and return its standard output.
+fn rev_list(repository_root: &Path, arguments: &[String]) -> Result<String, GitError> {
+    let output = git_output_dynamic(repository_root, arguments)?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_LIST_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)
 }
 
 /// Return every commit reachable from a proposed initial trunk object.
@@ -579,6 +739,11 @@ pub(crate) enum GitError {
         previous: GitObjectId,
         proposed: GitObjectId,
     },
+    /// `rev-list --count` printed something that was not a commit total.
+    UncountableCommitRange {
+        /// The range whose total could not be read.
+        range: String,
+    },
 }
 
 impl Display for GitError {
@@ -606,6 +771,9 @@ impl Display for GitError {
                 formatter,
                 "could not verify a fast-forward branch update from {previous} to {proposed}"
             ),
+            Self::UncountableCommitRange { range } => {
+                write!(formatter, "git could not count the commits in {range}")
+            },
         }
     }
 }

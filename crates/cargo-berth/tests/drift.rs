@@ -1132,6 +1132,120 @@ impl TracedDrift {
     }
 }
 
+#[test]
+fn a_rebase_reanchors_the_phase_so_the_new_base_is_not_read_as_its_work() {
+    let repository = initialized_repository();
+    let worktree_parent = tempdir().expect("worktree parent should exist");
+    let feature = add_worktree(repository.path(), worktree_parent.path(), "feature");
+    let reservation = claim(&feature, "file:claimed.txt", FIRST_RUN);
+
+    // This phase commits its claimed file and one more the reservation does not cover.
+    fs::write(feature.join("claimed.txt"), "phase\n").expect("claimed path should write");
+    fs::write(feature.join("phase-extra.txt"), "phase\n").expect("extra path should write");
+    git(&feature, &["add", "claimed.txt", "phase-extra.txt"]);
+    git(&feature, &["commit", "--quiet", "-m", "phase work"]);
+
+    // Trunk gains a file this worktree never opened.
+    fs::write(repository.path().join("upstream.txt"), "upstream\n")
+        .expect("upstream path should write");
+    git(repository.path(), &["add", "upstream.txt"]);
+    git(
+        repository.path(),
+        &["commit", "--quiet", "-m", "upstream work"],
+    );
+
+    git(&feature, &["rebase", "main"]);
+
+    let events = journal_events(repository.path());
+    let resnapshot = events
+        .iter()
+        .find(|event| event["op"] == "resnapshot")
+        .expect("the rebase should re-anchor the phase");
+    assert_eq!(resnapshot["reservation_id"], reservation.as_str());
+    assert_eq!(resnapshot["snapshot"]["stage"], "active");
+
+    let observed = drift(&feature, &["--full", "--reservation", &reservation]);
+    let envelope = json_output(&observed);
+    assert!(observed.status.success());
+    assert_eq!(
+        envelope["status"], "clear",
+        "the replayed upstream commits are not this phase's work: {envelope}"
+    );
+    let journal = journal_text(repository.path());
+    assert!(
+        !journal.contains("upstream.txt"),
+        "no upstream path may be widened onto or reported as an incursion: {journal}"
+    );
+    assert!(
+        journal.contains("phase-extra.txt"),
+        "this phase's own committed work still widens across the rebase: {journal}"
+    );
+}
+
+#[test]
+fn a_rebase_anchors_each_phase_sharing_a_branch_below_its_own_commits() {
+    let repository = initialized_repository();
+    let worktree_parent = tempdir().expect("worktree parent should exist");
+    let feature = add_worktree(repository.path(), worktree_parent.path(), "feature");
+
+    let first = claim(&feature, "file:alpha.txt", FIRST_RUN);
+    fs::write(feature.join("alpha.txt"), "alpha\n").expect("alpha path should write");
+    git(&feature, &["add", "alpha.txt"]);
+    git(&feature, &["commit", "--quiet", "-m", "alpha"]);
+
+    let second = claim(&feature, "file:beta.txt", SECOND_RUN);
+    fs::write(feature.join("beta.txt"), "beta\n").expect("beta path should write");
+    git(&feature, &["add", "beta.txt"]);
+    git(&feature, &["commit", "--quiet", "-m", "beta"]);
+
+    fs::write(repository.path().join("upstream.txt"), "upstream\n")
+        .expect("upstream path should write");
+    git(repository.path(), &["add", "upstream.txt"]);
+    git(
+        repository.path(),
+        &["commit", "--quiet", "-m", "upstream work"],
+    );
+
+    git(&feature, &["rebase", "main"]);
+
+    // The branch now reads: upstream, alpha, beta. Each phase anchors directly beneath
+    // the commits it authored, so the earlier phase's work is never read as the later
+    // phase's, and neither one owns the commit the rebase replayed them onto.
+    let anchors = journal_events(repository.path())
+        .into_iter()
+        .filter(|event| event["op"] == "resnapshot")
+        .map(|event| {
+            (
+                event["reservation_id"]
+                    .as_str()
+                    .expect("a resnapshot names its reservation")
+                    .to_owned(),
+                event["snapshot"]["claim_snapshot"]
+                    .as_str()
+                    .expect("an active resnapshot names its phase start")
+                    .to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let anchor_for = |reservation: &str| {
+        anchors
+            .iter()
+            .find(|(id, _)| id == reservation)
+            .map(|(_, anchor)| anchor.clone())
+            .expect("every active reservation on the branch is re-anchored")
+    };
+    assert_eq!(
+        anchor_for(&first),
+        git_stdout(&feature, &["rev-parse", "HEAD~2"]).trim(),
+        "the first phase anchors on the commit the rebase moved it onto"
+    );
+    assert_eq!(
+        anchor_for(&second),
+        git_stdout(&feature, &["rev-parse", "HEAD~1"]).trim(),
+        "the second phase anchors above the first phase's replayed commit"
+    );
+}
+
 fn traced_drift(repository_root: &Path, arguments: &[&str]) -> TracedDrift {
     let directory = tempdir().expect("wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);

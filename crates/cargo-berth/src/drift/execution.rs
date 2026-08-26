@@ -19,11 +19,14 @@ use super::report::DriftReport;
 use super::report::PostWriteFreePathProtection;
 use super::report::ReservationDriftResult;
 use super::report::UnattributedDriftPathSet;
+use super::selection::DriftComparisonChoice;
 use super::selection::DriftRequest;
 use super::selection::DriftReservationSelection;
 use super::selection::DriftSelectionError;
 use super::selection::PostWriteFirstTouchRequirement;
 use crate::config::Enrollment;
+use crate::git;
+use crate::git::GitError;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::Ledger;
@@ -144,13 +147,19 @@ fn execute_inner(
                     DriftReservationSelection::EveryActiveForPostCommit { .. }
                 ) =>
             {
-                return Ok(Enrollment::Enrolled(DriftReport::unchanged(
-                    request.comparison.report_mode(),
-                    &[],
-                )));
+                return Ok(nothing_to_compare(request.comparison));
             },
             Err(error) => return Err(DriftExecutionError::Ledger(error)),
         };
+    // Stand aside while git is still replaying commits onto a moved base. Every replayed
+    // commit runs `post-commit`, and nothing re-anchors the phase until the branch
+    // reference moves at the end, so a comparison taken here reads the new base's commits
+    // as this phase's work and acquires the paths they touch.
+    if git::rewrite_in_progress(worktree_context.repository_root())
+        .map_err(DriftExecutionError::Git)?
+    {
+        return Ok(nothing_to_compare(request.comparison));
+    }
     let initial_reservations = RetainedReservationSet::replay(initial_snapshot.events())?;
     let acting_identity =
         DriftActingIdentity::resolve(&worktree_context, worktree_id, &initial_reservations);
@@ -222,6 +231,11 @@ fn execute_inner(
         fingerprint::publish_fingerprint(&cache_path, &observation.cache_value);
     }
     Ok(Enrollment::Enrolled(report))
+}
+
+/// The report to give when no subject has a comparison worth making.
+fn nothing_to_compare(comparison: DriftComparisonChoice) -> Enrollment<DriftReport> {
+    Enrollment::Enrolled(DriftReport::unchanged(comparison.report_mode(), &[]))
 }
 
 fn claim_post_write_paths(
@@ -393,6 +407,7 @@ enum DriftExecutionError {
     Replay(ReservationReplayError),
     Selection(DriftSelectionError),
     Fingerprint(DriftFingerprintError),
+    Git(GitError),
     PathCase(PathCaseError),
     Transaction(LedgerTransactionError),
     Claim(ClaimError),
@@ -407,6 +422,7 @@ impl Display for DriftExecutionError {
             Self::Replay(error) => error.fmt(formatter),
             Self::Selection(error) => error.fmt(formatter),
             Self::Fingerprint(error) => error.fmt(formatter),
+            Self::Git(error) => error.fmt(formatter),
             Self::PathCase(error) => error.fmt(formatter),
             Self::Transaction(error) => error.fmt(formatter),
             Self::Claim(error) => error.fmt(formatter),

@@ -31,6 +31,16 @@ pub(super) const GIT_EXISTS_ARG: &str = "-e";
 pub(super) const GIT_DELETE_REF_ARG: &str = "-d";
 /// Ask `merge-base` to test commit ancestry.
 pub(super) const GIT_IS_ANCESTOR_ARG: &str = "--is-ancestor";
+/// Mark commits that have a patch-equivalent on the other side of a symmetric difference.
+pub(super) const GIT_CHERRY_MARK_ARG: &str = "--cherry-mark";
+/// Report only the number of selected commits.
+pub(super) const GIT_COUNT_ARG: &str = "--count";
+/// Follow only the first parent, so a walk stays on one branch's own line.
+pub(super) const GIT_FIRST_PARENT_ARG: &str = "--first-parent";
+/// Prefix bounding a revision walk to a number of commits.
+pub(super) const GIT_MAX_COUNT_ARG_PREFIX: &str = "--max-count=";
+/// Omit merge commits, which carry no patch of their own to compare.
+pub(super) const GIT_NO_MERGES_ARG: &str = "--no-merges";
 /// Prefix symmetric-difference commits by their left or right side.
 pub(super) const GIT_LEFT_RIGHT_ARG: &str = "--left-right";
 /// Disable git's optional locks for read-only calls.
@@ -49,6 +59,8 @@ pub(super) const GIT_SHOW_TOPLEVEL_ARG: &str = "--show-toplevel";
 pub(super) const GIT_WORKTREE_LIST_ARG: &str = "list";
 
 // output
+/// Prefix `--cherry-mark` gives a commit that has a patch-equivalent on the other side.
+pub(super) const GIT_EQUIVALENT_COMMIT_MARK: char = '=';
 /// Suffix reported by `cat-file --batch-check` for an unresolved object expression.
 pub(super) const GIT_MISSING_OBJECT_SUFFIX: &str = " missing";
 
@@ -61,8 +73,18 @@ pub(super) const GIT_HOOKS_PATH: &str = "hooks";
 pub(super) const GIT_LOCAL_BRANCH_REF_PREFIX: &str = "refs/heads/";
 /// Prefix excluding a revision while retaining its descendants.
 pub(super) const GIT_EXCLUDE_REVISION_PREFIX: &str = "^";
+/// Infix selecting the commits reachable from the second revision but not the first.
+pub(super) const GIT_ANCESTOR_RANGE_INFIX: &str = "..";
+/// Infix selecting the commits reachable from exactly one of two revisions.
+pub(super) const GIT_SYMMETRIC_RANGE_INFIX: &str = "...";
+/// Suffix selecting a commit's nth first-parent ancestor.
+pub(super) const GIT_FIRST_PARENT_ANCESTOR_INFIX: &str = "~";
 /// Suffix that requires a revision to resolve as a commit.
 pub(super) const GIT_COMMIT_PEEL_SUFFIX: &str = "^{commit}";
+/// Git's per-worktree state directory for a rebase running on the merge backend.
+pub(super) const GIT_REBASE_MERGE_STATE_PATH: &str = "rebase-merge";
+/// Git's per-worktree state directory for a rebase or `am` running on the apply backend.
+pub(super) const GIT_REBASE_APPLY_STATE_PATH: &str = "rebase-apply";
 /// The private namespace used to retain reservation commits.
 pub(super) const RESERVATION_RETENTION_REF_PREFIX: &str = "refs/cargo-berth/reservations/";
 
