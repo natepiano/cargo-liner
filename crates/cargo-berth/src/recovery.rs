@@ -717,9 +717,9 @@ impl Display for RecoveryRejection {
                 "incursion incident {incident_id} does not belong to reservation {reservation_id}"
             ),
             Self::Replay(error) => error.fmt(formatter),
-            Self::CheckpointRequired => {
-                formatter.write_str("the reservation must have a protected checkpoint first")
-            },
+            Self::CheckpointRequired => formatter.write_str(
+                "the reservation must have a protected checkpoint first; cargo-berth release records one",
+            ),
             Self::AlreadyResolved => formatter.write_str("the reservation is already resolved"),
             Self::SameWorktreeRecovery => formatter
                 .write_str("--recovered requires a replacement worktree with a new identity"),

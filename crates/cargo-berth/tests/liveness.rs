@@ -786,7 +786,9 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
     assert!(
         json_output(&resolution)["message"]
             .as_str()
-            .is_some_and(|message| message.contains("protected checkpoint"))
+            .is_some_and(|message| {
+                message.contains("protected checkpoint") && message.contains("cargo-berth release")
+            })
     );
 }
 

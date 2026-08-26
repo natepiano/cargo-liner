@@ -237,7 +237,8 @@ Forced permits are one-use: `ForcedIntegrationPermit` grants and `ConsumeForcedI
 - Ordering edges never form a cycle; `sequence` refuses one.
 - The overlap answer set is closed. A new answer is a new `ConflictAuthorization` variant, not a flag on an existing one.
 - Overlap proposal tokens are never journalled and are always re-derived and matched under the lock.
-- Nothing is auto-removed. Reconciliation raises an alert; a user action retires a reservation.
+- A post-write first-touch claim acquires only paths modified at the time of the claim. Drift reporting still classifies every path that moved.
+- Nothing is auto-removed. Reconciliation raises an alert; a user action retires a reservation. A live holder proven clean is no exception; the block message names the verbs that clear it.
 - A reconciliation failure never relaxes a block.
 - Editing fails open and integration fails closed when the ledger is unreadable.
 - `CARGO_BERTH_BYPASS` is read before any ledger access so a broken ledger can never trap a user.
@@ -330,6 +331,8 @@ Forced permits are one-use: `ForcedIntegrationPermit` grants and `ConsumeForcedI
 
 **Nothing is removed automatically.** The tool can prove a worktree is gone; it cannot prove the work is abandoned. Auto-removing a reservation on that evidence would silently discard someone's claim on the strength of an inference. An alert plus an explicit `resolve` keeps the decision with the person who has the missing context.
 
+A live holder that is clean and zero commits ahead of trunk is treated the same way, and for the same reason. A clean working tree is a fact about the tree, not about the work: a stash entry lives in the repository rather than the worktree, an ignored file never appears in `git status`, and work already parked on a merged branch reads as clean while its holder still intends to hold the path. Retiring a first-touch reservation on that evidence would reintroduce exactly the inference this invariant forbids, with a fresher observation and the same failure. `active_work` therefore names the lifecycle stage the reservation is in, not an observation that a file is currently dirty. What the tool owes a blocked caller instead is the route out, so the overlap block names the disposition verbs that clear a first-touch holder.
+
 **Fail open for editing, closed for integration.** These have asymmetric costs. If the ledger is unreadable and editing is blocked, the tool has bricked the repository for everyone — a coordination aid that stops work is worse than no aid. If the ledger is unreadable and integration proceeds, an unverified merge lands on trunk. So the cheap-to-recover direction fails open and the expensive-to-recover direction fails closed.
 
 **Bypass is evaluated before any read.** The one situation where a user most needs to escape the tool is the one where the tool is broken. Any bypass path that first consults the ledger would fail exactly when it is needed, which is why both the binary and both hook scripts check the variable first.
@@ -343,6 +346,8 @@ Forced permits are one-use: `ForcedIntegrationPermit` grants and `ConsumeForcedI
 **Two release valves, not one.** Forced permits handle the case where the gate is right about the facts and wrong about this particular merge; they are one-use and journalled, so the exception does not become the norm. `CARGO_BERTH_BYPASS` handles the case where the tool itself is the problem. Collapsing them would mean either no way out when the tool is broken, or a permanent global off switch for a single exception.
 
 **Drift detects after the write.** Intercepting writes would mean sitting in front of the editor, which is neither possible nor desirable. Comparing what the worktree actually touched against what it claimed catches the same divergence with no interception, and the cheap fingerprint comparison keeps the common case at two git calls so the check can run often.
+
+**Moving and being modified are different questions.** The cheap comparison is a symmetric difference against the last fingerprint, so it answers "which paths moved since the last observation" — and a path that moved because it was restored to its committed content is in that answer. Reporting drift against a reservation wants exactly that question. Acquiring a new reservation does not: a restored path carries no work to protect, and the first-touch reservation it would take blocks every other worktree until a person resolves it by hand. So the post-write claim intersects the observed paths with the fingerprint it is about to cache, which lists only paths modified at the moment of the call, and both comparison modes reach the same answer for the same working tree.
 
 **The commit-time drift check warns and never blocks.** A post-commit hook that fails leaves the user with a commit already made and a tool telling them it should not exist. Warning after the fact, and always exiting 0, keeps the commit valid and puts the finding where the user can act on it.
 

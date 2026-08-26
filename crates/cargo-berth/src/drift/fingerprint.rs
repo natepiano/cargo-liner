@@ -1,5 +1,6 @@
 //! The cached working-tree path fingerprint the cheap comparison comes from.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -20,6 +21,14 @@ pub(super) struct WorkingTreeFingerprint {
 }
 
 impl WorkingTreeFingerprint {
+    /// Every path this fingerprint reports as modified in the working tree.
+    pub(super) fn modified_paths(&self) -> HashSet<&ReservationScopePath> {
+        self.tracked_paths
+            .iter()
+            .chain(&self.untracked_paths)
+            .collect()
+    }
+
     pub(super) fn normalized(mut self) -> Self {
         ordering::normalize_paths(&mut self.tracked_paths);
         ordering::normalize_paths(&mut self.untracked_paths);

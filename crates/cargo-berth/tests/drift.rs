@@ -128,6 +128,65 @@ fn post_write_drift_mints_a_first_touch_reservation_when_none_exists() {
 }
 
 #[test]
+fn post_write_drift_does_not_claim_a_path_the_edit_restored() {
+    let repository = initialized_repository();
+    fs::write(repository.path().join("design.md"), "original\n").expect("design path should write");
+    git(repository.path(), &["add", "design.md"]);
+    git(repository.path(), &["commit", "--quiet", "-m", "design"]);
+    fs::write(repository.path().join("design.md"), "edited\n").expect("design path should edit");
+    let claimed = cheap_post_commit_drift(repository.path());
+    let claimed_envelope = json_output(&claimed);
+    assert_eq!(claimed_envelope["status"], "widened");
+    let reservation_id =
+        claimed_envelope["payload"]["data"]["widening"]["acquisition"]["reservation_id"]
+            .as_str()
+            .expect("the post-write claim should return a reservation id")
+            .to_owned();
+    let abandoned = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &reservation_id,
+            "--abandon",
+            "--why",
+            "the first-touch edit is deliberately discarded",
+            "--json",
+        ],
+    );
+    assert!(
+        abandoned.status.success(),
+        "abandon failed: {}",
+        String::from_utf8_lossy(&abandoned.stdout)
+    );
+    fs::write(repository.path().join("design.md"), "original\n")
+        .expect("design path should restore");
+    assert_eq!(
+        git_stdout(repository.path(), &["status", "--porcelain"]),
+        ""
+    );
+    let journal_before = journal_events(repository.path());
+
+    let restored = cheap_post_commit_drift(repository.path());
+    let envelope = json_output(&restored);
+
+    assert!(restored.status.success());
+    assert_eq!(envelope["payload"]["data"]["comparison"], "cheap_delta");
+    assert_eq!(envelope["status"], "clear");
+    assert_eq!(
+        envelope["payload"]["data"]["widening"]["status"],
+        "not_needed"
+    );
+    let full = post_commit_drift(repository.path(), &[]);
+    let full_envelope = json_output(&full);
+    assert_eq!(full_envelope["status"], envelope["status"]);
+    assert_eq!(
+        full_envelope["payload"]["data"]["widening"]["status"],
+        envelope["payload"]["data"]["widening"]["status"]
+    );
+    assert_eq!(journal_events(repository.path()), journal_before);
+}
+
+#[test]
 fn post_write_drift_detects_but_cannot_prevent_a_foreign_incursion() {
     let repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");
@@ -1237,6 +1296,18 @@ fn post_commit_drift(repository_root: &Path, arguments: &[&str]) -> Output {
         .env(POST_COMMIT_ENVIRONMENT, "1")
         .output()
         .expect("post-commit drift should run")
+}
+
+fn cheap_post_commit_drift(repository_root: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["drift", "--json"])
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(POST_COMMIT_ENVIRONMENT, "1")
+        .output()
+        .expect("cheap post-commit drift should run")
 }
 
 fn text_post_commit_drift(repository_root: &Path, arguments: &[&str]) -> Output {

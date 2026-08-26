@@ -13,6 +13,7 @@ use super::git_output::DriftFingerprintError;
 use super::identity::DriftActingIdentity;
 use super::observation;
 use super::observation::FingerprintObservation;
+use super::observation::PostWriteClaimSubject;
 use super::report::DriftPathAttributionOutcome;
 use super::report::DriftReport;
 use super::report::PostWriteFreePathProtection;
@@ -226,7 +227,15 @@ fn execute_inner(
 fn claim_post_write_paths(
     observation: &FingerprintObservation,
 ) -> Result<PostWritePathAttribution, DriftExecutionError> {
-    let paths = observation.changes.observed_paths();
+    let paths = match observation.post_write_claim_subject() {
+        PostWriteClaimSubject::NoModifiedPath => {
+            return Ok(PostWritePathAttribution {
+                outcome: DriftPathAttributionOutcome::NotNeeded,
+                results: Vec::new(),
+            });
+        },
+        PostWriteClaimSubject::ModifiedPaths(paths) => paths,
+    };
     let declared_scopes = DeclaredReservationScopeSet::from_file_paths(paths)
         .map_err(|error| DriftExecutionError::ClaimRejected(error.to_string()))?;
     let acquisition = claim::acquire_first_touch(FirstTouchClaimRequest {

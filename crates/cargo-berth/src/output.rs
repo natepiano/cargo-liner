@@ -1570,6 +1570,34 @@ impl OutputPayload {
 }
 
 fn blocked_message(conflicts: &[ReservationConflict]) -> String {
+    let mut message = overlap_holder_description(conflicts);
+    if let Some(disposition) = first_touch_disposition_description(conflicts) {
+        message.push(' ');
+        message.push_str(&disposition);
+    }
+    message
+}
+
+/// Name the verbs that clear a first-touch holder, which no other message reaches.
+fn first_touch_disposition_description(conflicts: &[ReservationConflict]) -> Option<String> {
+    let first_touch_holders = conflicts
+        .iter()
+        .filter(|conflict| matches!(conflict.source, ClaimSource::FirstTouch))
+        .map(|conflict| conflict.reservation_id.to_string())
+        .collect::<Vec<_>>();
+    match first_touch_holders.as_slice() {
+        [] => None,
+        [reservation_id] => Some(format!(
+            "Reservation {reservation_id} came from a first-touch edit, so its holder clears it with cargo-berth release {reservation_id} once the work is on trunk, cargo-berth resolve {reservation_id} --integrated-as <TRUNK_OID> after that release when git cannot prove the integration, or cargo-berth resolve {reservation_id} --abandon --why <WHY> when the work is discarded."
+        )),
+        [_, _, ..] => Some(format!(
+            "Reservations {} came from first-touch edits, so a holder clears one with cargo-berth release <RESERVATION_ID> once the work is on trunk, cargo-berth resolve <RESERVATION_ID> --integrated-as <TRUNK_OID> after that release when git cannot prove the integration, or cargo-berth resolve <RESERVATION_ID> --abandon --why <WHY> when the work is discarded.",
+            first_touch_holders.join(", ")
+        )),
+    }
+}
+
+fn overlap_holder_description(conflicts: &[ReservationConflict]) -> String {
     match conflicts {
         [] => {
             "A foreign reservation overlaps the requested paths; reduce the requested scopes or coordinate with the holder, then retry."

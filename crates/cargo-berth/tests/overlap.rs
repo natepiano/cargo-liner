@@ -685,6 +685,40 @@ fn blocked_message_names_every_holder() {
 }
 
 #[test]
+fn a_first_touch_holder_block_names_the_verbs_that_clear_it() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let first_touch = run_berth(repository.path(), &["check", "file:touched.rs", "--json"]);
+    assert!(first_touch.status.success());
+    let reservation_id =
+        json_output(&first_touch)["payload"]["data"]["acquisition"]["reservation_id"]
+            .as_str()
+            .expect("a clear check should mint a first-touch reservation")
+            .to_owned();
+
+    let blocked = run_berth(
+        repository.path(),
+        &["claim", "file:touched.rs", "--run", SECOND_RUN, "--json"],
+    );
+
+    assert_eq!(blocked.status.code(), Some(1));
+    let envelope = json_output(&blocked);
+    assert_eq!(
+        envelope["payload"]["data"]["conflicts"][0]["source"]["kind"],
+        "first_touch"
+    );
+    let message = envelope["message"]
+        .as_str()
+        .expect("blocked message should be text");
+    assert!(message.contains(&format!("cargo-berth release {reservation_id}")));
+    assert!(message.contains(&format!(
+        "cargo-berth resolve {reservation_id} --integrated-as"
+    )));
+    assert!(message.contains(&format!(
+        "cargo-berth resolve {reservation_id} --abandon --why"
+    )));
+}
+
+#[test]
 fn future_paths_succeed_invalid_paths_do_not_append_and_missing_why_is_typed() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
     let future_claim = run_berth(

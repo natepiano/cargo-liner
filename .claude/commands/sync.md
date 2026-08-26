@@ -77,6 +77,15 @@ The command has one authorization state machine:
    `requested_scopes`; `holder_shared_scopes_only` means a blocked claim carries
    the requested-path facts through each holder's exact `overlapping_scopes`.
 
+   Read `state.first_touch_dispositions`, never the presence of a sibling key. It
+   is empty unless a holder's source is `first_touch`, and it carries one entry
+   per such holder with the `release`, `integrated_as`, and `abandon` commands
+   that clear it. None of the answers below clears a first-touch holder: it was
+   acquired by whichever edit reached the paths first, so it may protect no work,
+   and only its own holder disposes of it. `release` must run from the holder's
+   worktree; both `resolve` dispositions run from anywhere but assert facts about
+   the holder's work, so the requester asks the holder rather than recording one.
+
    Ask the user for exactly one answer for one holder. Answers 1 through 4
    require a non-empty reason and are flags on `claim`, never separate verbs:
 

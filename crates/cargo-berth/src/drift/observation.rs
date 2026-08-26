@@ -80,7 +80,7 @@ impl ObservedDriftChanges {
         }
     }
 
-    pub(super) fn observed_paths(&self) -> Vec<ReservationScopePath> {
+    fn observed_paths(&self) -> Vec<ReservationScopePath> {
         let mut paths = match self {
             Self::Cheap(changes) => changes
                 .tracked
@@ -140,6 +140,44 @@ pub(super) struct FingerprintObservation {
     pub(super) comparison:  DriftComparisonMode,
     pub(super) changes:     ObservedDriftChanges,
     pub(super) cache_value: WorkingTreeFingerprint,
+}
+
+impl FingerprintObservation {
+    /// The observed paths a post-write first-touch claim may acquire.
+    ///
+    /// A cheap comparison answers "which paths moved since the last observation",
+    /// so it reports a path restored to its committed content alongside one that
+    /// was edited. A restored path carries no work for a new reservation to
+    /// protect, and the fingerprint about to be cached lists only the paths
+    /// modified at the moment of the call, so it decides what may be claimed.
+    pub(super) fn post_write_claim_subject(&self) -> PostWriteClaimSubject {
+        let modified = self.cache_value.modified_paths();
+        PostWriteClaimSubject::from_modified(
+            self.changes
+                .observed_paths()
+                .into_iter()
+                .filter(|path| modified.contains(path))
+                .collect(),
+        )
+    }
+}
+
+/// Which observed paths a post-write first-touch claim may acquire.
+pub(super) enum PostWriteClaimSubject {
+    /// Every observed path is back to its committed content, so none carries work.
+    NoModifiedPath,
+    /// These observed paths are still modified in the working tree.
+    ModifiedPaths(Vec<ReservationScopePath>),
+}
+
+impl PostWriteClaimSubject {
+    fn from_modified(paths: Vec<ReservationScopePath>) -> Self {
+        if paths.is_empty() {
+            Self::NoModifiedPath
+        } else {
+            Self::ModifiedPaths(paths)
+        }
+    }
 }
 
 pub(super) fn observe(
