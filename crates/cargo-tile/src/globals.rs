@@ -12,10 +12,11 @@
 //! Some are not about the grid at all: `f` holds the whole display
 //! still, which is what makes a screen that repaints four times a
 //! second readable, `a` draws the attract screen over the grid whether
-//! or not anything is running, and `p` says how much of each command a
-//! cell spells out. Three more belong to the attract screen's saved
-//! favorites: `ctrl-s` saves the parameters on screen now, `ctrl-o`
-//! opens the saved list, and `m` shows one of them at random.
+//! or not anything is running, `r` draws a fresh attract screen at
+//! random, and `p` says how much of each command a cell spells out.
+//! Three more belong to the attract screen's saved favorites: `ctrl-s`
+//! saves the parameters on screen now, `ctrl-o` opens the saved list,
+//! and `m` shows one of them at random.
 //!
 //! To add another, give the enum a variant, bind a default key in
 //! [`Globals::defaults`], and handle it in [`dispatch`].
@@ -33,8 +34,8 @@ use crate::app::App;
 use crate::attract::AttractMode;
 use crate::constants::APP_GLOBALS_SECTION;
 use crate::favorites;
+use crate::favorites::AttractSettings;
 use crate::favorites::FavoriteRows;
-use crate::favorites::FavoriteSettings;
 use crate::favorites::FavoritesFileState;
 use crate::favorites::FavoritesMutation;
 use crate::favorites::FavoritesRetryInstruction;
@@ -59,6 +60,7 @@ tui_pane::action_enum! {
         FocusDown  => ("focus_down",  "Focus the tile below");
         Freeze     => ("freeze",      "Freeze the display");
         Attract    => ("attract",     "Show the attract screen");
+        RandomizeAttract => ("randomize_attract", "Randomize the attract screen");
         ProcessTree => ("process_tree", "Show whole command lines");
         SaveFavorite => ("save_favorite", "Save attract parameters");
         OpenFavorites => ("open_favorites", "Open attract favorites");
@@ -83,6 +85,7 @@ impl Globals<App> for AppGlobalAction {
             KeyCode::Down => Self::FocusDown,
             'f' => Self::Freeze,
             'a' => Self::Attract,
+            'r' => Self::RandomizeAttract,
             'p' => Self::ProcessTree,
             KeyBind::ctrl('s') => Self::SaveFavorite,
             KeyBind::ctrl('o') => Self::OpenFavorites,
@@ -105,6 +108,7 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::FocusDown => app.tiles.focus_step(Direction::Down, initial_rows),
         AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
         AppGlobalAction::Attract => app.attract.toggle(),
+        AppGlobalAction::RandomizeAttract => app.attract.randomize(),
         AppGlobalAction::ProcessTree => app.tree = app.tree.toggled(),
         AppGlobalAction::SaveFavorite => save_favorite(app),
         AppGlobalAction::OpenFavorites => {
@@ -129,7 +133,7 @@ fn show_random_favorite_with(
     if let FavoritesFileState::Loaded { rows, .. } = &state
         && let Ok(settings) = draw_recognized_settings(rows, seed())
     {
-        let outcome = app.attract.apply_favorite(settings);
+        let outcome = app.attract.apply_settings(settings);
         app.attract.request_show();
         report_closed_overlay_adjustment(app, outcome);
         return;
@@ -141,7 +145,7 @@ fn show_random_favorite_with(
 fn draw_recognized_settings(
     rows: &FavoriteRows,
     seed: u64,
-) -> Result<FavoriteSettings, EmptyIndexDomain> {
+) -> Result<AttractSettings, EmptyIndexDomain> {
     let bound = NonZeroIndexBound::try_from_len(rows.recognized().count())?;
     let index = random::bounded_index(seed, bound);
     rows.recognized()
@@ -152,7 +156,7 @@ fn draw_recognized_settings(
 
 /// Persist the selected attract parameters and show the result.
 fn save_favorite(app: &mut App) {
-    let result = favorites::push(app.attract.favorite_settings());
+    let result = favorites::push(app.attract.current_settings());
     let (title, body) = match result {
         Ok(favorite) => (
             "Favorite saved",
@@ -298,6 +302,38 @@ mode = "future_mode"
     }
 
     #[test]
+    fn r_randomizes_the_attract_screen() {
+        let scope = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            scope.action_for(&KeyBind::from('r')),
+            Some(AppGlobalAction::RandomizeAttract),
+        );
+    }
+
+    #[test]
+    fn randomizing_always_requests_the_attract_screen() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let mut configurations = Vec::new();
+
+        assert!(!app.attract.asked_for());
+        for _ in 0..64 {
+            dispatch(AppGlobalAction::RandomizeAttract, &mut app);
+            assert!(app.attract.asked_for());
+            configurations.push(app.attract.current_settings());
+        }
+        configurations.dedup();
+        // A configuration spans a mode and wide numeric parameter ranges. Requiring
+        // 64 nanosecond-seeded draws to all match makes a chance failure negligible.
+        assert!(configurations.len() > 1);
+
+        app.attract.toggle();
+        assert!(!app.attract.asked_for());
+        dispatch(AppGlobalAction::RandomizeAttract, &mut app);
+        assert!(app.attract.asked_for());
+    }
+
+    #[test]
     fn control_s_saves_a_favorite() {
         let scope = AppGlobalAction::defaults().into_scope_map();
 
@@ -392,7 +428,7 @@ mode = "future_mode"
         assert!(!app.favorites_overlay.is_open());
         assert!(app.attract.asked_for());
         assert_eq!(
-            app.attract.favorite_settings(),
+            app.attract.current_settings(),
             draw_recognized_settings(
                 &parse_rows_for_overlay_test(MOVING_BAND_ROW)
                     .expect("favorites fixture should parse"),

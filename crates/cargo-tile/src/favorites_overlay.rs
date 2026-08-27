@@ -51,14 +51,14 @@ use crate::app::App;
 use crate::app::AppOverlay;
 use crate::app::AppPaneId;
 use crate::attract::AttractMode;
-use crate::attract::FavoriteApplicationOutcome;
+use crate::attract::SettingsApplicationOutcome;
 use crate::attract::ground;
 use crate::favorites;
+use crate::favorites::AttractSettings;
 use crate::favorites::Favorite;
 use crate::favorites::FavoriteId;
 use crate::favorites::FavoriteRowRecognition;
 use crate::favorites::FavoriteRows;
-use crate::favorites::FavoriteSettings;
 use crate::favorites::FavoritesFileState;
 use crate::favorites::FavoritesMutation;
 use crate::favorites::FavoritesMutationError;
@@ -132,7 +132,7 @@ fn dispatch(action: FavoritesOverlayAction, app: &mut App) {
     match overlay.handle_action(action) {
         FavoritesOverlayActionOutcome::Quiet => {},
         FavoritesOverlayActionOutcome::Load(settings) => {
-            let application = app.attract.apply_favorite(settings);
+            let application = app.attract.apply_settings(settings);
             close_overlay(&mut overlay, app);
             app.attract.request_show();
             report_application_outcome(&mut overlay, app, application);
@@ -295,7 +295,7 @@ struct FavoriteModeSection {
 #[derive(Clone, Debug)]
 struct FavoriteRowView {
     id:        FavoriteId,
-    settings:  FavoriteSettings,
+    settings:  AttractSettings,
     saved:     String,
     cells:     Vec<String>,
     lifecycle: FavoriteRowLifecycle,
@@ -654,7 +654,7 @@ enum FavoriteRemovalCommitState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FavoritesOverlayActionOutcome {
     Quiet,
-    Load(FavoriteSettings),
+    Load(AttractSettings),
     Close,
 }
 
@@ -1133,13 +1133,13 @@ fn close_overlay_with(
 fn report_application_outcome(
     overlay: &mut FavoritesOverlay,
     app: &mut App,
-    outcome: FavoriteApplicationOutcome,
+    outcome: SettingsApplicationOutcome,
 ) {
     if !overlay.is_open() {
         report_closed_overlay_adjustment(app, outcome);
         return;
     }
-    let FavoriteApplicationOutcome::AppliedWithAdjustments {
+    let SettingsApplicationOutcome::AppliedWithAdjustments {
         requested,
         effective,
     } = outcome
@@ -1151,8 +1151,8 @@ fn report_application_outcome(
 }
 
 /// Report an adjusted favorite after its modal has closed.
-pub(crate) fn report_closed_overlay_adjustment(app: &mut App, outcome: FavoriteApplicationOutcome) {
-    let FavoriteApplicationOutcome::AppliedWithAdjustments {
+pub(crate) fn report_closed_overlay_adjustment(app: &mut App, outcome: SettingsApplicationOutcome) {
+    let SettingsApplicationOutcome::AppliedWithAdjustments {
         requested,
         effective,
     } = outcome
@@ -1181,10 +1181,10 @@ fn push_scheduled_toast(app: &mut App, title: &str, body: &str, style: ToastStyl
     );
 }
 
-fn favorite_adjustment_message(requested: FavoriteSettings, effective: FavoriteSettings) -> String {
+fn favorite_adjustment_message(requested: AttractSettings, effective: AttractSettings) -> String {
     let mut fields = Vec::new();
     match (requested, effective) {
-        (FavoriteSettings::MovingBand(requested), FavoriteSettings::MovingBand(effective)) => {
+        (AttractSettings::MovingBand(requested), AttractSettings::MovingBand(effective)) => {
             record_adjustment(
                 &mut fields,
                 "direction",
@@ -1206,7 +1206,7 @@ fn favorite_adjustment_message(requested: FavoriteSettings, effective: FavoriteS
                 fraying_name(effective.fraying),
             );
         },
-        (FavoriteSettings::MovingText(requested), FavoriteSettings::MovingText(effective)) => {
+        (AttractSettings::MovingText(requested), AttractSettings::MovingText(effective)) => {
             record_adjustment(
                 &mut fields,
                 "direction",
@@ -1228,7 +1228,7 @@ fn favorite_adjustment_message(requested: FavoriteSettings, effective: FavoriteS
                 text_fill_name(effective.fill),
             );
         },
-        (FavoriteSettings::Pixelate(requested), FavoriteSettings::Pixelate(effective)) => {
+        (AttractSettings::Pixelate(requested), AttractSettings::Pixelate(effective)) => {
             record_adjustment(
                 &mut fields,
                 "direction",
@@ -1262,12 +1262,12 @@ fn favorite_adjustment_message(requested: FavoriteSettings, effective: FavoriteS
             );
         },
         (
-            FavoriteSettings::MovingBand(_)
-            | FavoriteSettings::MovingText(_)
-            | FavoriteSettings::Pixelate(_),
-            FavoriteSettings::MovingBand(_)
-            | FavoriteSettings::MovingText(_)
-            | FavoriteSettings::Pixelate(_),
+            AttractSettings::MovingBand(_)
+            | AttractSettings::MovingText(_)
+            | AttractSettings::Pixelate(_),
+            AttractSettings::MovingBand(_)
+            | AttractSettings::MovingText(_)
+            | AttractSettings::Pixelate(_),
         ) => fields.push("mode changed unexpectedly".to_string()),
     }
     format!("Adjusted favorite for this terminal: {}", fields.join(", "))
@@ -1311,7 +1311,7 @@ enum SelectedFavorite {
     NoFavoriteSelected,
     Selected {
         id:       FavoriteId,
-        settings: FavoriteSettings,
+        settings: AttractSettings,
     },
 }
 
@@ -1719,23 +1719,23 @@ fn format_timestamp(favorite: &Favorite) -> String {
     }
 }
 
-fn favorite_cells(settings: FavoriteSettings) -> Vec<String> {
+fn favorite_cells(settings: AttractSettings) -> Vec<String> {
     match settings {
-        FavoriteSettings::MovingBand(settings) => vec![
+        AttractSettings::MovingBand(settings) => vec![
             direction_name(settings.direction).to_string(),
             settings.width.to_string(),
             settings.speed.to_string(),
             settings.tail_speed.to_string(),
             fraying_name(settings.fraying).to_string(),
         ],
-        FavoriteSettings::MovingText(settings) => vec![
+        AttractSettings::MovingText(settings) => vec![
             direction_name(settings.direction).to_string(),
             settings.speed.to_string(),
             settings.spread.to_string(),
             drift_name(settings.drift).to_string(),
             text_fill_name(settings.fill).to_string(),
         ],
-        FavoriteSettings::Pixelate(settings) => vec![
+        AttractSettings::Pixelate(settings) => vec![
             direction_name(settings.direction).to_string(),
             settings.speed.to_string(),
             settings.wave_percent.to_string(),
@@ -1947,7 +1947,7 @@ fraying = "leading"
         overlay
     }
 
-    fn selected(overlay: &FavoritesOverlay) -> (FavoriteId, FavoriteSettings) {
+    fn selected(overlay: &FavoritesOverlay) -> (FavoriteId, AttractSettings) {
         let SelectedFavorite::Selected { id, settings } = overlay.selected_favorite() else {
             panic!("fixture should select a recognized favorite");
         };
@@ -2465,7 +2465,7 @@ travel_left = "界"
 
         assert!(!app.favorites_overlay.is_open());
         assert!(app.attract.asked_for());
-        assert_eq!(app.attract.favorite_settings(), settings);
+        assert_eq!(app.attract.current_settings(), settings);
     }
 
     #[test]
@@ -2849,7 +2849,7 @@ travel_left = "界"
         let keymap = keymap_from("");
         let overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
         let (_, requested) = selected(&overlay);
-        let FavoriteSettings::MovingBand(mut effective) = requested else {
+        let AttractSettings::MovingBand(mut effective) = requested else {
             panic!("fixture should contain moving-band settings");
         };
         effective.direction = BandDirection::Right;
@@ -2858,9 +2858,9 @@ travel_left = "界"
 
         report_closed_overlay_adjustment(
             &mut app,
-            FavoriteApplicationOutcome::AppliedWithAdjustments {
+            SettingsApplicationOutcome::AppliedWithAdjustments {
                 requested,
-                effective: FavoriteSettings::MovingBand(effective),
+                effective: AttractSettings::MovingBand(effective),
             },
         );
 
@@ -2880,8 +2880,8 @@ travel_left = "界"
         let mut requested = rows
             .recognized()
             .find_map(|favorite| match favorite.settings {
-                FavoriteSettings::Pixelate(settings) => Some(settings),
-                FavoriteSettings::MovingBand(_) | FavoriteSettings::MovingText(_) => None,
+                AttractSettings::Pixelate(settings) => Some(settings),
+                AttractSettings::MovingBand(_) | AttractSettings::MovingText(_) => None,
             })
             .expect("fixture should contain pixel settings");
         requested.resolve = tui_pane::PixelResolve::Blend;
@@ -2893,9 +2893,9 @@ travel_left = "界"
 
         report_closed_overlay_adjustment(
             &mut app,
-            FavoriteApplicationOutcome::AppliedWithAdjustments {
-                requested: FavoriteSettings::Pixelate(requested),
-                effective: FavoriteSettings::Pixelate(effective),
+            SettingsApplicationOutcome::AppliedWithAdjustments {
+                requested: AttractSettings::Pixelate(requested),
+                effective: AttractSettings::Pixelate(effective),
             },
         );
 

@@ -109,9 +109,9 @@ impl ResolvedBinding {
     }
 }
 
-/// Parameters saved for one attract-screen mode.
+/// Parameters that one attract-screen mode runs with, whether loaded or newly drawn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FavoriteSettings {
+pub(crate) enum AttractSettings {
     /// Moving-band parameters.
     MovingBand(BandSettings),
     /// Moving-text parameters.
@@ -120,7 +120,7 @@ pub(crate) enum FavoriteSettings {
     Pixelate(PixelSettings),
 }
 
-impl FavoriteSettings {
+impl AttractSettings {
     /// Attract mode that owns these parameters.
     #[must_use]
     pub(crate) const fn mode(&self) -> AttractMode {
@@ -140,11 +140,11 @@ pub(crate) struct Favorite {
     /// Local RFC 3339 time of the most recent save.
     pub(crate) saved:    DateTime<FixedOffset>,
     /// Mode-specific animation parameters.
-    pub(crate) settings: FavoriteSettings,
+    pub(crate) settings: AttractSettings,
 }
 
 impl Favorite {
-    fn now(settings: FavoriteSettings) -> Self {
+    fn now(settings: AttractSettings) -> Self {
         let saved = Local::now().fixed_offset();
         Self {
             id: FavoriteId(Uuid::now_v7()),
@@ -491,7 +491,7 @@ pub(crate) fn load() -> FavoritesFileState {
 /// # Errors
 ///
 /// Returns the read-only file state or the lock, directory, serialization, or write failure.
-pub(crate) fn push(settings: FavoriteSettings) -> Result<Favorite, FavoritesMutationError> {
+pub(crate) fn push(settings: AttractSettings) -> Result<Favorite, FavoritesMutationError> {
     push_to_location(
         FavoritesLocation::from(config::favorites_path()),
         Favorite::now(settings),
@@ -740,13 +740,9 @@ fn recognize_favorite(table: &Table) -> FavoriteRowRecognition {
         let saved = recognize_saved(table).into_result()?;
         let attract_mode = recognize_attract_mode(table).into_result()?;
         let settings = match attract_mode {
-            AttractMode::MovingBand => {
-                FavoriteSettings::MovingBand(recognize_band_settings(table)?)
-            },
-            AttractMode::MovingText => {
-                FavoriteSettings::MovingText(recognize_text_settings(table)?)
-            },
-            AttractMode::Pixelate => FavoriteSettings::Pixelate(recognize_pixel_settings(table)?),
+            AttractMode::MovingBand => AttractSettings::MovingBand(recognize_band_settings(table)?),
+            AttractMode::MovingText => AttractSettings::MovingText(recognize_text_settings(table)?),
+            AttractMode::Pixelate => AttractSettings::Pixelate(recognize_pixel_settings(table)?),
         };
         Ok(Favorite {
             id,
@@ -963,7 +959,7 @@ fn table_from_favorite(favorite: &Favorite) -> Table {
         attract_mode_name(favorite.settings.mode()),
     );
     match favorite.settings {
-        FavoriteSettings::MovingBand(settings) => {
+        AttractSettings::MovingBand(settings) => {
             insert_string(
                 &mut table,
                 FAVORITE_DIRECTION_KEY,
@@ -978,7 +974,7 @@ fn table_from_favorite(favorite: &Favorite) -> Table {
                 band_fraying_name(settings.fraying),
             );
         },
-        FavoriteSettings::MovingText(settings) => {
+        AttractSettings::MovingText(settings) => {
             insert_string(
                 &mut table,
                 FAVORITE_DIRECTION_KEY,
@@ -993,7 +989,7 @@ fn table_from_favorite(favorite: &Favorite) -> Table {
             );
             insert_string(&mut table, FAVORITE_FILL_KEY, text_fill_name(settings.fill));
         },
-        FavoriteSettings::Pixelate(settings) => {
+        AttractSettings::Pixelate(settings) => {
             insert_string(
                 &mut table,
                 FAVORITE_DIRECTION_KEY,
@@ -1200,8 +1196,8 @@ mod tests {
         table
     }
 
-    fn band_settings() -> FavoriteSettings {
-        FavoriteSettings::MovingBand(BandSettings {
+    fn band_settings() -> AttractSettings {
+        AttractSettings::MovingBand(BandSettings {
             direction:  BandDirection::Right,
             width:      12,
             speed:      40,

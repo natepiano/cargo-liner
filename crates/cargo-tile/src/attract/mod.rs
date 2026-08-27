@@ -75,9 +75,11 @@ use crate::constants::PIXEL_SPEED_STEP;
 use crate::constants::PIXEL_WAVE_STEP;
 use crate::constants::TEXT_SPEED_STEP;
 use crate::constants::TEXT_SPREAD_STEP;
-use crate::favorites::FavoriteSettings;
+use crate::favorites::AttractSettings;
 use crate::probe;
 use crate::probe::Phase;
+use crate::random;
+use crate::random::NonZeroIndexBound;
 
 /// What [`crate::render`] should do with the tile grid this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -202,17 +204,34 @@ pub(crate) enum AttractMode {
     Pixelate,
 }
 
-/// Result of restoring a favorite through the animation's normal clamp setters.
+impl AttractMode {
+    const ALL: [Self; 3] = [Self::MovingBand, Self::MovingText, Self::Pixelate];
+    const INDEX_BOUND: NonZeroIndexBound = match NonZeroIndexBound::try_from_len(Self::ALL.len()) {
+        Ok(bound) => bound,
+        Err(_) => panic!("AttractMode::ALL must contain at least one mode"),
+    };
+
+    fn draw(seed: u64) -> Self {
+        let index = random::bounded_index(seed, Self::INDEX_BOUND);
+        match index {
+            0 => Self::MovingBand,
+            1 => Self::MovingText,
+            _ => Self::Pixelate,
+        }
+    }
+}
+
+/// Result of applying attract settings through the selected animation's clamp setters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FavoriteApplicationOutcome {
-    /// Every value in the favorite was accepted unchanged.
+pub(crate) enum SettingsApplicationOutcome {
+    /// Every requested value was accepted unchanged.
     AppliedExactly,
-    /// One or more values were corrected for the current animation bounds.
+    /// One or more requested values were corrected for the current animation bounds.
     AppliedWithAdjustments {
-        /// Values requested by the favorite row.
-        requested: FavoriteSettings,
+        /// Values requested by the caller.
+        requested: AttractSettings,
         /// Values the animation accepted after applying its bounds.
-        effective: FavoriteSettings,
+        effective: AttractSettings,
     },
 }
 
@@ -350,6 +369,34 @@ impl Attract {
         self.covering = true;
     }
 
+    /// Draw and apply a fresh mode and parameters, then show the result.
+    pub(crate) fn randomize(&mut self) { self.randomize_from_seed(random::clock_seed()); }
+
+    fn randomize_from_seed(&mut self, seed: u64) {
+        self.mode = AttractMode::draw(seed);
+        self.size_current_animation();
+        let drawn_settings = self.draw_random_settings(seed);
+        // Applied unconditionally: the check below compiles out of release
+        // builds, so the call cannot live inside it. An adjusted outcome is a
+        // drawing bug rather than something the viewer should be made to see,
+        // and a clamped attract screen still draws, so release keeps running.
+        let outcome = self.apply_settings(drawn_settings);
+        debug_assert_eq!(
+            outcome,
+            SettingsApplicationOutcome::AppliedExactly,
+            "settings drawn after size_current_animation must satisfy the animation bounds",
+        );
+        self.request_show();
+    }
+
+    fn draw_random_settings(&self, seed: u64) -> AttractSettings {
+        match self.mode {
+            AttractMode::MovingBand => AttractSettings::MovingBand(self.band.random_settings(seed)),
+            AttractMode::MovingText => AttractSettings::MovingText(self.text.random_settings(seed)),
+            AttractMode::Pixelate => AttractSettings::Pixelate(self.pixels.random_settings(seed)),
+        }
+    }
+
     /// Whether the strip is being shown because it was asked for, which
     /// is what the status line says: a grid taken off the screen by the
     /// attract screen otherwise looks exactly like a grid with nothing
@@ -383,45 +430,45 @@ impl Attract {
         }
     }
 
-    /// Parameters held by the animation selected for the current mode.
+    /// Settings the current attract mode is running with now.
     ///
     /// Applies the latest [`LaidOutArea`] or [`PendingTerminalResize`]
     /// first so the returned values already match the next frame,
     /// including a mode switch with no frame in between.
-    pub(crate) fn favorite_settings(&mut self) -> FavoriteSettings {
+    pub(crate) fn current_settings(&mut self) -> AttractSettings {
         self.size_current_animation();
         match self.mode {
-            AttractMode::MovingBand => FavoriteSettings::MovingBand(self.band.settings()),
-            AttractMode::MovingText => FavoriteSettings::MovingText(self.text.settings()),
-            AttractMode::Pixelate => FavoriteSettings::Pixelate(self.pixels.settings()),
+            AttractMode::MovingBand => AttractSettings::MovingBand(self.band.settings()),
+            AttractMode::MovingText => AttractSettings::MovingText(self.text.settings()),
+            AttractMode::Pixelate => AttractSettings::Pixelate(self.pixels.settings()),
         }
     }
 
-    /// Restore one favorite after sizing its animation to the latest terminal area.
-    pub(crate) fn apply_favorite(
+    /// Apply mode-specific settings after sizing their animation to the latest terminal area.
+    pub(crate) fn apply_settings(
         &mut self,
-        requested: FavoriteSettings,
-    ) -> FavoriteApplicationOutcome {
+        requested: AttractSettings,
+    ) -> SettingsApplicationOutcome {
         self.mode = requested.mode();
         self.size_current_animation();
         let effective = match requested {
-            FavoriteSettings::MovingBand(settings) => {
+            AttractSettings::MovingBand(settings) => {
                 self.band.apply(settings);
-                FavoriteSettings::MovingBand(self.band.settings())
+                AttractSettings::MovingBand(self.band.settings())
             },
-            FavoriteSettings::MovingText(settings) => {
+            AttractSettings::MovingText(settings) => {
                 self.text.apply(settings);
-                FavoriteSettings::MovingText(self.text.settings())
+                AttractSettings::MovingText(self.text.settings())
             },
-            FavoriteSettings::Pixelate(settings) => {
+            AttractSettings::Pixelate(settings) => {
                 self.pixels.apply(settings);
-                FavoriteSettings::Pixelate(self.pixels.settings())
+                AttractSettings::Pixelate(self.pixels.settings())
             },
         };
         if effective == requested {
-            FavoriteApplicationOutcome::AppliedExactly
+            SettingsApplicationOutcome::AppliedExactly
         } else {
-            FavoriteApplicationOutcome::AppliedWithAdjustments {
+            SettingsApplicationOutcome::AppliedWithAdjustments {
                 requested,
                 effective,
             }
@@ -819,8 +866,16 @@ pub(crate) fn ground() -> Color {
 #[cfg(test)]
 #[expect(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
+    use std::collections::HashSet;
+
     use ratatui::layout::Rect;
+    use tui_pane::BandDirection;
+    use tui_pane::BandFraying;
     use tui_pane::FRAME_POLL_MILLIS;
+    use tui_pane::PixelFill;
+    use tui_pane::PixelResolve;
+    use tui_pane::TextDrift;
+    use tui_pane::TextFill;
 
     use super::*;
 
@@ -858,11 +913,11 @@ mod tests {
 
         attract.advance(NARROW_AREA, Work::Running, Updates::Live, now);
         attract.moving_text(MovingTextAction::ShowMovingBand);
-        let saved = attract.favorite_settings();
+        let saved = attract.current_settings();
 
         assert!(
             matches!(
-                saved, FavoriteSettings::MovingBand(settings)
+                saved, AttractSettings::MovingBand(settings)
                     if settings.width < unsized_settings.width
             ),
             "reading the switched mode removes the band's sentinel width",
@@ -872,31 +927,156 @@ mod tests {
         attract.advance(NARROW_AREA, Work::Running, Updates::Live, now + POLL);
 
         assert_eq!(
-            attract.favorite_settings(),
+            attract.current_settings(),
             saved,
             "the first frame keeps the parameters read before it",
         );
     }
 
     #[test]
-    fn favorite_application_reports_exact_and_adjusted_values() {
+    fn random_settings_corpus_reaches_every_variant_and_applies_every_draw() {
+        let mut attract = Attract::new();
+        attract.record_terminal_resize(AREA);
+        let mut modes = HashSet::new();
+        let mut band_directions = HashSet::new();
+        let mut band_fraying = HashSet::new();
+        let mut text_directions = HashSet::new();
+        let mut text_drift = HashSet::new();
+        let mut text_fill = HashSet::new();
+        let mut pixel_directions = HashSet::new();
+        let mut pixel_resolve = HashSet::new();
+        let mut pixel_fill = HashSet::new();
+
+        for seed in 0..=4095 {
+            attract.randomize_from_seed(seed);
+            let target = attract.draw_random_settings(seed);
+
+            assert_eq!(attract.current_settings(), target);
+            modes.insert(target.mode());
+            match target {
+                AttractSettings::MovingBand(settings) => {
+                    assert!((1..=400).contains(&settings.speed));
+                    assert!((8..=2000).contains(&settings.tail_speed));
+                    let width_ceiling = match settings.direction {
+                        BandDirection::Left | BandDirection::Right => u32::from(AREA.width),
+                        BandDirection::Up | BandDirection::Down => u32::from(AREA.height),
+                    };
+                    assert!((1..=width_ceiling).contains(&settings.width));
+                    band_directions.insert(settings.direction);
+                    band_fraying.insert(settings.fraying);
+                },
+                AttractSettings::MovingText(settings) => {
+                    assert!((1..=200).contains(&settings.speed));
+                    assert!((0..=100).contains(&settings.spread));
+                    text_directions.insert(settings.direction);
+                    text_drift.insert(settings.drift);
+                    text_fill.insert(settings.fill);
+                },
+                AttractSettings::Pixelate(settings) => {
+                    assert!((1..=200).contains(&settings.speed));
+                    assert!((5..=200).contains(&settings.wave_percent));
+                    assert!((2..=48).contains(&settings.block_columns));
+                    pixel_directions.insert(settings.direction);
+                    pixel_resolve.insert(settings.resolve);
+                    pixel_fill.insert(settings.fill);
+                },
+            }
+        }
+
+        let every_direction = [
+            BandDirection::Left,
+            BandDirection::Right,
+            BandDirection::Up,
+            BandDirection::Down,
+        ]
+        .into_iter()
+        .collect::<HashSet<_>>();
+        assert_eq!(modes, AttractMode::ALL.into_iter().collect());
+        assert_eq!(band_directions, every_direction);
+        assert_eq!(text_directions, every_direction);
+        assert_eq!(pixel_directions, every_direction);
+        assert_eq!(
+            band_fraying,
+            [
+                BandFraying::Trailing,
+                BandFraying::Both,
+                BandFraying::Leading,
+                BandFraying::Neither,
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(
+            text_drift,
+            [TextDrift::Together, TextDrift::Apart]
+                .into_iter()
+                .collect()
+        );
+        assert_eq!(
+            text_fill,
+            [TextFill::Bars, TextFill::Glyphs].into_iter().collect()
+        );
+        assert_eq!(
+            pixel_resolve,
+            [
+                PixelResolve::Blend,
+                PixelResolve::Step,
+                PixelResolve::Scatter,
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(
+            pixel_fill,
+            [PixelFill::Solid, PixelFill::Shades].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn never_shown_band_is_sized_before_its_random_width_is_drawn() {
+        const NARROW_AREA: Rect = Rect::new(0, 0, 9, 4);
+
+        let Some(seed) =
+            (0..=4095).find(|seed| AttractMode::draw(*seed) == AttractMode::MovingBand)
+        else {
+            panic!("the fixed seed corpus should reach the moving band");
+        };
+        let mut attract = Attract::new();
+        let unsized_width = attract.band.settings().width;
+        attract.record_terminal_resize(NARROW_AREA);
+
+        attract.randomize_from_seed(seed);
+
+        let AttractSettings::MovingBand(settings) = attract.current_settings() else {
+            panic!("the selected seed should draw moving-band settings");
+        };
+        let width_ceiling = match settings.direction {
+            BandDirection::Left | BandDirection::Right => u32::from(NARROW_AREA.width),
+            BandDirection::Up | BandDirection::Down => u32::from(NARROW_AREA.height),
+        };
+        assert!((1..=width_ceiling).contains(&settings.width));
+        assert!(settings.width < unsized_width);
+    }
+
+    #[test]
+    fn settings_application_reports_exact_and_adjusted_values() {
         let mut attract = Attract::new();
         attract.mode = AttractMode::MovingBand;
         attract.record_terminal_resize(AREA);
-        let exact = attract.favorite_settings();
+        let exact = attract.current_settings();
 
         assert_eq!(
-            attract.apply_favorite(exact),
-            FavoriteApplicationOutcome::AppliedExactly
+            attract.apply_settings(exact),
+            SettingsApplicationOutcome::AppliedExactly
         );
 
-        let FavoriteSettings::MovingBand(mut oversized) = exact else {
+        let AttractSettings::MovingBand(mut oversized) = exact else {
             panic!("moving-band mode should expose moving-band settings");
         };
         oversized.width = u32::MAX;
-        let requested = FavoriteSettings::MovingBand(oversized);
-        let outcome = attract.apply_favorite(requested);
-        let FavoriteApplicationOutcome::AppliedWithAdjustments {
+        let requested = AttractSettings::MovingBand(oversized);
+        let outcome = attract.apply_settings(requested);
+        let SettingsApplicationOutcome::AppliedWithAdjustments {
             requested: reported,
             effective,
         } = outcome
@@ -906,7 +1086,7 @@ mod tests {
 
         assert_eq!(reported, requested);
         assert_ne!(effective, requested);
-        assert_eq!(attract.favorite_settings(), effective);
+        assert_eq!(attract.current_settings(), effective);
     }
 
     #[test]
@@ -943,7 +1123,7 @@ mod tests {
         let mut attract = Attract::new();
         attract.mode = AttractMode::MovingBand;
         attract.record_terminal_resize(AREA);
-        let _ = attract.favorite_settings();
+        let _ = attract.current_settings();
         let band_before_frame = attract.band.clone();
 
         attract.advance(AREA, Work::Idle, Updates::Frozen, Instant::now());
@@ -956,7 +1136,7 @@ mod tests {
         let mut attract = Attract::new();
         attract.mode = AttractMode::MovingBand;
         attract.record_terminal_resize(AREA);
-        let _ = attract.favorite_settings();
+        let _ = attract.current_settings();
         attract.faded = 0;
         let previous = Instant::now();
         attract.advanced_at = previous;

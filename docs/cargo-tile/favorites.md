@@ -66,12 +66,13 @@
   - `crates/tui_pane/src/toasts/lifecycle.rs` — `prune` (334), `prune_tracked_items` (320).
   - `crates/tui_pane/src/theme/blend.rs` — `blend_color(color, toward, alpha)` (35);
     alpha 0 leaves `color`, `u8::MAX` yields `toward` — the same scale as `fade(faded: u8)`.
-  - `crates/cargo-tile/src/attract/mod.rs` — `AttractMode` (192, `pub(crate)`),
-    `Attract` (250), `new` (308), `toggle` (337), `request_show` (348),
-    `asked_for` (357), `keyed_mode` (378), `favorite_settings` (391),
-    `apply_favorite` (401), `size_current_animation` (433),
-    `record_terminal_resize` (452), `showing` (570), `due_back` (581), `identify`
-    (593), `advance` (679), `render` (790), `ground` (812).
+  - `crates/cargo-tile/src/attract/mod.rs` — `AttractMode` (194, `pub(crate)`),
+    `Attract` (269), `new` (327), `toggle` (356), `request_show` (367),
+    `randomize` (373), `asked_for` (404), `keyed_mode` (425),
+    `current_settings` (438), `apply_settings` (448),
+    `size_current_animation` (480), `record_terminal_resize` (499), `showing`
+    (617), `due_back` (628), `identify` (640), `advance` (726), `render` (837),
+    `ground` (859).
     Fields `mode`/`band`/`text`/`pixels` are private with no accessors.
     Phase 3 added the sizing state beside them: `LaidOutArea::{NeverLaidOut,
     LaidOut}`, `PendingTerminalResize::{NotReported, Reported}`,
@@ -83,15 +84,17 @@
     Faster, `<`/`,` Slower, `[` TailSlower, `]` TailFaster, `+`/`=` Wider, `-`
     Thinner, `v` CycleFraying, `1`/`2`/`3` mode switch. `moving_text.rs` and
     `pixelate.rs` hold the other two `bindings!` blocks.
-  - `crates/cargo-tile/src/globals.rs` — `action_enum!` block (**51–67**),
-    `SaveFavorite` (63), `OpenFavorites` (64), `RandomFavorite` (65),
-    `defaults()` (76), `ctrl-s` (87), `ctrl-o` (88), `m` (89), `dispatcher()`
-    (93), `dispatch` (97), its `SaveFavorite` arm (109), `RandomFavorite` arm
-    (114), `mode_label` (193). `mode_label` is **private to this file**. The
-    module doc (**12–21**) **enumerates** the non-grid globals and never states
-    a total: a phase adding one names it in the group it belongs to and leaves
-    every count alone. Phase 6's only review finding was a count there that had
-    been wrong since Phase 3.
+  - `crates/cargo-tile/src/globals.rs` — `action_enum!` block (**52–69**),
+    `RandomizeAttract` (63), `SaveFavorite` (65), `OpenFavorites` (66),
+    `RandomFavorite` (67), `defaults()` (78), `r` (88), `ctrl-s` (90), `ctrl-o`
+    (91), `m` (92), `dispatcher()` (96), `dispatch` (100), its
+    `RandomizeAttract` arm (111), `SaveFavorite` arm (113), `RandomFavorite` arm
+    (118), `show_random_favorite` (123), `show_random_favorite_with` (127),
+    `mode_label` (197). `mode_label` is **private to this file**. The module doc
+    (**12–22**) **enumerates** the non-grid globals and never states a total: a
+    phase adding one names it in the group it belongs to and leaves every count
+    alone. Phase 6's only review finding was a count there that had been wrong
+    since Phase 3.
   - `crates/cargo-tile/src/favorites.rs` — `favorite_refusal_message(mutation:
     FavoritesMutation, retry: &FavoritesRetryInstruction, error:
     &FavoritesMutationError) -> String` (**426**). Phase 5 moved it here out of
@@ -284,7 +287,7 @@ Unrecognized(UnrecognizedFavoriteValue { key, spelling })}` and `recognized()`
 over `&Favorite` alone, already grouped by mode and newest first within a mode.
 
 Three `pub(crate)` entry points: `load() -> FavoritesFileState`,
-`push(FavoriteSettings) -> Result<Favorite, FavoritesMutationError>`, and
+`push(AttractSettings) -> Result<Favorite, FavoritesMutationError>`, and
 `remove(FavoriteId) -> Result<(), FavoritesMutationError>`. Every mutation is a
 locked read-modify-write ending in an atomic rename. `FavoritesFileState` has five
 variants — `LocationUnavailable`, `Missing`, `Loaded`, `Unparseable`, `Unreadable`
@@ -314,7 +317,7 @@ file. `push` and `remove` do their own locking and atomic replace, so a caller
 handles only the `Result`. Rows are addressed by `FavoriteId`, never by storage
 index. `recognized()` already orders rows the way the overlay table renders them,
 so nothing downstream sorts again; `iter()` is the one that also carries
-unrecognized rows. `FavoriteSettings::mode() -> AttractMode` reads the mode off
+unrecognized rows. `AttractSettings::mode() -> AttractMode` reads the mode off
 the variant. `LockUnavailable` is an externally observable failure — a second
 cargo-tile instance mid-save — with no counterpart in the plan's original state
 table, so the save toast and the delete path each report it by name. The
@@ -488,10 +491,10 @@ labels.
 `enter` on a recognized row loads it. `FavoritesOverlay::handle_action` returns
 `FavoritesOverlayActionOutcome::Load(settings)`; the **module-level `dispatch`
 function** in `favorites_overlay.rs` — not `handle_action`, which holds no
-`&mut App` — applies it through `Attract::apply_favorite`, closes the modal,
+`&mut App` — applies it through `Attract::apply_settings`, closes the modal,
 calls `Attract::request_show()`, and reports the outcome as a scheduled toast
 paired with `App::schedule_timed_toast`.
-`apply_favorite(&mut self, requested: FavoriteSettings) -> FavoriteApplicationOutcome`
+`apply_settings(&mut self, requested: AttractSettings) -> SettingsApplicationOutcome`
 sizes the requested mode's own animation, applies, reads the settings back, and
 answers `AppliedExactly` or
 `AppliedWithAdjustments { requested, effective }`; the row on disk is never
@@ -531,8 +534,8 @@ delete a row other than the one on screen.
   notice and its height allowance, and the private reporting path
   (`report_application_outcome`, `favorite_adjustment_message`,
   `push_scheduled_toast`).
-- `crates/cargo-tile/src/attract/mod.rs` — `request_show`, `apply_favorite`,
-  `FavoriteApplicationOutcome`.
+- `crates/cargo-tile/src/attract/mod.rs` — `request_show`, `apply_settings`,
+  `SettingsApplicationOutcome`.
 - `crates/cargo-tile/src/favorites.rs` — `favorite_refusal_message`,
   `FavoritesMutation`, `FavoritesRetryInstruction`, `ResolvedBinding`,
   `refresh_recognitions`.
@@ -540,7 +543,7 @@ delete a row other than the one on screen.
   sites for the moved refusal message and the fading-row advance.
 
 **Binds later work:**
-- `Attract::apply_favorite(&mut self, requested: FavoriteSettings) -> FavoriteApplicationOutcome`
+- `Attract::apply_settings(&mut self, requested: AttractSettings) -> SettingsApplicationOutcome`
   with `AppliedExactly` / `AppliedWithAdjustments { requested, effective }` is the
   only load path; it already sizes the requested mode's own animation. *`m`, a
   random saved favorite* and *`u`, undo the last replacement* both load through it
@@ -589,7 +592,7 @@ delete a row other than the one on screen.
 it). On every press it loads the favorites file fresh (never cached, so a
 favorite saved by another running instance is visible immediately), draws one
 recognized row uniformly at random through a bounded index draw, applies it to
-the attract screen through `Attract::apply_favorite`, and calls
+the attract screen through `Attract::apply_settings`, and calls
 `Attract::request_show()`.
 
 Every state that yields no usable favorite — missing file, unreadable,
@@ -609,7 +612,7 @@ fallible constructor.
 
 An adjusted favorite applied from outside the overlay reports through a new
 shared `pub(crate) fn report_closed_overlay_adjustment(&mut App,
-FavoriteApplicationOutcome)` in `favorites_overlay.rs`: silent on an exact
+SettingsApplicationOutcome)` in `favorites_overlay.rs`: silent on an exact
 application, otherwise a scheduled lowercase warning toast via the existing
 `push_scheduled_toast`/`report_application_outcome` path. `enter`'s closed
 branch now routes through the same function, leaving one formatter and one
@@ -646,79 +649,64 @@ earlier stale count is why; keep it as an enumeration when adding globals.
 `advance()` recomputes direction from `asked` alone, so a stored destination is
 unreachable.
 
-### Phase 7 — `r`, randomize everything  · status: todo
+### Phase 7 — `r`, randomize everything  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `r` draws a fresh configuration at random across every mode and
-parameter, and starts showing the result.
+`r` draws a fresh attract configuration — a mode and that mode's parameters — and
+shows it. `AppGlobalAction::RandomizeAttract` (`globals.rs:63`, key at **88**,
+dispatch arm at **111**) calls `Attract::randomize()`.
 
-**Spec:**
+`AttractMode` owns the selection: `ALL: [Self; 3]` and `INDEX_BOUND:
+NonZeroIndexBound`, a `const` whose `Err` arm is a `panic!` so an empty mode list
+is a compile error rather than a runtime fallback. `draw(seed)` calls
+`random::bounded_index` and maps the index with a total `match`; no runtime branch
+in it can be skipped.
 
-`AppGlobalAction::RandomizeAttract` on `r`. Draws a mode at random, draws that mode's
-settings at random via Phase 1's `random_settings` on the chosen animation,
-applies both, and turns the attract screen on with `request_show()`.
+`Attract::randomize()` seeds from `random::clock_seed()`. `randomize_from_seed`
+sets the mode, calls `size_current_animation()`, draws through
+`draw_random_settings(&self)`, binds the `apply_settings` outcome and
+`debug_assert_eq!`s it against `AppliedExactly`, then `request_show()`. **Sizing
+precedes the draw**, so `tui_pane`'s `random_settings(seed)` bounds each parameter
+by the real terminal and a narrow window can never be handed a band wider than
+itself.
 
-`r` gets the bare letter because it is the bigger, less reversible action and the
-one pressed repeatedly while exploring. It is unbound in every scope: the
-framework binds capital `R` to `Restart` (`keymap/global_action.rs:64`), and no
-attract scope binds either case, so `r` reaches the app globals through the
-ladder untouched.
-
-`ctrl-shift-r` was the original ask and cannot be delivered. A terminal sends the
-same byte for `ctrl-r` and `ctrl-shift-r` (0x12) unless the Kitty keyboard
-protocol is negotiated. cargo-port pushes those flags
-(`crates/cargo-port/src/tui/terminal/run.rs:86–87`); **cargo-tile does not**.
-Pushing them here would change key reporting for every binding in the app, and
-would still degrade to nothing on a terminal that will not negotiate.
+Four names were corrected because `r` routes a never-saved configuration through
+them: `FavoriteSettings` → `AttractSettings`, `Attract::apply_favorite` →
+`apply_settings`, `FavoriteApplicationOutcome` → `SettingsApplicationOutcome`
+(`AppliedExactly` / `AppliedWithAdjustments { requested, effective }`),
+`Attract::favorite_settings` → `current_settings`. The on-disk favorites format is
+unchanged — schema constants, mode spellings, serializer and format fixtures all
+byte-equivalent.
 
 **Files:**
-- `crates/cargo-tile/src/globals.rs` — `RandomizeAttract` variant, default
-  binding, dispatch arm, and the module-doc line naming `r` in the non-grid
-  group (`r` randomizes the attract screen; it is not a saved-favorites action)
-- `crates/cargo-tile/src/attract/mod.rs` — draw a mode, call `random_settings` on that animation, apply, `request_show()`
-- `crates/cargo-tile/Cargo.toml` — patch version bump
-- `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
+- `crates/cargo-tile/src/attract/mod.rs` — `AttractMode::{ALL, INDEX_BOUND, draw}`,
+  `Attract::{randomize, randomize_from_seed, draw_random_settings,
+  current_settings, apply_settings}`, `AttractSettings`,
+  `SettingsApplicationOutcome`.
+- `crates/cargo-tile/src/globals.rs` — the `RandomizeAttract` action, its `r`
+  binding and dispatch arm, and the module-doc line naming `r` among the non-grid
+  globals.
+- `crates/cargo-tile/src/favorites.rs`, `favorites_overlay.rs` — renamed API only.
 
-**Constraints from prior phases:** Phase 1 provides
-`random_settings(&self, seed: u64)` on each of the three animations, seeded from
-the now-ungated `Xorshift::seeded`, with band width drawn from the band's own
-axis extent. Phase 5 provides `Attract::request_show()`
-(`attract/mod.rs:348`), which sets `asked = Asked::For` and `covering = true` and
-is therefore idempotent and correct during a fade-out, and `apply_favorite`
-(`attract/mod.rs:401`) returning `FavoriteApplicationOutcome`. Phase 6 shipped `crates/cargo-tile/src/random.rs`, which this phase reads and
-does not edit. Its whole `pub(crate)` surface is three items and one error type:
+**Binds later work:** `Attract::apply_settings` is the crate's single point at
+which a wholesale replacement is certain and about to happen; its three production
+callers are `randomize_from_seed`, the favorites overlay's `Load` branch, and
+`show_random_favorite_with`, and each reaches it only after its own candidate has
+succeeded. `randomize_from_seed` assigns `self.mode` **before** calling
+`apply_settings`, so anything that reads the outgoing mode from inside that method
+sees the new one. `random.rs` remains the crate's only randomness for app-owned
+choices.
 
-```rust
-struct NonZeroIndexBound(NonZeroUsize);          // random.rs:13
-impl NonZeroIndexBound {
-    const fn try_from_len(len: usize) -> Result<Self, EmptyIndexDomain>;  // :21
-}
-struct EmptyIndexDomain;                          // :33
-fn clock_seed() -> u64;                           // :37
-fn bounded_index(seed: u64, bound: NonZeroIndexBound) -> usize;  // :47
-```
+**Gotchas:** a `debug_assert` around a call compiles the call out of release
+builds — the outcome must be bound first and the binding asserted. `AttractMode::ALL`
+order is load-bearing: `draw`'s index-to-mode `match` mirrors it positionally.
+`globals.rs`'s module doc enumerates the non-grid globals and states no total.
 
-`bounded_index` rejection-samples, so every index in `0..bound` is equally
-likely. `r` composes exactly these — `bounded_index(clock_seed(), bound)` — to
-draw its mode. **Do not add a second generator**; `random.rs` is the only
-randomness cargo-tile owns and its gate uses `bounded_index` with fixed seeds. Phase 3 provides the terminal-area state and the zero-duration
-sizing boundary, which must run before `random_settings` so the band draws its
-width against the real screen rather than the unsized whole-range sentinel.
-
-**Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
-
-- Over a fixed seed corpus every mode and every enum variant is reached, and
-  every value sits inside its clamps.
-- A draw made while the band has never been shown lands inside the ceiling the
-  current screen allows, not the unsized sentinel range.
-- The animation's `settings()` after the action equals the generated target —
-  which is what proves the settings were applied and not merely drawn.
-- `r` is actually bound and reaches the action: the app-globals scope answers
-  `AppGlobalAction::RandomizeAttract` for the bare `r` key.
-- The action turns the screen on: `Attract::asked_for()` is true afterwards,
-  whatever it was before. Without this the gate above passes on a draw that is
-  applied but never shown.
+**Ruled out:** a second random generator or bounded-selection helper beside
+`random.rs`; a hard `assert!` on the keypress path, which would kill the whole TUI
+for an invariant the reader could not act on; renaming `Favorite`, `FavoriteId`, or
+any save/load/delete path, which genuinely are about saved favorites.
 
 ### Phase 8 — `u`, undo the last replacement  · status: todo
 
@@ -738,16 +726,36 @@ it.
 Capture the current mode, **all three parameter sets**, and how the attract screen
 was being presented. `AppGlobalAction::UndoAttractReplacement` on `u` restores them.
 
+**There is exactly one capture site, and it is `Attract::apply_settings`**
+(`attract/mod.rs:448`). Every wholesale replacement already goes through it, and
+nothing else does: `r` at `attract/mod.rs:383`, `enter` at
+`favorites_overlay.rs:135`, `m` at `globals.rs:136`. Each of those is reached only
+once its own candidate is certain — `m` has selected a recognized row, `enter` has
+one under the cursor, `r` has drawn a mode and settings — so the boundary satisfies
+this phase's ordering rule for all three at once. Inside the method the replacement
+begins at `self.mode = requested.mode()` (**452**); the capture goes immediately
+before that line, so what it stores is the configuration being replaced rather than
+the one replacing it. The presentation state it must capture alongside the
+parameters lives on the same `Attract` (**307**, **311**), so it is in reach.
+
+An earlier draft of this phase added the capture at three separate call sites.
+That rule predates `r`, whose replacement happens **inside** `Attract` rather than
+from outside it, and it is now both redundant and fragile: a fourth key added later
+would silently have no undo. **Do not reintroduce per-call-site capture.** The
+constraint that replaces it is: `apply_settings` sizes all modes, captures the mode,
+all three parameter sets and the presentation, then sets the requested mode and
+applies its settings — and **no non-replacement path may call `apply_settings`**.
+The two existing calls at `attract/mod.rs:1069` and **1078** are tests; capture
+there merely populates private undo state and produces no surface.
+
 **Capture after the replacement is certain, not before the key is handled.** `m`
 can find the file `Missing`, in an error state, or holding rows none of which this
-build recognizes, and in each of those it replaces nothing. Taking the checkpoint
-on the keypress would overwrite a good undo point with the current parameters and
-leave `u` restoring what is already on screen — the one press where undo matters
-is the press after a good one, and a failed `m` in between would have destroyed
-it. So each of the three call sites captures only once its own candidate selection
-has succeeded, immediately before the replacement: after a favorite has been
-selected successfully, not on entry. One step only, and the
-one-step limit is the type's job, not a flag beside it:
+build recognizes, and in each of those it replaces nothing — and in each of those it
+never reaches `apply_settings`, so the single boundary gives this property for free
+rather than by discipline at three sites. Taking the checkpoint on the keypress
+would overwrite a good undo point with the current parameters and leave `u`
+restoring what is already on screen. One step only, and the one-step limit is the
+type's job, not a flag beside it:
 
 ```rust
 enum ReplacementUndoState {
@@ -759,25 +767,31 @@ enum ReplacementUndoState {
 Taking the checkpoint returns it to `Unavailable`, so a second `u` has nothing to
 restore because there is nothing there — not because a boolean said so.
 
-**Capture sits between "the replacement will happen" and "the replacement has
-happened".** Each of the three call sites knows it has a real candidate before it
-applies anything: `m` has selected a recognized row, `enter` has one under the
-cursor, `r` has drawn a mode and settings. The checkpoint is taken at that point —
-after the candidate is certain, **before** `apply` runs — so what it stores is the
-configuration being replaced rather than the one replacing it.
+**`randomize_from_seed` must stop destroying the old mode before it applies.**
+As Phase 7 shipped it (`attract/mod.rs:375`), it assigns the drawn mode to
+`self.mode` at **376**, sizes, draws settings at **378**, and only then calls
+`apply_settings` at **383** — so a capture inside `apply_settings` would store the
+*new* mode against the *old* parameters. Refactor it: size all animations without
+touching `self.mode`, draw a local mode through `AttractMode::draw`, draw the
+settings for that explicit local mode, then call `apply_settings`, which sets the
+mode itself. `draw_random_settings` takes the mode as an argument instead of reading
+`self.mode`. Reuse `AttractMode::ALL` rather than re-listing the modes, and keep
+Phase 7's ordering guarantee — the animation is sized before its parameters are
+drawn — which is what `never_shown_band_is_sized_before_its_random_width_is_drawn`
+pins down.
 
 **Phase 3's sizing boundary is single-mode and this phase needs an all-mode one.**
-`Attract::size_current_animation` (`attract/mod.rs:433`) sizes only the animation
+`Attract::size_current_animation` (`attract/mod.rs:480`) sizes only the animation
 the current mode selects, which is all Phase 3's save needed. Undo captures and
-restores **all three** parameter sets, so a mode that has never been shown — or
-one that was last sized against a taller terminal — would be captured or restored
+restores **all three** parameter sets, so a mode that has never been shown — or one
+that was last sized against a taller terminal — would be captured or restored
 against a stale area. Add an all-mode zero-duration sizing operation beside it in
-`attract/mod.rs`, running the same `advance(area, Duration::ZERO)` pass over each
-of the three animations and recording each in `AnimationSizing`, and run it before
-both the capture and the restore.
+`attract/mod.rs`, running the same `advance(area, Duration::ZERO)` pass over each of
+the three animations and recording each in `AnimationSizing`. Run it before the
+capture, before the restore, and before the random draw in `randomize_from_seed`.
 
 **"Whether the screen was up" is not a boolean and `showing()` cannot answer
-it.** `showing()` (`attract/mod.rs:570`) is only `faded != u8::MAX`, so it stays
+it.** `showing()` (`attract/mod.rs:617`) is only `faded != u8::MAX`, so it stays
 true through an entire fade-*out*, and it cannot tell a screen that came up
 because the grid went idle from one the reader explicitly asked for, nor either
 from one the reader dismissed. Restoring from a bool would put the screen into a
@@ -785,62 +799,64 @@ position the reader never had.
 
 **But the presentation is richer than four coarse variants, and undo restores the
 settled position rather than the instant.** `Attract` actually carries four
-separate things: `Asked::{Nothing, For, Against}` (`attract/mod.rs:117`) — the
+separate things: `Asked::{Nothing, For, Against}` (`attract/mod.rs:119`) — the
 reader's own standing instruction; `Standing::{Showing, Leaving, Working,
-Settling(Instant)}` (141) — where the screen stands with the roster, including two
-mid-transition positions; `covering` (292) — whether the screen replaces the grid
-or lies over it; and `faded` — numeric fade progress. A four-variant enum cannot
-describe that, and the earlier draft of this phase promised to restore a
+Settling(Instant)}` (**143**) — where the screen stands with the roster, including
+two mid-transition positions; `covering` (**311**) — whether the screen replaces the
+grid or lies over it; and `faded` — numeric fade progress. A four-variant enum
+cannot describe that, and the earlier draft of this phase promised to restore a
 mid-fade-out position it had no way to represent.
 
 The rule for this phase is therefore: **capture what is durable, restore the
 reader's own instruction, and do not replay a transition.**
 
-- **Capture verbatim:** `Asked`, because it is the reader's own instruction and is
-  meaningful at any later moment; and `covering`, because it decides whether the
-  restored screen replaces the grid or lies over it.
+- **Capture verbatim:** the standing instruction, because it is the reader's own
+  and is meaningful at any later moment; and the grid presentation, because it
+  decides whether the restored screen replaces the grid or lies over it.
 - **Do not capture a destination at all.** An earlier draft of this phase stored
   where the screen was *heading* beside the instruction. That value cannot
   survive the restore and must not be added. `advance()`
-  (`attract/mod.rs:679`) recomputes the fade direction every frame from `asked`
-  alone (`attract/mod.rs:727`): `Asked::For` fades in, `Asked::Against` fades
-  out, and `Asked::Nothing` hands the answer to the roster's `standing` as it is
-  at that frame. A stored destination is therefore either redundant or
-  unreachable:
+  (`attract/mod.rs:726`) recomputes the fade direction every frame from the
+  standing instruction alone (`attract/mod.rs:775`): `Show` fades in, `Hide` fades
+  out, and `FollowRoster` hands the answer to the roster's `standing` as it is at
+  that frame. A stored destination is therefore either redundant or unreachable:
   - Captured `Show` or `Hide`, the reader's own instruction **is** the
-    destination. Writing `asked` back reproduces it exactly, with nothing else
-    stored.
+    destination. Writing it back reproduces it exactly, with nothing else stored.
   - Captured `FollowRoster`, the roster owned the answer when the checkpoint was
-    taken and still owns it now. Restoring `Asked::Nothing` and letting the
-    roster decide is the faithful restore. Forcing back a destination read a
-    minute ago would put the attract screen over a grid that has started working
-    since — the exact failure `Standing`'s hand-over rule
-    (`attract/mod.rs:141`) exists to prevent.
+    taken and still owns it now. Restoring `FollowRoster` and letting the roster
+    decide is the faithful restore. Forcing back a destination read a minute ago
+    would put the attract screen over a grid that has started working since — the
+    exact failure `Standing`'s hand-over rule (`attract/mod.rs:143`) exists to
+    prevent.
 - **Do not capture `faded` and do not restore it.** A fade is a transient. Putting
   back a half-finished one reproduces a glitch rather than a state, and the reader
   cannot have meant "and leave it 40% faded". The restore puts back the
   instruction and lets the ordinary fade run on from wherever it stood, exactly
   as the equivalent keypress would.
 
-Name the captured shape accordingly, and name each of its two parts for what it
-means rather than for the field it came from. `Asked` does not say what is
-being asked for, and "covering" is a boolean carrying two domain positions, so
-neither survives into the captured type as it stands:
+**Make the two live fields semantic rather than capturing mirrors of them.**
+`Asked` does not say what is being asked for, and `covering` is a boolean carrying
+two domain positions. Writing a semantic capture type into either would not be a
+direct write, and would leave the vague state alive beside the clear one. So this
+phase changes the fields themselves:
 
 ```rust
 enum AttractVisibilityInstruction { FollowRoster, Show, Hide }
 enum AttractGridPresentation { OverGrid, ReplacesGrid }
 
 struct AttractPresentationBeforeReplacement {
-    instruction: AttractVisibilityInstruction,
+    instruction:  AttractVisibilityInstruction,
     presentation: AttractGridPresentation,
 }
 ```
 
-`AttractVisibilityInstruction` is the reader's own standing instruction captured
-verbatim from `Asked`, and it is the whole of what decides where the screen
-goes; `AttractGridPresentation` replaces the `covering` flag with its two
-meanings written out. No four-variant approximation, no bool, and no separate
+`AttractVisibilityInstruction` **replaces** `Asked` throughout `Attract` —
+`FollowRoster` for `Nothing`, `Show` for `For`, `Hide` for `Against` — and
+`AttractGridPresentation` **replaces** the `covering: bool` field, with `OverGrid`
+and `ReplacesGrid` written out. Both are private to `attract/mod.rs`, so nothing
+outside cargo-tile sees the change and `crates/tui_pane/` stays byte-identical.
+Capture and restore then copy those two values verbatim, with no second enum
+mirroring a first. No four-variant approximation, no bool, and no separate
 destination.
 
 **The restore needs no transition of its own, and must not add one.** It writes
@@ -848,6 +864,14 @@ the two captured values straight into the fields. That is simpler than a
 transition, it cannot lose them, and it is idempotent for free: writing the same
 two values twice leaves the same state, so a second restore — or restoring a
 screen that is already down — does nothing rather than toggling it.
+
+**The restore must not go through the capture boundary.** `apply_settings` now
+captures, so calling it during undo would overwrite the very checkpoint being
+consumed. The restore instead: moves `ReplacementUndoState` from `Available` to
+`Unavailable` first, runs the all-mode sizing, applies the saved band, text and
+pixel settings directly through their Phase 1 `apply` methods, writes back the mode
+and the two presentation values, and calls **neither `apply_settings` nor
+`request_show`**.
 
 **What `u` tells the reader, in all three of its outcomes.** An exact restore can
 legitimately put back a *hidden* screen, so "it worked" is not always visible and
@@ -868,93 +892,77 @@ per the Delegation Context, or it will not animate on this loop.
 
 It covers all three replacing actions, not just the random draw: an undo that
 catches one but not the others is worse than none, because you cannot predict
-which press it will catch. The checkpoint is captured by whichever of the three replacing actions
-runs, so this phase adds the capture at all three existing call sites.
+which press it will catch. The single boundary is what makes that guarantee
+structural rather than a matter of remembering three sites.
 
 `u` is unbound in every scope. Only `ctrl-u` is taken, by tui_pane's vim
 half-page scroll, and cargo-tile sets no vim mode — so `h` `j` `k` `l` are free
 too.
 
-`globals.rs`'s module doc (**12–21**) **enumerates** the non-grid globals and
+`globals.rs`'s module doc (**12–22**) **enumerates** the non-grid globals and
 states no total. Name `u` in the group it belongs to and leave every count
 alone: Phase 6's only review finding was a count there that had been wrong since
 Phase 3.
 
 **Files:**
 - `crates/cargo-tile/src/globals.rs` — `UndoAttractReplacement` variant, default
-  binding, dispatch arm, the module-doc line naming `u` in the non-grid group,
-  **and Phase 6's `m` capture site**. That site is
-  `fn show_random_favorite_with(app: &mut App, load: impl FnOnce() ->
-  FavoritesFileState, seed: impl FnOnce() -> u64)` (**123**), and the capture goes
-  on the line immediately before `app.attract.apply_favorite(settings)` (**132**),
-  inside the `if let` that has already proved a recognized row was drawn. It is
-  **not** `show_random_favorite` (**119**), the thin production wrapper that only
-  supplies the real loader and clock. `show_random_favorite_with` is also the
-  deterministic seam this phase's `m` tests drive: a fixed `load` and a fixed
-  `seed` make the drawn favorite reproducible.
-- `crates/cargo-tile/src/attract/mod.rs` — `ReplacementUndoState`,
+  binding, dispatch arm, the module-doc line naming `u` in the non-grid group, and
+  the three `u` toasts with their `App::schedule_timed_toast` registrations. **No
+  capture goes in this file.** `show_random_favorite_with` (**127**) and
+  `show_random_favorite` (**123**) are unchanged by this phase; `m`'s replacement
+  reaches the capture through `app.attract.apply_settings(settings)` (**136**) like
+  every other one.
+- `crates/cargo-tile/src/attract/mod.rs` — the whole of the mechanism:
+  `AttractVisibilityInstruction` replacing `Asked`, `AttractGridPresentation`
+  replacing `covering: bool`, `ReplacementUndoState`,
   `AttractConfigurationBeforeReplacement`,
-  `AttractPresentationBeforeReplacement` (standing instruction and covering, no
-  destination), `AttractConfigurationRestoreOutcome`, the all-mode
-  zero-duration sizing operation beside `size_current_animation` (**433**), the
-  capture, and the restore. No hide transition — see Constraints.
-- `crates/cargo-tile/src/favorites_overlay.rs` — capture in the module-level
-  `dispatch` function (**130**), in its
-  `FavoritesOverlayActionOutcome::Load(settings)` branch (**134**), on the line
-  immediately before `app.attract.apply_favorite(settings)` (**135**); not in
-  `FavoritesOverlay::handle_action`, which has no `&mut App`
+  `AttractPresentationBeforeReplacement`, `AttractConfigurationRestoreOutcome`, an
+  `Attract`-owned undo field initialized to `ReplacementUndoState::Unavailable`,
+  the all-mode zero-duration sizing operation beside `size_current_animation`
+  (**480**), the capture inside `apply_settings` (**448**, immediately before
+  **452**), the `randomize_from_seed` refactor (**375**), and the restore. No hide
+  transition — see Constraints.
+- `crates/cargo-tile/src/favorites_overlay.rs` — **no capture**. Its `dispatch`
+  (**130**) `FavoritesOverlayActionOutcome::Load(settings)` branch (**134**) already
+  reaches the boundary at `app.attract.apply_settings(settings)` (**135**). Listed
+  because `enter`'s integration tests live here.
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
 
-**Constraints from prior phases:** The three replacing call sites are Phase 5's
-`enter` (`favorites_overlay.rs:135`, via `Attract::apply_favorite()`), Phase 6's
-`m` (`globals.rs:132`, inside `show_random_favorite_with`), and Phase 7's `r` (in
-`attract/mod.rs`). Phase 6's is the one the Files list spells out, because `m`
-applies a favorite from **outside** the overlay: `show_random_favorite_with`
-calls `apply_favorite` and then `request_show()` itself, so a capture added only
-to the overlay's `Load` branch would miss every `m` press. Phase 3's
-`size_current_animation` (`attract/mod.rs:433`) sizes **only the animation the
-current mode selects**; this phase adds the all-mode counterpart it needs, and
-Phase 3's `App::schedule_timed_toast` must be paired with every toast push here or
-the notice will not animate. Phase 1's
-`settings()` on each animation is what the checkpoint stores, and `apply` is what
-restores it — an ordered semantic transition, so restoring a checkpoint leaves
-the same runtime state the equivalent keypress would. **Phase 5's `Attract::request_show()` (`attract/mod.rs:348`) is a transition, and
-the restore must not call it.** It overwrites `asked` with `Asked::For` *and*
-`covering` with `true`, so neither captured field survives it, and `advance()`
-(`attract/mod.rs:727`) then reads the overwritten `asked` to pick the fade
-direction — which is why calling it first and writing the captured values back
-afterwards would discard whatever it just did. An `Attract`-owned restore
-therefore writes both captured values straight into the private fields, the
-`AttractVisibilityInstruction` into `asked` and the `AttractGridPresentation`
-into `covering`, and calls no transition at all. **Do not add a hide transition
-to pair with `request_show()`**; an earlier draft of this constraint asked for
-one and there is nothing for it to do. Writing only `covering` is the other
-failure that draft invited: a checkpoint holding `FollowRoster` or `Hide` would
-come back as `Show`, so `u` would turn the screen on for a reader who had
-dismissed it or never asked for it. Because `asked` and `covering` are private
-fields with no setters, the whole restore lives inside `attract/mod.rs`; no
-caller writes either one. Phase 5's `enter`
-capture site is the module-level `dispatch` function's
-`FavoritesOverlayActionOutcome::Load(settings)` branch
-(`favorites_overlay.rs:134`), on the line immediately before
-`app.attract.apply_favorite(settings)`. **It is not
-`FavoritesOverlay::handle_action`**, which decides the outcome but holds no
-`&mut App` and therefore cannot reach `App::attract` at all; `handle_action`
-returns `FavoritesOverlayActionOutcome::Load(settings)` and `dispatch` is where
-that outcome meets the attract screen. That branch is exactly the window this
-phase's checkpoint needs: the candidate is certain, and `apply_favorite` has not
-yet run.
-`apply_favorite` (`attract/mod.rs:401`) already sizes the requested mode's
-animation itself, so the all-mode sizing operation this phase adds is additional
-to that call rather than a replacement for it.
-Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, whose
-`AppliedWithAdjustments { requested, effective }` carries **one**
-`FavoriteSettings` — the single mode's parameters that one favorite held. That
-type cannot describe this phase's restore and must not be reused for it: an undo
-puts back the mode, *all three* parameter sets, and the presentation state, so a
-report shaped around one settings variant would be a name that is not true of its
-payload.
+**Constraints from prior phases:** The snapshot stores the mode plus one
+`BandSettings`, one `TextSettings` and one `PixelSettings`, and the two semantic
+presentation values — never a bool and never an `Option`. Phase 1's `settings()` on
+each animation is what the checkpoint reads, and each animation's `apply` is what
+restores it — an ordered semantic transition, so restoring a checkpoint leaves the
+same runtime state the equivalent keypress would. Phase 3's `size_current_animation`
+(`attract/mod.rs:480`) sizes **only the animation the current mode selects**; this
+phase adds the all-mode counterpart it needs, and Phase 3's
+`App::schedule_timed_toast` must be paired with every toast push here or the notice
+will not animate.
+
+**Phase 5's `Attract::request_show()` (`attract/mod.rs:367`) is a transition, and
+the restore must not call it.** It overwrites the standing instruction with `Show`
+*and* the grid presentation with `ReplacesGrid`, so neither captured value survives
+it, and `advance()` (`attract/mod.rs:775`) then reads the overwritten instruction to
+pick the fade direction — which is why calling it first and writing the captured
+values back afterwards would discard whatever it just did. The restore therefore
+writes both captured values straight into the private fields and calls no transition
+at all. **Do not add a hide transition to pair with `request_show()`**; an earlier
+draft of this constraint asked for one and there is nothing for it to do. Writing
+only the presentation is the other failure that draft invited: a checkpoint holding
+`FollowRoster` or `Hide` would come back as `Show`, so `u` would turn the screen on
+for a reader who had dismissed it or never asked for it. Because both fields are
+private with no setters, the whole restore lives inside `attract/mod.rs`; no caller
+writes either one.
+
+`apply_settings` (`attract/mod.rs:448`) already sizes the requested mode's animation
+itself, so the all-mode sizing this phase adds is additional to that call rather
+than a replacement for it. Its return type, `SettingsApplicationOutcome`, carries
+**one** `AttractSettings` in `AppliedWithAdjustments { requested, effective }` — the
+single mode's parameters that one replacement applied. That type cannot describe
+this phase's restore and must not be reused for it: an undo puts back the mode,
+*all three* parameter sets, and the presentation state, so a report shaped around
+one settings variant would be a name that is not true of its payload.
 
 This phase therefore owns two of its own types: a full semantic configuration
 snapshot — the same shape `AttractConfigurationBeforeReplacement` stores — and
@@ -967,10 +975,16 @@ the same reason.
 
 **Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
 
+- A direct call to `apply_settings` captures the immediately preceding full
+  configuration — mode, all three parameter sets, and both presentation values —
+  and leaves `ReplacementUndoState::Available`.
 - After each of the three replacing actions, `u` restores the mode, all three
-  parameter sets, the standing instruction and the covering flag — proven
+  parameter sets, the standing instruction and the grid presentation — proven
   separately for a screen that came up automatically, one the reader asked for,
   one the reader dismissed, and one fully hidden.
+- **`r` then `u` across a mode change restores the pre-`r` mode**, not the drawn
+  one: with a fixed seed that draws a different mode than the one showing, the
+  checkpoint holds the mode being replaced.
 - A checkpoint taken mid-fade does **not** put back a partial fade: `faded` is
   untouched by the restore and the ordinary fade carries on from wherever it
   stood. Proven separately for each captured instruction — `Show` brings the
@@ -989,10 +1003,11 @@ the same reason.
 - Restoring onto a terminal smaller than the one the checkpoint was taken on
   reports the adjustment through `AttractConfigurationRestoreOutcome`, naming
   which of the three parameter sets moved, instead of correcting silently.
-- A press of `m` that replaces nothing — the file missing, in an error state, or
-  holding no recognized rows — leaves an existing
-  `ReplacementUndoState::Available` exactly as it was, and the following `u`
-  still restores the configuration from before the last real replacement.
+- **A replacement that never happens leaves the checkpoint alone.** A press of `m`
+  with the file missing, in an error state, or holding no recognized rows, and an
+  `enter` with no selected recognized row, both leave an existing
+  `ReplacementUndoState::Available` exactly as it was, and the following `u` still
+  restores the configuration from before the last real replacement.
 - **Undo composes with an adjusted replacement, proven at both call sites.**
   `enter` on an out-of-range favorite and `m` drawing one each capture the prior
   full configuration, keep the adjusted-favorite warning Phase 5 and Phase 6 raise

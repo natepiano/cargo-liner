@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Press `r` to draw a fresh attract mode and all of its parameters at random, and show the result.
 - Press `m` to load and show a random saved attract favorite; unavailable or unusable favorites open the existing diagnostic overlay instead.
 - Load a selected attract favorite with `enter`, reporting any terminal-sized adjustments without rewriting the saved row. Delete with `x`; rows fade before their locked removal, remain visible after a refusal, and finish deleting even when the overlay closes mid-fade.
 - Open a mode-grouped, scrolling favorites table with `ctrl-o`; its live key labels follow rebinding, and narrow terminals page parameter columns while keeping the saved timestamp visible.
@@ -44,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report test progress, not just build progress. `cargo nextest run` counts its tests the way cargo counts units, and the working-directory heading names which count is on screen: `building`, then `testing`. Runs with no terminal report too -- nextest draws no bar there, so the count is read from its per-test lines instead.
 
 ### Fixed
+- A run stops reading as `blocked` once its lock comes free. The wait line is printed once and stays in the log, and it was only ever superseded by a progress bar -- so a run with nothing to compile, which draws no bar at all, read as blocked for as long as it lived. The wait now counts only while it is the last thing written. Waits on the package cache no longer show at all: cargo names it in the same words, hands it back a moment later, and every command run beside another takes it.
 - A cell's process chain is drawn to the row count the cell asked for. The number it asks for is the whole chain, and the block is handed whatever the table under it does not take, so the chain is shortened only when the grid gave the cell less than it asked for.
 - The attract screen finds iTerm2's windows again, so it draws the desktop of the display the terminal is on. `TERM_PROGRAM` names a bundle, `iTerm.app`, and the `.app` was being compared as part of the name -- matching nothing, which left the frontmost application's window standing in for the terminal's.
 - The attract screen falls back to the nearest display, not the primary, when the terminal's window centre lands on no display at all.
