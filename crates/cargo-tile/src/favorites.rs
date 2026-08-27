@@ -196,10 +196,6 @@ impl FavoriteRows {
     }
 
     /// Recognized favorites, grouped by mode and newest first within each mode.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "loading a favorite starts in the next phase")
-    )]
     pub(crate) fn recognized(&self) -> impl Iterator<Item = &Favorite> {
         self.recognitions
             .iter()

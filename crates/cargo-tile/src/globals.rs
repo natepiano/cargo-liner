@@ -9,11 +9,13 @@
 //! rest from the registration in [`crate::keymap`]: TOML loading, the
 //! status-line slots, and the rows in the keymap overlay.
 //!
-//! Three of them are not about the grid at all: `f` holds the whole
-//! display still, which is what makes a screen that repaints four times
-//! a second readable, `a` draws the attract screen over the grid whether
+//! Some are not about the grid at all: `f` holds the whole display
+//! still, which is what makes a screen that repaints four times a
+//! second readable, `a` draws the attract screen over the grid whether
 //! or not anything is running, and `p` says how much of each command a
-//! cell spells out.
+//! cell spells out. Three more belong to the attract screen's saved
+//! favorites: `ctrl-s` saves the parameters on screen now, `ctrl-o`
+//! opens the saved list, and `m` shows one of them at random.
 //!
 //! To add another, give the enum a variant, bind a default key in
 //! [`Globals::defaults`], and handle it in [`dispatch`].
@@ -31,9 +33,16 @@ use crate::app::App;
 use crate::attract::AttractMode;
 use crate::constants::APP_GLOBALS_SECTION;
 use crate::favorites;
+use crate::favorites::FavoriteRows;
+use crate::favorites::FavoriteSettings;
+use crate::favorites::FavoritesFileState;
 use crate::favorites::FavoritesMutation;
 use crate::favorites::FavoritesRetryInstruction;
 use crate::favorites::ResolvedBinding;
+use crate::favorites_overlay::report_closed_overlay_adjustment;
+use crate::random;
+use crate::random::EmptyIndexDomain;
+use crate::random::NonZeroIndexBound;
 use crate::tiles::Direction;
 
 const FAVORITE_TOAST_MIN_INTERIOR_LINES: usize = 1;
@@ -53,6 +62,7 @@ tui_pane::action_enum! {
         ProcessTree => ("process_tree", "Show whole command lines");
         SaveFavorite => ("save_favorite", "Save attract parameters");
         OpenFavorites => ("open_favorites", "Open attract favorites");
+        RandomFavorite => ("random_favorite", "Show a random favorite");
     }
 }
 
@@ -76,6 +86,7 @@ impl Globals<App> for AppGlobalAction {
             'p' => Self::ProcessTree,
             KeyBind::ctrl('s') => Self::SaveFavorite,
             KeyBind::ctrl('o') => Self::OpenFavorites,
+            'm' => Self::RandomFavorite,
         }
     }
 
@@ -100,7 +111,43 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
             let keymap = Rc::clone(&app.keymap);
             app.favorites_overlay.open(&keymap);
         },
+        AppGlobalAction::RandomFavorite => show_random_favorite(app),
     }
+}
+
+/// Load the current favorites file and show one recognized row at random.
+fn show_random_favorite(app: &mut App) {
+    show_random_favorite_with(app, favorites::load, random::clock_seed);
+}
+
+fn show_random_favorite_with(
+    app: &mut App,
+    load: impl FnOnce() -> FavoritesFileState,
+    seed: impl FnOnce() -> u64,
+) {
+    let state = load();
+    if let FavoritesFileState::Loaded { rows, .. } = &state
+        && let Ok(settings) = draw_recognized_settings(rows, seed())
+    {
+        let outcome = app.attract.apply_favorite(settings);
+        app.attract.request_show();
+        report_closed_overlay_adjustment(app, outcome);
+        return;
+    }
+    let keymap = Rc::clone(&app.keymap);
+    app.favorites_overlay.open_file_state(state, &keymap);
+}
+
+fn draw_recognized_settings(
+    rows: &FavoriteRows,
+    seed: u64,
+) -> Result<FavoriteSettings, EmptyIndexDomain> {
+    let bound = NonZeroIndexBound::try_from_len(rows.recognized().count())?;
+    let index = random::bounded_index(seed, bound);
+    rows.recognized()
+        .nth(index)
+        .map(|favorite| favorite.settings)
+        .ok_or(EmptyIndexDomain)
 }
 
 /// Persist the selected attract parameters and show the result.
@@ -152,16 +199,89 @@ const fn mode_label(attract_mode: AttractMode) -> &'static str {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use std::collections::HashSet;
+    use std::fs;
+    use std::io;
+    use std::path::Path;
     use std::path::PathBuf;
+    use std::time::Duration;
 
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use tempfile::TempDir;
     use tui_pane::KeyBind;
     use tui_pane::KeySequence;
 
     use super::*;
     use crate::app::ProcessTree;
+    use crate::app::Updates;
     use crate::favorites::FavoritesMutationError;
+    use crate::favorites::parse_rows_for_overlay_test;
+    use crate::terminal::VisualDeadline;
+    use crate::terminal::VisualFrameRequest;
+
+    const MOVING_BAND_ROW: &str = r#"
+[[favorite]]
+id = "01a03f60-9c14-7b41-8a02-1de4c7c9b332"
+saved = "2026-08-26T11:02:44-07:00"
+mode = "moving_band"
+direction = "left"
+width = 10
+speed = 32
+tail_speed = 72
+fraying = "leading"
+"#;
+
+    const UNRECOGNIZED_ROW: &str = r#"
+[[favorite]]
+id = "01a03f62-9c14-7b41-8a02-1de4c7c9b334"
+saved = "2026-08-26T14:31:05-07:00"
+mode = "future_mode"
+"#;
+
+    fn loaded_state(path: impl Into<PathBuf>, text: &str) -> FavoritesFileState {
+        FavoritesFileState::Loaded {
+            path: path.into(),
+            rows: parse_rows_for_overlay_test(text).expect("favorites fixture should parse"),
+        }
+    }
+
+    fn load_test_path(path: &Path) -> FavoritesFileState {
+        match fs::read_to_string(path) {
+            Ok(text) => loaded_state(path, &text),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => FavoritesFileState::Missing {
+                path: path.to_path_buf(),
+            },
+            Err(error) => FavoritesFileState::Unreadable {
+                path:  path.to_path_buf(),
+                error: error.to_string(),
+            },
+        }
+    }
+
+    fn rendered_overlay(app: &mut App) -> String {
+        let mut terminal =
+            Terminal::new(TestBackend::new(100, 20)).expect("test terminal should build");
+        terminal
+            .draw(|frame| app.favorites_overlay.render(frame))
+            .expect("favorites overlay should render");
+        let buffer = terminal.backend().buffer();
+        (buffer.area.y..buffer.area.bottom())
+            .map(|y| {
+                (buffer.area.x..buffer.area.right()).fold(String::new(), |mut line, x| {
+                    line.push_str(buffer[(x, y)].symbol());
+                    line
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     /// `p` reaches the process-tree toggle, read out of the table the
     /// keymap is actually built from. It shares the scope with the four
@@ -195,6 +315,152 @@ mod tests {
             scope.action_for(&KeyBind::ctrl('o')),
             Some(AppGlobalAction::OpenFavorites),
         );
+    }
+
+    #[test]
+    fn m_loads_a_random_favorite() {
+        let scope = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            scope.action_for(&KeyBind::from('m')),
+            Some(AppGlobalAction::RandomFavorite),
+        );
+    }
+
+    #[test]
+    fn every_non_loadable_state_opens_the_existing_overlay_position() {
+        let path = PathBuf::from("/tmp/favorites.toml");
+        let cases = [
+            (
+                FavoritesFileState::Missing { path: path.clone() },
+                "No favorites saved",
+            ),
+            (loaded_state(&path, ""), "No favorites saved"),
+            (
+                loaded_state(&path, UNRECOGNIZED_ROW),
+                "mode = \"future_mode\" is not recognized",
+            ),
+            (
+                FavoritesFileState::LocationUnavailable,
+                "location unavailable",
+            ),
+            (
+                FavoritesFileState::Unparseable {
+                    path:  path.clone(),
+                    error: "bad TOML".to_string(),
+                },
+                "bad TOML",
+            ),
+            (
+                FavoritesFileState::Unreadable {
+                    path,
+                    error: "permission denied".to_string(),
+                },
+                "permission denied",
+            ),
+        ];
+
+        for (state, expected) in cases {
+            let mut app = App::new_for_test().expect("test app should build");
+            show_random_favorite_with(&mut app, || state, || 0);
+            let rendered = rendered_overlay(&mut app);
+
+            assert!(app.favorites_overlay.is_open());
+            assert!(
+                rendered.contains(expected),
+                "{rendered:?} should contain {expected:?}"
+            );
+            if expected.contains("future_mode") {
+                assert!(!rendered.contains("No favorites saved"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_later_press_observes_a_favorite_saved_after_the_first_load() {
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = directory.path().join("favorites.toml");
+        let mut app = App::new_for_test().expect("test app should build");
+
+        show_random_favorite_with(&mut app, || load_test_path(&path), || 0);
+        assert!(app.favorites_overlay.is_open());
+
+        app.favorites_overlay = crate::favorites_overlay::FavoritesOverlay::default();
+        fs::write(&path, MOVING_BAND_ROW).expect("another process should save a favorite");
+        show_random_favorite_with(&mut app, || load_test_path(&path), || 0);
+
+        assert!(!app.favorites_overlay.is_open());
+        assert!(app.attract.asked_for());
+        assert_eq!(
+            app.attract.favorite_settings(),
+            draw_recognized_settings(
+                &parse_rows_for_overlay_test(MOVING_BAND_ROW)
+                    .expect("favorites fixture should parse"),
+                0,
+            )
+            .expect("fixture has a recognized row")
+        );
+    }
+
+    #[test]
+    fn applying_a_favorite_is_silent_when_exact_and_never_rewrites_the_file() {
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = directory.path().join("favorites.toml");
+        fs::write(&path, MOVING_BAND_ROW).expect("favorites fixture should be written");
+        let before = fs::read(&path).expect("favorites fixture should be readable");
+        let mut app = App::new_for_test().expect("test app should build");
+        app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
+
+        show_random_favorite_with(&mut app, || load_test_path(&path), || 0);
+
+        assert!(app.framework.toasts.active_now().is_empty());
+        assert_eq!(
+            app.toast_visual_deadline(Instant::now(), Duration::from_millis(8)),
+            VisualDeadline::NoVisualChangeScheduled
+        );
+        assert_eq!(
+            fs::read(&path).expect("favorites fixture should remain readable"),
+            before
+        );
+    }
+
+    #[test]
+    fn an_adjusted_random_favorite_schedules_a_lowercase_warning_while_frozen() {
+        let oversized = MOVING_BAND_ROW.replace("width = 10", "width = 10000");
+        let mut app = App::new_for_test().expect("test app should build");
+        app.updates = Updates::Frozen;
+        app.attract.record_terminal_resize(Rect::new(0, 0, 10, 5));
+        let now = Instant::now();
+
+        show_random_favorite_with(
+            &mut app,
+            || loaded_state("/tmp/favorites.toml", &oversized),
+            || 0,
+        );
+
+        let toasts = app.framework.toasts.active_views(Instant::now());
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].title(), "Favorite adjusted");
+        assert!(toasts[0].body().contains("width 10000 ->"));
+        assert!(!toasts[0].body().contains("MovingBand"));
+        assert!(matches!(
+            app.toast_visual_deadline(now, Duration::from_millis(8)),
+            VisualDeadline::At(_)
+        ));
+
+        let at_expiry = now + Duration::from_secs(30);
+        app.framework.toasts.prune(at_expiry);
+        assert_eq!(
+            app.toast_visual_frame_request(at_expiry),
+            VisualFrameRequest::Requested
+        );
+        let after_exit = at_expiry + Duration::from_secs(30);
+        app.framework.toasts.prune(after_exit);
+        assert_eq!(
+            app.toast_visual_frame_request(after_exit),
+            VisualFrameRequest::Requested
+        );
+        assert!(app.framework.toasts.active_views(after_exit).is_empty());
     }
 
     #[test]

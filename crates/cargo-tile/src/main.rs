@@ -17,6 +17,7 @@ mod navigation;
 mod probe;
 mod processes;
 mod progress;
+mod random;
 mod render;
 mod roster;
 mod sccache;

@@ -718,7 +718,8 @@ impl FavoritesOverlay {
         self.open_file_state(loader(), keymap);
     }
 
-    fn open_file_state(&mut self, state: FavoritesFileState, keymap: &Keymap<App>) {
+    /// Open the modal at the content position represented by one complete file state.
+    pub(crate) fn open_file_state(&mut self, state: FavoritesFileState, keymap: &Keymap<App>) {
         self.state = AppOverlay::Favorites(FavoritesOverlayContent::from_file_state(state));
         self.surface_bindings = FavoritesSurfaceBindings::resolve(keymap);
         self.horizontal_column_page = 0;
@@ -1134,6 +1135,10 @@ fn report_application_outcome(
     app: &mut App,
     outcome: FavoriteApplicationOutcome,
 ) {
+    if !overlay.is_open() {
+        report_closed_overlay_adjustment(app, outcome);
+        return;
+    }
     let FavoriteApplicationOutcome::AppliedWithAdjustments {
         requested,
         effective,
@@ -1142,11 +1147,20 @@ fn report_application_outcome(
         return;
     };
     let message = favorite_adjustment_message(requested, effective);
-    if overlay.is_open() {
-        overlay.set_adjustment_notice(message);
-    } else {
-        push_scheduled_toast(app, "Favorite adjusted", &message, ToastStyle::Warning);
-    }
+    overlay.set_adjustment_notice(message);
+}
+
+/// Report an adjusted favorite after its modal has closed.
+pub(crate) fn report_closed_overlay_adjustment(app: &mut App, outcome: FavoriteApplicationOutcome) {
+    let FavoriteApplicationOutcome::AppliedWithAdjustments {
+        requested,
+        effective,
+    } = outcome
+    else {
+        return;
+    };
+    let message = favorite_adjustment_message(requested, effective);
+    push_scheduled_toast(app, "Favorite adjusted", &message, ToastStyle::Warning);
 }
 
 fn push_scheduled_toast(app: &mut App, title: &str, body: &str, style: ToastStyle) {
@@ -2839,13 +2853,59 @@ travel_left = "界"
             panic!("fixture should contain moving-band settings");
         };
         effective.direction = BandDirection::Right;
+        effective.fraying = BandFraying::Both;
+        let mut app = App::new_for_test().expect("test app should build");
 
-        let message =
-            favorite_adjustment_message(requested, FavoriteSettings::MovingBand(effective));
+        report_closed_overlay_adjustment(
+            &mut app,
+            FavoriteApplicationOutcome::AppliedWithAdjustments {
+                requested,
+                effective: FavoriteSettings::MovingBand(effective),
+            },
+        );
 
-        assert!(message.contains("direction left -> right"));
-        assert!(!message.contains("Left"));
-        assert!(!message.contains("Right"));
+        let toasts = app.framework.toasts.active_now();
+        assert_eq!(toasts.len(), 1);
+        let body = toasts[0].body();
+        assert!(body.contains("direction left -> right"));
+        assert!(body.contains("fraying leading -> both"));
+        assert!(!body.contains("Left"));
+        assert!(!body.contains("Leading"));
+    }
+
+    #[test]
+    fn pixel_adjustment_toast_uses_lowercase_resolve_and_fill_spellings() {
+        let rows = parse_rows_for_overlay_test(RECOGNIZED_ROWS)
+            .expect("recognized favorites fixture should parse");
+        let mut requested = rows
+            .recognized()
+            .find_map(|favorite| match favorite.settings {
+                FavoriteSettings::Pixelate(settings) => Some(settings),
+                FavoriteSettings::MovingBand(_) | FavoriteSettings::MovingText(_) => None,
+            })
+            .expect("fixture should contain pixel settings");
+        requested.resolve = tui_pane::PixelResolve::Blend;
+        requested.fill = tui_pane::PixelFill::Solid;
+        let mut effective = requested;
+        effective.resolve = tui_pane::PixelResolve::Step;
+        effective.fill = tui_pane::PixelFill::Shades;
+        let mut app = App::new_for_test().expect("test app should build");
+
+        report_closed_overlay_adjustment(
+            &mut app,
+            FavoriteApplicationOutcome::AppliedWithAdjustments {
+                requested: FavoriteSettings::Pixelate(requested),
+                effective: FavoriteSettings::Pixelate(effective),
+            },
+        );
+
+        let toasts = app.framework.toasts.active_now();
+        assert_eq!(toasts.len(), 1);
+        let body = toasts[0].body();
+        assert!(body.contains("resolve blend -> step"));
+        assert!(body.contains("fill solid -> shades"));
+        assert!(!body.contains("Blend"));
+        assert!(!body.contains("Solid"));
     }
 
     #[test]

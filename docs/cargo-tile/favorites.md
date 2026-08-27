@@ -83,10 +83,15 @@
     Faster, `<`/`,` Slower, `[` TailSlower, `]` TailFaster, `+`/`=` Wider, `-`
     Thinner, `v` CycleFraying, `1`/`2`/`3` mode switch. `moving_text.rs` and
     `pixelate.rs` hold the other two `bindings!` blocks.
-  - `crates/cargo-tile/src/globals.rs` — `action_enum!` block (**42–55**),
-    `SaveFavorite` (54), `defaults()` (66), `ctrl-s` binding (77), `dispatcher()`
-    (82), `dispatch` (86), its `SaveFavorite` arm (98), `mode_label` (146).
-    `mode_label` is **private to this file**.
+  - `crates/cargo-tile/src/globals.rs` — `action_enum!` block (**51–67**),
+    `SaveFavorite` (63), `OpenFavorites` (64), `RandomFavorite` (65),
+    `defaults()` (76), `ctrl-s` (87), `ctrl-o` (88), `m` (89), `dispatcher()`
+    (93), `dispatch` (97), its `SaveFavorite` arm (109), `RandomFavorite` arm
+    (114), `mode_label` (193). `mode_label` is **private to this file**. The
+    module doc (**12–21**) **enumerates** the non-grid globals and never states
+    a total: a phase adding one names it in the group it belongs to and leaves
+    every count alone. Phase 6's only review finding was a count there that had
+    been wrong since Phase 3.
   - `crates/cargo-tile/src/favorites.rs` — `favorite_refusal_message(mutation:
     FavoritesMutation, retry: &FavoritesRetryInstruction, error:
     &FavoritesMutationError) -> String` (**426**). Phase 5 moved it here out of
@@ -575,220 +580,71 @@ delete a row other than the one on screen.
 - Gating the load on `Attract::showing()` or `toggle()` — `showing()` stays true
   through a fade-out and `toggle()` can ask for the opposite state.
 
-### Phase 6 — `m`, a random saved favorite  · status: todo
+### Phase 6 — `m`, a random saved favorite  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `m` picks a saved favorite at random and shows it.
+`AppGlobalAction::RandomFavorite` binds the bare `m` key, free in every scope
+(framework globals, all three attract panes, vim nav extras — nothing shadows
+it). On every press it loads the favorites file fresh (never cached, so a
+favorite saved by another running instance is visible immediately), draws one
+recognized row uniformly at random through a bounded index draw, applies it to
+the attract screen through `Attract::apply_favorite`, and calls
+`Attract::request_show()`.
 
-**Spec:**
+Every state that yields no usable favorite — missing file, unreadable,
+unparseable, unresolvable config location, loaded-but-empty, or loaded with
+rows present but none recognized — opens the favorites overlay at the matching
+diagnostic position instead of doing nothing, reusing
+`FavoritesOverlayContent::from_file_state` through `FavoritesOverlay::open_file_state`
+(now `pub(crate)`) rather than restating the mapping.
 
-`AppGlobalAction::RandomFavorite` on `m`. `m` is free in every scope. `q` was
-proposed first and cannot be used: it is the framework's `Quit`
-(`keymap/global_action.rs:63`), so a mis-press would exit the app.
+New `random.rs` is the crate's only source of randomness: dependency-free
+SplitMix64 plus rejection sampling (uniform, not biased by modulo), exposed as
+`clock_seed() -> u64`, `NonZeroIndexBound::try_from_len(usize) ->
+Result<NonZeroIndexBound, EmptyIndexDomain>`, and `bounded_index(seed: u64,
+bound: NonZeroIndexBound) -> usize`, all `pub(crate)`. The empty-list case is
+unreachable inside the draw — it is decided once, by the caller, via the
+fallible constructor.
 
-**cargo-tile has no source of randomness yet.** The workspace declares no random
-crate at all, and Phase 1's `Xorshift` is `pub(super)` inside
-`tui_pane::backdrop` — not reachable from here, and not to be exposed, since
-widening tui_pane's surface is outside this plan. `random_settings(seed)`
-consumes a seed; nothing yet produces one. This phase establishes cargo-tile's
-own, in a new `random` module:
+An adjusted favorite applied from outside the overlay reports through a new
+shared `pub(crate) fn report_closed_overlay_adjustment(&mut App,
+FavoriteApplicationOutcome)` in `favorites_overlay.rs`: silent on an exact
+application, otherwise a scheduled lowercase warning toast via the existing
+`push_scheduled_toast`/`report_application_outcome` path. `enter`'s closed
+branch now routes through the same function, leaving one formatter and one
+scheduled-toast site. The adjustment is clamped in the running attract state
+only and never rewrites the saved favorites file.
 
-These are **two separate functions**, not one that both reads the clock and
-accepts a seed — a single signature cannot do both, and describing it as if it
-could is what leaves an implementer guessing:
-
-- **A seed source**, `fn clock_seed() -> u64`, drawing from the clock (nanos since
-  `SystemTime::UNIX_EPOCH`). It takes nothing and is the only part that is
-  non-deterministic, so it is the only part tests never call. This matches
-  tui_pane's dependency-free posture rather than adding a crate for two call sites.
-- **An unbiased bounded index draw**, `fn bounded_index(seed: u64, bound:
-  NonZeroIndexBound) -> usize`, which is pure: same seed and bound, same index.
-  Callers compose the two — `bounded_index(clock_seed(), bound)` in the app,
-  `bounded_index(fixed, bound)` in tests — and that composition is what makes the
-  fixed-seed corpus in the gate possible.
-
-Plain modulo skews toward the low indices whenever the bound does not divide the
-generator's range; reject and redraw the short tail instead.
-
-**The bound is a nonempty type, not a `usize` checked at the top and not an
-`Option<usize>` returned from the bottom.** "Pick one of none" has no answer, so
-the draw must not be reachable with an empty list at all. Introduce a small
-semantic bound with a fallible constructor and no domain-owned `Option` — the
-contract is `NonZeroIndexBound::try_from_len(usize) -> Result<NonZeroIndexBound,
-EmptyIndexDomain>`, and `NonZeroUsize::new`'s external `Option` is converted
-inside that constructor and never leaves it. The empty case is then decided
-once, by the caller, at the point where it already has a different job to do
-(open the empty notice). Do not store a `NonZeroIndexBound` in an `Option`
-anywhere; the absence of a bound is `EmptyIndexDomain`, which says what the
-absence means. A draw
-that returns `Option<usize>` pushes that decision to every call site and invites
-an `unwrap`; a draw that takes a bare `usize` and guards internally has to invent
-an answer for a case that has none.
-
-Phase 7 reuses both halves. Neither exposes nor changes anything in tui_pane.
-
-Picks uniformly from the saved list and loads it through the same path `enter`
-uses.
-
-**Every way `m` can fail to load opens Phase 4's overlay in the matching state.**
-`m` calls `favorites::load()`, so it faces exactly the positions Phase 4 already
-named as `FavoritesOverlayContent` variants, and it reuses them rather than
-inventing a second notice surface with its own owner:
-
-| `load()` result | What `m` opens |
-| --- | --- |
-| `Loaded`, at least one recognized row | nothing — draws the favorite |
-| `Missing` | `FavoritesOverlayContent::NoneSaved` |
-| `Loaded`, no rows at all | `FavoritesOverlayContent::NoneSaved` |
-| `Loaded`, rows present but none recognized | `FavoritesOverlayContent::OnlyUnrecognized` |
-| `LocationUnavailable` | `FavoritesOverlayContent::LocationUnavailable` |
-| `Unparseable` | `FavoritesOverlayContent::Unparseable` |
-| `Unreadable` | `FavoritesOverlayContent::Unreadable` |
-
-**This mapping already exists — reuse it, do not restate it.**
-`FavoritesOverlayContent::from_file_state` (`favorites_overlay.rs:173`) is the
-exhaustive match Phase 4 shipped, and it is what draws the loaded/empty
-distinction above: a `Loaded` file with no rows at all falls to `NoneSaved`,
-while `Loaded` with rows that this build understood none of falls to
-`OnlyUnrecognized`. Writing that mapping a second time in `globals.rs` would put
-the two copies one refactor apart from disagreeing. So `m` hands its
-`FavoritesFileState` straight to `FavoritesOverlay::open_file_state` (721), which
-already runs `from_file_state`, resolves the surface bindings and rebuilds the
-line plan. Six source positions therefore reach five content variants, and a
-seventh `FavoritesFileState` variant is a compile error inside `from_file_state`
-rather than a silent fall-through to "no favorites".
-
-`esc` dismisses each of them through the same app-modal route.
-
-Because the overlay opens on failure and stays closed on success, `m`'s own
-adjustment warning is a **toast** — nothing is covering it — and it must be
-registered with `App::schedule_timed_toast` beside the push, per the Delegation
-Context.
-
-**Reporting an adjusted favorite goes through one shared reporter, not a second
-copy.** Phase 5 shipped the whole reporting path private to `favorites_overlay.rs`:
-`report_application_outcome` (1132) decides notice-versus-toast,
-`favorite_adjustment_message` (1170) formats the changed fields using the
-file's own lowercase spellings through `direction_name` / `fraying_name` /
-`drift_name` / `text_fill_name` / `pixel_resolve_name` / `pixel_fill_name`, and
-`push_scheduled_toast` (1152) pairs the push with `App::schedule_timed_toast`.
-`m` reaches none of them from `globals.rs`, and re-formatting the message there
-would put two spellings of the same adjustment one refactor apart.
-
-Add **one** `pub(crate) fn report_closed_overlay_adjustment(app: &mut App,
-outcome: FavoriteApplicationOutcome)` in `favorites_overlay.rs`, returning early
-on `FavoriteApplicationOutcome::AppliedExactly` so an exact application stays
-silent, and pushing the scheduled warning toast otherwise. Make
-`report_application_outcome`'s closed branch call it rather than duplicating the
-push, so there remains exactly one formatter and exactly one scheduled-toast
-site. `m` calls this and nothing else; it does not format, does not push a toast
-of its own, and does not touch the in-modal notice, which stays Phase 5's.
-
-The key lives on `AppGlobalAction`, not on the three attract scopes. One place
-instead of three near-copies, one section in the keymap overlay, and it works
-from the grid as well: `m` over a working grid gives you a random favorite and
-turns the attract screen on to show it. The ladder already suits this — attract
-scope keys are offered first, and `m` collides with nothing they bind, so it
-falls through to the app globals below.
+`globals.rs::show_random_favorite_with(app, load, seed)` is the deterministic
+test seam; `show_random_favorite` is the zero-argument production entry.
+`favorites.rs::recognized()` is now production code — its dead-code exemption
+is gone.
 
 **Files:**
-- `crates/cargo-tile/src/globals.rs` — `RandomFavorite` variant, default binding, dispatch arm
-- `crates/cargo-tile/src/random.rs` — new file: `clock_seed()`, the nonempty bound type, and the pure unbiased `bounded_index(seed, bound)`
-- `crates/cargo-tile/src/main.rs` — declare `mod random;` in the `mod` block at 4–27
-- `crates/cargo-tile/src/favorites_overlay.rs` — widen Phase 4's existing `FavoritesOverlay::open_file_state(FavoritesFileState, &Keymap<App>)` (721) to `pub(crate)` so `m` can hand it the very `FavoritesFileState` it already loaded; add no second constructor. Also add the shared closed-overlay reporter described under **Reporting an adjusted favorite** below, and route Phase 5's own closed branch through it
-- `crates/cargo-tile/src/favorites.rs` — delete the now-obsolete `#[expect(dead_code, reason = "loading a favorite starts in the next phase")]` attribute on `recognized()` (203)
-- `crates/cargo-tile/Cargo.toml` — patch version bump
-- `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
+- `crates/cargo-tile/src/random.rs` — seed source, nonempty index bound, unbiased bounded draw
+- `crates/cargo-tile/src/globals.rs` — `RandomFavorite` action, dispatch arm, `show_random_favorite`/`show_random_favorite_with`
+- `crates/cargo-tile/src/favorites_overlay.rs` — `report_closed_overlay_adjustment`; `open_file_state` widened to `pub(crate)`
+- `crates/cargo-tile/src/favorites.rs` — `recognized()` no longer dead code
 
-**Constraints from prior phases:** Phase 5 provides `Attract::apply_favorite()`
-and `Attract::request_show()`; this phase calls them rather than reaching into
-`Attract`'s private fields. Phase 4 provides `FavoritesOverlayContent` with one
-variant per load position and its non-selectable notices, dispatched through the
-app-modal route ahead of the framework check; this phase opens them and adds none
-of its own. Phase 3 requires every timed toast to be registered with
-`App::schedule_timed_toast` beside its push, or it will not animate.
+**Binds later work:** `random.rs`'s three `pub(crate)` functions are the
+crate's only RNG; the phase that adds `r` (randomize everything) composes
+`bounded_index(clock_seed(), bound)` from this module rather than adding a
+second one. `m` applies a favorite from outside the overlay via
+`show_random_favorite_with` in `globals.rs`, a second call site (alongside
+`favorites_overlay.rs`'s dispatch `Load` branch) for anything that must observe
+a wholesale parameter replacement — the undo phase (`u`) needs both.
 
-**The three Phase 2 APIs this phase consumes, exactly:** `favorites::load() ->
-FavoritesFileState`; `FavoriteRows::recognized() -> impl Iterator<Item =
-&Favorite>`, which is the **only** one of the two iterators this phase uses,
-because a row this build cannot understand cannot be loaded and must never enter
-the draw; and `FavoriteSettings::mode() -> AttractMode`, which supplies the mode
-to switch to. Do not reach for `FavoriteRows::iter()` here — that one carries the
-unrecognized rows and belongs to Phase 4's table.
+**Gotchas:** `Attract::request_show()` only sets fields (`asked`, `covering`);
+`advance()` re-derives the fade direction from `asked` every frame, so nothing
+a caller writes before `advance()` runs survives as a destination. `globals.rs`'s
+module doc enumerates the non-grid globals rather than stating a total — an
+earlier stale count is why; keep it as an enumeration when adding globals.
 
-Call `load()` on **every** `m` press, not once at startup: another instance can
-save a favorite between presses, and a cached list would hide it.
-
-Phase 2's load returns `FavoritesFileState` — a parse error, a read failure, or an
-unresolvable config directory is reported, never treated as an empty list.
-**Neither is a file whose rows exist but none are recognized.** `Loaded` with
-`recognized()` empty is a distinct position from `Missing`: there is something in
-the file and this build understood none of it, so `m` opens
-`FavoritesOverlayContent::OnlyUnrecognized`, where the diagnostic lines name which
-keys and spellings failed, rather than claiming no favorites are saved. Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, so
-`m` reports an adjusted favorite the same way `enter` does.
-
-**What Phase 5 actually shipped, that this phase calls.**
-`Attract::apply_favorite(&mut self, requested: FavoriteSettings) ->
-FavoriteApplicationOutcome` (`attract/mod.rs:401`) sizes the requested mode's own
-animation before applying, so `m` hands it the row's retained settings and does no
-sizing of its own. `Attract::request_show()` (`attract/mod.rs:348`) is a two-line
-const setter — `asked = Asked::For` and `covering = true` — which is what makes it
-idempotent and correct during a fade-out.
-
-**A duplicated favorite id can no longer reach this phase's draw.**
-`FavoriteRows::refresh_recognitions` (`favorites.rs:245`) demotes the second and
-every later table carrying an already-seen `FavoriteId` to
-`FavoriteRowRecognition::Unrecognized`, spelled `<id> (duplicate)`. So
-`recognized()` yields at most one row per id and the bounded draw cannot land on a
-duplicate, and a file whose only extra rows are duplicates opens as diagnostics
-rather than widening the list.
-
-**Anything raised while the overlay is open belongs in Phase 5's notice, not a
-toast.** `FavoritesOverlayNotice::{NoNotice, DeletionRefused, FavoriteAdjusted}` is
-the in-modal surface, cleared on open, on close, and when a fresh attempt on the
-same row succeeds. `m` raises nothing there — it opens the overlay only on failure
-and stays closed on success — but any message this phase later needs while the
-modal is up joins that enum as a variant rather than becoming a second string
-field.
-
-**Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
-
-- Selection is proven through its **bounded index draw against a fixed seed
-  corpus**, not by pressing the key until the row changes — a valid list can
-  legitimately return the same row twice, so "repeated presses visibly move" is a
-  flaky condition.
-- All six non-loadable source positions reach their content variant through
-  Phase 4's own `open_file_state`, and each renders and consumes `esc` through
-  the app overlay route ahead of framework handling. Six positions map into five
-  variants, because a missing file and a loaded-but-empty file both reach
-  `NoneSaved`.
-- A file holding only unrecognized rows does **not** report "no favorites": it
-  opens `OnlyUnrecognized`, distinctly from both the `Missing` case and the
-  loaded-but-empty case, which are asserted separately.
-- Pressing `m` after another process saves a favorite can draw that favorite.
-- `m`'s adjustment warning toast animates and expires with updates frozen and no
-  input arriving, which proves it was registered with the visual schedule.
-- The adjusted-favorite toast `m` raises names its changed fields in the **same
-  lowercase spellings the favorites file uses** — `leading`, `left`, `blend` and
-  the rest — asserted against the rendered toast body, not against a `Debug`
-  rendering of the enum.
-- A favorite whose settings apply exactly raises **no** toast at all: `m` on an
-  in-range row is silent, asserted as the absence of a pushed toast rather than
-  as an empty one.
-- Drawing a favorite through `m` leaves the favorites TOML **byte-identical** —
-  an adjustment is clamped in the running attract state only and is never
-  written back to the file.
-- The bounded draw's rejection path is exercised **directly**, not inferred from
-  coverage: a fixed corpus that reaches every index proves nothing about bias.
-  Either drive the reject-and-redraw threshold with seeds chosen to land in the
-  short tail and assert the redraw happens, or exhaust a reduced-width generator
-  model over every possible state and assert each index is produced an equal
-  number of times.
-- `NonZeroIndexBound::try_from_len(0)` returns `EmptyIndexDomain`, so the empty
-  case is unreachable inside the draw rather than guarded there, and no
-  `Option<NonZeroIndexBound>` appears in any signature or field.
+**Ruled out:** a second random helper module for later phases — compose from
+`random.rs` instead; restoring a captured visibility destination for undo —
+`advance()` recomputes direction from `asked` alone, so a stored destination is
+unreachable.
 
 ### Phase 7 — `r`, randomize everything  · status: todo
 
@@ -799,7 +655,7 @@ parameter, and starts showing the result.
 
 **Spec:**
 
-`AppGlobalAction::RandomizeAll` on `r`. Draws a mode at random, draws that mode's
+`AppGlobalAction::RandomizeAttract` on `r`. Draws a mode at random, draws that mode's
 settings at random via Phase 1's `random_settings` on the chosen animation,
 applies both, and turns the attract screen on with `request_show()`.
 
@@ -817,7 +673,9 @@ Pushing them here would change key reporting for every binding in the app, and
 would still degrade to nothing on a terminal that will not negotiate.
 
 **Files:**
-- `crates/cargo-tile/src/globals.rs` — `RandomizeAll` variant, default binding, dispatch arm
+- `crates/cargo-tile/src/globals.rs` — `RandomizeAttract` variant, default
+  binding, dispatch arm, and the module-doc line naming `r` in the non-grid
+  group (`r` randomizes the attract screen; it is not a saved-favorites action)
 - `crates/cargo-tile/src/attract/mod.rs` — draw a mode, call `random_settings` on that animation, apply, `request_show()`
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
@@ -828,10 +686,23 @@ the now-ungated `Xorshift::seeded`, with band width drawn from the band's own
 axis extent. Phase 5 provides `Attract::request_show()`
 (`attract/mod.rs:348`), which sets `asked = Asked::For` and `covering = true` and
 is therefore idempotent and correct during a fade-out, and `apply_favorite`
-(`attract/mod.rs:401`) returning `FavoriteApplicationOutcome`. Phase 6 provides cargo-tile's `random` module — `clock_seed()`, the nonempty
-bound type, and the pure `bounded_index(seed, bound)`; `r` composes the same two
-(`bounded_index(clock_seed(), bound)`) to draw its mode rather than adding a
-second helper, and its gate uses the pure half with fixed seeds. Phase 3 provides the terminal-area state and the zero-duration
+(`attract/mod.rs:401`) returning `FavoriteApplicationOutcome`. Phase 6 shipped `crates/cargo-tile/src/random.rs`, which this phase reads and
+does not edit. Its whole `pub(crate)` surface is three items and one error type:
+
+```rust
+struct NonZeroIndexBound(NonZeroUsize);          // random.rs:13
+impl NonZeroIndexBound {
+    const fn try_from_len(len: usize) -> Result<Self, EmptyIndexDomain>;  // :21
+}
+struct EmptyIndexDomain;                          // :33
+fn clock_seed() -> u64;                           // :37
+fn bounded_index(seed: u64, bound: NonZeroIndexBound) -> usize;  // :47
+```
+
+`bounded_index` rejection-samples, so every index in `0..bound` is equally
+likely. `r` composes exactly these — `bounded_index(clock_seed(), bound)` — to
+draw its mode. **Do not add a second generator**; `random.rs` is the only
+randomness cargo-tile owns and its gate uses `bounded_index` with fixed seeds. Phase 3 provides the terminal-area state and the zero-duration
 sizing boundary, which must run before `random_settings` so the band draws its
 width against the real screen rather than the unsized whole-range sentinel.
 
@@ -843,6 +714,11 @@ width against the real screen rather than the unsized whole-range sentinel.
   current screen allows, not the unsized sentinel range.
 - The animation's `settings()` after the action equals the generated target —
   which is what proves the settings were applied and not merely drawn.
+- `r` is actually bound and reaches the action: the app-globals scope answers
+  `AppGlobalAction::RandomizeAttract` for the bare `r` key.
+- The action turns the screen on: `Attract::asked_for()` is true afterwards,
+  whatever it was before. Without this the gate above passes on a draw that is
+  applied but never shown.
 
 ### Phase 8 — `u`, undo the last replacement  · status: todo
 
@@ -860,7 +736,7 @@ intended workflow, but the moment you would need it is the moment you do not tak
 it.
 
 Capture the current mode, **all three parameter sets**, and how the attract screen
-was being presented. `AppGlobalAction::UndoReplace` on `u` restores them.
+was being presented. `AppGlobalAction::UndoAttractReplacement` on `u` restores them.
 
 **Capture after the replacement is certain, not before the key is handled.** `m`
 can find the file `Missing`, in an error state, or holding rows none of which this
@@ -876,7 +752,7 @@ one-step limit is the type's job, not a flag beside it:
 ```rust
 enum ReplacementUndoState {
     Unavailable,
-    Available(PreviousAttractConfiguration),
+    Available(AttractConfigurationBeforeReplacement),
 }
 ```
 
@@ -918,46 +794,60 @@ describe that, and the earlier draft of this phase promised to restore a
 mid-fade-out position it had no way to represent.
 
 The rule for this phase is therefore: **capture what is durable, restore the
-settled destination, and do not replay a transition.**
+reader's own instruction, and do not replay a transition.**
 
 - **Capture verbatim:** `Asked`, because it is the reader's own instruction and is
   meaningful at any later moment; and `covering`, because it decides whether the
   restored screen replaces the grid or lies over it.
-- **Capture as a destination, not a position:** where the screen was *heading* —
-  on screen or off it. `Standing::Leaving` and `Standing::Settling` are both
-  in-flight, and a `Settling` deadline captured a minute ago is meaningless when
-  `u` is pressed.
+- **Do not capture a destination at all.** An earlier draft of this phase stored
+  where the screen was *heading* beside the instruction. That value cannot
+  survive the restore and must not be added. `advance()`
+  (`attract/mod.rs:679`) recomputes the fade direction every frame from `asked`
+  alone (`attract/mod.rs:727`): `Asked::For` fades in, `Asked::Against` fades
+  out, and `Asked::Nothing` hands the answer to the roster's `standing` as it is
+  at that frame. A stored destination is therefore either redundant or
+  unreachable:
+  - Captured `Show` or `Hide`, the reader's own instruction **is** the
+    destination. Writing `asked` back reproduces it exactly, with nothing else
+    stored.
+  - Captured `FollowRoster`, the roster owned the answer when the checkpoint was
+    taken and still owns it now. Restoring `Asked::Nothing` and letting the
+    roster decide is the faithful restore. Forcing back a destination read a
+    minute ago would put the attract screen over a grid that has started working
+    since — the exact failure `Standing`'s hand-over rule
+    (`attract/mod.rs:141`) exists to prevent.
 - **Do not capture `faded` and do not restore it.** A fade is a transient. Putting
   back a half-finished one reproduces a glitch rather than a state, and the reader
-  cannot have meant "and leave it 40% faded". The restore sets the destination and
-  lets the ordinary fade run to it, exactly as the equivalent keypress would.
+  cannot have meant "and leave it 40% faded". The restore puts back the
+  instruction and lets the ordinary fade run on from wherever it stood, exactly
+  as the equivalent keypress would.
 
-Name the captured shape accordingly, and name each of its three parts for what
-it means rather than for the field it came from. `Asked` does not say what is
+Name the captured shape accordingly, and name each of its two parts for what it
+means rather than for the field it came from. `Asked` does not say what is
 being asked for, and "covering" is a boolean carrying two domain positions, so
 neither survives into the captured type as it stands:
 
 ```rust
 enum AttractVisibilityInstruction { FollowRoster, Show, Hide }
-enum AttractVisibilityDestination { Shown, Hidden }
 enum AttractGridPresentation { OverGrid, ReplacesGrid }
 
-struct PreviousAttractPresentation {
+struct AttractPresentationBeforeReplacement {
     instruction: AttractVisibilityInstruction,
-    destination: AttractVisibilityDestination,
     presentation: AttractGridPresentation,
 }
 ```
 
 `AttractVisibilityInstruction` is the reader's own standing instruction captured
-verbatim from `Asked`; `AttractVisibilityDestination` is where the screen was
-heading, not where it was; and `AttractGridPresentation` replaces the `covering`
-flag with its two meanings written out. No four-variant approximation, and no
-bool.
+verbatim from `Asked`, and it is the whole of what decides where the screen
+goes; `AttractGridPresentation` replaces the `covering` flag with its two
+meanings written out. No four-variant approximation, no bool, and no separate
+destination.
 
-Restoring a hidden destination needs a hide transition to match Phase 5's
-`request_show()` — idempotent in the same way, so restoring twice or restoring a
-screen that is already down does nothing rather than toggling it back up.
+**The restore needs no transition of its own, and must not add one.** It writes
+the two captured values straight into the fields. That is simpler than a
+transition, it cannot lose them, and it is idempotent for free: writing the same
+two values twice leaves the same state, so a second restore — or restoring a
+screen that is already down — does nothing rather than toggling it.
 
 **What `u` tells the reader, in all three of its outcomes.** An exact restore can
 legitimately put back a *hidden* screen, so "it worked" is not always visible and
@@ -985,41 +875,69 @@ runs, so this phase adds the capture at all three existing call sites.
 half-page scroll, and cargo-tile sets no vim mode — so `h` `j` `k` `l` are free
 too.
 
+`globals.rs`'s module doc (**12–21**) **enumerates** the non-grid globals and
+states no total. Name `u` in the group it belongs to and leave every count
+alone: Phase 6's only review finding was a count there that had been wrong since
+Phase 3.
+
 **Files:**
-- `crates/cargo-tile/src/globals.rs` — `UndoReplace` variant, default binding, dispatch arm
-- `crates/cargo-tile/src/attract/mod.rs` — `ReplacementUndoState`, `PreviousAttractConfiguration`, the captured presentation (standing instruction, destination, covering), `AttractConfigurationRestoreOutcome`, the all-mode zero-duration sizing operation beside `size_current_animation` (433), the idempotent hide transition, the capture, and the restore
-- `crates/cargo-tile/src/favorites_overlay.rs` — capture in the module-level `dispatch` function's `FavoritesOverlayActionOutcome::Load(settings)` branch (130), on the line before `app.attract.apply_favorite(settings)`; not in `FavoritesOverlay::handle_action`, which has no `&mut App`
+- `crates/cargo-tile/src/globals.rs` — `UndoAttractReplacement` variant, default
+  binding, dispatch arm, the module-doc line naming `u` in the non-grid group,
+  **and Phase 6's `m` capture site**. That site is
+  `fn show_random_favorite_with(app: &mut App, load: impl FnOnce() ->
+  FavoritesFileState, seed: impl FnOnce() -> u64)` (**123**), and the capture goes
+  on the line immediately before `app.attract.apply_favorite(settings)` (**132**),
+  inside the `if let` that has already proved a recognized row was drawn. It is
+  **not** `show_random_favorite` (**119**), the thin production wrapper that only
+  supplies the real loader and clock. `show_random_favorite_with` is also the
+  deterministic seam this phase's `m` tests drive: a fixed `load` and a fixed
+  `seed` make the drawn favorite reproducible.
+- `crates/cargo-tile/src/attract/mod.rs` — `ReplacementUndoState`,
+  `AttractConfigurationBeforeReplacement`,
+  `AttractPresentationBeforeReplacement` (standing instruction and covering, no
+  destination), `AttractConfigurationRestoreOutcome`, the all-mode
+  zero-duration sizing operation beside `size_current_animation` (**433**), the
+  capture, and the restore. No hide transition — see Constraints.
+- `crates/cargo-tile/src/favorites_overlay.rs` — capture in the module-level
+  `dispatch` function (**130**), in its
+  `FavoritesOverlayActionOutcome::Load(settings)` branch (**134**), on the line
+  immediately before `app.attract.apply_favorite(settings)` (**135**); not in
+  `FavoritesOverlay::handle_action`, which has no `&mut App`
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
 
 **Constraints from prior phases:** The three replacing call sites are Phase 5's
-`enter` (in `favorites_overlay.rs`, via `Attract::apply_favorite()`), Phase 6's
-`m` (in `globals.rs`), and Phase 7's `r` (in `attract/mod.rs`). Phase 3's
+`enter` (`favorites_overlay.rs:135`, via `Attract::apply_favorite()`), Phase 6's
+`m` (`globals.rs:132`, inside `show_random_favorite_with`), and Phase 7's `r` (in
+`attract/mod.rs`). Phase 6's is the one the Files list spells out, because `m`
+applies a favorite from **outside** the overlay: `show_random_favorite_with`
+calls `apply_favorite` and then `request_show()` itself, so a capture added only
+to the overlay's `Load` branch would miss every `m` press. Phase 3's
 `size_current_animation` (`attract/mod.rs:433`) sizes **only the animation the
 current mode selects**; this phase adds the all-mode counterpart it needs, and
 Phase 3's `App::schedule_timed_toast` must be paired with every toast push here or
 the notice will not animate. Phase 1's
 `settings()` on each animation is what the checkpoint stores, and `apply` is what
 restores it — an ordered semantic transition, so restoring a checkpoint leaves
-the same runtime state the equivalent keypress would. Phase 5's
-`Attract::request_show()` (`attract/mod.rs:348`) restores visibility, and this
-phase adds the matching hide transition for a checkpoint that was taken while the
-screen was down. **`request_show()` overwrites `asked` with `Asked::For` *and* `covering` with
-`true`**, so it is a transition, not a restore, and neither captured field
-survives a call to it. An `Attract`-owned restore therefore runs in one order and
-only one: start the destination transition first — `request_show()` for
-`AttractVisibilityDestination::Shown`, the matching hide transition for
-`Hidden` — and then write **both** captured values back, the
+the same runtime state the equivalent keypress would. **Phase 5's `Attract::request_show()` (`attract/mod.rs:348`) is a transition, and
+the restore must not call it.** It overwrites `asked` with `Asked::For` *and*
+`covering` with `true`, so neither captured field survives it, and `advance()`
+(`attract/mod.rs:727`) then reads the overwritten `asked` to pick the fade
+direction — which is why calling it first and writing the captured values back
+afterwards would discard whatever it just did. An `Attract`-owned restore
+therefore writes both captured values straight into the private fields, the
 `AttractVisibilityInstruction` into `asked` and the `AttractGridPresentation`
-into `covering`. Reapplying only `covering` is the failure the earlier draft of
-this constraint invited: a checkpoint holding `FollowRoster` or `Hide` would come
-back as `Show`, so `u` would turn the screen on for a reader who had dismissed it
-or never asked for it. Because `asked` and `covering` are private fields with no
-setters, the whole restore lives inside `attract/mod.rs`; no caller writes either
-one. Phase 5's `enter`
+into `covering`, and calls no transition at all. **Do not add a hide transition
+to pair with `request_show()`**; an earlier draft of this constraint asked for
+one and there is nothing for it to do. Writing only `covering` is the other
+failure that draft invited: a checkpoint holding `FollowRoster` or `Hide` would
+come back as `Show`, so `u` would turn the screen on for a reader who had
+dismissed it or never asked for it. Because `asked` and `covering` are private
+fields with no setters, the whole restore lives inside `attract/mod.rs`; no
+caller writes either one. Phase 5's `enter`
 capture site is the module-level `dispatch` function's
 `FavoritesOverlayActionOutcome::Load(settings)` branch
-(`favorites_overlay.rs:130`), on the line immediately before
+(`favorites_overlay.rs:134`), on the line immediately before
 `app.attract.apply_favorite(settings)`. **It is not
 `FavoritesOverlay::handle_action`**, which decides the outcome but holds no
 `&mut App` and therefore cannot reach `App::attract` at all; `handle_action`
@@ -1039,7 +957,7 @@ report shaped around one settings variant would be a name that is not true of it
 payload.
 
 This phase therefore owns two of its own types: a full semantic configuration
-snapshot — the same shape `PreviousAttractConfiguration` stores — and
+snapshot — the same shape `AttractConfigurationBeforeReplacement` stores — and
 `AttractConfigurationRestoreOutcome`, which compares the requested and effective
 **full** configurations and names which of the three parameter sets moved. A
 restore that has to be clamped, because the terminal shrank since the checkpoint,
@@ -1053,9 +971,11 @@ the same reason.
   parameter sets, the standing instruction and the covering flag — proven
   separately for a screen that came up automatically, one the reader asked for,
   one the reader dismissed, and one fully hidden.
-- A checkpoint taken while the screen was mid-transition restores the settled
-  destination it was heading to, and does **not** put back a partial fade: after
-  the restore the fade runs normally to that destination.
+- A checkpoint taken mid-fade does **not** put back a partial fade: `faded` is
+  untouched by the restore and the ordinary fade carries on from wherever it
+  stood. Proven separately for each captured instruction — `Show` brings the
+  screen in, `Hide` sends it away, and `FollowRoster` follows the roster as it
+  stands at the moment of the restore rather than as it stood at the checkpoint.
 - All three restore outcomes reach the reader: an exact restore onto a hidden
   screen still shows a confirmation, an adjusted restore names which parameter
   sets moved, and `u` with nothing to undo says so instead of doing nothing
