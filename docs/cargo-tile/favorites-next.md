@@ -96,3 +96,35 @@ casing in the surface it was not looking at.
 Give each the name of its own surface — `column_mode_label` and
 `toast_mode_label`, or equivalent — so the casing difference is visible at the
 call site instead of only in the body.
+
+## The moving band sits on flat color instead of on the desktop
+
+The moving band draws its characters over the theme's background color, so the
+band reads as a rectangle pasted onto the window rather than as something moving
+across what is behind it. The screenshot shows the effect plainly: the strip is a
+hard-edged column of blue characters, and everything it has passed over is one
+flat tone.
+
+Two changes together fix it. Sample the desktop behind the window and use that
+as the band's background, the way `attract_pixelate` already does — the capture
+machinery exists and is enabled for the attract screen, so this is a matter of
+routing it to `moving_band.rs` rather than building it. Then fade the characters
+toward that background as they approach the band's leading and trailing edges,
+instead of ending the band on a hard cut, so the strip reads as passing over the
+desktop rather than being laid on top of it.
+
+Worth checking whether `moving_text.rs` wants the same treatment; it has the same
+flat-background problem wherever its characters stop.
+
+## Saving the same settings twice should not make a second favorite
+
+`ctrl-s` writes a favorite every time it is pressed, so pressing it twice without
+changing anything leaves two rows in the favorites file that load identically.
+The overlay then shows duplicates the user has no way to tell apart, and the list
+grows every time they come back to a setup they liked.
+
+`favorites.rs` already recognizes a repeated *id* and marks it, but nothing
+compares the settings themselves. Before appending, compare the settings being
+saved against every favorite already in the file; if one matches, keep the
+existing row rather than adding a second, and say so in the toast so the press
+still gets an acknowledgement.
