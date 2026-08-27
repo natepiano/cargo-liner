@@ -17,6 +17,7 @@ use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
 use crate::constants::DEFAULT_INITIAL_ROWS;
 use crate::constants::DEFAULT_ITERM2_PROFILE;
 use crate::constants::DEFAULT_LIGHT_THEME;
+use crate::constants::FAVORITES_FILENAME;
 use crate::constants::KEYMAP_FILENAME;
 use crate::constants::MAX_FADE_SECONDS;
 use crate::constants::MIN_INITIAL_ROWS;
@@ -214,6 +215,15 @@ pub(crate) fn save(config: &Config) -> Option<String> {
 /// `<os config dir>/cargo-tile/config.toml`.
 pub(crate) fn config_path() -> Option<PathBuf> {
     config_root().map(|dir| dir.join(CONFIG_FILENAME))
+}
+
+/// `<os config dir>/cargo-tile/favorites.toml`.
+#[expect(
+    dead_code,
+    reason = "the favorites file path is resolved here before anything reads the file"
+)]
+pub(crate) fn favorites_path() -> Option<PathBuf> {
+    config_root().map(|dir| dir.join(FAVORITES_FILENAME))
 }
 
 /// `<os config dir>/cargo-tile/keymap.toml`.

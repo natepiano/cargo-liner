@@ -103,6 +103,48 @@ pub(crate) const DEFAULT_HIDDEN_WHEN_IDLE: [&str; 1] = [SIBLING_SUBCOMMAND_NAME]
 /// Id of the built-in light variant, and the `appearance.light_theme`
 /// default.
 pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
+/// TOML key for a favorite's pixel block width.
+pub(crate) const FAVORITE_BLOCK_COLUMNS_KEY: &str = "block_columns";
+/// TOML key for a favorite's travel direction.
+pub(crate) const FAVORITE_DIRECTION_KEY: &str = "direction";
+/// TOML key for a favorite's text drift behavior.
+pub(crate) const FAVORITE_DRIFT_KEY: &str = "drift";
+/// TOML key for a favorite's cell fill behavior.
+pub(crate) const FAVORITE_FILL_KEY: &str = "fill";
+/// TOML key for a favorite's band fraying behavior.
+pub(crate) const FAVORITE_FRAYING_KEY: &str = "fraying";
+/// TOML key for a favorite's stable UUID.
+pub(crate) const FAVORITE_ID_KEY: &str = "id";
+/// Diagnostic spelling used when a favorite omits a required key.
+pub(crate) const FAVORITE_MISSING_VALUE: &str = "<missing>";
+/// TOML key for a favorite's attract mode.
+pub(crate) const FAVORITE_MODE_KEY: &str = "mode";
+/// TOML key for a favorite's pixel resolution behavior.
+pub(crate) const FAVORITE_RESOLVE_KEY: &str = "resolve";
+/// TOML key for a favorite's save timestamp.
+pub(crate) const FAVORITE_SAVED_KEY: &str = "saved";
+/// TOML key for a favorite's travel speed.
+pub(crate) const FAVORITE_SPEED_KEY: &str = "speed";
+/// TOML key for a favorite's text speed spread.
+pub(crate) const FAVORITE_SPREAD_KEY: &str = "spread";
+/// TOML key for a favorite's band-tail speed.
+pub(crate) const FAVORITE_TAIL_SPEED_KEY: &str = "tail_speed";
+/// TOML key for a favorite's pixel-wave width.
+pub(crate) const FAVORITE_WAVE_PERCENT_KEY: &str = "wave_percent";
+/// TOML key for a favorite's band width.
+pub(crate) const FAVORITE_WIDTH_KEY: &str = "width";
+/// Top-level array of favorite tables.
+pub(crate) const FAVORITES_ARRAY_KEY: &str = "favorite";
+/// Attract-screen favorites stored beside the app configuration.
+pub(crate) const FAVORITES_FILENAME: &str = "favorites.toml";
+/// Number of brief retries while another process owns the favorites lock.
+pub(crate) const FAVORITES_LOCK_RETRY_ATTEMPTS: usize = 10;
+/// Delay between attempts to acquire the favorites lock.
+pub(crate) const FAVORITES_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
+/// Suffix appended to the favorites path for its sibling lock file.
+pub(crate) const FAVORITES_LOCK_SUFFIX: &str = ".lock";
+/// Suffix appended to the favorites path for its atomic-write file.
+pub(crate) const FAVORITES_TEMP_SUFFIX: &str = ".tmp";
 /// Keymap overrides loaded by [`tui_pane::KeymapBuilder::load_toml`].
 pub(crate) const KEYMAP_FILENAME: &str = "keymap.toml";
 /// Per-user theme directory scanned by

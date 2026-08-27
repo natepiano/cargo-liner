@@ -9,7 +9,7 @@ license.workspace    = true
 name                 = "cargo-tile"
 readme               = "README.md"
 repository.workspace = true
-version              = "0.2.53-dev"
+version              = "0.2.54-dev"
 
 [lints]
 workspace = true
@@ -23,6 +23,7 @@ ratatui   = { workspace = true }
 serde     = { workspace = true, features = ["derive"] }
 sysinfo   = { workspace = true }
 toml      = { workspace = true }
+uuid      = { workspace = true }
 
 # tui_pane provides the framework used by the binary. `backdrop` is what
 # captures the desktop behind the window for the attract screen.

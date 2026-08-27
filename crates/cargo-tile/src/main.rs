@@ -6,6 +6,11 @@ mod attract;
 mod cli;
 mod config;
 mod constants;
+#[expect(
+    dead_code,
+    reason = "the favorites file API is written before the key handlers that call it"
+)]
+mod favorites;
 mod globals;
 mod hook;
 mod interaction;

@@ -160,7 +160,7 @@
     struct field* needs a doc comment. `unwrap_used` / `expect_used` / `panic` /
     `unreachable` / `unsafe_code` are denied outside tests; test modules opt back
     in with `#[expect(clippy::expect_used, reason = "tests should panic on
-    unexpected values")]` (see `config.rs:231-235`, `keymap.rs:86-90`).
+    unexpected values")]` (see `config.rs:241-245`, `keymap.rs:86-90`).
     `self_named_module_files = deny`.
   - **Every phase ends green:** `cargo build && cargo +nightly fmt`, clippy clean,
     tests passing, CHANGELOG entry added under `## [Unreleased]` (a sentence or
@@ -217,188 +217,78 @@ pub struct PixelSettings { pub direction: BandDirection, pub speed: u32, pub wav
 - Rewriting a hand-edited row to its clamped value — destroys a value that becomes valid again on a taller terminal.
 - Adding a random crate for two call sites — tui_pane is dependency-free here.
 
-### Phase 2 — the favorites file  · status: todo
+### Phase 2 — the favorites file  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** cargo-tile can read and write `favorites.toml` without ever losing a
-row it did not understand, and without two instances clobbering each other.
+`crates/cargo-tile/src/favorites.rs` persists attract-screen parameter sets to
+`<os config dir>/cargo-tile/favorites.toml`. The model is the raw `toml::Table`
+row list with typed values derived beside it, so an unknown mode, a misspelled
+enum or an unknown key survives a save and a delete untouched — losslessness
+falls out of the representation rather than out of special cases. `FavoriteRows`
+exposes `iter()` over `FavoriteRowRecognition::{Recognized(Favorite),
+Unrecognized(UnrecognizedFavoriteValue { key, spelling })}` and `recognized()`
+over `&Favorite` alone, already grouped by mode and newest first within a mode.
 
-**Spec:**
+Three `pub(crate)` entry points: `load() -> FavoritesFileState`,
+`push(FavoriteSettings) -> Result<Favorite, FavoritesMutationError>`, and
+`remove(FavoriteId) -> Result<(), FavoritesMutationError>`. Every mutation is a
+locked read-modify-write ending in an atomic rename. `FavoritesFileState` has five
+variants — `LocationUnavailable`, `Missing`, `Loaded`, `Unparseable`, `Unreadable`
+— and so does `FavoritesMutationError`: `LocationUnavailable`, `Unparseable`,
+`Unreadable`, `LockUnavailable`, `WriteFailed`. The error implements `Display` and
+`Error`.
 
-`<os config dir>/cargo-tile/favorites.toml`, alongside `config.toml` and
-`keymap.toml`, reached through a new `config::favorites_path()` next to the
-existing `keymap_path()` (`config.rs:220`). It must live in `config.rs` because
-`config_root()` (229) is private. `FAVORITES_FILENAME` joins `constants.rs`
-beside `KEYMAP_FILENAME` (107).
+Mutual exclusion is a kernel advisory lock: `std::fs::File::{try_lock, unlock}`,
+retried a bounded number of times before returning `LockUnavailable`, with a
+`FavoritesLock` guard unlocking on drop. Each row carries a UUIDv7 `FavoriteId`
+minted at save and a `saved` timestamp written with `SecondsFormat::Millis`.
+`push` is idempotent on `(mode, settings)`: an identical row has its timestamp
+updated rather than being duplicated.
 
-```toml
-[[favorite]]
-id            = "01a03f60-2e8b-77c2-858f-476ee413d81c"
-saved         = "2026-08-26T14:31:05.412-07:00"
-mode          = "pixelate"
-direction     = "left"
-speed         = 24
-wave_percent  = 145
-block_columns = 6
-resolve       = "scatter"
-fill          = "solid"
-
-[[favorite]]
-id         = "01a03f5e-9c14-7b41-8a02-1de4c7c9b330"
-saved      = "2026-08-26T09:02:44.870-07:00"
-mode       = "moving_band"
-direction  = "right"
-width      = 12
-speed      = 40
-tail_speed = 96
-fraying    = "both"
-```
-
-One array of tables, mode-tagged, each holding only the keys its own mode has.
-`saved` is RFC 3339 local time with fractional seconds; `chrono` is already a
-cargo-tile dependency (`Cargo.toml:18`). `id` is a UUIDv7 minted once at save
-and never changed — deletion, selection and the rendered-line map all address a
-row by it, never by storage index, and it is what lets a mutation re-find its
-row after re-reading the file. Add `uuid = { workspace = true }` to
-`crates/cargo-tile/Cargo.toml`; the workspace already declares it with the
-`serde` and `v7` features, but cargo-tile does not depend on it yet. v7 is
-time-ordered, so id order matches save order.
-
-**In memory the parsed `toml` tables are the model**, with a typed favorite
-derived from each table for display and loading. This is the difference between
-skipping a row and destroying it. A row whose `mode` is unknown, or whose enum
-spelling does not parse, is **skipped for display** — the posture `keymap.toml`
-already takes toward a stale entry — but it is still written back out on the next
-save or delete. Serializing only the recognized rows would silently delete a
-favorite written by a newer version, or one hand-edited with a typo. Unknown
-*keys* on an otherwise-good row survive the same way.
-
-The typed payload is **one enum, not a string plus optional fields**:
-
-```rust
-struct Favorite { id: FavoriteId, saved: DateTime<FixedOffset>, settings: FavoriteSettings }
-enum FavoriteSettings { MovingBand(BandSettings), MovingText(TextSettings), Pixelate(PixelSettings) }
-```
-
-`FavoriteId` is a newtype over `uuid::Uuid`. `mode` is derived from the variant.
-A `mode: String` alongside optional per-mode fields would let missing, mixed and
-mismatched settings past parsing, and every later consumer — grouping, `m`,
-`enter` — would re-derive a relationship the type already carries. The raw
-`toml::Table` stays confined to parsing so unknown rows survive.
-
-A file that does not exist is an empty list, not an error. The outcomes are
-**distinct variants of one named enum, `FavoritesFileState`**, not all folded
-into "empty":
-
-| Variant | `ctrl-o` | `ctrl-s` | `x` |
-|---|---|---|---|
-| `LocationUnavailable` | says the OS config directory could not be resolved | refused | refused |
-| `Missing { path }` | empty notice | writes a new file | n/a |
-| `Loaded { path, rows }` | the table | appends | deletes |
-| `Unparseable { path, error }` | shows path + parse error | refused | refused |
-| `Unreadable { path, error }` | shows path + error | refused | refused |
-
-`LocationUnavailable` is not optional extra polish. `config::favorites_path()`
-returns `Option<PathBuf>` because `config_root()` (`config.rs:229`) does —
-`dirs::config_dir()` resolves to nothing on some platforms. Every other variant
-carries a path, so a four-variant enum has no truthful answer there and would
-have to report a file as missing that was never looked for. Convert the external
-`Option` into this domain state at the boundary; it must not travel past
-`favorites.rs`.
-
-Refusing rather than overwriting matches what `config.toml` already does with a
-file that failed to parse: `restate` (`config.rs:181`) is reached only on the
-`Ok` arm of `toml::from_str`, so an unparseable config is never overwritten.
-Reporting "nothing saved" over a file that exists but cannot be read would be a
-lie, and letting `ctrl-s` replace a damaged file with one row loses everything in it.
-
-**Every mutation is a locked read-modify-write ending in an atomic replace.**
-Take a sibling lock file, re-read and re-parse under it, mutate the raw table
-list by `id`, write a temporary file in the same directory, `sync_all`, and
-rename over `favorites.toml`. Two running instances otherwise each hold a stale
-snapshot and the later writer drops the earlier one's favorite; a direct
-`fs::write` (what `config::save` at 194 does today) interrupted mid-way leaves a
-truncated file. The cost is one lock and one reparse per keypress-driven
-mutation, which is not a per-frame path.
-
-The lock is `favorites.toml.lock`, acquired with
-`OpenOptions::new().write(true).create_new(true)`; on `AlreadyExists`, retry
-briefly, and treat a lock file whose mtime is older than five seconds as stale —
-remove it and retry once. Release on both the success and the error path. This
-is dependency-free on purpose: the workspace declares no file-locking crate, and
-`unsafe_code = deny` rules out calling `flock` directly. *Author's call for a
-two-instance edge case on a config file; swapping in a locking crate later is a
-contained change to this one helper.*
-
-Saving is **idempotent on `(mode, settings)`**: an identical parameter set
-updates the existing row's `saved` rather than adding a second row. Repeated
-`ctrl-s` otherwise clutters the table with indistinguishable rows and gives that
-one parameter set extra weight in `m`'s uniform draw. Within a mode, rows are
-ordered newest first.
-
-The enum-to-string mapping is a `match` in cargo-tile, not a serde derive in
-tui_pane. The app that writes the file owns the file's vocabulary, and an on-disk
-spelling should not be pinned by a library that has no other reason to care.
-(Note: "it keeps serde out of tui_pane" is **not** the reason — `tui_pane`
-already depends on serde with `derive` unconditionally, `Cargo.toml:31`.) The
-mapping's shape must fail loudly when a variant is added:
-
-- `enum -> &'static str` is **exhaustive, with no wildcard arm**. A new tui_pane
-  variant then breaks the build here rather than silently losing a spelling.
-- The `str ->` direction stays tolerant, since it has to skip a stale file
-  entry, but it reports **what** it could not place rather than returning a bare
-  `Option`. Each value parses into a two-state enum over that value, and a whole
-  row resolves to
-  `FavoriteRowRecognition::{Recognized(Favorite), Unrecognized(UnrecognizedFavoriteValue)}`,
-  where the unrecognized case carries the key and the spelling that defeated it.
-  A bare `Option` erases both, which leaves a skipped row indistinguishable from
-  a row that was never there and gives a later diagnostic nothing to say. The raw
-  `toml::Table` for the row is retained either way, so rewriting stays lossless.
-- **Seven** enums need the pair, not six: the six animation enums
-  (`BandDirection`, `BandFraying`, `TextDrift`, `TextFill`, `PixelResolve`,
-  `PixelFill`) **and** the app-owned `AttractMode` (`attract/mod.rs:162`,
-  `pub(crate)`) for the `mode` tag.
-
-Public surface for the module: `load`, `save`, `push`, `remove`. Keep everything
-`pub(crate)`; nothing here has an outside consumer.
+`FavoritesLocation::from(Option<PathBuf>)` converts `config::favorites_path()`'s
+external optional once at the module boundary, so no `Option<PathBuf>` reaches
+any entry point.
 
 **Files:**
-- `crates/cargo-tile/src/favorites.rs` — new file: raw-table model, typed `Favorite` / `FavoriteSettings` / `FavoriteId`, the load state enum, the seven enum mappings, `load` / `save` / `push` / `remove`, the lock + atomic replace helper
-- `crates/cargo-tile/src/config.rs` — `favorites_path()` beside `keymap_path()` (220)
-- `crates/cargo-tile/src/constants.rs` — `FAVORITES_FILENAME` beside `KEYMAP_FILENAME` (107), plus the lock and temp suffixes
-- `crates/cargo-tile/src/main.rs` — declare `mod favorites;` in the `mod` block at 4–25
-- `crates/cargo-tile/Cargo.toml` — add `uuid = { workspace = true }`; patch version bump
-- `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
+- `crates/cargo-tile/src/favorites.rs` — the whole favorites file API: row model, recognition, load state, mutation errors, the lock, and the three entry points
+- `crates/cargo-tile/src/config.rs` — `favorites_path()`, beside `config_path()` and `keymap_path()`
+- `crates/cargo-tile/src/constants.rs` — the favorites filename, array key, lock and temp suffixes, and the lock retry count and delay
+- `crates/cargo-tile/src/main.rs` — `mod favorites`, carrying a `dead_code` expectation until the module's last entry point has a caller
 
-**Constraints from prior phases:** Phase 1 exports `BandSettings`,
-`TextSettings` and `PixelSettings` from `tui_pane` under the `backdrop` feature,
-which `crates/cargo-tile/Cargo.toml:29` already enables. Their fields are public
-plain data, so cargo-tile constructs them with full struct literals — use no
-`..Default::default()`, so a new field is a compile error at this boundary. The
-six animation enums were already re-exported from `tui_pane` before Phase 1.
+**Binds later work:** The three entry points above are the only way to reach the
+file. `push` and `remove` do their own locking and atomic replace, so a caller
+handles only the `Result`. Rows are addressed by `FavoriteId`, never by storage
+index. `recognized()` already orders rows the way the overlay table renders them,
+so nothing downstream sorts again; `iter()` is the one that also carries
+unrecognized rows. `FavoriteSettings::mode() -> AttractMode` reads the mode off
+the variant. `LockUnavailable` is an externally observable failure — a second
+cargo-tile instance mid-save — with no counterpart in the plan's original state
+table, so the save toast and the delete path each report it by name. The
+`#[expect(dead_code)]` on `config::favorites_path()` must be deleted by the phase
+that makes `push` reachable, and the one on `mod favorites` by the phase that
+makes `remove` reachable; an expectation whose lint has stopped firing is itself
+an error under `-D warnings`.
 
-**Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus
-inline tests (there is no `crates/cargo-tile/tests/` directory; `tempfile` is
-already a dev-dependency) proving:
+**Gotchas:** `favorites.toml.lock` is created on first mutation and **never
+unlinked** — it persists between runs. Unlinking a locked file is what
+reintroduces the race, because POSIX has no "unlink this path only if it is still
+this inode", so a stat-then-`remove_file` sequence can never be made exclusive.
+`#[expect(dead_code)]` on a `mod` item seeds rustc's dead-code root worklist,
+which is why one module-level attribute keeps every item inside it live; placing
+it above the whole `mod` block instead would suppress genuine dead code across
+every unrelated module. Timestamps need millisecond precision: a `Favorite` built
+in memory carries sub-second time, so second-granularity spelling makes a saved
+entry unequal to the one reloaded.
 
-- A list survives save and load unchanged.
-- An entry with an unknown mode or a misspelled enum is skipped for display
-  **and is still present in the file after a save and after a delete**. Same for
-  an unknown key on a recognized row.
-- Truncated or otherwise unparseable TOML puts favorites in a read-only error
-  state carrying the path; save and delete are refused, not silently applied to
-  an empty list.
-- A missing file loads as empty.
-- A run where the OS config directory cannot be resolved reports
-  `LocationUnavailable`; save and delete are refused rather than writing to a
-  guessed path.
-- An unrecognized row resolves to `Unrecognized` naming the key and the spelling
-  that defeated it, and that row is still in the file after a save and a delete.
-- Every variant of all seven enums round-trips; the `enum -> str` match has no
-  wildcard arm.
-- Saving an identical `(mode, settings)` twice leaves one row with the later
-  timestamp.
+**Ruled out:** A hand-rolled lock using `OpenOptions::create_new(true)` plus an
+mtime staleness rule that removes an apparently abandoned lock — unfixably racy,
+and the reason given for it (that `unsafe_code = deny` ruled out `flock`) was out
+of date, since `File::try_lock` is safe `std` stable from Rust 1.89. Adding
+dev/inode identity to that scheme — still unlinks by path. A `save()` entry point
+that re-read and rewrote the file unchanged — a canonicalizing no-op no consumer
+could reach; the rewrite survives only as a test helper. Rewriting a row on disk
+to record a clamped value — the file keeps what the reader wrote.
 
 ### Phase 3 — `ctrl-s` and the toast path  · status: todo
 
@@ -438,7 +328,9 @@ Close it once here, for every phase that follows:
 
 - **cargo-tile owns a semantic terminal-area state** — the last area the app
   actually laid out — as a named state with its own variant for "nothing has
-  been laid out yet", not a bare `Option<Rect>`.
+  been laid out yet", not a bare `Option<Rect>`. Name it explicitly:
+  `LaidOutArea::{NeverLaidOut, LaidOut(Rect)}`, so a fresh implementer does not
+  reintroduce the optional it replaces.
 - **It is updated before `Attract::advance` returns early.** `advance`
   (`attract/mod.rs:519`) takes `area` and returns at the `Updates::Frozen` branch
   before any animation is touched, so an update placed after that point misses
@@ -466,10 +358,37 @@ call, and no toast rendering at all — `render::draw` never renders the stack a
   only, with one wake at expiry — not a continuous repaint through the static
   timeout. Phase 5's deletion fade reuses this same deadline.
 
+  **cargo-tile computes that deadline itself; `tui_pane` is not touched.**
+  `Toasts` keeps each toast's creation instant, phase and expiry private and
+  offers no next-transition accessor: `ToastView::remaining_secs()`
+  (`toasts/view.rs:78`) is whole seconds and `linger_progress()` (74) is a
+  fraction, so neither can be woken on. Do **not** add one — `tui_pane` is shared
+  with cargo-port and stays unchanged for this whole plan. Every input the
+  schedule needs is already reachable:
+
+  - Push through `Toasts::push_timed` (`toasts/commands.rs:64`), so this app
+    chooses the visible `Duration` rather than inheriting a private one.
+  - Record the `Instant` of that push next to the `ToastId` it returned.
+  - Read the animation legs from `Toasts::settings()` (`toasts/manager.rs:88`):
+    `settings().animation.entrance_duration` and `.exit_duration`, each a
+    `ToastDuration` whose `get()` (`toasts/settings.rs:280`) yields a `Duration`.
+    `ToastAnimationSettings` is `pub` inside a private module and is **not**
+    re-exported from `tui_pane`, so reach those two fields by field access and
+    never name their type.
+
+  Hold that per-toast schedule in a named state with a variant for "no toast is
+  scheduled", not a bare `Option<Instant>`.
+
 `App::ToastAction` is `NoToastAction` (`app.rs:175`) and stays that way; these
 toasts are not interactive.
 
-A toast confirms the save and reports the path on a write failure.
+A toast confirms the save. **Every way the save can refuse is reported by name**,
+not just a write failure: `FavoritesMutationError` has five variants —
+`LocationUnavailable`, `Unparseable`, `Unreadable`, `LockUnavailable` and
+`WriteFailed` — and it implements `Display` and `Error`, so the message can come
+straight from the value. `LockUnavailable` is the one the plan's original state
+table never listed: another cargo-tile instance is mid-save, and the honest
+message says favorites are in use and the keypress can be repeated.
 
 Persistence stays **synchronous on the dispatch path**, matching `config.rs`. A
 reviewer proposed a persistence worker thread and reply channel; declined — the
@@ -483,14 +402,26 @@ instead.
 - `crates/cargo-tile/src/attract/mod.rs` — a method returning the current mode's `FavoriteSettings`; the terminal-area state and its update ahead of the `Frozen` early return; the zero-duration sizing boundary
 - `crates/cargo-tile/src/render.rs` — render the toast stack with `ToastsRenderCtx`
 - `crates/cargo-tile/src/terminal.rs` — prune toasts outside the `Frozen` branch; the shared visual deadline
-- `crates/cargo-tile/src/favorites.rs` — call site for `push`
+- `crates/cargo-tile/src/config.rs` — delete the `#[expect(dead_code, …)]` above `favorites_path()` (221–224)
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
 
-**Constraints from prior phases:** Phase 2 provides
-`favorites::{load, save, push, remove}`, the `Favorite` / `FavoriteSettings` /
-`FavoriteId` types, the `FavoritesFileState` load enum, and
+**Constraints from prior phases:** Phase 2 provides three `pub(crate)` entry
+points in `crates/cargo-tile/src/favorites.rs` — `load() -> FavoritesFileState`,
+`push(FavoriteSettings) -> Result<Favorite, FavoritesMutationError>` and
+`remove(FavoriteId) -> Result<(), FavoritesMutationError>` — plus the `Favorite` /
+`FavoriteSettings` / `FavoriteId` types, the five-variant `FavoritesFileState`
+load enum, the five-variant `FavoritesMutationError`, and
 `config::favorites_path()`.
+
+**This phase must delete `#[expect(dead_code, reason = …)]` from
+`config::favorites_path()` at `crates/cargo-tile/src/config.rs:221-224`.** Today
+the whole favorites chain is dead, so the lint fires and the expectation is
+fulfilled; the moment `ctrl-s` reaches `push`, `favorites_path()` becomes live,
+the expectation goes unfulfilled, and `-D warnings` fails the build. The
+`#[expect(dead_code, …)]` on `mod favorites` at
+`crates/cargo-tile/src/main.rs:9-12` stays until every item in that module has a
+caller; Phase 5 deletes it.
 `push` is idempotent on `(mode, settings)` and does its own locked
 read-modify-write with an atomic replace, so the dispatch path calls it and
 handles only its `Result`. Phase 1 provides `settings()` on each animation.
@@ -505,6 +436,11 @@ handles only its `Result`. Phase 1 provides `settings()` on each animation.
   different terminal size, records the settings the next drawn frame actually
   uses — the saved values do not change on that first frame.
 - The area state is current after a frame arrives with `Updates::Frozen`.
+- Each of the five `FavoritesMutationError` variants renders a distinct toast
+  naming its cause, including a held-lock case driven by a second process holding
+  the favorites lock.
+- The toast wakes the loop exactly at its own entrance, expiry and exit, and asks
+  for no frames while it sits static.
 
 ### Phase 4 — the favorites overlay: modal shell and table  · status: todo
 
@@ -527,11 +463,14 @@ repaint defect gets reintroduced — the demand-driven loop repaints nothing unl
 something asks.
 
 **The overlay is a complete modal, not a key-order tweak.**
-`AppOverlay::{Favorites, NoFavorites}` with a registered `FavoritesOverlayAction`
-scope and `AppPaneId::Favorites`, following
+`AppOverlay::{Closed, Favorites, NoFavorites}` with a registered
+`FavoritesOverlayAction` scope and `AppPaneId::Favorites`, following
 `docs/cargo-port/style/adding-a-keybinding.md`, so the footer labels follow
-rebinding like every other surface. While an `AppOverlay` is open its scope is
-dispatched and **every** key is consumed, unmatched ones as no-ops, ahead of the
+rebinding like every other surface. `Closed` is a variant of that enum, not an
+absent `Option<AppOverlay>` beside it — the closed position is a state of the
+overlay, and naming it keeps the three positions in one exhaustive match. While an
+`AppOverlay` other than `Closed` is open its scope is dispatched and **every** key
+is consumed, unmatched ones as no-ops, ahead of the
 framework overlay check at `terminal.rs:451`. Taking only the recognized keys
 would leave `r` randomizing behind the popup and `?` opening a framework overlay
 on top of it. At most one app or framework modal is open at a time.
@@ -570,11 +509,21 @@ for `AppPaneId::Attract(mode)`, resolved with `Keymap::key_for_toml_key`
 through rather than a hardcoded label going stale.
 
 That needs an explicit **per-column descriptor**, because the mapping is not
-one-to-one. A displayed parameter usually covers a *pair* of actions with aliases
-on each: band speed is `SpeedFaster` and `SpeedSlower`, bound to `>`/`.` and
-`<`/`,`. The descriptor names the action or action pair per column, the policy is
-primary-binding-per-action, and an unbound half renders as a blank rather than a
-stale default. The sketch above is deliberately wrong as a warning: it puts Tail
+one-to-one and **"one action or an action pair" is not a wide enough shape**.
+Direction is four actions, not two — up, down, left and right — and Pixelate
+spells its travel actions `sweep_*` where the other two modes use `travel_*`, so
+a descriptor keyed on a shared spelling silently resolves nothing for one mode.
+Enumerate the complete matrix explicitly in the descriptor table: every column of
+all three modes, with the exact action name each half or quarter resolves
+through. Do not derive one mode's spelling from another's.
+
+The policy is primary-binding-per-action. `Keymap::key_for_toml_key` returns an
+external `Option<KeySequence>`; convert it **at that boundary, inside
+cargo-tile** into a named state — `ResolvedColumnBinding::{Bound(KeySequence),
+Unbound}` — so an unbound half renders as a blank by matching a variant rather
+than by unwrapping an optional. `key_for_toml_key` is `tui_pane`'s
+`RuntimeScope` trait method and cargo-port calls it too, so its signature does
+**not** change; the conversion is cargo-tile's. The sketch above is deliberately wrong as a warning: it puts Tail
 on `</>` and Speed on `,/.`, while the real defaults (`attract/moving_band.rs:95`)
 are Speed `</>` and Tail `[/]`. A descriptor plus a test against the resolved
 keymap is what prevents exactly that class of error.
@@ -598,6 +547,17 @@ The empty case is a non-selectable line, not an empty table: `No favorites
 saved -- press <live ctrl-s label> to save one`. A list with one mode renders
 that mode's section only, with no others stubbed in.
 
+**A row the file holds but this build does not understand is shown, not
+swallowed.** `FavoriteRows::iter()` yields `FavoriteRowRecognition::Unrecognized(
+UnrecognizedFavoriteValue { key, spelling })` for a row carrying an unknown mode
+or a misspelled enum. Phase 2 keeps those rows on disk verbatim, so the only
+thing left to decide is whether the reader is told. They are: render each one as
+a **non-selectable diagnostic line** naming the key and the spelling that was not
+recognized, in its own section below the mode groups. Skipping them silently
+means a reader who typos one value in `favorites.toml` sees a shorter list with
+no explanation and no way to find out why. A file whose rows are *all*
+unrecognized is therefore not the empty case — see the gate.
+
 **Row rendering is cached, not rebuilt per frame.** `keymap_ui.rs`'s
 `prepare_overlay_inputs` (126) / `render_overlay` (173) build, format and measure
 every row before applying the scroll offset; copied here, each of Phase 5's fade
@@ -614,9 +574,9 @@ O(visible rows), and refusing a save is a worse experience than a slower open.
 - Narrow `render.rs:187`'s `_ => ()` to `None => ()`. The match at 183 currently
   swallows a future `FrameworkOverlayId` variant along with `None`, so a new
   framework overlay would compile with no draw arm. `terminal.rs`'s
-  `dispatch_overlay_key` (505) already matches every variant.
+  `dispatch_overlay_key` (494) already matches every variant.
 - Drop the `|| matches!(action, GlobalAction::Dismiss))` clause at
-  **`terminal.rs:456`** (inside the `if let` beginning at 454). That clause lets
+  **`terminal.rs:456`** (inside the `if let` beginning at 453). That clause lets
   any `Dismiss`-bound key through an open framework overlay, which is what makes
   `x` close every overlay in the app — and what would make a reflexive `x` over
   the favorites table destroy a saved row in Phase 5. Removing it leaves the
@@ -637,16 +597,28 @@ O(visible rows), and refusing a save is a worse experience than a slower open.
 - `crates/cargo-tile/src/render.rs` — draw the overlay; narrow `_ => ()` (187) to `None => ()`
 - `crates/cargo-tile/src/terminal.rs` — app-modal dispatch ahead of the framework check (451); drop the `Dismiss` clause (456)
 - `crates/cargo-tile/src/interaction.rs` — `app_modal_overlay_hit` (94) reports the app modal as open
-- `crates/cargo-tile/src/main.rs` — declare `mod favorites_overlay;` in the `mod` block at 4–13
+- `crates/cargo-tile/src/main.rs` — declare `mod favorites_overlay;` in the `mod` block at 4–30
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added` / `### Changed`
 
 **Constraints from prior phases:** Phase 2 provides `favorites::load()` and its
-`FavoritesFileState` — the overlay renders the unparseable and unreadable states
-as the path plus the error, and the unresolvable-config-directory state as its
-own notice, never as an empty list. Rows are addressed by
-`FavoriteId`, never by storage index, and arrive ordered newest first within a
-mode. Phase 3 established the shared visual deadline in `terminal::event_loop`
+five-variant `FavoritesFileState` — the overlay renders the unparseable and
+unreadable states as the path plus the error, and the unresolvable-config-directory
+state as its own notice, never as an empty list. Rows are addressed by
+`FavoriteId`, never by storage index.
+
+**Phase 2 already owns ordering; do not sort again here.**
+`FavoriteRows::recognized()` yields `&Favorite` grouped by mode and newest first
+within a mode, which is exactly this table's layout — a second sort in the
+overlay is duplicated logic that can only drift. `FavoriteRows::iter()` yields
+`&FavoriteRowRecognition` and is the one that also carries the unrecognized rows;
+use `iter()` here, because this phase renders both. `FavoriteSettings::mode()`
+returns the `AttractMode`, so the grouping reads the mode off the variant rather
+than re-deriving it.
+
+**Call `load()` on every open, not once.** Another cargo-tile instance can save
+or delete a row while this one is idle; an overlay populated from a cache taken
+at startup would show a list the file no longer has. Phase 3 established the shared visual deadline in `terminal::event_loop`
 outside the `Updates::Frozen` branch; `frame_owed()` folds into it. Phase 3 also
 added the toast render path, so this phase can report a load failure.
 
@@ -658,7 +630,20 @@ added the toast render path, so this phase can report a load failure.
 - A list too tall to fit scrolls and keeps the cursor visible.
 - A table wider than the terminal pages its parameter columns with `Saved` pinned,
   and the header, key line and cells stay aligned across a page.
+- Each of the five `FavoritesFileState` variants renders distinctly: `Loaded`
+  shows the table, `Missing` shows the empty notice, `Unparseable` and
+  `Unreadable` each show the path together with the failure text, and
+  `LocationUnavailable` shows its own notice. Neither failure state renders as an
+  empty list.
 - An empty list shows the notice with the live `ctrl-s` label, and `esc` dismisses it.
+- A file holding an unknown mode and a misspelled enum renders one diagnostic line
+  per unrecognized row, naming its key and spelling; those lines cannot be
+  selected, and a file whose rows are all unrecognized shows them rather than the
+  empty notice.
+- Reopening the overlay after another process appends a row shows that row.
+- Column key labels cover the full matrix: direction resolves all four of its
+  actions, and Pixelate resolves through `sweep_*` while the other two modes
+  resolve through `travel_*`.
 - A key bound to an app or framework global action does nothing while the overlay
   is open.
 - `x` over an open settings, keymap or global-shortcuts overlay leaves it open,
@@ -711,7 +696,9 @@ Phase 6's `m` and Phase 8's `u` load through this same call and report the same
 way.
 
 **`x` deletes with a fade.** `x` marks the selected row
-`Removing { since: Instant }` rather than dropping it. Alpha is computed from
+`FavoriteRowLifecycle::Removing { since: Instant }` rather than dropping it; the
+other variant is `Active`, and the enum is the row's state rather than a flag
+beside it. Alpha is computed from
 `now - since` against a fixed fade duration, **not** incremented per draw —
 otherwise an unrelated scan or keypress adds frames and the fade runs faster.
 Use `blend_color(color, ground, alpha)` (`theme/blend.rs:35`, re-exported at
@@ -720,8 +707,20 @@ ground, the same scale the animations' `fade(faded: u8)` uses.
 
 The row leaves the selection set the moment deletion starts and the cursor moves
 to the next active row, but it keeps its rendered line until the fade ends. When
-alpha reaches `u8::MAX` the row is dropped **by `id`**, the table is laid out
-again without it, and the file is rewritten.
+alpha reaches `u8::MAX` the file is rewritten by calling `remove` **with the row's
+`FavoriteId`**, and only a successful `remove` drops the row and lays the table
+out again without it.
+
+**A refused deletion puts the row back.** `remove` returns
+`Result<(), FavoritesMutationError>` and can fail five different ways — another
+instance holds the lock, the file became unparseable or unreadable, the config
+directory stopped resolving, or the write failed. The row must not disappear on
+any of them, because an overlay that drops a row the file still holds tells the
+reader a deletion happened that did not, and the next open contradicts it. So the
+order is: fade, then `remove`, then drop. On `Err`, return the row to
+`FavoriteRowLifecycle::Active`, restore it to the selection set and to the cached
+line plan, and raise an error toast naming the cause from the value's `Display`.
+`LockUnavailable` says favorites are in use and the key can be pressed again.
 
 The overlay must report that it owes frames while a removal is in flight, the way
 `Attract::showing` does, or the fade draws one frame and stops. This is the exact
@@ -747,7 +746,7 @@ afterthought. Three details decide whether it is actually met:
 - `crates/cargo-tile/src/favorites_overlay.rs` — `enter` and `x` handling, the adjustment warning toast, `Removing { since }`, `advance(now)`, elapsed-time alpha, close-mid-fade commit
 - `crates/cargo-tile/src/attract/mod.rs` — `Attract::apply_favorite()` returning `FavoriteApplicationOutcome`, `Attract::request_show()`
 - `crates/cargo-tile/src/terminal.rs` — call `advance` outside the `Frozen` branch on the shared deadline
-- `crates/cargo-tile/src/favorites.rs` — `remove` call site
+- `crates/cargo-tile/src/main.rs` — delete the `#[expect(dead_code, …)]` above `mod favorites` (9–12)
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
 
@@ -757,7 +756,16 @@ that controller and adds no second owner. The cached line plan is rebuilt on
 mutation, so a removal invalidates it. Phase 4 already dropped the `Dismiss`
 clause at `terminal.rs:456`, so `x` closes nothing and is free to delete here.
 Phase 2's `remove` addresses the row by `FavoriteId` and does its own locked
-read-modify-write with an atomic replace. Phase 1's `apply` is an ordered
+read-modify-write with an atomic replace; it returns
+`Result<(), FavoritesMutationError>` and every one of that enum's five variants is
+a refusal this phase has to survive.
+
+**This phase makes the last item in `favorites.rs` live, so it must delete
+`#[expect(dead_code, reason = …)]` from `mod favorites` at
+`crates/cargo-tile/src/main.rs:9-12`.** Phase 3 made `push` live and Phase 4 made
+`load` live; `remove` is the third and last of the module's three entry points.
+An expectation whose lint has stopped firing is itself an error under
+`-D warnings`, so leaving it in fails `verify.sh lint cargo-tile`. Phase 1's `apply` is an ordered
 semantic transition through the private clamp setters. Phase 3 established the
 shared visual deadline outside the `Updates::Frozen` branch, cargo-tile's
 terminal-area state updated ahead of `Attract::advance`'s early return, the
@@ -774,6 +782,11 @@ render and prune path the warning toast uses.
 - The fade's duration is driven by elapsed time: extra draws from unrelated
   events do not shorten it.
 - Closing the overlay mid-fade still removes the row and writes the file.
+- A deletion the file refuses leaves the row on screen: with a second process
+  holding the favorites lock, `x` fades the row, `remove` returns
+  `LockUnavailable`, the row returns to `Active` and to the selection set, an
+  error toast names the cause, and reopening the overlay still shows the row.
+- The same holds for a `WriteFailed` refusal.
 - No file write happens inside `render::draw`.
 - Loading a hand-edited row whose value is out of range applies the clamped
   value, reports `AppliedWithAdjustments`, renders the warning toast naming the
@@ -827,7 +840,7 @@ falls through to the app globals below.
 **Files:**
 - `crates/cargo-tile/src/globals.rs` — `RandomFavorite` variant, default binding, dispatch arm
 - `crates/cargo-tile/src/random.rs` — new file: the clock seed source and the unbiased bounded index draw, both taking an injected seed
-- `crates/cargo-tile/src/main.rs` — declare `mod random;` in the `mod` block at 4–25
+- `crates/cargo-tile/src/main.rs` — declare `mod random;` in the `mod` block at 4–30
 - `crates/cargo-tile/src/favorites_overlay.rs` — open `NoFavorites` on an empty list
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
@@ -836,9 +849,26 @@ falls through to the app globals below.
 and `Attract::request_show()`; this phase calls them rather than reaching into
 `Attract`'s private fields. Phase 4 provides `AppOverlay::NoFavorites` and its
 non-selectable empty notice, dispatched through the app-modal route ahead of the
-framework check. Phase 2's load returns `FavoritesFileState` — a parse error, a read
-failure, or an unresolvable config directory is reported, never treated as an
-empty list. Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, so
+framework check.
+
+**The three Phase 2 APIs this phase consumes, exactly:** `favorites::load() ->
+FavoritesFileState`; `FavoriteRows::recognized() -> impl Iterator<Item =
+&Favorite>`, which is the **only** one of the two iterators this phase uses,
+because a row this build cannot understand cannot be loaded and must never enter
+the draw; and `FavoriteSettings::mode() -> AttractMode`, which supplies the mode
+to switch to. Do not reach for `FavoriteRows::iter()` here — that one carries the
+unrecognized rows and belongs to Phase 4's table.
+
+Call `load()` on **every** `m` press, not once at startup: another instance can
+save a favorite between presses, and a cached list would hide it.
+
+Phase 2's load returns `FavoritesFileState` — a parse error, a read failure, or an
+unresolvable config directory is reported, never treated as an empty list.
+**Neither is a file whose rows exist but none are recognized.** `Loaded` with
+`recognized()` empty is a distinct position from `Missing`: there is something in
+the file and this build understood none of it, so `m` says that — pointing at
+Phase 4's overlay, where the diagnostic lines name which keys and spellings
+failed — rather than claiming no favorites are saved. Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, so
 `m` reports an adjusted favorite the same way `enter` does.
 
 **Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
@@ -849,6 +879,10 @@ empty list. Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, so
   flaky condition.
 - An empty list opens the notice, which renders and consumes `esc` through the
   app overlay route ahead of framework handling.
+- A file holding only unrecognized rows does **not** report "no favorites": it
+  reports that the file holds rows this build did not understand and points at the
+  overlay, distinctly from the `Missing` case.
+- Pressing `m` after another process saves a favorite can draw that favorite.
 - The bounded draw is unbiased: over a fixed seed corpus every index in
   `0..len` is reached, with no index systematically favored for a `len` that does
   not divide the generator's range.
@@ -921,9 +955,17 @@ you like and your hand has already pressed the key again. Saving first is the
 intended workflow, but the moment you would need it is the moment you do not take
 it.
 
-Before any of the three replacing actions runs, capture the current mode, **all
-three parameter sets**, and how the attract screen was being presented.
-`AppGlobalAction::UndoReplace` on `u` restores them. One step only, and the
+Capture the current mode, **all three parameter sets**, and how the attract screen
+was being presented. `AppGlobalAction::UndoReplace` on `u` restores them.
+
+**Capture after the replacement is certain, not before the key is handled.** `m`
+can find the file `Missing`, in an error state, or holding rows none of which this
+build recognizes, and in each of those it replaces nothing. Taking the checkpoint
+on the keypress would overwrite a good undo point with the current parameters and
+leave `u` restoring what is already on screen — the one press where undo matters
+is the press after a good one, and a failed `m` in between would have destroyed
+it. So each of the three call sites captures only once its own replacement is
+committed: after a favorite has been selected successfully, not on entry. One step only, and the
 one-step limit is the type's job, not a flag beside it:
 
 ```rust
@@ -942,10 +984,12 @@ true through an entire fade-*out*, and it cannot tell a screen that came up
 because the grid went idle from one the reader explicitly asked for, nor either
 from one the reader dismissed. Restoring from a bool would put the screen into a
 position the reader never had. `PreviousAttractConfiguration` therefore stores
-the mode, the three parameter sets, and a semantic presentation state covering
-the four positions `faded` and `Asked` already distinguish between them: fully
-hidden, shown because the grid went idle, shown because the reader asked, and
-dismissed over an idle grid.
+the mode, the three parameter sets, and a named presentation state —
+`AttractPresentation::{Hidden, ShownOnIdle, ShownOnRequest, DismissedWhileIdle}` —
+covering the four positions `faded` and `Asked` already distinguish between:
+fully hidden, shown because the grid went idle, shown because the reader asked,
+and dismissed over an idle grid. Name all four variants rather than leaving a
+fresh implementer to reach for a boolean or an `Option`.
 
 Restoring a hidden position needs a hide transition to match Phase 5's
 `request_show()` — idempotent in the same way, so restoring twice or restoring a
@@ -975,10 +1019,22 @@ restores it — an ordered semantic transition, so restoring a checkpoint leaves
 the same runtime state the equivalent keypress would. Phase 5's
 `Attract::request_show()` restores visibility, and this phase adds the matching
 hide transition for a checkpoint that was taken while the screen was down.
-Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, so a restore
-that has to be clamped — the terminal shrank since the checkpoint — reports the
-adjustment rather than applying it silently. Phase 3's terminal-area state and
-zero-duration sizing boundary run before the restore for the same reason.
+Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, whose
+`AppliedWithAdjustments { requested, effective }` carries **one**
+`FavoriteSettings` — the single mode's parameters that one favorite held. That
+type cannot describe this phase's restore and must not be reused for it: an undo
+puts back the mode, *all three* parameter sets, and the presentation state, so a
+report shaped around one settings variant would be a name that is not true of its
+payload.
+
+This phase therefore owns two of its own types: a full semantic configuration
+snapshot — the same shape `PreviousAttractConfiguration` stores — and
+`AttractConfigurationRestoreOutcome`, which compares the requested and effective
+**full** configurations and names which of the three parameter sets moved. A
+restore that has to be clamped, because the terminal shrank since the checkpoint,
+reports through that outcome rather than applying it silently. Phase 3's
+terminal-area state and zero-duration sizing boundary run before the restore for
+the same reason.
 
 **Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
 
@@ -989,4 +1045,9 @@ zero-duration sizing boundary run before the restore for the same reason.
 - A second `u` does not step back twice: the state is `Unavailable` after the
   first, and the restore is a no-op rather than a toggle.
 - Restoring onto a terminal smaller than the one the checkpoint was taken on
-  reports the adjustment instead of correcting silently.
+  reports the adjustment through `AttractConfigurationRestoreOutcome`, naming
+  which of the three parameter sets moved, instead of correcting silently.
+- A press of `m` that replaces nothing — the file missing, in an error state, or
+  holding no recognized rows — leaves an existing
+  `ReplacementUndoState::Available` exactly as it was, and the following `u`
+  still restores the configuration from before the last real replacement.
