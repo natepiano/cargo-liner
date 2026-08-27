@@ -1087,6 +1087,73 @@ fn unchanged_full_drift_carries_reconciliation_alerts() {
 }
 
 #[test]
+fn first_drift_after_a_trunk_rewrite_reports_lost_released_evidence() {
+    let repository = initialized_repository();
+    let observer_id = claim(repository.path(), "file:observer.txt", FIRST_RUN);
+    let released_id = claim(repository.path(), "file:released.txt", FIRST_RUN);
+    fs::write(repository.path().join("released.txt"), "released work\n")
+        .expect("released work should write");
+    git(repository.path(), &["add", "released.txt"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "released work",
+        ],
+    );
+    for (expected_status, expected_fact_status) in [
+        ("outstanding", "checkpointed"),
+        ("integrated", "evidence_revalidated"),
+        ("integrated", "released"),
+    ] {
+        let release = run_berth(repository.path(), &["release", &released_id, "--json"]);
+        assert!(release.status.success());
+        assert_eq!(json_output(&release)["status"], expected_status);
+        assert_eq!(
+            json_output(&release)["payload"]["data"]["status"],
+            expected_fact_status
+        );
+    }
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            "--quiet",
+            "HEAD^",
+        ],
+    );
+
+    let first_detection = drift(
+        repository.path(),
+        &["--full", "--reservation", &observer_id],
+    );
+    let envelope = json_output(&first_detection);
+
+    assert!(first_detection.status.success());
+    let alert = envelope["payload"]["alerts"]
+        .as_array()
+        .and_then(|alerts| {
+            alerts.iter().find(|alert| {
+                alert["kind"] == "lost_integration_evidence"
+                    && alert["data"]["reservation_id"] == released_id
+            })
+        })
+        .expect("the first drift reconciliation should report the lost evidence");
+    assert_eq!(
+        alert["data"]["evidence_status"]["status"],
+        "trunk_rewritten"
+    );
+    assert_eq!(alert["data"]["recovery"]["kind"], "verify_resolved_trunk");
+}
+
+#[test]
 fn cheap_delta_parses_rename_with_worktree_modification() {
     let repository = initialized_repository();
     fs::create_dir_all(repository.path().join("files")).expect("files directory should exist");

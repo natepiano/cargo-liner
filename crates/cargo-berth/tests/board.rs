@@ -2047,7 +2047,213 @@ fn deferred_comparison_rejects_a_refuted_ancestor_proof() {
         std::slice::from_ref(&fixture.reservation_id),
         "not_integrated",
     );
+    let row = reservation_row(data, &fixture.reservation_id);
+    assert_eq!(row["edit_blocking_status"], "clear");
+    let alert = data["alerts"]["entries"]
+        .as_array()
+        .and_then(|alerts| {
+            alerts.iter().find(|alert| {
+                alert["kind"] == "lost_integration_evidence"
+                    && alert["reservation_id"] == fixture.reservation_id
+            })
+        })
+        .expect("the first reconciled board should report lost integration evidence");
+    assert_eq!(alert["evidence_status"]["status"], "not_integrated");
+    assert_eq!(alert["recovery"]["kind"], "verify_resolved_trunk");
+    assert_eq!(alert["recovery"]["trunk_oid"], fixture.target);
+    assert_eq!(
+        alert["recovery"]["action"]["action"],
+        "resolve_integrated_as"
+    );
+    assert_eq!(
+        alert["recovery"]["action"]["reservation_id"],
+        fixture.reservation_id
+    );
     assert_integration_statuses(data, &competing_reservations, "trunk_rewritten");
+
+    append_released_reservations(&fixture, 1, ProofSubjectSimilarity::Distinct);
+    append_scoped_patch_attempt(
+        fixture.repository.path(),
+        &fixture.reservation_id,
+        &fixture.target,
+    );
+    let recovered = run_berth(
+        fixture.repository.path(),
+        &[
+            "resolve",
+            &fixture.reservation_id,
+            "--integrated-as",
+            &fixture.target,
+            "--json",
+        ],
+    );
+    assert!(
+        recovered.status.success(),
+        "recovery failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&recovered.stdout),
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    let recovered_envelope = json_output(&recovered);
+    assert_eq!(recovered_envelope["status"], "integrated");
+    let latest_evidence = fs::read_to_string(fixture.repository.path().join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .rfind(|event| {
+            event["op"] == "evidence_revalidated"
+                && event["reservation_id"] == fixture.reservation_id
+        })
+        .expect("the recovered reservation should retain materialized evidence");
+    assert_eq!(latest_evidence["status"]["status"], "not_integrated");
+    assert_eq!(
+        journal_operation_count_for_reservation(
+            fixture.repository.path(),
+            "replace_release_disposition",
+            &fixture.reservation_id,
+        ),
+        1
+    );
+}
+
+#[test]
+fn lost_evidence_alert_covers_an_unknown_protected_tip() {
+    let unknown_tip_repository = initialized_repository();
+    let unknown_tip_id = reservation_id(&claim(
+        unknown_tip_repository.path(),
+        "file:unknown-tip.rs",
+        FIRST_RUN,
+    ));
+    let trunk_oid = git_stdout(unknown_tip_repository.path(), &["rev-parse", "HEAD"]);
+    let unavailable_tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    append_journal_operation(
+        unknown_tip_repository.path(),
+        serde_json::json!({
+            "op": "checkpoint",
+            "reservation_id": unknown_tip_id,
+            "protected_tip": unavailable_tip,
+            "trunk_snapshot": trunk_oid,
+        }),
+    );
+    append_journal_operation(
+        unknown_tip_repository.path(),
+        serde_json::json!({
+            "op": "evidence_revalidated",
+            "reservation_id": unknown_tip_id,
+            "status": {"status": "integrated", "trunk_oid": trunk_oid},
+            "edit_blocking_status": "clear",
+        }),
+    );
+    append_journal_operation(
+        unknown_tip_repository.path(),
+        serde_json::json!({
+            "op": "release",
+            "reservation_id": unknown_tip_id,
+            "disposition": {"kind": "integrated"},
+        }),
+    );
+
+    let unknown_tip_board = board_data(unknown_tip_repository.path());
+    let unknown_tip_row = reservation_row(&unknown_tip_board, &unknown_tip_id);
+    assert_eq!(unknown_tip_row["edit_blocking_status"], "clear");
+    assert_eq!(
+        unknown_tip_row["integration_evidence"]["status"]["status"],
+        "object_unknown"
+    );
+    let unknown_tip_alert = unknown_tip_board["alerts"]["entries"]
+        .as_array()
+        .and_then(|alerts| {
+            alerts.iter().find(|alert| {
+                alert["kind"] == "lost_integration_evidence"
+                    && alert["reservation_id"] == unknown_tip_id
+            })
+        })
+        .expect("an unavailable protected tip should raise an alert");
+    assert_eq!(
+        unknown_tip_alert["recovery"]["kind"],
+        "verify_resolved_trunk"
+    );
+    assert_eq!(unknown_tip_alert["recovery"]["trunk_oid"], trunk_oid);
+}
+
+#[test]
+fn legacy_release_then_resnapshot_replays_to_a_lost_evidence_alert() {
+    let legacy_repository = initialized_repository();
+    let legacy_id = reservation_id(&claim(
+        legacy_repository.path(),
+        "file:legacy-resnapshot.rs",
+        FIRST_RUN,
+    ));
+    fs::write(
+        legacy_repository.path().join("legacy-resnapshot.rs"),
+        "legacy work\n",
+    )
+    .expect("legacy protected work should write");
+    git(legacy_repository.path(), &["add", "legacy-resnapshot.rs"]);
+    git(
+        legacy_repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "legacy protected work",
+        ],
+    );
+    let protected_tip = git_stdout(legacy_repository.path(), &["rev-parse", "HEAD"]);
+    for operation in [
+        serde_json::json!({
+            "op": "checkpoint",
+            "reservation_id": legacy_id,
+            "protected_tip": protected_tip,
+            "trunk_snapshot": protected_tip,
+        }),
+        serde_json::json!({
+            "op": "evidence_revalidated",
+            "reservation_id": legacy_id,
+            "status": {"status": "integrated", "trunk_oid": protected_tip},
+            "edit_blocking_status": "clear",
+        }),
+        serde_json::json!({
+            "op": "release",
+            "reservation_id": legacy_id,
+            "disposition": {"kind": "integrated"},
+        }),
+        serde_json::json!({
+            "op": "resnapshot",
+            "reservation_id": legacy_id,
+            "snapshot": {
+                "stage": "outstanding",
+                "protected_tip": protected_tip,
+                "trunk_oid": protected_tip,
+            },
+        }),
+    ] {
+        append_journal_operation(legacy_repository.path(), operation);
+    }
+    git(
+        legacy_repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            "--quiet",
+            "HEAD^",
+        ],
+    );
+
+    let legacy_board = board_data(legacy_repository.path());
+    let legacy_row = reservation_row(&legacy_board, &legacy_id);
+    assert_eq!(legacy_row["lifecycle"]["stage"], "released");
+    assert_eq!(legacy_row["edit_blocking_status"], "clear");
+    assert!(
+        legacy_board["alerts"]["entries"]
+            .as_array()
+            .is_some_and(|alerts| alerts.iter().any(|alert| {
+                alert["kind"] == "lost_integration_evidence" && alert["reservation_id"] == legacy_id
+            }))
+    );
 }
 
 #[test]

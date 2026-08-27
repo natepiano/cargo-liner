@@ -567,7 +567,8 @@ fn recovery_operation(
                 ReservationEvidenceState::Released {
                     disposition: superseded,
                     integration_status:
-                        IntegrationEvidenceStatus::TrunkRewritten
+                        IntegrationEvidenceStatus::NotIntegrated
+                        | IntegrationEvidenceStatus::TrunkRewritten
                         | IntegrationEvidenceStatus::ObjectUnknown,
                     ..
                 } if !matches!(

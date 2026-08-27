@@ -208,12 +208,16 @@ The sections mean:
 - `outstanding_incursions`: incidents awaiting the row's supplied `flag`, which
   names `resolve <reservation-id> --incursion <incident-id>`.
 - `recorded_incursion_answers`: durable resolutions for those incidents.
-- `alerts`: orphan recovery evidence and its `recover` or
-  `retire_or_abandon` action; stale reservations and their
+- `alerts`: lost integration evidence and its `resolve_integrated_as` action;
+  orphan recovery evidence and its `recover` or `retire_or_abandon` action;
+  stale reservations and their
   `resolution.action = "renew"`; or bypasses not yet recorded and an instruction
-  for restoring the journal audit path. The orphan action names either
-  `resolve --recovered` or the explicit retire/abandon flags; the stale action
-  names the reservation for `renew`; the bypass alert names the recovery step.
+  for restoring the journal audit path. A lost-evidence alert identifies the
+  released reservation, protected tip, current evidence status, and whether
+  trunk must resolve before the operator can confirm integration. The orphan
+  action names either `resolve --recovered` or the explicit retire/abandon
+  flags; the stale action names the reservation for `renew`; the bypass alert
+  names the recovery step.
 - `git_cost`: exact Git-call counts used to build this board.
 
 `integration_order` is `undeclared` or `constraints_recorded`.
@@ -222,6 +226,36 @@ The sections mean:
 notice reported once by the read that imported the marker into the journal and
 deleted it; the next board read returns an empty list. The corresponding
 `bypass_audit` entry remains as durable history.
+
+Board `lost_integration_evidence` entries use this tagged form:
+
+```json
+{
+  "kind": "lost_integration_evidence",
+  "reservation_id": "01a036fa-b70a-7e72-89ae-0facf1976ed1",
+  "protected_tip": "1111111111111111111111111111111111111111",
+  "evidence_status": { "status": "trunk_rewritten" },
+  "recovery": {
+    "kind": "verify_resolved_trunk",
+    "trunk_oid": "2222222222222222222222222222222222222222",
+    "action": {
+      "action": "resolve_integrated_as",
+      "reservation_id": "01a036fa-b70a-7e72-89ae-0facf1976ed1"
+    }
+  }
+}
+```
+
+`evidence_status.status` is `not_integrated`, `trunk_rewritten`, or
+`object_unknown`. `recovery.kind = verify_resolved_trunk` includes the resolved
+`trunk_oid`. `recovery.kind = resolve_trunk_first` omits `trunk_oid` and requires
+the configured trunk to resolve before the action is usable. Both alternatives
+carry `action.action = resolve_integrated_as` and its `reservation_id`.
+Released rows remain `edit_blocking_status = clear` in every alternative.
+
+The envelope-level `payload.alerts[]` form carries the same fields under
+`{ "kind": "lost_integration_evidence", "data": { ... } }`. Board alerts are
+flattened under `payload.data.alerts.entries[]` as shown above.
 
 Two similar answer tags are intentionally separate parts of the frozen schema.
 Journal, claim, and widen payloads use

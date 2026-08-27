@@ -8,6 +8,7 @@ use std::path::Path;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::edge::RepositoryTrunk;
 use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
@@ -15,15 +16,21 @@ use crate::git::ReferenceLookup;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ledger::ClaimHeadSnapshot;
+use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::ProtectedReservationTip;
+use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::Reservation;
+use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationLifecycle;
+use crate::reservation::ReservationReplayError;
 use crate::worktree::WorktreeLiveness;
 
 /// A persistent coordination condition that remains until journal state resolves it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub(crate) enum Alert {
+    /// A released reservation no longer has affirmative integration evidence.
+    LostIntegrationEvidence(LostIntegrationEvidenceAlert),
     /// A protected reservation has no validated worktree holder.
     OrphanedOutstanding(OrphanedOutstandingAlert),
 }
@@ -32,6 +39,7 @@ impl Alert {
     /// Return the reservation whose retained state keeps this alert active.
     pub(crate) const fn reservation_id(&self) -> ReservationId {
         match self {
+            Self::LostIntegrationEvidence(alert) => alert.reservation_id,
             Self::OrphanedOutstanding(alert) => alert.reservation_id,
         }
     }
@@ -39,6 +47,7 @@ impl Alert {
     /// Count the git queries that established this orphan recovery verdict.
     pub(crate) const fn recovery_evidence_query_count(&self) -> u64 {
         match self {
+            Self::LostIntegrationEvidence(_) => 0,
             Self::OrphanedOutstanding(alert) => match alert.branch_ref_status {
                 BranchRefStatus::Present { .. } => 4,
                 BranchRefStatus::Missing { .. } => 3,
@@ -51,6 +60,23 @@ impl Alert {
 impl Display for Alert {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LostIntegrationEvidence(alert) => match &alert.recovery {
+                LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. } => write!(
+                    formatter,
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but trunk {} no longer proves protected tip {}. If trunk {} contains the released work, run `cargo-berth resolve {} --integrated-as {}`. Otherwise restore the work first. Inspect `cargo-berth board --json`.",
+                    alert.reservation_id,
+                    trunk_oid,
+                    alert.protected_tip,
+                    trunk_oid,
+                    alert.reservation_id,
+                    trunk_oid,
+                ),
+                LostEvidenceRecovery::ResolveTrunkFirst { .. } => write!(
+                    formatter,
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and trunk does not currently resolve to a known object, so protected tip {} cannot be proved either way. Resolve trunk first, then rerun. Inspect `cargo-berth board --json`.",
+                    alert.reservation_id, alert.protected_tip,
+                ),
+            },
             Self::OrphanedOutstanding(alert) => write!(
                 formatter,
                 "Alert: orphaned outstanding reservation {} at protected tip {}; branch {}; object {}; retention {}; recovery {}.",
@@ -63,6 +89,61 @@ impl Display for Alert {
             ),
         }
     }
+}
+
+/// Lost affirmative Git evidence for a terminal reservation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct LostIntegrationEvidenceAlert {
+    /// The released reservation whose evidence no longer proves integration.
+    reservation_id:  ReservationId,
+    /// The fixed checkpoint commit whose released work needs confirmation.
+    protected_tip:   ProtectedReservationTip,
+    /// What the current repository observation proves about the released evidence.
+    evidence_status: IntegrationEvidenceStatus,
+    /// The recovery path selected by whether trunk resolved.
+    recovery:        LostEvidenceRecovery,
+}
+
+impl LostIntegrationEvidenceAlert {
+    /// Return the released reservation whose integration evidence was lost.
+    pub(crate) const fn reservation_id(&self) -> ReservationId { self.reservation_id }
+
+    /// Borrow the released reservation's fixed checkpoint commit.
+    pub(crate) const fn protected_tip(&self) -> &ProtectedReservationTip { &self.protected_tip }
+
+    /// Borrow the current non-affirmative evidence status.
+    pub(crate) const fn evidence_status(&self) -> &IntegrationEvidenceStatus {
+        &self.evidence_status
+    }
+
+    /// Borrow the recovery path supported by the current trunk observation.
+    pub(crate) const fn recovery(&self) -> &LostEvidenceRecovery { &self.recovery }
+}
+
+/// Recovery instructions distinguished by whether the configured trunk resolved.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum LostEvidenceRecovery {
+    /// Trunk resolved; the operator can confirm it carries the released work.
+    VerifyResolvedTrunk {
+        /// The current configured trunk commit.
+        trunk_oid: GitObjectId,
+        /// The typed resolution available after the operator verifies the work.
+        action:    RecoveryAction,
+    },
+    /// No trunk object resolved; trunk must resolve before any repair is available.
+    ResolveTrunkFirst {
+        /// The typed resolution that becomes available after trunk resolves.
+        action: RecoveryAction,
+    },
+}
+
+/// The reservation recovery command represented without a stringly typed flag.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub(crate) enum RecoveryAction {
+    /// Replace lost Git-backed evidence with an operator-verified trunk commit.
+    ResolveIntegratedAs { reservation_id: ReservationId },
 }
 
 /// Recovery evidence for an outstanding reservation whose worktree was pruned.
@@ -197,6 +278,50 @@ enum BranchProtectedTipStatus {
     Reachable,
     /// The branch is absent or no longer retains the protected tip.
     Unreachable,
+}
+
+/// Derive an alert when a released Git-backed disposition has no affirmative proof.
+pub(crate) fn for_lost_integration_evidence(
+    reservation: &Reservation,
+    repository_trunk: &RepositoryTrunk,
+) -> Result<Vec<Alert>, ReservationReplayError> {
+    let ReservationEvidenceState::Released {
+        protected_tip,
+        disposition,
+        integration_status,
+        ..
+    } = reservation.evidence_state()?
+    else {
+        return Ok(Vec::new());
+    };
+    if matches!(
+        disposition.revalidation_subject(),
+        ReleaseRevalidationSubject::None
+    ) || matches!(
+        integration_status,
+        IntegrationEvidenceStatus::Integrated { .. }
+    ) {
+        return Ok(Vec::new());
+    }
+
+    let action = RecoveryAction::ResolveIntegratedAs {
+        reservation_id: reservation.id(),
+    };
+    let recovery = match repository_trunk {
+        RepositoryTrunk::Resolved(trunk_oid) => LostEvidenceRecovery::VerifyResolvedTrunk {
+            trunk_oid: trunk_oid.clone(),
+            action,
+        },
+        RepositoryTrunk::ObjectUnknown => LostEvidenceRecovery::ResolveTrunkFirst { action },
+    };
+    Ok(vec![Alert::LostIntegrationEvidence(
+        LostIntegrationEvidenceAlert {
+            reservation_id: reservation.id(),
+            protected_tip,
+            evidence_status: integration_status,
+            recovery,
+        },
+    )])
 }
 
 impl Display for RecoverabilityVerdict {

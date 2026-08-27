@@ -1551,7 +1551,7 @@ fn hook_git_cost_scales_with_protected_graph_predecessors() {
             .lines()
             .filter(|command| *command == "rev-list")
             .count(),
-        4
+        5
     );
 }
 

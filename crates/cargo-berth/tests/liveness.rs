@@ -1019,6 +1019,77 @@ fn recovery_dispositions_validate_evidence_and_remain_distinct_after_replay() {
     }
 }
 
+#[test]
+fn unresolved_trunk_alert_survives_and_defers_integrated_as_recovery() {
+    let repository = initialized_repository();
+    let claim = run_berth(
+        repository.path(),
+        &["claim", "file:unknown-trunk", "--run", FIRST_RUN, "--json"],
+    );
+    assert!(claim.status.success());
+    let reservation_id = reservation_id(&claim);
+    commit_file(
+        repository.path(),
+        "unknown-trunk",
+        "released work\n",
+        "unknown trunk work",
+    );
+    for (expected_status, expected_fact_status) in [
+        ("outstanding", "checkpointed"),
+        ("integrated", "evidence_revalidated"),
+        ("integrated", "released"),
+    ] {
+        let release = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+        assert!(release.status.success());
+        assert_eq!(json_output(&release)["status"], expected_status);
+        assert_eq!(
+            json_output(&release)["payload"]["data"]["status"],
+            expected_fact_status
+        );
+    }
+    let integrated_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "branch",
+            "-m",
+            "trunk-unavailable",
+        ],
+    );
+
+    for _ in 0..2 {
+        let board = run_berth(repository.path(), &["board", "--json"]);
+        assert!(board.status.success());
+        let alert = json_output(&board)["payload"]["data"]["alerts"]["entries"]
+            .as_array()
+            .and_then(|alerts| {
+                alerts.iter().find(|alert| {
+                    alert["kind"] == "lost_integration_evidence"
+                        && alert["reservation_id"] == reservation_id
+                })
+            })
+            .cloned()
+            .expect("the unresolved trunk alert should remain on each board");
+        assert_eq!(alert["evidence_status"]["status"], "object_unknown");
+        assert_eq!(alert["recovery"]["kind"], "resolve_trunk_first");
+    }
+
+    let unavailable = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &reservation_id,
+            "--integrated-as",
+            &integrated_tip,
+            "--json",
+        ],
+    );
+    assert_eq!(unavailable.status.code(), Some(4));
+    assert_eq!(json_output(&unavailable)["status"], "ledger_unreadable");
+}
+
 fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) {
     git(repository, &["switch", "--quiet", "-c", "abandoned"]);
     commit_file(repository, "abandoned", "work\n", "abandoned work");
@@ -1130,6 +1201,16 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
     git(repository, &["reset", "--hard", "--quiet", "HEAD^"]);
     let reblocked = run_berth(repository, &["release", &rewritten_id, "--json"]);
     assert_eq!(json_output(&reblocked)["status"], "trunk_rewritten");
+    assert_eq!(
+        json_output(&reblocked)["payload"]["alerts"][0]["kind"],
+        "lost_integration_evidence"
+    );
+    let persisted = run_berth(repository, &["release", &rewritten_id, "--json"]);
+    assert_eq!(json_output(&persisted)["status"], "trunk_rewritten");
+    assert_eq!(
+        json_output(&persisted)["payload"]["alerts"][0]["kind"],
+        "lost_integration_evidence"
+    );
     commit_file(
         repository,
         "integrated-again",

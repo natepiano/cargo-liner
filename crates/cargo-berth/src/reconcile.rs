@@ -1713,6 +1713,12 @@ impl ReconciliationAction {
             })?;
         }
         let mut alerts = Vec::new();
+        for reservation in reservations.iter() {
+            alerts.extend(
+                alert::for_lost_integration_evidence(reservation, self.repository_snapshot.trunk())
+                    .map_err(ReconcileError::Replay)?,
+            );
+        }
         for alert_subject in self.alert_subjects {
             alerts.extend(alert::for_orphaned_outstanding(
                 &self.repository_root,

@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::alert::Alert;
 use crate::alert::BranchRefStatus;
+use crate::alert::LostEvidenceRecovery;
 use crate::alert::ObjectAvailability;
 use crate::alert::RecoverabilityVerdict;
 use crate::alert::RetentionRefStatus;
@@ -432,6 +433,12 @@ struct RecordedIncursionAnswer {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum BoardAlert {
+    LostIntegrationEvidence {
+        reservation_id:  ReservationId,
+        protected_tip:   ProtectedReservationTip,
+        evidence_status: IntegrationEvidenceStatus,
+        recovery:        LostEvidenceRecovery,
+    },
     OrphanedOutstanding {
         reservation_id:       ReservationId,
         protected_tip:        ProtectedReservationTip,
@@ -1306,6 +1313,12 @@ fn board_alerts(
 
 fn board_alert(alert: &Alert) -> Result<BoardAlert, BoardError> {
     match alert {
+        Alert::LostIntegrationEvidence(lost_evidence) => Ok(BoardAlert::LostIntegrationEvidence {
+            reservation_id:  lost_evidence.reservation_id(),
+            protected_tip:   lost_evidence.protected_tip().clone(),
+            evidence_status: lost_evidence.evidence_status().clone(),
+            recovery:        lost_evidence.recovery().clone(),
+        }),
         Alert::OrphanedOutstanding(orphan) => {
             let recoverability = orphan.recoverability();
             Ok(BoardAlert::OrphanedOutstanding {
