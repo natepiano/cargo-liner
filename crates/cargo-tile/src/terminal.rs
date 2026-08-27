@@ -34,6 +34,7 @@ use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Position;
+use ratatui::layout::Rect;
 use tui_pane::FRAME_POLL_MILLIS;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction;
@@ -43,8 +44,11 @@ use tui_pane::KeyOutcome;
 use tui_pane::Keymap;
 use tui_pane::Navigation;
 use tui_pane::OverlayAction;
+use tui_pane::ToastId;
+use tui_pane::ToastSettings;
 use tui_pane::matches_open_overlay_toggle;
 use tui_pane::overlay_is_in_text_mode;
+use tui_pane::toast_body_width;
 
 use crate::app::App;
 use crate::app::AppPaneId;
@@ -72,9 +76,251 @@ use crate::settings;
 use crate::settings::Step;
 use crate::theme;
 
+/// Extra line step that keeps a `ToastVisualTimeline` active after its
+/// corresponding framework animation.
+///
+/// `Toasts::push_timed` samples its own instant, so `pushed_at`, sampled before
+/// that call, makes every app-owned boundary fractionally early.
+const TOAST_VISUAL_TIMELINE_SLACK_LINE_STEPS: u32 = 1;
+
 /// The terminal backend, with everything written to it counted on the
 /// way out. See [`probe::Counted`].
 type Backend = CrosstermBackend<Counted<Stdout>>;
+
+/// Phase whose time boundary determines the next frame for one timed toast.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToastVisualPhase {
+    /// The toast is growing into view.
+    Entering,
+    /// The toast is fully visible and needs no frames before expiry.
+    Static,
+    /// The toast is leaving the screen from this instant.
+    Exiting { started_at: Instant },
+}
+
+/// Timing inputs and current visual phase for one timed toast.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ToastVisualTimeline {
+    /// Toast whose rendered lifecycle these times describe.
+    toast_id:          ToastId,
+    /// Instant recorded beside the id returned by `Toasts::push_timed`.
+    pushed_at:         Instant,
+    /// Time spent asking for entrance frames.
+    entrance_duration: Duration,
+    /// Instant at which `Toasts::prune` starts the exit phase.
+    expires_at:        Instant,
+    /// Time spent asking for exit frames.
+    exit_duration:     Duration,
+    /// Current portion of the rendered lifecycle.
+    phase:             ToastVisualPhase,
+}
+
+impl ToastVisualTimeline {
+    fn new(
+        toast_id: ToastId,
+        pushed_at: Instant,
+        visible_duration: Duration,
+        body_text: &str,
+        min_interior_lines: usize,
+        settings: &ToastSettings,
+    ) -> Self {
+        let target_height = toast_target_height(body_text, min_interior_lines, settings);
+        let renderer_entrance_line_steps = u32::from(target_height.saturating_sub(1));
+        let entrance_line_steps =
+            renderer_entrance_line_steps.saturating_add(TOAST_VISUAL_TIMELINE_SLACK_LINE_STEPS);
+        let entrance_duration = settings
+            .animation
+            .entrance_duration
+            .get()
+            .saturating_mul(entrance_line_steps);
+        let renderer_exit_line_steps = u32::from(target_height);
+        let exit_line_steps =
+            renderer_exit_line_steps.saturating_add(TOAST_VISUAL_TIMELINE_SLACK_LINE_STEPS);
+        let exit_duration = settings
+            .animation
+            .exit_duration
+            .get()
+            .saturating_mul(exit_line_steps);
+        Self {
+            toast_id,
+            pushed_at,
+            entrance_duration,
+            expires_at: pushed_at + visible_duration,
+            exit_duration,
+            phase: ToastVisualPhase::Entering,
+        }
+    }
+
+    fn next_deadline(self, now: Instant, frame_period: Duration) -> VisualDeadline {
+        match self.phase {
+            ToastVisualPhase::Entering => VisualDeadline::At(
+                (now + frame_period)
+                    .min(self.pushed_at + self.entrance_duration)
+                    .min(self.expires_at),
+            ),
+            ToastVisualPhase::Static => VisualDeadline::At(self.expires_at),
+            ToastVisualPhase::Exiting { started_at } => {
+                VisualDeadline::At((now + frame_period).min(started_at + self.exit_duration))
+            },
+        }
+    }
+
+    fn advance(&mut self, now: Instant) -> ToastTimelineUpdate {
+        match self.phase {
+            ToastVisualPhase::Entering | ToastVisualPhase::Static if now >= self.expires_at => {
+                self.phase = ToastVisualPhase::Exiting { started_at: now };
+                ToastTimelineUpdate::Repaint
+            },
+            ToastVisualPhase::Entering if now >= self.pushed_at + self.entrance_duration => {
+                self.phase = ToastVisualPhase::Static;
+                ToastTimelineUpdate::Repaint
+            },
+            ToastVisualPhase::Static => ToastTimelineUpdate::Quiet,
+            ToastVisualPhase::Exiting { started_at } if now >= started_at + self.exit_duration => {
+                ToastTimelineUpdate::Finished
+            },
+            ToastVisualPhase::Entering | ToastVisualPhase::Exiting { .. } => {
+                ToastTimelineUpdate::Repaint
+            },
+        }
+    }
+}
+
+/// Result of advancing one toast's visual timeline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToastTimelineUpdate {
+    /// No frame is needed while the toast remains static.
+    Quiet,
+    /// The entrance, expiry, or exit needs a frame.
+    Repaint,
+    /// The exit is complete and one frame must erase the toast.
+    Finished,
+}
+
+/// All timed toasts whose visual transitions still need event-loop wakes.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) enum ToastVisualSchedule {
+    /// No timed toast has an outstanding visual transition.
+    #[default]
+    NoToastScheduled,
+    /// Timelines for the timed toasts still entering, visible, or exiting.
+    Scheduled(Vec<ToastVisualTimeline>),
+}
+
+impl ToastVisualSchedule {
+    /// Record one timed toast using the same body and layout settings
+    /// that its framework toast renders with.
+    pub(crate) fn record_timed_toast(
+        &mut self,
+        toast_id: ToastId,
+        pushed_at: Instant,
+        visible_duration: Duration,
+        body_text: &str,
+        min_interior_lines: usize,
+        settings: &ToastSettings,
+    ) {
+        self.record(ToastVisualTimeline::new(
+            toast_id,
+            pushed_at,
+            visible_duration,
+            body_text,
+            min_interior_lines,
+            settings,
+        ));
+    }
+
+    fn record(&mut self, timeline: ToastVisualTimeline) {
+        match self {
+            Self::NoToastScheduled => *self = Self::Scheduled(vec![timeline]),
+            Self::Scheduled(timelines) => {
+                timelines.retain(|existing| existing.toast_id != timeline.toast_id);
+                timelines.push(timeline);
+            },
+        }
+    }
+
+    pub(crate) fn next_deadline(&self, now: Instant, frame_period: Duration) -> VisualDeadline {
+        match self {
+            Self::NoToastScheduled => VisualDeadline::NoVisualChangeScheduled,
+            Self::Scheduled(timelines) => timelines.iter().fold(
+                VisualDeadline::NoVisualChangeScheduled,
+                |deadline, timeline| deadline.earlier(timeline.next_deadline(now, frame_period)),
+            ),
+        }
+    }
+
+    pub(crate) fn request_frame(&mut self, now: Instant) -> VisualFrameRequest {
+        let Self::Scheduled(timelines) = self else {
+            return VisualFrameRequest::None;
+        };
+        let mut request = VisualFrameRequest::None;
+        timelines.retain_mut(|timeline| match timeline.advance(now) {
+            ToastTimelineUpdate::Quiet => true,
+            ToastTimelineUpdate::Repaint => {
+                request = VisualFrameRequest::Requested;
+                true
+            },
+            ToastTimelineUpdate::Finished => {
+                request = VisualFrameRequest::Requested;
+                false
+            },
+        });
+        if timelines.is_empty() {
+            *self = Self::NoToastScheduled;
+        }
+        request
+    }
+}
+
+fn toast_target_height(
+    body_text: &str,
+    min_interior_lines: usize,
+    settings: &ToastSettings,
+) -> u16 {
+    let width = toast_body_width(settings).max(1);
+    let body_lines = body_text
+        .lines()
+        .map(|line| (line.chars().count().max(1).saturating_sub(1) / width) + 1)
+        .sum::<usize>()
+        .max(1);
+    let interior_lines = min_interior_lines.max(body_lines);
+    u16::try_from(interior_lines + 2).unwrap_or(u16::MAX)
+}
+
+/// Earliest app-owned visual transition that can require another frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VisualDeadline {
+    /// No app-owned transition is waiting on time alone.
+    NoVisualChangeScheduled,
+    /// Wake no later than this instant.
+    At(Instant),
+}
+
+impl VisualDeadline {
+    fn earlier(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::NoVisualChangeScheduled, deadline)
+            | (deadline, Self::NoVisualChangeScheduled) => deadline,
+            (Self::At(left), Self::At(right)) => Self::At(left.min(right)),
+        }
+    }
+
+    fn limit_wait(self, now: Instant, wait: Duration) -> Duration {
+        match self {
+            Self::NoVisualChangeScheduled => wait,
+            Self::At(deadline) => wait.min(deadline.saturating_duration_since(now)),
+        }
+    }
+}
+
+/// Whether a time-driven visual transition asks the event loop for a frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VisualFrameRequest {
+    /// No frame is needed.
+    None,
+    /// A frame is needed now.
+    Requested,
+}
 
 /// Load configuration, install the theme, build the keymap, and run the
 /// event loop with the terminal in the alternate screen.
@@ -211,7 +457,9 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
         if deadline < now {
             deadline = now + period;
         }
-        let remaining = deadline.saturating_duration_since(now);
+        let remaining = app
+            .toast_visual_deadline(now, period)
+            .limit_wait(now, deadline.saturating_duration_since(now));
         match input.recv_timeout(remaining) {
             Ok(event) => {
                 let mut resized = apply_event(app, &event);
@@ -233,6 +481,11 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
             // cannot read input is dead, and without this the loop would
             // spin on a disconnected channel.
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+        let now = Instant::now();
+        app.framework.toasts.prune(now);
+        if app.toast_visual_frame_request(now) == VisualFrameRequest::Requested {
+            dirty = true;
         }
         // Frozen, every one of these is skipped: what a scan found,
         // how far a fade has walked and where a travelling cell has
@@ -396,7 +649,11 @@ fn apply_event(app: &mut App, event: &Event) -> Resized {
             handle_mouse(app, mouse);
             Resized::No
         },
-        Event::Resize(..) => Resized::Yes,
+        Event::Resize(width, height) => {
+            app.attract
+                .record_terminal_resize(Rect::new(0, 0, width, height));
+            Resized::Yes
+        },
         _ => Resized::No,
     }
 }
@@ -581,5 +838,231 @@ fn restart_self() {
     match Command::new(&exe).args(&args).spawn() {
         Ok(_) => std::process::exit(0),
         Err(error) => eprintln!("cargo-tile: restart: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tui_pane::Toasts;
+
+    use super::*;
+
+    fn matching_toast_heights(toasts: &Toasts<App>, toast_id: ToastId, now: Instant) -> Vec<u16> {
+        toasts
+            .active_views(now)
+            .into_iter()
+            .filter(|view| view.id() == toast_id)
+            .map(|view| view.desired_height())
+            .collect()
+    }
+
+    #[test]
+    fn multi_line_toast_schedule_requests_only_transition_frames() {
+        const FRAME: Duration = Duration::from_millis(10);
+        const MIN_INTERIOR_LINES: usize = 1;
+
+        let settings = ToastSettings::default();
+        let entrance_line = settings.animation.entrance_duration.get();
+        let exit_line = settings.animation.exit_duration.get();
+        let body = "x".repeat(toast_body_width(&settings) * 4);
+        let target_height = toast_target_height(&body, MIN_INTERIOR_LINES, &settings);
+        let renderer_entrance_line_steps = u32::from(target_height.saturating_sub(1));
+        let renderer_entrance = entrance_line.saturating_mul(renderer_entrance_line_steps);
+        let entrance = entrance_line.saturating_mul(
+            renderer_entrance_line_steps.saturating_add(TOAST_VISUAL_TIMELINE_SLACK_LINE_STEPS),
+        );
+        let renderer_exit_line_steps = u32::from(target_height);
+        let exit = exit_line.saturating_mul(
+            renderer_exit_line_steps.saturating_add(TOAST_VISUAL_TIMELINE_SLACK_LINE_STEPS),
+        );
+        let visible = entrance + FRAME.saturating_mul(4);
+        let pushed_at = Instant::now();
+        let mut toasts = Toasts::<App>::with_settings(settings.clone());
+        let toast_id = toasts.push_timed(
+            "Favorite not saved",
+            body.clone(),
+            visible,
+            MIN_INTERIOR_LINES,
+        );
+        let renderer_heights_at_last_entrance_step =
+            matching_toast_heights(&toasts, toast_id, Instant::now() + renderer_entrance);
+        let renderer_entrance_ends_at = pushed_at + renderer_entrance;
+        let entrance_ends_at = pushed_at + entrance;
+        let entrance_before_end = pushed_at + entrance.saturating_sub(FRAME);
+        let expires_at = pushed_at + visible;
+        let exit_ends_at = expires_at + exit;
+        let exit_before_end = expires_at + exit.saturating_sub(FRAME);
+        let static_midpoint = entrance_ends_at + FRAME;
+        let mut schedule = ToastVisualSchedule::NoToastScheduled;
+        schedule.record(ToastVisualTimeline::new(
+            toast_id,
+            pushed_at,
+            visible,
+            &body,
+            MIN_INTERIOR_LINES,
+            &settings,
+        ));
+
+        assert!(target_height >= 5);
+        assert_eq!(renderer_heights_at_last_entrance_step, vec![target_height]);
+        assert!(entrance > renderer_entrance);
+        assert_eq!(
+            schedule.request_frame(pushed_at),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(
+            schedule.next_deadline(pushed_at, FRAME),
+            VisualDeadline::At(pushed_at + FRAME),
+        );
+        assert_eq!(
+            schedule.request_frame(renderer_entrance_ends_at),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(
+            schedule.request_frame(entrance_before_end),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(
+            schedule.request_frame(entrance_ends_at),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(
+            schedule.next_deadline(entrance_ends_at, FRAME),
+            VisualDeadline::At(expires_at),
+        );
+        assert_eq!(
+            schedule.request_frame(static_midpoint),
+            VisualFrameRequest::None,
+        );
+        assert_eq!(
+            schedule.next_deadline(static_midpoint, FRAME),
+            VisualDeadline::At(expires_at),
+        );
+        assert_eq!(
+            schedule.request_frame(expires_at),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(
+            schedule.next_deadline(expires_at, FRAME),
+            VisualDeadline::At(expires_at + FRAME),
+        );
+        assert_eq!(
+            schedule.request_frame(exit_before_end),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(
+            schedule.request_frame(exit_ends_at),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(schedule, ToastVisualSchedule::NoToastScheduled);
+        assert_eq!(
+            schedule.next_deadline(exit_ends_at, FRAME),
+            VisualDeadline::NoVisualChangeScheduled,
+        );
+    }
+
+    #[test]
+    fn single_line_toast_schedule_becomes_quiet_before_expiry() {
+        const FRAME: Duration = Duration::from_millis(10);
+        const MIN_INTERIOR_LINES: usize = 1;
+
+        let settings = ToastSettings::default();
+        let entrance_line = settings.animation.entrance_duration.get();
+        let body = "Favorite saved";
+        let target_height = toast_target_height(body, MIN_INTERIOR_LINES, &settings);
+        let min_height = u16::try_from(MIN_INTERIOR_LINES + 2).unwrap_or(u16::MAX);
+        let renderer_entrance_line_steps = u32::from(target_height.saturating_sub(1));
+        let entrance = entrance_line.saturating_mul(
+            renderer_entrance_line_steps.saturating_add(TOAST_VISUAL_TIMELINE_SLACK_LINE_STEPS),
+        );
+        let visible = Duration::from_secs(5);
+        let pushed_at = Instant::now();
+        let mut toasts = Toasts::<App>::with_settings(settings.clone());
+        let toast_id = toasts.push_timed("Favorite saved", body, visible, MIN_INTERIOR_LINES);
+        let initial_heights = matching_toast_heights(&toasts, toast_id, Instant::now());
+        let final_renderer_entrance_heights = matching_toast_heights(
+            &toasts,
+            toast_id,
+            Instant::now() + entrance_line.saturating_mul(renderer_entrance_line_steps),
+        );
+        let entrance_ends_at = pushed_at + entrance;
+        let quiet_at = entrance_ends_at + FRAME;
+        let expires_at = pushed_at + visible;
+        let mut schedule = ToastVisualSchedule::NoToastScheduled;
+        schedule.record(ToastVisualTimeline::new(
+            toast_id,
+            pushed_at,
+            visible,
+            body,
+            MIN_INTERIOR_LINES,
+            &settings,
+        ));
+
+        assert_eq!(target_height, min_height);
+        assert_eq!(initial_heights, vec![min_height]);
+        assert_eq!(final_renderer_entrance_heights, vec![min_height]);
+        assert!(quiet_at < expires_at);
+        assert_eq!(
+            schedule.request_frame(entrance_ends_at),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(schedule.request_frame(quiet_at), VisualFrameRequest::None);
+        assert_eq!(
+            schedule.next_deadline(quiet_at, FRAME),
+            VisualDeadline::At(expires_at),
+        );
+    }
+
+    #[test]
+    fn toast_exit_schedule_outlives_renderer_line_steps() {
+        const MIN_INTERIOR_LINES: usize = 1;
+
+        let settings = ToastSettings::default();
+        let exit_line = settings.animation.exit_duration.get();
+        let body = "x".repeat(toast_body_width(&settings) * 3);
+        let target_height = toast_target_height(&body, MIN_INTERIOR_LINES, &settings);
+        let renderer_exit_line_steps = u32::from(target_height);
+        let renderer_exit = exit_line.saturating_mul(renderer_exit_line_steps);
+        let scheduled_exit = exit_line.saturating_mul(
+            renderer_exit_line_steps.saturating_add(TOAST_VISUAL_TIMELINE_SLACK_LINE_STEPS),
+        );
+        let visible = Duration::from_secs(2);
+        let pushed_at = Instant::now();
+        let expires_at = pushed_at + visible;
+        let last_renderer_line_at =
+            expires_at + exit_line.saturating_mul(u32::from(target_height.saturating_sub(1)));
+        let renderer_finished_at = expires_at + renderer_exit;
+        let schedule_finished_at = expires_at + scheduled_exit;
+        let timeline = ToastVisualTimeline::new(
+            ToastId(8),
+            pushed_at,
+            visible,
+            &body,
+            MIN_INTERIOR_LINES,
+            &settings,
+        );
+
+        assert_eq!(timeline.exit_duration, scheduled_exit);
+        assert!(timeline.exit_duration >= renderer_exit);
+        let mut schedule = ToastVisualSchedule::NoToastScheduled;
+        schedule.record(timeline);
+        assert_eq!(
+            schedule.request_frame(expires_at),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(
+            schedule.request_frame(last_renderer_line_at),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(
+            schedule.request_frame(renderer_finished_at),
+            VisualFrameRequest::Requested,
+        );
+        assert!(matches!(schedule, ToastVisualSchedule::Scheduled(_)));
+        assert_eq!(
+            schedule.request_frame(schedule_finished_at),
+            VisualFrameRequest::Requested,
+        );
+        assert_eq!(schedule, ToastVisualSchedule::NoToastScheduled);
     }
 }

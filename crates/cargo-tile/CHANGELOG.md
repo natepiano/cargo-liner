@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Save the current attract-screen parameters as a favorite with `ctrl-s`, including while the animation is hidden, and report the result in an expiring toast.
 - Persist attract-screen parameter favorites in a lossless `favorites.toml`, with UUID-addressed rows, tolerant recognition of newer values, locked mutations, and atomic replacement.
 - The keymap overlay draws its sections side by side where the terminal is wide enough, so the whole keymap is read at once instead of scrolled past. With three attract screens listed it no longer fits one column on any ordinary window.
 - A third attract screen on `3`: the desktop drawn as itself, one colour per cell, with a band of coarseness sweeping across it that takes the picture to blocks and gives it back. The arrows point the sweep, `>` and `<` set its pace, `+` and `-` size the blocks, `[` and `]` narrow and widen the band, `v` cycles how a block hands its cells back -- blended, stepped through four sizes, or scattered cell by cell -- and `t` draws the cells solid or in shades. `1` and `2` go back to the other two. Holding `]` past the whole window flattens the wave until the picture stands at one size the whole way round, so the screen can be asked for the desktop in blocks with no wave crossing it. A wave narrower than a block travels through it a cell at a time rather than lighting the whole block up and dropping it a step later.

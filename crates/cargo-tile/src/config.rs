@@ -218,10 +218,6 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 }
 
 /// `<os config dir>/cargo-tile/favorites.toml`.
-#[expect(
-    dead_code,
-    reason = "the favorites file path is resolved here before anything reads the file"
-)]
 pub(crate) fn favorites_path() -> Option<PathBuf> {
     config_root().map(|dir| dir.join(FAVORITES_FILENAME))
 }

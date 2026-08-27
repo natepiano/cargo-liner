@@ -18,13 +18,23 @@
 //! To add another, give the enum a variant, bind a default key in
 //! [`Globals::defaults`], and handle it in [`dispatch`].
 
+use std::time::Duration;
+use std::time::Instant;
+
 use crossterm::event::KeyCode;
 use tui_pane::Bindings;
 use tui_pane::Globals;
+use tui_pane::KeyBind;
 
 use crate::app::App;
+use crate::attract::AttractMode;
 use crate::constants::APP_GLOBALS_SECTION;
+use crate::favorites;
+use crate::favorites::FavoritesMutationError;
 use crate::tiles::Direction;
+
+const FAVORITE_TOAST_MIN_INTERIOR_LINES: usize = 1;
+const FAVORITE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -38,6 +48,7 @@ tui_pane::action_enum! {
         Freeze     => ("freeze",      "Freeze the display");
         Attract    => ("attract",     "Show the attract screen");
         ProcessTree => ("process_tree", "Show whole command lines");
+        SaveFavorite => ("save_favorite", "Save attract parameters");
     }
 }
 
@@ -59,6 +70,7 @@ impl Globals<App> for AppGlobalAction {
             'f' => Self::Freeze,
             'a' => Self::Attract,
             'p' => Self::ProcessTree,
+            KeyBind::ctrl('s') => Self::SaveFavorite,
         }
     }
 
@@ -78,11 +90,63 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
         AppGlobalAction::Attract => app.attract.toggle(),
         AppGlobalAction::ProcessTree => app.tree = app.tree.toggled(),
+        AppGlobalAction::SaveFavorite => save_favorite(app),
+    }
+}
+
+/// Persist the selected attract parameters and show the result.
+fn save_favorite(app: &mut App) {
+    let result = favorites::push(app.attract.favorite_settings());
+    let (title, body) = match result {
+        Ok(favorite) => (
+            "Favorite saved",
+            format!("{} parameters saved", mode_label(favorite.settings.mode())),
+        ),
+        Err(error) => ("Favorite not saved", favorite_refusal_message(&error)),
+    };
+    let pushed_at = Instant::now();
+    let toast_id = app.framework.toasts.push_timed(
+        title,
+        body.as_str(),
+        FAVORITE_TOAST_VISIBLE,
+        FAVORITE_TOAST_MIN_INTERIOR_LINES,
+    );
+    app.schedule_timed_toast(
+        toast_id,
+        pushed_at,
+        FAVORITE_TOAST_VISIBLE,
+        &body,
+        FAVORITE_TOAST_MIN_INTERIOR_LINES,
+    );
+}
+
+const fn mode_label(attract_mode: AttractMode) -> &'static str {
+    match attract_mode {
+        AttractMode::MovingBand => "Moving band",
+        AttractMode::MovingText => "Moving text",
+        AttractMode::Pixelate => "Pixelate",
+    }
+}
+
+fn favorite_refusal_message(error: &FavoritesMutationError) -> String {
+    match error {
+        FavoritesMutationError::LockUnavailable { .. } => {
+            format!("Favorites are in use; press ctrl-s to try again. {error}")
+        },
+        FavoritesMutationError::LocationUnavailable
+        | FavoritesMutationError::Unparseable { .. }
+        | FavoritesMutationError::Unreadable { .. }
+        | FavoritesMutationError::WriteFailed { .. } => {
+            format!("Favorites refused the save: {error}")
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
     use tui_pane::KeyBind;
 
     use super::*;
@@ -100,6 +164,54 @@ mod tests {
             scope.action_for(&KeyBind::from('p')),
             Some(AppGlobalAction::ProcessTree),
         );
+    }
+
+    #[test]
+    fn control_s_saves_a_favorite() {
+        let scope = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            scope.action_for(&KeyBind::ctrl('s')),
+            Some(AppGlobalAction::SaveFavorite),
+        );
+    }
+
+    #[test]
+    fn every_favorite_refusal_names_a_distinct_cause() {
+        let path = PathBuf::from("/tmp/favorites.toml");
+        let errors = [
+            FavoritesMutationError::LocationUnavailable,
+            FavoritesMutationError::Unparseable {
+                path:  path.clone(),
+                error: "bad TOML".to_string(),
+            },
+            FavoritesMutationError::Unreadable {
+                path:  path.clone(),
+                error: "permission denied".to_string(),
+            },
+            FavoritesMutationError::LockUnavailable {
+                path:  path.clone(),
+                error: "favorites are in use".to_string(),
+            },
+            FavoritesMutationError::WriteFailed {
+                path,
+                error: "disk is read-only".to_string(),
+            },
+        ];
+        let messages: Vec<String> = errors.iter().map(favorite_refusal_message).collect();
+        let distinct: HashSet<&str> = messages.iter().map(String::as_str).collect();
+
+        assert_eq!(distinct.len(), errors.len());
+        for (message, cause) in messages.iter().zip([
+            "no OS config directory",
+            "unparseable favorites",
+            "cannot read favorites",
+            "cannot acquire favorites lock",
+            "cannot write favorites",
+        ]) {
+            assert!(message.contains(cause), "{message:?} should name {cause:?}");
+        }
+        assert!(messages[3].contains("press ctrl-s to try again"));
     }
 
     /// The display starts short and the key walks between the two. A

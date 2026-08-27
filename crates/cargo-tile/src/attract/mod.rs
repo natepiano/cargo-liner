@@ -75,6 +75,7 @@ use crate::constants::PIXEL_SPEED_STEP;
 use crate::constants::PIXEL_WAVE_STEP;
 use crate::constants::TEXT_SPEED_STEP;
 use crate::constants::TEXT_SPREAD_STEP;
+use crate::favorites::FavoriteSettings;
 use crate::probe;
 use crate::probe::Phase;
 
@@ -152,6 +153,35 @@ enum Standing {
     Settling(Instant),
 }
 
+/// Terminal area most recently passed through the app's frame layout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LaidOutArea {
+    /// No frame has reached [`Attract::advance`] yet.
+    NeverLaidOut,
+    /// The terminal area used by the most recent frame.
+    LaidOut(Rect),
+}
+
+/// Terminal resize received since the most recent frame layout.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum PendingTerminalResize {
+    /// No resize input is waiting for the next frame.
+    #[default]
+    NotReported,
+    /// New terminal area reported by resize input.
+    Reported(Rect),
+}
+
+/// Area an animation's internal buffers were most recently sized to.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum LastSizedArea {
+    /// The animation has not received a terminal area yet.
+    #[default]
+    NeverSized,
+    /// The animation has been sized to this terminal area.
+    Sized(Rect),
+}
+
 /// Which animation the attract screen is drawing.
 ///
 /// Also the keymap scope its keys resolve against: each variant is an
@@ -172,75 +202,115 @@ pub(crate) enum AttractMode {
     Pixelate,
 }
 
+/// Last terminal area applied to each attract animation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct AnimationSizing {
+    /// Area applied to the moving band.
+    band:   LastSizedArea,
+    /// Area applied to the drifting text.
+    text:   LastSizedArea,
+    /// Area applied to the pixelating desktop.
+    pixels: LastSizedArea,
+}
+
+impl AnimationSizing {
+    const fn area(self, attract_mode: AttractMode) -> LastSizedArea {
+        match attract_mode {
+            AttractMode::MovingBand => self.band,
+            AttractMode::MovingText => self.text,
+            AttractMode::Pixelate => self.pixels,
+        }
+    }
+
+    const fn record(&mut self, attract_mode: AttractMode, area: Rect) {
+        let sized_area = LastSizedArea::Sized(area);
+        match attract_mode {
+            AttractMode::MovingBand => self.band = sized_area,
+            AttractMode::MovingText => self.text = sized_area,
+            AttractMode::Pixelate => self.pixels = sized_area,
+        }
+    }
+}
+
 /// The attract screen's state between frames.
 pub(crate) struct Attract {
     /// Keeps the captured desktop up to date on a worker thread.
-    monitor:     BackdropMonitor,
+    monitor:          BackdropMonitor,
     /// Which animation is being drawn, and which keymap scope the
     /// reader's keys resolve against while it is on screen.
-    mode:        AttractMode,
+    mode:             AttractMode,
+    /// Terminal area used to size the current animation before its
+    /// parameters are read or drawn.
+    laid_out_area:    LaidOutArea,
+    /// Resize input received after the most recent frame layout.
+    pending_resize:   PendingTerminalResize,
+    /// Last terminal area applied to each animation's internal buffers.
+    animation_sizing: AnimationSizing,
     /// The strip of characters crossing the grid.
-    band:        TravelingBand,
+    band:             TravelingBand,
     /// The window of characters drifting line by line.
-    text:        DriftingText,
+    text:             DriftingText,
     /// The desktop drawn as itself, coarsening under a travelling wave.
-    pixels:      ResolvingPixels,
+    pixels:           ResolvingPixels,
     /// How far into a run of presses of one of the band's steering keys
     /// the reader is, which is what lets a held key move it further per
     /// press.
-    held_band:   HeldKey<MovingBandAction>,
+    held_band:        HeldKey<MovingBandAction>,
     /// The same for the text's own keys. One run each, so turning
     /// between the animations does not hand the second whatever speed
     /// the first was climbing at.
-    held_text:   HeldKey<MovingTextAction>,
+    held_text:        HeldKey<MovingTextAction>,
     /// And the same again for the pixelate screen's.
-    held_pixels: HeldKey<PixelateAction>,
+    held_pixels:      HeldKey<PixelateAction>,
     /// How far the strip is carried toward the ground it is drawn on,
     /// on the alpha scale [`tui_pane::blend_color`] reads. Starts at
     /// [`u8::MAX`] so the app opens with nothing over its grid.
-    faded:       u8,
+    faded:            u8,
     /// When the strip was last moved on, so its speed is a speed rather
     /// than a step per frame.
-    advanced_at: Instant,
+    advanced_at:      Instant,
     /// What the reader has said about the strip, which the roster does
     /// not get to overrule either way.
-    asked:       Asked,
+    asked:            Asked,
     /// Whether the grid is being left out of the frame altogether. Not
     /// the same as [`Self::asked_for`]: it outlasts it, by the fade the
     /// strip takes to leave.
-    covering:    bool,
+    covering:         bool,
     /// Whether the display was being held still when the strip was last
     /// drawn, which is what says the gap since then is not travel the
     /// strip owes.
-    held:        bool,
+    held:             bool,
     /// Where the screen stands with the roster, which is what keeps a
     /// hand-over from turning around part way through it.
-    standing:    Standing,
+    standing:         Standing,
     /// What the last pass at settling on a window answered, so the
     /// probe notes the answer changing rather than every frame's
     /// repeat of it. [`None`] until the first pass.
-    identified:  Option<bool>,
+    identified:       Option<bool>,
 }
 
 impl Attract {
     /// An attract screen that is not yet showing.
     pub(crate) fn new() -> Self {
         Self {
-            monitor:     BackdropMonitor::new(),
-            mode:        AttractMode::default(),
-            band:        TravelingBand::new(),
-            text:        DriftingText::new(),
-            pixels:      ResolvingPixels::new(),
-            held_band:   HeldKey::new(),
-            held_text:   HeldKey::new(),
-            held_pixels: HeldKey::new(),
-            faded:       u8::MAX,
-            advanced_at: Instant::now(),
-            asked:       Asked::Nothing,
-            covering:    false,
-            held:        false,
-            standing:    Standing::Showing,
-            identified:  None,
+            monitor:          BackdropMonitor::new(),
+            mode:             AttractMode::default(),
+            laid_out_area:    LaidOutArea::NeverLaidOut,
+            pending_resize:   PendingTerminalResize::NotReported,
+            animation_sizing: AnimationSizing::default(),
+            band:             TravelingBand::new(),
+            text:             DriftingText::new(),
+            pixels:           ResolvingPixels::new(),
+            held_band:        HeldKey::new(),
+            held_text:        HeldKey::new(),
+            held_pixels:      HeldKey::new(),
+            faded:            u8::MAX,
+            advanced_at:      Instant::now(),
+            asked:            Asked::Nothing,
+            covering:         false,
+            held:             false,
+            standing:         Standing::Showing,
+            identified:       None,
         }
     }
 
@@ -291,6 +361,45 @@ impl Attract {
         } else {
             None
         }
+    }
+
+    /// Parameters held by the animation selected for the current mode.
+    ///
+    /// Applies the latest [`LaidOutArea`] or [`PendingTerminalResize`]
+    /// first so the returned values already match the next frame,
+    /// including a mode switch with no frame in between.
+    pub(crate) fn favorite_settings(&mut self) -> FavoriteSettings {
+        self.size_current_animation();
+        match self.mode {
+            AttractMode::MovingBand => FavoriteSettings::MovingBand(self.band.settings()),
+            AttractMode::MovingText => FavoriteSettings::MovingText(self.text.settings()),
+            AttractMode::Pixelate => FavoriteSettings::Pixelate(self.pixels.settings()),
+        }
+    }
+
+    /// Size the selected animation to the latest frame or resize area
+    /// without moving it.
+    fn size_current_animation(&mut self) {
+        let area = match (self.pending_resize, self.laid_out_area) {
+            (PendingTerminalResize::Reported(area), _) | (_, LaidOutArea::LaidOut(area)) => area,
+            (PendingTerminalResize::NotReported, LaidOutArea::NeverLaidOut) => return,
+        };
+        let attract_mode = self.mode;
+        if self.animation_sizing.area(attract_mode) == LastSizedArea::Sized(area) {
+            return;
+        }
+        match attract_mode {
+            AttractMode::MovingBand => self.band.advance(area, Duration::ZERO),
+            AttractMode::MovingText => self.text.advance(area, Duration::ZERO),
+            AttractMode::Pixelate => self.pixels.advance(area, Duration::ZERO),
+        }
+        self.animation_sizing.record(attract_mode, area);
+    }
+
+    /// Record an input-reported terminal area before queued keys are
+    /// dispatched.
+    pub(crate) const fn record_terminal_resize(&mut self, area: Rect) {
+        self.pending_resize = PendingTerminalResize::Reported(area);
     }
 
     /// Steer the moving band.
@@ -523,6 +632,8 @@ impl Attract {
         updates: Updates,
         now: Instant,
     ) -> Grid {
+        self.laid_out_area = LaidOutArea::LaidOut(area);
+        self.pending_resize = PendingTerminalResize::NotReported;
         // A freeze just let go of leaves a gap between this draw and
         // the one before it that the strip does not owe: the display
         // stood still, so the strip stood still with it. The gap is not
@@ -592,6 +703,7 @@ impl Attract {
         self.covering =
             matches!(self.asked, Asked::For) || (self.covering && self.faded != u8::MAX);
         if self.faded == u8::MAX {
+            self.size_current_animation();
             return self.grid();
         }
 
@@ -599,7 +711,8 @@ impl Attract {
         // Only the animation on screen is carried forward. The other
         // holds wherever it was left, which is what makes turning
         // between them a turn rather than a restart.
-        match self.mode {
+        let attract_mode = self.mode;
+        match attract_mode {
             AttractMode::MovingBand => {
                 self.band.advance(area, elapsed);
                 self.band.fade(self.faded);
@@ -613,6 +726,7 @@ impl Attract {
                 self.pixels.fade(self.faded);
             },
         }
+        self.animation_sizing.record(attract_mode, area);
         self.grid()
     }
 
@@ -680,6 +794,77 @@ mod tests {
             attract.advance(AREA, work, Updates::Live, now);
         }
         attract.faded
+    }
+
+    #[test]
+    fn switched_mode_settings_are_sized_before_the_next_frame() {
+        const NARROW_AREA: Rect = Rect::new(0, 0, 20, 10);
+
+        let mut attract = Attract::new();
+        let unsized_settings = attract.band.settings();
+        let now = Instant::now();
+
+        attract.advance(NARROW_AREA, Work::Running, Updates::Live, now);
+        attract.moving_text(MovingTextAction::ShowMovingBand);
+        let saved = attract.favorite_settings();
+
+        assert!(
+            matches!(
+                saved, FavoriteSettings::MovingBand(settings)
+                    if settings.width < unsized_settings.width
+            ),
+            "reading the switched mode removes the band's sentinel width",
+        );
+
+        attract.toggle();
+        attract.advance(NARROW_AREA, Work::Running, Updates::Live, now + POLL);
+
+        assert_eq!(
+            attract.favorite_settings(),
+            saved,
+            "the first frame keeps the parameters read before it",
+        );
+    }
+
+    #[test]
+    fn frozen_frame_records_its_laid_out_area() {
+        let mut attract = Attract::new();
+        let resized = Rect::new(0, 0, AREA.width.saturating_sub(7), AREA.height);
+
+        attract.advance(resized, Work::Running, Updates::Frozen, Instant::now());
+
+        assert_eq!(attract.laid_out_area, LaidOutArea::LaidOut(resized));
+    }
+
+    #[test]
+    fn frozen_frame_does_not_change_band_glyphs() {
+        let mut attract = Attract::new();
+        attract.mode = AttractMode::MovingBand;
+        attract.record_terminal_resize(AREA);
+        let _ = attract.favorite_settings();
+        let band_before_frame = attract.band.clone();
+
+        attract.advance(AREA, Work::Idle, Updates::Frozen, Instant::now());
+
+        assert_eq!(attract.band, band_before_frame);
+    }
+
+    #[test]
+    fn live_visible_frame_advances_band_once() {
+        let mut attract = Attract::new();
+        attract.mode = AttractMode::MovingBand;
+        attract.record_terminal_resize(AREA);
+        let _ = attract.favorite_settings();
+        attract.faded = 0;
+        let previous = Instant::now();
+        attract.advanced_at = previous;
+        let mut expected = attract.band.clone();
+        expected.advance(AREA, POLL);
+        expected.fade(0);
+
+        attract.advance(AREA, Work::Idle, Updates::Live, previous + POLL);
+
+        assert_eq!(attract.band, expected);
     }
 
     /// Asking for the strip over an idle grid and then asking again has

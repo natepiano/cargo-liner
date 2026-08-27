@@ -30,6 +30,7 @@ use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameLabel;
 use tui_pane::PopupFrame;
 use tui_pane::RenderFocus;
+use tui_pane::Renderable;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::ScanIndicator;
@@ -37,6 +38,7 @@ use tui_pane::SettingsRenderOptions;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
+use tui_pane::ToastsRenderCtx;
 use tui_pane::accent_color;
 use tui_pane::blend_color;
 use tui_pane::default_pane_chrome;
@@ -178,6 +180,14 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         app.attract.render(frame.buffer_mut(), area);
     });
     draw_status_line(frame, app, keymap, status);
+    app.framework.toasts.render(
+        frame,
+        area,
+        &ToastsRenderCtx {
+            now:              Instant::now(),
+            pane_focus_state: PaneFocusState::Inactive,
+        },
+    );
 
     match app.framework.overlay() {
         Some(FrameworkOverlayId::Settings) => draw_settings(frame, app),
@@ -739,10 +749,16 @@ fn draw_group(
     // Where the driver stands at the foot of its own chain, that is
     // where its pid is written, and the rows pointing at it in the
     // table below need it in the colour they are pointing with.
-    let foot = leads_as_ancestor
-        .then(|| group.lead.family())
-        .flatten()
-        .map(theme::family_color);
+    let foot = if leads_as_ancestor {
+        group
+            .lead
+            .family()
+            .map_or(AncestryFoot::PlainCommand, |family| {
+                AncestryFoot::ColoredCommand(theme::family_color(family))
+            })
+    } else {
+        AncestryFoot::Other
+    };
     // The lead's own fade goes into the block whether or not it is a
     // row there: the chain stands over the whole cell, and the cell
     // goes out when the command does.
@@ -757,16 +773,7 @@ fn draw_group(
         Some(group.lead.process.path.as_str()),
         tree,
     );
-    let used = draw_ancestry(
-        buffer,
-        inner,
-        &ancestry,
-        faded,
-        ground,
-        foot,
-        leads_as_ancestor,
-        table_rows,
-    );
+    let used = draw_ancestry(buffer, inner, &ancestry, faded, ground, foot, table_rows);
     let table = Rect {
         y: inner.y.saturating_add(used),
         height: inner.height.saturating_sub(used),
@@ -883,18 +890,35 @@ fn carried(chain: Vec<Ancestor>) -> Vec<Ancestor> {
 /// family, `foot` carries the colour its `parent` cells point with; the
 /// rest of the chain heads nothing, and takes the same plain text
 /// [`pid_style`] leaves an unfamilied pid in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AncestryFoot {
+    /// The lead command closes its own chain with a family colour.
+    ColoredCommand(Color),
+    /// The lead command closes its own chain without a family colour.
+    PlainCommand,
+    /// A shell or other ordinary ancestor closes the chain.
+    Other,
+}
+
 fn draw_ancestry(
     buffer: &mut Buffer,
     area: Rect,
     ancestry: &[Ancestor],
     faded: u8,
     ground: Color,
-    foot: Option<Color>,
-    foot_is_the_command: bool,
+    foot: AncestryFoot,
     table: usize,
 ) -> u16 {
     let budget = ancestry_budget(area.height, table);
-    let levels = ancestry_fit(ancestry, budget, area.width, foot_is_the_command);
+    let levels = ancestry_fit(
+        ancestry,
+        budget,
+        area.width,
+        matches!(
+            foot,
+            AncestryFoot::ColoredCommand(_) | AncestryFoot::PlainCommand
+        ),
+    );
     if levels.is_empty() {
         return 0;
     }
@@ -906,8 +930,12 @@ fn draw_ancestry(
         .enumerate()
         .flat_map(|(level, ancestor)| {
             let ink = match foot {
-                Some(color) if level == last => blend_color(color, ground, faded),
-                _ => pid,
+                AncestryFoot::ColoredCommand(color) if level == last => {
+                    blend_color(color, ground, faded)
+                },
+                AncestryFoot::ColoredCommand(_)
+                | AncestryFoot::PlainCommand
+                | AncestryFoot::Other => pid,
             };
             ancestry_lines(*ancestor, level, area.width, ink, command)
         })
@@ -1972,6 +2000,7 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
 
 #[cfg(test)]
 #[allow(
+    clippy::expect_used,
     clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
@@ -2195,8 +2224,7 @@ mod tests {
                 &[],
                 0,
                 pane_background(false),
-                None,
-                false,
+                AncestryFoot::Other,
                 usize::from(area.height - area.height / 2),
             ),
             0
@@ -2221,8 +2249,7 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            None,
-            false,
+            AncestryFoot::Other,
             usize::from(area.height - area.height / 2),
         );
 
@@ -2251,8 +2278,7 @@ mod tests {
             &ancestry,
             0,
             ground,
-            Some(theme::family_color(0)),
-            true,
+            AncestryFoot::ColoredCommand(theme::family_color(0)),
             usize::from(area.height - area.height / 2),
         );
 
@@ -2281,8 +2307,7 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            None,
-            false,
+            AncestryFoot::Other,
             usize::from(area.height - area.height / 2),
         );
 
@@ -2310,8 +2335,7 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            None,
-            false,
+            AncestryFoot::Other,
             usize::from(area.height - area.height / 2),
         );
 
@@ -2341,8 +2365,7 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            None,
-            false,
+            AncestryFoot::Other,
             usize::from(area.height - area.height / 2),
         );
 
@@ -2370,8 +2393,7 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            None,
-            false,
+            AncestryFoot::Other,
             usize::from(area.height - area.height / 2),
         );
 
@@ -2550,7 +2572,7 @@ mod tests {
 
         // The cell the grid would build from that ask, and the room the
         // block is left once the table has taken its rows.
-        let height = u16::try_from(asked + table).expect("a test cell fits a u16");
+        let height = u16::try_from(asked + table).expect("a test cell should fit a u16");
         let budget = ancestry_budget(height, table);
         let levels = ancestry_fit(&ancestry, budget, width, false);
 
