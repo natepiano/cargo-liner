@@ -21,6 +21,7 @@ use super::classify::CrateKind;
 use super::classify::ModuleLocation;
 use super::classify::ParentVisibility;
 use super::classify::VisibilityFindingContext;
+use crate::compiler::cfg_excluded_references::CfgExcludedReference;
 use crate::compiler::constants::PRELUDE_MODULE_NAME;
 use crate::compiler::facade;
 use crate::compiler::facade::ParentFacadeExportStatus;
@@ -276,15 +277,27 @@ pub(super) fn record_forbidden_visibility_annotation(
         return Ok(false);
     }
     match annotation.syntax() {
-        VisibilitySyntax::Crate | VisibilitySyntax::InCrate => record_overbroad_pub_crate(
-            ctx,
-            item,
-            annotation,
-            finding_context,
-            parent_facade_analysis,
-            signature_exposure,
-            sink,
-        ),
+        VisibilitySyntax::Crate | VisibilitySyntax::InCrate => {
+            if cfg_excluded_source_names_item(ctx, item) {
+                // `true` is "this annotation is handled", not "a finding was
+                // recorded". `record_overbroad_pub_crate` answers `true` on
+                // every path that reaches a decision, and both callers stop
+                // there. Answering `false` instead would hand a `pub(crate)
+                // mod` on to `record_review_pub_mod`, which reports every
+                // module it is handed, so suppressing one diagnostic would
+                // raise another on the same line.
+                return Ok(true);
+            }
+            record_overbroad_pub_crate(
+                ctx,
+                item,
+                annotation,
+                finding_context,
+                parent_facade_analysis,
+                signature_exposure,
+                sink,
+            )
+        },
         VisibilitySyntax::InParent | VisibilitySyntax::InCurrent | VisibilitySyntax::InPath(_) => {
             record_forbidden_pub_in_crate(
                 ctx,
@@ -1237,6 +1250,24 @@ fn facade_less_boundary_matches_callers(
     };
     policy::canonical_pub_in_boundary(&item_module, annotation.source())
         == Some(policy::crate_rooted_def_path(&boundary))
+}
+
+/// Whether source this compilation's `#[cfg]` configuration left out writes
+/// the item's name.
+///
+/// [`collect_use_sites`] walks the post-expansion HIR, so a consumer inside an
+/// excluded region contributes no use site.
+/// `VisibilityConstraintGroup::caller_required_reach` then reads a caller set
+/// missing that consumer's module and resolves the boundary to what the
+/// remaining callers need. Rust accepts no `#[cfg]` on a visibility qualifier,
+/// so the narrowed spelling satisfies one configuration and stops the other
+/// compiling; `overbroad-pub-crate` reports nothing here rather than advise it.
+///
+/// [`collect_use_sites`]: crate::compiler::visibility::use_sites::collect_use_sites
+fn cfg_excluded_source_names_item(ctx: &VisibilityContext<'_, '_>, item: &ItemInfo<'_>) -> bool {
+    item.name.is_some_and(|name| {
+        ctx.cfg_excluded_references.reference(name) == CfgExcludedReference::Present
+    })
 }
 
 fn facade_is_possible(ctx: &VisibilityContext<'_, '_>, def_id: LocalDefId) -> bool {

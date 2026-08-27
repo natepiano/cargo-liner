@@ -19,6 +19,7 @@ use rustc_span::def_id::LocalDefId;
 use serde_json::to_vec_pretty;
 
 use super::visit;
+use crate::compiler::cfg_excluded_references::CfgExcludedReferences;
 use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
 use crate::compiler::exposure::SignatureExposureCache;
 #[cfg(feature = "test-counters")]
@@ -47,6 +48,10 @@ pub(in crate::compiler::visibility) struct VisibilityContext<'a, 'tcx> {
     pub root_module:               &'a Path,
     pub effective_visibilities:    &'a EffectiveVisibilities,
     pub source_cache:              &'a SourceCache,
+    /// Names written in source this compilation's `#[cfg]` configuration left
+    /// out, so a narrowing is never derived from a caller set that is missing a
+    /// consumer another configuration compiles.
+    pub cfg_excluded_references:   &'a CfgExcludedReferences,
     pub public_visibility_targets: &'a FxHashSet<LocalDefId>,
     /// Per ADT, how far it may be widened before one of its trait impls leaves
     /// a narrower type in its interface. Absent means nothing caps it.
@@ -122,6 +127,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
     let mut sink = FindingsSink::default();
     let crate_items = tcx.hir_crate_items(());
     let source_cache = build_source_cache(tcx, &crate_root_file)?;
+    let cfg_excluded_references = CfgExcludedReferences::collect(tcx, &source_cache);
     let reexport_index = use_sites::reexport_index(tcx);
     let module_sources = ModuleSourceMap::new(tcx, &source_cache);
     let mut public_visibility_targets = FxHashSet::default();
@@ -134,6 +140,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
         root_module: &crate_root_file,
         effective_visibilities: tcx.effective_visibilities(()),
         source_cache: &source_cache,
+        cfg_excluded_references: &cfg_excluded_references,
         public_visibility_targets: &public_visibility_targets,
         interface_ceilings: &interface_ceilings,
         reexport_index: &reexport_index,
