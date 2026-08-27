@@ -701,10 +701,13 @@ pub(crate) const PHASE_BUILDING: &str = "building";
 /// test runner works through the tests it collected.
 pub(crate) const PHASE_TESTING: &str = "testing";
 /// What cargo says while it waits for another cargo to give up the
-/// build directory. Matched on the phrase alone: the `Blocking` status
-/// word ahead of it arrives wrapped in colour codes, and what it names
-/// varies with which lock is held.
-pub(crate) const LOCK_WAIT_MARKER: &str = "waiting for file lock";
+/// build directory. The match opens past the `Blocking` status word,
+/// which arrives wrapped in colour codes, and runs to the end of the
+/// phrase rather than stopping at the lock: cargo takes the package
+/// cache under the same wording, holds it for a moment, and every
+/// concurrent command touches it. That wait is over before there is
+/// anything to draw, and is not what the state column is for.
+pub(crate) const LOCK_WAIT_MARKER: &str = "waiting for file lock on build directory";
 
 // sccache
 /// The sccache executable: what the stats read runs, and the process

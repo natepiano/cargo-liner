@@ -304,42 +304,49 @@ fn tail(path: &Path) -> Option<String> {
 
 /// What the end of a log says the run is doing now.
 ///
-/// A blocked run has usually drawn a bar before it stopped -- cargo
-/// counts its downloads before it reaches for the lock, and the wait
-/// itself is one line printed once -- so the two markers are weighed by
-/// where they sit rather than by which is present. Whichever came last
-/// is what is happening.
+/// The wait is one line printed once, and it stays in the log for as
+/// long as the run does -- so finding it says only that the run waited,
+/// never that it still is. What settles it is whether anything came
+/// after: a bar, a `Finished`, or the output of the binary a `cargo
+/// run` went on to start are each proof the lock came free. A run that
+/// is still waiting has written the line and then nothing, which is
+/// exactly what being blocked looks like from outside.
 fn parse_state(tail: &str) -> Option<RunState> {
-    let counter = last_counter(tail);
-    let waiting = tail.rfind(LOCK_WAIT_MARKER);
-    match (counter, waiting) {
-        (Some((at, state)), Some(wait)) if at > wait => Some(state),
-        (_, Some(_)) => Some(RunState::Blocked),
-        (Some((_, state)), None) => Some(state),
-        (None, None) => None,
+    if still_waiting(tail) {
+        return Some(RunState::Blocked);
     }
+    last_counter(tail)
 }
 
-/// The last counter in `tail` and where it sits, which is the most
-/// recent redraw of the bar.
+/// Whether the log ends on the wait line.
+///
+/// The line itself is the one line the trailing text is allowed to
+/// hold. Cargo redraws its bar over carriage returns rather than
+/// newlines, so a redraw that followed the wait counts as the second
+/// line here just as a `Finished` would.
+fn still_waiting(tail: &str) -> bool {
+    tail.rfind(LOCK_WAIT_MARKER)
+        .and_then(|at| tail.get(at..))
+        .is_some_and(|after| after.trim_end().lines().count() == 1)
+}
+
+/// What the last counter in `tail` reads, which is the most recent
+/// redraw of the bar.
 ///
 /// Last rather than first because a run draws more than one bar: cargo
 /// counts downloads before it counts compilations, each nested cargo a
 /// command drives counts its own, and a test runner counts the tests
 /// once the compiling is over. The one at the end is the one happening
 /// now.
-fn last_counter(tail: &str) -> Option<(usize, RunState)> {
+fn last_counter(tail: &str) -> Option<RunState> {
     tail.rmatch_indices(UNIT_COUNTER_LEAD)
         .find_map(|(index, lead)| {
             let after = index.saturating_add(lead.len());
             let (counter, progress) = counter_at(tail.get(after..)?)?;
-            Some((
-                index,
-                RunState::Working {
-                    phase: counter.phase(tail, index),
-                    progress,
-                },
-            ))
+            Some(RunState::Working {
+                phase: counter.phase(tail, index),
+                progress,
+            })
         })
 }
 
@@ -699,6 +706,31 @@ mod tests {
         let tail = format!("{CAPTURED_WAIT}{CAPTURED_REDRAW}");
 
         assert_eq!(parse_state(&tail), Some(compiling(149, 403)));
+    }
+
+    /// A run with nothing to compile draws no bar at all, so there is no
+    /// counter to weigh the wait against -- and what follows it is the
+    /// output of the binary the run went on to start. That output is
+    /// proof enough the lock came free.
+    #[test]
+    fn output_after_a_wait_means_the_lock_came_free_even_with_no_bar() {
+        let tail = format!(
+            "{CAPTURED_WAIT}    Finished `dev` profile [unoptimized + debuginfo] target(s) in \
+             3.19s\n     Running `/rust/bevy_brp/target/debug/examples/extras_plugin`\nINFO \
+             bevy_winit::system: Creating new window\n"
+        );
+
+        assert_eq!(parse_state(&tail), None);
+    }
+
+    /// Cargo takes the package cache under the same wording as the build
+    /// directory and gives it straight back, so every command run beside
+    /// another says this. It is not a wait anyone can see.
+    #[test]
+    fn a_wait_on_the_package_cache_is_not_a_state_worth_showing() {
+        let tail = "    Blocking waiting for file lock on package cache\n";
+
+        assert_eq!(parse_state(tail), None);
     }
 
     #[test]
