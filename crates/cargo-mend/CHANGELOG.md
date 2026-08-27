@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Keep the `pub(crate)` on an item whose only caller sits behind an inactive `#[cfg]`. Mend sees just the code that survived `#[cfg]` expansion, so that caller was invisible and the narrowing it rules out was advised anyway -- applying it left the other configuration not compiling.
+
 ## [0.20.1] - 2026-08-25
 
 ### Fixed
