@@ -426,17 +426,6 @@ pub(crate) const ANCESTRY_GAP_HEIGHT: u16 = 1;
 /// middle rather than off the end: one for the top-level parent, one
 /// for the elision, and one for the level nearest the command.
 pub(crate) const ANCESTRY_MIN_ELIDED_ROWS: usize = 3;
-/// How many times a cell's demand re-measures its ancestry block
-/// against the cell its own last answer would have bought.
-///
-/// The block is given half the cell, so what it draws depends on a
-/// height the demand is itself deciding. Each pass hands the block the
-/// budget the pass before it worked out, and each answer is no larger
-/// than the one before -- a smaller cell buys a smaller budget, which
-/// fits no more levels -- so the sequence settles, usually on the second
-/// pass. This bounds it anyway: a render path is no place to discover
-/// that an assumption about convergence was wrong.
-pub(crate) const ANCESTRY_DEMAND_PASSES: usize = 8;
 /// What stands in the ancestry block for the levels a short cell has no
 /// room to draw.
 pub(crate) const ANCESTRY_ELISION: &str = "\u{2026}";

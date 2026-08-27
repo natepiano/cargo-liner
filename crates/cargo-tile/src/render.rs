@@ -61,7 +61,6 @@ use crate::app::Updates;
 use crate::attract;
 use crate::attract::Grid;
 use crate::attract::Work;
-use crate::constants::ANCESTRY_DEMAND_PASSES;
 use crate::constants::ANCESTRY_ELISION;
 use crate::constants::ANCESTRY_GAP_HEIGHT;
 use crate::constants::ANCESTRY_LEVEL_INDENT;
@@ -417,61 +416,24 @@ fn group_height_parts(
         Some(group.lead.process.path.as_str()),
         tree,
     );
-    (
-        ancestry_demand(&ancestry, width, table, leads_as_ancestor),
-        table,
-    )
+    (ancestry_demand(&ancestry, width), table)
 }
 
-/// Rows the block above the table asks for: the ones
-/// [`draw_ancestry`] will actually put on screen, not the ones the
-/// whole chain would take.
+/// Rows the block above the table asks for: the whole chain, plus the
+/// blank row under it.
 ///
-/// The two are far apart. The block is given half the cell, and
-/// [`ancestry_fit`] then gives up whole levels until what is left fits
-/// -- so what it draws is neither the chain nor the budget, but wherever
-/// the last level to survive leaves it. Counting the chain asked for
-/// every row of every level the cell was always going to elide, which
-/// is how a cell drawing twelve rows came to ask for forty-five, then
-/// sat in a cell sized for the larger number with the difference blank.
-///
-/// The budget comes from the cell's height and the cell's height is what
-/// this is deciding, so it is solved rather than read: the whole chain
-/// is the ceiling, and each pass gives the block the budget its own last
-/// answer would have bought. See [`ANCESTRY_DEMAND_PASSES`] for why that
-/// settles.
-fn ancestry_demand(
-    ancestry: &[Ancestor],
-    width: u16,
-    table: usize,
-    foot_is_the_command: bool,
-) -> usize {
+/// The ask is exactly what [`draw_ancestry`] draws when the cell is
+/// given it, because [`ancestry_budget`] hands the block whatever the
+/// table does not need. Elision is then the answer to a cell that got
+/// less than it asked for, never to a cell that got what it asked for --
+/// which is what keeps the count the readout writes out equal to the
+/// rows on screen.
+fn ancestry_demand(ancestry: &[Ancestor], width: u16) -> usize {
     if ancestry.is_empty() {
         return 0;
     }
-    let gap = usize::from(ANCESTRY_GAP_HEIGHT);
     let whole: Vec<Option<&Ancestor>> = ancestry.iter().map(Some).collect();
-    let mut above = ancestry_height(&whole, width).saturating_add(gap);
-    for _ in 0..ANCESTRY_DEMAND_PASSES {
-        let height = u16::try_from(above.saturating_add(table)).unwrap_or(u16::MAX);
-        let budget = ancestry_budget(height);
-        let levels = ancestry_fit(ancestry, budget, width, foot_is_the_command);
-        // The same rows [`draw_ancestry`] ends up with: the levels it
-        // settled on, cut to the budget where the one level it stops at
-        // outruns it on its own, and no gap at all where it drew nothing.
-        let drawn = if levels.is_empty() {
-            0
-        } else {
-            ancestry_height(&levels, width)
-                .min(budget.max(1))
-                .saturating_add(gap)
-        };
-        if drawn >= above {
-            break;
-        }
-        above = drawn;
-    }
-    above
+    ancestry_height(&whole, width).saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
 }
 
 /// Rows a table of `rows` lays out at `width`: the one column-label row
@@ -785,6 +747,16 @@ fn draw_group(
     // row there: the chain stands over the whole cell, and the cell
     // goes out when the command does.
     let faded = heading_fade(&rows).min(group.lead.faded());
+    // The same measurement [`group_height_parts`] made when the cell
+    // asked for its room, so the block is given back exactly what the
+    // ask left it.
+    let table_rows = table_height(
+        &rows,
+        TableKind::Command,
+        inner.width,
+        Some(group.lead.process.path.as_str()),
+        tree,
+    );
     let used = draw_ancestry(
         buffer,
         inner,
@@ -793,6 +765,7 @@ fn draw_group(
         ground,
         foot,
         leads_as_ancestor,
+        table_rows,
     );
     let table = Rect {
         y: inner.y.saturating_add(used),
@@ -918,8 +891,9 @@ fn draw_ancestry(
     ground: Color,
     foot: Option<Color>,
     foot_is_the_command: bool,
+    table: usize,
 ) -> u16 {
-    let budget = ancestry_budget(area.height);
+    let budget = ancestry_budget(area.height, table);
     let levels = ancestry_fit(ancestry, budget, area.width, foot_is_the_command);
     if levels.is_empty() {
         return 0;
@@ -989,13 +963,18 @@ fn ancestry_height(levels: &[Option<&Ancestor>], width: u16) -> usize {
         .sum()
 }
 
-/// Rows the ancestry block may take at a cell of `height`.
+/// Rows the ancestry block may take at a cell of `height` standing over
+/// a table of `table` rows.
 ///
-/// Never more than half the cell, and the blank row under the block
-/// comes out of that half: whatever the chain has to say, the table it
-/// stands over is what the cell is for.
-fn ancestry_budget(height: u16) -> usize {
-    usize::from(height / 2).saturating_sub(usize::from(ANCESTRY_GAP_HEIGHT))
+/// What the table needs comes off the top, then the blank row under the
+/// block: the table is what the cell is for, and the chain gets what is
+/// left. A cell granted its [`ancestry_demand`] has exactly the whole
+/// chain left over, so it draws the chain whole; a cell given less
+/// elides, and by exactly the shortfall.
+fn ancestry_budget(height: u16, table: usize) -> usize {
+    usize::from(height)
+        .saturating_sub(table)
+        .saturating_sub(usize::from(ANCESTRY_GAP_HEIGHT))
 }
 
 /// Which levels of `ancestry` a block of `budget` rows carries, `None`
@@ -2190,17 +2169,17 @@ mod tests {
     /// is for.
     #[test]
     fn the_block_never_takes_more_than_half_the_cell() {
-        assert_eq!(ancestry_budget(12), 5);
-        assert_eq!(ancestry_budget(4), 1);
-        assert_eq!(ancestry_budget(2), 0);
-        assert_eq!(ancestry_budget(0), 0);
+        assert_eq!(ancestry_budget(12, 6), 5);
+        assert_eq!(ancestry_budget(4, 2), 1);
+        assert_eq!(ancestry_budget(2, 1), 0);
+        assert_eq!(ancestry_budget(0, 0), 0);
     }
 
     /// A cell with no room for the block at all draws none of it, and
     /// leaves the table every row it had.
     #[test]
     fn a_cell_too_short_for_the_block_spends_nothing_on_it() {
-        assert!(ancestry_levels(&chain(3), ancestry_budget(2), false).is_empty());
+        assert!(ancestry_levels(&chain(3), ancestry_budget(2, 1), false).is_empty());
     }
 
     /// A command whose parents could not be read costs the table
@@ -2217,7 +2196,8 @@ mod tests {
                 0,
                 pane_background(false),
                 None,
-                false
+                false,
+                usize::from(area.height - area.height / 2),
             ),
             0
         );
@@ -2243,6 +2223,7 @@ mod tests {
             pane_background(false),
             None,
             false,
+            usize::from(area.height - area.height / 2),
         );
 
         assert_eq!(used, 4, "three levels and the blank row under them");
@@ -2272,6 +2253,7 @@ mod tests {
             ground,
             Some(theme::family_color(0)),
             true,
+            usize::from(area.height - area.height / 2),
         );
 
         assert_eq!(buffer[(1, 0)].fg, blend_color(text_default(), ground, 0));
@@ -2301,6 +2283,7 @@ mod tests {
             pane_background(false),
             None,
             false,
+            usize::from(area.height - area.height / 2),
         );
 
         assert_eq!(buffer_line(&buffer, 0), " 6218 claude --remote-control");
@@ -2329,6 +2312,7 @@ mod tests {
             pane_background(false),
             None,
             false,
+            usize::from(area.height - area.height / 2),
         );
 
         assert_eq!(
@@ -2359,6 +2343,7 @@ mod tests {
             pane_background(false),
             None,
             false,
+            usize::from(area.height - area.height / 2),
         );
 
         assert_eq!(used, 3, "the two rows the budget bought, and the gap");
@@ -2387,6 +2372,7 @@ mod tests {
             pane_background(false),
             None,
             false,
+            usize::from(area.height - area.height / 2),
         );
 
         assert!(
@@ -2543,22 +2529,40 @@ mod tests {
         );
     }
 
-    /// The elision the demand is counting on: the cell really does draw
-    /// fewer levels than the chain has, which is what makes the two
-    /// counts capable of disagreeing at all.
+    /// The ask is the chain itself, so a cell granted it has the room to
+    /// draw every level -- which is what makes the count the readout
+    /// writes out the count that goes on screen.
     #[test]
-    fn a_chain_too_long_for_its_cell_costs_far_less_than_the_chain() {
+    fn a_cell_granted_its_ask_draws_the_whole_chain() {
         let width = 60;
         let ancestry = long_chain();
         let whole: Vec<Option<&Ancestor>> = ancestry.iter().map(Some).collect();
         let table = 6;
+        let gap = usize::from(ANCESTRY_GAP_HEIGHT);
 
-        let asked = ancestry_demand(&ancestry, width, table, false);
+        let asked = ancestry_demand(&ancestry, width);
 
-        assert!(
-            asked < ancestry_height(&whole, width),
-            "a demand of {asked} should be under the {} rows the chain takes whole",
-            ancestry_height(&whole, width),
+        assert_eq!(
+            asked,
+            ancestry_height(&whole, width).saturating_add(gap),
+            "the ask is the whole chain plus the blank row under it",
+        );
+
+        // The cell the grid would build from that ask, and the room the
+        // block is left once the table has taken its rows.
+        let height = u16::try_from(asked + table).expect("a test cell fits a u16");
+        let budget = ancestry_budget(height, table);
+        let levels = ancestry_fit(&ancestry, budget, width, false);
+
+        assert_eq!(
+            levels.len(),
+            ancestry.len(),
+            "a cell sized to the ask elides no level",
+        );
+        assert_eq!(
+            ancestry_height(&levels, width).saturating_add(gap),
+            asked,
+            "and draws exactly the rows it asked for",
         );
     }
 

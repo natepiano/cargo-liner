@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report test progress, not just build progress. `cargo nextest run` counts its tests the way cargo counts units, and the working-directory heading names which count is on screen: `building`, then `testing`. Runs with no terminal report too -- nextest draws no bar there, so the count is read from its per-test lines instead.
 
 ### Fixed
+- A cell's process chain is drawn to the row count the cell asked for. The number it asks for is the whole chain, and the block is handed whatever the table under it does not take, so the chain is shortened only when the grid gave the cell less than it asked for.
 - The attract screen finds iTerm2's windows again, so it draws the desktop of the display the terminal is on. `TERM_PROGRAM` names a bundle, `iTerm.app`, and the `.app` was being compared as part of the name -- matching nothing, which left the frontmost application's window standing in for the terminal's.
 - The attract screen falls back to the nearest display, not the primary, when the terminal's window centre lands on no display at all.
 - The moving-band attract screen draws the desktop across the whole of each cell rather than only through the character's ink, so the colours line up with the picture instead of scattering to whichever corner each glyph puts its ink in.
