@@ -138,6 +138,21 @@ impl BandFraying {
     const fn trailing(self) -> bool { matches!(self, Self::Trailing | Self::Both) }
 }
 
+/// The parameters that steering can change on a [`TravelingBand`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BandSettings {
+    /// Which way the strip travels.
+    pub direction:  BandDirection,
+    /// How deep the strip stands, in cells along its travel axis.
+    pub width:      u32,
+    /// How far the strip travels each second, in cells.
+    pub speed:      u32,
+    /// How fast the strip's edges fray.
+    pub tail_speed: u32,
+    /// Which of the strip's edges fray.
+    pub fraying:    BandFraying,
+}
+
 /// How much of the run of `length` starting at `start` falls inside
 /// `0..inside`, on a ring of circumference `span`.
 ///
@@ -356,6 +371,61 @@ impl TravelingBand {
     #[must_use]
     pub fn new() -> Self { Self::default() }
 
+    /// The strip's current steerable parameters.
+    #[must_use]
+    pub const fn settings(&self) -> BandSettings {
+        BandSettings {
+            direction:  self.direction,
+            width:      self.width,
+            speed:      self.speed,
+            tail_speed: self.tail_speed,
+            fraying:    self.fraying,
+        }
+    }
+
+    /// Restores steerable parameters through the same transitions as
+    /// the individual steering methods.
+    pub fn apply(&mut self, settings: BandSettings) {
+        self.set_direction(settings.direction);
+        self.set_fraying(settings.fraying);
+        self.set_width(settings.width);
+        self.set_speed(settings.speed);
+        self.set_tail_speed(settings.tail_speed);
+    }
+
+    /// Generates steerable parameters deterministically from `seed`.
+    ///
+    /// The width is limited by the field extent along the generated
+    /// direction, so the returned value is already valid for this
+    /// strip's current area.
+    #[must_use]
+    pub fn random_settings(&self, seed: u64) -> BandSettings {
+        let mut xorshift = Xorshift::seeded(seed);
+        let direction = match xorshift.index(4) {
+            0 => BandDirection::Left,
+            1 => BandDirection::Right,
+            2 => BandDirection::Up,
+            _ => BandDirection::Down,
+        };
+        let lines = match direction {
+            BandDirection::Left | BandDirection::Right => self.columns,
+            BandDirection::Up | BandDirection::Down => self.rows,
+        };
+        let widest = Self::widest_permitted_width(lines);
+        BandSettings {
+            direction,
+            width: xorshift.u32_inclusive(MIN_BAND_WIDTH, widest),
+            speed: xorshift.u32_inclusive(MIN_BAND_SPEED, MAX_BAND_SPEED),
+            tail_speed: xorshift.u32_inclusive(MIN_TAIL_SPEED, MAX_TAIL_SPEED),
+            fraying: match xorshift.index(4) {
+                0 => BandFraying::Trailing,
+                1 => BandFraying::Both,
+                2 => BandFraying::Leading,
+                _ => BandFraying::Neither,
+            },
+        }
+    }
+
     /// Move the strip on by `elapsed`, sizing it to `area` and
     /// re-rolling the characters its leading edge has reached.
     pub fn advance(&mut self, area: Rect, elapsed: Duration) {
@@ -407,15 +477,7 @@ impl TravelingBand {
     /// An edge that has stopped fraying is put back flat, so the next
     /// time round it starts from flat and frays outward rather than
     /// snapping to wherever it was left.
-    pub fn cycle_fraying(&mut self) {
-        self.fraying = self.fraying.next();
-        if !self.fraying.trailing() {
-            self.tails.fill(EdgeRun::at(u8::MAX));
-        }
-        if !self.fraying.leading() {
-            self.heads.fill(EdgeRun::at(0));
-        }
-    }
+    pub fn cycle_fraying(&mut self) { self.set_fraying(self.fraying.next()); }
 
     /// Send the strip a different way.
     ///
@@ -492,36 +554,24 @@ impl TravelingBand {
 
     /// Travel `cells_per_second` faster, up to the fastest it goes.
     pub fn speed_up(&mut self, cells_per_second: u32) {
-        self.speed = self
-            .speed
-            .saturating_add(cells_per_second)
-            .clamp(MIN_BAND_SPEED, MAX_BAND_SPEED);
+        self.set_speed(self.speed.saturating_add(cells_per_second));
     }
 
     /// Travel `cells_per_second` slower, down to the slowest it goes.
     pub fn slow_down(&mut self, cells_per_second: u32) {
-        self.speed = self
-            .speed
-            .saturating_sub(cells_per_second)
-            .clamp(MIN_BAND_SPEED, MAX_BAND_SPEED);
+        self.set_speed(self.speed.saturating_sub(cells_per_second));
     }
 
     /// Fray the trailing edge `per_second` faster, up to the fastest it
     /// goes. Does nothing visible while the trailing edge is flat.
     pub fn tail_faster(&mut self, per_second: u32) {
-        self.tail_speed = self
-            .tail_speed
-            .saturating_add(per_second)
-            .clamp(MIN_TAIL_SPEED, MAX_TAIL_SPEED);
+        self.set_tail_speed(self.tail_speed.saturating_add(per_second));
     }
 
     /// Fray the trailing edge `per_second` slower, down to the slowest
     /// it goes.
     pub fn tail_slower(&mut self, per_second: u32) {
-        self.tail_speed = self
-            .tail_speed
-            .saturating_sub(per_second)
-            .clamp(MIN_TAIL_SPEED, MAX_TAIL_SPEED);
+        self.set_tail_speed(self.tail_speed.saturating_sub(per_second));
     }
 
     /// Draw the strip over `area`, colouring each cell by the
@@ -792,6 +842,17 @@ impl TravelingBand {
         usize::from(row) * usize::from(self.columns) + usize::from(column)
     }
 
+    /// Widest width permitted for `lines`; an unsized strip gets the
+    /// [`MAX_BAND_WIDTH`] sentinel until the first sizing lowers it.
+    fn widest_permitted_width(lines: u16) -> u32 {
+        let widest = if lines == 0 {
+            MAX_BAND_WIDTH
+        } else {
+            u32::from(lines) * MAX_BAND_WIDTH_PERCENT / WHOLE_PERCENT
+        };
+        widest.max(MIN_BAND_WIDTH)
+    }
+
     /// Stand the strip `width` deep, clamped to what it is allowed.
     ///
     /// Never deeper than the grid it crosses -- see
@@ -802,13 +863,32 @@ impl TravelingBand {
     /// state at once and there is too little grid left empty to read
     /// the strip against.
     fn set_width(&mut self, width: u32) {
-        let lines = self.lines();
-        let widest = if lines == 0 {
-            MAX_BAND_WIDTH
-        } else {
-            u32::from(lines) * MAX_BAND_WIDTH_PERCENT / WHOLE_PERCENT
-        };
-        self.width = width.clamp(MIN_BAND_WIDTH, widest.max(MIN_BAND_WIDTH));
+        let widest = Self::widest_permitted_width(self.lines());
+        self.width = width.clamp(MIN_BAND_WIDTH, widest);
+    }
+
+    /// Set the strip's travel speed inside its allowed range.
+    fn set_speed(&mut self, speed: u32) {
+        self.speed = speed.clamp(MIN_BAND_SPEED, MAX_BAND_SPEED);
+    }
+
+    /// Set the edge-fraying speed inside its allowed range.
+    fn set_tail_speed(&mut self, tail_speed: u32) {
+        self.tail_speed = tail_speed.clamp(MIN_TAIL_SPEED, MAX_TAIL_SPEED);
+    }
+
+    /// Reach `fraying` through the same transitions as repeated calls
+    /// to [`Self::cycle_fraying`].
+    fn set_fraying(&mut self, fraying: BandFraying) {
+        while self.fraying != fraying {
+            self.fraying = self.fraying.next();
+            if !self.fraying.trailing() {
+                self.tails.fill(EdgeRun::at(u8::MAX));
+            }
+            if !self.fraying.leading() {
+                self.heads.fill(EdgeRun::at(0));
+            }
+        }
     }
 
     /// Ask the terminal how big one character cell is, and keep the
@@ -1628,5 +1708,194 @@ mod tests {
         band.advance(AREA, Duration::from_millis(500));
 
         assert_eq!(band.leading_edge, speed * SUBCELLS_PER_CELL / 2);
+    }
+
+    /// Settings taken from one sized strip restore exactly on another
+    /// strip sized to the same area.
+    #[test]
+    fn band_settings_round_trip_between_sized_strips() {
+        let mut source = TravelingBand::new();
+        source.advance(AREA, Duration::ZERO);
+        source.set_direction(BandDirection::Down);
+        source.narrow(u32::MAX);
+        source.widen(NARROW - MIN_BAND_WIDTH);
+        source.speed_up(17);
+        source.tail_faster(31);
+        source.cycle_fraying();
+        let settings = source.settings();
+        let mut restored = TravelingBand::new();
+        restored.advance(AREA, Duration::ZERO);
+
+        restored.apply(settings);
+
+        assert_eq!(restored.settings(), settings);
+    }
+
+    /// Applying direction and fraying settings to a running strip has
+    /// the same runtime result as the corresponding steering calls.
+    #[test]
+    fn applying_band_settings_uses_the_steering_transitions() {
+        let mut starting = TravelingBand::new();
+        starting.advance(AREA, Duration::ZERO);
+        starting.narrow(u32::MAX);
+        starting.speed_up(17);
+        starting.tail_faster(31);
+        starting.set_direction(BandDirection::Left);
+        starting.advance(AREA, Duration::from_millis(250));
+        starting.advance(AREA, Duration::from_millis(250));
+
+        for direction in [
+            BandDirection::Left,
+            BandDirection::Right,
+            BandDirection::Up,
+            BandDirection::Down,
+        ] {
+            for fraying in [
+                BandFraying::Trailing,
+                BandFraying::Both,
+                BandFraying::Leading,
+                BandFraying::Neither,
+            ] {
+                let mut expected = starting.clone();
+                expected.set_direction(direction);
+                while expected.fraying != fraying {
+                    expected.cycle_fraying();
+                }
+                let mut settings = starting.settings();
+                settings.direction = direction;
+                settings.fraying = fraying;
+                let mut applied = starting.clone();
+
+                applied.apply(settings);
+
+                assert_eq!(
+                    applied, expected,
+                    "direction {direction:?}, fraying {fraying:?}"
+                );
+            }
+        }
+    }
+
+    /// Values outside every numeric range are normalized by
+    /// [`TravelingBand::apply`].
+    #[test]
+    fn applying_band_settings_clamps_every_numeric_field() {
+        let mut band = TravelingBand::new();
+        band.advance(AREA, Duration::ZERO);
+
+        band.apply(BandSettings {
+            direction:  BandDirection::Right,
+            width:      0,
+            speed:      0,
+            tail_speed: 0,
+            fraying:    BandFraying::Both,
+        });
+        assert_eq!(band.width, MIN_BAND_WIDTH);
+        assert_eq!(band.speed, MIN_BAND_SPEED);
+        assert_eq!(band.tail_speed, MIN_TAIL_SPEED);
+
+        band.apply(BandSettings {
+            direction:  BandDirection::Right,
+            width:      u32::MAX,
+            speed:      u32::MAX,
+            tail_speed: u32::MAX,
+            fraying:    BandFraying::Both,
+        });
+        let widest = u32::from(AREA.width) * MAX_BAND_WIDTH_PERCENT / WHOLE_PERCENT;
+        assert_eq!(band.width, widest);
+        assert_eq!(band.speed, MAX_BAND_SPEED);
+        assert_eq!(band.tail_speed, MAX_TAIL_SPEED);
+    }
+
+    /// A seed always produces the same settings, while the fixed seed
+    /// corpus varies every field and reaches every enum variant.
+    #[test]
+    fn random_band_settings_are_deterministic_and_cover_every_field() {
+        let mut band = TravelingBand::new();
+        band.advance(AREA, Duration::ZERO);
+        let samples: Vec<BandSettings> = (1..=512).map(|seed| band.random_settings(seed)).collect();
+        let first = samples[0];
+
+        assert_eq!(band.random_settings(41), band.random_settings(41));
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.direction != first.direction)
+        );
+        assert!(samples.iter().any(|settings| settings.width != first.width));
+        assert!(samples.iter().any(|settings| settings.speed != first.speed));
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.tail_speed != first.tail_speed)
+        );
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.fraying != first.fraying)
+        );
+        for direction in [
+            BandDirection::Left,
+            BandDirection::Right,
+            BandDirection::Up,
+            BandDirection::Down,
+        ] {
+            assert!(
+                samples
+                    .iter()
+                    .any(|settings| settings.direction == direction)
+            );
+        }
+        for fraying in [
+            BandFraying::Trailing,
+            BandFraying::Both,
+            BandFraying::Leading,
+            BandFraying::Neither,
+        ] {
+            assert!(samples.iter().any(|settings| settings.fraying == fraying));
+        }
+    }
+
+    /// Before its first sizing, the strip draws widths across the
+    /// sentinel range instead of reducing every seed to the minimum.
+    #[test]
+    fn random_band_width_uses_the_unsized_sentinel_range() {
+        let band = TravelingBand::new();
+        let samples: Vec<BandSettings> = (1..=512).map(|seed| band.random_settings(seed)).collect();
+        let first = samples[0].width;
+        let widest = TravelingBand::widest_permitted_width(0);
+
+        assert_eq!(widest, MAX_BAND_WIDTH);
+        assert!(
+            samples
+                .iter()
+                .all(|settings| (MIN_BAND_WIDTH..=widest).contains(&settings.width))
+        );
+        assert!(samples.iter().any(|settings| settings.width != first));
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.width > MIN_BAND_WIDTH)
+        );
+    }
+
+    /// Random widths use the sized strip's extent along the generated
+    /// direction, never the pre-sizing sentinel.
+    #[test]
+    fn random_band_width_uses_the_generated_directions_axis_extent() {
+        let mut band = TravelingBand::new();
+        band.advance(AREA, Duration::ZERO);
+
+        for seed in 1..=512 {
+            let settings = band.random_settings(seed);
+            let lines = match settings.direction {
+                BandDirection::Left | BandDirection::Right => AREA.width,
+                BandDirection::Up | BandDirection::Down => AREA.height,
+            };
+            let widest =
+                (u32::from(lines) * MAX_BAND_WIDTH_PERCENT / WHOLE_PERCENT).max(MIN_BAND_WIDTH);
+            assert!((MIN_BAND_WIDTH..=widest).contains(&settings.width));
+            assert_ne!(settings.width, MAX_BAND_WIDTH);
+        }
     }
 }

@@ -11,6 +11,7 @@
   cargo tool; owns the attract screen, config/keymap files, grid. Phase 1 is
   tui_pane; Phases 2–8 are cargo-tile. `cargo-berth`, `cargo-mend` and
   `cargo-port` are untouched.
+- **Project started:** 2026-08-26T12:59:46-04:00
 - **Stack:** Rust edition 2024, resolver 3. Workspace deps these phases use:
   `ratatui 0.30.2`, `crossterm 0.29.0`, `chrono 0.4.45` (cargo-tile only),
   `toml 1.1.4`, `serde 1` (`derive`, in both crates), `dirs 6.0.0`,
@@ -108,12 +109,35 @@
   `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` (Phases 2–8).
 - **Lint:** `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` (Phase 1);
   `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` (Phases 2–8).
-- **Style:** `phase-end /clippy style-only auto-proceed`
+- **Backdrop feature gate — required for any phase touching
+  `crates/tui_pane/src/backdrop/`.** `backdrop` is **not** a default feature of
+  `tui_pane` (`default = ["clipboard"]`), and `verify.sh` passes target flags
+  only, never `--features`. So the scoped `tui_pane` lines above compile and test
+  the crate *with none of that code in it* — they pass whether the backdrop
+  module builds or not. Phase 1 shipped a `const fn` calling `Ord::min` and a
+  green `verify.sh test tui_pane`; `cargo-tile` would not build. Run these as
+  well, unsandboxed, and treat them as the real gate:
+  `cargo nextest run -p tui_pane --features backdrop --no-fail-fast` and
+  `cargo clippy -p tui_pane --features backdrop --all-targets`.
+  Phases 2–8 are scoped to `cargo-tile`, which enables `tui_pane/backdrop`
+  (`crates/cargo-tile/Cargo.toml:29`), so their listed lines already compile it —
+  but they still do not *run* tui_pane's own backdrop tests.
+- **Style:** `project-end /clippy style-only auto-proceed`. **No per-phase style
+  review — user instruction.** The whole run gets one style pass, and it runs at
+  the final gate: after the last phase, once workspace verification is green.
+  Phases neither run it nor wait on it.
+  - **It reviews the branch, not the working tree.** Every phase checkpoints a
+    commit, so by the last phase `git diff` is empty and a working-tree review
+    would report clean having read nothing. The reviewed range is
+    `<project base>..` — every checkpoint this plan landed on
+    `feat/cargo-tile-favorites` plus whatever is still uncommitted. The base is
+    resolved once per run (the parent of the plan's first checkpoint, or HEAD
+    before any) and held in the delegate session.
 - **Invariants:**
   - **tui_pane's keymap defaults are not touched.** User constraint, stated
     verbatim: *"not a tui-pane change - definitely not - i'm only talking about
     behavior in cargo-tile - we need to not change anything that can affect
-    cargo-port"*. `'x' => Dismiss` at `keymap/global_action.rs:69` stays exactly
+    cargo-port"*. `'x' => Dismiss` at `keymap/global_action.rs:70` stays exactly
     as it is; cargo-port keeps `x` for its own dismiss fallback. Phase 4's
     `x`-no-longer-closes change is a cargo-tile dispatch-ladder edit only.
     Phase 1 is the one tui_pane phase and it adds API without changing behavior.
@@ -156,20 +180,11 @@
 
 ## Phases
 
-### Phase 1 — the snapshot API  · status: todo
+### Phase 1 — the snapshot API  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** Each backdrop animation can report its steerable parameters, restore a
-set of them as a semantic transition, and generate a random valid set.
-
-**Spec:**
-
-Three plain-data structs, one per animation, defined in that animation's own
-module. Fields are **public** — cargo-tile builds these values from TOML in
-Phase 2, and private fields would force an unplanned getter and constructor per
-field. `apply` is the boundary that clamps, so public fields cost nothing. Every
-field carries a doc comment (`missing_docs = deny`).
+Each backdrop animation reports its steerable parameters as a plain-data struct, restores one, and draws a fresh one at random. `BandSettings`, `TextSettings` and `PixelSettings` are public structs with public fields, each defined in its animation's module and re-exported from `tui_pane` under the `backdrop` feature; all three derive `Clone, Copy, Debug, Eq, PartialEq` and carry per-field doc comments.
 
 ```rust
 pub struct BandSettings  { pub direction: BandDirection, pub width: u32, pub speed: u32, pub tail_speed: u32, pub fraying: BandFraying }
@@ -177,117 +192,30 @@ pub struct TextSettings  { pub direction: BandDirection, pub speed: u32, pub spr
 pub struct PixelSettings { pub direction: BandDirection, pub speed: u32, pub wave_percent: u32, pub block_columns: u32, pub resolve: PixelResolve, pub fill: PixelFill }
 ```
 
-All three animations already hold `direction: BandDirection`; that is the shared
-direction enum, not a band-only one. Derive `Clone, Copy, Debug, Eq, PartialEq`
-to match the animations.
+`TravelingBand`, `DriftingText` and `ResolvingPixels` each carry `pub const fn settings(&self) -> <T>Settings`, `pub fn apply(&mut self, settings: <T>Settings)` and `pub fn random_settings(&self, seed: u64) -> <T>Settings`. A snapshot holds only what a key steers — never runtime state (`glyphs`, `tails`, `heads`, `phases`, `lanes`, `ripple`, `waved`, `grains`, `xorshift`, `faded`, `columns`, `rows`, `cell_pixels`, `leading_edge`, `middle`, `rolled_through`), because restoring that would put a strip halfway across a window it was never sized to. `apply` is a semantic transition, not field assignment: it runs in dependency order (direction, then the enum transitions, then the numeric targets) and routes every field through the private absolute clamp setters, which the public `cycle_*` methods also delegate to, so one path maintains the invariants — and it can silently clamp an out-of-range value. `random_settings` takes `&self` so bounded draws use the animation's live extent instead of the pre-sizing sentinels. `TravelingBand::widest_permitted_width` is the single band-width ceiling shared by `set_width` and `random_settings`.
 
-Three methods per animation:
-
-```rust
-impl TravelingBand {
-    pub fn settings(&self) -> BandSettings;
-    pub fn apply(&mut self, settings: BandSettings);
-    pub fn random_settings(&self, seed: u64) -> BandSettings;
-}
-// and the same three on DriftingText / ResolvingPixels
-```
-
-`random_settings` takes `&self`, not a bare seed. The band's real width limit is
-its current line count — `MAX_BAND_WIDTH = 1000` is a pre-sizing sentinel, not a
-runtime bound, and generating against the sentinel then clamping on apply would
-collapse most seeds onto the same terminal-dependent maximum. Text and pixels do
-not need the context, but one shape across all three keeps the caller uniform.
-
-Randomization lives here rather than in cargo-tile because the ranges live here
-(`backdrop/constants.rs`, all `pub(super)`), and a defect in a range gets fixed
-where the range is. Reuse `Xorshift`: drop the `#[cfg(test)]` gate from
-`Xorshift::seeded` (`backdrop/random.rs:44`) so non-test code can seed it; it
-stays `pub(super)`.
-
-**What a snapshot holds is only what a key steers.** Everything else is runtime
-state that must not be saved or restored, because restoring it would put a strip
-halfway across a window it was never sized to:
-
-> `glyphs`, `tails`, `heads`, `phases`, `lanes`, `ripple`, `waved`, `grains`,
-> `xorshift`, `faded`, `columns`, `rows`, `cell_pixels`, `leading_edge`,
-> `middle`, `rolled_through`
-
-A snapshot therefore *holds* none of those fields. `apply` is a different
-matter: it is a **semantic transition, not field assignment**, and it updates
-exactly the runtime state the equivalent keypress would. The existing mutators
-maintain derived state deliberately — `TravelingBand::set_direction` rescales
-width and resets `leading_edge` and `rolled_through`, `DriftingText::set_direction`
-rebuilds `lines`, `cycle_drift` to `Together` resets each line's accumulated
-drift, `ResolvingPixels::set_direction` transforms `middle`. Assigning past them
-produces states unreachable by steering.
-
-So `apply` must:
-
-- Run in **dependency order**: direction first, then the enum transitions, then
-  the numeric targets. Band width after direction; text spread after drift.
-- Route **every numeric field through a private absolute setter** that clamps.
-  A struct built from hand-edited TOML can carry a zero speed or a spread above
-  100, and direct assignment would admit it.
-- Reach absolute values only through those private setters, with the public
-  `cycle_*` methods delegating to them, so one path maintains the invariants.
-
-Private absolute setters that already exist: `TravelingBand::set_width` (804),
-`DriftingText::set_speed` (673), `ResolvingPixels::{set_speed, set_block_columns,
-set_wave}` (773, 779, 785). Ones to add:
-
-- `TravelingBand::set_speed` / `set_tail_speed` — the clamps are currently
-  inline in `speed_up` / `slow_down` / `tail_faster` / `tail_slower`; lift them.
-- `TravelingBand::set_fraying` — `cycle_fraying` delegates to it.
-- `DriftingText::set_spread` — clamp `.min(MAX_TEXT_SPREAD)` with a floor of 0.
-  There is **no `MIN_TEXT_SPREAD` constant and none is added**: `spread_narrower`
-  is a bare `saturating_sub` today, so 0 is already reachable by steering and the
-  clamp must not exclude it.
-- `DriftingText::set_drift` / `set_fill` — `cycle_drift` / `cycle_fill` delegate.
-- `ResolvingPixels::set_resolve` / `set_fill` — `cycle_resolve` / `cycle_fill` delegate.
-
-Direction setters are already public on all three and already early-return when
-the direction is unchanged; `apply` uses them as they are.
-
-Band width drawn by `random_settings` comes from the band's own axis extent —
-the same `lines()` count `set_width` derives its maximum from — not from
-`MAX_BAND_WIDTH`.
-
-Export: add `pub use band::BandSettings;`, `pub use pixels::PixelSettings;`,
-`pub use text::TextSettings;` to `backdrop/mod.rs` in alphabetical position among
-the existing re-exports (40–54), then three separately cfg-attributed
-`pub use backdrop::…;` lines in `lib.rs` among 35–56. Clamp constants stay
-`pub(super)`.
-
-tui_pane is mid-cycle at `0.8.0-dev`: add a CHANGELOG entry under
-`## [Unreleased]` → `### Added`, no version edit.
+`Xorshift` remains `pub(super)` inside `tui_pane::backdrop`; `Xorshift::seeded` is no longer test-gated, and `Xorshift::u32_inclusive` exists for bounded draws. `random_settings` consumes a seed but produces none.
 
 **Files:**
-- `crates/tui_pane/src/backdrop/band.rs` — `BandSettings`, `settings`, `apply`, `random_settings`, `set_speed`, `set_tail_speed`, `set_fraying`
-- `crates/tui_pane/src/backdrop/text.rs` — `TextSettings`, `settings`, `apply`, `random_settings`, `set_spread`, `set_drift`, `set_fill`
-- `crates/tui_pane/src/backdrop/pixels.rs` — `PixelSettings`, `settings`, `apply`, `random_settings`, `set_resolve`, `set_fill`
-- `crates/tui_pane/src/backdrop/random.rs` — ungate `Xorshift::seeded`
-- `crates/tui_pane/src/backdrop/mod.rs` — three re-exports
-- `crates/tui_pane/src/lib.rs` — three cfg-attributed re-exports
-- `crates/tui_pane/CHANGELOG.md` — `## [Unreleased]` → `### Added`
+- `crates/tui_pane/src/backdrop/band.rs` — `BandSettings`; `settings`/`apply`/`random_settings`; private `set_speed`, `set_tail_speed`, `set_fraying`, `widest_permitted_width`
+- `crates/tui_pane/src/backdrop/text.rs` — `TextSettings` and the same trio; private `set_spread` (const), `set_drift`, `set_fill`; `spread_wider` is `pub const fn`
+- `crates/tui_pane/src/backdrop/pixels.rs` — `PixelSettings` and the same trio; private `set_resolve`, `set_fill`
+- `crates/tui_pane/src/backdrop/random.rs` — ungated `Xorshift::seeded`, `Xorshift::u32_inclusive`
+- `crates/tui_pane/src/backdrop/mod.rs`, `crates/tui_pane/src/lib.rs` — the three re-exports, cfg-attributed in `lib.rs`
+- `crates/tui_pane/CHANGELOG.md` — one `## [Unreleased]` → `### Added` line
 
-**Constraints from prior phases:** None — this is Phase 1.
+**Binds later work:** the three settings structs are the shape favorites are serialized from and deserialized into. Because `apply` clamps silently, any diagnostic for a hand-edited out-of-range value belongs to the load path, which reports whether a favorite applied exactly or with adjustments. `Xorshift` is not exported, so any consumer needing a seed owns its own seed source and bounded draw. An animation that has never been drawn is unsized, so save and randomize paths need a sizing boundary before the values they read or write match the next drawn frame.
 
-**Acceptance gate:** `verify.sh check/test/lint tui_pane` all green, plus inline
-`#[cfg(test)] mod tests` proving:
+**Gotchas:**
+- `backdrop` is not a default feature of `tui_pane`, and `verify.sh` emits no `--features` flag, so a scoped `tui_pane` gate compiles and tests the crate without any of this code in it. The real gate is `cargo nextest run -p tui_pane --features backdrop --no-fail-fast` and `cargo clippy -p tui_pane --features backdrop --all-targets`, unsandboxed.
+- `set_spread` must stay `const` because `pub const fn spread_narrower` calls it; that rules out `Ord::min`, which is not const-stable, so the clamp is written longhand.
+- The band's width ceiling is a share of the lines on screen (`TravelingBand::widest_permitted_width`), and at zero lines it falls back to the whole-range maximum — an animation that has never been drawn is unsized, and values read or written before the first sizing are not the values the next drawn frame uses.
 
-- A valid settings value taken from an animation and applied to a fresh one
-  round-trips exactly through `settings()`.
-- `apply` on an **already-running, already-sized** animation preserves the
-  invariants: every direction change, every drift change and every fraying
-  change, from a non-default starting state, leaves the same runtime state the
-  equivalent keypress would.
-- Arbitrary constructed values normalize rather than round-trip — `0` and
-  `u32::MAX` on every numeric field land inside the clamps.
-- `random_settings` is deterministic per seed and, over a fixed seed corpus,
-  **every field varies and every enum variant is reachable**. A generator
-  returning one constant valid value must fail this.
-- Band width drawn for a sized band lands inside that band's own axis extent,
-  not the `MAX_BAND_WIDTH` sentinel.
+**Ruled out:**
+- Exposing `Xorshift` from `tui_pane` — tui_pane surface changes beyond this phase are barred, and a consumer can own its own generator.
+- A `MIN_TEXT_SPREAD` constant — `spread_narrower` is a bare `saturating_sub`, so 0 is already reachable by steering and the clamp must not exclude it.
+- Rewriting a hand-edited row to its clamped value — destroys a value that becomes valid again on a taller terminal.
+- Adding a random crate for two call sites — tui_pane is dependency-free here.
 
 ### Phase 2 — the favorites file  · status: todo
 
@@ -359,15 +287,25 @@ mismatched settings past parsing, and every later consumer — grouping, `m`,
 `enter` — would re-derive a relationship the type already carries. The raw
 `toml::Table` stays confined to parsing so unknown rows survive.
 
-A file that does not exist is an empty list, not an error. The four outcomes are
-**distinct states in one enum**, not all folded into "empty":
+A file that does not exist is an empty list, not an error. The outcomes are
+**distinct variants of one named enum, `FavoritesFileState`**, not all folded
+into "empty":
 
-| State | `ctrl-o` | `ctrl-s` | `x` |
+| Variant | `ctrl-o` | `ctrl-s` | `x` |
 |---|---|---|---|
-| `Missing` | empty notice | writes a new file | n/a |
-| `Loaded` | the table | appends | deletes |
-| Whole-file parse error | shows path + parse error | refused | refused |
-| Read failure | shows path + error | refused | refused |
+| `LocationUnavailable` | says the OS config directory could not be resolved | refused | refused |
+| `Missing { path }` | empty notice | writes a new file | n/a |
+| `Loaded { path, rows }` | the table | appends | deletes |
+| `Unparseable { path, error }` | shows path + parse error | refused | refused |
+| `Unreadable { path, error }` | shows path + error | refused | refused |
+
+`LocationUnavailable` is not optional extra polish. `config::favorites_path()`
+returns `Option<PathBuf>` because `config_root()` (`config.rs:229`) does —
+`dirs::config_dir()` resolves to nothing on some platforms. Every other variant
+carries a path, so a four-variant enum has no truthful answer there and would
+have to report a file as missing that was never looked for. Convert the external
+`Option` into this domain state at the boundary; it must not travel past
+`favorites.rs`.
 
 Refusing rather than overwriting matches what `config.toml` already does with a
 file that failed to parse: `restate` (`config.rs:181`) is reached only on the
@@ -408,7 +346,15 @@ mapping's shape must fail loudly when a variant is added:
 
 - `enum -> &'static str` is **exhaustive, with no wildcard arm**. A new tui_pane
   variant then breaks the build here rather than silently losing a spelling.
-- `str -> Option<Enum>` stays tolerant, since it has to skip a stale file entry.
+- The `str ->` direction stays tolerant, since it has to skip a stale file
+  entry, but it reports **what** it could not place rather than returning a bare
+  `Option`. Each value parses into a two-state enum over that value, and a whole
+  row resolves to
+  `FavoriteRowRecognition::{Recognized(Favorite), Unrecognized(UnrecognizedFavoriteValue)}`,
+  where the unrecognized case carries the key and the spelling that defeated it.
+  A bare `Option` erases both, which leaves a skipped row indistinguishable from
+  a row that was never there and gives a later diagnostic nothing to say. The raw
+  `toml::Table` for the row is retained either way, so rewriting stays lossless.
 - **Seven** enums need the pair, not six: the six animation enums
   (`BandDirection`, `BandFraying`, `TextDrift`, `TextFill`, `PixelResolve`,
   `PixelFill`) **and** the app-owned `AttractMode` (`attract/mod.rs:162`,
@@ -421,7 +367,7 @@ Public surface for the module: `load`, `save`, `push`, `remove`. Keep everything
 - `crates/cargo-tile/src/favorites.rs` — new file: raw-table model, typed `Favorite` / `FavoriteSettings` / `FavoriteId`, the load state enum, the seven enum mappings, `load` / `save` / `push` / `remove`, the lock + atomic replace helper
 - `crates/cargo-tile/src/config.rs` — `favorites_path()` beside `keymap_path()` (220)
 - `crates/cargo-tile/src/constants.rs` — `FAVORITES_FILENAME` beside `KEYMAP_FILENAME` (107), plus the lock and temp suffixes
-- `crates/cargo-tile/src/main.rs` — declare `mod favorites;` in the `mod` block at 4–13
+- `crates/cargo-tile/src/main.rs` — declare `mod favorites;` in the `mod` block at 4–25
 - `crates/cargo-tile/Cargo.toml` — add `uuid = { workspace = true }`; patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
 
@@ -444,6 +390,11 @@ already a dev-dependency) proving:
   state carrying the path; save and delete are refused, not silently applied to
   an empty list.
 - A missing file loads as empty.
+- A run where the OS config directory cannot be resolved reports
+  `LocationUnavailable`; save and delete are refused rather than writing to a
+  guessed path.
+- An unrecognized row resolves to `Unrecognized` naming the key and the spelling
+  that defeated it, and that row is still in the file after a save and a delete.
 - Every variant of all seven enums round-trips; the `enum -> str` match has no
   wildcard arm.
 - Saving an identical `(mode, settings)` twice leaves one row with the later
@@ -472,6 +423,33 @@ animations hold their parameters whether or not they are being drawn, so this
 works with the attract screen fully hidden too, which is what makes `ctrl-s`
 from a working grid save something real.
 
+**But an animation that has never been drawn is not sized yet, and an unsized
+band does not hold the width it will hold once it is.** `TravelingBand` starts
+with no dimensions. Its width ceiling is a share of the lines on screen
+(`widest_permitted_width`, `band.rs:847`), and with zero lines that falls back to
+the whole-range sentinel; the first `advance(area, …)` calls `resize` and
+re-clamps. So `ctrl-s` from a working grid — the case just argued for — can
+record a width the band would narrow the instant it appeared, and an animation
+still sized to a terminal that has since been resized records a stale ceiling.
+The same gap catches `enter`, `r` and `u` later, since all three write settings
+in and let the next frame re-clamp them.
+
+Close it once here, for every phase that follows:
+
+- **cargo-tile owns a semantic terminal-area state** — the last area the app
+  actually laid out — as a named state with its own variant for "nothing has
+  been laid out yet", not a bare `Option<Rect>`.
+- **It is updated before `Attract::advance` returns early.** `advance`
+  (`attract/mod.rs:519`) takes `area` and returns at the `Updates::Frozen` branch
+  before any animation is touched, so an update placed after that point misses
+  every frozen frame — stale exactly while a reader is holding the display still.
+- **A zero-duration sizing boundary** applies that area to the mode's animation
+  without moving it: `advance(area, Duration::ZERO)` resizes and clamps but
+  travels nothing (`band.rs:431`). Read `settings()` only after it, so what gets
+  saved is what the next drawn frame will use. Check the boundary for side
+  effects of its own first — `advance` also re-rolls characters — and if it has
+  any, apply it only where a frame is being drawn anyway.
+
 **The toast has no path to the screen yet.** `App` owns `framework.toasts`
 transitively (`app.rs:113` → `framework/mod.rs:106`), but a full grep of
 `crates/cargo-tile/src/` finds no `ToastsRenderCtx` use, no `Toasts::prune`
@@ -479,7 +457,7 @@ call, and no toast rendering at all — `render::draw` never renders the stack a
 `event_loop` never prunes it. Pushing a toast today produces nothing. So:
 
 - Render the toast stack in `render::draw` (136) with `ToastsRenderCtx`
-  (`tui_pane::lib.rs:300`), beneath the modal overlays.
+  (`tui_pane::lib.rs:306`), beneath the modal overlays.
 - Call `Toasts::prune` (`toasts/lifecycle.rs:334`) from `terminal::event_loop`
   **outside** the `Updates::Frozen` branch (`terminal.rs:243`), not inside its
   `else` where the attract frame request sits (290).
@@ -502,7 +480,7 @@ instead.
 
 **Files:**
 - `crates/cargo-tile/src/globals.rs` — `SaveFavorite` variant, default binding, dispatch arm
-- `crates/cargo-tile/src/attract/mod.rs` — a method returning the current mode's `FavoriteSettings`
+- `crates/cargo-tile/src/attract/mod.rs` — a method returning the current mode's `FavoriteSettings`; the terminal-area state and its update ahead of the `Frozen` early return; the zero-duration sizing boundary
 - `crates/cargo-tile/src/render.rs` — render the toast stack with `ToastsRenderCtx`
 - `crates/cargo-tile/src/terminal.rs` — prune toasts outside the `Frozen` branch; the shared visual deadline
 - `crates/cargo-tile/src/favorites.rs` — call site for `push`
@@ -511,7 +489,8 @@ instead.
 
 **Constraints from prior phases:** Phase 2 provides
 `favorites::{load, save, push, remove}`, the `Favorite` / `FavoriteSettings` /
-`FavoriteId` types, the four-state load enum, and `config::favorites_path()`.
+`FavoriteId` types, the `FavoritesFileState` load enum, and
+`config::favorites_path()`.
 `push` is idempotent on `(mode, settings)` and does its own locked
 read-modify-write with an atomic replace, so the dispatch path calls it and
 handles only its `Result`. Phase 1 provides `settings()` on each animation.
@@ -522,6 +501,10 @@ handles only its `Result`. Phase 1 provides `settings()` on each animation.
   back as that mode's current parameters.
 - The same holds with the attract screen **fully hidden**.
 - The success toast and the write-failure toast both appear on screen and expire.
+- Saving a band that has never been shown, and one whose last sizing was a
+  different terminal size, records the settings the next drawn frame actually
+  uses — the saved values do not change on that first frame.
+- The area state is current after a frame arrives with `Updates::Frozen`.
 
 ### Phase 4 — the favorites overlay: modal shell and table  · status: todo
 
@@ -659,8 +642,9 @@ O(visible rows), and refusing a save is a worse experience than a slower open.
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added` / `### Changed`
 
 **Constraints from prior phases:** Phase 2 provides `favorites::load()` and its
-four-state enum — the overlay renders the parse-error and read-failure states as
-the path plus the error, not as an empty list. Rows are addressed by
+`FavoritesFileState` — the overlay renders the unparseable and unreadable states
+as the path plus the error, and the unresolvable-config-directory state as its
+own notice, never as an empty list. Rows are addressed by
 `FavoriteId`, never by storage index, and arrive ordered newest first within a
 mode. Phase 3 established the shared visual deadline in `terminal::event_loop`
 outside the `Updates::Frozen` branch; `frame_owed()` folds into it. Phase 3 also
@@ -703,12 +687,35 @@ rather than a restart.
 so both `Attract::apply_favorite()` and `Attract::request_show()` go in
 `attract/mod.rs`.
 
+**A loaded favorite can be quietly corrected, and it must not be.** `apply` runs
+the private clamp setters, so a hand-edited row holding an out-of-range value —
+or one saved on a much taller terminal — lands as a different value than the file
+states. Nothing currently tells the reader that happened: they typed a number and
+the tool shows another one. So `apply_favorite` sizes the animation through Phase
+3's zero-duration boundary first, then reports what it actually did:
+
+```rust
+enum FavoriteApplicationOutcome {
+    AppliedExactly,
+    AppliedWithAdjustments { requested: FavoriteSettings, effective: FavoriteSettings },
+}
+```
+
+On `AppliedWithAdjustments` a warning toast names the fields that moved and what
+they became; the toast path is already in place from Phase 3. **The row on disk is
+not rewritten.** The file keeps what the reader wrote, and the correction is
+reported rather than committed — rewriting it would destroy a value that becomes
+valid again on a taller terminal.
+
+Phase 6's `m` and Phase 8's `u` load through this same call and report the same
+way.
+
 **`x` deletes with a fade.** `x` marks the selected row
 `Removing { since: Instant }` rather than dropping it. Alpha is computed from
 `now - since` against a fixed fade duration, **not** incremented per draw —
 otherwise an unrelated scan or keypress adds frames and the fade runs faster.
 Use `blend_color(color, ground, alpha)` (`theme/blend.rs:35`, re-exported at
-`lib.rs:258`); alpha 0 leaves the row at full strength and `u8::MAX` yields the
+`lib.rs:264`); alpha 0 leaves the row at full strength and `u8::MAX` yields the
 ground, the same scale the animations' `fade(faded: u8)` uses.
 
 The row leaves the selection set the moment deletion starts and the cursor moves
@@ -737,8 +744,8 @@ afterthought. Three details decide whether it is actually met:
   immediately.
 
 **Files:**
-- `crates/cargo-tile/src/favorites_overlay.rs` — `enter` and `x` handling, `Removing { since }`, `advance(now)`, elapsed-time alpha, close-mid-fade commit
-- `crates/cargo-tile/src/attract/mod.rs` — `Attract::apply_favorite()`, `Attract::request_show()`
+- `crates/cargo-tile/src/favorites_overlay.rs` — `enter` and `x` handling, the adjustment warning toast, `Removing { since }`, `advance(now)`, elapsed-time alpha, close-mid-fade commit
+- `crates/cargo-tile/src/attract/mod.rs` — `Attract::apply_favorite()` returning `FavoriteApplicationOutcome`, `Attract::request_show()`
 - `crates/cargo-tile/src/terminal.rs` — call `advance` outside the `Frozen` branch on the shared deadline
 - `crates/cargo-tile/src/favorites.rs` — `remove` call site
 - `crates/cargo-tile/Cargo.toml` — patch version bump
@@ -752,7 +759,10 @@ clause at `terminal.rs:456`, so `x` closes nothing and is free to delete here.
 Phase 2's `remove` addresses the row by `FavoriteId` and does its own locked
 read-modify-write with an atomic replace. Phase 1's `apply` is an ordered
 semantic transition through the private clamp setters. Phase 3 established the
-shared visual deadline outside the `Updates::Frozen` branch.
+shared visual deadline outside the `Updates::Frozen` branch, cargo-tile's
+terminal-area state updated ahead of `Attract::advance`'s early return, the
+zero-duration sizing boundary this phase applies before `apply`, and the toast
+render and prune path the warning toast uses.
 
 **Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
 
@@ -765,6 +775,11 @@ shared visual deadline outside the `Updates::Frozen` branch.
   events do not shorten it.
 - Closing the overlay mid-fade still removes the row and writes the file.
 - No file write happens inside `render::draw`.
+- Loading a hand-edited row whose value is out of range applies the clamped
+  value, reports `AppliedWithAdjustments`, renders the warning toast naming the
+  adjusted fields, and leaves the row's raw TOML on disk untouched.
+- Loading a row that needs no correction reports `AppliedExactly` and shows no
+  warning.
 
 ### Phase 6 — `m`, a random saved favorite  · status: todo
 
@@ -776,7 +791,26 @@ shared visual deadline outside the `Updates::Frozen` branch.
 
 `AppGlobalAction::RandomFavorite` on `m`. `m` is free in every scope. `q` was
 proposed first and cannot be used: it is the framework's `Quit`
-(`keymap/global_action.rs:64`), so a mis-press would exit the app.
+(`keymap/global_action.rs:63`), so a mis-press would exit the app.
+
+**cargo-tile has no source of randomness yet.** The workspace declares no random
+crate at all, and Phase 1's `Xorshift` is `pub(super)` inside
+`tui_pane::backdrop` — not reachable from here, and not to be exposed, since
+widening tui_pane's surface is outside this plan. `random_settings(seed)`
+consumes a seed; nothing yet produces one. This phase establishes cargo-tile's
+own, in a new `random` module:
+
+- **A seed source** drawing a `u64` from the clock (nanos since
+  `SystemTime::UNIX_EPOCH`), matching tui_pane's dependency-free posture rather
+  than adding a crate for two call sites.
+- **An unbiased bounded index draw** over `0..len`. Plain modulo skews toward the
+  low indices whenever `len` does not divide the generator's range; reject and
+  redraw the short tail instead.
+- **Deterministic injection for tests** — the draw takes its seed as an argument
+  rather than reading the clock inside itself, which is what makes the fixed-seed
+  corpus in the gate below possible.
+
+Phase 7 reuses both halves. Neither exposes nor changes anything in tui_pane.
 
 Picks uniformly from the saved list and loads it through the same path `enter`
 uses. With an empty list, `AppOverlay::NoFavorites` — the empty state already
@@ -792,7 +826,8 @@ falls through to the app globals below.
 
 **Files:**
 - `crates/cargo-tile/src/globals.rs` — `RandomFavorite` variant, default binding, dispatch arm
-- `crates/cargo-tile/src/favorites.rs` — the bounded uniform index draw
+- `crates/cargo-tile/src/random.rs` — new file: the clock seed source and the unbiased bounded index draw, both taking an injected seed
+- `crates/cargo-tile/src/main.rs` — declare `mod random;` in the `mod` block at 4–25
 - `crates/cargo-tile/src/favorites_overlay.rs` — open `NoFavorites` on an empty list
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
@@ -801,8 +836,10 @@ falls through to the app globals below.
 and `Attract::request_show()`; this phase calls them rather than reaching into
 `Attract`'s private fields. Phase 4 provides `AppOverlay::NoFavorites` and its
 non-selectable empty notice, dispatched through the app-modal route ahead of the
-framework check. Phase 2's load returns the four-state enum — a parse error or
-read failure is reported, not treated as an empty list.
+framework check. Phase 2's load returns `FavoritesFileState` — a parse error, a read
+failure, or an unresolvable config directory is reported, never treated as an
+empty list. Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, so
+`m` reports an adjusted favorite the same way `enter` does.
 
 **Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
 
@@ -812,6 +849,9 @@ read failure is reported, not treated as an empty list.
   flaky condition.
 - An empty list opens the notice, which renders and consumes `esc` through the
   app overlay route ahead of framework handling.
+- The bounded draw is unbiased: over a fixed seed corpus every index in
+  `0..len` is reached, with no index systematically favored for a `len` that does
+  not divide the generator's range.
 
 ### Phase 7 — `r`, randomize everything  · status: todo
 
@@ -828,14 +868,14 @@ applies both, and turns the attract screen on with `request_show()`.
 
 `r` gets the bare letter because it is the bigger, less reversible action and the
 one pressed repeatedly while exploring. It is unbound in every scope: the
-framework binds capital `R` to `Restart` (`keymap/global_action.rs:65`), and no
+framework binds capital `R` to `Restart` (`keymap/global_action.rs:64`), and no
 attract scope binds either case, so `r` reaches the app globals through the
 ladder untouched.
 
 `ctrl-shift-r` was the original ask and cannot be delivered. A terminal sends the
 same byte for `ctrl-r` and `ctrl-shift-r` (0x12) unless the Kitty keyboard
 protocol is negotiated. cargo-port pushes those flags
-(`crates/cargo-port/src/tui/terminal/run.rs:85`); **cargo-tile does not**.
+(`crates/cargo-port/src/tui/terminal/run.rs:86–87`); **cargo-tile does not**.
 Pushing them here would change key reporting for every binding in the app, and
 would still degrade to nothing on a terminal that will not negotiate.
 
@@ -849,12 +889,20 @@ would still degrade to nothing on a terminal that will not negotiate.
 `random_settings(&self, seed: u64)` on each of the three animations, seeded from
 the now-ungated `Xorshift::seeded`, with band width drawn from the band's own
 axis extent. Phase 5 provides `Attract::request_show()`, which is idempotent and
-correct during a fade-out.
+correct during a fade-out, and `apply_favorite` returning
+`FavoriteApplicationOutcome`. Phase 6 provides cargo-tile's `random` module —
+the clock seed source and the unbiased bounded index draw, both taking an
+injected seed; `r` draws its mode with the same helper rather than adding a
+second one. Phase 3 provides the terminal-area state and the zero-duration
+sizing boundary, which must run before `random_settings` so the band draws its
+width against the real screen rather than the unsized whole-range sentinel.
 
 **Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
 
 - Over a fixed seed corpus every mode and every enum variant is reached, and
   every value sits inside its clamps.
+- A draw made while the band has never been shown lands inside the ceiling the
+  current screen allows, not the unsized sentinel range.
 - The animation's `settings()` after the action equals the generated target —
   which is what proves the settings were applied and not merely drawn.
 
@@ -874,8 +922,34 @@ intended workflow, but the moment you would need it is the moment you do not tak
 it.
 
 Before any of the three replacing actions runs, capture the current mode, **all
-three parameter sets**, and whether the attract screen was up.
-`AppGlobalAction::UndoReplace` on `u` restores them. One step only.
+three parameter sets**, and how the attract screen was being presented.
+`AppGlobalAction::UndoReplace` on `u` restores them. One step only, and the
+one-step limit is the type's job, not a flag beside it:
+
+```rust
+enum ReplacementUndoState {
+    Unavailable,
+    Available(PreviousAttractConfiguration),
+}
+```
+
+Taking the checkpoint returns it to `Unavailable`, so a second `u` has nothing to
+restore because there is nothing there — not because a boolean said so.
+
+**"Whether the screen was up" is not a boolean and `showing()` cannot answer
+it.** `showing()` (`attract/mod.rs:410`) is only `faded != u8::MAX`, so it stays
+true through an entire fade-*out*, and it cannot tell a screen that came up
+because the grid went idle from one the reader explicitly asked for, nor either
+from one the reader dismissed. Restoring from a bool would put the screen into a
+position the reader never had. `PreviousAttractConfiguration` therefore stores
+the mode, the three parameter sets, and a semantic presentation state covering
+the four positions `faded` and `Asked` already distinguish between them: fully
+hidden, shown because the grid went idle, shown because the reader asked, and
+dismissed over an idle grid.
+
+Restoring a hidden position needs a hide transition to match Phase 5's
+`request_show()` — idempotent in the same way, so restoring twice or restoring a
+screen that is already down does nothing rather than toggling it back up.
 
 It covers all three, not just the random draw: an undo that catches one but not
 the others is worse than none, because you cannot predict which press it will
@@ -888,7 +962,7 @@ too.
 
 **Files:**
 - `crates/cargo-tile/src/globals.rs` — `UndoReplace` variant, default binding, dispatch arm
-- `crates/cargo-tile/src/attract/mod.rs` — the checkpoint type, its capture, and the restore
+- `crates/cargo-tile/src/attract/mod.rs` — `ReplacementUndoState`, `PreviousAttractConfiguration`, the presentation state, the idempotent hide transition, the capture, and the restore
 - `crates/cargo-tile/src/favorites_overlay.rs` — capture before `enter` loads
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
@@ -899,11 +973,20 @@ too.
 `settings()` on each animation is what the checkpoint stores, and `apply` is what
 restores it — an ordered semantic transition, so restoring a checkpoint leaves
 the same runtime state the equivalent keypress would. Phase 5's
-`Attract::request_show()` restores visibility; there must be a matching way to
-put the screen back down when the checkpoint says it was hidden.
+`Attract::request_show()` restores visibility, and this phase adds the matching
+hide transition for a checkpoint that was taken while the screen was down.
+Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, so a restore
+that has to be clamped — the terminal shrank since the checkpoint — reports the
+adjustment rather than applying it silently. Phase 3's terminal-area state and
+zero-duration sizing boundary run before the restore for the same reason.
 
 **Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
 
 - After each of the three replacing actions, `u` restores the mode, all three
-  parameter sets, and the attract screen's visibility.
-- A second `u` does not step back twice — one step only.
+  parameter sets, and the presentation state — proven separately for a screen
+  that came up automatically, one the reader asked for, one caught mid-fade-out,
+  and one fully hidden.
+- A second `u` does not step back twice: the state is `Unavailable` after the
+  first, and the restore is a no-op rather than a toggle.
+- Restoring onto a terminal smaller than the one the checkpoint was taken on
+  reports the adjustment instead of correcting silently.

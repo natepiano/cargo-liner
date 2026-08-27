@@ -209,6 +209,21 @@ impl TextFill {
     }
 }
 
+/// The parameters that steering can change on a [`DriftingText`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextSettings {
+    /// Which way every line drifts.
+    pub direction: BandDirection,
+    /// How far the field travels each second, in cells.
+    pub speed:     u32,
+    /// How far each line's speed may stand from the field's speed, as a percentage.
+    pub spread:    u32,
+    /// Whether the lines travel together or at speeds of their own.
+    pub drift:     TextDrift,
+    /// What each line's numbers are drawn as.
+    pub fill:      TextFill,
+}
+
 /// A window filled with characters, every line of them drifting in the
 /// colours of the desktop behind it.
 ///
@@ -315,6 +330,52 @@ impl DriftingText {
     #[must_use]
     pub fn new() -> Self { Self::default() }
 
+    /// The field's current steerable parameters.
+    #[must_use]
+    pub const fn settings(&self) -> TextSettings {
+        TextSettings {
+            direction: self.direction,
+            speed:     self.speed,
+            spread:    self.spread,
+            drift:     self.drift,
+            fill:      self.fill,
+        }
+    }
+
+    /// Restores steerable parameters through the same transitions as
+    /// the individual steering methods.
+    pub fn apply(&mut self, settings: TextSettings) {
+        self.set_direction(settings.direction);
+        self.set_drift(settings.drift);
+        self.set_fill(settings.fill);
+        self.set_speed(settings.speed);
+        self.set_spread(settings.spread);
+    }
+
+    /// Generates steerable parameters deterministically from `seed`.
+    #[must_use]
+    pub fn random_settings(&self, seed: u64) -> TextSettings {
+        let mut xorshift = Xorshift::seeded(seed);
+        TextSettings {
+            direction: match xorshift.index(4) {
+                0 => BandDirection::Left,
+                1 => BandDirection::Right,
+                2 => BandDirection::Up,
+                _ => BandDirection::Down,
+            },
+            speed:     xorshift.u32_inclusive(MIN_TEXT_SPEED, MAX_TEXT_SPEED),
+            spread:    xorshift.u32_inclusive(0, MAX_TEXT_SPREAD),
+            drift:     match xorshift.index(2) {
+                0 => TextDrift::Together,
+                _ => TextDrift::Apart,
+            },
+            fill:      match xorshift.index(2) {
+                0 => TextFill::Bars,
+                _ => TextFill::Glyphs,
+            },
+        }
+    }
+
     /// Carry every line one frame further along, sizing the field to
     /// `area` first.
     pub fn advance(&mut self, area: Rect, elapsed: Duration) {
@@ -362,15 +423,22 @@ impl DriftingText {
     /// Costs the field nothing: the numbers are already dealt and this
     /// only changes how they are read, so every line carries on from
     /// exactly where it stood.
-    pub const fn cycle_fill(&mut self) { self.fill = self.fill.next(); }
+    pub const fn cycle_fill(&mut self) { self.set_fill(self.fill.next()); }
 
     /// Turn the lines' speeds together or send them apart again.
     ///
     /// Together is the lines moving as one, which they cannot do from
     /// wherever their own speeds have carried them -- so turning it on
     /// puts every line back flush and the field sets off from there.
-    pub fn cycle_drift(&mut self) {
-        self.drift = self.drift.next();
+    pub fn cycle_drift(&mut self) { self.set_drift(self.drift.next()); }
+
+    /// Set whether the lines travel together or apart, maintaining the
+    /// state changed by [`Self::cycle_drift`].
+    fn set_drift(&mut self, drift: TextDrift) {
+        if self.drift == drift {
+            return;
+        }
+        self.drift = drift;
         match self.drift {
             TextDrift::Together => {
                 for line in &mut self.lines {
@@ -383,9 +451,12 @@ impl DriftingText {
             // enough to be read. Only ever upward: a reader who has
             // already sent the speeds further apart than the default
             // is not asking to be brought back to it.
-            TextDrift::Apart => self.spread = self.spread.max(DEFAULT_TEXT_SPREAD),
+            TextDrift::Apart => self.set_spread(self.spread.max(DEFAULT_TEXT_SPREAD)),
         }
     }
+
+    /// Set how the field's numbers are drawn.
+    const fn set_fill(&mut self, fill: TextFill) { self.fill = fill; }
 
     /// Which way the lines drift, and so which edge fresh characters
     /// enter by.
@@ -446,14 +517,14 @@ impl DriftingText {
     /// -- lines that have already come apart stay where they are and
     /// keep the arrangement they drifted into.
     pub const fn spread_narrower(&mut self, percent: u32) {
-        self.spread = self.spread.saturating_sub(percent);
+        self.set_spread(self.spread.saturating_sub(percent));
     }
 
     /// Send the lines' own speeds `percent` further from the field's,
     /// never past the width at which the slowest line would stop and
     /// the fastest would run at twice the field's speed.
-    pub fn spread_wider(&mut self, percent: u32) {
-        self.spread = self.spread.saturating_add(percent).min(MAX_TEXT_SPREAD);
+    pub const fn spread_wider(&mut self, percent: u32) {
+        self.set_spread(self.spread.saturating_add(percent));
     }
 
     /// Draw the field where it currently stands, moving nothing.
@@ -672,6 +743,19 @@ impl DriftingText {
     /// allowed.
     fn set_speed(&mut self, speed: u32) {
         self.speed = speed.clamp(MIN_TEXT_SPEED, MAX_TEXT_SPEED);
+    }
+
+    /// Set how far line speeds may stand from the field speed.
+    ///
+    /// Written out rather than as `min`, which is `Ord`'s and so cannot
+    /// be called from a `const fn` on stable -- and this has to stay
+    /// const for [`Self::spread_narrower`], which is.
+    const fn set_spread(&mut self, spread: u32) {
+        self.spread = if spread > MAX_TEXT_SPREAD {
+            MAX_TEXT_SPREAD
+        } else {
+            spread
+        };
     }
 }
 
@@ -1706,6 +1790,150 @@ mod tests {
                 "a line stands somewhere on its own length: {}",
                 line.drifted
             );
+        }
+    }
+
+    /// Settings taken from one sized field restore exactly on another
+    /// field sized to the same area.
+    #[test]
+    fn text_settings_round_trip_between_sized_fields() {
+        let mut source = DriftingText::new();
+        source.advance(AREA, Duration::ZERO);
+        source.set_direction(BandDirection::Down);
+        source.speed_up(17);
+        source.spread_wider(13);
+        source.cycle_drift();
+        source.cycle_fill();
+        let settings = source.settings();
+        let mut restored = DriftingText::new();
+        restored.advance(AREA, Duration::ZERO);
+
+        restored.apply(settings);
+
+        assert_eq!(restored.settings(), settings);
+    }
+
+    /// Applying direction, drift, and fill settings to a running field
+    /// has the same runtime result as the corresponding steering calls.
+    #[test]
+    fn applying_text_settings_uses_the_steering_transitions() {
+        for starting_drift in [TextDrift::Together, TextDrift::Apart] {
+            let mut starting = DriftingText::new();
+            starting.set_direction(BandDirection::Left);
+            starting.advance(AREA, Duration::ZERO);
+            starting.speed_up(17);
+            starting.spread_narrower(u32::MAX);
+            starting.cycle_fill();
+            if starting.drift != starting_drift {
+                starting.cycle_drift();
+            }
+            starting.advance(AREA, A_WHILE);
+
+            for direction in [
+                BandDirection::Left,
+                BandDirection::Right,
+                BandDirection::Up,
+                BandDirection::Down,
+            ] {
+                for drift in [TextDrift::Together, TextDrift::Apart] {
+                    for fill in [TextFill::Bars, TextFill::Glyphs] {
+                        let mut settings = starting.settings();
+                        settings.direction = direction;
+                        settings.drift = drift;
+                        settings.fill = fill;
+                        let mut expected = starting.clone();
+                        expected.set_direction(direction);
+                        if expected.drift != drift {
+                            expected.cycle_drift();
+                        }
+                        if expected.fill != fill {
+                            expected.cycle_fill();
+                        }
+                        if expected.spread < settings.spread {
+                            expected.spread_wider(settings.spread - expected.spread);
+                        } else {
+                            expected.spread_narrower(expected.spread - settings.spread);
+                        }
+                        let mut applied = starting.clone();
+
+                        applied.apply(settings);
+
+                        assert_eq!(
+                            applied, expected,
+                            "starting {starting_drift:?}, direction {direction:?}, drift {drift:?}, fill {fill:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Values outside every numeric range are normalized by
+    /// [`DriftingText::apply`].
+    #[test]
+    fn applying_text_settings_clamps_every_numeric_field() {
+        let mut text = DriftingText::new();
+
+        text.apply(TextSettings {
+            direction: BandDirection::Right,
+            speed:     0,
+            spread:    0,
+            drift:     TextDrift::Apart,
+            fill:      TextFill::Bars,
+        });
+        assert_eq!(text.speed, MIN_TEXT_SPEED);
+        assert_eq!(text.spread, 0);
+
+        text.apply(TextSettings {
+            direction: BandDirection::Right,
+            speed:     u32::MAX,
+            spread:    u32::MAX,
+            drift:     TextDrift::Apart,
+            fill:      TextFill::Bars,
+        });
+        assert_eq!(text.speed, MAX_TEXT_SPEED);
+        assert_eq!(text.spread, MAX_TEXT_SPREAD);
+    }
+
+    /// A seed always produces the same settings, while the fixed seed
+    /// corpus varies every field and reaches every enum variant.
+    #[test]
+    fn random_text_settings_are_deterministic_and_cover_every_field() {
+        let text = DriftingText::new();
+        let samples: Vec<TextSettings> = (1..=512).map(|seed| text.random_settings(seed)).collect();
+        let first = samples[0];
+
+        assert_eq!(text.random_settings(41), text.random_settings(41));
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.direction != first.direction)
+        );
+        assert!(samples.iter().any(|settings| settings.speed != first.speed));
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.spread != first.spread)
+        );
+        assert!(samples.iter().any(|settings| settings.drift != first.drift));
+        assert!(samples.iter().any(|settings| settings.fill != first.fill));
+        for direction in [
+            BandDirection::Left,
+            BandDirection::Right,
+            BandDirection::Up,
+            BandDirection::Down,
+        ] {
+            assert!(
+                samples
+                    .iter()
+                    .any(|settings| settings.direction == direction)
+            );
+        }
+        for drift in [TextDrift::Together, TextDrift::Apart] {
+            assert!(samples.iter().any(|settings| settings.drift == drift));
+        }
+        for fill in [TextFill::Bars, TextFill::Glyphs] {
+            assert!(samples.iter().any(|settings| settings.fill == fill));
         }
     }
 }

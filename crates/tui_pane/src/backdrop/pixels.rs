@@ -163,6 +163,23 @@ impl PixelFill {
     }
 }
 
+/// The parameters that steering can change on [`ResolvingPixels`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PixelSettings {
+    /// Which way the wave sweeps.
+    pub direction:     BandDirection,
+    /// How far the wave travels each second, in cells.
+    pub speed:         u32,
+    /// How much of the field the wave covers, as a percentage.
+    pub wave_percent:  u32,
+    /// How many columns one block covers at its coarsest.
+    pub block_columns: u32,
+    /// What blocks do as the wave leaves them.
+    pub resolve:       PixelResolve,
+    /// What each cell is painted with.
+    pub fill:          PixelFill,
+}
+
 /// The channels summed over one block, and how many cells went into
 /// them.
 ///
@@ -372,6 +389,56 @@ impl ResolvingPixels {
     #[must_use]
     pub fn new() -> Self { Self::default() }
 
+    /// The field's current steerable parameters.
+    #[must_use]
+    pub const fn settings(&self) -> PixelSettings {
+        PixelSettings {
+            direction:     self.direction,
+            speed:         self.speed,
+            wave_percent:  self.wave_percent,
+            block_columns: self.block_columns,
+            resolve:       self.resolve,
+            fill:          self.fill,
+        }
+    }
+
+    /// Restores steerable parameters through the same transitions as
+    /// the individual steering methods.
+    pub fn apply(&mut self, settings: PixelSettings) {
+        self.set_direction(settings.direction);
+        self.set_resolve(settings.resolve);
+        self.set_fill(settings.fill);
+        self.set_speed(settings.speed);
+        self.set_wave(settings.wave_percent);
+        self.set_block_columns(settings.block_columns);
+    }
+
+    /// Generates steerable parameters deterministically from `seed`.
+    #[must_use]
+    pub fn random_settings(&self, seed: u64) -> PixelSettings {
+        let mut xorshift = Xorshift::seeded(seed);
+        PixelSettings {
+            direction:     match xorshift.index(4) {
+                0 => BandDirection::Left,
+                1 => BandDirection::Right,
+                2 => BandDirection::Up,
+                _ => BandDirection::Down,
+            },
+            speed:         xorshift.u32_inclusive(MIN_PIXEL_SPEED, MAX_PIXEL_SPEED),
+            wave_percent:  xorshift.u32_inclusive(MIN_PIXEL_WAVE_PERCENT, MAX_PIXEL_WAVE_PERCENT),
+            block_columns: xorshift.u32_inclusive(MIN_BLOCK_COLUMNS, MAX_BLOCK_COLUMNS),
+            resolve:       match xorshift.index(3) {
+                0 => PixelResolve::Blend,
+                1 => PixelResolve::Step,
+                _ => PixelResolve::Scatter,
+            },
+            fill:          match xorshift.index(2) {
+                0 => PixelFill::Solid,
+                _ => PixelFill::Shades,
+            },
+        }
+    }
+
     /// Carry the wave one frame further across the field, sizing it to
     /// `area` first.
     ///
@@ -408,7 +475,7 @@ impl ResolvingPixels {
     /// Costs the field nothing: the colours are worked out the same way
     /// either way and this only changes what is written into the cell,
     /// so the wave carries on from exactly where it stood.
-    pub const fn cycle_fill(&mut self) { self.fill = self.fill.next(); }
+    pub const fn cycle_fill(&mut self) { self.set_fill(self.fill.next()); }
 
     /// Step to the next of the three ways a block gives its cells back
     /// -- see [`PixelResolve::next`].
@@ -416,7 +483,7 @@ impl ResolvingPixels {
     /// The wave is not moved and the blocks are not re-cut, so what the
     /// reader sees is the same wave over the same picture, resolving it
     /// another way.
-    pub const fn cycle_resolve(&mut self) { self.resolve = self.resolve.next(); }
+    pub const fn cycle_resolve(&mut self) { self.set_resolve(self.resolve.next()); }
 
     /// Which way the wave sweeps, and so which edge it enters by.
     ///
@@ -785,6 +852,12 @@ impl ResolvingPixels {
     fn set_wave(&mut self, percent: u32) {
         self.wave_percent = percent.clamp(MIN_PIXEL_WAVE_PERCENT, MAX_PIXEL_WAVE_PERCENT);
     }
+
+    /// Set what blocks do as the wave leaves them.
+    const fn set_resolve(&mut self, resolve: PixelResolve) { self.resolve = resolve; }
+
+    /// Set what each cell is painted with.
+    const fn set_fill(&mut self, fill: PixelFill) { self.fill = fill; }
 }
 
 /// How much light a colour carries, as the sum of its three channels.
@@ -1238,5 +1311,164 @@ mod tests {
         assert_eq!(resolve, PixelResolve::default());
 
         assert_eq!(PixelFill::default().next().next(), PixelFill::default());
+    }
+
+    /// Settings taken from one sized field restore exactly on another
+    /// field sized to the same area.
+    #[test]
+    fn pixel_settings_round_trip_between_sized_fields() {
+        let mut source = ResolvingPixels::new();
+        source.advance(AREA, Duration::ZERO);
+        source.set_direction(BandDirection::Down);
+        source.speed_up(17);
+        source.coarsen(5);
+        source.wider(13);
+        source.cycle_resolve();
+        source.cycle_fill();
+        let settings = source.settings();
+        let mut restored = ResolvingPixels::new();
+        restored.advance(AREA, Duration::ZERO);
+
+        restored.apply(settings);
+
+        assert_eq!(restored.settings(), settings);
+    }
+
+    /// Applying direction, resolve, and fill settings to a running
+    /// field has the same runtime result as the steering calls.
+    #[test]
+    fn applying_pixel_settings_uses_the_steering_transitions() {
+        let mut starting = ResolvingPixels::new();
+        starting.advance(AREA, Duration::ZERO);
+        starting.set_direction(BandDirection::Left);
+        starting.speed_up(17);
+        starting.coarsen(5);
+        starting.wider(13);
+        starting.cycle_resolve();
+        starting.cycle_fill();
+        starting.advance(AREA, FRAME);
+
+        for direction in [
+            BandDirection::Left,
+            BandDirection::Right,
+            BandDirection::Up,
+            BandDirection::Down,
+        ] {
+            for resolve in [
+                PixelResolve::Blend,
+                PixelResolve::Step,
+                PixelResolve::Scatter,
+            ] {
+                for fill in [PixelFill::Solid, PixelFill::Shades] {
+                    let mut settings = starting.settings();
+                    settings.direction = direction;
+                    settings.resolve = resolve;
+                    settings.fill = fill;
+                    let mut expected = starting.clone();
+                    expected.set_direction(direction);
+                    while expected.resolve != resolve {
+                        expected.cycle_resolve();
+                    }
+                    if expected.fill != fill {
+                        expected.cycle_fill();
+                    }
+                    let mut applied = starting.clone();
+
+                    applied.apply(settings);
+
+                    assert_eq!(
+                        applied, expected,
+                        "direction {direction:?}, resolve {resolve:?}, fill {fill:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Values outside every numeric range are normalized by
+    /// [`ResolvingPixels::apply`].
+    #[test]
+    fn applying_pixel_settings_clamps_every_numeric_field() {
+        let mut pixels = ResolvingPixels::new();
+
+        pixels.apply(PixelSettings {
+            direction:     BandDirection::Right,
+            speed:         0,
+            wave_percent:  0,
+            block_columns: 0,
+            resolve:       PixelResolve::Blend,
+            fill:          PixelFill::Solid,
+        });
+        assert_eq!(pixels.speed, MIN_PIXEL_SPEED);
+        assert_eq!(pixels.wave_percent, MIN_PIXEL_WAVE_PERCENT);
+        assert_eq!(pixels.block_columns, MIN_BLOCK_COLUMNS);
+
+        pixels.apply(PixelSettings {
+            direction:     BandDirection::Right,
+            speed:         u32::MAX,
+            wave_percent:  u32::MAX,
+            block_columns: u32::MAX,
+            resolve:       PixelResolve::Blend,
+            fill:          PixelFill::Solid,
+        });
+        assert_eq!(pixels.speed, MAX_PIXEL_SPEED);
+        assert_eq!(pixels.wave_percent, MAX_PIXEL_WAVE_PERCENT);
+        assert_eq!(pixels.block_columns, MAX_BLOCK_COLUMNS);
+    }
+
+    /// A seed always produces the same settings, while the fixed seed
+    /// corpus varies every field and reaches every enum variant.
+    #[test]
+    fn random_pixel_settings_are_deterministic_and_cover_every_field() {
+        let pixels = ResolvingPixels::new();
+        let samples: Vec<PixelSettings> =
+            (1..=512).map(|seed| pixels.random_settings(seed)).collect();
+        let first = samples[0];
+
+        assert_eq!(pixels.random_settings(41), pixels.random_settings(41));
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.direction != first.direction)
+        );
+        assert!(samples.iter().any(|settings| settings.speed != first.speed));
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.wave_percent != first.wave_percent)
+        );
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.block_columns != first.block_columns)
+        );
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.resolve != first.resolve)
+        );
+        assert!(samples.iter().any(|settings| settings.fill != first.fill));
+        for direction in [
+            BandDirection::Left,
+            BandDirection::Right,
+            BandDirection::Up,
+            BandDirection::Down,
+        ] {
+            assert!(
+                samples
+                    .iter()
+                    .any(|settings| settings.direction == direction)
+            );
+        }
+        for resolve in [
+            PixelResolve::Blend,
+            PixelResolve::Step,
+            PixelResolve::Scatter,
+        ] {
+            assert!(samples.iter().any(|settings| settings.resolve == resolve));
+        }
+        for fill in [PixelFill::Solid, PixelFill::Shades] {
+            assert!(samples.iter().any(|settings| settings.fill == fill));
+        }
     }
 }

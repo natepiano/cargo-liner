@@ -39,6 +39,7 @@ mod text;
 
 pub use band::BandDirection;
 pub use band::BandFraying;
+pub use band::BandSettings;
 pub use band::TravelingBand;
 use crossterm::terminal;
 use desktop::Desktop;
@@ -46,12 +47,14 @@ use desktop::Placement;
 pub use monitor::BackdropMonitor;
 pub use pixels::PixelFill;
 pub use pixels::PixelResolve;
+pub use pixels::PixelSettings;
 pub use pixels::ResolvingPixels;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 pub use text::DriftingText;
 pub use text::TextDrift;
 pub use text::TextFill;
+pub use text::TextSettings;
 
 use self::constants::PIXEL_PRECISION;
 
