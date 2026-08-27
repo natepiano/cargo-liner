@@ -31,7 +31,9 @@ use crate::app::App;
 use crate::attract::AttractMode;
 use crate::constants::APP_GLOBALS_SECTION;
 use crate::favorites;
-use crate::favorites::FavoritesMutationError;
+use crate::favorites::FavoritesMutation;
+use crate::favorites::FavoritesRetryInstruction;
+use crate::favorites::ResolvedBinding;
 use crate::tiles::Direction;
 
 const FAVORITE_TOAST_MIN_INTERIOR_LINES: usize = 1;
@@ -109,7 +111,21 @@ fn save_favorite(app: &mut App) {
             "Favorite saved",
             format!("{} parameters saved", mode_label(favorite.settings.mode())),
         ),
-        Err(error) => ("Favorite not saved", favorite_refusal_message(&error)),
+        Err(error) => {
+            let binding = app
+                .keymap
+                .globals::<AppGlobalAction>()
+                .and_then(|scope| scope.key_for(AppGlobalAction::SaveFavorite))
+                .cloned();
+            let retry = FavoritesRetryInstruction::Press(ResolvedBinding::for_action(
+                "save_favorite",
+                binding,
+            ));
+            (
+                "Favorite not saved",
+                favorites::favorite_refusal_message(FavoritesMutation::Save, &retry, &error),
+            )
+        },
     };
     let pushed_at = Instant::now();
     let toast_id = app.framework.toasts.push_timed(
@@ -135,29 +151,17 @@ const fn mode_label(attract_mode: AttractMode) -> &'static str {
     }
 }
 
-fn favorite_refusal_message(error: &FavoritesMutationError) -> String {
-    match error {
-        FavoritesMutationError::LockUnavailable { .. } => {
-            format!("Favorites are in use; press ctrl-s to try again. {error}")
-        },
-        FavoritesMutationError::LocationUnavailable
-        | FavoritesMutationError::Unparseable { .. }
-        | FavoritesMutationError::Unreadable { .. }
-        | FavoritesMutationError::WriteFailed { .. } => {
-            format!("Favorites refused the save: {error}")
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
     use std::path::PathBuf;
 
     use tui_pane::KeyBind;
+    use tui_pane::KeySequence;
 
     use super::*;
     use crate::app::ProcessTree;
+    use crate::favorites::FavoritesMutationError;
 
     /// `p` reaches the process-tree toggle, read out of the table the
     /// keymap is actually built from. It shares the scope with the four
@@ -215,7 +219,16 @@ mod tests {
                 error: "disk is read-only".to_string(),
             },
         ];
-        let messages: Vec<String> = errors.iter().map(favorite_refusal_message).collect();
+        let retry = FavoritesRetryInstruction::Press(ResolvedBinding::for_action(
+            "save_favorite",
+            Some(KeySequence::from(KeyBind::ctrl('s'))),
+        ));
+        let messages: Vec<String> = errors
+            .iter()
+            .map(|error| {
+                favorites::favorite_refusal_message(FavoritesMutation::Save, &retry, error)
+            })
+            .collect();
         let distinct: HashSet<&str> = messages.iter().map(String::as_str).collect();
 
         assert_eq!(distinct.len(), errors.len());
@@ -228,7 +241,7 @@ mod tests {
         ]) {
             assert!(message.contains(cause), "{message:?} should name {cause:?}");
         }
-        assert!(messages[3].contains("press ctrl-s to try again"));
+        assert!(messages[3].contains("press ⌃s to try again"));
     }
 
     /// The display starts short and the key walks between the two. A

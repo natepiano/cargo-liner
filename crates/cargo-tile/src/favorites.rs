@@ -1,6 +1,7 @@
 //! Lossless persistence for attract-screen parameter favorites.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -23,6 +24,7 @@ use toml::Value;
 use tui_pane::BandDirection;
 use tui_pane::BandFraying;
 use tui_pane::BandSettings;
+use tui_pane::KeySequence;
 use tui_pane::PixelFill;
 use tui_pane::PixelResolve;
 use tui_pane::PixelSettings;
@@ -61,6 +63,50 @@ pub(crate) struct FavoriteId(Uuid);
 
 impl fmt::Display for FavoriteId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }
+}
+
+/// A keymap lookup whose variants say whether the action can currently be invoked.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ResolvedBinding {
+    /// The action has a primary binding.
+    Bound {
+        /// TOML name of the action the key invokes.
+        action_name: &'static str,
+        /// Primary key sequence for the action.
+        sequence:    KeySequence,
+    },
+    /// The action is deliberately unbound.
+    Unbound {
+        /// TOML name of the action the reader needs to bind.
+        action_name: &'static str,
+    },
+}
+
+impl ResolvedBinding {
+    /// Resolve the primary binding for one named keymap action.
+    pub(crate) fn for_action(action_name: &'static str, binding: Option<KeySequence>) -> Self {
+        binding.map_or(Self::Unbound { action_name }, |sequence| Self::Bound {
+            action_name,
+            sequence,
+        })
+    }
+
+    /// Compact label for the resolved key, or an empty label when it is unbound.
+    pub(crate) fn display_short(&self) -> String {
+        match self {
+            Self::Bound { sequence, .. } => sequence.display_short(),
+            Self::Unbound { .. } => String::new(),
+        }
+    }
+
+    fn retry_phrase(&self, instruction: &str) -> String {
+        match self {
+            Self::Bound { sequence, .. } => {
+                format!("press {} to {instruction}", sequence.display_short())
+            },
+            Self::Unbound { action_name } => format!("bind the {action_name} action first"),
+        }
+    }
 }
 
 /// Parameters saved for one attract-screen mode.
@@ -197,7 +243,22 @@ impl FavoriteRows {
     }
 
     fn refresh_recognitions(&mut self) {
-        self.recognitions = self.tables.iter().map(recognize_favorite).collect();
+        let mut recognized_ids = HashSet::new();
+        self.recognitions = self
+            .tables
+            .iter()
+            .map(|table| match recognize_favorite(table) {
+                FavoriteRowRecognition::Recognized(favorite)
+                    if !recognized_ids.insert(favorite.id) =>
+                {
+                    FavoriteRowRecognition::Unrecognized(UnrecognizedFavoriteValue::new(
+                        FAVORITE_ID_KEY,
+                        format!("{} (duplicate)", favorite.id),
+                    ))
+                },
+                recognition => recognition,
+            })
+            .collect();
         self.recognitions.sort_by(compare_recognitions);
     }
 
@@ -233,10 +294,6 @@ impl FavoriteRows {
         favorite
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "deleting a favorite starts in the next phase")
-    )]
     fn remove(&mut self, favorite_id: FavoriteId) {
         let row = self.tables.iter().position(|table| {
             matches!(
@@ -319,6 +376,73 @@ pub(crate) enum FavoritesMutationError {
     },
 }
 
+/// Favorites-file mutation being reported to the reader.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FavoritesMutation {
+    /// Saving the current attract parameters.
+    Save,
+    /// Deleting a saved favorite.
+    Delete,
+}
+
+impl FavoritesMutation {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Save => "save",
+            Self::Delete => "deletion",
+        }
+    }
+}
+
+/// Usable instruction for retrying a refused favorites mutation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum FavoritesRetryInstruction {
+    /// Retry through one action that is available on the current surface.
+    Press(ResolvedBinding),
+    /// Reopen the favorites overlay before invoking its local retry action.
+    ReopenThenPress {
+        /// Binding that reopens the favorites overlay.
+        open:  ResolvedBinding,
+        /// Binding that retries the mutation inside the overlay.
+        retry: ResolvedBinding,
+    },
+}
+
+impl FavoritesRetryInstruction {
+    fn sentence(&self, mutation: FavoritesMutation) -> String {
+        match self {
+            Self::Press(binding) => binding.retry_phrase("try again"),
+            Self::ReopenThenPress { open, retry } => format!(
+                "{}, then {}",
+                open.retry_phrase("reopen favorites"),
+                retry.retry_phrase(&format!("retry the {}", mutation.label())),
+            ),
+        }
+    }
+}
+
+/// Explain a refused mutation, including a retry that works on the current surface.
+#[must_use]
+pub(crate) fn favorite_refusal_message(
+    mutation: FavoritesMutation,
+    retry: &FavoritesRetryInstruction,
+    error: &FavoritesMutationError,
+) -> String {
+    match error {
+        FavoritesMutationError::LockUnavailable { .. } => format!(
+            "Favorites refused the {} because they are in use; {}. {error}",
+            mutation.label(),
+            retry.sentence(mutation)
+        ),
+        FavoritesMutationError::LocationUnavailable
+        | FavoritesMutationError::Unparseable { .. }
+        | FavoritesMutationError::Unreadable { .. }
+        | FavoritesMutationError::WriteFailed { .. } => {
+            format!("Favorites refused the {}: {error}", mutation.label())
+        },
+    }
+}
+
 impl fmt::Display for FavoritesMutationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -383,7 +507,6 @@ pub(crate) fn push(settings: FavoriteSettings) -> Result<Favorite, FavoritesMuta
 /// # Errors
 ///
 /// Returns the read-only file state or the lock, directory, serialization, or write failure.
-#[expect(dead_code, reason = "deleting a favorite starts in the next phase")]
 pub(crate) fn remove(favorite_id: FavoriteId) -> Result<(), FavoritesMutationError> {
     remove_from_location(
         FavoritesLocation::from(config::favorites_path()),
@@ -464,10 +587,6 @@ fn push_to_location(
     edit_at_location(location, |rows| rows.push(favorite))
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "deleting a favorite starts in the next phase")
-)]
 fn remove_from_location(
     location: FavoritesLocation,
     favorite_id: FavoriteId,
@@ -930,9 +1049,11 @@ fn timestamp_at_file_precision(timestamp: DateTime<FixedOffset>) -> DateTime<Fix
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::collections::HashSet;
     use std::fs;
 
     use tempfile::TempDir;
+    use tui_pane::KeyBind;
 
     use super::*;
 
@@ -940,6 +1061,104 @@ mod tests {
     const FIRST_SAVED: &str = "2026-08-26T09:02:44.870-07:00";
     const SECOND_ID: &str = "01a03f60-2e8b-77c2-858f-476ee413d81c";
     const SECOND_SAVED: &str = "2026-08-26T14:31:05.412-07:00";
+
+    fn mutation_errors() -> [FavoritesMutationError; 5] {
+        let path = PathBuf::from("/tmp/favorites.toml");
+        [
+            FavoritesMutationError::LocationUnavailable,
+            FavoritesMutationError::Unparseable {
+                path:  path.clone(),
+                error: "bad TOML".to_string(),
+            },
+            FavoritesMutationError::Unreadable {
+                path:  path.clone(),
+                error: "permission denied".to_string(),
+            },
+            FavoritesMutationError::LockUnavailable {
+                path:  path.clone(),
+                error: "favorites are in use".to_string(),
+            },
+            FavoritesMutationError::WriteFailed {
+                path,
+                error: "disk is read-only".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn every_refusal_names_a_distinct_cause_for_both_mutations() {
+        for mutation in [FavoritesMutation::Save, FavoritesMutation::Delete] {
+            let action_name = match mutation {
+                FavoritesMutation::Save => "save_favorite",
+                FavoritesMutation::Delete => "delete",
+            };
+            let retry = FavoritesRetryInstruction::Press(ResolvedBinding::for_action(
+                action_name,
+                Some(KeySequence::from(KeyBind::from('x'))),
+            ));
+            let messages = mutation_errors()
+                .iter()
+                .map(|error| favorite_refusal_message(mutation, &retry, error))
+                .collect::<Vec<_>>();
+            let distinct = messages.iter().map(String::as_str).collect::<HashSet<_>>();
+
+            assert_eq!(distinct.len(), messages.len());
+            assert!(messages.iter().all(|message| match mutation {
+                FavoritesMutation::Save => message.contains("save") || message.contains("in use"),
+                FavoritesMutation::Delete => !message.contains("save"),
+            }));
+        }
+    }
+
+    #[test]
+    fn lock_refusal_names_the_retry_that_works_on_each_surface() {
+        let error = FavoritesMutationError::LockUnavailable {
+            path:  PathBuf::from("/tmp/favorites.lock"),
+            error: "held".to_string(),
+        };
+        let save = favorite_refusal_message(
+            FavoritesMutation::Save,
+            &FavoritesRetryInstruction::Press(ResolvedBinding::for_action(
+                "save_favorite",
+                Some(KeySequence::from(KeyBind::ctrl('s'))),
+            )),
+            &error,
+        );
+        let open_delete = favorite_refusal_message(
+            FavoritesMutation::Delete,
+            &FavoritesRetryInstruction::Press(ResolvedBinding::for_action(
+                "delete",
+                Some(KeySequence::from(KeyBind::from('x'))),
+            )),
+            &error,
+        );
+        let closed_delete = favorite_refusal_message(
+            FavoritesMutation::Delete,
+            &FavoritesRetryInstruction::ReopenThenPress {
+                open:  ResolvedBinding::for_action(
+                    "open_favorites",
+                    Some(KeySequence::from(KeyBind::ctrl('o'))),
+                ),
+                retry: ResolvedBinding::for_action(
+                    "delete",
+                    Some(KeySequence::from(KeyBind::from('x'))),
+                ),
+            },
+            &error,
+        );
+        let unbound_delete = favorite_refusal_message(
+            FavoritesMutation::Delete,
+            &FavoritesRetryInstruction::Press(ResolvedBinding::for_action("delete", None)),
+            &error,
+        );
+
+        assert!(save.contains("press ⌃s to try again"));
+        assert!(open_delete.contains("press x to try again"));
+        assert!(closed_delete.contains("press ⌃o to reopen favorites"));
+        assert!(closed_delete.contains("press x to retry the deletion"));
+        assert!(unbound_delete.contains("bind the delete action first"));
+        assert!(!unbound_delete.contains("bind the try again action"));
+    }
 
     fn favorites_path(directory: &TempDir) -> PathBuf { directory.path().join(FAVORITES_FILENAME) }
 
@@ -1122,6 +1341,44 @@ fill = "solid"
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn duplicate_id_is_recognized_only_once() {
+        let text = format!(
+            r#"[[favorite]]
+id = "{FIRST_ID}"
+saved = "{FIRST_SAVED}"
+mode = "moving_band"
+direction = "right"
+width = 12
+speed = 40
+tail_speed = 96
+fraying = "both"
+
+[[favorite]]
+id = "{FIRST_ID}"
+saved = "{SECOND_SAVED}"
+mode = "pixelate"
+direction = "left"
+speed = 24
+wave_percent = 145
+block_columns = 6
+resolve = "scatter"
+fill = "solid"
+"#
+        );
+
+        let rows = FavoriteRows::parse(&text).expect("duplicate fixture should parse");
+        let recognitions = rows.iter().collect::<Vec<_>>();
+
+        assert_eq!(rows.recognized().count(), 1);
+        assert_eq!(recognitions.len(), 2);
+        assert!(matches!(
+            recognitions[1],
+            FavoriteRowRecognition::Unrecognized(UnrecognizedFavoriteValue { key, spelling })
+                if key == FAVORITE_ID_KEY && spelling == &format!("{FIRST_ID} (duplicate)")
+        ));
     }
 
     #[test]

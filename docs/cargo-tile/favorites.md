@@ -67,10 +67,11 @@
   - `crates/tui_pane/src/theme/blend.rs` — `blend_color(color, toward, alpha)` (35);
     alpha 0 leaves `color`, `u8::MAX` yields `toward` — the same scale as `fade(faded: u8)`.
   - `crates/cargo-tile/src/attract/mod.rs` — `AttractMode` (192, `pub(crate)`),
-    `Attract` (236), `new` (294), `toggle` (323), `asked_for` (337), `keyed_mode`
-    (358), `favorite_settings` (371), `size_current_animation` (382),
-    `record_terminal_resize` (401), `showing` (519), `due_back` (530), `identify`
-    (542), `advance` (628), `render` (739), `ground` (761).
+    `Attract` (250), `new` (308), `toggle` (337), `request_show` (348),
+    `asked_for` (357), `keyed_mode` (378), `favorite_settings` (391),
+    `apply_favorite` (401), `size_current_animation` (433),
+    `record_terminal_resize` (452), `showing` (570), `due_back` (581), `identify`
+    (593), `advance` (679), `render` (790), `ground` (812).
     Fields `mode`/`band`/`text`/`pixels` are private with no accessors.
     Phase 3 added the sizing state beside them: `LaidOutArea::{NeverLaidOut,
     LaidOut}`, `PendingTerminalResize::{NotReported, Reported}`,
@@ -82,22 +83,28 @@
     Faster, `<`/`,` Slower, `[` TailSlower, `]` TailFaster, `+`/`=` Wider, `-`
     Thinner, `v` CycleFraying, `1`/`2`/`3` mode switch. `moving_text.rs` and
     `pixelate.rs` hold the other two `bindings!` blocks.
-  - `crates/cargo-tile/src/globals.rs` — `action_enum!` block (**39–52**),
-    `SaveFavorite` (51), `defaults()` (62), `dispatch` (81), `mode_label` (123),
-    `favorite_refusal_message` (131). The last two are **private to this file**
-    today; `favorite_refusal_message` hardcodes the word "save" and the literal
-    `ctrl-s`, so any later phase that reports a different mutation has to
-    generalise it rather than call it as it stands.
+  - `crates/cargo-tile/src/globals.rs` — `action_enum!` block (**42–55**),
+    `SaveFavorite` (54), `defaults()` (66), `ctrl-s` binding (77), `dispatcher()`
+    (82), `dispatch` (86), its `SaveFavorite` arm (98), `mode_label` (146).
+    `mode_label` is **private to this file**.
+  - `crates/cargo-tile/src/favorites.rs` — `favorite_refusal_message(mutation:
+    FavoritesMutation, retry: &FavoritesRetryInstruction, error:
+    &FavoritesMutationError) -> String` (**426**). Phase 5 moved it here out of
+    `globals.rs` and generalised it: the mutation word and the retry sentence
+    both come from arguments, so `FavoritesMutation::{Save, Delete}` (381) and
+    `FavoritesRetryInstruction` (398) carry what used to be hardcoded. Any phase
+    reporting a refused favorites mutation calls it as it stands.
   - `crates/cargo-tile/src/keymap.rs` — `build_keymap` (64), scope registrations (75–83).
-  - `crates/cargo-tile/src/terminal.rs` — `handle_key` (**705**), which now
-    dispatches an open favorites overlay **first**, at **708–710**, and returns
+  - `crates/cargo-tile/src/terminal.rs` — `handle_key` (**717**), which now
+    dispatches an open favorites overlay **first**, at **720–723**, and returns
     before the framework is consulted; the framework branch
-    `if let Some(overlay) = app.framework.overlay()` (**712**), whose
-    open-overlay toggle runs at **714–719** and carries **no**
+    `if let Some(overlay) = app.framework.overlay()` (**724**), whose
+    open-overlay toggle runs at **726–731** and carries **no**
     `GlobalAction::Dismiss` fallback — Phase 4 removed that clause;
-    `dispatch_overlay_key` (**754**); `if app.updates == Updates::Frozen {`
-    (**496**), its `else` (**498**), the attract frame request **inside** that
-    else (**543**). Phase 3 put the toast prune and the shared visual frame
+    `dispatch_overlay_key` (**766**); `if app.updates == Updates::Frozen {`
+    (**508**), its `else` (**510**), the attract frame request **inside** that
+    else (**555**). Phase 5 added the fading-row advance at **493–499**, which
+    commits one pending deletion per loop iteration outside the `Frozen` branch. Phase 3 put the toast prune and the shared visual frame
     request **after** the recv match and outside the `Frozen` branch, and the
     toast deadline shortens the loop's wait through `VisualDeadline::limit_wait`.
   - `crates/cargo-tile/src/render.rs` — `draw` (**137**); the toast stack drawn
@@ -469,303 +476,104 @@ labels.
 - Rewriting the removed global `Dismiss` clause into an exception rather than
   deleting it — the exception would have re-entered on the next overlay.
 
-### Phase 5 — `enter` loads, `x` deletes with a fade  · status: todo
+### Phase 5 — `enter` loads, `x` deletes with a fade  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** The two mutating keys in the favorites table.
+`enter` on a recognized row loads it. `FavoritesOverlay::handle_action` returns
+`FavoritesOverlayActionOutcome::Load(settings)`; the **module-level `dispatch`
+function** in `favorites_overlay.rs` — not `handle_action`, which holds no
+`&mut App` — applies it through `Attract::apply_favorite`, closes the modal,
+calls `Attract::request_show()`, and reports the outcome as a scheduled toast
+paired with `App::schedule_timed_toast`.
+`apply_favorite(&mut self, requested: FavoriteSettings) -> FavoriteApplicationOutcome`
+sizes the requested mode's own animation, applies, reads the settings back, and
+answers `AppliedExactly` or
+`AppliedWithAdjustments { requested, effective }`; the row on disk is never
+rewritten, so a value that is out of range on this terminal survives to a taller
+one. `request_show()` is a const setter writing `asked = Asked::For` **and**
+`covering = true`, so it is idempotent and reverses a fade-out.
 
-**Spec:**
+`x` marks the row `FavoriteRowLifecycle::Removing { since }` and commits the disk
+removal at the keypress, in the event loop, never in `render::draw` — the fade is
+presentation only. `FavoritesOverlay::advance(now)` runs outside the
+`Updates::Frozen` branch and answers `Quiet`, `Repaint`, or
+`CommitRemoval(FavoriteId)`; alpha comes from elapsed time through
+`blend_color(text_default(), ground(), alpha)`, so extra draws never shorten it.
+`finish_removal` is idempotent per id, and closing mid-fade commits through
+`begin_close` before `finish_close` resets the cached plan.
 
-**`enter` loads.** Set `Attract::mode` to the row's mode, call `apply` on that
-animation with the row's settings, close the overlay, and ask for the attract
-screen **unconditionally** through a new idempotent `Attract::request_show()`.
-Not "if it is not already showing": `Attract::showing()` (`attract/mod.rs:519`)
-only tests that the fade is off its maximum, so it stays true through a
-fade-*out*, and a load landing in that window would skip the request and watch
-the favorite it just loaded disappear. `toggle()` (323) is equally unsuitable,
-since it can ask for the opposite state. The other two animations keep whatever
-they were last steered to — that is what already makes `1` / `2` / `3` a turn
-rather than a restart.
+A refused mutation raises `FavoritesOverlayNotice::DeletionRefused` inside the
+open modal, because toasts render beneath overlays. The notice wraps and is
+variable-height, bounded by the popup's existing 80%-of-area cap with
+`CONTENT_MIN_HEIGHT` reserving one favorite row. `favorite_refusal_message` lives
+in `favorites.rs` and takes `FavoritesMutation` and `FavoritesRetryInstruction`,
+so the mutation word and the retry sentence are arguments rather than a hardcoded
+"save" / `ctrl-s`; the match stays exhaustive over all five
+`FavoritesMutationError` variants. `ResolvedBinding::{Bound, Unbound}` carries
+`action_name: &'static str` separately from the caller's instruction phrase, so
+an unbound retry names a real keymap action.
 
-`Attract`'s `mode`/`band`/`text`/`pixels` fields are private with no accessors,
-so both `Attract::apply_favorite()` and `Attract::request_show()` go in
-`attract/mod.rs`.
-
-**A loaded favorite can be quietly corrected, and it must not be.** `apply` runs
-the private clamp setters, so a hand-edited row holding an out-of-range value —
-or one saved on a much taller terminal — lands as a different value than the file
-states. Nothing currently tells the reader that happened: they typed a number and
-the tool shows another one. So `apply_favorite` sizes the animation through Phase
-3's zero-duration boundary first, then reports what it actually did:
-
-```rust
-enum FavoriteApplicationOutcome {
-    AppliedExactly,
-    AppliedWithAdjustments { requested: FavoriteSettings, effective: FavoriteSettings },
-}
-```
-
-On `AppliedWithAdjustments` a warning names the fields that moved and what they
-became. **Which surface carries it depends on whether the overlay is still open** —
-see *Where a message goes* below; `enter` closes the overlay first, so its warning
-is a scheduled toast. **The row on disk is not rewritten.** The file keeps what the reader wrote, and the correction is
-reported rather than committed — rewriting it would destroy a value that becomes
-valid again on a taller terminal.
-
-Phase 6's `m` and Phase 8's `u` load through this same call and report the same
-way.
-
-**`x` deletes with a fade.** `x` marks the selected row
-`FavoriteRowLifecycle::Removing { since: Instant }` rather than dropping it; the
-other variant is `Active`, and the enum is the row's state rather than a flag
-beside it. Alpha is computed from
-`now - since` against a fixed fade duration, **not** incremented per draw —
-otherwise an unrelated scan or keypress adds frames and the fade runs faster.
-Use `blend_color(color, ground, alpha)` (`theme/blend.rs:35`, re-exported at
-`lib.rs:264`); alpha 0 leaves the row at full strength and `u8::MAX` yields the
-ground, the same scale the animations' `fade(faded: u8)` uses.
-
-The row leaves the selection set the moment deletion starts and the cursor moves
-to the next active row, but it keeps its rendered line until the fade ends. When
-alpha reaches `u8::MAX` the file is rewritten by calling `remove` **with the row's
-`FavoriteId`**, and only a successful `remove` drops the row and lays the table
-out again without it.
-
-**Dropping a row can change which content variant the overlay is in.**
-`FavoritesOverlayContent::Rows` guarantees at least one recognized row, so
-deleting the last one must not leave `Rows` holding an empty table. After every
-successful removal, normalize the content: to `OnlyUnrecognized` when
-unrecognized diagnostic rows remain, and to `NoneSaved` when none do. Several
-rows may be `Removing` at once, because the cursor advances off each one as its
-fade starts and the next `x` can land before the first fade ends; every matured
-removal is committed exactly once, and `close()` commits every in-flight row
-before it resets the controller.
-
-**A refused deletion puts the row back.** `remove` returns
-`Result<(), FavoritesMutationError>` and can fail five different ways — another
-instance holds the lock, the file became unparseable or unreadable, the config
-directory stopped resolving, or the write failed. The row must not disappear on
-any of them, because an overlay that drops a row the file still holds tells the
-reader a deletion happened that did not, and the next open contradicts it. So the
-order is: fade, then `remove`, then drop. On `Err`, return the row to
-`FavoriteRowLifecycle::Active`, restore it to the selection set and to the cached
-line plan, and raise an error toast naming the cause from the value's `Display`.
-`LockUnavailable` says favorites are in use and the key can be pressed again.
-
-**Where a message goes, and why it is not always a toast.** Phase 3 draws the
-toast stack *beneath* every overlay. A deletion refusal happens while the
-favorites overlay is still open — that is the whole point, the row has to stay
-visible — so a refusal toast would render underneath the modal and the reader
-would see the row reappear with no explanation. The rule for this phase:
-
-- **Overlay open → the overlay says it.** Add a notice line owned by
-  `FavoritesOverlay`, rendered inside the modal, naming the cause. That covers
-  every `x` refusal and any adjustment warning raised before the overlay closes.
-  The notice is a state on the controller, not a string that may or may not be
-  there:
-
-  ```rust
-  enum FavoritesOverlayNotice {
-      NoNotice,
-      DeletionRefused { message: String },
-      FavoriteAdjusted { message: String },
-  }
-  ```
-
-  It is cleared on open, on close, and at the start of every new mutation
-  attempt, and it is removed once that attempt succeeds — so a refusal stays
-  readable until the reader does something about it, and a successful retry is
-  what makes it disappear.
-- **Overlay already closed → a scheduled toast.** The two cases are `enter`'s
-  adjustment warning (the overlay closes as part of the load) and a
-  close-mid-fade commit that fails after the modal is gone. Both use Phase 3's
-  toast path, and **both must pair the push with `App::schedule_timed_toast`** —
-  see the Delegation Context; a pushed-but-unregistered toast does not animate on
-  this loop.
-
-**The refusal formatter has to be generalised before it can be reused.**
-`favorite_refusal_message` (`globals.rs:138`) is private to that file and its text
-hardcodes the word "save" and a literal `ctrl-s`, so it cannot report a deletion
-as it stands. Move it somewhere both call sites reach — `favorites.rs` alongside
-`FavoritesMutationError` is the natural home — and parameterise it by two things:
-a named mutation operation (`FavoritesMutation::{Save, Delete}`, so the message
-says which one was refused) and a retry instruction.
-
-**The retry instruction is not always a single key, so it cannot be a single
-binding.** A refused save is retried by pressing `ctrl-s` again, and a refused
-delete is retried by pressing `x` again — but only while the overlay is still
-open. A close-mid-fade commit that fails reports after the modal is gone, and at
-that point `x` is not routed to `Delete` at all: the reader has to reopen with
-`ctrl-o`, select the row, and then press `x`. Naming a live binding there would
-name a key that does nothing. So the formatter takes
-
-```rust
-enum FavoritesRetryInstruction {
-    Press(ResolvedBinding),
-    ReopenThenPress { open: ResolvedBinding, retry: ResolvedBinding },
-}
-```
-
-and `LockUnavailable` describes whichever of the two the reader actually has. Keep the match exhaustive over all five `FavoritesMutationError`
-variants with no wildcard arm — that exhaustiveness is what makes a new variant a
-compile error instead of a generic message — and keep the existing
-"every refusal names a distinct cause" test passing across both operations.
-
-**The overlay's frame request is introduced here**, because this is the first
-thing in it that moves without an event behind it. Phase 4 deliberately added
-none. The overlay must report that it owes frames while a removal is in flight, or
-the fade draws one frame and stops — the exact defect recorded in the attract-mode
-attempts log. It is a requirement, not an afterthought.
-
-`advance(now)` returns a named outcome rather than a bool, because there are three
-distinguishable answers and the third one has a side effect the caller must run:
-
-```rust
-enum FavoritesOverlayFrameOutcome {
-    Quiet,                              // nothing is fading; no frame owed
-    Repaint,                            // a fade is mid-flight; draw again
-    CommitRemoval(FavoriteId),          // the fade finished; the caller writes the file
-}
-```
-
-`CommitRemoval` is what keeps the disk write out of the render path. The event
-loop composes this with Phase 3's toast request — both live outside the
-`Updates::Frozen` branch, and either one asking for a frame marks it dirty — and
-the overlay's deadline joins `VisualDeadline` the same way the toast schedule's
-does, so a fade shortens the loop's wait.
-
-Three details decide whether it is actually met:
-
-- **Where it advances.** `FavoritesOverlay::advance(now)` runs from
-  `terminal::event_loop` **outside** the `Updates::Frozen` branch
-  (`terminal.rs:496`), on the shared visual deadline Phase 3 established. The
-  attract screen's frame request sits *inside* that branch's `else` (543);
-  copying its placement would freeze the deletion fade, and leaning on
-  `Attract::showing` would only work when the attract screen happens to be up —
-  a delete over a working grid would stop after its event-driven frame.
-- **Where the commit happens.** `advance` returns whether a repaint or a final
-  removal is owed. Mutation and file I/O stay out of `render::draw` (136);
-  discovering `u8::MAX` mid-render and writing the file there puts a disk write
-  inside a frame. `render::draw` is at `render.rs:137`.
-- **Closing mid-fade.** Deletion is committed at `x`, not at fade end. If the
-  overlay closes while a row is fading, the row is removed and the file written
-  immediately.
+`FavoriteRows::refresh_recognitions` demotes the second and every later table
+carrying an already-seen `FavoriteId` to `FavoriteRowRecognition::Unrecognized`,
+spelled `<id> (duplicate)`, so no two rows share one id and `remove` can never
+delete a row other than the one on screen.
 
 **Files:**
-- `crates/cargo-tile/src/favorites_overlay.rs` — `Load` and `Delete` added to `FavoritesOverlayAction` with their footer labels, `enter` and `x` handling, the in-overlay refusal notice, `FavoriteRowLifecycle::{Active, Removing { since }}`, `advance(now) -> FavoritesOverlayFrameOutcome`, elapsed-time alpha, close-mid-fade commit
-- `crates/cargo-tile/src/favorites.rs` — generalise the refusal formatter: move it here, parameterise by `FavoritesMutation::{Save, Delete}` and `FavoritesRetryInstruction`, keep the match exhaustive; delete the three now-obsolete `#[expect(dead_code, reason = "deleting a favorite starts in the next phase")]` attributes — on `FavoriteRows::remove` (238), the public `remove` (386), and `remove_from_location` (469)
-- `crates/cargo-tile/src/globals.rs` — `save_favorite` calls the moved formatter instead of the local one
-- `crates/cargo-tile/src/attract/mod.rs` — `Attract::apply_favorite()` returning `FavoriteApplicationOutcome`, `Attract::request_show()`
-- `crates/cargo-tile/src/terminal.rs` — call `advance` outside the `Frozen` branch, composing its outcome with Phase 3's toast frame request; fold the overlay's fade deadline into `VisualDeadline`
-- `crates/cargo-tile/Cargo.toml` — patch version bump
-- `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
+- `crates/cargo-tile/src/favorites_overlay.rs` — `Load`/`Delete` handling, the
+  module-level `dispatch` branch that reaches `Attract`, `FavoriteRowLifecycle`,
+  `advance` / `finish_removal` / `begin_close` / `finish_close`, the wrapped
+  notice and its height allowance, and the private reporting path
+  (`report_application_outcome`, `favorite_adjustment_message`,
+  `push_scheduled_toast`).
+- `crates/cargo-tile/src/attract/mod.rs` — `request_show`, `apply_favorite`,
+  `FavoriteApplicationOutcome`.
+- `crates/cargo-tile/src/favorites.rs` — `favorite_refusal_message`,
+  `FavoritesMutation`, `FavoritesRetryInstruction`, `ResolvedBinding`,
+  `refresh_recognitions`.
+- `crates/cargo-tile/src/globals.rs`, `crates/cargo-tile/src/terminal.rs` — call
+  sites for the moved refusal message and the fading-row advance.
 
-**Constraints from prior phases:** Phase 4 owns `FavoritesOverlay` with its
-selection, `Viewport`, cached line plan and `FavoritesOverlayContent`; this phase
-extends that controller and adds no second owner, and adds the overlay's first
-frame request. Phase 4's `FavoritesOverlayAction` already carries movement, paging
-and close; `Load` and `Delete` join that same enum here, with TOML names `load`
-and `delete` and defaults `enter` and `x`. The cached line plan is rebuilt on
-mutation, so a removal invalidates it. Phase 4 already dropped the `Dismiss`
-clause at `terminal.rs:716`, so `x` closes nothing and is free to delete here.
-Phase 2's `remove` addresses the row by `FavoriteId` and does its own locked
-read-modify-write with an atomic replace; it returns
-`Result<(), FavoritesMutationError>` and every one of that enum's five variants is
-a refusal this phase has to survive.
+**Binds later work:**
+- `Attract::apply_favorite(&mut self, requested: FavoriteSettings) -> FavoriteApplicationOutcome`
+  with `AppliedExactly` / `AppliedWithAdjustments { requested, effective }` is the
+  only load path; it already sizes the requested mode's own animation. *`m`, a
+  random saved favorite* and *`u`, undo the last replacement* both load through it
+  with the overlay closed, so their adjustment report is a scheduled toast paired
+  with `App::schedule_timed_toast`, never an overlay notice.
+- `Attract::request_show()` overwrites `asked` as well as `covering`. It is a
+  transition, not a restore, and nothing captured survives a call to it — an
+  `Attract`-owned restore starts the destination transition first, then writes both
+  captured values back.
+- The `enter` capture site is the module-level `dispatch` function's
+  `FavoritesOverlayActionOutcome::Load(settings)` branch.
+- `FavoritesOverlayNotice::{NoNotice, DeletionRefused, FavoriteAdjusted}` is the
+  in-modal message surface; a new in-modal message is a new variant, not a second
+  string field.
 
-**What Phase 4 actually shipped, that this phase builds on.** The overlay keeps
-**two** line indices, not one. `selectable_line_index` holds recognized favorite
-rows only; `navigation_line_index` holds those plus every line after the last
-recognized row, so the cursor can scroll into the unrecognized-diagnostics block.
-The cursor's identity is
-`SelectedFavorite::{NoFavoriteSelected, Selected(FavoriteId)}`, derived from
-`navigation_line_index`, so **`NoFavoriteSelected` is a reachable position with a
-live cursor on screen** — `enter` and `x` must both no-op there rather than
-assuming a row.
+**Gotchas:**
+- Clearing `FavoritesOverlayNotice` ahead of the `SelectedFavorite` check, or in
+  `finish_removal`'s `Ok` arm without checking the id, silently erases a refusal
+  that is still true. Both clears happen only for a real favorite, and a success
+  clears only the notice its own row raised.
+- Enum values printed beside the favorites table go through the lowercase name
+  helpers (`direction_name`, `fraying_name`, `drift_name`, `text_fill_name`,
+  `pixel_resolve_name`, `pixel_fill_name`), never `{:?}` — the file and the table
+  both spell them lowercase.
+- The popup already carries two independent height bounds (`popup_height_cap` at
+  80% of the area, then `.min(area.height)`); a third fixed cap on a sub-region
+  only clips content.
 
-**The typed settings `enter` needs are not on the row yet.** `FavoriteRowView`
-(`favorites_overlay.rs:220`) keeps only `id`, a formatted `saved` timestamp and
-formatted display `cells`; the `FavoriteSettings` they were rendered from is
-dropped in `from_favorite`. So this phase gives `FavoriteRowView` a
-`settings: FavoriteSettings` field and widens the cursor to
-`SelectedFavorite::{NoFavoriteSelected, Selected { id, settings }}`. `enter` and
-`x` match that one semantic state; `enter` applies the retained typed settings
-and never reconstructs a value by parsing a display string, and no `Option`
-appears in either the row or the cursor.
-
-A line is `CachedOverlayLine::{Static(Line), Favorite { id, tail }}`
-and `rendered_line` applies selection styling at draw time from the cached `tail`
-string, which is what lets a per-frame fade restyle a row **without** rebuilding
-the plan. `rebuild_line_plan` runs only on open, on surface-width change, and on
-horizontal page change; `render` takes `&mut self` and rebuilds when the width
-moved, so `advance(now)` stays a separate call. `close()` resets the cached plan
-to default and calls `Viewport::clear_surface`, so a close-mid-fade commit has to
-run before that reset. `crates/cargo-tile/Cargo.toml` already depends on
-`unicode-width`; measure any new label for this surface in display cells, never
-`chars().count()`. `FavoritesSurfaceBindings::footer` builds the footer from live
-bindings and already varies on whether paging is available, so `Load` and
-`Delete` labels join it there.
-
-**`mod favorites` in `main.rs` already carries no `#[expect(dead_code, …)]`** —
-Phase 4 removed it when `load` went live, so this phase touches `main.rs` not at
-all. Phase 1's `apply` is an ordered
-semantic transition through the private clamp setters. Phase 3 established the
-shared visual deadline outside the `Updates::Frozen` branch, cargo-tile's
-terminal-area state updated ahead of `Attract::advance`'s early return, the
-zero-duration sizing boundary this phase applies before `apply`, and the toast
-render and prune path. Two Phase 3 facts bind this phase specifically: toasts
-render **beneath** overlays, so a message raised while the modal is open must be
-an overlay notice rather than a toast; and a timed toast animates only if its push
-is paired with `App::schedule_timed_toast` carrying the same body, duration and
-minimum interior lines.
-
-**Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
-
-- `enter` loads: the mode changes, the animation's `settings()` equals the row's
-  settings, and the attract screen comes up **even when the load lands during a
-  fade-out**.
-- `enter` applies the settings the row retained, proven by loading a favorite
-  whose display string is lossy for at least one field and asserting the applied
-  value matches the file rather than the rendered cell.
-- With the cursor parked on the unrecognized-diagnostics block, both `enter` and
-  `x` do nothing: no mode change, no file write, no notice.
-- Deleting the last recognized row leaves the overlay in `NoneSaved` when no
-  unrecognized rows remain, and in `OnlyUnrecognized` when they do — never in
-  `Rows` with an empty table.
-- Two `x` presses in quick succession, the second landing before the first fade
-  ends, remove both rows and write each exactly once.
-- `x` fades the row and rewrites the file **with the attract screen fully hidden,
-  with updates frozen, and with no other events arriving**.
-- The fade's duration is driven by elapsed time: extra draws from unrelated
-  events do not shorten it.
-- Closing the overlay mid-fade still removes the row and writes the file.
-- A deletion the file refuses leaves the row on screen: with a second process
-  holding the favorites lock, `x` fades the row, `remove` returns
-  `LockUnavailable`, the row returns to `Active` and to the selection set, the
-  cause is named **inside the open overlay** rather than in a toast, and reopening
-  the overlay still shows the row.
-- The same holds for a `WriteFailed` refusal.
-- The refusal text names the operation: a refused deletion does not say "save",
-  and `LockUnavailable` names a usable retry rather than a hardcoded `ctrl-s`.
-  All five error variants still produce distinct messages, for both operations.
-- The three refusal surfaces are tested separately, because they do not name the
-  same keys: a refused save says press the save key again; a refused delete with
-  the overlay open says press the delete key again; and a refused close-mid-fade
-  commit, reported after the modal is gone, says to reopen and then press it.
-- A refusal notice stays readable until the reader acts on it, and a successful
-  retry clears it.
-- Every timed toast this phase raises is registered with the visual schedule: with
-  updates frozen and no input arriving, `enter`'s adjustment warning opens, holds
-  and expires on its own.
-- `advance` returns `CommitRemoval` exactly once per completed fade, and the
-  overlay's fade deadline shortens the event loop's wait.
-- No file write happens inside `render::draw`.
-- Loading a hand-edited row whose value is out of range applies the clamped
-  value, reports `AppliedWithAdjustments`, renders the warning toast naming the
-  adjusted fields, and leaves the row's raw TOML on disk untouched.
-- Loading a row that needs no correction reports `AppliedExactly` and shows no
-  warning.
+**Ruled out:**
+- A one-line unwrapped `Paragraph` for the notice — at 80 columns the prefix alone
+  exceeds the interior width, so the cause never reached the screen.
+- A fixed three-row cap on the refusal notice — redundant against the two existing
+  bounds, and it clipped the cause.
+- Reusing the caller's instruction phrase as the keymap action name in
+  `ResolvedBinding::Unbound` — it named an action that does not exist.
+- Committing the disk removal at fade end rather than at the key.
+- Gating the load on `Attract::showing()` or `toggle()` — `showing()` stays true
+  through a fade-out and `toggle()` can ask for the opposite state.
 
 ### Phase 6 — `m`, a random saved favorite  · status: todo
 
@@ -839,13 +647,13 @@ inventing a second notice surface with its own owner:
 | `Unreadable` | `FavoritesOverlayContent::Unreadable` |
 
 **This mapping already exists — reuse it, do not restate it.**
-`FavoritesOverlayContent::from_file_state` (`favorites_overlay.rs:141`) is the
+`FavoritesOverlayContent::from_file_state` (`favorites_overlay.rs:173`) is the
 exhaustive match Phase 4 shipped, and it is what draws the loaded/empty
 distinction above: a `Loaded` file with no rows at all falls to `NoneSaved`,
 while `Loaded` with rows that this build understood none of falls to
 `OnlyUnrecognized`. Writing that mapping a second time in `globals.rs` would put
 the two copies one refactor apart from disagreeing. So `m` hands its
-`FavoritesFileState` straight to `FavoritesOverlay::open_file_state` (569), which
+`FavoritesFileState` straight to `FavoritesOverlay::open_file_state` (721), which
 already runs `from_file_state`, resolves the surface bindings and rebuilds the
 line plan. Six source positions therefore reach five content variants, and a
 seventh `FavoritesFileState` variant is a compile error inside `from_file_state`
@@ -858,6 +666,25 @@ adjustment warning is a **toast** — nothing is covering it — and it must be
 registered with `App::schedule_timed_toast` beside the push, per the Delegation
 Context.
 
+**Reporting an adjusted favorite goes through one shared reporter, not a second
+copy.** Phase 5 shipped the whole reporting path private to `favorites_overlay.rs`:
+`report_application_outcome` (1132) decides notice-versus-toast,
+`favorite_adjustment_message` (1170) formats the changed fields using the
+file's own lowercase spellings through `direction_name` / `fraying_name` /
+`drift_name` / `text_fill_name` / `pixel_resolve_name` / `pixel_fill_name`, and
+`push_scheduled_toast` (1152) pairs the push with `App::schedule_timed_toast`.
+`m` reaches none of them from `globals.rs`, and re-formatting the message there
+would put two spellings of the same adjustment one refactor apart.
+
+Add **one** `pub(crate) fn report_closed_overlay_adjustment(app: &mut App,
+outcome: FavoriteApplicationOutcome)` in `favorites_overlay.rs`, returning early
+on `FavoriteApplicationOutcome::AppliedExactly` so an exact application stays
+silent, and pushing the scheduled warning toast otherwise. Make
+`report_application_outcome`'s closed branch call it rather than duplicating the
+push, so there remains exactly one formatter and exactly one scheduled-toast
+site. `m` calls this and nothing else; it does not format, does not push a toast
+of its own, and does not touch the in-modal notice, which stays Phase 5's.
+
 The key lives on `AppGlobalAction`, not on the three attract scopes. One place
 instead of three near-copies, one section in the keymap overlay, and it works
 from the grid as well: `m` over a working grid gives you a random favorite and
@@ -869,8 +696,8 @@ falls through to the app globals below.
 - `crates/cargo-tile/src/globals.rs` — `RandomFavorite` variant, default binding, dispatch arm
 - `crates/cargo-tile/src/random.rs` — new file: `clock_seed()`, the nonempty bound type, and the pure unbiased `bounded_index(seed, bound)`
 - `crates/cargo-tile/src/main.rs` — declare `mod random;` in the `mod` block at 4–27
-- `crates/cargo-tile/src/favorites_overlay.rs` — widen Phase 4's existing `FavoritesOverlay::open_file_state(FavoritesFileState, &Keymap<App>)` (569) to `pub(crate)` so `m` can hand it the very `FavoritesFileState` it already loaded; add no second constructor
-- `crates/cargo-tile/src/favorites.rs` — delete the now-obsolete `#[expect(dead_code, reason = "loading a favorite starts in the next phase")]` attribute on `recognized()` (153)
+- `crates/cargo-tile/src/favorites_overlay.rs` — widen Phase 4's existing `FavoritesOverlay::open_file_state(FavoritesFileState, &Keymap<App>)` (721) to `pub(crate)` so `m` can hand it the very `FavoritesFileState` it already loaded; add no second constructor. Also add the shared closed-overlay reporter described under **Reporting an adjusted favorite** below, and route Phase 5's own closed branch through it
+- `crates/cargo-tile/src/favorites.rs` — delete the now-obsolete `#[expect(dead_code, reason = "loading a favorite starts in the next phase")]` attribute on `recognized()` (203)
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
 
@@ -902,6 +729,30 @@ the file and this build understood none of it, so `m` opens
 keys and spellings failed, rather than claiming no favorites are saved. Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, so
 `m` reports an adjusted favorite the same way `enter` does.
 
+**What Phase 5 actually shipped, that this phase calls.**
+`Attract::apply_favorite(&mut self, requested: FavoriteSettings) ->
+FavoriteApplicationOutcome` (`attract/mod.rs:401`) sizes the requested mode's own
+animation before applying, so `m` hands it the row's retained settings and does no
+sizing of its own. `Attract::request_show()` (`attract/mod.rs:348`) is a two-line
+const setter — `asked = Asked::For` and `covering = true` — which is what makes it
+idempotent and correct during a fade-out.
+
+**A duplicated favorite id can no longer reach this phase's draw.**
+`FavoriteRows::refresh_recognitions` (`favorites.rs:245`) demotes the second and
+every later table carrying an already-seen `FavoriteId` to
+`FavoriteRowRecognition::Unrecognized`, spelled `<id> (duplicate)`. So
+`recognized()` yields at most one row per id and the bounded draw cannot land on a
+duplicate, and a file whose only extra rows are duplicates opens as diagnostics
+rather than widening the list.
+
+**Anything raised while the overlay is open belongs in Phase 5's notice, not a
+toast.** `FavoritesOverlayNotice::{NoNotice, DeletionRefused, FavoriteAdjusted}` is
+the in-modal surface, cleared on open, on close, and when a fresh attempt on the
+same row succeeds. `m` raises nothing there — it opens the overlay only on failure
+and stays closed on success — but any message this phase later needs while the
+modal is up joins that enum as a variant rather than becoming a second string
+field.
+
 **Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
 
 - Selection is proven through its **bounded index draw against a fixed seed
@@ -919,6 +770,16 @@ keys and spellings failed, rather than claiming no favorites are saved. Phase 5'
 - Pressing `m` after another process saves a favorite can draw that favorite.
 - `m`'s adjustment warning toast animates and expires with updates frozen and no
   input arriving, which proves it was registered with the visual schedule.
+- The adjusted-favorite toast `m` raises names its changed fields in the **same
+  lowercase spellings the favorites file uses** — `leading`, `left`, `blend` and
+  the rest — asserted against the rendered toast body, not against a `Debug`
+  rendering of the enum.
+- A favorite whose settings apply exactly raises **no** toast at all: `m` on an
+  in-range row is silent, asserted as the absence of a pushed toast rather than
+  as an empty one.
+- Drawing a favorite through `m` leaves the favorites TOML **byte-identical** —
+  an adjustment is clamped in the running attract state only and is never
+  written back to the file.
 - The bounded draw's rejection path is exercised **directly**, not inferred from
   coverage: a fixed corpus that reaches every index proves nothing about bias.
   Either drive the reject-and-redraw threshold with seeds chosen to land in the
@@ -964,9 +825,10 @@ would still degrade to nothing on a terminal that will not negotiate.
 **Constraints from prior phases:** Phase 1 provides
 `random_settings(&self, seed: u64)` on each of the three animations, seeded from
 the now-ungated `Xorshift::seeded`, with band width drawn from the band's own
-axis extent. Phase 5 provides `Attract::request_show()`, which is idempotent and
-correct during a fade-out, and `apply_favorite` returning
-`FavoriteApplicationOutcome`. Phase 6 provides cargo-tile's `random` module — `clock_seed()`, the nonempty
+axis extent. Phase 5 provides `Attract::request_show()`
+(`attract/mod.rs:348`), which sets `asked = Asked::For` and `covering = true` and
+is therefore idempotent and correct during a fade-out, and `apply_favorite`
+(`attract/mod.rs:401`) returning `FavoriteApplicationOutcome`. Phase 6 provides cargo-tile's `random` module — `clock_seed()`, the nonempty
 bound type, and the pure `bounded_index(seed, bound)`; `r` composes the same two
 (`bounded_index(clock_seed(), bound)`) to draw its mode rather than adding a
 second helper, and its gate uses the pure half with fixed seeds. Phase 3 provides the terminal-area state and the zero-duration
@@ -1006,8 +868,9 @@ build recognizes, and in each of those it replaces nothing. Taking the checkpoin
 on the keypress would overwrite a good undo point with the current parameters and
 leave `u` restoring what is already on screen — the one press where undo matters
 is the press after a good one, and a failed `m` in between would have destroyed
-it. So each of the three call sites captures only once its own replacement is
-committed: after a favorite has been selected successfully, not on entry. One step only, and the
+it. So each of the three call sites captures only once its own candidate selection
+has succeeded, immediately before the replacement: after a favorite has been
+selected successfully, not on entry. One step only, and the
 one-step limit is the type's job, not a flag beside it:
 
 ```rust
@@ -1028,7 +891,7 @@ after the candidate is certain, **before** `apply` runs — so what it stores is
 configuration being replaced rather than the one replacing it.
 
 **Phase 3's sizing boundary is single-mode and this phase needs an all-mode one.**
-`Attract::size_current_animation` (`attract/mod.rs:382`) sizes only the animation
+`Attract::size_current_animation` (`attract/mod.rs:433`) sizes only the animation
 the current mode selects, which is all Phase 3's save needed. Undo captures and
 restores **all three** parameter sets, so a mode that has never been shown — or
 one that was last sized against a taller terminal — would be captured or restored
@@ -1038,7 +901,7 @@ of the three animations and recording each in `AnimationSizing`, and run it befo
 both the capture and the restore.
 
 **"Whether the screen was up" is not a boolean and `showing()` cannot answer
-it.** `showing()` (`attract/mod.rs:519`) is only `faded != u8::MAX`, so it stays
+it.** `showing()` (`attract/mod.rs:570`) is only `faded != u8::MAX`, so it stays
 true through an entire fade-*out*, and it cannot tell a screen that came up
 because the grid went idle from one the reader explicitly asked for, nor either
 from one the reader dismissed. Restoring from a bool would put the screen into a
@@ -1049,7 +912,7 @@ settled position rather than the instant.** `Attract` actually carries four
 separate things: `Asked::{Nothing, For, Against}` (`attract/mod.rs:117`) — the
 reader's own standing instruction; `Standing::{Showing, Leaving, Working,
 Settling(Instant)}` (141) — where the screen stands with the roster, including two
-mid-transition positions; `covering` (278) — whether the screen replaces the grid
+mid-transition positions; `covering` (292) — whether the screen replaces the grid
 or lies over it; and `faded` — numeric fade progress. A four-variant enum cannot
 describe that, and the earlier draft of this phase promised to restore a
 mid-fade-out position it had no way to represent.
@@ -1124,23 +987,49 @@ too.
 
 **Files:**
 - `crates/cargo-tile/src/globals.rs` — `UndoReplace` variant, default binding, dispatch arm
-- `crates/cargo-tile/src/attract/mod.rs` — `ReplacementUndoState`, `PreviousAttractConfiguration`, the captured presentation (standing instruction, destination, covering), `AttractConfigurationRestoreOutcome`, the all-mode zero-duration sizing operation beside `size_current_animation` (382), the idempotent hide transition, the capture, and the restore
-- `crates/cargo-tile/src/favorites_overlay.rs` — capture once `enter`'s row is certain, before `apply_favorite` runs
+- `crates/cargo-tile/src/attract/mod.rs` — `ReplacementUndoState`, `PreviousAttractConfiguration`, the captured presentation (standing instruction, destination, covering), `AttractConfigurationRestoreOutcome`, the all-mode zero-duration sizing operation beside `size_current_animation` (433), the idempotent hide transition, the capture, and the restore
+- `crates/cargo-tile/src/favorites_overlay.rs` — capture in the module-level `dispatch` function's `FavoritesOverlayActionOutcome::Load(settings)` branch (130), on the line before `app.attract.apply_favorite(settings)`; not in `FavoritesOverlay::handle_action`, which has no `&mut App`
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
 
 **Constraints from prior phases:** The three replacing call sites are Phase 5's
 `enter` (in `favorites_overlay.rs`, via `Attract::apply_favorite()`), Phase 6's
 `m` (in `globals.rs`), and Phase 7's `r` (in `attract/mod.rs`). Phase 3's
-`size_current_animation` (`attract/mod.rs:382`) sizes **only the animation the
+`size_current_animation` (`attract/mod.rs:433`) sizes **only the animation the
 current mode selects**; this phase adds the all-mode counterpart it needs, and
 Phase 3's `App::schedule_timed_toast` must be paired with every toast push here or
 the notice will not animate. Phase 1's
 `settings()` on each animation is what the checkpoint stores, and `apply` is what
 restores it — an ordered semantic transition, so restoring a checkpoint leaves
 the same runtime state the equivalent keypress would. Phase 5's
-`Attract::request_show()` restores visibility, and this phase adds the matching
-hide transition for a checkpoint that was taken while the screen was down.
+`Attract::request_show()` (`attract/mod.rs:348`) restores visibility, and this
+phase adds the matching hide transition for a checkpoint that was taken while the
+screen was down. **`request_show()` overwrites `asked` with `Asked::For` *and* `covering` with
+`true`**, so it is a transition, not a restore, and neither captured field
+survives a call to it. An `Attract`-owned restore therefore runs in one order and
+only one: start the destination transition first — `request_show()` for
+`AttractVisibilityDestination::Shown`, the matching hide transition for
+`Hidden` — and then write **both** captured values back, the
+`AttractVisibilityInstruction` into `asked` and the `AttractGridPresentation`
+into `covering`. Reapplying only `covering` is the failure the earlier draft of
+this constraint invited: a checkpoint holding `FollowRoster` or `Hide` would come
+back as `Show`, so `u` would turn the screen on for a reader who had dismissed it
+or never asked for it. Because `asked` and `covering` are private fields with no
+setters, the whole restore lives inside `attract/mod.rs`; no caller writes either
+one. Phase 5's `enter`
+capture site is the module-level `dispatch` function's
+`FavoritesOverlayActionOutcome::Load(settings)` branch
+(`favorites_overlay.rs:130`), on the line immediately before
+`app.attract.apply_favorite(settings)`. **It is not
+`FavoritesOverlay::handle_action`**, which decides the outcome but holds no
+`&mut App` and therefore cannot reach `App::attract` at all; `handle_action`
+returns `FavoritesOverlayActionOutcome::Load(settings)` and `dispatch` is where
+that outcome meets the attract screen. That branch is exactly the window this
+phase's checkpoint needs: the candidate is certain, and `apply_favorite` has not
+yet run.
+`apply_favorite` (`attract/mod.rs:401`) already sizes the requested mode's
+animation itself, so the all-mode sizing operation this phase adds is additional
+to that call rather than a replacement for it.
 Phase 5's `apply_favorite` returns `FavoriteApplicationOutcome`, whose
 `AppliedWithAdjustments { requested, effective }` carries **one**
 `FavoriteSettings` — the single mode's parameters that one favorite held. That
@@ -1184,3 +1073,11 @@ the same reason.
   holding no recognized rows — leaves an existing
   `ReplacementUndoState::Available` exactly as it was, and the following `u`
   still restores the configuration from before the last real replacement.
+- **Undo composes with an adjusted replacement, proven at both call sites.**
+  `enter` on an out-of-range favorite and `m` drawing one each capture the prior
+  full configuration, keep the adjusted-favorite warning Phase 5 and Phase 6 raise
+  through their own reporters, and leave the favorites TOML byte-identical — the
+  clamp is in the running state, never written back. A following `u` then restores
+  the configuration from before that replacement, not the clamped one. The
+  equivalent exact load at either call site stays quiet and still leaves a usable
+  undo point.

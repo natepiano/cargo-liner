@@ -202,6 +202,20 @@ pub(crate) enum AttractMode {
     Pixelate,
 }
 
+/// Result of restoring a favorite through the animation's normal clamp setters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FavoriteApplicationOutcome {
+    /// Every value in the favorite was accepted unchanged.
+    AppliedExactly,
+    /// One or more values were corrected for the current animation bounds.
+    AppliedWithAdjustments {
+        /// Values requested by the favorite row.
+        requested: FavoriteSettings,
+        /// Values the animation accepted after applying its bounds.
+        effective: FavoriteSettings,
+    },
+}
+
 /// Last terminal area applied to each attract animation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct AnimationSizing {
@@ -330,6 +344,12 @@ impl Attract {
         }
     }
 
+    /// Ask for the attract screen regardless of its current fade direction.
+    pub(crate) const fn request_show(&mut self) {
+        self.asked = Asked::For;
+        self.covering = true;
+    }
+
     /// Whether the strip is being shown because it was asked for, which
     /// is what the status line says: a grid taken off the screen by the
     /// attract screen otherwise looks exactly like a grid with nothing
@@ -374,6 +394,37 @@ impl Attract {
             AttractMode::MovingBand => FavoriteSettings::MovingBand(self.band.settings()),
             AttractMode::MovingText => FavoriteSettings::MovingText(self.text.settings()),
             AttractMode::Pixelate => FavoriteSettings::Pixelate(self.pixels.settings()),
+        }
+    }
+
+    /// Restore one favorite after sizing its animation to the latest terminal area.
+    pub(crate) fn apply_favorite(
+        &mut self,
+        requested: FavoriteSettings,
+    ) -> FavoriteApplicationOutcome {
+        self.mode = requested.mode();
+        self.size_current_animation();
+        let effective = match requested {
+            FavoriteSettings::MovingBand(settings) => {
+                self.band.apply(settings);
+                FavoriteSettings::MovingBand(self.band.settings())
+            },
+            FavoriteSettings::MovingText(settings) => {
+                self.text.apply(settings);
+                FavoriteSettings::MovingText(self.text.settings())
+            },
+            FavoriteSettings::Pixelate(settings) => {
+                self.pixels.apply(settings);
+                FavoriteSettings::Pixelate(self.pixels.settings())
+            },
+        };
+        if effective == requested {
+            FavoriteApplicationOutcome::AppliedExactly
+        } else {
+            FavoriteApplicationOutcome::AppliedWithAdjustments {
+                requested,
+                effective,
+            }
         }
     }
 
@@ -766,6 +817,7 @@ pub(crate) fn ground() -> Color {
 }
 
 #[cfg(test)]
+#[expect(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use ratatui::layout::Rect;
     use tui_pane::FRAME_POLL_MILLIS;
@@ -824,6 +876,56 @@ mod tests {
             saved,
             "the first frame keeps the parameters read before it",
         );
+    }
+
+    #[test]
+    fn favorite_application_reports_exact_and_adjusted_values() {
+        let mut attract = Attract::new();
+        attract.mode = AttractMode::MovingBand;
+        attract.record_terminal_resize(AREA);
+        let exact = attract.favorite_settings();
+
+        assert_eq!(
+            attract.apply_favorite(exact),
+            FavoriteApplicationOutcome::AppliedExactly
+        );
+
+        let FavoriteSettings::MovingBand(mut oversized) = exact else {
+            panic!("moving-band mode should expose moving-band settings");
+        };
+        oversized.width = u32::MAX;
+        let requested = FavoriteSettings::MovingBand(oversized);
+        let outcome = attract.apply_favorite(requested);
+        let FavoriteApplicationOutcome::AppliedWithAdjustments {
+            requested: reported,
+            effective,
+        } = outcome
+        else {
+            panic!("oversized width should be adjusted");
+        };
+
+        assert_eq!(reported, requested);
+        assert_ne!(effective, requested);
+        assert_eq!(attract.favorite_settings(), effective);
+    }
+
+    #[test]
+    fn request_show_reverses_a_fade_out() {
+        let mut attract = Attract::new();
+        attract.request_show();
+        assert_eq!(settle(&mut attract, Work::Idle), 0);
+        attract.toggle();
+        let now = Instant::now();
+        attract.advance(AREA, Work::Idle, Updates::Live, now);
+        let fading_out = attract.faded;
+
+        assert!(attract.showing());
+        assert!(fading_out > 0);
+        attract.request_show();
+        attract.advance(AREA, Work::Idle, Updates::Live, now + POLL);
+
+        assert!(attract.asked_for());
+        assert!(attract.faded < fading_out);
     }
 
     #[test]

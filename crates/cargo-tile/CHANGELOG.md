@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Load a selected attract favorite with `enter`, reporting any terminal-sized adjustments without rewriting the saved row. Delete with `x`; rows fade before their locked removal, remain visible after a refusal, and finish deleting even when the overlay closes mid-fade.
 - Open a mode-grouped, scrolling favorites table with `ctrl-o`; its live key labels follow rebinding, and narrow terminals page parameter columns while keeping the saved timestamp visible.
 - Save the current attract-screen parameters as a favorite with `ctrl-s`, including while the animation is hidden, and report the result in an expiring toast.
 - Persist attract-screen parameter favorites in a lossless `favorites.toml`, with UUID-addressed rows, tolerant recognition of newer values, locked mutations, and atomic replacement.

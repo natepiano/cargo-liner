@@ -1,8 +1,11 @@
 //! App-owned modal for browsing attract-screen favorites.
 
+use std::mem;
 use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
 
 use chrono::Datelike;
 use chrono::Local;
@@ -14,13 +17,13 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use ratatui::widgets::Wrap;
 use tui_pane::Action;
 use tui_pane::BandDirection;
 use tui_pane::BandFraying;
 use tui_pane::Bindings;
 use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
-use tui_pane::KeySequence;
 use tui_pane::Keymap;
 use tui_pane::Mode;
 use tui_pane::Pane;
@@ -30,8 +33,10 @@ use tui_pane::Shortcuts;
 use tui_pane::TabStop;
 use tui_pane::TextDrift;
 use tui_pane::TextFill;
+use tui_pane::ToastStyle;
 use tui_pane::Viewport;
 use tui_pane::ViewportOverflow;
+use tui_pane::blend_color;
 use tui_pane::error_color;
 use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
@@ -39,12 +44,15 @@ use tui_pane::render_overflow_affordance;
 use tui_pane::selection_style;
 use tui_pane::text_default;
 use tui_pane::title_color;
+use tui_pane::warning_color;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::app::AppOverlay;
 use crate::app::AppPaneId;
 use crate::attract::AttractMode;
+use crate::attract::FavoriteApplicationOutcome;
+use crate::attract::ground;
 use crate::favorites;
 use crate::favorites::Favorite;
 use crate::favorites::FavoriteId;
@@ -52,8 +60,13 @@ use crate::favorites::FavoriteRowRecognition;
 use crate::favorites::FavoriteRows;
 use crate::favorites::FavoriteSettings;
 use crate::favorites::FavoritesFileState;
+use crate::favorites::FavoritesMutation;
+use crate::favorites::FavoritesMutationError;
+use crate::favorites::FavoritesRetryInstruction;
+use crate::favorites::ResolvedBinding;
 use crate::favorites::UnrecognizedFavoriteValue;
 use crate::globals::AppGlobalAction;
+use crate::terminal::VisualDeadline;
 
 const FAVORITES_SCOPE_NAME: &str = "favorites";
 const FAVORITES_SECTION_NAME: &str = "Favorites";
@@ -61,9 +74,13 @@ const POPUP_MAX_WIDTH: u16 = 110;
 const POPUP_SIDE_MARGIN: u16 = 4;
 const POPUP_BORDER_WIDTH: u16 = 2;
 const POPUP_BORDER_HEIGHT: u16 = 2;
+const CONTENT_MIN_HEIGHT: u16 = 1;
 const FOOTER_HEIGHT: u16 = 1;
 const COLUMN_GAP: usize = 2;
 const MARKER_WIDTH: usize = 2;
+const FAVORITE_REMOVAL_FADE: Duration = Duration::from_millis(400);
+const FAVORITE_NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
+const FAVORITE_NOTICE_TOAST_MIN_INTERIOR_LINES: usize = 1;
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -72,6 +89,8 @@ tui_pane::action_enum! {
         SelectNext => ("select_next", "Select the next favorite");
         PageColumnsLeft => ("page_columns_left", "Show the previous parameter column");
         PageColumnsRight => ("page_columns_right", "Show the next parameter column");
+        Load => ("load", "Load the selected favorite");
+        Delete => ("delete", "Delete the selected favorite");
         Close => ("close", "Close favorites");
     }
 }
@@ -99,6 +118,8 @@ impl Shortcuts<App> for FavoritesOverlayPane {
             [KeyCode::Down, 'j'] => FavoritesOverlayAction::SelectNext,
             [KeyCode::Left, 'h'] => FavoritesOverlayAction::PageColumnsLeft,
             [KeyCode::Right, 'l'] => FavoritesOverlayAction::PageColumnsRight,
+            KeyCode::Enter => FavoritesOverlayAction::Load,
+            'x' => FavoritesOverlayAction::Delete,
             KeyCode::Esc => FavoritesOverlayAction::Close,
         }
     }
@@ -107,7 +128,18 @@ impl Shortcuts<App> for FavoritesOverlayPane {
 }
 
 fn dispatch(action: FavoritesOverlayAction, app: &mut App) {
-    app.favorites_overlay.handle_action(action);
+    let mut overlay = mem::take(&mut app.favorites_overlay);
+    match overlay.handle_action(action) {
+        FavoritesOverlayActionOutcome::Quiet => {},
+        FavoritesOverlayActionOutcome::Load(settings) => {
+            let application = app.attract.apply_favorite(settings);
+            close_overlay(&mut overlay, app);
+            app.attract.request_show();
+            report_application_outcome(&mut overlay, app, application);
+        },
+        FavoritesOverlayActionOutcome::Close => close_overlay(&mut overlay, app),
+    }
+    app.favorites_overlay = overlay;
 }
 
 /// The content carried by an open favorites modal.
@@ -208,6 +240,50 @@ impl FavoriteRowsView {
     }
 
     fn saved_count(&self) -> usize { self.sections.iter().map(|section| section.rows.len()).sum() }
+
+    fn row(&self, favorite_id: FavoriteId) -> FavoriteRowLookup<'_> {
+        self.sections
+            .iter()
+            .flat_map(|section| &section.rows)
+            .find(|row| row.id == favorite_id)
+            .map_or(FavoriteRowLookup::Missing, FavoriteRowLookup::Found)
+    }
+
+    fn row_mut(&mut self, favorite_id: FavoriteId) -> FavoriteRowLookupMut<'_> {
+        self.sections
+            .iter_mut()
+            .flat_map(|section| &mut section.rows)
+            .find(|row| row.id == favorite_id)
+            .map_or(FavoriteRowLookupMut::Missing, FavoriteRowLookupMut::Found)
+    }
+
+    fn remove(&mut self, favorite_id: FavoriteId) {
+        for section in &mut self.sections {
+            section.rows.retain(|row| row.id != favorite_id);
+        }
+        self.sections.retain(|section| !section.rows.is_empty());
+    }
+
+    fn removing_ids(&self) -> Vec<FavoriteId> {
+        self.sections
+            .iter()
+            .flat_map(|section| &section.rows)
+            .filter_map(|row| match row.lifecycle {
+                FavoriteRowLifecycle::Active => None,
+                FavoriteRowLifecycle::Removing { .. } => Some(row.id),
+            })
+            .collect()
+    }
+}
+
+enum FavoriteRowLookup<'a> {
+    Found(&'a FavoriteRowView),
+    Missing,
+}
+
+enum FavoriteRowLookupMut<'a> {
+    Found(&'a mut FavoriteRowView),
+    Missing,
 }
 
 #[derive(Clone, Debug)]
@@ -218,19 +294,29 @@ struct FavoriteModeSection {
 
 #[derive(Clone, Debug)]
 struct FavoriteRowView {
-    id:    FavoriteId,
-    saved: String,
-    cells: Vec<String>,
+    id:        FavoriteId,
+    settings:  FavoriteSettings,
+    saved:     String,
+    cells:     Vec<String>,
+    lifecycle: FavoriteRowLifecycle,
 }
 
 impl FavoriteRowView {
     fn from_favorite(favorite: &Favorite) -> Self {
         Self {
-            id:    favorite.id,
-            saved: format_timestamp(favorite),
-            cells: favorite_cells(favorite.settings),
+            id:        favorite.id,
+            settings:  favorite.settings,
+            saved:     format_timestamp(favorite),
+            cells:     favorite_cells(favorite.settings),
+            lifecycle: FavoriteRowLifecycle::Active,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FavoriteRowLifecycle {
+    Active,
+    Removing { since: Instant },
 }
 
 /// Display-ready rows a newer or misspelled file left unrecognized.
@@ -250,29 +336,6 @@ impl From<&UnrecognizedFavoriteValue> for UnrecognizedFavoriteView {
         Self {
             key:      value.key.clone(),
             spelling: value.spelling.clone(),
-        }
-    }
-}
-
-/// A live keymap lookup after domain meaning has replaced optionality.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-enum ResolvedBinding {
-    /// The action has a primary binding.
-    Bound(KeySequence),
-    /// The action is deliberately unbound.
-    #[default]
-    Unbound,
-}
-
-impl From<Option<KeySequence>> for ResolvedBinding {
-    fn from(binding: Option<KeySequence>) -> Self { binding.map_or(Self::Unbound, Self::Bound) }
-}
-
-impl ResolvedBinding {
-    fn display_short(&self) -> String {
-        match self {
-            Self::Bound(sequence) => sequence.display_short(),
-            Self::Unbound => String::new(),
         }
     }
 }
@@ -387,15 +450,35 @@ struct ModeColumnBindings {
     labels: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct FavoritesSurfaceBindings {
     columns:  Vec<ModeColumnBindings>,
     previous: ResolvedBinding,
     next:     ResolvedBinding,
     left:     ResolvedBinding,
     right:    ResolvedBinding,
+    load:     ResolvedBinding,
+    delete:   ResolvedBinding,
     close:    ResolvedBinding,
     save:     ResolvedBinding,
+    open:     ResolvedBinding,
+}
+
+impl Default for FavoritesSurfaceBindings {
+    fn default() -> Self {
+        Self {
+            columns:  Vec::new(),
+            previous: ResolvedBinding::for_action("select_previous", None),
+            next:     ResolvedBinding::for_action("select_next", None),
+            left:     ResolvedBinding::for_action("page_columns_left", None),
+            right:    ResolvedBinding::for_action("page_columns_right", None),
+            load:     ResolvedBinding::for_action("load", None),
+            delete:   ResolvedBinding::for_action("delete", None),
+            close:    ResolvedBinding::for_action("close", None),
+            save:     ResolvedBinding::for_action("save_favorite", None),
+            open:     ResolvedBinding::for_action("open_favorites", None),
+        }
+    }
 }
 
 impl FavoritesSurfaceBindings {
@@ -420,8 +503,11 @@ impl FavoritesSurfaceBindings {
             next: resolve_pane_binding(keymap, AppPaneId::Favorites, "select_next"),
             left: resolve_pane_binding(keymap, AppPaneId::Favorites, "page_columns_left"),
             right: resolve_pane_binding(keymap, AppPaneId::Favorites, "page_columns_right"),
+            load: resolve_pane_binding(keymap, AppPaneId::Favorites, "load"),
+            delete: resolve_pane_binding(keymap, AppPaneId::Favorites, "delete"),
             close: resolve_pane_binding(keymap, AppPaneId::Favorites, "close"),
             save: resolve_global_binding(keymap, "save_favorite"),
+            open: resolve_global_binding(keymap, "open_favorites"),
         }
     }
 
@@ -438,12 +524,17 @@ impl FavoritesSurfaceBindings {
             self.previous.display_short(),
             self.next.display_short(),
         );
+        let mutations = format!(
+            "{} load   {} delete",
+            self.load.display_short(),
+            self.delete.display_short(),
+        );
         let close = format!("{} close", self.close.display_short());
         if last_horizontal_column_page == 0 {
-            format!("{movement}   {close}")
+            format!("{movement}   {mutations}   {close}")
         } else {
             format!(
-                "{movement}   {}/{} page   {close}",
+                "{movement}   {}/{} page   {mutations}   {close}",
                 self.left.display_short(),
                 self.right.display_short(),
             )
@@ -457,24 +548,35 @@ impl FavoritesSurfaceBindings {
             self.save.display_short(),
         )
     }
+
+    fn delete_retry(&self) -> FavoritesRetryInstruction {
+        FavoritesRetryInstruction::Press(self.delete.clone())
+    }
+
+    fn close_delete_retry(&self) -> FavoritesRetryInstruction {
+        FavoritesRetryInstruction::ReopenThenPress {
+            open:  self.open.clone(),
+            retry: self.delete.clone(),
+        }
+    }
 }
 
 fn resolve_pane_binding(
     keymap: &Keymap<App>,
     pane: AppPaneId,
-    action_name: &str,
+    action_name: &'static str,
 ) -> ResolvedBinding {
-    ResolvedBinding::from(keymap.key_for_toml_key(pane, action_name))
+    ResolvedBinding::for_action(action_name, keymap.key_for_toml_key(pane, action_name))
 }
 
-fn resolve_global_binding(keymap: &Keymap<App>, action_name: &str) -> ResolvedBinding {
+fn resolve_global_binding(keymap: &Keymap<App>, action_name: &'static str) -> ResolvedBinding {
     let binding = AppGlobalAction::from_toml_key(action_name).and_then(|action| {
         keymap
             .globals::<AppGlobalAction>()
             .and_then(|scope| scope.key_for(action))
             .cloned()
     });
-    ResolvedBinding::from(binding)
+    ResolvedBinding::for_action(action_name, binding)
 }
 
 fn resolve_column_label(
@@ -510,9 +612,13 @@ impl CachedLinePlan {
     fn finish_navigation(&mut self) {
         self.navigation_line_index
             .clone_from(&self.selectable_line_index);
-        if let Some(last_selectable_line) = self.selectable_line_index.last().copied() {
+        if let Some(last_favorite_line) = self
+            .lines
+            .iter()
+            .rposition(|line| matches!(line, CachedOverlayLine::Favorite { .. }))
+        {
             self.navigation_line_index
-                .extend(last_selectable_line.saturating_add(1)..self.lines.len());
+                .extend(last_favorite_line.saturating_add(1)..self.lines.len());
         } else {
             self.navigation_line_index.extend(0..self.lines.len());
         }
@@ -526,6 +632,48 @@ enum CachedSurfaceWidth {
     Rendered(u16),
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+enum FavoritesOverlayNotice {
+    #[default]
+    NoNotice,
+    DeletionRefused {
+        message: String,
+    },
+    FavoriteAdjusted {
+        message: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum FavoriteRemovalCommitState {
+    #[default]
+    NoCommitPending,
+    Pending(FavoriteId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FavoritesOverlayActionOutcome {
+    Quiet,
+    Load(FavoriteSettings),
+    Close,
+}
+
+/// Time-driven work owed by the favorites overlay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FavoritesOverlayFrameOutcome {
+    /// No row is fading and no frame is owed.
+    Quiet,
+    /// A removal fade is in progress.
+    Repaint,
+    /// The fade finished and this row must be removed from the file.
+    CommitRemoval(FavoriteId),
+}
+
+struct FavoritesOverlayCloseCommit {
+    favorite_ids: Vec<FavoriteId>,
+    retry:        FavoritesRetryInstruction,
+}
+
 /// The complete app-owned favorites modal controller.
 pub(crate) struct FavoritesOverlay {
     state:                  AppOverlay,
@@ -534,6 +682,8 @@ pub(crate) struct FavoritesOverlay {
     surface_bindings:       FavoritesSurfaceBindings,
     line_plan:              CachedLinePlan,
     cached_surface_width:   CachedSurfaceWidth,
+    notice:                 FavoritesOverlayNotice,
+    removal_commit:         FavoriteRemovalCommitState,
 }
 
 impl Default for FavoritesOverlay {
@@ -545,6 +695,8 @@ impl Default for FavoritesOverlay {
             surface_bindings:       FavoritesSurfaceBindings::default(),
             line_plan:              CachedLinePlan::default(),
             cached_surface_width:   CachedSurfaceWidth::NeverRendered,
+            notice:                 FavoritesOverlayNotice::NoNotice,
+            removal_commit:         FavoriteRemovalCommitState::NoCommitPending,
         }
     }
 }
@@ -570,6 +722,8 @@ impl FavoritesOverlay {
         self.state = AppOverlay::Favorites(FavoritesOverlayContent::from_file_state(state));
         self.surface_bindings = FavoritesSurfaceBindings::resolve(keymap);
         self.horizontal_column_page = 0;
+        self.notice = FavoritesOverlayNotice::NoNotice;
+        self.removal_commit = FavoriteRemovalCommitState::NoCommitPending;
         let selected_rows = match &self.state {
             AppOverlay::Closed => 0,
             AppOverlay::Favorites(content) => content.saved_count(),
@@ -581,9 +735,9 @@ impl FavoritesOverlay {
     }
 
     /// Apply one resolved modal action.
-    pub(crate) fn handle_action(&mut self, action: FavoritesOverlayAction) {
+    fn handle_action(&mut self, action: FavoritesOverlayAction) -> FavoritesOverlayActionOutcome {
         if !self.is_open() {
-            return;
+            return FavoritesOverlayActionOutcome::Quiet;
         }
         match action {
             FavoritesOverlayAction::SelectPrevious => self.viewport.up(),
@@ -598,14 +752,169 @@ impl FavoritesOverlay {
                     self.rebuild_for_cached_width();
                 }
             },
-            FavoritesOverlayAction::Close => self.close(),
+            FavoritesOverlayAction::Load => {
+                if let SelectedFavorite::Selected { settings, .. } = self.selected_favorite() {
+                    self.notice = FavoritesOverlayNotice::NoNotice;
+                    return FavoritesOverlayActionOutcome::Load(settings);
+                }
+            },
+            FavoritesOverlayAction::Delete => {
+                self.start_removal(Instant::now());
+            },
+            FavoritesOverlayAction::Close => return FavoritesOverlayActionOutcome::Close,
+        }
+        FavoritesOverlayActionOutcome::Quiet
+    }
+
+    fn start_removal(&mut self, now: Instant) {
+        let SelectedFavorite::Selected { id, .. } = self.selected_favorite() else {
+            return;
+        };
+        self.notice = FavoritesOverlayNotice::NoNotice;
+        if let AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) = &mut self.state
+            && let FavoriteRowLookupMut::Found(row) = rows.row_mut(id)
+        {
+            row.lifecycle = FavoriteRowLifecycle::Removing { since: now };
+            self.rebuild_for_cached_width();
         }
     }
 
-    fn close(&mut self) {
+    fn begin_close(&mut self) -> FavoritesOverlayCloseCommit {
+        let favorite_ids = match &self.state {
+            AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) => rows.removing_ids(),
+            AppOverlay::Closed
+            | AppOverlay::Favorites(
+                FavoritesOverlayContent::NoneSaved
+                | FavoritesOverlayContent::OnlyUnrecognized(_)
+                | FavoritesOverlayContent::LocationUnavailable
+                | FavoritesOverlayContent::Unparseable { .. }
+                | FavoritesOverlayContent::Unreadable { .. },
+            ) => Vec::new(),
+        };
         self.state = AppOverlay::Closed;
+        self.notice = FavoritesOverlayNotice::NoNotice;
+        self.removal_commit = FavoriteRemovalCommitState::NoCommitPending;
+        FavoritesOverlayCloseCommit {
+            favorite_ids,
+            retry: self.surface_bindings.close_delete_retry(),
+        }
+    }
+
+    fn finish_close(&mut self) {
         self.viewport.clear_surface();
         self.line_plan = CachedLinePlan::default();
+    }
+
+    /// Advance any row-removal fade without writing the favorites file.
+    pub(crate) fn advance(&mut self, now: Instant) -> FavoritesOverlayFrameOutcome {
+        if !matches!(
+            self.removal_commit,
+            FavoriteRemovalCommitState::NoCommitPending
+        ) {
+            return FavoritesOverlayFrameOutcome::Quiet;
+        }
+        let AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) = &self.state else {
+            return FavoritesOverlayFrameOutcome::Quiet;
+        };
+        let mut fade_in_progress = false;
+        for row in rows.sections.iter().flat_map(|section| &section.rows) {
+            if let FavoriteRowLifecycle::Removing { since } = row.lifecycle {
+                if now.duration_since(since) >= FAVORITE_REMOVAL_FADE {
+                    self.removal_commit = FavoriteRemovalCommitState::Pending(row.id);
+                    return FavoritesOverlayFrameOutcome::CommitRemoval(row.id);
+                }
+                fade_in_progress = true;
+            }
+        }
+        if fade_in_progress {
+            FavoritesOverlayFrameOutcome::Repaint
+        } else {
+            FavoritesOverlayFrameOutcome::Quiet
+        }
+    }
+
+    /// Earliest wake needed to continue a row-removal fade.
+    pub(crate) fn visual_deadline(&self, now: Instant, frame_period: Duration) -> VisualDeadline {
+        if !matches!(
+            self.removal_commit,
+            FavoriteRemovalCommitState::NoCommitPending
+        ) {
+            return VisualDeadline::NoVisualChangeScheduled;
+        }
+        let AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) = &self.state else {
+            return VisualDeadline::NoVisualChangeScheduled;
+        };
+        rows.sections.iter().flat_map(|section| &section.rows).fold(
+            VisualDeadline::NoVisualChangeScheduled,
+            |deadline, row| {
+                let FavoriteRowLifecycle::Removing { since } = row.lifecycle else {
+                    return deadline;
+                };
+                let removal_done = since + FAVORITE_REMOVAL_FADE;
+                let next_frame = now + frame_period;
+                deadline.earlier(VisualDeadline::At(removal_done.min(next_frame)))
+            },
+        )
+    }
+
+    /// Reconcile one completed fade with the result of its file mutation.
+    pub(crate) fn finish_removal(
+        &mut self,
+        favorite_id: FavoriteId,
+        result: Result<(), FavoritesMutationError>,
+    ) {
+        if self.removal_commit != FavoriteRemovalCommitState::Pending(favorite_id) {
+            return;
+        }
+        self.removal_commit = FavoriteRemovalCommitState::NoCommitPending;
+        match result {
+            Ok(()) => {
+                self.drop_removed_row(favorite_id);
+                self.rebuild_for_cached_width();
+            },
+            Err(error) => {
+                if let AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) = &mut self.state
+                    && let FavoriteRowLookupMut::Found(row) = rows.row_mut(favorite_id)
+                {
+                    row.lifecycle = FavoriteRowLifecycle::Active;
+                }
+                self.notice = FavoritesOverlayNotice::DeletionRefused {
+                    message: favorites::favorite_refusal_message(
+                        FavoritesMutation::Delete,
+                        &self.surface_bindings.delete_retry(),
+                        &error,
+                    ),
+                };
+                self.rebuild_for_cached_width();
+                self.select_favorite(favorite_id);
+            },
+        }
+    }
+
+    fn drop_removed_row(&mut self, favorite_id: FavoriteId) {
+        let AppOverlay::Favorites(content) = &mut self.state else {
+            return;
+        };
+        if let FavoritesOverlayContent::Rows(rows) = content {
+            rows.remove(favorite_id);
+        }
+        normalize_content_after_removal(content);
+    }
+
+    fn select_favorite(&mut self, favorite_id: FavoriteId) {
+        for (position, line_index) in self.line_plan.navigation_line_index.iter().enumerate() {
+            if matches!(
+                self.line_plan.lines.get(*line_index),
+                Some(CachedOverlayLine::Favorite { id, .. }) if *id == favorite_id
+            ) {
+                self.viewport.set_pos(position);
+                return;
+            }
+        }
+    }
+
+    fn set_adjustment_notice(&mut self, message: String) {
+        self.notice = FavoritesOverlayNotice::FavoriteAdjusted { message };
     }
 
     fn rebuild_for_cached_width(&mut self) {
@@ -627,9 +936,17 @@ impl FavoritesOverlay {
             self.rebuild_line_plan(surface_width);
         }
 
+        let notice_height = match &self.notice {
+            FavoritesOverlayNotice::NoNotice => 0,
+            FavoritesOverlayNotice::DeletionRefused { message }
+            | FavoritesOverlayNotice::FavoriteAdjusted { message } => {
+                wrapped_notice_height(message, surface_width)
+            },
+        };
         let desired_height = u16::try_from(self.line_plan.lines.len())
             .unwrap_or(u16::MAX)
             .saturating_add(FOOTER_HEIGHT)
+            .saturating_add(notice_height)
             .saturating_add(POPUP_BORDER_HEIGHT);
         let height = desired_height.min(popup_height_cap(area)).min(area.height);
         let saved_count = match &self.state {
@@ -643,18 +960,40 @@ impl FavoritesOverlay {
             height,
         }
         .render_with_areas(frame);
-        let content_height = popup.inner.height.saturating_sub(FOOTER_HEIGHT);
+        let footer_height = FOOTER_HEIGHT.min(popup.inner.height);
+        let notice_height = notice_height.min(
+            popup
+                .inner
+                .height
+                .saturating_sub(footer_height)
+                .saturating_sub(CONTENT_MIN_HEIGHT),
+        );
+        let content_height = popup
+            .inner
+            .height
+            .saturating_sub(footer_height)
+            .saturating_sub(notice_height);
         let content_area = Rect::new(
             popup.inner.x,
             popup.inner.y,
             popup.inner.width,
             content_height,
         );
-        let footer_area = Rect::new(
+        let notice_area = Rect::new(
             popup.inner.x,
             popup.inner.y.saturating_add(content_height),
             popup.inner.width,
-            popup.inner.height.saturating_sub(content_height),
+            notice_height,
+        );
+        let footer_area = Rect::new(
+            popup.inner.x,
+            popup
+                .inner
+                .y
+                .saturating_add(content_height)
+                .saturating_add(notice_height),
+            popup.inner.width,
+            footer_height,
         );
 
         let active_line = self.update_vertical_viewport(content_area);
@@ -663,12 +1002,15 @@ impl FavoritesOverlay {
         let scroll_offset = self.viewport.scroll_offset();
 
         let end = scroll_offset.saturating_add(visible_rows).min(line_count);
-        let selected_id = self.selected_id();
+        let selected = self.selected_favorite();
+        let now = Instant::now();
+        let state = &self.state;
         let visible = self.line_plan.lines[scroll_offset..end]
             .iter()
-            .map(|line| rendered_line(line, selected_id))
+            .map(|line| rendered_line(line, selected, row_lifecycle(state, line), now))
             .collect::<Vec<_>>();
         frame.render_widget(Paragraph::new(visible), content_area);
+        render_notice(frame, &self.notice, notice_area);
         frame.render_widget(
             Paragraph::new(
                 self.surface_bindings
@@ -702,7 +1044,7 @@ impl FavoritesOverlay {
         active_line
     }
 
-    fn selected_id(&self) -> SelectedFavorite {
+    fn selected_favorite(&self) -> SelectedFavorite {
         let Some(&line_index) = self
             .line_plan
             .navigation_line_index
@@ -711,7 +1053,23 @@ impl FavoritesOverlay {
             return SelectedFavorite::NoFavoriteSelected;
         };
         match self.line_plan.lines.get(line_index) {
-            Some(CachedOverlayLine::Favorite { id, .. }) => SelectedFavorite::Selected(*id),
+            Some(CachedOverlayLine::Favorite { id, .. }) => match &self.state {
+                AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) => match rows.row(*id) {
+                    FavoriteRowLookup::Found(row) => SelectedFavorite::Selected {
+                        id:       *id,
+                        settings: row.settings,
+                    },
+                    FavoriteRowLookup::Missing => SelectedFavorite::NoFavoriteSelected,
+                },
+                AppOverlay::Closed
+                | AppOverlay::Favorites(
+                    FavoritesOverlayContent::NoneSaved
+                    | FavoritesOverlayContent::OnlyUnrecognized(_)
+                    | FavoritesOverlayContent::LocationUnavailable
+                    | FavoritesOverlayContent::Unparseable { .. }
+                    | FavoritesOverlayContent::Unreadable { .. },
+                ) => SelectedFavorite::NoFavoriteSelected,
+            },
             Some(CachedOverlayLine::Static(_)) | None => SelectedFavorite::NoFavoriteSelected,
         }
     }
@@ -734,26 +1092,264 @@ impl FavoritesOverlay {
     }
 }
 
+fn render_notice(frame: &mut Frame<'_>, notice: &FavoritesOverlayNotice, area: Rect) {
+    let (message, color) = match notice {
+        FavoritesOverlayNotice::NoNotice => return,
+        FavoritesOverlayNotice::DeletionRefused { message } => (message, error_color()),
+        FavoritesOverlayNotice::FavoriteAdjusted { message } => (message, warning_color()),
+    };
+    frame.render_widget(
+        Paragraph::new(message.as_str())
+            .style(Style::default().fg(color))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn close_overlay(overlay: &mut FavoritesOverlay, app: &mut App) {
+    close_overlay_with(overlay, app, favorites::remove);
+}
+
+fn close_overlay_with(
+    overlay: &mut FavoritesOverlay,
+    app: &mut App,
+    mut remove: impl FnMut(FavoriteId) -> Result<(), FavoritesMutationError>,
+) {
+    let close_commit = overlay.begin_close();
+    for favorite_id in close_commit.favorite_ids {
+        if let Err(error) = remove(favorite_id) {
+            let message = favorites::favorite_refusal_message(
+                FavoritesMutation::Delete,
+                &close_commit.retry,
+                &error,
+            );
+            push_scheduled_toast(app, "Favorite not deleted", &message, ToastStyle::Error);
+        }
+    }
+    overlay.finish_close();
+}
+
+fn report_application_outcome(
+    overlay: &mut FavoritesOverlay,
+    app: &mut App,
+    outcome: FavoriteApplicationOutcome,
+) {
+    let FavoriteApplicationOutcome::AppliedWithAdjustments {
+        requested,
+        effective,
+    } = outcome
+    else {
+        return;
+    };
+    let message = favorite_adjustment_message(requested, effective);
+    if overlay.is_open() {
+        overlay.set_adjustment_notice(message);
+    } else {
+        push_scheduled_toast(app, "Favorite adjusted", &message, ToastStyle::Warning);
+    }
+}
+
+fn push_scheduled_toast(app: &mut App, title: &str, body: &str, style: ToastStyle) {
+    let pushed_at = Instant::now();
+    let toast_id = app.framework.toasts.push_timed_styled(
+        title,
+        body,
+        FAVORITE_NOTICE_TOAST_VISIBLE,
+        FAVORITE_NOTICE_TOAST_MIN_INTERIOR_LINES,
+        style,
+    );
+    app.schedule_timed_toast(
+        toast_id,
+        pushed_at,
+        FAVORITE_NOTICE_TOAST_VISIBLE,
+        body,
+        FAVORITE_NOTICE_TOAST_MIN_INTERIOR_LINES,
+    );
+}
+
+fn favorite_adjustment_message(requested: FavoriteSettings, effective: FavoriteSettings) -> String {
+    let mut fields = Vec::new();
+    match (requested, effective) {
+        (FavoriteSettings::MovingBand(requested), FavoriteSettings::MovingBand(effective)) => {
+            record_adjustment(
+                &mut fields,
+                "direction",
+                direction_name(requested.direction),
+                direction_name(effective.direction),
+            );
+            record_numeric_adjustment(&mut fields, "width", &requested.width, &effective.width);
+            record_numeric_adjustment(&mut fields, "speed", &requested.speed, &effective.speed);
+            record_numeric_adjustment(
+                &mut fields,
+                "tail_speed",
+                &requested.tail_speed,
+                &effective.tail_speed,
+            );
+            record_adjustment(
+                &mut fields,
+                "fraying",
+                fraying_name(requested.fraying),
+                fraying_name(effective.fraying),
+            );
+        },
+        (FavoriteSettings::MovingText(requested), FavoriteSettings::MovingText(effective)) => {
+            record_adjustment(
+                &mut fields,
+                "direction",
+                direction_name(requested.direction),
+                direction_name(effective.direction),
+            );
+            record_numeric_adjustment(&mut fields, "speed", &requested.speed, &effective.speed);
+            record_numeric_adjustment(&mut fields, "spread", &requested.spread, &effective.spread);
+            record_adjustment(
+                &mut fields,
+                "drift",
+                drift_name(requested.drift),
+                drift_name(effective.drift),
+            );
+            record_adjustment(
+                &mut fields,
+                "fill",
+                text_fill_name(requested.fill),
+                text_fill_name(effective.fill),
+            );
+        },
+        (FavoriteSettings::Pixelate(requested), FavoriteSettings::Pixelate(effective)) => {
+            record_adjustment(
+                &mut fields,
+                "direction",
+                direction_name(requested.direction),
+                direction_name(effective.direction),
+            );
+            record_numeric_adjustment(&mut fields, "speed", &requested.speed, &effective.speed);
+            record_numeric_adjustment(
+                &mut fields,
+                "wave_percent",
+                &requested.wave_percent,
+                &effective.wave_percent,
+            );
+            record_numeric_adjustment(
+                &mut fields,
+                "block_columns",
+                &requested.block_columns,
+                &effective.block_columns,
+            );
+            record_adjustment(
+                &mut fields,
+                "resolve",
+                pixel_resolve_name(requested.resolve),
+                pixel_resolve_name(effective.resolve),
+            );
+            record_adjustment(
+                &mut fields,
+                "fill",
+                pixel_fill_name(requested.fill),
+                pixel_fill_name(effective.fill),
+            );
+        },
+        (
+            FavoriteSettings::MovingBand(_)
+            | FavoriteSettings::MovingText(_)
+            | FavoriteSettings::Pixelate(_),
+            FavoriteSettings::MovingBand(_)
+            | FavoriteSettings::MovingText(_)
+            | FavoriteSettings::Pixelate(_),
+        ) => fields.push("mode changed unexpectedly".to_string()),
+    }
+    format!("Adjusted favorite for this terminal: {}", fields.join(", "))
+}
+
+fn record_adjustment(fields: &mut Vec<String>, name: &str, requested: &str, effective: &str) {
+    if requested != effective {
+        fields.push(format!("{name} {requested} -> {effective}"));
+    }
+}
+
+fn record_numeric_adjustment<T: std::fmt::Display + Eq>(
+    fields: &mut Vec<String>,
+    name: &str,
+    requested: &T,
+    effective: &T,
+) {
+    if requested != effective {
+        fields.push(format!("{name} {requested} -> {effective}"));
+    }
+}
+
+fn normalize_content_after_removal(content: &mut FavoritesOverlayContent) {
+    let current = mem::replace(content, FavoritesOverlayContent::NoneSaved);
+    *content = match current {
+        FavoritesOverlayContent::Rows(rows) if rows.saved_count() == 0 => {
+            if rows.unrecognized.is_empty() {
+                FavoritesOverlayContent::NoneSaved
+            } else {
+                FavoritesOverlayContent::OnlyUnrecognized(UnrecognizedFavoritesView {
+                    rows: rows.unrecognized,
+                })
+            }
+        },
+        other => other,
+    };
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SelectedFavorite {
     NoFavoriteSelected,
-    Selected(FavoriteId),
+    Selected {
+        id:       FavoriteId,
+        settings: FavoriteSettings,
+    },
 }
 
-fn rendered_line(line: &CachedOverlayLine, selected: SelectedFavorite) -> Line<'static> {
+fn rendered_line(
+    line: &CachedOverlayLine,
+    selected: SelectedFavorite,
+    lifecycle: FavoriteRowLifecycle,
+    now: Instant,
+) -> Line<'static> {
     match line {
         CachedOverlayLine::Static(line) => line.clone(),
         CachedOverlayLine::Favorite { id, tail } => {
-            let is_selected = selected == SelectedFavorite::Selected(*id);
+            let is_selected = matches!(selected, SelectedFavorite::Selected { id: selected, .. } if selected == *id);
             let marker = if is_selected { "▸ " } else { "  " };
             let line = Line::from(vec![Span::raw(marker), Span::raw(tail.clone())]);
             if is_selected {
                 line.style(selection_style(PaneFocusState::Active))
             } else {
-                line.style(Style::default().fg(text_default()))
+                line.style(Style::default().fg(blend_color(
+                    text_default(),
+                    ground(),
+                    removal_alpha(lifecycle, now),
+                )))
             }
         },
     }
+}
+
+fn row_lifecycle(state: &AppOverlay, line: &CachedOverlayLine) -> FavoriteRowLifecycle {
+    let CachedOverlayLine::Favorite { id, .. } = line else {
+        return FavoriteRowLifecycle::Active;
+    };
+    let AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) = state else {
+        return FavoriteRowLifecycle::Active;
+    };
+    match rows.row(*id) {
+        FavoriteRowLookup::Found(row) => row.lifecycle,
+        FavoriteRowLookup::Missing => FavoriteRowLifecycle::Active,
+    }
+}
+
+fn removal_alpha(lifecycle: FavoriteRowLifecycle, now: Instant) -> u8 {
+    let FavoriteRowLifecycle::Removing { since } = lifecycle else {
+        return 0;
+    };
+    let elapsed = now.duration_since(since);
+    if elapsed >= FAVORITE_REMOVAL_FADE {
+        return u8::MAX;
+    }
+    let scaled =
+        elapsed.as_nanos().saturating_mul(u128::from(u8::MAX)) / FAVORITE_REMOVAL_FADE.as_nanos();
+    u8::try_from(scaled).unwrap_or(u8::MAX)
 }
 
 fn build_line_plan(
@@ -873,7 +1469,9 @@ fn append_section(
     ));
     for row in &section.rows {
         let line_index = plan.lines.len();
-        plan.selectable_line_index.push(line_index);
+        if row.lifecycle == FavoriteRowLifecycle::Active {
+            plan.selectable_line_index.push(line_index);
+        }
         plan.lines.push(CachedOverlayLine::Favorite {
             id:   row.id,
             tail: format_table_tail(
@@ -1057,6 +1655,48 @@ fn popup_height_cap(area: Rect) -> u16 {
         .max((POPUP_BORDER_HEIGHT + FOOTER_HEIGHT).min(area.height))
 }
 
+fn wrapped_notice_height(message: &str, surface_width: u16) -> u16 {
+    let available_width = usize::from(surface_width);
+    if message.is_empty() || available_width == 0 {
+        return 0;
+    }
+
+    let mut wrapped_lines = 0_usize;
+    for logical_line in message.split('\n') {
+        wrapped_lines = wrapped_lines.saturating_add(1);
+        let mut used_width = 0_usize;
+        for word in logical_line.split_whitespace() {
+            let word_width = UnicodeWidthStr::width(word);
+            let separator_width = usize::from(used_width > 0);
+            if used_width
+                .saturating_add(separator_width)
+                .saturating_add(word_width)
+                <= available_width
+            {
+                used_width = used_width
+                    .saturating_add(separator_width)
+                    .saturating_add(word_width);
+                continue;
+            }
+
+            if used_width > 0 {
+                wrapped_lines = wrapped_lines.saturating_add(1);
+            }
+            let full_lines = word_width / available_width;
+            let remainder = word_width % available_width;
+            if remainder == 0 && full_lines > 0 {
+                wrapped_lines = wrapped_lines.saturating_add(full_lines.saturating_sub(1));
+                used_width = available_width;
+            } else {
+                wrapped_lines = wrapped_lines.saturating_add(full_lines);
+                used_width = remainder;
+            }
+        }
+    }
+
+    u16::try_from(wrapped_lines).unwrap_or(u16::MAX)
+}
+
 fn format_timestamp(favorite: &Favorite) -> String {
     if favorite.saved.year() == Local::now().year() {
         favorite.saved.format("%d %b %H:%M:%S").to_string()
@@ -1150,17 +1790,24 @@ const fn pixel_fill_name(fill: tui_pane::PixelFill) -> &'static str {
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
+    clippy::panic,
+    clippy::unchecked_time_subtraction,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
     use std::fs;
 
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use tempfile::TempDir;
     use tui_pane::FocusedPane;
     use tui_pane::Framework;
     use tui_pane::KeyBind;
+    use tui_pane::KeySequence;
 
     use super::*;
+    use crate::app::Updates;
+    use crate::attract::Work;
     use crate::favorites::parse_rows_for_overlay_test;
     use crate::keymap::build_keymap;
 
@@ -1286,8 +1933,36 @@ fraying = "leading"
         overlay
     }
 
+    fn selected(overlay: &FavoritesOverlay) -> (FavoriteId, FavoriteSettings) {
+        let SelectedFavorite::Selected { id, settings } = overlay.selected_favorite() else {
+            panic!("fixture should select a recognized favorite");
+        };
+        (id, settings)
+    }
+
+    fn lifecycle(overlay: &FavoritesOverlay, favorite_id: FavoriteId) -> FavoriteRowLifecycle {
+        let AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) = &overlay.state else {
+            panic!("fixture should contain recognized rows");
+        };
+        let FavoriteRowLookup::Found(row) = rows.row(favorite_id) else {
+            panic!("favorite should remain in the overlay");
+        };
+        row.lifecycle
+    }
+
+    fn rendered_buffer_lines(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+        (buffer.area.y..buffer.area.bottom())
+            .map(|y| {
+                (buffer.area.x..buffer.area.right()).fold(String::new(), |mut line, x| {
+                    line.push_str(buffer[(x, y)].symbol());
+                    line
+                })
+            })
+            .collect()
+    }
+
     #[test]
-    fn modal_scope_has_only_the_phase_four_actions() {
+    fn modal_scope_includes_load_and_delete() {
         let scope = FavoritesOverlayPane::defaults().into_scope_map();
         let cases = [
             (
@@ -1310,13 +1985,13 @@ fraying = "leading"
                 FavoritesOverlayAction::PageColumnsRight,
             ),
             (KeyBind::from('l'), FavoritesOverlayAction::PageColumnsRight),
+            (KeyBind::from(KeyCode::Enter), FavoritesOverlayAction::Load),
+            (KeyBind::from('x'), FavoritesOverlayAction::Delete),
             (KeyBind::from(KeyCode::Esc), FavoritesOverlayAction::Close),
         ];
         for (binding, action) in cases {
             assert_eq!(scope.action_for(&binding), Some(action));
         }
-        assert_eq!(scope.action_for(&KeyBind::from(KeyCode::Enter)), None);
-        assert_eq!(scope.action_for(&KeyBind::from('x')), None);
     }
 
     #[test]
@@ -1365,14 +2040,20 @@ sweep_right = "r"
         let bindings = FavoritesSurfaceBindings::resolve(&keymap);
 
         assert_eq!(bindings.column_labels(AttractMode::Pixelate)[0], "aunr");
-        assert_eq!(bindings.footer(1), "w/s move   a/d page   z close");
-        assert_eq!(bindings.footer(0), "w/s move   z close");
+        assert_eq!(
+            bindings.footer(1),
+            "w/s move   a/d page   enter load   x delete   z close"
+        );
+        assert_eq!(
+            bindings.footer(0),
+            "w/s move   enter load   x delete   z close"
+        );
         assert_eq!(
             bindings.empty_notice(),
             "No favorites saved -- press z, then y while the attract screen is up"
         );
-        assert!(!bindings.footer(1).contains("enter"));
-        assert!(!bindings.footer(1).contains("x delete"));
+        assert!(bindings.footer(1).contains("enter load"));
+        assert!(bindings.footer(1).contains("x delete"));
     }
 
     #[test]
@@ -1447,7 +2128,10 @@ sweep_right = "r"
         assert_eq!(active_line, overlay.line_plan.lines.len() - 1);
         assert_eq!(overlay.viewport.scroll_offset(), active_line);
         assert!(rendered[active_line].contains("resolve = \"mist\" is not recognized"));
-        assert_eq!(overlay.selected_id(), SelectedFavorite::NoFavoriteSelected);
+        assert_eq!(
+            overlay.selected_favorite(),
+            SelectedFavorite::NoFavoriteSelected
+        );
     }
 
     #[test]
@@ -1475,7 +2159,10 @@ sweep_right = "r"
             overlay.line_plan.lines.len() - 2
         );
         assert!(rendered[active_line].contains("resolve = \"mist\" is not recognized"));
-        assert_eq!(overlay.selected_id(), SelectedFavorite::NoFavoriteSelected);
+        assert_eq!(
+            overlay.selected_favorite(),
+            SelectedFavorite::NoFavoriteSelected
+        );
     }
 
     #[test]
@@ -1729,6 +2416,457 @@ travel_left = "界"
     }
 
     #[test]
+    fn load_uses_retained_settings_and_reverses_fade_out() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        let (_, settings) = selected(&overlay);
+        let AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) = &mut overlay.state else {
+            panic!("fixture should contain recognized rows");
+        };
+        rows.sections[0].rows[0].cells[0] = "lossy-display-value".to_string();
+
+        let mut app = App::new_for_test().expect("test app should build");
+        let now = Instant::now();
+        app.attract.request_show();
+        app.attract
+            .advance(Rect::new(0, 0, 80, 24), Work::Idle, Updates::Live, now);
+        app.attract.advance(
+            Rect::new(0, 0, 80, 24),
+            Work::Idle,
+            Updates::Live,
+            now + Duration::from_millis(8),
+        );
+        app.attract.toggle();
+        app.attract.advance(
+            Rect::new(0, 0, 80, 24),
+            Work::Idle,
+            Updates::Live,
+            now + Duration::from_millis(16),
+        );
+        assert!(app.attract.showing());
+        assert!(!app.attract.asked_for());
+
+        app.favorites_overlay = overlay;
+        dispatch(FavoritesOverlayAction::Load, &mut app);
+
+        assert!(!app.favorites_overlay.is_open());
+        assert!(app.attract.asked_for());
+        assert_eq!(app.attract.favorite_settings(), settings);
+    }
+
+    #[test]
+    fn mutation_keys_do_nothing_on_diagnostic_lines() {
+        let keymap = keymap_from("");
+        let mixed = format!("{MOVING_BAND_ROW}\n{UNRECOGNIZED_ROWS}");
+        let mut overlay = open_at_width(loaded_state(&mixed), &keymap, 100);
+        while overlay.viewport.pos() + 1 < overlay.viewport.len() {
+            overlay.handle_action(FavoritesOverlayAction::SelectNext);
+        }
+        assert_eq!(
+            overlay.selected_favorite(),
+            SelectedFavorite::NoFavoriteSelected
+        );
+        let refusal = FavoritesOverlayNotice::DeletionRefused {
+            message: "keep this refusal visible".to_string(),
+        };
+        overlay.notice = refusal.clone();
+
+        assert_eq!(
+            overlay.handle_action(FavoritesOverlayAction::Load),
+            FavoritesOverlayActionOutcome::Quiet
+        );
+        assert_eq!(overlay.notice, refusal);
+        assert_eq!(
+            overlay.handle_action(FavoritesOverlayAction::Delete),
+            FavoritesOverlayActionOutcome::Quiet
+        );
+        assert_eq!(overlay.notice, refusal);
+        assert!(matches!(
+            overlay.advance(Instant::now() + FAVORITE_REMOVAL_FADE),
+            FavoritesOverlayFrameOutcome::Quiet
+        ));
+    }
+
+    #[test]
+    fn deletion_fade_uses_elapsed_time_and_commits_once() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        let (favorite_id, _) = selected(&overlay);
+        let started = Instant::now();
+
+        overlay.start_removal(started);
+        assert_eq!(
+            lifecycle(&overlay, favorite_id),
+            FavoriteRowLifecycle::Removing { since: started }
+        );
+        let halfway = started + FAVORITE_REMOVAL_FADE / 2;
+        let alpha = removal_alpha(lifecycle(&overlay, favorite_id), halfway);
+        for _ in 0..20 {
+            assert_eq!(
+                removal_alpha(lifecycle(&overlay, favorite_id), halfway),
+                alpha
+            );
+        }
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE - Duration::from_nanos(1)),
+            FavoritesOverlayFrameOutcome::Repaint
+        );
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE),
+            FavoritesOverlayFrameOutcome::CommitRemoval(favorite_id)
+        );
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE),
+            FavoritesOverlayFrameOutcome::Quiet
+        );
+
+        overlay.finish_removal(favorite_id, Ok(()));
+        assert!(matches!(
+            overlay.state,
+            AppOverlay::Favorites(FavoritesOverlayContent::NoneSaved)
+        ));
+    }
+
+    #[test]
+    fn two_removals_can_fade_together_and_each_commit_once() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(RECOGNIZED_ROWS), &keymap, 100);
+        let started = Instant::now();
+        let (first, _) = selected(&overlay);
+        overlay.start_removal(started);
+        let (second, _) = selected(&overlay);
+        assert_ne!(first, second);
+        overlay.start_removal(started + Duration::from_millis(1));
+
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE),
+            FavoritesOverlayFrameOutcome::CommitRemoval(first)
+        );
+        overlay.finish_removal(first, Ok(()));
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE + Duration::from_millis(1)),
+            FavoritesOverlayFrameOutcome::CommitRemoval(second)
+        );
+        overlay.finish_removal(second, Ok(()));
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE + Duration::from_millis(1)),
+            FavoritesOverlayFrameOutcome::Quiet
+        );
+        assert_eq!(
+            match &overlay.state {
+                AppOverlay::Favorites(content) => content.saved_count(),
+                AppOverlay::Closed => 0,
+            },
+            1
+        );
+    }
+
+    #[test]
+    fn successful_removal_preserves_another_rows_refusal() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(RECOGNIZED_ROWS), &keymap, 100);
+        let started = Instant::now();
+        let (first, _) = selected(&overlay);
+        overlay.start_removal(started);
+        let (second, _) = selected(&overlay);
+        overlay.start_removal(started + Duration::from_millis(1));
+
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE),
+            FavoritesOverlayFrameOutcome::CommitRemoval(first)
+        );
+        overlay.finish_removal(
+            first,
+            Err(FavoritesMutationError::LockUnavailable {
+                path:  PathBuf::from("/tmp/favorites.lock"),
+                error: "held".to_string(),
+            }),
+        );
+        let refusal = overlay.notice.clone();
+
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE + Duration::from_millis(1)),
+            FavoritesOverlayFrameOutcome::CommitRemoval(second)
+        );
+        overlay.finish_removal(second, Ok(()));
+
+        assert_eq!(overlay.notice, refusal);
+        assert!(matches!(
+            overlay.notice,
+            FavoritesOverlayNotice::DeletionRefused { .. }
+        ));
+    }
+
+    #[test]
+    fn last_removal_normalizes_to_unrecognized_content() {
+        let keymap = keymap_from("");
+        let mixed = format!("{MOVING_BAND_ROW}\n{UNRECOGNIZED_ROWS}");
+        let mut overlay = open_at_width(loaded_state(&mixed), &keymap, 100);
+        let (favorite_id, _) = selected(&overlay);
+        let started = Instant::now();
+
+        overlay.start_removal(started);
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE),
+            FavoritesOverlayFrameOutcome::CommitRemoval(favorite_id)
+        );
+        overlay.finish_removal(favorite_id, Ok(()));
+
+        assert!(matches!(
+            overlay.state,
+            AppOverlay::Favorites(FavoritesOverlayContent::OnlyUnrecognized(_))
+        ));
+    }
+
+    #[test]
+    fn refused_deletion_restores_the_row_and_notice_until_retry() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        let (favorite_id, _) = selected(&overlay);
+        let started = Instant::now();
+        overlay.start_removal(started);
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE),
+            FavoritesOverlayFrameOutcome::CommitRemoval(favorite_id)
+        );
+        overlay.finish_removal(
+            favorite_id,
+            Err(FavoritesMutationError::LockUnavailable {
+                path:  PathBuf::from("/tmp/favorites.lock"),
+                error: "held".to_string(),
+            }),
+        );
+
+        assert_eq!(
+            lifecycle(&overlay, favorite_id),
+            FavoriteRowLifecycle::Active
+        );
+        assert_eq!(selected(&overlay).0, favorite_id);
+        let FavoritesOverlayNotice::DeletionRefused { message } = &overlay.notice else {
+            panic!("refusal should be rendered inside the open overlay");
+        };
+        assert!(message.contains("deletion"));
+        assert!(message.contains("press x to try again"));
+
+        overlay.handle_action(FavoritesOverlayAction::SelectPrevious);
+        assert!(matches!(
+            overlay.notice,
+            FavoritesOverlayNotice::DeletionRefused { .. }
+        ));
+        let retry_started = started + FAVORITE_REMOVAL_FADE + Duration::from_millis(1);
+        overlay.start_removal(retry_started);
+        assert_eq!(overlay.notice, FavoritesOverlayNotice::NoNotice);
+        assert_eq!(
+            overlay.advance(retry_started + FAVORITE_REMOVAL_FADE),
+            FavoritesOverlayFrameOutcome::CommitRemoval(favorite_id)
+        );
+        overlay.finish_removal(favorite_id, Ok(()));
+        assert_eq!(overlay.notice, FavoritesOverlayNotice::NoNotice);
+    }
+
+    #[test]
+    fn wrapped_refusal_renders_trailing_lock_error_with_realistic_path() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 74);
+        let (favorite_id, _) = selected(&overlay);
+        let started = Instant::now();
+        overlay.start_removal(started);
+        let _ = overlay.advance(started + FAVORITE_REMOVAL_FADE);
+        overlay.finish_removal(
+            favorite_id,
+            Err(FavoritesMutationError::LockUnavailable {
+                path:  PathBuf::from(
+                    "/Users/testuser/Library/Application Support/cargo-tile/favorites.toml",
+                ),
+                error: "Resource temporarily unavailable (os error 35)".to_string(),
+            }),
+        );
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("test terminal should build");
+
+        terminal
+            .draw(|frame| overlay.render(frame))
+            .expect("favorites overlay should render");
+
+        let rendered = rendered_buffer_lines(terminal.backend().buffer());
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("temporarily unavailable (os error 35)"))
+        );
+    }
+
+    #[test]
+    fn oversized_refusal_keeps_one_favorite_row_visible() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 74);
+        let (favorite_id, _) = selected(&overlay);
+        let started = Instant::now();
+        overlay.start_removal(started);
+        let _ = overlay.advance(started + FAVORITE_REMOVAL_FADE);
+        overlay.finish_removal(
+            favorite_id,
+            Err(FavoritesMutationError::LockUnavailable {
+                path:  PathBuf::from(
+                    "/Users/testuser/Library/Application Support/cargo-tile/favorites.toml",
+                ),
+                error: "Resource temporarily unavailable (os error 35); ".repeat(12),
+            }),
+        );
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 8)).expect("test terminal should build");
+
+        terminal
+            .draw(|frame| overlay.render(frame))
+            .expect("favorites overlay should render");
+
+        let rendered = rendered_buffer_lines(terminal.backend().buffer());
+        assert!(rendered.iter().any(|line| line.contains("▸ ")));
+    }
+
+    #[test]
+    fn write_refusal_also_restores_the_row() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        let (favorite_id, _) = selected(&overlay);
+        let started = Instant::now();
+        overlay.start_removal(started);
+        let _ = overlay.advance(started + FAVORITE_REMOVAL_FADE);
+        overlay.finish_removal(
+            favorite_id,
+            Err(FavoritesMutationError::WriteFailed {
+                path:  PathBuf::from("/tmp/favorites.toml"),
+                error: "read-only disk".to_string(),
+            }),
+        );
+
+        assert_eq!(
+            lifecycle(&overlay, favorite_id),
+            FavoriteRowLifecycle::Active
+        );
+        let FavoritesOverlayNotice::DeletionRefused { message } = &overlay.notice else {
+            panic!("write refusal should remain visible");
+        };
+        assert!(message.contains("cannot write favorites"));
+    }
+
+    #[test]
+    fn close_mid_fade_commits_before_resetting_the_controller() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        let (favorite_id, _) = selected(&overlay);
+        overlay.start_removal(Instant::now());
+        let mut removed = Vec::new();
+        let mut app = App::new_for_test().expect("test app should build");
+
+        close_overlay_with(&mut overlay, &mut app, |id| {
+            removed.push(id);
+            Ok(())
+        });
+
+        assert_eq!(removed, [favorite_id]);
+        assert!(!overlay.is_open());
+        assert!(overlay.line_plan.lines.is_empty());
+    }
+
+    #[test]
+    fn close_mid_fade_refusal_uses_reopen_retry_and_a_scheduled_toast() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        overlay.start_removal(Instant::now());
+        let mut app = App::new_for_test().expect("test app should build");
+        let now = Instant::now();
+
+        close_overlay_with(&mut overlay, &mut app, |_| {
+            Err(FavoritesMutationError::LockUnavailable {
+                path:  PathBuf::from("/tmp/favorites.lock"),
+                error: "held".to_string(),
+            })
+        });
+
+        let toasts = app.framework.toasts.active_views(Instant::now());
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].body().contains("press ⌃o to reopen favorites"));
+        assert!(toasts[0].body().contains("press x to retry the deletion"));
+        assert_eq!(toasts[0].style(), ToastStyle::Error);
+        assert!(matches!(
+            app.toast_visual_deadline(now, Duration::from_millis(8)),
+            VisualDeadline::At(_)
+        ));
+    }
+
+    #[test]
+    fn adjustment_warning_is_scheduled_after_load_and_exact_load_is_quiet() {
+        let keymap = keymap_from("");
+        let oversized = MOVING_BAND_ROW.replace("width = 10", "width = 10000");
+        let mut app = App::new_for_test().expect("test app should build");
+        app.attract.record_terminal_resize(Rect::new(0, 0, 10, 5));
+        app.favorites_overlay = open_at_width(loaded_state(&oversized), &keymap, 100);
+        let now = Instant::now();
+
+        dispatch(FavoritesOverlayAction::Load, &mut app);
+
+        let toasts = app.framework.toasts.active_views(Instant::now());
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].title(), "Favorite adjusted");
+        assert!(toasts[0].body().contains("width"));
+        assert!(toasts[0].body().contains("10000"));
+        assert_eq!(toasts[0].style(), ToastStyle::Warning);
+        assert!(matches!(
+            app.toast_visual_deadline(now, Duration::from_millis(8)),
+            VisualDeadline::At(_)
+        ));
+
+        let mut exact_app = App::new_for_test().expect("test app should build");
+        exact_app
+            .attract
+            .record_terminal_resize(Rect::new(0, 0, 80, 24));
+        exact_app.favorites_overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        dispatch(FavoritesOverlayAction::Load, &mut exact_app);
+        assert!(exact_app.framework.toasts.active_now().is_empty());
+        assert_eq!(
+            exact_app.toast_visual_deadline(Instant::now(), Duration::from_millis(8)),
+            VisualDeadline::NoVisualChangeScheduled
+        );
+    }
+
+    #[test]
+    fn adjustment_warning_uses_lowercase_file_spellings() {
+        let keymap = keymap_from("");
+        let overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        let (_, requested) = selected(&overlay);
+        let FavoriteSettings::MovingBand(mut effective) = requested else {
+            panic!("fixture should contain moving-band settings");
+        };
+        effective.direction = BandDirection::Right;
+
+        let message =
+            favorite_adjustment_message(requested, FavoriteSettings::MovingBand(effective));
+
+        assert!(message.contains("direction left -> right"));
+        assert!(!message.contains("Left"));
+        assert!(!message.contains("Right"));
+    }
+
+    #[test]
+    fn removal_deadline_requests_frames_without_attract_or_input() {
+        let keymap = keymap_from("");
+        let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        let now = Instant::now();
+        let frame = Duration::from_millis(8);
+        overlay.start_removal(now);
+
+        assert_eq!(
+            overlay.visual_deadline(now, frame),
+            VisualDeadline::At(now + frame)
+        );
+        assert_eq!(
+            overlay.advance(now + frame),
+            FavoritesOverlayFrameOutcome::Repaint
+        );
+    }
+
+    #[test]
     fn reopening_runs_the_loader_again_and_sees_an_appended_row() {
         let keymap = keymap_from("");
         let mut overlay = FavoritesOverlay::default();
@@ -1741,7 +2879,8 @@ travel_left = "界"
         });
         assert_eq!(loads, 1);
         assert_eq!(overlay.viewport.len(), 0);
-        overlay.handle_action(FavoritesOverlayAction::Close);
+        let _ = overlay.begin_close();
+        overlay.finish_close();
 
         overlay.open_with_loader(&keymap, || {
             loads += 1;
@@ -1753,10 +2892,18 @@ travel_left = "界"
 
     #[test]
     fn unbound_labels_cross_the_same_named_boundary_as_bound_labels() {
-        let unbound = ResolvedBinding::from(None);
-        let bound = ResolvedBinding::from(Some(KeySequence::from(KeyBind::ctrl('s'))));
+        let unbound = ResolvedBinding::for_action("save_favorite", None);
+        let bound = ResolvedBinding::for_action(
+            "save_favorite",
+            Some(KeySequence::from(KeyBind::ctrl('s'))),
+        );
 
-        assert_eq!(unbound, ResolvedBinding::Unbound);
+        assert_eq!(
+            unbound,
+            ResolvedBinding::Unbound {
+                action_name: "save_favorite",
+            }
+        );
         assert_eq!(unbound.display_short(), "");
         assert_eq!(bound.display_short(), "⌃s");
     }

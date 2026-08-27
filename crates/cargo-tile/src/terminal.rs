@@ -59,6 +59,8 @@ use crate::constants::BINARY_NAME;
 use crate::constants::FULL_REPAINT_SECONDS;
 use crate::constants::PROBE_THRESHOLD;
 use crate::constants::REPAINT_SENTINEL;
+use crate::favorites;
+use crate::favorites_overlay::FavoritesOverlayFrameOutcome;
 use crate::globals::AppGlobalAction;
 use crate::interaction;
 use crate::iterm2;
@@ -297,7 +299,7 @@ pub(crate) enum VisualDeadline {
 }
 
 impl VisualDeadline {
-    fn earlier(self, other: Self) -> Self {
+    pub(crate) fn earlier(self, other: Self) -> Self {
         match (self, other) {
             (Self::NoVisualChangeScheduled, deadline)
             | (deadline, Self::NoVisualChangeScheduled) => deadline,
@@ -457,9 +459,10 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
         if deadline < now {
             deadline = now + period;
         }
-        let remaining = app
+        let visual_deadline = app
             .toast_visual_deadline(now, period)
-            .limit_wait(now, deadline.saturating_duration_since(now));
+            .earlier(app.favorites_overlay.visual_deadline(now, period));
+        let remaining = visual_deadline.limit_wait(now, deadline.saturating_duration_since(now));
         match input.recv_timeout(remaining) {
             Ok(event) => {
                 let mut resized = apply_event(app, &event);
@@ -486,6 +489,15 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
         app.framework.toasts.prune(now);
         if app.toast_visual_frame_request(now) == VisualFrameRequest::Requested {
             dirty = true;
+        }
+        match app.favorites_overlay.advance(now) {
+            FavoritesOverlayFrameOutcome::Quiet => {},
+            FavoritesOverlayFrameOutcome::Repaint => dirty = true,
+            FavoritesOverlayFrameOutcome::CommitRemoval(favorite_id) => {
+                let result = favorites::remove(favorite_id);
+                app.favorites_overlay.finish_removal(favorite_id, result);
+                dirty = true;
+            },
         }
         // Frozen, every one of these is skipped: what a scan found,
         // how far a fade has walked and where a travelling cell has
