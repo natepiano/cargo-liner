@@ -29,7 +29,6 @@ use crate::ledger::BypassOccurrenceTime;
 use crate::ledger::BypassRecording;
 use crate::ledger::BypassedAction;
 use crate::ledger::BypassedMergeIdentity;
-use crate::ledger::EditAuthorization;
 use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
@@ -192,25 +191,26 @@ pub(crate) fn record_environment_bypass(
         },
         Ok(Enrollment::Enrolled(_)) | Err(_) => {},
     }
-    let coordination_run_id = coordination_run_id(&worktree_context);
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context);
     let cause = BypassCause::EnvironmentOverride {
         bypassed_merge: bypassed_merge_identity(),
     };
     let journalled = Ledger::open(worktree_context.repository_root())
         .and_then(|ledger| {
-            let worktree_identity = ledger::worktree_identity(
-                worktree_context.administrative_directory(),
-                worktree_context.worktree_kind(),
-            )?;
+            let journal_mutation_actor = journal_mutation_actor?;
             ledger
-                .try_transact(worktree_identity.id, coordination_run_id, |_| {
-                    TransactionValidation::<()>::Append(Box::new(JournalOperation::Bypass {
-                        action:          BypassedAction::Integration,
-                        cause:           cause.clone(),
-                        occurrence_time: BypassOccurrenceTime::EventRecordedAt,
-                        recording:       BypassRecording::Direct,
-                    }))
-                })
+                .try_transact(
+                    journal_mutation_actor.worktree_id,
+                    journal_mutation_actor.coordination_run_id,
+                    |_| {
+                        TransactionValidation::<()>::Append(Box::new(JournalOperation::Bypass {
+                            action:          BypassedAction::Integration,
+                            cause:           cause.clone(),
+                            occurrence_time: BypassOccurrenceTime::EventRecordedAt,
+                            recording:       BypassRecording::Direct,
+                        }))
+                    },
+                )
                 .map(|_| ())
                 .map_err(|error| match error {
                     LedgerTransactionError::LedgerUnreadable(error) => error,
@@ -236,27 +236,6 @@ fn bypassed_merge_identity() -> BypassedMergeIdentity {
         .ok()
         .and_then(|token| BypassedMergeIdentity::from_hook_token(&token).ok())
         .unwrap_or_else(|| CoordinationRunId::new().into())
-}
-
-fn coordination_run_id(worktree_context: &WorktreeContext) -> CoordinationRunId {
-    match EditAuthorization::resolve(
-        worktree_context.administrative_directory(),
-        &worktree_context.ledger_directory(),
-    ) {
-        EditAuthorization::Session {
-            coordination_run_id: run,
-            ..
-        }
-        | EditAuthorization::Environment {
-            coordination_run_id: run,
-            ..
-        }
-        | EditAuthorization::Marker {
-            coordination_run_id: run,
-            ..
-        } => run,
-        EditAuthorization::Unidentified => CoordinationRunId::new(),
-    }
 }
 
 fn write_pending_marker(

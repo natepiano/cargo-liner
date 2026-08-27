@@ -52,6 +52,7 @@ use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeAdditionSet;
+use crate::ledger::ResolvedJournalMutationActor;
 use crate::ledger::TransactionValidation;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WidenCause;
@@ -383,8 +384,10 @@ fn acquire(claim_request: ClaimRequest) -> Result<Enrollment<ClaimExecution>, Cl
     } = claim_request;
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let claim_run_validation = coordination_run_selection.resolve(&worktree_context);
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
+    let claim_run_validation = coordination_run_selection.resolve(journal_mutation_actor);
     let actor_run_id = claim_run_validation.actor_run_id();
+    let journal_mutation_actor = journal_mutation_actor.with_coordination_run_id(actor_run_id);
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let scopes = match &source {
         ClaimSource::FirstTouch => declared_scopes.into_exact_file_antichain(path_case),
@@ -410,10 +413,6 @@ fn acquire(claim_request: ClaimRequest) -> Result<Enrollment<ClaimExecution>, Cl
         },
     };
     let trunk_at_claim = read_trunk_commit(&worktree_context, &berth_config.trunk, &source)?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
     let ledger = match &source {
         ClaimSource::FirstTouch => Ledger::open_from_discovered_worktree(&worktree_context)?,
         ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => {
@@ -434,25 +433,29 @@ fn acquire(claim_request: ClaimRequest) -> Result<Enrollment<ClaimExecution>, Cl
     };
     let requester = OverlapRequester::new(
         claim_run_validation.presented_coordination_identity(),
-        worktree_identity.id,
+        journal_mutation_actor.worktree_id,
         prepared_claim.source.clone(),
         prepared_claim.purpose.clone(),
     );
-    let outcome = ledger.transact(worktree_identity.id, actor_run_id, |state| {
-        validate_claim_transaction(
-            &state,
-            prepared_claim,
-            ClaimValidationContext {
-                run_validation: claim_run_validation,
-                worktree_id: worktree_identity.id,
-                path_case,
-                requester,
-                overlap_authorization,
-                maximum_reservations: berth_config.maximum_reservations,
-                maximum_ordering_edges: berth_config.maximum_ordering_edges,
-            },
-        )
-    })?;
+    let outcome = ledger.transact(
+        journal_mutation_actor.worktree_id,
+        journal_mutation_actor.coordination_run_id,
+        |state| {
+            validate_claim_transaction(
+                &state,
+                prepared_claim,
+                ClaimValidationContext {
+                    run_validation: claim_run_validation,
+                    worktree_id: journal_mutation_actor.worktree_id,
+                    path_case,
+                    requester,
+                    overlap_authorization,
+                    maximum_reservations: berth_config.maximum_reservations,
+                    maximum_ordering_edges: berth_config.maximum_ordering_edges,
+                },
+            )
+        },
+    )?;
     claim_execution_from_outcome(outcome, reservation_id, scopes, &worktree_context)
         .map(Enrollment::Enrolled)
 }
@@ -467,8 +470,12 @@ pub(crate) fn acquire_first_touch(
     } = request;
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let run_validation = ClaimCoordinationRunSelection::ContinueOrStart.resolve(&worktree_context);
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
+    let run_validation =
+        ClaimCoordinationRunSelection::ContinueOrStart.resolve(journal_mutation_actor);
     let coordination_run_id = run_validation.actor_run_id();
+    let journal_mutation_actor =
+        journal_mutation_actor.with_coordination_run_id(coordination_run_id);
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let scopes = declared_scopes.into_exact_file_antichain(path_case);
     let source = ClaimSource::FirstTouch;
@@ -485,10 +492,6 @@ pub(crate) fn acquire_first_touch(
         },
     };
     let trunk_at_claim = read_trunk_commit(&worktree_context, &berth_config.trunk, &source)?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
     let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let prepared_claim = PreparedClaim {
         reservation_id: ReservationId::new(),
@@ -502,8 +505,8 @@ pub(crate) fn acquire_first_touch(
         worktree_administrative_locator: worktree_context.administrative_locator().clone(),
     };
     let execution = ledger.transact_with_committed_action_and_consume_locked_outcome(
-        worktree_identity.id,
-        coordination_run_id,
+        journal_mutation_actor.worktree_id,
+        journal_mutation_actor.coordination_run_id,
         |state| {
             validate_first_touch_transaction(
                 &state,
@@ -511,7 +514,7 @@ pub(crate) fn acquire_first_touch(
                 FirstTouchValidationContext {
                     run_validation,
                     coordination_run_id,
-                    worktree_id: worktree_identity.id,
+                    worktree_id: journal_mutation_actor.worktree_id,
                     path_case,
                     conflict_handling,
                     maximum_reservations: berth_config.maximum_reservations,
@@ -1103,42 +1106,40 @@ impl PreparedClaim {
 }
 
 impl ClaimCoordinationRunSelection {
-    fn resolve(self, worktree_context: &WorktreeContext) -> ClaimRunValidation {
+    const fn resolve(
+        self,
+        journal_mutation_actor: ResolvedJournalMutationActor,
+    ) -> ClaimRunValidation {
         match self {
             Self::Specified(coordination_run_id) => {
                 ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id)
             },
-            Self::ContinueOrStart => {
-                match EditAuthorization::resolve(
-                    worktree_context.administrative_directory(),
-                    &worktree_context.ledger_directory(),
-                ) {
-                    EditAuthorization::Session {
-                        coordination_run_id,
-                        reservation_id,
-                        worktree_id,
-                    } => ClaimRunValidation::ActiveSessionReservationRequired {
-                        coordination_run_id,
-                        reservation_id,
-                        worktree_id,
-                    },
-                    EditAuthorization::Environment {
-                        coordination_run_id,
-                        ..
-                    } => ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id),
-                    EditAuthorization::Marker {
-                        coordination_run_id,
-                        worktree_id,
-                    } => ClaimRunValidation::ActiveMarkerRequired {
-                        coordination_run_id,
-                        worktree_id,
-                    },
-                    EditAuthorization::Unidentified => {
-                        ClaimRunValidation::IndependentWithoutPresentedIdentity {
-                            actor_run_id: CoordinationRunId::new(),
-                        }
-                    },
-                }
+            Self::ContinueOrStart => match journal_mutation_actor.edit_authorization() {
+                EditAuthorization::Session {
+                    coordination_run_id,
+                    reservation_id,
+                    worktree_id,
+                } => ClaimRunValidation::ActiveSessionReservationRequired {
+                    coordination_run_id,
+                    reservation_id,
+                    worktree_id,
+                },
+                EditAuthorization::Environment {
+                    coordination_run_id,
+                    ..
+                } => ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id),
+                EditAuthorization::Marker {
+                    coordination_run_id,
+                    worktree_id,
+                } => ClaimRunValidation::ActiveMarkerRequired {
+                    coordination_run_id,
+                    worktree_id,
+                },
+                EditAuthorization::Unidentified => {
+                    ClaimRunValidation::IndependentWithoutPresentedIdentity {
+                        actor_run_id: journal_mutation_actor.coordination_run_id,
+                    }
+                },
             },
         }
     }
@@ -1593,4 +1594,44 @@ impl From<LedgerTransactionError> for ClaimError {
 
 impl From<FromUtf8Error> for ClaimError {
     fn from(error: FromUtf8Error) -> Self { Self::InvalidUtf8(error) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClaimCoordinationRunSelection;
+    use super::ClaimRunValidation;
+    use crate::ids::CoordinationRunId;
+    use crate::ids::ReservationId;
+    use crate::ids::WorktreeId;
+    use crate::ledger::EditAuthorization;
+    use crate::ledger::ResolvedJournalMutationActor;
+
+    #[test]
+    fn continue_or_start_uses_the_session_authorization_resolved_with_the_actor() {
+        let coordination_run_id = CoordinationRunId::new();
+        let reservation_id = ReservationId::new();
+        let worktree_id = WorktreeId::new();
+        let journal_mutation_actor = ResolvedJournalMutationActor::for_edit_authorization(
+            worktree_id,
+            EditAuthorization::Session {
+                coordination_run_id,
+                reservation_id,
+                worktree_id,
+            },
+        );
+
+        let run_validation =
+            ClaimCoordinationRunSelection::ContinueOrStart.resolve(journal_mutation_actor);
+
+        assert!(matches!(
+            run_validation,
+            ClaimRunValidation::ActiveSessionReservationRequired {
+                coordination_run_id: actual_run_id,
+                reservation_id: actual_reservation_id,
+                worktree_id: actual_worktree_id,
+            } if actual_run_id == coordination_run_id
+                && actual_reservation_id == reservation_id
+                && actual_worktree_id == worktree_id
+        ));
+    }
 }

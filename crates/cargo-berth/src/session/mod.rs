@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
+use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 
@@ -25,20 +26,22 @@ use crate::ledger::JournalOperation;
 struct HarnessSessionId(String);
 
 impl HarnessSessionId {
-    const ENVIRONMENT: &'static str = "CARGO_BERTH_SESSION_ID";
     const MAXIMUM_CHARACTERS: usize = 256;
 
     fn from_environment() -> HarnessSessionIdentity {
-        std::env::var_os(Self::ENVIRONMENT).map_or(HarnessSessionIdentity::Unavailable, |value| {
-            value
-                .into_string()
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .map_or(
-                    HarnessSessionIdentity::Unavailable,
-                    HarnessSessionIdentity::Available,
-                )
-        })
+        std::env::var_os(HARNESS_SESSION_ENVIRONMENT).map_or(
+            HarnessSessionIdentity::Unavailable,
+            |value| {
+                value
+                    .into_string()
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .map_or(
+                        HarnessSessionIdentity::Unavailable,
+                        HarnessSessionIdentity::Available,
+                    )
+            },
+        )
     }
 }
 

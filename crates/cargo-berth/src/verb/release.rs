@@ -19,7 +19,6 @@ use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::CommittedActionValidation;
 use crate::ledger::CoordinationRunMarkerRemoval;
-use crate::ledger::EditAuthorization;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
@@ -151,11 +150,7 @@ fn execute_release(
 ) -> Result<Enrollment<ReleasePayload>, ReleaseError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
-    let coordination_run_id = mutation_run_id(&worktree_context);
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
     let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
@@ -169,8 +164,8 @@ fn execute_release(
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let outcome = ledger
         .transact_with_committed_action(
-            worktree_identity.id,
-            coordination_run_id,
+            journal_mutation_actor.worktree_id,
+            journal_mutation_actor.coordination_run_id,
             |state| {
                 validate_release_transaction(
                     &state,
@@ -178,7 +173,7 @@ fn execute_release(
                         repository_root:      worktree_context.repository_root(),
                         trunk_branch:         &berth_config.trunk,
                         reservation_id:       release_request.reservation_id,
-                        invoking_worktree_id: worktree_identity.id,
+                        invoking_worktree_id: journal_mutation_actor.worktree_id,
                     },
                 )
             },
@@ -569,27 +564,6 @@ fn evidence_operation(
         reservation_id,
         protected_tip,
     )
-}
-
-fn mutation_run_id(worktree_context: &WorktreeContext) -> CoordinationRunId {
-    match EditAuthorization::resolve(
-        worktree_context.administrative_directory(),
-        &worktree_context.ledger_directory(),
-    ) {
-        EditAuthorization::Session {
-            coordination_run_id,
-            ..
-        }
-        | EditAuthorization::Environment {
-            coordination_run_id,
-            ..
-        }
-        | EditAuthorization::Marker {
-            coordination_run_id,
-            ..
-        } => coordination_run_id,
-        EditAuthorization::Unidentified => CoordinationRunId::new(),
-    }
 }
 
 fn marker_plan_for(

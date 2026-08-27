@@ -16,9 +16,14 @@ use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::constants::COORDINATION_RUN_ENVIRONMENT;
 use super::constants::CURRENT_SCHEMA_VERSION;
 use super::constants::DELETE_CONTROL_BYTE;
+use super::constants::GIT_COMMON_DIRECTORY_ENVIRONMENT;
+use super::constants::GIT_DIRECTORY_ENVIRONMENT;
+use super::constants::HARNESS_SESSION_ENVIRONMENT;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
+use super::constants::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
 use super::constants::MINIMUM_SUPPORTED_SCHEMA_VERSION;
 use crate::answer::ConflictAuthorization;
 use crate::config::InitializationState;
@@ -55,6 +60,12 @@ pub(crate) struct JournalEvent {
     pub(super) event_id:              EventId,
     /// The coordination actor that recorded this fact.
     pub(crate) actor:                 JournalActor,
+    /// The process inputs available when this mutation actor was resolved.
+    #[serde(
+        default,
+        skip_serializing_if = "JournalMutationIdentityInputs::was_unrecorded"
+    )]
+    identity_inputs:                  JournalMutationIdentityInputs,
     /// The time this fact was recorded.
     pub(super) at:                    RecordedAt,
     /// The cache generation this append publishes.
@@ -81,6 +92,7 @@ impl JournalEvent {
             schema_version: SchemaVersion::from(CURRENT_SCHEMA_VERSION),
             event_id: EventId::new(),
             actor,
+            identity_inputs: JournalMutationIdentityInputs::record(),
             at: RecordedAt::now(),
             projection_generation,
             operation,
@@ -108,6 +120,132 @@ pub(crate) struct JournalActor {
     pub(crate) worktree:   WorktreeId,
     /// The active coordination run in that worktree.
     pub(crate) run:        CoordinationRunId,
+}
+
+/// The process inputs that can explain one journal mutation actor resolution.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum JournalMutationIdentityInputs {
+    /// Records written before identity instrumentation carry no process inputs.
+    #[default]
+    Unrecorded,
+    /// A new mutation captured the invocation, session, run, and Git environment inputs.
+    Recorded {
+        /// The process working directory at append time.
+        invocation_directory:   InvocationDirectoryAtMutation,
+        /// The bounded `CARGO_BERTH_SESSION_ID` process environment record.
+        cargo_berth_session_id: EnvironmentValueAtMutation,
+        /// The bounded `CARGO_BERTH_RUN` process environment record.
+        cargo_berth_run:        EnvironmentValueAtMutation,
+        /// The bounded `GIT_DIR` process environment record.
+        git_dir:                EnvironmentValueAtMutation,
+        /// The bounded `GIT_COMMON_DIR` process environment record.
+        git_common_dir:         EnvironmentValueAtMutation,
+    },
+}
+
+impl JournalMutationIdentityInputs {
+    fn record() -> Self {
+        Self::Recorded {
+            invocation_directory:   InvocationDirectoryAtMutation::record(),
+            cargo_berth_session_id: EnvironmentValueAtMutation::record(HARNESS_SESSION_ENVIRONMENT),
+            cargo_berth_run:        EnvironmentValueAtMutation::record(
+                COORDINATION_RUN_ENVIRONMENT,
+            ),
+            git_dir:                EnvironmentValueAtMutation::record(GIT_DIRECTORY_ENVIRONMENT),
+            git_common_dir:         EnvironmentValueAtMutation::record(
+                GIT_COMMON_DIRECTORY_ENVIRONMENT,
+            ),
+        }
+    }
+
+    const fn was_unrecorded(&self) -> bool { matches!(self, Self::Unrecorded) }
+}
+
+/// The process working directory available when a journal mutation was appended.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum InvocationDirectoryAtMutation {
+    /// The working directory was valid UTF-8 and is recorded exactly.
+    Utf8 { path: String },
+    /// The working directory exceeded the bounded diagnostic value budget.
+    TooLong { observed_bytes: usize },
+    /// The working directory was available but could not be represented as UTF-8.
+    NonUtf8,
+    /// The process no longer had a readable working directory.
+    Unavailable { diagnostic: String },
+}
+
+impl InvocationDirectoryAtMutation {
+    fn record() -> Self {
+        std::env::current_dir().map_or_else(
+            |error| Self::Unavailable {
+                diagnostic: error.to_string(),
+            },
+            |path| {
+                path.into_os_string()
+                    .into_string()
+                    .map_or(Self::NonUtf8, Self::from)
+            },
+        )
+    }
+}
+
+impl From<String> for InvocationDirectoryAtMutation {
+    fn from(path: String) -> Self {
+        let observed_bytes = path.len();
+        if recorded_json_string_contents_bytes(&path) > MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES
+        {
+            Self::TooLong { observed_bytes }
+        } else {
+            Self::Utf8 { path }
+        }
+    }
+}
+
+/// One process environment value available when a journal mutation was appended.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum EnvironmentValueAtMutation {
+    /// The variable was absent from the process environment.
+    Unset,
+    /// The variable contained valid UTF-8 and is recorded exactly.
+    Utf8 { value: String },
+    /// The variable exceeded the bounded diagnostic value budget.
+    TooLong { observed_bytes: usize },
+    /// The variable was present but could not be represented as UTF-8.
+    NonUtf8,
+}
+
+impl EnvironmentValueAtMutation {
+    fn record(name: &str) -> Self {
+        std::env::var_os(name).map_or(Self::Unset, |value| {
+            value.into_string().map_or(Self::NonUtf8, Self::from)
+        })
+    }
+}
+
+impl From<String> for EnvironmentValueAtMutation {
+    fn from(value: String) -> Self {
+        let observed_bytes = value.len();
+        if recorded_json_string_contents_bytes(&value) > MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES
+        {
+            Self::TooLong { observed_bytes }
+        } else {
+            Self::Utf8 { value }
+        }
+    }
+}
+
+fn recorded_json_string_contents_bytes(value: &str) -> usize {
+    value.bytes().fold(0, |encoded_bytes, byte| {
+        let byte_contribution = match byte {
+            b'\"' | b'\\' | b'\x08' | b'\x09' | b'\x0a' | b'\x0c' | b'\x0d' => 2,
+            0..=0x1f => 6,
+            _ => 1,
+        };
+        encoded_bytes.saturating_add(byte_contribution)
+    })
 }
 
 /// The opaque UUID-v7 identity of one incursion incident.
@@ -1590,6 +1728,7 @@ mod tests {
     use super::JournalActor;
     use super::JournalError;
     use super::JournalEvent;
+    use super::JournalMutationIdentityInputs;
     use super::JournalOperation;
     use super::NonEmptyReservationPurpose;
     use super::OrderingDirection;
@@ -1974,6 +2113,7 @@ mod tests {
                     .parse::<CoordinationRunId>()
                     .expect("coordination run identifier should parse"),
             },
+            identity_inputs:       JournalMutationIdentityInputs::Unrecorded,
             at:                    "2026-08-23T17:34:54.123Z"
                 .parse::<RecordedAt>()
                 .expect("recorded timestamp should parse"),

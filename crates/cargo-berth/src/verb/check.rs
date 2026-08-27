@@ -202,10 +202,7 @@ fn decide(
     let scopes = declared_scopes.into_exact_file_antichain(path_case);
     let reservations = RetainedReservationSet::replay(snapshot.events())
         .map_err(CheckDecisionError::ReservationReplay)?;
-    let edit_authorization = EditAuthorization::resolve(
-        snapshot.worktree_context().administrative_directory(),
-        &snapshot.worktree_context().ledger_directory(),
-    );
+    let edit_authorization = EditAuthorization::resolve(snapshot.worktree_context());
     let conflicts = reservations.conflicts_for_edit(&scopes, edit_authorization, path_case);
     Ok(Enrollment::Enrolled(CheckDecision { scopes, conflicts }))
 }

@@ -14,6 +14,9 @@ pub(super) const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
 
 // process context
 pub(super) const COORDINATION_RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
+pub(super) const GIT_COMMON_DIRECTORY_ENVIRONMENT: &str = "GIT_COMMON_DIR";
+pub(super) const GIT_DIRECTORY_ENVIRONMENT: &str = "GIT_DIR";
+pub(crate) const HARNESS_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 
 // lock acquisition
 pub(super) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(10);
@@ -28,6 +31,8 @@ pub(super) const DELETE_CONTROL_BYTE: u8 = 0x7f;
 
 // journal limits
 pub(super) const MAXIMUM_JOURNAL_RECORD_BYTES: usize = 16 * 1_024;
+/// Maximum JSON-encoded string-content bytes retained for one actor identity input.
+pub(super) const MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES: usize = 256;
 
 // ledger layout
 pub(super) const LEDGER_DIRECTORY_NAME: &str = "cargo-berth";

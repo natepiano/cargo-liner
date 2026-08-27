@@ -477,15 +477,13 @@ fn reanchor_rewritten_phases(
     rewrites: &[BranchRewrite],
 ) -> Result<(), GateError> {
     let ledger = Ledger::open(invocation_directory)?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
+    let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
+        .with_coordination_run_id(CoordinationRunId::new());
     let repository_root = worktree_context.repository_root();
     let outcome = ledger
         .transact_reconciliation(
-            worktree_identity.id,
-            CoordinationRunId::new(),
+            journal_mutation_actor.worktree_id,
+            journal_mutation_actor.coordination_run_id,
             |state| {
                 let reservations = match RetainedReservationSet::replay(state.events()) {
                     Ok(reservations) => reservations,
@@ -571,15 +569,12 @@ fn commit_forced_permit_audits(
 ) -> Result<(), GateError> {
     let ledger = Ledger::open(invocation_directory)?;
     let ledger_repository = ledger.repository_identity()?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
-    let coordination_run_id = CoordinationRunId::new();
+    let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
+        .with_coordination_run_id(CoordinationRunId::new());
     let outcome = ledger
         .transact_reconciliation(
-            worktree_identity.id,
-            coordination_run_id,
+            journal_mutation_actor.worktree_id,
+            journal_mutation_actor.coordination_run_id,
             |state| {
                 let prepared = match reconcile::prepare_gate_reconciliation(
                     state.events(),
@@ -724,15 +719,12 @@ fn evaluate_locked(
     };
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let ledger_repository = ledger.repository_identity()?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
-    let coordination_run_id = purpose.coordination_run_id();
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?
+        .with_coordination_run_id(purpose.coordination_run_id());
     let outcome = ledger
         .transact_reconciliation(
-            worktree_identity.id,
-            coordination_run_id,
+            journal_mutation_actor.worktree_id,
+            journal_mutation_actor.coordination_run_id,
             |state| {
                 let prepared = match reconcile::prepare_gate_reconciliation(
                     state.events(),
@@ -1121,10 +1113,7 @@ impl GatePurpose {
 
 impl ActingRun {
     fn resolve(worktree_context: &WorktreeContext) -> Self {
-        match EditAuthorization::resolve(
-            worktree_context.administrative_directory(),
-            &worktree_context.ledger_directory(),
-        ) {
+        match EditAuthorization::resolve(worktree_context) {
             EditAuthorization::Session {
                 coordination_run_id,
                 reservation_id,

@@ -12,22 +12,37 @@ then serializes and fsyncs on every reconciliation. Reconciliation runs on the
 of journal events for the life of the repository.
 
 The growth is inherent to the append-only journal and predates this plan, but
-Phases 3 and 4 raise the rate. `ScopedPatchEquivalenceChecked` records one event
-per `(reservation, trunk target)` even when the reported status does not change.
-`SuccessorScopedPatchEquivalenceChecked` records one event per `(predecessor,
-proof subject, successor head)`, and `SuccessorScopedPatchComparisonAttempted`
-records every transient successor comparison that cannot be cached. The
-successor cache's 512-entry verdict and attempt retention bounds replayed state;
-it does not compact these durable journal or projection records.
+Phases 3 and 4 raise the event rate. `ScopedPatchEquivalenceChecked` records one
+event per `(reservation, trunk target)` even when the reported status does not
+change. `SuccessorScopedPatchEquivalenceChecked` records one event per
+`(predecessor, proof subject, successor head)`, and
+`SuccessorScopedPatchComparisonAttempted` records every transient successor
+comparison that cannot be cached. The successor cache's 512-entry verdict and
+attempt retention bounds replayed state; it does not bound durable journal or
+projection bytes.
+
+Phase 6 also raises the serialized size of every new event by attaching
+`identity_inputs`: the invocation directory and four environment values each
+retain at most 256 JSON-content bytes, or a bounded state carrying only an
+observed byte count. These inputs are durable audit evidence for the unresolved
+worktree-attribution incident. They remain in the append-only journal for its
+lifetime, but they are not replay state and must not be copied into a bounded
+projection.
 
 No phase owns this. The plan-wide invariant (`berth-fix.md:90`) constrains Git
 subprocess counts, not ledger size, and bounded per-reservation replay state
-cannot bound the append-only journal. The work is journal compaction or a
-projection that stores replayed facts instead of raw events — a change to
-`ledger/`, not a repair to any completed phase's diff.
+cannot bound a projection that stores every `JournalEvent`. Replace
+`Projection.events` with bounded replay state while retaining the journal offset,
+fingerprint, generation, and enough materialized facts to preserve replay
+behavior. Do not rewrite or compact the append-only journal.
+
+Acceptance compares projection publication and reload from a small journal and a
+long journal carrying equivalent live state: serialized projection size and
+publish work remain bounded by live replay state rather than event count, while
+the journal retains every Phase 6 `identity_inputs` record unchanged.
 
 Surfaced by the Phase 3 closure review, pass 5; strengthened by the Phase 4
-retrospective.
+retrospective and Phase 6 identity instrumentation.
 
 ## Make `maximum_reservations` truthful against the successor-verdict retention bound
 

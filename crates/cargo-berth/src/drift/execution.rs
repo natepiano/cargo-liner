@@ -36,6 +36,7 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
+use crate::ledger::ResolvedJournalMutationActor;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
@@ -65,13 +66,13 @@ enum DriftTransactionRejection {
 }
 
 struct DriftMutationContext<'observation> {
-    request:              DriftRequest,
-    repository_root:      &'observation Path,
-    acting_identity:      DriftActingIdentity,
-    worktree_id:          WorktreeId,
-    path_case:            PathCase,
-    observation:          &'observation FingerprintObservation,
-    prior_classification: &'observation PriorClassification,
+    request:                DriftRequest,
+    repository_root:        &'observation Path,
+    acting_identity:        DriftActingIdentity,
+    journal_mutation_actor: ResolvedJournalMutationActor,
+    path_case:              PathCase,
+    observation:            &'observation FingerprintObservation,
+    prior_classification:   &'observation PriorClassification,
 }
 
 /// Execute one cheap or full drift observation and reconcile any changed paths.
@@ -143,9 +144,18 @@ fn execute_inner(
     let Some(worktree_id) = comparable_worktree(&worktree_context, &request)? else {
         return Ok(nothing_to_compare(request.comparison));
     };
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
+    if journal_mutation_actor.worktree_id != worktree_id {
+        return Err(DriftExecutionError::Ledger(
+            LedgerError::WorktreeIdentityMismatch,
+        ));
+    }
     let initial_reservations = RetainedReservationSet::replay(initial_snapshot.events())?;
-    let acting_identity =
-        DriftActingIdentity::resolve(&worktree_context, worktree_id, &initial_reservations);
+    let acting_identity = DriftActingIdentity::resolve(
+        &worktree_context,
+        journal_mutation_actor,
+        &initial_reservations,
+    );
     let initial_subjects = request
         .reservation
         .resolve(&initial_reservations, acting_identity)?;
@@ -196,7 +206,7 @@ fn execute_inner(
         request,
         repository_root: worktree_context.repository_root(),
         acting_identity,
-        worktree_id,
+        journal_mutation_actor,
         path_case,
         observation: &observation,
         prior_classification: &prior_classification,
@@ -361,9 +371,12 @@ fn transact_classification(
         .acting_identity
         .run_for_mutation(context.request.reservation)?
         .into_coordination_run_id();
+    let journal_mutation_actor = context
+        .journal_mutation_actor
+        .with_coordination_run_id(actor_run);
     let outcome = ledger.transact_reconciliation(
-        context.worktree_id,
-        actor_run,
+        journal_mutation_actor.worktree_id,
+        journal_mutation_actor.coordination_run_id,
         |state| {
             let reservations = match RetainedReservationSet::replay(state.events()) {
                 Ok(reservations) => reservations,

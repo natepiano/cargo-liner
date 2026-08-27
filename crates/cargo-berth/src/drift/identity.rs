@@ -6,6 +6,7 @@ use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger::EditAuthorization;
+use crate::ledger::ResolvedJournalMutationActor;
 use crate::ledger::WorktreeContext;
 use crate::reservation::AuthorizedEditingIdentity;
 use crate::reservation::RetainedReservationSet;
@@ -29,13 +30,10 @@ pub(super) enum DriftActingIdentity {
 impl DriftActingIdentity {
     pub(super) fn resolve(
         worktree_context: &WorktreeContext,
-        current_worktree: WorktreeId,
+        journal_mutation_actor: ResolvedJournalMutationActor,
         reservations: &RetainedReservationSet,
     ) -> Self {
-        let edit_authorization = EditAuthorization::resolve(
-            worktree_context.administrative_directory(),
-            &worktree_context.ledger_directory(),
-        );
+        let edit_authorization = EditAuthorization::resolve(worktree_context);
         match reservations.resolve_editing_identity(edit_authorization) {
             AuthorizedEditingIdentity::SessionReservation {
                 coordination_run_id: run,
@@ -51,7 +49,7 @@ impl DriftActingIdentity {
                 worktree_id: worktree,
             } => Self::Run { run, worktree },
             AuthorizedEditingIdentity::Unidentified => Self::Unidentified {
-                worktree: current_worktree,
+                worktree: journal_mutation_actor.worktree_id,
             },
         }
     }

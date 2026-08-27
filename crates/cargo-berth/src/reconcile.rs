@@ -520,15 +520,12 @@ fn reconcile_enrolled(
 ) -> Result<ReconciliationReport, ReconcileError> {
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let ledger_repository = ledger.repository_identity()?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
-    let coordination_run_id = CoordinationRunId::new();
+    let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
+        .with_coordination_run_id(CoordinationRunId::new());
     let outcome = ledger
         .transact_reconciliation(
-            worktree_identity.id,
-            coordination_run_id,
+            journal_mutation_actor.worktree_id,
+            journal_mutation_actor.coordination_run_id,
             |state| {
                 let reservations = match RetainedReservationSet::replay(state.events()) {
                     Ok(reservations) => reservations,

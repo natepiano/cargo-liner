@@ -21,7 +21,6 @@ use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::CommittedActionValidation;
-use crate::ledger::EditAuthorization;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
@@ -209,14 +208,11 @@ fn execute_every_incursion_resolution(
 ) -> Result<ResolvePayload, RecoveryError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let outcome = ledger.transact_reconciliation(
-        worktree_identity.id,
-        mutation_run_id(&worktree_context),
+        journal_mutation_actor.worktree_id,
+        journal_mutation_actor.coordination_run_id,
         |state| {
             let reservations = match RetainedReservationSet::replay(state.events()) {
                 Ok(reservations) => reservations,
@@ -269,14 +265,11 @@ fn execute_one_incursion_resolution(
 ) -> Result<ResolvePayload, RecoveryError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let outcome = ledger.transact(
-        worktree_identity.id,
-        mutation_run_id(&worktree_context),
+        journal_mutation_actor.worktree_id,
+        journal_mutation_actor.coordination_run_id,
         |state| {
             let reservations = match RetainedReservationSet::replay(state.events()) {
                 Ok(reservations) => reservations,
@@ -324,11 +317,7 @@ fn execute_reservation_resolution(
 ) -> Result<Enrollment<ResolvePayload>, RecoveryError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
-    let coordination_run_id = mutation_run_id(&worktree_context);
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
     let repository_root = worktree_context.repository_root();
     let berth_config = match BerthConfig::read(repository_root)? {
         Enrollment::Enrolled(berth_config) => berth_config,
@@ -344,8 +333,8 @@ fn execute_reservation_resolution(
     let ledger = Ledger::open(repository_root)?;
     let outcome = ledger
         .transact_with_committed_action(
-            worktree_identity.id,
-            coordination_run_id,
+            journal_mutation_actor.worktree_id,
+            journal_mutation_actor.coordination_run_id,
             |state| {
                 let recovery_request = match validate_recovery_request(
                     repository_root,
@@ -384,7 +373,7 @@ fn execute_reservation_resolution(
                     reservation,
                     resolve_request.reservation_id,
                     recovery_request,
-                    worktree_identity.id,
+                    journal_mutation_actor.worktree_id,
                     current_worktree_root,
                     worktree_context.administrative_locator().clone(),
                 ) {
@@ -456,14 +445,11 @@ fn recovery_retention_deletions(
 fn execute_renewal(renew_request: RenewRequest) -> Result<(), RecoveryError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let outcome = ledger.transact(
-        worktree_identity.id,
-        mutation_run_id(&worktree_context),
+        journal_mutation_actor.worktree_id,
+        journal_mutation_actor.coordination_run_id,
         |state| {
             let reservations = match RetainedReservationSet::replay(state.events()) {
                 Ok(reservations) => reservations,
@@ -642,27 +628,6 @@ fn canonical_root(
         .ok_or(RecoveryError::NonUtf8WorktreeRoot)?
         .parse()
         .map_err(|_| RecoveryError::InvalidCanonicalWorktreeRoot)
-}
-
-fn mutation_run_id(worktree_context: &WorktreeContext) -> CoordinationRunId {
-    match EditAuthorization::resolve(
-        worktree_context.administrative_directory(),
-        &worktree_context.ledger_directory(),
-    ) {
-        EditAuthorization::Session {
-            coordination_run_id,
-            ..
-        }
-        | EditAuthorization::Environment {
-            coordination_run_id,
-            ..
-        }
-        | EditAuthorization::Marker {
-            coordination_run_id,
-            ..
-        } => coordination_run_id,
-        EditAuthorization::Unidentified => CoordinationRunId::new(),
-    }
 }
 
 struct RecoveryCommittedAction {

@@ -164,6 +164,37 @@ This is the same misattribution family already recorded in `issue2.md` (rebase
 attributing upstream commits to the rebasing worktree). Worth checking whether
 one shared identity-resolution helper fixes all of them.
 
+##### Phase 6 reproduction result — not reproduced
+
+The Phase 6 fixture used the recorded invocation route from the linked
+`cargo-tile-favorites` worktree and wrote the recorded marker pairs into the
+same main and linked administrative-directory locations:
+
+- main: worktree `01a03f08-e197-7a83-9b7c-bc7c555d0c00`, run
+  `01a03f63-03e7-7fb2-ae63-5b297177f59f`
+- linked: worktree `01a03f1f-6d9c-7383-8389-a6fd541e79d5`, run
+  `01a03f60-2e87-7b93-b933-e3dc5e9211d9`
+
+The fixture first recorded an incursion from the linked worktree, then invoked
+`cargo-berth resolve <reservation> --incursion <incident> --json` there. Both
+events carried the linked pair. The fixture passed before any production source
+changed, so the common-directory hypothesis did not reproduce the incident.
+
+The incident record contains no `CARGO_BERTH_SESSION_ID`, `CARGO_BERTH_RUN`,
+`GIT_DIR`, or `GIT_COMMON_DIR` values. Phase 6 therefore retained the evidence
+as an unexplained historical misattribution and added `identity_inputs` to every
+new journal event. It records the invocation directory and those four process
+environment values, including explicit `unset` and non-UTF-8 states. A future
+recurrence will show whether the command ran in the reported directory and
+which session, run, and Git inputs were present.
+
+Worktree actor resolution uses the canonical invocation directory's filesystem
+metadata. A relative `gitdir:` locator is resolved from the worktree root, and a
+relative `commondir` locator is resolved from the per-worktree administrative
+directory. `GIT_DIR` and `GIT_COMMON_DIR`, whether absolute or relative, do not
+override those actor paths; their raw values are recorded for diagnosis. When
+the Git variables are absent, the same filesystem traversal remains in use.
+
 #### Defect 3 — resolving a live incident reports `invalid_input` (important)
 
 The invocation above returned:

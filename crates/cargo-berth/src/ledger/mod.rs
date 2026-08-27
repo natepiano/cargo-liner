@@ -21,6 +21,7 @@ use std::time::Duration;
 use constants::COORDINATION_RUN_ENVIRONMENT;
 use constants::COORDINATION_RUN_MARKER_FILE_NAME;
 use constants::COORDINATION_RUN_MARKER_RETIREMENT_SUFFIX;
+pub(crate) use constants::HARNESS_SESSION_ENVIRONMENT;
 use constants::JOURNAL_FILE_NAME;
 use constants::LEDGER_DIRECTORY_NAME;
 use constants::LOCK_FILE_NAME;
@@ -104,11 +105,69 @@ pub(crate) struct Ledger {
 /// Repository and administrative paths discovered without executing git.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WorktreeContext {
-    repository_root:                   PathBuf,
-    worktree_administrative_directory: PathBuf,
-    common_git_directory:              PathBuf,
-    administrative_locator:            WorktreeAdministrativeLocator,
-    worktree_kind:                     WorktreeKind,
+    repository_root:          PathBuf,
+    administrative_directory: WorktreeAdministrativeDirectory,
+    common_git_directory:     PathBuf,
+    shared_ledger_directory:  SharedLedgerDirectory,
+    administrative_locator:   WorktreeAdministrativeLocator,
+    worktree_kind:            WorktreeKind,
+}
+
+/// The per-worktree Git directory that owns worktree and run identity markers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorktreeAdministrativeDirectory(PathBuf);
+
+/// The common cargo-berth directory that owns the journal and session mappings.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SharedLedgerDirectory(PathBuf);
+
+/// The actor ids and edit authorization resolved from one process-context read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedJournalMutationActor {
+    pub(crate) worktree_id:         WorktreeId,
+    pub(crate) coordination_run_id: CoordinationRunId,
+    edit_authorization:             EditAuthorization,
+}
+
+impl ResolvedJournalMutationActor {
+    /// Build the coherent actor for one resolved edit authorization.
+    pub(crate) fn for_edit_authorization(
+        worktree_id: WorktreeId,
+        edit_authorization: EditAuthorization,
+    ) -> Self {
+        let coordination_run_id = match edit_authorization {
+            EditAuthorization::Session {
+                coordination_run_id,
+                ..
+            }
+            | EditAuthorization::Environment {
+                coordination_run_id,
+                ..
+            }
+            | EditAuthorization::Marker {
+                coordination_run_id,
+                ..
+            } => coordination_run_id,
+            EditAuthorization::Unidentified => CoordinationRunId::new(),
+        };
+        Self {
+            worktree_id,
+            coordination_run_id,
+            edit_authorization,
+        }
+    }
+
+    /// Return the authorization resolved in the same read as this actor.
+    pub(crate) const fn edit_authorization(self) -> EditAuthorization { self.edit_authorization }
+
+    /// Deliberately replace the context-selected run for a command-owned run identity.
+    pub(crate) const fn with_coordination_run_id(
+        mut self,
+        coordination_run_id: CoordinationRunId,
+    ) -> Self {
+        self.coordination_run_id = coordination_run_id;
+        self
+    }
 }
 
 /// The relationship between a `.git` file target and any shared git directory.
@@ -213,14 +272,20 @@ pub(crate) enum CoordinationRunMarkerRemoval {
 
 impl EditAuthorization {
     /// Resolve identity from the harness session, environment, marker, or no source.
-    pub(crate) fn resolve(
-        worktree_administrative_directory: &Path,
-        ledger_directory: &Path,
-    ) -> Self {
+    pub(crate) fn resolve(worktree_context: &WorktreeContext) -> Self {
+        let Ok(worktree_id) = mint_or_read_worktree_id(worktree_context.administrative_directory())
+        else {
+            return Self::Unidentified;
+        };
+        Self::resolve_for_worktree(worktree_context, worktree_id)
+    }
+
+    fn resolve_for_worktree(worktree_context: &WorktreeContext, worktree_id: WorktreeId) -> Self {
         Self::resolve_from_sources(
-            session::resolve(ledger_directory),
+            session::resolve(&worktree_context.ledger_directory()),
             std::env::var_os(COORDINATION_RUN_ENVIRONMENT),
-            worktree_administrative_directory,
+            worktree_context.administrative_directory(),
+            worktree_id,
         )
     }
 
@@ -228,10 +293,9 @@ impl EditAuthorization {
         session_identity: SessionIdentityLookup,
         environment_run: Option<OsString>,
         worktree_administrative_directory: &Path,
+        worktree_id: WorktreeId,
     ) -> Self {
-        if let SessionIdentityLookup::Mapped(identity) = session_identity
-            && let Ok(worktree_id) = mint_or_read_worktree_id(worktree_administrative_directory)
-        {
+        if let SessionIdentityLookup::Mapped(identity) = session_identity {
             return Self::Session {
                 coordination_run_id: identity.coordination_run_id(),
                 reservation_id: identity.reservation_id(),
@@ -241,13 +305,9 @@ impl EditAuthorization {
         if let Some(environment) = environment_run
             .and_then(|value| value.into_string().ok())
             .and_then(|value| value.parse().ok())
-            .and_then(|coordination_run_id| {
-                mint_or_read_worktree_id(worktree_administrative_directory)
-                    .ok()
-                    .map(|worktree_id| Self::Environment {
-                        coordination_run_id,
-                        worktree_id,
-                    })
+            .map(|coordination_run_id| Self::Environment {
+                coordination_run_id,
+                worktree_id,
             })
         {
             return environment;
@@ -256,13 +316,9 @@ impl EditAuthorization {
         if let Some(marker) = fs::read_to_string(marker_path)
             .ok()
             .and_then(|value| value.trim().parse().ok())
-            .and_then(|coordination_run_id| {
-                mint_or_read_worktree_id(worktree_administrative_directory)
-                    .ok()
-                    .map(|worktree_id| Self::Marker {
-                        coordination_run_id,
-                        worktree_id,
-                    })
+            .map(|coordination_run_id| Self::Marker {
+                coordination_run_id,
+                worktree_id,
             })
         {
             return marker;
@@ -327,10 +383,15 @@ impl WorktreeContext {
         };
         let administrative_locator = WorktreeAdministrativeLocator::from_str(&locator)
             .map_err(|_| LedgerError::InvalidAdministrativeLocator(locator))?;
+        let shared_ledger_directory =
+            SharedLedgerDirectory(common_git_directory.join(LEDGER_DIRECTORY_NAME));
         Ok(Self {
             repository_root,
-            worktree_administrative_directory,
+            administrative_directory: WorktreeAdministrativeDirectory(
+                worktree_administrative_directory,
+            ),
             common_git_directory,
+            shared_ledger_directory,
             administrative_locator,
             worktree_kind,
         })
@@ -340,17 +401,13 @@ impl WorktreeContext {
     pub(crate) fn repository_root(&self) -> &Path { &self.repository_root }
 
     /// Return the administrative directory for this worktree.
-    pub(crate) fn administrative_directory(&self) -> &Path {
-        &self.worktree_administrative_directory
-    }
+    pub(crate) fn administrative_directory(&self) -> &Path { &self.administrative_directory.0 }
 
     /// Return the common git directory shared by every linked worktree.
     pub(crate) fn common_git_directory(&self) -> &Path { &self.common_git_directory }
 
     /// Return the shared cargo-berth ledger directory.
-    pub(crate) fn ledger_directory(&self) -> PathBuf {
-        self.common_git_directory.join(LEDGER_DIRECTORY_NAME)
-    }
+    pub(crate) fn ledger_directory(&self) -> PathBuf { self.shared_ledger_directory.0.clone() }
 
     /// Return the common-directory-relative worktree administrative locator.
     pub(crate) const fn administrative_locator(&self) -> &WorktreeAdministrativeLocator {
@@ -366,10 +423,11 @@ impl WorktreeContext {
         coordination_run_id: CoordinationRunId,
     ) -> Result<(), LedgerError> {
         let marker_path = self
-            .worktree_administrative_directory
+            .administrative_directory
+            .0
             .join(COORDINATION_RUN_MARKER_FILE_NAME);
         let publication_attempt_id = Uuid::now_v7();
-        let temporary_path = self.worktree_administrative_directory.join(format!(
+        let temporary_path = self.administrative_directory.0.join(format!(
             "{COORDINATION_RUN_MARKER_FILE_NAME}.{coordination_run_id}.{publication_attempt_id}.tmp"
         ));
         let publication = (|| -> Result<(), std::io::Error> {
@@ -380,7 +438,7 @@ impl WorktreeContext {
             temporary_file.write_all(format!("{coordination_run_id}\n").as_bytes())?;
             temporary_file.sync_all()?;
             fs::rename(&temporary_path, marker_path)?;
-            fs::File::open(&self.worktree_administrative_directory)?.sync_all()?;
+            fs::File::open(&self.administrative_directory.0)?.sync_all()?;
             Ok(())
         })();
         if publication.is_err() {
@@ -421,16 +479,17 @@ impl WorktreeContext {
         &self,
     ) -> Result<CoordinationRunMarkerAtRetirement, LedgerError> {
         let marker_path = self
-            .worktree_administrative_directory
+            .administrative_directory
+            .0
             .join(COORDINATION_RUN_MARKER_FILE_NAME);
-        let retirement_path = self.worktree_administrative_directory.join(format!(
+        let retirement_path = self.administrative_directory.0.join(format!(
             "{COORDINATION_RUN_MARKER_FILE_NAME}.{}.{COORDINATION_RUN_MARKER_RETIREMENT_SUFFIX}",
             Uuid::now_v7()
         ));
         match fs::rename(&marker_path, &retirement_path) {
             Ok(()) => Ok(CoordinationRunMarkerAtRetirement::Detached(
                 DetachedCoordinationRunMarker {
-                    administrative_directory: self.worktree_administrative_directory.clone(),
+                    administrative_directory: self.administrative_directory.0.clone(),
                     marker_path,
                     retirement_path,
                 },
@@ -1239,6 +1298,22 @@ pub(crate) fn worktree_identity(
     })
 }
 
+/// Resolve the worktree and coordination-run ids recorded by a journal mutation.
+pub(crate) fn resolve_identity(
+    worktree_context: &WorktreeContext,
+) -> Result<ResolvedJournalMutationActor, LedgerError> {
+    let worktree_identity = worktree_identity(
+        worktree_context.administrative_directory(),
+        worktree_context.worktree_kind(),
+    )?;
+    let edit_authorization =
+        EditAuthorization::resolve_for_worktree(worktree_context, worktree_identity.id);
+    Ok(ResolvedJournalMutationActor::for_edit_authorization(
+        worktree_identity.id,
+        edit_authorization,
+    ))
+}
+
 /// Mint the worktree's identity on first use and read it on every later one.
 fn mint_or_read_worktree_id(administrative_directory: &Path) -> Result<WorktreeId, LedgerError> {
     let identity_path = administrative_directory.join(WORKTREE_ID_FILE_NAME);
@@ -1592,7 +1667,6 @@ mod tests {
     use super::ForcedIntegrationReason;
     use super::JournalEvent;
     use super::JournalOperation;
-    use super::LEDGER_DIRECTORY_NAME;
     use super::Ledger;
     use super::LedgerCommittedActionOutcome;
     use super::LedgerError;
@@ -1901,6 +1975,7 @@ mod tests {
                 crate::session::SessionIdentityLookup::Unavailable,
                 Some(environment_run.to_string().into()),
                 administrative_directory.path(),
+                administrative_worktree,
             ),
             EditAuthorization::Environment {
                 coordination_run_id: environment_run,
@@ -1920,6 +1995,7 @@ mod tests {
                 ),
                 Some(environment_run.to_string().into()),
                 administrative_directory.path(),
+                administrative_worktree,
             ),
             EditAuthorization::Session {
                 coordination_run_id: session_run,
@@ -1933,6 +2009,7 @@ mod tests {
                 crate::session::SessionIdentityLookup::Unavailable,
                 None,
                 administrative_directory.path(),
+                administrative_worktree,
             ),
             EditAuthorization::Marker {
                 coordination_run_id: marker_run,
@@ -1951,6 +2028,7 @@ mod tests {
                 crate::session::SessionIdentityLookup::Unavailable,
                 Some(environment_run.to_string().into()),
                 administrative_directory.path(),
+                administrative_worktree,
             ),
             EditAuthorization::Environment {
                 coordination_run_id: environment_run,
@@ -1962,14 +2040,15 @@ mod tests {
                 crate::session::SessionIdentityLookup::Unavailable,
                 None,
                 administrative_directory.path(),
+                administrative_worktree,
             ),
             EditAuthorization::Unidentified
         );
+        let repository = scratch_repository();
+        let worktree_context = WorktreeContext::discover(repository.path())
+            .expect("scratch worktree should be discovered");
         assert!(matches!(
-            EditAuthorization::resolve(
-                administrative_directory.path(),
-                &administrative_directory.path().join(LEDGER_DIRECTORY_NAME),
-            ),
+            EditAuthorization::resolve(&worktree_context),
             EditAuthorization::Session { .. }
                 | EditAuthorization::Environment { .. }
                 | EditAuthorization::Marker { .. }

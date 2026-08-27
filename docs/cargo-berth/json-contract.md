@@ -268,12 +268,17 @@ Journal, claim, and widen payloads use
 ## The journal record
 
 `.git/cargo-berth/journal.ndjson` contains one complete JSON object per line.
-Every v1 record has this envelope:
+Every record has this envelope:
 
-- `schema_version`: the integer `1`.
+- `schema_version`: the integer `2` on every new record. Records carrying the
+  integer `1` are historical and still accepted; `1` is the oldest version this
+  binary decodes.
 - `event_id`: the record's UUID-v7 string.
 - `actor`: `{ "repository": <uuid-v7>, "worktree": <uuid-v7>, "run":
   <uuid-v7> }`.
+- `identity_inputs`: the process inputs captured for actor diagnosis. Historical
+  records written before this field omit it. Every new mutation writes the
+  `recorded` form described below.
 - `at`: an RFC 3339 UTC string with millisecond precision.
 - `projection_generation`: the integer generation published by this append.
 - `op`: the operation discriminator. Operation fields are flattened into the
@@ -284,8 +289,38 @@ coordination-run ids are UUID-v7 strings. Pending-marker ids and bypassed-merge
 identities are opaque strings. Git object ids are full lowercase SHA-1 or
 SHA-256 hex strings. A `scope` is `{ "path": <repository-relative string>,
 "kind": "file" | "tree" }`; fields named `scopes`, `added_scopes`,
-`scope_revision`, and overlap `scopes` are arrays of that object. The v1
-operation union is:
+`scope_revision`, and overlap `scopes` are arrays of that object.
+
+`identity_inputs` has this form on every new journal mutation:
+
+```json
+{
+  "status": "recorded",
+  "invocation_directory": {
+    "status": "utf8",
+    "path": "/Users/example/rust/cargo-tile-favorites"
+  },
+  "cargo_berth_session_id": { "status": "utf8", "value": "session-4134" },
+  "cargo_berth_run": { "status": "unset" },
+  "git_dir": { "status": "utf8", "value": ".git/worktrees/favorites" },
+  "git_common_dir": { "status": "utf8", "value": ".git" }
+}
+```
+
+Each environment field is `unset`, `utf8` with its exact raw `value`,
+`too_long` with `observed_bytes`, or `non_utf8`. `invocation_directory` is
+`utf8` with `path`, `too_long` with `observed_bytes`, `non_utf8`, or
+`unavailable` with `diagnostic`. A `utf8` path or value is retained only when
+its JSON-encoded string contents are at most 256 bytes; `observed_bytes` is the
+raw UTF-8 byte length before JSON escaping. Actor resolution canonicalizes the
+invocation directory and follows its `.git` filesystem metadata. A relative
+`gitdir:` locator is relative to the worktree root; a relative `commondir`
+locator is relative to the per-worktree administrative directory. Supplied
+`GIT_DIR` and `GIT_COMMON_DIR` values do not override that actor resolution,
+including when they are relative; they are recorded as process inputs for
+diagnosis.
+
+The v1 operation union is:
 
 | `op` | Operation fields |
 | --- | --- |
@@ -395,7 +430,8 @@ These operation fields use the following tagged values:
   `known` with `at`, or `unavailable`. `recording.kind` is `direct` or
   `pending_marker` with `marker_id`.
 
-An unknown `schema_version` or `op`, an omitted required field, an empty field
-whose type is documented as non-empty, or an invalid tagged alternative makes
-the journal unreadable; an older binary never skips an operation it cannot
-replay.
+An unknown `schema_version` or `op`, an omitted field required for that record,
+an empty field whose type is documented as non-empty, or an invalid tagged
+alternative makes the journal unreadable. The only backward-compatible envelope
+omission is `identity_inputs` on records written before identity instrumentation;
+an older binary never skips an operation it cannot replay.

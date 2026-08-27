@@ -23,6 +23,7 @@ use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
+use crate::ledger::ResolvedJournalMutationActor;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
@@ -134,11 +135,10 @@ fn execute_sequence(
 ) -> Result<Enrollment<OrderingEdge>, SequenceError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let worktree_identity = ledger::worktree_identity(
-        worktree_context.administrative_directory(),
-        worktree_context.worktree_kind(),
-    )?;
-    let run_validation = SequenceRunValidation::resolve(&worktree_context);
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
+    let run_validation = SequenceRunValidation::resolve(journal_mutation_actor);
+    let journal_mutation_actor =
+        journal_mutation_actor.with_coordination_run_id(run_validation.coordination_run_id());
     let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
@@ -152,8 +152,8 @@ fn execute_sequence(
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let prepared_edge = RefCell::<PreparedEdgeState>::new(PreparedEdgeState::NotPrepared);
     let outcome = ledger.transact(
-        worktree_identity.id,
-        run_validation.coordination_run_id(),
+        journal_mutation_actor.worktree_id,
+        journal_mutation_actor.coordination_run_id,
         |state| {
             let reservations = match RetainedReservationSet::replay(state.events()) {
                 Ok(reservations) => reservations,
@@ -226,11 +226,8 @@ enum SequenceRunValidation {
 }
 
 impl SequenceRunValidation {
-    fn resolve(worktree_context: &WorktreeContext) -> Self {
-        match EditAuthorization::resolve(
-            worktree_context.administrative_directory(),
-            &worktree_context.ledger_directory(),
-        ) {
+    const fn resolve(journal_mutation_actor: ResolvedJournalMutationActor) -> Self {
+        match journal_mutation_actor.edit_authorization() {
             EditAuthorization::Session {
                 coordination_run_id,
                 reservation_id,
@@ -251,7 +248,9 @@ impl SequenceRunValidation {
                 coordination_run_id,
                 worktree_id,
             },
-            EditAuthorization::Unidentified => Self::Independent(CoordinationRunId::new()),
+            EditAuthorization::Unidentified => {
+                Self::Independent(journal_mutation_actor.coordination_run_id)
+            },
         }
     }
 
@@ -385,4 +384,42 @@ impl From<LedgerError> for SequenceError {
 
 impl From<LedgerTransactionError> for SequenceError {
     fn from(error: LedgerTransactionError) -> Self { Self::Transaction(error) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SequenceRunValidation;
+    use crate::ids::CoordinationRunId;
+    use crate::ids::ReservationId;
+    use crate::ids::WorktreeId;
+    use crate::ledger::EditAuthorization;
+    use crate::ledger::ResolvedJournalMutationActor;
+
+    #[test]
+    fn sequence_uses_the_session_authorization_resolved_with_the_actor() {
+        let coordination_run_id = CoordinationRunId::new();
+        let reservation_id = ReservationId::new();
+        let worktree_id = WorktreeId::new();
+        let journal_mutation_actor = ResolvedJournalMutationActor::for_edit_authorization(
+            worktree_id,
+            EditAuthorization::Session {
+                coordination_run_id,
+                reservation_id,
+                worktree_id,
+            },
+        );
+
+        let run_validation = SequenceRunValidation::resolve(journal_mutation_actor);
+
+        assert!(matches!(
+            run_validation,
+            SequenceRunValidation::ActiveSessionReservationRequired {
+                coordination_run_id: actual_run_id,
+                reservation_id: actual_reservation_id,
+                worktree_id: actual_worktree_id,
+            } if actual_run_id == coordination_run_id
+                && actual_reservation_id == reservation_id
+                && actual_worktree_id == worktree_id
+        ));
+    }
 }
