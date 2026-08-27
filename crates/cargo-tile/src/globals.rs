@@ -23,7 +23,6 @@
 //! [`Globals::defaults`], and handle it in [`dispatch`].
 
 use std::rc::Rc;
-use std::time::Duration;
 use std::time::Instant;
 
 use crossterm::event::KeyCode;
@@ -35,6 +34,8 @@ use crate::app::App;
 use crate::attract::AttractConfigurationRestoreOutcome;
 use crate::attract::AttractMode;
 use crate::constants::APP_GLOBALS_SECTION;
+use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
+use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::favorites;
 use crate::favorites::AttractSettings;
 use crate::favorites::FavoriteRows;
@@ -42,16 +43,11 @@ use crate::favorites::FavoritesFileState;
 use crate::favorites::FavoritesMutation;
 use crate::favorites::FavoritesRetryInstruction;
 use crate::favorites::ResolvedBinding;
-use crate::favorites_overlay::report_closed_overlay_adjustment;
+use crate::favorites_overlay;
 use crate::random;
 use crate::random::EmptyIndexDomain;
 use crate::random::NonZeroIndexBound;
 use crate::tiles::Direction;
-
-const FAVORITE_TOAST_MIN_INTERIOR_LINES: usize = 1;
-const FAVORITE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
-const UNDO_TOAST_MIN_INTERIOR_LINES: usize = 1;
-const UNDO_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -153,15 +149,15 @@ fn undo_attract_replacement(app: &mut App) {
     let toast_id = app.framework.toasts.push_timed(
         title,
         &body,
-        UNDO_TOAST_VISIBLE,
-        UNDO_TOAST_MIN_INTERIOR_LINES,
+        NOTICE_TOAST_VISIBLE,
+        NOTICE_TOAST_MIN_INTERIOR_LINES,
     );
     app.schedule_timed_toast(
         toast_id,
         pushed_at,
-        UNDO_TOAST_VISIBLE,
+        NOTICE_TOAST_VISIBLE,
         &body,
-        UNDO_TOAST_MIN_INTERIOR_LINES,
+        NOTICE_TOAST_MIN_INTERIOR_LINES,
     );
 }
 
@@ -181,7 +177,7 @@ fn show_random_favorite_with(
     {
         let outcome = app.attract.apply_settings(settings);
         app.attract.request_show();
-        report_closed_overlay_adjustment(app, outcome);
+        favorites_overlay::report_closed_overlay_adjustment(app, outcome);
         return;
     }
     let keymap = Rc::clone(&app.keymap);
@@ -228,15 +224,15 @@ fn save_favorite(app: &mut App) {
     let toast_id = app.framework.toasts.push_timed(
         title,
         body.as_str(),
-        FAVORITE_TOAST_VISIBLE,
-        FAVORITE_TOAST_MIN_INTERIOR_LINES,
+        NOTICE_TOAST_VISIBLE,
+        NOTICE_TOAST_MIN_INTERIOR_LINES,
     );
     app.schedule_timed_toast(
         toast_id,
         pushed_at,
-        FAVORITE_TOAST_VISIBLE,
+        NOTICE_TOAST_VISIBLE,
         &body,
-        FAVORITE_TOAST_MIN_INTERIOR_LINES,
+        NOTICE_TOAST_MIN_INTERIOR_LINES,
     );
 }
 
@@ -256,7 +252,7 @@ const fn mode_label(attract_mode: AttractMode) -> &'static str {
 mod tests {
     use std::collections::HashSet;
     use std::fs;
-    use std::io;
+    use std::io::ErrorKind;
     use std::path::Path;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -273,8 +269,8 @@ mod tests {
     use crate::app::Updates;
     use crate::attract::AttractGridPresentation;
     use crate::attract::AttractVisibilityInstruction;
+    use crate::favorites;
     use crate::favorites::FavoritesMutationError;
-    use crate::favorites::parse_rows_for_overlay_test;
     use crate::terminal::VisualDeadline;
     use crate::terminal::VisualFrameRequest;
 
@@ -300,14 +296,15 @@ mode = "future_mode"
     fn loaded_state(path: impl Into<PathBuf>, text: &str) -> FavoritesFileState {
         FavoritesFileState::Loaded {
             path: path.into(),
-            rows: parse_rows_for_overlay_test(text).expect("favorites fixture should parse"),
+            rows: favorites::parse_rows_for_overlay_test(text)
+                .expect("favorites fixture should parse"),
         }
     }
 
     fn load_test_path(path: &Path) -> FavoritesFileState {
         match fs::read_to_string(path) {
             Ok(text) => loaded_state(path, &text),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => FavoritesFileState::Missing {
+            Err(error) if error.kind() == ErrorKind::NotFound => FavoritesFileState::Missing {
                 path: path.to_path_buf(),
             },
             Err(error) => FavoritesFileState::Unreadable {
@@ -337,7 +334,8 @@ mode = "future_mode"
 
     fn moving_band_settings() -> AttractSettings {
         draw_recognized_settings(
-            &parse_rows_for_overlay_test(MOVING_BAND_ROW).expect("favorites fixture should parse"),
+            &favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+                .expect("favorites fixture should parse"),
             0,
         )
         .expect("fixture should contain a recognized favorite")
@@ -357,13 +355,13 @@ mode = "future_mode"
         app.framework.toasts.prune(at_expiry);
         assert_eq!(
             app.toast_visual_frame_request(at_expiry),
-            VisualFrameRequest::Requested
+            VisualFrameRequest::Needed
         );
         let after_exit = at_expiry + Duration::from_secs(30);
         app.framework.toasts.prune(after_exit);
         assert_eq!(
             app.toast_visual_frame_request(after_exit),
-            VisualFrameRequest::Requested
+            VisualFrameRequest::Needed
         );
         assert!(app.framework.toasts.active_views(after_exit).is_empty());
     }
@@ -594,7 +592,7 @@ mode = "future_mode"
         assert_eq!(
             app.attract.current_settings(),
             draw_recognized_settings(
-                &parse_rows_for_overlay_test(MOVING_BAND_ROW)
+                &favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
                     .expect("favorites fixture should parse"),
                 0,
             )
@@ -669,13 +667,13 @@ mode = "future_mode"
         app.framework.toasts.prune(at_expiry);
         assert_eq!(
             app.toast_visual_frame_request(at_expiry),
-            VisualFrameRequest::Requested
+            VisualFrameRequest::Needed
         );
         let after_exit = at_expiry + Duration::from_secs(30);
         app.framework.toasts.prune(after_exit);
         assert_eq!(
             app.toast_visual_frame_request(after_exit),
-            VisualFrameRequest::Requested
+            VisualFrameRequest::Needed
         );
         assert!(app.framework.toasts.active_views(after_exit).is_empty());
         assert_eq!(

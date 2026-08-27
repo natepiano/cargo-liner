@@ -33,9 +33,30 @@ every writer.
 
 `Attract::keyed_mode() -> Option<AttractMode>` has the same problem on the input
 path: `None` means the keystroke passes through to the app rather than "no mode
-exists", and only the caller's shape reveals which.
+exists", and only the call site tells the two apart.
 
 Replace both with named enums — an identification state carrying the
 not-observed / unsettled / settled distinction, and a key-routing type carrying
 pass-through versus a chosen mode. Neither is a behavior change, both are
 mechanical once the enums exist, and the compiler finds every site.
+
+## The favorites overlay file holds four independent type clusters
+
+`crates/cargo-tile/src/favorites_overlay.rs` is about 1,800 lines of non-test
+code, and the module-splitting rule asks for a split when two of its four tests
+hold. Three hold here. The file defines well over a dozen top-level types that
+never appear in each other's field lists; it mixes four domains — the displayed
+content (`FavoritesOverlayContent`, `FavoriteRowsView`, `FavoriteRowView`,
+`UnrecognizedFavoritesView`), keymap binding resolution
+(`FavoritesSurfaceBindings`, `ModeColumnBindings`, `ParameterColumnDescriptor`),
+the width and line cache (`CachedOverlayLine`, `CachedLinePlan`,
+`CachedSurfaceWidth`, `FavoriteSectionTableLayout`), and the overlay's own state
+machine (`FavoritesOverlay`, `FavoritesOverlayNotice`,
+`FavoriteRemovalCommitState`, the outcome enums); and each of those four would
+carry a focused test module instead of the single 1,250-line one the file has
+now.
+
+Split it into `favorites_overlay/mod.rs` with a submodule per cluster, named
+after each cluster's anchor type, and move each cluster's tests down with it.
+This is a structural change with no behavior in it, which is why it is a backlog
+item rather than a defect: the file works, it is just too large to navigate.

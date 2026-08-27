@@ -48,6 +48,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
+use AdjustedAttractParameterSets as Adjusted;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -182,13 +183,13 @@ pub(crate) struct AttractPresentation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AttractConfiguration {
     /// Animation selected for display and keyboard input.
-    pub(crate) mode:         AttractMode,
+    mode:                    AttractMode,
     /// Moving-band parameters.
-    pub(crate) band:         BandSettings,
+    band:                    BandSettings,
     /// Moving-text parameters.
-    pub(crate) text:         TextSettings,
+    text:                    TextSettings,
     /// Pixelate parameters.
-    pub(crate) pixels:       PixelSettings,
+    pixels:                  PixelSettings,
     /// Durable presentation state.
     pub(crate) presentation: AttractPresentation,
 }
@@ -264,8 +265,6 @@ impl AttractConfigurationRestoreOutcome {
         requested: AttractConfiguration,
         effective: AttractConfiguration,
     ) -> Self {
-        use AdjustedAttractParameterSets as Adjusted;
-
         let adjusted_parameter_sets = match (
             requested.band == effective.band,
             requested.text == effective.text,
@@ -293,7 +292,7 @@ impl AttractConfigurationRestoreOutcome {
 
 /// Terminal area most recently passed through the app's frame layout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LaidOutArea {
+enum FrameArea {
     /// No frame has reached [`Attract::advance`] yet.
     NeverLaidOut,
     /// The terminal area used by the most recent frame.
@@ -312,7 +311,7 @@ enum PendingTerminalResize {
 
 /// Area an animation's internal buffers were most recently sized to.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum LastSizedArea {
+enum AnimationArea {
     /// The animation has not received a terminal area yet.
     #[default]
     NeverSized,
@@ -375,15 +374,15 @@ pub(crate) enum SettingsApplicationOutcome {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct AnimationSizing {
     /// Area applied to the moving band.
-    band:   LastSizedArea,
+    band:   AnimationArea,
     /// Area applied to the drifting text.
-    text:   LastSizedArea,
+    text:   AnimationArea,
     /// Area applied to the pixelating desktop.
-    pixels: LastSizedArea,
+    pixels: AnimationArea,
 }
 
 impl AnimationSizing {
-    const fn area(self, attract_mode: AttractMode) -> LastSizedArea {
+    const fn area(self, attract_mode: AttractMode) -> AnimationArea {
         match attract_mode {
             AttractMode::MovingBand => self.band,
             AttractMode::MovingText => self.text,
@@ -392,7 +391,7 @@ impl AnimationSizing {
     }
 
     const fn record(&mut self, attract_mode: AttractMode, area: Rect) {
-        let sized_area = LastSizedArea::Sized(area);
+        let sized_area = AnimationArea::Sized(area);
         match attract_mode {
             AttractMode::MovingBand => self.band = sized_area,
             AttractMode::MovingText => self.text = sized_area,
@@ -410,7 +409,7 @@ pub(crate) struct Attract {
     mode:                   AttractMode,
     /// Terminal area used to size the current animation before its
     /// parameters are read or drawn.
-    laid_out_area:          LaidOutArea,
+    laid_out_area:          FrameArea,
     /// Resize input received after the most recent frame layout.
     pending_resize:         PendingTerminalResize,
     /// Last terminal area applied to each animation's internal buffers.
@@ -465,7 +464,7 @@ impl Attract {
         Self {
             monitor:                BackdropMonitor::new(),
             mode:                   AttractMode::default(),
-            laid_out_area:          LaidOutArea::NeverLaidOut,
+            laid_out_area:          FrameArea::NeverLaidOut,
             pending_resize:         PendingTerminalResize::NotReported,
             animation_sizing:       AnimationSizing::default(),
             replacement_undo:       ReplacementUndoState::Unavailable,
@@ -584,7 +583,7 @@ impl Attract {
 
     /// Settings the current attract mode is running with now.
     ///
-    /// Applies the latest [`LaidOutArea`] or [`PendingTerminalResize`]
+    /// Applies the latest [`FrameArea`] or [`PendingTerminalResize`]
     /// first so the returned values already match the next frame,
     /// including a mode switch with no frame in between.
     pub(crate) fn current_settings(&mut self) -> AttractSettings {
@@ -671,7 +670,7 @@ impl Attract {
     /// Size the selected animation to the latest frame or resize area
     /// without moving it.
     fn size_current_animation(&mut self) {
-        let LaidOutArea::LaidOut(area) = self.latest_sizing_area() else {
+        let FrameArea::LaidOut(area) = self.latest_sizing_area() else {
             return;
         };
         let attract_mode = self.mode;
@@ -680,7 +679,7 @@ impl Attract {
 
     /// Size every animation to the latest frame or resize area without moving it.
     fn size_all_animations(&mut self) {
-        let LaidOutArea::LaidOut(area) = self.latest_sizing_area() else {
+        let FrameArea::LaidOut(area) = self.latest_sizing_area() else {
             return;
         };
         for attract_mode in AttractMode::ALL {
@@ -688,19 +687,19 @@ impl Attract {
         }
     }
 
-    const fn latest_sizing_area(&self) -> LaidOutArea {
+    const fn latest_sizing_area(&self) -> FrameArea {
         match (self.pending_resize, self.laid_out_area) {
-            (PendingTerminalResize::Reported(area), _) | (_, LaidOutArea::LaidOut(area)) => {
-                LaidOutArea::LaidOut(area)
+            (PendingTerminalResize::Reported(area), _) | (_, FrameArea::LaidOut(area)) => {
+                FrameArea::LaidOut(area)
             },
-            (PendingTerminalResize::NotReported, LaidOutArea::NeverLaidOut) => {
-                LaidOutArea::NeverLaidOut
+            (PendingTerminalResize::NotReported, FrameArea::NeverLaidOut) => {
+                FrameArea::NeverLaidOut
             },
         }
     }
 
     fn size_animation(&mut self, attract_mode: AttractMode, area: Rect) {
-        if self.animation_sizing.area(attract_mode) == LastSizedArea::Sized(area) {
+        if self.animation_sizing.area(attract_mode) == AnimationArea::Sized(area) {
             return;
         }
         match attract_mode {
@@ -947,7 +946,7 @@ impl Attract {
         updates: Updates,
         now: Instant,
     ) -> Grid {
-        self.laid_out_area = LaidOutArea::LaidOut(area);
+        self.laid_out_area = FrameArea::LaidOut(area);
         self.pending_resize = PendingTerminalResize::NotReported;
         // A freeze just let go of leaves a gap between this draw and
         // the one before it that the strip does not owe: the display
@@ -1459,9 +1458,9 @@ mod tests {
         assert_eq!(
             attract.animation_sizing,
             AnimationSizing {
-                band:   LastSizedArea::Sized(AREA),
-                text:   LastSizedArea::Sized(AREA),
-                pixels: LastSizedArea::Sized(AREA),
+                band:   AnimationArea::Sized(AREA),
+                text:   AnimationArea::Sized(AREA),
+                pixels: AnimationArea::Sized(AREA),
             },
             "even modes never shown are sized before capture"
         );
@@ -1481,9 +1480,9 @@ mod tests {
         assert_eq!(
             attract.animation_sizing,
             AnimationSizing {
-                band:   LastSizedArea::Sized(SMALL_AREA),
-                text:   LastSizedArea::Sized(SMALL_AREA),
-                pixels: LastSizedArea::Sized(SMALL_AREA),
+                band:   AnimationArea::Sized(SMALL_AREA),
+                text:   AnimationArea::Sized(SMALL_AREA),
+                pixels: AnimationArea::Sized(SMALL_AREA),
             },
             "every animation is sized before restore"
         );
@@ -1586,7 +1585,7 @@ mod tests {
 
         attract.advance(resized, Work::Running, Updates::Frozen, Instant::now());
 
-        assert_eq!(attract.laid_out_area, LaidOutArea::LaidOut(resized));
+        assert_eq!(attract.laid_out_area, FrameArea::LaidOut(resized));
     }
 
     #[test]

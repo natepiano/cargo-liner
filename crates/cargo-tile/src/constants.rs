@@ -151,6 +151,25 @@ pub(crate) const KEYMAP_FILENAME: &str = "keymap.toml";
 /// [`tui_pane::ThemeRegistry::from_dir_with_builtins`].
 pub(crate) const THEMES_DIRNAME: &str = "themes";
 
+// favorites overlay
+/// Cells between two parameter columns in a favorite's row.
+pub(crate) const COLUMN_GAP: usize = 2;
+/// Rows the favorites table keeps even when the popup is squeezed.
+pub(crate) const CONTENT_MIN_HEIGHT: u16 = 1;
+/// TOML table name the favorites overlay's bindings are read from.
+pub(crate) const FAVORITES_SCOPE: &str = "favorites";
+/// Section heading the keymap overlay gives the favorites scope.
+pub(crate) const FAVORITES_SECTION: &str = "Favorites";
+/// How long a deleted favorite's row stays on screen, fading, before
+/// the table closes over it.
+pub(crate) const FAVORITE_REMOVAL_FADE: Duration = Duration::from_millis(400);
+/// Rows the favorites popup reserves along its bottom for the footer.
+pub(crate) const FOOTER_HEIGHT: u16 = 1;
+/// Widest the favorites popup grows, however wide the terminal is.
+pub(crate) const POPUP_MAX_WIDTH: u16 = 110;
+/// Columns left clear either side of the favorites popup.
+pub(crate) const POPUP_SIDE_MARGIN: u16 = 4;
+
 // settings overlay
 /// Values `appearance.mode` cycles through, in stepper order.
 pub(crate) const APPEARANCE_MODES: [&str; 3] = ["auto", "light", "dark"];
@@ -230,6 +249,11 @@ pub(crate) const KEYMAP_TOML_HEADER: &str = "\
 # Chord steps are space-separated, e.g. \"g g\".\n\n";
 /// Section heading the keymap overlay gives the navigation scope.
 pub(crate) const NAVIGATION_SECTION: &str = "Navigation";
+/// Interior lines a notice toast keeps even when its body is one line,
+/// so entrance and exit animate over a stable height.
+pub(crate) const NOTICE_TOAST_MIN_INTERIOR_LINES: usize = 1;
+/// How long a notice toast stays visible before it starts to exit.
+pub(crate) const NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 /// Rows the status line occupies along the bottom of the terminal.
 pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 
@@ -379,6 +403,14 @@ pub(crate) const TILE_ROWS_WIDTH_LABEL: &str = " @ ";
 pub(crate) const TILE_ROWS_RIGHT_INSET: u16 = 1;
 /// Rows the readout takes: it is one line along the foot of the cell.
 pub(crate) const TILE_ROWS_READOUT_HEIGHT: u16 = 1;
+
+// random
+/// Second multiplier in `SplitMix64`'s finalizer.
+pub(crate) const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xbf58_476d_1ce4_e5b9;
+/// Odd increment `SplitMix64` adds to its state before each draw.
+pub(crate) const SPLITMIX_INCREMENT: u64 = 0x9e37_79b9_7f4a_7c15;
+/// Third multiplier in `SplitMix64`'s finalizer.
+pub(crate) const SPLITMIX_SECOND_MULTIPLIER: u64 = 0x94d0_49bb_1331_11eb;
 
 // running-cargo table
 /// Process names that are the genuine cargo binary.

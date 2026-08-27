@@ -260,7 +260,7 @@ pub struct PixelSettings { pub direction: BandDirection, pub speed: u32, pub wav
 - `crates/tui_pane/src/backdrop/mod.rs`, `crates/tui_pane/src/lib.rs` — the three re-exports, cfg-attributed in `lib.rs`
 - `crates/tui_pane/CHANGELOG.md` — one `## [Unreleased]` → `### Added` line
 
-**Binds later work:** the three settings structs are the shape favorites are serialized from and deserialized into. Because `apply` clamps silently, any diagnostic for a hand-edited out-of-range value belongs to the load path, which reports whether a favorite applied exactly or with adjustments. `Xorshift` is not exported, so any consumer needing a seed owns its own seed source and bounded draw. An animation that has never been drawn is unsized, so save and randomize paths need a sizing boundary before the values they read or write match the next drawn frame.
+**Binds later work:** the three settings structs are what favorites serialize from and deserialize into. Because `apply` clamps silently, any diagnostic for a hand-edited out-of-range value belongs to the load path, which reports whether a favorite applied exactly or with adjustments. `Xorshift` is not exported, so any consumer needing a seed owns its own seed source and bounded draw. An animation that has never been drawn is unsized, so save and randomize paths need a sizing boundary before the values they read or write match the next drawn frame.
 
 **Gotchas:**
 - `backdrop` is not a default feature of `tui_pane`, and `verify.sh` emits no `--features` flag, so a scoped `tui_pane` gate compiles and tests the crate without any of this code in it. The real gate is `cargo nextest run -p tui_pane --features backdrop --no-fail-fast` and `cargo clippy -p tui_pane --features backdrop --all-targets`, unsandboxed.
@@ -298,7 +298,7 @@ variants — `LocationUnavailable`, `Missing`, `Loaded`, `Unparseable`, `Unreada
 Mutual exclusion is a kernel advisory lock: `std::fs::File::{try_lock, unlock}`,
 retried a bounded number of times before returning `LockUnavailable`, with a
 `FavoritesLock` guard unlocking on drop. Each row carries a UUIDv7 `FavoriteId`
-minted at save and a `saved` timestamp written with `SecondsFormat::Millis`.
+assigned at save and a `saved` timestamp written with `SecondsFormat::Millis`.
 `push` is idempotent on `(mode, settings)`: an identical row has its timestamp
 updated rather than being duplicated.
 
@@ -620,7 +620,7 @@ scheduled-toast site. The adjustment is clamped in the running attract state
 only and never rewrites the saved favorites file.
 
 `globals.rs::show_random_favorite_with(app, load, seed)` is the deterministic
-test seam; `show_random_favorite` is the zero-argument production entry.
+entry point tests call; `show_random_favorite` is the zero-argument production entry.
 `favorites.rs::recognized()` is now production code — its dead-code exemption
 is gone.
 
@@ -700,7 +700,7 @@ choices.
 
 **Gotchas:** a `debug_assert` around a call compiles the call out of release
 builds — the outcome must be bound first and the binding asserted. `AttractMode::ALL`
-order is load-bearing: `draw`'s index-to-mode `match` mirrors it positionally.
+order is fixed: `draw`'s index-to-mode `match` mirrors it positionally.
 `globals.rs`'s module doc enumerates the non-grid globals and states no total.
 
 **Ruled out:** a second random generator or bounded-selection helper beside

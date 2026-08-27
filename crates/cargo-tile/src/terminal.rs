@@ -204,9 +204,9 @@ enum ToastTimelineUpdate {
 pub(crate) enum ToastVisualSchedule {
     /// No timed toast has an outstanding visual transition.
     #[default]
-    NoToastScheduled,
+    Idle,
     /// Timelines for the timed toasts still entering, visible, or exiting.
-    Scheduled(Vec<ToastVisualTimeline>),
+    Timelines(Vec<ToastVisualTimeline>),
 }
 
 impl ToastVisualSchedule {
@@ -233,8 +233,8 @@ impl ToastVisualSchedule {
 
     fn record(&mut self, timeline: ToastVisualTimeline) {
         match self {
-            Self::NoToastScheduled => *self = Self::Scheduled(vec![timeline]),
-            Self::Scheduled(timelines) => {
+            Self::Idle => *self = Self::Timelines(vec![timeline]),
+            Self::Timelines(timelines) => {
                 timelines.retain(|existing| existing.toast_id != timeline.toast_id);
                 timelines.push(timeline);
             },
@@ -243,8 +243,8 @@ impl ToastVisualSchedule {
 
     pub(crate) fn next_deadline(&self, now: Instant, frame_period: Duration) -> VisualDeadline {
         match self {
-            Self::NoToastScheduled => VisualDeadline::NoVisualChangeScheduled,
-            Self::Scheduled(timelines) => timelines.iter().fold(
+            Self::Idle => VisualDeadline::NoVisualChangeScheduled,
+            Self::Timelines(timelines) => timelines.iter().fold(
                 VisualDeadline::NoVisualChangeScheduled,
                 |deadline, timeline| deadline.earlier(timeline.next_deadline(now, frame_period)),
             ),
@@ -252,23 +252,23 @@ impl ToastVisualSchedule {
     }
 
     pub(crate) fn request_frame(&mut self, now: Instant) -> VisualFrameRequest {
-        let Self::Scheduled(timelines) = self else {
-            return VisualFrameRequest::None;
+        let Self::Timelines(timelines) = self else {
+            return VisualFrameRequest::NotNeeded;
         };
-        let mut request = VisualFrameRequest::None;
+        let mut request = VisualFrameRequest::NotNeeded;
         timelines.retain_mut(|timeline| match timeline.advance(now) {
             ToastTimelineUpdate::Quiet => true,
             ToastTimelineUpdate::Repaint => {
-                request = VisualFrameRequest::Requested;
+                request = VisualFrameRequest::Needed;
                 true
             },
             ToastTimelineUpdate::Finished => {
-                request = VisualFrameRequest::Requested;
+                request = VisualFrameRequest::Needed;
                 false
             },
         });
         if timelines.is_empty() {
-            *self = Self::NoToastScheduled;
+            *self = Self::Idle;
         }
         request
     }
@@ -319,9 +319,9 @@ impl VisualDeadline {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VisualFrameRequest {
     /// No frame is needed.
-    None,
+    NotNeeded,
     /// A frame is needed now.
-    Requested,
+    Needed,
 }
 
 /// Load configuration, install the theme, build the keymap, and run the
@@ -487,7 +487,7 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
         }
         let now = Instant::now();
         app.framework.toasts.prune(now);
-        if app.toast_visual_frame_request(now) == VisualFrameRequest::Requested {
+        if app.toast_visual_frame_request(now) == VisualFrameRequest::Needed {
             dirty = true;
         }
         match app.favorites_overlay.advance(now) {
@@ -968,7 +968,7 @@ mod tests {
         let exit_ends_at = expires_at + exit;
         let exit_before_end = expires_at + exit.saturating_sub(FRAME);
         let static_midpoint = entrance_ends_at + FRAME;
-        let mut schedule = ToastVisualSchedule::NoToastScheduled;
+        let mut schedule = ToastVisualSchedule::Idle;
         schedule.record(ToastVisualTimeline::new(
             toast_id,
             pushed_at,
@@ -983,7 +983,7 @@ mod tests {
         assert!(entrance > renderer_entrance);
         assert_eq!(
             schedule.request_frame(pushed_at),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
         assert_eq!(
             schedule.next_deadline(pushed_at, FRAME),
@@ -991,15 +991,15 @@ mod tests {
         );
         assert_eq!(
             schedule.request_frame(renderer_entrance_ends_at),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
         assert_eq!(
             schedule.request_frame(entrance_before_end),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
         assert_eq!(
             schedule.request_frame(entrance_ends_at),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
         assert_eq!(
             schedule.next_deadline(entrance_ends_at, FRAME),
@@ -1007,7 +1007,7 @@ mod tests {
         );
         assert_eq!(
             schedule.request_frame(static_midpoint),
-            VisualFrameRequest::None,
+            VisualFrameRequest::NotNeeded,
         );
         assert_eq!(
             schedule.next_deadline(static_midpoint, FRAME),
@@ -1015,7 +1015,7 @@ mod tests {
         );
         assert_eq!(
             schedule.request_frame(expires_at),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
         assert_eq!(
             schedule.next_deadline(expires_at, FRAME),
@@ -1023,13 +1023,13 @@ mod tests {
         );
         assert_eq!(
             schedule.request_frame(exit_before_end),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
         assert_eq!(
             schedule.request_frame(exit_ends_at),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
-        assert_eq!(schedule, ToastVisualSchedule::NoToastScheduled);
+        assert_eq!(schedule, ToastVisualSchedule::Idle);
         assert_eq!(
             schedule.next_deadline(exit_ends_at, FRAME),
             VisualDeadline::NoVisualChangeScheduled,
@@ -1063,7 +1063,7 @@ mod tests {
         let entrance_ends_at = pushed_at + entrance;
         let quiet_at = entrance_ends_at + FRAME;
         let expires_at = pushed_at + visible;
-        let mut schedule = ToastVisualSchedule::NoToastScheduled;
+        let mut schedule = ToastVisualSchedule::Idle;
         schedule.record(ToastVisualTimeline::new(
             toast_id,
             pushed_at,
@@ -1079,9 +1079,12 @@ mod tests {
         assert!(quiet_at < expires_at);
         assert_eq!(
             schedule.request_frame(entrance_ends_at),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
-        assert_eq!(schedule.request_frame(quiet_at), VisualFrameRequest::None);
+        assert_eq!(
+            schedule.request_frame(quiet_at),
+            VisualFrameRequest::NotNeeded
+        );
         assert_eq!(
             schedule.next_deadline(quiet_at, FRAME),
             VisualDeadline::At(expires_at),
@@ -1119,25 +1122,25 @@ mod tests {
 
         assert_eq!(timeline.exit_duration, scheduled_exit);
         assert!(timeline.exit_duration >= renderer_exit);
-        let mut schedule = ToastVisualSchedule::NoToastScheduled;
+        let mut schedule = ToastVisualSchedule::Idle;
         schedule.record(timeline);
         assert_eq!(
             schedule.request_frame(expires_at),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
         assert_eq!(
             schedule.request_frame(last_renderer_line_at),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
         assert_eq!(
             schedule.request_frame(renderer_finished_at),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
-        assert!(matches!(schedule, ToastVisualSchedule::Scheduled(_)));
+        assert!(matches!(schedule, ToastVisualSchedule::Timelines(_)));
         assert_eq!(
             schedule.request_frame(schedule_finished_at),
-            VisualFrameRequest::Requested,
+            VisualFrameRequest::Needed,
         );
-        assert_eq!(schedule, ToastVisualSchedule::NoToastScheduled);
+        assert_eq!(schedule, ToastVisualSchedule::Idle);
     }
 }

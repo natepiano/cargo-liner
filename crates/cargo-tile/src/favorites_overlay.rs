@@ -28,6 +28,8 @@ use tui_pane::Keymap;
 use tui_pane::Mode;
 use tui_pane::Pane;
 use tui_pane::PaneFocusState;
+use tui_pane::PixelFill;
+use tui_pane::PixelResolve;
 use tui_pane::PopupFrame;
 use tui_pane::Shortcuts;
 use tui_pane::TabStop;
@@ -50,9 +52,22 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::App;
 use crate::app::AppOverlay;
 use crate::app::AppPaneId;
+use crate::attract;
 use crate::attract::AttractMode;
 use crate::attract::SettingsApplicationOutcome;
-use crate::attract::ground;
+use crate::constants::COLUMN_GAP;
+use crate::constants::CONTENT_MIN_HEIGHT;
+use crate::constants::CURSOR_WIDTH;
+use crate::constants::FAVORITE_REMOVAL_FADE;
+use crate::constants::FAVORITES_SCOPE;
+use crate::constants::FAVORITES_SECTION;
+use crate::constants::FOOTER_HEIGHT;
+use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
+use crate::constants::NOTICE_TOAST_VISIBLE;
+use crate::constants::POPUP_CHROME_HEIGHT;
+use crate::constants::POPUP_CHROME_WIDTH;
+use crate::constants::POPUP_MAX_WIDTH;
+use crate::constants::POPUP_SIDE_MARGIN;
 use crate::favorites;
 use crate::favorites::AttractSettings;
 use crate::favorites::Favorite;
@@ -67,20 +82,6 @@ use crate::favorites::ResolvedBinding;
 use crate::favorites::UnrecognizedFavoriteValue;
 use crate::globals::AppGlobalAction;
 use crate::terminal::VisualDeadline;
-
-const FAVORITES_SCOPE_NAME: &str = "favorites";
-const FAVORITES_SECTION_NAME: &str = "Favorites";
-const POPUP_MAX_WIDTH: u16 = 110;
-const POPUP_SIDE_MARGIN: u16 = 4;
-const POPUP_BORDER_WIDTH: u16 = 2;
-const POPUP_BORDER_HEIGHT: u16 = 2;
-const CONTENT_MIN_HEIGHT: u16 = 1;
-const FOOTER_HEIGHT: u16 = 1;
-const COLUMN_GAP: usize = 2;
-const MARKER_WIDTH: usize = 2;
-const FAVORITE_REMOVAL_FADE: Duration = Duration::from_millis(400);
-const FAVORITE_NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
-const FAVORITE_NOTICE_TOAST_MIN_INTERIOR_LINES: usize = 1;
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -109,8 +110,8 @@ impl Pane<App> for FavoritesOverlayPane {
 impl Shortcuts<App> for FavoritesOverlayPane {
     type Actions = FavoritesOverlayAction;
 
-    const SCOPE_NAME: &'static str = FAVORITES_SCOPE_NAME;
-    const SECTION_NAME: &'static str = FAVORITES_SECTION_NAME;
+    const SCOPE_NAME: &'static str = FAVORITES_SCOPE;
+    const SECTION_NAME: &'static str = FAVORITES_SECTION;
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
@@ -169,13 +170,13 @@ pub(crate) enum FavoritesOverlayContent {
     },
 }
 
-impl FavoritesOverlayContent {
-    fn from_file_state(state: FavoritesFileState) -> Self {
+impl From<FavoritesFileState> for FavoritesOverlayContent {
+    fn from(state: FavoritesFileState) -> Self {
         match state {
             FavoritesFileState::LocationUnavailable => Self::LocationUnavailable,
             FavoritesFileState::Missing { .. } => Self::NoneSaved,
             FavoritesFileState::Loaded { rows, .. } => {
-                let view = FavoriteRowsView::from_rows(&rows);
+                let view = FavoriteRowsView::from(&rows);
                 if view.saved_count() > 0 {
                     Self::Rows(view)
                 } else if view.unrecognized.is_empty() {
@@ -190,7 +191,9 @@ impl FavoritesOverlayContent {
             FavoritesFileState::Unreadable { path, error } => Self::Unreadable { path, error },
         }
     }
+}
 
+impl FavoritesOverlayContent {
     fn saved_count(&self) -> usize {
         match self {
             Self::Rows(rows) => rows.saved_count(),
@@ -210,8 +213,8 @@ pub(crate) struct FavoriteRowsView {
     unrecognized: Vec<UnrecognizedFavoriteView>,
 }
 
-impl FavoriteRowsView {
-    fn from_rows(rows: &FavoriteRows) -> Self {
+impl From<&FavoriteRows> for FavoriteRowsView {
+    fn from(rows: &FavoriteRows) -> Self {
         let mut sections: Vec<FavoriteModeSection> = Vec::new();
         let mut unrecognized = Vec::new();
         for recognition in rows.iter() {
@@ -220,11 +223,11 @@ impl FavoriteRowsView {
                     let mode = favorite.settings.mode();
                     if let Some(section) = sections.iter_mut().find(|section| section.mode == mode)
                     {
-                        section.rows.push(FavoriteRowView::from_favorite(favorite));
+                        section.rows.push(FavoriteRowView::from(favorite));
                     } else {
                         sections.push(FavoriteModeSection {
                             mode,
-                            rows: vec![FavoriteRowView::from_favorite(favorite)],
+                            rows: vec![FavoriteRowView::from(favorite)],
                         });
                     }
                 },
@@ -238,7 +241,9 @@ impl FavoriteRowsView {
             unrecognized,
         }
     }
+}
 
+impl FavoriteRowsView {
     fn saved_count(&self) -> usize { self.sections.iter().map(|section| section.rows.len()).sum() }
 
     fn row(&self, favorite_id: FavoriteId) -> FavoriteRowLookup<'_> {
@@ -301,8 +306,8 @@ struct FavoriteRowView {
     lifecycle: FavoriteRowLifecycle,
 }
 
-impl FavoriteRowView {
-    fn from_favorite(favorite: &Favorite) -> Self {
+impl From<&Favorite> for FavoriteRowView {
+    fn from(favorite: &Favorite) -> Self {
         Self {
             id:        favorite.id,
             settings:  favorite.settings,
@@ -720,7 +725,7 @@ impl FavoritesOverlay {
 
     /// Open the modal at the content position represented by one complete file state.
     pub(crate) fn open_file_state(&mut self, state: FavoritesFileState, keymap: &Keymap<App>) {
-        self.state = AppOverlay::Favorites(FavoritesOverlayContent::from_file_state(state));
+        self.state = AppOverlay::Favorites(FavoritesOverlayContent::from(state));
         self.surface_bindings = FavoritesSurfaceBindings::resolve(keymap);
         self.horizontal_column_page = 0;
         self.notice = FavoritesOverlayNotice::NoNotice;
@@ -754,7 +759,7 @@ impl FavoritesOverlay {
                 }
             },
             FavoritesOverlayAction::Load => {
-                if let SelectedFavorite::Selected { settings, .. } = self.selected_favorite() {
+                if let FavoriteSelection::Row { settings, .. } = self.favorite_selection() {
                     self.notice = FavoritesOverlayNotice::NoNotice;
                     return FavoritesOverlayActionOutcome::Load(settings);
                 }
@@ -768,7 +773,7 @@ impl FavoritesOverlay {
     }
 
     fn start_removal(&mut self, now: Instant) {
-        let SelectedFavorite::Selected { id, .. } = self.selected_favorite() else {
+        let FavoriteSelection::Row { id, .. } = self.favorite_selection() else {
             return;
         };
         self.notice = FavoritesOverlayNotice::NoNotice;
@@ -931,7 +936,7 @@ impl FavoritesOverlay {
         }
         let area = frame.area();
         let width = popup_width(area);
-        let surface_width = width.saturating_sub(POPUP_BORDER_WIDTH);
+        let surface_width = width.saturating_sub(POPUP_CHROME_WIDTH);
         if self.cached_surface_width != CachedSurfaceWidth::Rendered(surface_width) {
             self.cached_surface_width = CachedSurfaceWidth::Rendered(surface_width);
             self.rebuild_line_plan(surface_width);
@@ -948,7 +953,7 @@ impl FavoritesOverlay {
             .unwrap_or(u16::MAX)
             .saturating_add(FOOTER_HEIGHT)
             .saturating_add(notice_height)
-            .saturating_add(POPUP_BORDER_HEIGHT);
+            .saturating_add(POPUP_CHROME_HEIGHT);
         let height = desired_height.min(popup_height_cap(area)).min(area.height);
         let saved_count = match &self.state {
             AppOverlay::Closed => 0,
@@ -1003,7 +1008,7 @@ impl FavoritesOverlay {
         let scroll_offset = self.viewport.scroll_offset();
 
         let end = scroll_offset.saturating_add(visible_rows).min(line_count);
-        let selected = self.selected_favorite();
+        let selected = self.favorite_selection();
         let now = Instant::now();
         let state = &self.state;
         let visible = self.line_plan.lines[scroll_offset..end]
@@ -1045,22 +1050,22 @@ impl FavoritesOverlay {
         active_line
     }
 
-    fn selected_favorite(&self) -> SelectedFavorite {
+    fn favorite_selection(&self) -> FavoriteSelection {
         let Some(&line_index) = self
             .line_plan
             .navigation_line_index
             .get(self.viewport.pos())
         else {
-            return SelectedFavorite::NoFavoriteSelected;
+            return FavoriteSelection::Nothing;
         };
         match self.line_plan.lines.get(line_index) {
             Some(CachedOverlayLine::Favorite { id, .. }) => match &self.state {
                 AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) => match rows.row(*id) {
-                    FavoriteRowLookup::Found(row) => SelectedFavorite::Selected {
+                    FavoriteRowLookup::Found(row) => FavoriteSelection::Row {
                         id:       *id,
                         settings: row.settings,
                     },
-                    FavoriteRowLookup::Missing => SelectedFavorite::NoFavoriteSelected,
+                    FavoriteRowLookup::Missing => FavoriteSelection::Nothing,
                 },
                 AppOverlay::Closed
                 | AppOverlay::Favorites(
@@ -1069,9 +1074,9 @@ impl FavoritesOverlay {
                     | FavoritesOverlayContent::LocationUnavailable
                     | FavoritesOverlayContent::Unparseable { .. }
                     | FavoritesOverlayContent::Unreadable { .. },
-                ) => SelectedFavorite::NoFavoriteSelected,
+                ) => FavoriteSelection::Nothing,
             },
-            Some(CachedOverlayLine::Static(_)) | None => SelectedFavorite::NoFavoriteSelected,
+            Some(CachedOverlayLine::Static(_)) | None => FavoriteSelection::Nothing,
         }
     }
 
@@ -1168,16 +1173,16 @@ fn push_scheduled_toast(app: &mut App, title: &str, body: &str, style: ToastStyl
     let toast_id = app.framework.toasts.push_timed_styled(
         title,
         body,
-        FAVORITE_NOTICE_TOAST_VISIBLE,
-        FAVORITE_NOTICE_TOAST_MIN_INTERIOR_LINES,
+        NOTICE_TOAST_VISIBLE,
+        NOTICE_TOAST_MIN_INTERIOR_LINES,
         style,
     );
     app.schedule_timed_toast(
         toast_id,
         pushed_at,
-        FAVORITE_NOTICE_TOAST_VISIBLE,
+        NOTICE_TOAST_VISIBLE,
         body,
-        FAVORITE_NOTICE_TOAST_MIN_INTERIOR_LINES,
+        NOTICE_TOAST_MIN_INTERIOR_LINES,
     );
 }
 
@@ -1307,9 +1312,9 @@ fn normalize_content_after_removal(content: &mut FavoritesOverlayContent) {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SelectedFavorite {
-    NoFavoriteSelected,
-    Selected {
+enum FavoriteSelection {
+    Nothing,
+    Row {
         id:       FavoriteId,
         settings: AttractSettings,
     },
@@ -1317,14 +1322,15 @@ enum SelectedFavorite {
 
 fn rendered_line(
     line: &CachedOverlayLine,
-    selected: SelectedFavorite,
+    selected: FavoriteSelection,
     lifecycle: FavoriteRowLifecycle,
     now: Instant,
 ) -> Line<'static> {
     match line {
         CachedOverlayLine::Static(line) => line.clone(),
         CachedOverlayLine::Favorite { id, tail } => {
-            let is_selected = matches!(selected, SelectedFavorite::Selected { id: selected, .. } if selected == *id);
+            let is_selected =
+                matches!(selected, FavoriteSelection::Row { id: selected, .. } if selected == *id);
             let marker = if is_selected { "▸ " } else { "  " };
             let line = Line::from(vec![Span::raw(marker), Span::raw(tail.clone())]);
             if is_selected {
@@ -1332,7 +1338,7 @@ fn rendered_line(
             } else {
                 line.style(Style::default().fg(blend_color(
                     text_default(),
-                    ground(),
+                    attract::ground(),
                     removal_alpha(lifecycle, now),
                 )))
             }
@@ -1600,7 +1606,7 @@ fn visible_parameter_columns(
         return 0..0;
     }
     let start = horizontal_page.min(column_count - 1);
-    let pinned = MARKER_WIDTH.saturating_add(usize::from(saved_width));
+    let pinned = CURSOR_WIDTH.saturating_add(usize::from(saved_width));
     let available = usize::from(width).saturating_sub(pinned);
     let mut used: usize = 0;
     let mut end = start;
@@ -1659,14 +1665,14 @@ fn popup_width(area: Rect) -> u16 {
     area.width
         .saturating_sub(POPUP_SIDE_MARGIN)
         .min(POPUP_MAX_WIDTH)
-        .max(area.width.min(POPUP_BORDER_WIDTH))
+        .max(area.width.min(POPUP_CHROME_WIDTH))
 }
 
 fn popup_height_cap(area: Rect) -> u16 {
     let eighty_percent = u32::from(area.height).saturating_mul(80) / 100;
     u16::try_from(eighty_percent)
         .unwrap_or(u16::MAX)
-        .max((POPUP_BORDER_HEIGHT + FOOTER_HEIGHT).min(area.height))
+        .max((POPUP_CHROME_HEIGHT + FOOTER_HEIGHT).min(area.height))
 }
 
 fn wrapped_notice_height(message: &str, surface_width: u16) -> u16 {
@@ -1786,18 +1792,18 @@ const fn text_fill_name(fill: TextFill) -> &'static str {
     }
 }
 
-const fn pixel_resolve_name(resolve: tui_pane::PixelResolve) -> &'static str {
+const fn pixel_resolve_name(resolve: PixelResolve) -> &'static str {
     match resolve {
-        tui_pane::PixelResolve::Blend => "blend",
-        tui_pane::PixelResolve::Step => "step",
-        tui_pane::PixelResolve::Scatter => "scatter",
+        PixelResolve::Blend => "blend",
+        PixelResolve::Step => "step",
+        PixelResolve::Scatter => "scatter",
     }
 }
 
-const fn pixel_fill_name(fill: tui_pane::PixelFill) -> &'static str {
+const fn pixel_fill_name(fill: PixelFill) -> &'static str {
     match fill {
-        tui_pane::PixelFill::Solid => "solid",
-        tui_pane::PixelFill::Shades => "shades",
+        PixelFill::Solid => "solid",
+        PixelFill::Shades => "shades",
     }
 }
 
@@ -1813,19 +1819,22 @@ mod tests {
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use tempfile::TempDir;
     use tui_pane::FocusedPane;
     use tui_pane::Framework;
     use tui_pane::KeyBind;
     use tui_pane::KeySequence;
+    use tui_pane::PixelFill;
+    use tui_pane::PixelResolve;
 
     use super::*;
     use crate::app::Updates;
     use crate::attract::AttractGridPresentation;
     use crate::attract::AttractVisibilityInstruction;
     use crate::attract::Work;
-    use crate::favorites::parse_rows_for_overlay_test;
-    use crate::keymap::build_keymap;
+    use crate::favorites;
+    use crate::keymap;
 
     const RECOGNIZED_ROWS: &str = r#"
 [[favorite]]
@@ -1897,7 +1906,7 @@ fraying = "leading"
             fs::write(&path, toml).expect("test keymap should be written");
         }
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
-        build_keymap(&mut framework, (!toml.is_empty()).then_some(path))
+        keymap::build_keymap(&mut framework, (!toml.is_empty()).then_some(path))
             .expect("test keymap should resolve")
     }
 
@@ -1908,7 +1917,8 @@ fraying = "leading"
     fn loaded_state_at(path: impl Into<PathBuf>, text: &str) -> FavoritesFileState {
         FavoritesFileState::Loaded {
             path: path.into(),
-            rows: parse_rows_for_overlay_test(text).expect("favorites fixture should parse"),
+            rows: favorites::parse_rows_for_overlay_test(text)
+                .expect("favorites fixture should parse"),
         }
     }
 
@@ -1934,9 +1944,9 @@ fraying = "leading"
     }
 
     fn moving_band_table_layout(keymap: &Keymap<App>) -> FavoriteSectionTableLayout {
-        let rows =
-            parse_rows_for_overlay_test(MOVING_BAND_ROW).expect("moving-band fixture should parse");
-        let view = FavoriteRowsView::from_rows(&rows);
+        let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+            .expect("moving-band fixture should parse");
+        let view = FavoriteRowsView::from(&rows);
         let bindings = FavoritesSurfaceBindings::resolve(keymap);
         FavoriteSectionTableLayout::measure(&view.sections[0], &bindings)
     }
@@ -1954,7 +1964,7 @@ fraying = "leading"
     }
 
     fn selected(overlay: &FavoritesOverlay) -> (FavoriteId, AttractSettings) {
-        let SelectedFavorite::Selected { id, settings } = overlay.selected_favorite() else {
+        let FavoriteSelection::Row { id, settings } = overlay.favorite_selection() else {
             panic!("fixture should select a recognized favorite");
         };
         (id, settings)
@@ -1970,7 +1980,7 @@ fraying = "leading"
         row.lifecycle
     }
 
-    fn rendered_buffer_lines(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+    fn rendered_buffer_lines(buffer: &Buffer) -> Vec<String> {
         (buffer.area.y..buffer.area.bottom())
             .map(|y| {
                 (buffer.area.x..buffer.area.right()).fold(String::new(), |mut line, x| {
@@ -2148,10 +2158,7 @@ sweep_right = "r"
         assert_eq!(active_line, overlay.line_plan.lines.len() - 1);
         assert_eq!(overlay.viewport.scroll_offset(), active_line);
         assert!(rendered[active_line].contains("resolve = \"mist\" is not recognized"));
-        assert_eq!(
-            overlay.selected_favorite(),
-            SelectedFavorite::NoFavoriteSelected
-        );
+        assert_eq!(overlay.favorite_selection(), FavoriteSelection::Nothing);
     }
 
     #[test]
@@ -2179,10 +2186,7 @@ sweep_right = "r"
             overlay.line_plan.lines.len() - 2
         );
         assert!(rendered[active_line].contains("resolve = \"mist\" is not recognized"));
-        assert_eq!(
-            overlay.selected_favorite(),
-            SelectedFavorite::NoFavoriteSelected
-        );
+        assert_eq!(overlay.favorite_selection(), FavoriteSelection::Nothing);
     }
 
     #[test]
@@ -2213,7 +2217,7 @@ sweep_right = "r"
     fn timestamps_keep_seconds_and_add_the_year_only_when_needed() {
         let current_year = Local::now().year();
         let old_year = current_year - 1;
-        let rows = parse_rows_for_overlay_test(&format!(
+        let rows = favorites::parse_rows_for_overlay_test(&format!(
             r#"
 [[favorite]]
 id = "01a03f64-9c14-7b41-8a02-1de4c7c9b336"
@@ -2237,7 +2241,7 @@ fraying = "both"
 "#
         ))
         .expect("timestamp fixture should parse");
-        let view = FavoriteRowsView::from_rows(&rows);
+        let view = FavoriteRowsView::from(&rows);
         let saved = view.sections[0]
             .rows
             .iter()
@@ -2305,7 +2309,7 @@ fraying = "both"
         let keymap = keymap_from("");
         let table_layout = moving_band_table_layout(&keymap);
         let width = u16::try_from(
-            MARKER_WIDTH
+            CURSOR_WIDTH
                 + usize::from(table_layout.saved_width)
                 + COLUMN_GAP
                 + usize::from(table_layout.parameter_widths.get(0)),
@@ -2335,7 +2339,7 @@ fraying = "both"
         let keymap = keymap_from("");
         let table_layout = moving_band_table_layout(&keymap);
         let width = u16::try_from(
-            MARKER_WIDTH
+            CURSOR_WIDTH
                 + usize::from(table_layout.saved_width)
                 + COLUMN_GAP
                 + usize::from(table_layout.parameter_widths.get(0)),
@@ -2387,7 +2391,7 @@ travel_left = "界"
         let keymap = keymap_from("");
         let table_layout = moving_band_table_layout(&keymap);
         let exact_width = usize::from(table_layout.saved_width)
-            + MARKER_WIDTH
+            + CURSOR_WIDTH
             + COLUMN_GAP
             + usize::from(table_layout.parameter_widths.get(0));
         let width = u16::try_from(exact_width - 1).expect("narrow table width should fit u16");
@@ -2398,9 +2402,9 @@ travel_left = "界"
         let labels = FavoritesSurfaceBindings::resolve(&keymap)
             .column_labels(AttractMode::MovingBand)
             .to_vec();
-        let rows =
-            parse_rows_for_overlay_test(MOVING_BAND_ROW).expect("moving-band fixture should parse");
-        let view = FavoriteRowsView::from_rows(&rows);
+        let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+            .expect("moving-band fixture should parse");
+        let view = FavoriteRowsView::from(&rows);
         let row = &view.sections[0].rows[0];
         let header = format_table_line(
             "Saved",
@@ -2482,10 +2486,7 @@ travel_left = "界"
         while overlay.viewport.pos() + 1 < overlay.viewport.len() {
             overlay.handle_action(FavoritesOverlayAction::SelectNext);
         }
-        assert_eq!(
-            overlay.selected_favorite(),
-            SelectedFavorite::NoFavoriteSelected
-        );
+        assert_eq!(overlay.favorite_selection(), FavoriteSelection::Nothing);
         let refusal = FavoritesOverlayNotice::DeletionRefused {
             message: "keep this refusal visible".to_string(),
         };
@@ -2515,10 +2516,7 @@ travel_left = "界"
         while overlay.viewport.pos() + 1 < overlay.viewport.len() {
             overlay.handle_action(FavoritesOverlayAction::SelectNext);
         }
-        assert_eq!(
-            overlay.selected_favorite(),
-            SelectedFavorite::NoFavoriteSelected
-        );
+        assert_eq!(overlay.favorite_selection(), FavoriteSelection::Nothing);
         let (_, replacement) =
             selected(&open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100));
         let mut app = App::new_for_test().expect("test app should build");
@@ -2963,7 +2961,7 @@ travel_left = "界"
 
     #[test]
     fn pixel_adjustment_toast_uses_lowercase_resolve_and_fill_spellings() {
-        let rows = parse_rows_for_overlay_test(RECOGNIZED_ROWS)
+        let rows = favorites::parse_rows_for_overlay_test(RECOGNIZED_ROWS)
             .expect("recognized favorites fixture should parse");
         let mut requested = rows
             .recognized()
@@ -2972,11 +2970,11 @@ travel_left = "界"
                 AttractSettings::MovingBand(_) | AttractSettings::MovingText(_) => None,
             })
             .expect("fixture should contain pixel settings");
-        requested.resolve = tui_pane::PixelResolve::Blend;
-        requested.fill = tui_pane::PixelFill::Solid;
+        requested.resolve = PixelResolve::Blend;
+        requested.fill = PixelFill::Solid;
         let mut effective = requested;
-        effective.resolve = tui_pane::PixelResolve::Step;
-        effective.fill = tui_pane::PixelFill::Shades;
+        effective.resolve = PixelResolve::Step;
+        effective.fill = PixelFill::Shades;
         let mut app = App::new_for_test().expect("test app should build");
 
         report_closed_overlay_adjustment(

@@ -4,11 +4,14 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::fs::TryLockError;
 use std::io;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -61,8 +64,8 @@ use crate::constants::FAVORITES_TEMP_SUFFIX;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct FavoriteId(Uuid);
 
-impl fmt::Display for FavoriteId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }
+impl Display for FavoriteId {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }
 }
 
 /// A keymap lookup whose variants say whether the action can currently be invoked.
@@ -439,8 +442,8 @@ pub(crate) fn favorite_refusal_message(
     }
 }
 
-impl fmt::Display for FavoritesMutationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for FavoritesMutationError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::LocationUnavailable => write!(
                 formatter,
@@ -630,7 +633,7 @@ fn read_rows(path: &Path) -> FavoritesReadOutcome {
             FavoritesReadOutcome::Unparseable,
             FavoritesReadOutcome::Loaded,
         ),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => FavoritesReadOutcome::Missing,
+        Err(error) if error.kind() == ErrorKind::NotFound => FavoritesReadOutcome::Missing,
         Err(error) => FavoritesReadOutcome::Unreadable(error.to_string()),
     }
 }

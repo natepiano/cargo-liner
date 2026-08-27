@@ -4,9 +4,9 @@ use std::num::NonZeroUsize;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-const SPLITMIX_INCREMENT: u64 = 0x9e37_79b9_7f4a_7c15;
-const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xbf58_476d_1ce4_e5b9;
-const SPLITMIX_SECOND_MULTIPLIER: u64 = 0x94d0_49bb_1331_11eb;
+use crate::constants::SPLITMIX_FIRST_MULTIPLIER;
+use crate::constants::SPLITMIX_INCREMENT;
+use crate::constants::SPLITMIX_SECOND_MULTIPLIER;
 
 /// A nonempty set of consecutive indices beginning at zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +32,21 @@ impl NonZeroIndexBound {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct EmptyIndexDomain;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    const fn new(seed: u64) -> Self { Self(seed) }
+
+    const fn draw(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(SPLITMIX_INCREMENT);
+        let mut mixed = self.0;
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(SPLITMIX_FIRST_MULTIPLIER);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(SPLITMIX_SECOND_MULTIPLIER);
+        mixed ^ (mixed >> 31)
+    }
+}
+
 /// Seed a caller-owned random operation from nanoseconds since the Unix epoch.
 #[must_use]
 pub(crate) fn clock_seed() -> u64 {
@@ -47,21 +62,6 @@ pub(crate) fn clock_seed() -> u64 {
 pub(crate) fn bounded_index(seed: u64, bound: NonZeroIndexBound) -> usize {
     let mut generator = SplitMix64::new(seed);
     bounded_index_from(&mut generator, bound)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    const fn new(seed: u64) -> Self { Self(seed) }
-
-    const fn draw(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(SPLITMIX_INCREMENT);
-        let mut mixed = self.0;
-        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(SPLITMIX_FIRST_MULTIPLIER);
-        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(SPLITMIX_SECOND_MULTIPLIER);
-        mixed ^ (mixed >> 31)
-    }
 }
 
 fn bounded_index_from(generator: &mut SplitMix64, bound: NonZeroIndexBound) -> usize {
