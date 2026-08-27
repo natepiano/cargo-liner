@@ -31,12 +31,8 @@ pub(super) const GIT_WRITE_TREE_COMMAND: &str = "write-tree";
 pub(super) const GIT_INDEX_FILE_ENV: &str = "GIT_INDEX_FILE";
 
 // flags
-/// Prefix selecting commits on descendant paths from one protected tip.
-pub(super) const GIT_ANCESTRY_PATH_ARG_PREFIX: &str = "--ancestry-path=";
 /// Ask `cat-file` to classify one object per input line.
 pub(super) const GIT_BATCH_CHECK_ARG: &str = "--batch-check";
-/// Include excluded boundary commits so unrelated histories remain distinguishable.
-pub(super) const GIT_BOUNDARY_ARG: &str = "--boundary";
 /// Mark commits that have a patch-equivalent on the other side of a symmetric difference.
 pub(super) const GIT_CHERRY_MARK_ARG: &str = "--cherry-mark";
 /// Ask `rev-parse` for the shared administrative directory.
@@ -49,6 +45,8 @@ pub(super) const GIT_DELETE_REF_ARG: &str = "-d";
 pub(super) const GIT_EXISTS_ARG: &str = "-e";
 /// Follow only the first parent, so a walk stays on one branch's own line.
 pub(super) const GIT_FIRST_PARENT_ARG: &str = "--first-parent";
+/// Continue a revision walk when one supplied object cannot be resolved.
+pub(super) const GIT_IGNORE_MISSING_ARG: &str = "--ignore-missing";
 /// Read NUL-delimited cache entries from standard input.
 pub(super) const GIT_INDEX_INFO_ARG: &str = "--index-info";
 /// Ask `merge-base` to test commit ancestry.
@@ -71,6 +69,8 @@ pub(super) const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
 pub(super) const GIT_NO_RENAMES_ARG: &str = "--no-renames";
 /// Terminate each porcelain field with NUL so worktree paths remain verbatim.
 pub(super) const GIT_NUL_TERMINATED_ARG: &str = "-z";
+/// Print each selected commit with its direct parents.
+pub(super) const GIT_PARENTS_ARG: &str = "--parents";
 /// Ask `rev-parse` to resolve its path result to an absolute path.
 pub(super) const GIT_PATH_FORMAT_ABSOLUTE_ARG: &str = "--path-format=absolute";
 /// Ask `rev-parse` to resolve a repository path after configuration overrides.
@@ -83,6 +83,8 @@ pub(super) const GIT_PORCELAIN_ARG: &str = "--porcelain";
 pub(super) const GIT_RAW_ARG: &str = "--raw";
 /// Ask `rev-parse` for the repository worktree root.
 pub(super) const GIT_SHOW_TOPLEVEL_ARG: &str = "--show-toplevel";
+/// Read revision arguments from standard input.
+pub(super) const GIT_STDIN_ARG: &str = "--stdin";
 /// List registered worktrees.
 pub(super) const GIT_WORKTREE_LIST_ARG: &str = "list";
 /// Write the merged tree even when it contains conflicts.

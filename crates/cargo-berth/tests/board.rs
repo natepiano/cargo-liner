@@ -1698,17 +1698,18 @@ fn board_git_cost_separates_each_scaling_dimension() {
             .count(),
         1
     );
+    assert_batched_evidence_and_retention_queries(&trace);
     assert_eq!(
         trace
             .lines()
-            .filter(|line| line.starts_with("cat-file --batch-check"))
+            .filter(|line| *line == "rev-list --ignore-missing --parents --stdin")
             .count(),
-        2
+        1
     );
     assert_eq!(
         trace
             .lines()
-            .filter(|line| line.contains("--left-right --boundary"))
+            .filter(|line| *line == "rev-list --parents --ignore-missing --stdin")
             .count(),
         1
     );
@@ -2405,8 +2406,9 @@ fn orphan_recoverability_and_each_observed_git_query_are_explicit() {
             .lines()
             .filter(|line| *line == protected_object_query)
             .count(),
-        2
+        1
     );
+    assert_batched_evidence_and_retention_queries(&trace);
     assert_eq!(trace.lines().filter(|line| *line == retention).count(), 1);
     assert_eq!(
         trace
@@ -2490,6 +2492,23 @@ fn assert_orphan_verdict(
     } else {
         assert!(!encoded.contains("commits_lost"));
     }
+}
+
+fn assert_batched_evidence_and_retention_queries(trace: &str) {
+    assert_eq!(
+        trace
+            .lines()
+            .filter(|line| line.starts_with("cat-file --batch-check"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        trace
+            .lines()
+            .filter(|line| *line == "update-ref --stdin")
+            .count(),
+        1
+    );
 }
 
 struct TracedBoard {

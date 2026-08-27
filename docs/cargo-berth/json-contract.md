@@ -265,6 +265,8 @@ operation union is:
 | `evidence_revalidated` | `reservation_id`, `status`, `edit_blocking_status` |
 | `scoped_patch_equivalence_checked` | `reservation_id`, `subject`, `target`, `verdict` |
 | `scoped_patch_comparison_attempted` | `reservation_id`, `subject`, `target` |
+| `successor_scoped_patch_equivalence_checked` | `predecessor_reservation_id`, `subject`, `successor_head`, `verdict` |
+| `successor_scoped_patch_comparison_attempted` | `predecessor_reservation_id`, `subject`, `successor_head` |
 | `resolve_defer` | `deferred_reservation_id`, `blocker_reservation_id`, `edge_id`, `direction`, `reason` |
 | `incursion` | `incident_id`, `reservation_id`, `foreign_reservation_ids`, `paths` |
 | `resolve_incursion` | `incident_id` |
@@ -333,6 +335,19 @@ These operation fields use the following tagged values:
   `scoped_patch_equivalence_checked`. Reconciliation runs the least-recently
   attempted uncached subject first at each target, so every subject receives a
   comparison while the transient failure remains eligible for later retries.
+- `successor_scoped_patch_equivalence_checked` records the separate durable
+  successor-incorporation cache. `predecessor_reservation_id` owns the protected
+  content, `subject` identifies that predecessor's current baseline, content, and
+  scopes, and `successor_head` is the immutable target checked by git. `verdict`
+  is `equivalent` or `different`; both outcomes are cached. Entries are invalidated
+  by a predecessor subject revision and retained under a bounded successor-target
+  limit independent of the trunk-target cache.
+- `successor_scoped_patch_comparison_attempted` records a successor comparison
+  that produced transient `object_unknown`, which is never cached. One shared
+  fixed budget admits one cold successor comparison per reconciliation. Pending
+  heads are ordered by their persisted attempt generation, and every transient
+  attempt records a new generation so an unavailable head rotates behind other
+  pending heads instead of starving them. A deferred head remains not incorporated.
 - Incursion `foreign_reservation_ids` and `paths` are non-empty arrays of
   reservation-id strings and repository-relative path strings, respectively.
 - `skipped_holds.kind` is `ordering_edges` with non-empty `edges`; `deferrals`

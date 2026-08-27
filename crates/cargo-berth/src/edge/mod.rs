@@ -17,13 +17,12 @@ pub(crate) use graph::PreparedOrderingEdge;
 use serde::Deserialize;
 use serde::Serialize;
 pub(crate) use snapshot::MissingReadinessFact;
-pub(crate) use snapshot::PredecessorReachability;
+pub(crate) use snapshot::PredecessorSuccessorIncorporation;
 pub(crate) use snapshot::RepositoryReservationEvidence;
 pub(crate) use snapshot::RepositoryReservationSnapshot;
 pub(crate) use snapshot::RepositorySnapshot;
 pub(crate) use snapshot::RepositoryTrunk;
-use snapshot::SnapshotReachability;
-pub(crate) use snapshot::SuccessorHeadReachability;
+pub(crate) use snapshot::SuccessorIncorporationEvidence;
 
 use crate::answer::AuthorizedOverlapSet;
 use crate::answer::OverlapAuthorizationReason;
@@ -354,9 +353,15 @@ impl OrderingEdge {
                 integration_status, ..
             } => match integration_status {
                 IntegrationEvidenceStatus::Integrated { .. } => {
-                    match repository_snapshot.successor_reachability(self.before, self.after)? {
-                        SnapshotReachability::Ancestor => Ok(EdgeReadiness::Fulfilled),
-                        SnapshotReachability::NotAncestor | SnapshotReachability::ObjectUnknown => {
+                    match repository_snapshot
+                        .successor_incorporation_evidence(self.before, self.after)?
+                    {
+                        SuccessorIncorporationEvidence::ProtectedTipAncestor
+                        | SuccessorIncorporationEvidence::ScopedPatchEquivalent => {
+                            Ok(EdgeReadiness::Fulfilled)
+                        },
+                        SuccessorIncorporationEvidence::NotIncorporated
+                        | SuccessorIncorporationEvidence::ObjectUnknown => {
                             Ok(EdgeReadiness::Holding {
                                 hold: EdgeHold::AwaitingSuccessorIncorporation,
                             })
@@ -397,7 +402,7 @@ pub(crate) enum EdgeReadiness {
     },
     /// A user-confirmed abandonment or orphan retirement ended the constraint.
     Cancelled,
-    /// The successor's current head contains the predecessor's protected tip.
+    /// The successor's current head contains the predecessor tip or equivalent scoped content.
     Fulfilled,
 }
 

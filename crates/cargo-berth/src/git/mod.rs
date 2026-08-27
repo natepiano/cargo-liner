@@ -4,6 +4,7 @@ mod command;
 mod constants;
 mod refs;
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Display;
@@ -24,9 +25,7 @@ use command::git_output_dynamic_with_environment_and_input;
 use command::git_output_dynamic_with_input;
 use constants::GIT_ADDED_STATUS;
 use constants::GIT_ANCESTOR_RANGE_INFIX;
-use constants::GIT_ANCESTRY_PATH_ARG_PREFIX;
 use constants::GIT_BATCH_CHECK_ARG;
-use constants::GIT_BOUNDARY_ARG;
 use constants::GIT_CAT_FILE_COMMAND;
 use constants::GIT_CHERRY_MARK_ARG;
 use constants::GIT_COMMIT_PEEL_SUFFIX;
@@ -41,6 +40,7 @@ use constants::GIT_FIRST_PARENT_ANCESTOR_INFIX;
 use constants::GIT_FIRST_PARENT_ARG;
 use constants::GIT_HEAD_REVISION;
 use constants::GIT_HOOKS_PATH;
+use constants::GIT_IGNORE_MISSING_ARG;
 use constants::GIT_INDEX_FILE_ENV;
 use constants::GIT_INDEX_INFO_ARG;
 use constants::GIT_INDEX_REMOVAL_RECORD_PREFIX;
@@ -63,6 +63,7 @@ use constants::GIT_NO_MERGES_ARG;
 use constants::GIT_NO_RENAMES_ARG;
 use constants::GIT_NOT_ANCESTOR_EXIT_CODE;
 use constants::GIT_NUL_TERMINATED_ARG;
+use constants::GIT_PARENTS_ARG;
 use constants::GIT_PATH_ARG;
 use constants::GIT_PATH_FORMAT_ABSOLUTE_ARG;
 use constants::GIT_PATHSPEC_SEPARATOR;
@@ -74,6 +75,7 @@ use constants::GIT_REBASE_MERGE_STATE_PATH;
 use constants::GIT_REV_LIST_COMMAND;
 use constants::GIT_REV_PARSE_COMMAND;
 use constants::GIT_SHOW_TOPLEVEL_ARG;
+use constants::GIT_STDIN_ARG;
 use constants::GIT_SYMMETRIC_RANGE_INFIX;
 use constants::GIT_TYPE_CHANGED_STATUS;
 use constants::GIT_UPDATE_INDEX_COMMAND;
@@ -101,6 +103,52 @@ pub(crate) enum AheadBehind {
     Unrelated,
     /// Git or one required object could not produce a trustworthy comparison.
     Unavailable,
+}
+
+/// The parent links needed to compare multiple worktree histories with one revision walk.
+struct CommitAncestryGraph {
+    parents_by_commit: HashMap<GitObjectId, Vec<GitObjectId>>,
+}
+
+impl CommitAncestryGraph {
+    fn contains(&self, commit: &GitObjectId) -> bool { self.parents_by_commit.contains_key(commit) }
+
+    fn ancestors_including(&self, tip: &GitObjectId) -> HashSet<GitObjectId> {
+        let mut ancestors = HashSet::new();
+        let mut pending = vec![tip.clone()];
+        while let Some(commit) = pending.pop() {
+            if !ancestors.insert(commit.clone()) {
+                continue;
+            }
+            if let Some(parents) = self.parents_by_commit.get(&commit) {
+                pending.extend(parents.iter().cloned());
+            }
+        }
+        ancestors
+    }
+}
+
+impl TryFrom<&str> for CommitAncestryGraph {
+    type Error = GitError;
+
+    fn try_from(output: &str) -> Result<Self, Self::Error> {
+        let mut parents_by_commit = HashMap::new();
+        for line in output.lines() {
+            let mut object_ids = line.split_whitespace().map(str::parse::<GitObjectId>);
+            let Some(commit) = object_ids
+                .next()
+                .transpose()
+                .map_err(GitError::InvalidObjectId)?
+            else {
+                continue;
+            };
+            let parents = object_ids
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(GitError::InvalidObjectId)?;
+            parents_by_commit.insert(commit, parents);
+        }
+        Ok(Self { parents_by_commit })
+    }
 }
 
 /// The result of comparing a protected phase's aggregate scoped change with a target history.
@@ -1106,50 +1154,66 @@ pub(crate) fn worktree_list_porcelain(repository_root: &Path) -> Result<Vec<u8>,
     Ok(output.stdout)
 }
 
-/// Compute one worktree head's live relationship to trunk with one git invocation.
-pub(crate) fn ahead_behind(
+/// Compute every worktree head's live relationship to trunk with one git invocation.
+pub(crate) fn ahead_behind_for_heads(
     repository_root: &Path,
     trunk: &GitObjectId,
-    worktree_head: &GitObjectId,
-) -> AheadBehind {
-    if trunk == worktree_head {
-        return AheadBehind::Counts {
-            ahead:  0,
-            behind: 0,
-        };
+    worktree_heads: &[GitObjectId],
+) -> Vec<AheadBehind> {
+    if worktree_heads.is_empty() {
+        return Vec::new();
     }
-    let symmetric_difference = format!("{trunk}...{worktree_head}");
-    let arguments = vec![
+    let input =
+        std::iter::once(trunk)
+            .chain(worktree_heads)
+            .fold(String::new(), |mut input, object_id| {
+                let _ = writeln!(input, "{object_id}");
+                input
+            });
+    let arguments = [
         GIT_REV_LIST_COMMAND.to_owned(),
-        GIT_LEFT_RIGHT_ARG.to_owned(),
-        GIT_BOUNDARY_ARG.to_owned(),
-        symmetric_difference,
+        GIT_PARENTS_ARG.to_owned(),
+        GIT_IGNORE_MISSING_ARG.to_owned(),
+        GIT_STDIN_ARG.to_owned(),
     ];
-    let Ok(output) = git_output_dynamic(repository_root, &arguments) else {
-        return AheadBehind::Unavailable;
+    let Ok(output) = git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())
+    else {
+        return vec![AheadBehind::Unavailable; worktree_heads.len()];
     };
     if !output.status.success() {
-        return AheadBehind::Unavailable;
+        return vec![AheadBehind::Unavailable; worktree_heads.len()];
     }
     let Ok(output) = String::from_utf8(output.stdout) else {
-        return AheadBehind::Unavailable;
+        return vec![AheadBehind::Unavailable; worktree_heads.len()];
     };
-    let mut ahead = 0_u64;
-    let mut behind = 0_u64;
-    let mut common_boundary = false;
-    for line in output.lines() {
-        match line.as_bytes().first() {
-            Some(b'<') => behind = behind.saturating_add(1),
-            Some(b'>') => ahead = ahead.saturating_add(1),
-            Some(b'-') => common_boundary = true,
-            _ => return AheadBehind::Unavailable,
-        }
+    let Ok(commit_ancestry_graph) = CommitAncestryGraph::try_from(output.as_str()) else {
+        return vec![AheadBehind::Unavailable; worktree_heads.len()];
+    };
+    if !commit_ancestry_graph.contains(trunk) {
+        return vec![AheadBehind::Unavailable; worktree_heads.len()];
     }
-    if common_boundary {
-        AheadBehind::Counts { ahead, behind }
-    } else {
-        AheadBehind::Unrelated
-    }
+    let trunk_ancestors = commit_ancestry_graph.ancestors_including(trunk);
+    worktree_heads
+        .iter()
+        .map(|worktree_head| {
+            if !commit_ancestry_graph.contains(worktree_head) {
+                return AheadBehind::Unavailable;
+            }
+            let worktree_ancestors = commit_ancestry_graph.ancestors_including(worktree_head);
+            if trunk_ancestors.is_disjoint(&worktree_ancestors) {
+                return AheadBehind::Unrelated;
+            }
+            let Ok(ahead) = u64::try_from(worktree_ancestors.difference(&trunk_ancestors).count())
+            else {
+                return AheadBehind::Unavailable;
+            };
+            let Ok(behind) = u64::try_from(trunk_ancestors.difference(&worktree_ancestors).count())
+            else {
+                return AheadBehind::Unavailable;
+            };
+            AheadBehind::Counts { ahead, behind }
+        })
+        .collect()
 }
 
 /// Determine whether one commit is an ancestor of another.
@@ -1229,53 +1293,30 @@ pub(crate) fn reachability_to_target(
         .collect())
 }
 
-/// Find supplied holder heads that descend from one protected predecessor tip.
+/// Classify successor heads against every protected predecessor tip in one revision walk.
 pub(crate) fn descendant_commits(
     repository_root: &Path,
-    ancestor: &GitObjectId,
-    candidate_heads: &[GitObjectId],
-) -> Result<DescendantCommitQuery, GitError> {
-    if candidate_heads.is_empty() {
-        return Ok(DescendantCommitQuery::Classified(Vec::new()));
+    predecessors: &[ProtectedTipSuccessorHeads<'_>],
+) -> Result<Vec<DescendantCommitQuery>, GitError> {
+    if predecessors.is_empty() {
+        return Ok(Vec::new());
     }
-    let mut queried_objects = Vec::with_capacity(candidate_heads.len() + 1);
-    queried_objects.push(ancestor.clone());
-    queried_objects.extend(candidate_heads.iter().cloned());
-    let object_availability = commit_availability(repository_root, &queried_objects)?;
-    let Some((ancestor_availability, candidate_availability)) = object_availability.split_first()
-    else {
-        return Err(GitError::InvalidBatchObjectCount {
-            expected: queried_objects.len(),
-            actual:   0,
-        });
-    };
-    if matches!(ancestor_availability, CommitAvailability::ObjectUnknown) {
-        return Ok(DescendantCommitQuery::AncestorObjectUnknown);
-    }
-    let available_heads = candidate_heads
+    let input = predecessors
         .iter()
-        .zip(candidate_availability)
-        .filter_map(|(head, availability)| match availability {
-            CommitAvailability::Available => Some(head.clone()),
-            CommitAvailability::ObjectUnknown => None,
-        })
-        .collect::<Vec<_>>();
-    if available_heads.is_empty() {
-        return Ok(DescendantCommitQuery::Classified(
-            candidate_heads
-                .iter()
-                .cloned()
-                .map(CandidateHeadReachability::ObjectUnknown)
-                .collect(),
-        ));
-    }
-    let ancestor_text = ancestor.to_string();
-    let mut arguments = Vec::with_capacity(available_heads.len() + 3);
-    arguments.push(GIT_REV_LIST_COMMAND.to_owned());
-    arguments.extend(available_heads.iter().map(ToString::to_string));
-    arguments.push(format!("{GIT_ANCESTRY_PATH_ARG_PREFIX}{ancestor_text}"));
-    arguments.push(format!("{GIT_EXCLUDE_REVISION_PREFIX}{ancestor_text}"));
-    let output = git_output_dynamic(repository_root, &arguments)?;
+        .fold(String::new(), |mut input, predecessor| {
+            let _ = writeln!(input, "{}", predecessor.protected_tip);
+            for successor_head in predecessor.successor_heads {
+                let _ = writeln!(input, "{successor_head}");
+            }
+            input
+        });
+    let arguments = [
+        GIT_REV_LIST_COMMAND.to_owned(),
+        GIT_IGNORE_MISSING_ARG.to_owned(),
+        GIT_PARENTS_ARG.to_owned(),
+        GIT_STDIN_ARG.to_owned(),
+    ];
+    let output = git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_LIST_COMMAND,
@@ -1283,29 +1324,36 @@ pub(crate) fn descendant_commits(
         });
     }
     let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
-    let mut descendants = output_text
-        .lines()
-        .map(str::parse)
-        .collect::<Result<Vec<GitObjectId>, _>>()
-        .map_err(GitError::InvalidObjectId)?;
-    descendants.push(ancestor.clone());
-    Ok(DescendantCommitQuery::Classified(
-        candidate_heads
-            .iter()
-            .zip(candidate_availability)
-            .map(|(head, availability)| match availability {
-                CommitAvailability::Available if descendants.contains(head) => {
-                    CandidateHeadReachability::Descendant(head.clone())
-                },
-                CommitAvailability::Available => {
-                    CandidateHeadReachability::NotDescendant(head.clone())
-                },
-                CommitAvailability::ObjectUnknown => {
-                    CandidateHeadReachability::ObjectUnknown(head.clone())
-                },
-            })
-            .collect(),
-    ))
+    let commit_ancestry_graph = CommitAncestryGraph::try_from(output_text.as_str())?;
+    Ok(predecessors
+        .iter()
+        .map(|predecessor| {
+            if !commit_ancestry_graph.contains(predecessor.protected_tip) {
+                return DescendantCommitQuery::AncestorObjectUnknown;
+            }
+            DescendantCommitQuery::Classified(
+                predecessor
+                    .successor_heads
+                    .iter()
+                    .map(|successor_head| {
+                        if !commit_ancestry_graph.contains(successor_head) {
+                            return CandidateHeadReachability::ObjectUnknown(
+                                successor_head.clone(),
+                            );
+                        }
+                        if commit_ancestry_graph
+                            .ancestors_including(successor_head)
+                            .contains(predecessor.protected_tip)
+                        {
+                            CandidateHeadReachability::Descendant(successor_head.clone())
+                        } else {
+                            CandidateHeadReachability::NotDescendant(successor_head.clone())
+                        }
+                    })
+                    .collect(),
+            )
+        })
+        .collect())
 }
 
 fn commit_availability(
@@ -1358,6 +1406,48 @@ pub(crate) fn write_reservation_retention_ref(
     refs::write(repository_root, reservation_id, protected_tip)
 }
 
+/// Rewrite every readable protected-tip retention ref with at most two git invocations.
+pub(crate) fn repair_reservation_retention_refs(
+    repository_root: &Path,
+    repairs: &[ReservationRetentionRefRepair],
+) -> Result<(), GitError> {
+    if repairs.is_empty() {
+        return Ok(());
+    }
+    let protected_tips = repairs
+        .iter()
+        .map(|repair| repair.protected_tip.clone())
+        .collect::<Vec<_>>();
+    let availability = commit_availability(repository_root, &protected_tips)?;
+    let input = repairs.iter().zip(availability).fold(
+        String::new(),
+        |mut input, (repair, availability)| {
+            if matches!(availability, CommitAvailability::Available) {
+                let _ = writeln!(
+                    input,
+                    "update {} {}",
+                    refs::name(repair.reservation_id),
+                    repair.protected_tip
+                );
+            }
+            input
+        },
+    );
+    if input.is_empty() {
+        return Ok(());
+    }
+    let arguments = [GIT_UPDATE_REF_COMMAND.to_owned(), GIT_STDIN_ARG.to_owned()];
+    let output = git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(GitError::CommandFailed {
+            command: GIT_UPDATE_REF_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+    }
+}
+
 /// Return the full private ref used to retain one reservation's protected tip.
 pub(crate) fn reservation_retention_ref_name(reservation_id: ReservationId) -> String {
     refs::name(reservation_id)
@@ -1402,6 +1492,39 @@ pub(crate) enum CandidateHeadReachability {
     NotDescendant(GitObjectId),
     /// This candidate head does not resolve as a commit.
     ObjectUnknown(GitObjectId),
+}
+
+/// The successor heads whose ancestry is evaluated against one protected reservation tip.
+pub(crate) struct ProtectedTipSuccessorHeads<'commits> {
+    protected_tip:   &'commits GitObjectId,
+    successor_heads: &'commits [GitObjectId],
+}
+
+impl<'commits> ProtectedTipSuccessorHeads<'commits> {
+    pub(crate) const fn new(
+        protected_tip: &'commits GitObjectId,
+        successor_heads: &'commits [GitObjectId],
+    ) -> Self {
+        Self {
+            protected_tip,
+            successor_heads,
+        }
+    }
+}
+
+/// One reservation ref that must retain its protected commit when that commit is readable.
+pub(crate) struct ReservationRetentionRefRepair {
+    reservation_id: ReservationId,
+    protected_tip:  GitObjectId,
+}
+
+impl ReservationRetentionRefRepair {
+    pub(crate) const fn new(reservation_id: ReservationId, protected_tip: GitObjectId) -> Self {
+        Self {
+            reservation_id,
+            protected_tip,
+        }
+    }
 }
 
 /// The grouped descendant result for one protected predecessor tip.
@@ -1518,9 +1641,15 @@ mod tests {
     use tempfile::TempDir;
     use tempfile::tempdir;
 
+    use super::AheadBehind;
+    use super::CandidateHeadReachability;
+    use super::DescendantCommitQuery;
+    use super::ProtectedTipSuccessorHeads;
     use super::ScopedPatchComparison;
     use super::ScopedPatchComparisonError;
+    use super::ahead_behind_for_heads;
     use super::command::GitCommandExecution;
+    use super::descendant_commits;
     use super::head_object_id;
     use super::scoped_patch_command_output;
     use super::scoped_patch_equivalence;
@@ -1632,6 +1761,74 @@ mod tests {
             scoped_patch_command_output(command_execution),
             Err(ScopedPatchComparisonError::CommandUnavailable)
         ));
+    }
+
+    #[test]
+    fn unresolvable_worktree_head_preserves_other_ahead_behind_counts() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let trunk = fixture.phase_start_head.clone();
+        fixture.write(PRIMARY_PATH, "resolvable worktree head\n")?;
+        let ahead_head = fixture.commit("worktree ahead of trunk")?;
+        let unresolvable_head = UNAVAILABLE_OBJECT_ID.parse::<GitObjectId>()?;
+
+        assert_eq!(
+            ahead_behind_for_heads(
+                fixture.root(),
+                &trunk,
+                &[ahead_head, unresolvable_head, trunk.clone()],
+            ),
+            vec![
+                AheadBehind::Counts {
+                    ahead:  1,
+                    behind: 0,
+                },
+                AheadBehind::Unavailable,
+                AheadBehind::Counts {
+                    ahead:  0,
+                    behind: 0,
+                },
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn batched_descendant_query_confines_unknown_objects_to_their_subjects() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let ancestor = fixture.phase_start_head.clone();
+        fixture.write(PRIMARY_PATH, "descendant worktree head\n")?;
+        let descendant = fixture.commit("descendant head")?;
+        let unresolvable = UNAVAILABLE_OBJECT_ID.parse::<GitObjectId>()?;
+        let mixed_heads = [descendant.clone(), unresolvable.clone()];
+        let known_head = [descendant.clone()];
+        let unrelated_head = [ancestor.clone()];
+        let queries = [
+            ProtectedTipSuccessorHeads::new(&ancestor, &mixed_heads),
+            ProtectedTipSuccessorHeads::new(&unresolvable, &known_head),
+            ProtectedTipSuccessorHeads::new(&descendant, &unrelated_head),
+        ];
+
+        let results = descendant_commits(fixture.root(), &queries)?;
+        assert!(matches!(
+            results.as_slice(),
+            [
+                DescendantCommitQuery::Classified(mixed),
+                DescendantCommitQuery::AncestorObjectUnknown,
+                DescendantCommitQuery::Classified(unrelated),
+            ] if matches!(
+                mixed.as_slice(),
+                [
+                    CandidateHeadReachability::Descendant(classified_descendant),
+                    CandidateHeadReachability::ObjectUnknown(classified_unresolvable),
+                ] if classified_descendant == &descendant
+                    && classified_unresolvable == &unresolvable
+            ) && matches!(
+                unrelated.as_slice(),
+                [CandidateHeadReachability::NotDescendant(classified_ancestor)]
+                    if classified_ancestor == &ancestor
+            )
+        ));
+        Ok(())
     }
 
     #[test]

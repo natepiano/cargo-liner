@@ -64,24 +64,26 @@ pub(crate) struct RepositoryReservationSnapshot {
     pub(crate) evidence:          RepositoryReservationEvidence,
 }
 
-/// Whether one successor head contains its predecessor's protected tip.
+/// What proves whether one successor head has incorporated its predecessor's protected work.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SuccessorHeadReachability {
-    /// The successor head contains the predecessor tip.
-    ContainsPredecessor,
-    /// The successor head resolves without containing the predecessor tip.
-    DoesNotContainPredecessor,
-    /// This successor head does not resolve as a commit.
+pub(crate) enum SuccessorIncorporationEvidence {
+    /// The successor head contains the predecessor's protected tip as an ancestor.
+    ProtectedTipAncestor,
+    /// The successor head contains equivalent rewritten protected content.
+    ScopedPatchEquivalent,
+    /// Neither ancestry nor scoped content proves incorporation.
+    NotIncorporated,
+    /// A required object or comparison result was unavailable.
     ObjectUnknown,
 }
 
-/// Reachability results for one protected graph predecessor.
+/// Successor-incorporation results for one protected graph predecessor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum PredecessorReachability {
+pub(crate) enum PredecessorSuccessorIncorporation {
     /// Every resolvable successor head received its independent result.
-    Classified(HashMap<GitObjectId, SuccessorHeadReachability>),
+    Classified(HashMap<GitObjectId, SuccessorIncorporationEvidence>),
     /// The predecessor's protected tip does not resolve as a commit.
-    ObjectUnknown,
+    PredecessorObjectUnknown,
     /// Git could not complete the grouped ancestry query.
     QueryFailed,
 }
@@ -89,9 +91,9 @@ pub(crate) enum PredecessorReachability {
 /// One complete repository observation used for every edge-readiness decision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RepositorySnapshot {
-    trunk:                    RepositoryTrunk,
-    reservations:             HashMap<ReservationId, RepositoryReservationSnapshot>,
-    predecessor_reachability: HashMap<ReservationId, PredecessorReachability>,
+    trunk:                   RepositoryTrunk,
+    reservations:            HashMap<ReservationId, RepositoryReservationSnapshot>,
+    successor_incorporation: HashMap<ReservationId, PredecessorSuccessorIncorporation>,
 }
 
 impl RepositorySnapshot {
@@ -99,7 +101,7 @@ impl RepositorySnapshot {
     pub(crate) fn new(
         trunk: RepositoryTrunk,
         reservations: Vec<RepositoryReservationSnapshot>,
-        predecessor_reachability: Vec<(ReservationId, PredecessorReachability)>,
+        successor_incorporation: Vec<(ReservationId, PredecessorSuccessorIncorporation)>,
     ) -> Self {
         Self {
             trunk,
@@ -107,7 +109,7 @@ impl RepositorySnapshot {
                 .into_iter()
                 .map(|snapshot| (snapshot.reservation_id, snapshot))
                 .collect(),
-            predecessor_reachability: predecessor_reachability.into_iter().collect(),
+            successor_incorporation: successor_incorporation.into_iter().collect(),
         }
     }
 
@@ -123,57 +125,33 @@ impl RepositorySnapshot {
     /// Borrow the one resolved-or-unknown trunk observation used for this snapshot.
     pub(crate) const fn trunk(&self) -> &RepositoryTrunk { &self.trunk }
 
-    /// Iterate the one grouped reachability result recorded per graph predecessor.
-    pub(crate) fn predecessor_reachability(
-        &self,
-    ) -> impl Iterator<Item = (&ReservationId, &PredecessorReachability)> {
-        self.predecessor_reachability.iter()
-    }
-
-    pub(super) fn successor_reachability(
+    pub(super) fn successor_incorporation_evidence(
         &self,
         predecessor: ReservationId,
         successor: ReservationId,
-    ) -> Result<SnapshotReachability, MissingReadinessFact> {
+    ) -> Result<SuccessorIncorporationEvidence, MissingReadinessFact> {
         let successor = self.reservation(successor)?;
         let WorktreeHead::Resolved(successor_head) = &successor.worktree_head else {
-            return Ok(SnapshotReachability::ObjectUnknown);
+            return Ok(SuccessorIncorporationEvidence::ObjectUnknown);
         };
-        let predecessor_reachability = self
-            .predecessor_reachability
+        let predecessor_incorporation = self
+            .successor_incorporation
             .get(&predecessor)
-            .ok_or(MissingReadinessFact::PredecessorReachability(predecessor))?;
-        match predecessor_reachability {
-            PredecessorReachability::Classified(successor_heads) => {
-                match successor_heads.get(successor_head).ok_or(
-                    MissingReadinessFact::SuccessorReachability {
-                        predecessor,
-                        successor: successor.reservation_id,
-                    },
-                )? {
-                    SuccessorHeadReachability::ContainsPredecessor => {
-                        Ok(SnapshotReachability::Ancestor)
-                    },
-                    SuccessorHeadReachability::DoesNotContainPredecessor => {
-                        Ok(SnapshotReachability::NotAncestor)
-                    },
-                    SuccessorHeadReachability::ObjectUnknown => {
-                        Ok(SnapshotReachability::ObjectUnknown)
-                    },
-                }
-            },
-            PredecessorReachability::ObjectUnknown | PredecessorReachability::QueryFailed => {
-                Ok(SnapshotReachability::ObjectUnknown)
+            .ok_or(MissingReadinessFact::PredecessorIncorporation(predecessor))?;
+        match predecessor_incorporation {
+            PredecessorSuccessorIncorporation::Classified(successor_heads) => successor_heads
+                .get(successor_head)
+                .copied()
+                .ok_or(MissingReadinessFact::SuccessorIncorporation {
+                    predecessor,
+                    successor: successor.reservation_id,
+                }),
+            PredecessorSuccessorIncorporation::PredecessorObjectUnknown
+            | PredecessorSuccessorIncorporation::QueryFailed => {
+                Ok(SuccessorIncorporationEvidence::ObjectUnknown)
             },
         }
     }
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum SnapshotReachability {
-    Ancestor,
-    NotAncestor,
-    ObjectUnknown,
 }
 
 /// A repository snapshot lacks a fact required to classify an edge.
@@ -181,10 +159,10 @@ pub(super) enum SnapshotReachability {
 pub(crate) enum MissingReadinessFact {
     /// The snapshot contains no entry for this reservation.
     Reservation(ReservationId),
-    /// The snapshot contains no ancestry result for this protected predecessor.
-    PredecessorReachability(ReservationId),
+    /// The snapshot contains no incorporation result for this protected predecessor.
+    PredecessorIncorporation(ReservationId),
     /// A classified predecessor omitted one of its direct successor heads.
-    SuccessorReachability {
+    SuccessorIncorporation {
         /// The protected predecessor whose classification omitted a head.
         predecessor: ReservationId,
         /// The direct successor whose head received no result.
@@ -199,16 +177,16 @@ impl Display for MissingReadinessFact {
                 formatter,
                 "repository snapshot has no reservation {reservation_id}"
             ),
-            Self::PredecessorReachability(reservation_id) => write!(
+            Self::PredecessorIncorporation(reservation_id) => write!(
                 formatter,
-                "repository snapshot has no protected-tip reachability for {reservation_id}"
+                "repository snapshot has no successor-incorporation evidence for {reservation_id}"
             ),
-            Self::SuccessorReachability {
+            Self::SuccessorIncorporation {
                 predecessor,
                 successor,
             } => write!(
                 formatter,
-                "repository snapshot has no reachability from predecessor {predecessor} to successor {successor}"
+                "repository snapshot has no incorporation evidence from predecessor {predecessor} to successor {successor}"
             ),
         }
     }

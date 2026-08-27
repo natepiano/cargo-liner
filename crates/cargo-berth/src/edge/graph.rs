@@ -113,6 +113,8 @@ impl OrderingGraph {
                 | JournalOperation::EvidenceRevalidated { .. }
                 | JournalOperation::ScopedPatchEquivalenceChecked { .. }
                 | JournalOperation::ScopedPatchComparisonAttempted { .. }
+                | JournalOperation::SuccessorScopedPatchEquivalenceChecked { .. }
+                | JournalOperation::SuccessorScopedPatchComparisonAttempted { .. }
                 | JournalOperation::Incursion { .. }
                 | JournalOperation::ResolveIncursion { .. }
                 | JournalOperation::ForcedIntegrationPermit { .. }

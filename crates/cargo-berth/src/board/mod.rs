@@ -750,26 +750,14 @@ fn reservation_rows(
     snapshot: &RepositorySnapshot,
     observed_at: &RecordedAt,
 ) -> Result<(Vec<ReservationRow>, u64), BoardError> {
-    let mut ahead_by_worktree = HashMap::new();
-    let mut ahead_behind_computations = 0_u64;
+    let (ahead_by_worktree, ahead_behind_computations) =
+        ahead_behind_by_worktree(repository_root, reservations, snapshot)?;
     let mut rows = Vec::new();
     for reservation in reservations.iter() {
         let repository_reservation = snapshot.reservation(reservation.id())?;
         let ahead_behind_main = *ahead_by_worktree
-            .entry(reservation.actor().worktree)
-            .or_insert_with(
-                || match (snapshot.trunk(), &repository_reservation.worktree_head) {
-                    (RepositoryTrunk::Resolved(trunk), WorktreeHead::Resolved(head)) => {
-                        if trunk != head {
-                            ahead_behind_computations = ahead_behind_computations.saturating_add(1);
-                        }
-                        git::ahead_behind(repository_root, trunk, head)
-                    },
-                    (RepositoryTrunk::Resolved(_) | RepositoryTrunk::ObjectUnknown, _) => {
-                        AheadBehind::Unavailable
-                    },
-                },
-            );
+            .get(&reservation.actor().worktree)
+            .unwrap_or(&AheadBehind::Unavailable);
         let integration_evidence = match &repository_reservation.evidence {
             RepositoryReservationEvidence::Active => BoardIntegrationEvidence::ActiveWork,
             RepositoryReservationEvidence::Outstanding {
@@ -805,6 +793,47 @@ fn reservation_rows(
         });
     }
     Ok((rows, ahead_behind_computations))
+}
+
+fn ahead_behind_by_worktree(
+    repository_root: &Path,
+    reservations: &RetainedReservationSet,
+    snapshot: &RepositorySnapshot,
+) -> Result<(HashMap<WorktreeId, AheadBehind>, u64), BoardError> {
+    let RepositoryTrunk::Resolved(trunk) = snapshot.trunk() else {
+        return Ok((HashMap::new(), 0));
+    };
+    let mut head_by_worktree = HashMap::new();
+    for reservation in reservations.iter() {
+        let repository_reservation = snapshot.reservation(reservation.id())?;
+        if let WorktreeHead::Resolved(head) = &repository_reservation.worktree_head {
+            head_by_worktree
+                .entry(reservation.actor().worktree)
+                .or_insert_with(|| head.clone());
+        }
+    }
+    let mut worktree_heads = head_by_worktree.into_iter().collect::<Vec<_>>();
+    worktree_heads.sort_by_key(|(worktree_id, _)| worktree_id.to_string());
+    let ahead_behind_computations = u64::try_from(
+        worktree_heads
+            .iter()
+            .filter(|(_, worktree_head)| worktree_head != trunk)
+            .count(),
+    )
+    .unwrap_or(u64::MAX);
+    let heads = worktree_heads
+        .iter()
+        .map(|(_, worktree_head)| worktree_head.clone())
+        .collect::<Vec<_>>();
+    let ahead_behind = git::ahead_behind_for_heads(repository_root, trunk, &heads);
+    Ok((
+        worktree_heads
+            .into_iter()
+            .zip(ahead_behind)
+            .map(|((worktree_id, _), ahead_behind)| (worktree_id, ahead_behind))
+            .collect(),
+        ahead_behind_computations,
+    ))
 }
 
 const fn reservation_visibility(reservation: &Reservation) -> BoardReservationVisibility {

@@ -36,6 +36,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use self::constants::SCOPED_PATCH_TARGET_RETENTION_LIMIT;
+use self::constants::SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT;
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
@@ -132,6 +133,39 @@ pub(crate) enum ScopedPatchEquivalenceCacheLookup {
     Miss,
 }
 
+/// A definitive successor-incorporation verdict produced by scoped patch equivalence.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SuccessorScopedPatchEquivalenceVerdict {
+    /// The successor head contains the predecessor's protected scoped change.
+    Equivalent,
+    /// The successor head does not contain the predecessor's protected scoped change.
+    Different,
+}
+
+/// One definitive successor-incorporation verdict retained for an immutable head.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SuccessorScopedPatchEquivalenceCacheEntry {
+    subject:        IntegrationProofSubjectRevision,
+    successor_head: GitObjectId,
+    verdict:        SuccessorScopedPatchEquivalenceVerdict,
+}
+
+/// The bounded durable verdict cache for recently observed successor heads.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SuccessorScopedPatchEquivalenceCache {
+    entries: VecDeque<SuccessorScopedPatchEquivalenceCacheEntry>,
+}
+
+/// Whether the successor-incorporation cache answers one proof subject and head.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SuccessorScopedPatchEquivalenceCacheLookup {
+    /// The stored proof subject and successor head match the request.
+    Hit(SuccessorScopedPatchEquivalenceVerdict),
+    /// No stored successor-incorporation verdict applies to the request.
+    Miss,
+}
+
 /// The scheduling order for uncached scoped comparisons at one trunk target.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum ScopedPatchEvaluationPriority {
@@ -188,6 +222,49 @@ impl ScopedPatchComparisonAttemptHistory {
     }
 }
 
+/// Attempt generations for recent successor heads under the current proof subject.
+///
+/// The retention limit matches the successor verdict cache, so an unvisited retained head sorts
+/// ahead of retried transient failures. Recording a new proof subject removes every superseded
+/// subject before applying that limit.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SuccessorScopedPatchComparisonAttemptHistory {
+    entries: VecDeque<ScopedPatchComparisonAttempt>,
+}
+
+impl SuccessorScopedPatchComparisonAttemptHistory {
+    fn priority(
+        &self,
+        subject: IntegrationProofSubjectRevision,
+        successor_head: &GitObjectId,
+    ) -> ScopedPatchEvaluationPriority {
+        for attempt in &self.entries {
+            if attempt.subject == subject && attempt.target == *successor_head {
+                return ScopedPatchEvaluationPriority::LastAttemptedAt(attempt.generation);
+            }
+        }
+        ScopedPatchEvaluationPriority::NotAttempted
+    }
+
+    fn record(
+        &mut self,
+        subject: IntegrationProofSubjectRevision,
+        successor_head: &GitObjectId,
+        generation: ProjectionGeneration,
+    ) {
+        self.entries
+            .retain(|attempt| attempt.subject == subject && attempt.target != *successor_head);
+        if self.entries.len() == SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT {
+            std::mem::drop(self.entries.pop_front());
+        }
+        self.entries.push_back(ScopedPatchComparisonAttempt {
+            subject,
+            target: successor_head.clone(),
+            generation,
+        });
+    }
+}
+
 impl ScopedPatchEquivalenceCache {
     /// Look up a verdict only when both immutable proof inputs match.
     pub(crate) fn lookup(
@@ -222,6 +299,41 @@ impl ScopedPatchEquivalenceCache {
     }
 }
 
+impl SuccessorScopedPatchEquivalenceCache {
+    /// Look up a verdict only when both immutable successor-proof inputs match.
+    pub(crate) fn lookup(
+        &self,
+        subject: IntegrationProofSubjectRevision,
+        successor_head: &GitObjectId,
+    ) -> SuccessorScopedPatchEquivalenceCacheLookup {
+        for entry in &self.entries {
+            if entry.subject == subject && entry.successor_head == *successor_head {
+                return SuccessorScopedPatchEquivalenceCacheLookup::Hit(entry.verdict);
+            }
+        }
+        SuccessorScopedPatchEquivalenceCacheLookup::Miss
+    }
+
+    fn record(
+        &mut self,
+        subject: IntegrationProofSubjectRevision,
+        successor_head: &GitObjectId,
+        verdict: SuccessorScopedPatchEquivalenceVerdict,
+    ) {
+        self.entries
+            .retain(|entry| entry.subject != subject || entry.successor_head != *successor_head);
+        if self.entries.len() == SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT {
+            std::mem::drop(self.entries.pop_front());
+        }
+        self.entries
+            .push_back(SuccessorScopedPatchEquivalenceCacheEntry {
+                subject,
+                successor_head: successor_head.clone(),
+                verdict,
+            });
+    }
+}
+
 /// Every retained reservation after replaying the journal in append order.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RetainedReservationSet {
@@ -237,6 +349,8 @@ pub(crate) struct Reservation {
     integration_proof_subject:  IntegrationProofSubjectRevision,
     scoped_patch_verdicts:      ScopedPatchEquivalenceCache,
     scoped_patch_attempts:      ScopedPatchComparisonAttemptHistory,
+    successor_patch_verdicts:   SuccessorScopedPatchEquivalenceCache,
+    successor_patch_attempts:   SuccessorScopedPatchComparisonAttemptHistory,
     scopes:                     ReservationScopeSet,
     authorizations:             Vec<ConflictAuthorization>,
     source:                     ClaimSource,
@@ -929,6 +1043,28 @@ impl RetainedReservationSet {
                 target,
                 event.projection_generation(),
             )?,
+            JournalOperation::SuccessorScopedPatchEquivalenceChecked {
+                predecessor_reservation_id,
+                subject,
+                successor_head,
+                verdict,
+            } => self.apply_successor_scoped_patch_equivalence_check(
+                *predecessor_reservation_id,
+                *subject,
+                successor_head,
+                *verdict,
+                event.projection_generation(),
+            )?,
+            JournalOperation::SuccessorScopedPatchComparisonAttempted {
+                predecessor_reservation_id,
+                subject,
+                successor_head,
+            } => self.apply_successor_scoped_patch_comparison_attempt(
+                *predecessor_reservation_id,
+                *subject,
+                successor_head,
+                event.projection_generation(),
+            )?,
             JournalOperation::RebindWorktree {
                 reservation_id,
                 previous_worktree_id,
@@ -1094,6 +1230,8 @@ impl RetainedReservationSet {
             integration_proof_subject:  IntegrationProofSubjectRevision::INITIAL,
             scoped_patch_verdicts:      ScopedPatchEquivalenceCache::default(),
             scoped_patch_attempts:      ScopedPatchComparisonAttemptHistory::default(),
+            successor_patch_verdicts:   SuccessorScopedPatchEquivalenceCache::default(),
+            successor_patch_attempts:   SuccessorScopedPatchComparisonAttemptHistory::default(),
             scopes:                     replayed_claim.scopes.clone(),
             authorizations:             vec![replayed_claim.authorization.clone()],
             source:                     replayed_claim.source.clone(),
@@ -1290,6 +1428,40 @@ impl RetainedReservationSet {
             .scoped_patch_attempts
             .record(subject, target, generation);
         reservation.advance_revision()
+    }
+
+    fn apply_successor_scoped_patch_equivalence_check(
+        &mut self,
+        predecessor_reservation_id: ReservationId,
+        subject: IntegrationProofSubjectRevision,
+        successor_head: &GitObjectId,
+        verdict: SuccessorScopedPatchEquivalenceVerdict,
+        generation: ProjectionGeneration,
+    ) -> Result<(), ReservationReplayError> {
+        let predecessor =
+            self.scoped_patch_comparison_subject_mut(predecessor_reservation_id, subject)?;
+        predecessor
+            .successor_patch_verdicts
+            .record(subject, successor_head, verdict);
+        predecessor
+            .successor_patch_attempts
+            .record(subject, successor_head, generation);
+        predecessor.advance_revision()
+    }
+
+    fn apply_successor_scoped_patch_comparison_attempt(
+        &mut self,
+        predecessor_reservation_id: ReservationId,
+        subject: IntegrationProofSubjectRevision,
+        successor_head: &GitObjectId,
+        generation: ProjectionGeneration,
+    ) -> Result<(), ReservationReplayError> {
+        let predecessor =
+            self.scoped_patch_comparison_subject_mut(predecessor_reservation_id, subject)?;
+        predecessor
+            .successor_patch_attempts
+            .record(subject, successor_head, generation);
+        predecessor.advance_revision()
     }
 
     fn scoped_patch_comparison_subject_mut(
@@ -1525,6 +1697,8 @@ impl Reservation {
             .ok_or(ReservationReplayError::IntegrationProofSubjectRevisionExhausted(self.id))?;
         self.scoped_patch_verdicts = ScopedPatchEquivalenceCache::default();
         self.scoped_patch_attempts = ScopedPatchComparisonAttemptHistory::default();
+        self.successor_patch_verdicts = SuccessorScopedPatchEquivalenceCache::default();
+        self.successor_patch_attempts = SuccessorScopedPatchComparisonAttemptHistory::default();
         Ok(())
     }
 
@@ -1547,6 +1721,22 @@ impl Reservation {
     ) -> ScopedPatchEvaluationPriority {
         self.scoped_patch_attempts
             .priority(self.integration_proof_subject, target)
+    }
+
+    /// Borrow cached scoped-equivalence verdicts for successor incorporation.
+    pub(crate) const fn successor_scoped_patch_equivalence_cache(
+        &self,
+    ) -> &SuccessorScopedPatchEquivalenceCache {
+        &self.successor_patch_verdicts
+    }
+
+    /// Return this proof subject's scheduling priority for one successor head.
+    pub(crate) fn successor_scoped_patch_evaluation_priority(
+        &self,
+        successor_head: &GitObjectId,
+    ) -> ScopedPatchEvaluationPriority {
+        self.successor_patch_attempts
+            .priority(self.integration_proof_subject, successor_head)
     }
 
     /// Return the reservation's owning actor.
@@ -1875,10 +2065,13 @@ mod tests {
     use super::DurableScopedPatchComparison;
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
+    use super::IntegrationProofSubjectRevision;
     use super::ReservationEvidenceState;
     use super::RetainedReservationSet;
     use super::ScopedPatchEquivalenceCacheLookup;
     use super::ScopedPatchEvaluationPriority;
+    use super::SuccessorScopedPatchComparisonAttemptHistory;
+    use super::constants::SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT;
     use super::lifecycle::EditBlockingStatus;
     use crate::ids::CoordinationRunId;
     use crate::ids::GitObjectId;
@@ -2190,6 +2383,42 @@ mod tests {
         assert_eq!(
             reservation.scoped_patch_evaluation_priority(&third_target),
             ScopedPatchEvaluationPriority::LastAttemptedAt(ProjectionGeneration::from(5))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn successor_attempt_history_retains_only_bounded_current_subject_heads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let superseded_subject = IntegrationProofSubjectRevision::INITIAL;
+        let current_subject = IntegrationProofSubjectRevision(2);
+        let superseded_head = TRUNK_OID.parse::<GitObjectId>()?;
+        let generation = ProjectionGeneration::from(3);
+        let mut history = SuccessorScopedPatchComparisonAttemptHistory::default();
+        history.record(superseded_subject, &superseded_head, generation);
+
+        for successor_number in 1..=SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT + 1 {
+            let successor_head = format!("{successor_number:040x}").parse::<GitObjectId>()?;
+            history.record(current_subject, &successor_head, generation);
+        }
+
+        let evicted_head = format!("{:040x}", 1).parse::<GitObjectId>()?;
+        let oldest_retained_head = format!("{:040x}", 2).parse::<GitObjectId>()?;
+        assert_eq!(
+            history.entries.len(),
+            SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT
+        );
+        assert_eq!(
+            history.priority(superseded_subject, &superseded_head),
+            ScopedPatchEvaluationPriority::NotAttempted
+        );
+        assert_eq!(
+            history.priority(current_subject, &evicted_head),
+            ScopedPatchEvaluationPriority::NotAttempted
+        );
+        assert_eq!(
+            history.priority(current_subject, &oldest_retained_head),
+            ScopedPatchEvaluationPriority::LastAttemptedAt(generation)
         );
         Ok(())
     }

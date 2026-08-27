@@ -44,6 +44,7 @@ use crate::reservation::IntegrationProofSubjectRevision;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
+use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
 
 /// One append-only fact in the shared coordination journal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -269,6 +270,26 @@ pub(crate) enum JournalOperation {
         subject:        IntegrationProofSubjectRevision,
         /// The trunk object supplied to the comparison.
         target:         GitObjectId,
+    },
+    /// Record one definitive scoped-content verdict for a successor head.
+    SuccessorScopedPatchEquivalenceChecked {
+        /// The predecessor reservation whose protected content was checked.
+        predecessor_reservation_id: ReservationId,
+        /// The semantic revision of the checked baseline, content, and scopes.
+        subject:                    IntegrationProofSubjectRevision,
+        /// The successor head checked by git.
+        successor_head:             GitObjectId,
+        /// The definitive successor-incorporation verdict produced by the check.
+        verdict:                    SuccessorScopedPatchEquivalenceVerdict,
+    },
+    /// Record a successor comparison that produced no durable cache verdict.
+    SuccessorScopedPatchComparisonAttempted {
+        /// The predecessor reservation whose protected content was compared.
+        predecessor_reservation_id: ReservationId,
+        /// The semantic revision of the compared baseline, content, and scopes.
+        subject:                    IntegrationProofSubjectRevision,
+        /// The successor head supplied to the comparison.
+        successor_head:             GitObjectId,
     },
     /// Convert a previously recorded defer answer into an ordering edge.
     ResolveDefer {

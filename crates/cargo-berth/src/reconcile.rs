@@ -18,12 +18,12 @@ use crate::edge::EdgeReplayError;
 use crate::edge::IntegrationConstraintProjection;
 use crate::edge::MissingReadinessFact;
 use crate::edge::OrderingGraph;
-use crate::edge::PredecessorReachability;
+use crate::edge::PredecessorSuccessorIncorporation;
 use crate::edge::RepositoryReservationEvidence;
 use crate::edge::RepositoryReservationSnapshot;
 use crate::edge::RepositorySnapshot;
 use crate::edge::RepositoryTrunk;
-use crate::edge::SuccessorHeadReachability;
+use crate::edge::SuccessorIncorporationEvidence;
 use crate::gate::permit;
 use crate::gate::permit::PendingBypassMarkerImport;
 use crate::gate::permit::RecoveredPendingBypassMarker;
@@ -31,6 +31,7 @@ use crate::git;
 use crate::git::CandidateHeadReachability;
 use crate::git::DescendantCommitQuery;
 use crate::git::GitError;
+use crate::git::ProtectedTipSuccessorHeads;
 use crate::git::Reachability;
 use crate::git::ScopedPatchComparison;
 use crate::ids::CoordinationRunId;
@@ -77,6 +78,8 @@ use crate::reservation::ScopedPatchComparisonObservation;
 use crate::reservation::ScopedPatchEquivalenceCacheLookup;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
 use crate::reservation::ScopedPatchEvaluationPriority;
+use crate::reservation::SuccessorScopedPatchEquivalenceCacheLookup;
+use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
 use crate::scope::ScopeKind;
 use crate::worktree::WorktreeHead;
 use crate::worktree::WorktreeLiveness;
@@ -153,8 +156,9 @@ struct ReconciliationPlan {
 }
 
 struct ReconciliationEvidenceContext<'context> {
-    berth_config:                 &'context BerthConfig,
-    scoped_patch_evaluation_memo: &'context mut ScopedPatchEvaluationMemo,
+    berth_config:                             &'context BerthConfig,
+    scoped_patch_evaluation_memo:             &'context mut ScopedPatchEvaluationMemo,
+    successor_scoped_patch_evaluation_budget: &'context mut SuccessorScopedPatchEvaluationBudget,
 }
 
 struct TargetIntegrationEvidenceContext<'context> {
@@ -330,6 +334,57 @@ struct ScopedPatchEvaluationMemo {
     evaluated_targets: HashSet<GitObjectId>,
 }
 
+/// A fixed per-reconciliation budget shared by every pending successor target.
+///
+/// Reachability remains batched for all heads. Scoped equivalence is deliberately admitted once,
+/// and durable attempt generations rotate the next cold target to the front on later passes.
+#[derive(Default)]
+struct SuccessorScopedPatchEvaluationBudget {
+    comparison_performed: bool,
+}
+
+impl SuccessorScopedPatchEvaluationBudget {
+    fn evaluate(
+        &mut self,
+        evaluate: impl FnOnce() -> ScopedPatchComparison,
+    ) -> SuccessorScopedPatchComparisonObservation {
+        if self.comparison_performed {
+            SuccessorScopedPatchComparisonObservation::Deferred
+        } else {
+            self.comparison_performed = true;
+            SuccessorScopedPatchComparisonObservation::Observed(evaluate())
+        }
+    }
+}
+
+enum SuccessorScopedPatchComparisonObservation {
+    Observed(ScopedPatchComparison),
+    Deferred,
+}
+
+struct PredecessorSuccessorEvidenceSubject<'reservation> {
+    reservation:               &'reservation Reservation,
+    prior_integration_status:  PriorIntegrationStatus,
+    protected_reservation_tip: ProtectedReservationTip,
+    successor_heads:           Vec<GitObjectId>,
+}
+
+struct SuccessorScopedPatchEvaluationCandidate {
+    predecessor_index:          usize,
+    predecessor_reservation_id: ReservationId,
+    subject:                    IntegrationProofSubjectRevision,
+    phase_start_head:           GitObjectId,
+    scopes:                     crate::scope::ReservationScopeSet,
+    protected_tip:              GitObjectId,
+    successor_head:             GitObjectId,
+    priority:                   ScopedPatchEvaluationPriority,
+}
+
+struct SuccessorIncorporationObservation {
+    by_predecessor: Vec<(ReservationId, PredecessorSuccessorIncorporation)>,
+    operations:     Vec<JournalOperation>,
+}
+
 impl ScopedPatchEvaluationMemo {
     fn evaluate(
         &mut self,
@@ -368,7 +423,7 @@ pub(crate) struct GateReconciliationAction<Decision> {
 #[derive(Default)]
 struct ReconciliationChanges {
     operations:          Vec<JournalOperation>,
-    retention_repairs:   Vec<RetentionRepair>,
+    retention_repairs:   Vec<git::ReservationRetentionRefRepair>,
     retention_deletions: Vec<ReservationId>,
     evidence:            Vec<ReconciledEvidence>,
 }
@@ -377,7 +432,7 @@ struct ReconciliationAction {
     active_holders:                Vec<ActiveHolder>,
     marker_contexts:               Vec<WorktreeContext>,
     repository_root:               PathBuf,
-    retention_repairs:             Vec<RetentionRepair>,
+    retention_repairs:             Vec<git::ReservationRetentionRefRepair>,
     retention_deletions:           Vec<ReservationId>,
     alert_subjects:                Vec<AlertSubject>,
     evidence:                      Vec<ReconciledEvidence>,
@@ -393,11 +448,6 @@ struct ReconciliationAction {
 struct ActiveHolder {
     worktree_id:         WorktreeId,
     coordination_run_id: CoordinationRunId,
-}
-
-struct RetentionRepair {
-    reservation_id: ReservationId,
-    protected_tip:  ProtectedReservationTip,
 }
 
 struct AlertSubject {
@@ -506,9 +556,13 @@ fn reconcile_enrolled(
                         },
                     };
                 let mut scoped_patch_evaluation_memo = ScopedPatchEvaluationMemo::default();
+                let mut successor_scoped_patch_evaluation_budget =
+                    SuccessorScopedPatchEvaluationBudget::default();
                 let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
                     berth_config,
                     scoped_patch_evaluation_memo: &mut scoped_patch_evaluation_memo,
+                    successor_scoped_patch_evaluation_budget:
+                        &mut successor_scoped_patch_evaluation_budget,
                 };
                 let mut reconciliation_plan = match build_plan(
                     &reservations,
@@ -566,6 +620,10 @@ fn reconcile_enrolled(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one locked observation keeps repository facts and their journal updates coherent"
+)]
 fn build_plan(
     reservations: &RetainedReservationSet,
     ordering_graph: &OrderingGraph,
@@ -637,16 +695,21 @@ fn build_plan(
             evidence:          repository_evidence_observation.evidence,
         });
     }
-    let predecessor_reachability = predecessor_descendants(
+    let successor_incorporation = successor_incorporation_evidence(
         repository_root,
+        reservations,
         ordering_graph,
         repository_observation_scope,
         &reservation_snapshots,
-    );
+        reconciliation_evidence_context.successor_scoped_patch_evaluation_budget,
+    )?;
+    changes
+        .operations
+        .extend(successor_incorporation.operations);
     let repository_snapshot = RepositorySnapshot::new(
         repository_trunk,
         reservation_snapshots,
-        predecessor_reachability,
+        successor_incorporation.by_predecessor,
     );
     let active_holders = reservations
         .iter()
@@ -691,10 +754,11 @@ fn scoped_patch_evaluation_order<'reservation>(
 /// Prepare the actual reconciliation and proposed-ref constraint read from one replay.
 ///
 /// Each observed trunk target uses one `cat-file` batch and one grouped `rev-list` to classify all
-/// integration-proof ancestors. Graph predecessor queries use one additional `cat-file` batch and
-/// at most one grouped `rev-list` per protected predecessor. These invocation counts are
-/// independent of the total retained-reservation count. Scoped patch comparisons reuse identical
-/// proof inputs and evaluate at most one distinct proof subject for each observed trunk target.
+/// integration-proof ancestors. Graph predecessor queries use one grouped `rev-list` for every
+/// protected tip and successor head. Retention repair uses one `cat-file` batch and one
+/// `update-ref` transaction. These invocation counts are independent of the total retained-
+/// reservation count. Scoped patch comparisons reuse identical proof inputs and evaluate at most
+/// one distinct proof subject for each observed trunk target.
 pub(crate) fn prepare_gate_reconciliation(
     events: &[JournalEvent],
     generation: ProjectionGeneration,
@@ -709,28 +773,31 @@ pub(crate) fn prepare_gate_reconciliation(
     let worktree_registry = WorktreeRegistry::read(worktree_context.repository_root())
         .map_err(GateReconciliationError::WorktreeRegistry)?;
     let mut scoped_patch_evaluation_memo = ScopedPatchEvaluationMemo::default();
-    let mut reconciliation = {
-        let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
-            berth_config,
-            scoped_patch_evaluation_memo: &mut scoped_patch_evaluation_memo,
-        };
-        build_plan(
-            &reservations,
-            &ordering_graph,
-            RepositoryObservationScope::CurrentOrderingGraph,
-            &worktree_registry,
-            ledger_repository,
-            worktree_context,
-            &mut reconciliation_evidence_context,
-        )
-    }
+    let mut successor_scoped_patch_evaluation_budget =
+        SuccessorScopedPatchEvaluationBudget::default();
+    let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
+        berth_config,
+        scoped_patch_evaluation_memo: &mut scoped_patch_evaluation_memo,
+        successor_scoped_patch_evaluation_budget: &mut successor_scoped_patch_evaluation_budget,
+    };
+    let mut reconciliation = build_plan(
+        &reservations,
+        &ordering_graph,
+        RepositoryObservationScope::CurrentOrderingGraph,
+        &worktree_registry,
+        ledger_repository,
+        worktree_context,
+        &mut reconciliation_evidence_context,
+    )
     .map_err(GateReconciliationError::Reservation)?;
     let proposed_observation = observe_proposed_trunk(
         &reservations,
+        &ordering_graph,
+        RepositoryObservationScope::CurrentOrderingGraph,
         &reconciliation.action.repository_snapshot,
         worktree_context,
         proposed_trunk,
-        &mut scoped_patch_evaluation_memo,
+        &mut reconciliation_evidence_context,
     )?;
     for operation in proposed_observation.operations {
         if !reconciliation.operations.contains(&operation) {
@@ -749,10 +816,12 @@ pub(crate) fn prepare_gate_reconciliation(
 
 fn observe_proposed_trunk(
     reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    repository_observation_scope: RepositoryObservationScope,
     actual_snapshot: &RepositorySnapshot,
     worktree_context: &WorktreeContext,
     proposed_trunk: GitObjectId,
-    scoped_patch_evaluation_memo: &mut ScopedPatchEvaluationMemo,
+    reconciliation_evidence_context: &mut ReconciliationEvidenceContext<'_>,
 ) -> Result<ProposedTrunkObservation, GateReconciliationError> {
     let repository_trunk = RepositoryTrunk::Resolved(proposed_trunk);
     let integration_reachability = BatchedIntegrationReachability::observe(
@@ -762,10 +831,10 @@ fn observe_proposed_trunk(
     )
     .map_err(GateReconciliationError::Reservation)?;
     let mut target_evidence_context = TargetIntegrationEvidenceContext {
-        repository_root: worktree_context.repository_root(),
-        repository_trunk: &repository_trunk,
-        integration_reachability: &integration_reachability,
-        scoped_patch_evaluation_memo,
+        repository_root:              worktree_context.repository_root(),
+        repository_trunk:             &repository_trunk,
+        integration_reachability:     &integration_reachability,
+        scoped_patch_evaluation_memo: reconciliation_evidence_context.scoped_patch_evaluation_memo,
     };
     let mut indexed_evidence = scoped_patch_evaluation_order(reservations, &repository_trunk)
         .into_iter()
@@ -796,15 +865,21 @@ fn observe_proposed_trunk(
             })
         })
         .collect::<Result<Vec<_>, GateReconciliationError>>()?;
-    let predecessor_reachability = actual_snapshot
-        .predecessor_reachability()
-        .map(|(reservation_id, reachability)| (*reservation_id, reachability.clone()))
-        .collect();
+    let successor_incorporation = successor_incorporation_evidence(
+        worktree_context.repository_root(),
+        reservations,
+        ordering_graph,
+        repository_observation_scope,
+        &reservation_snapshots,
+        reconciliation_evidence_context.successor_scoped_patch_evaluation_budget,
+    )
+    .map_err(GateReconciliationError::Reservation)?;
+    operations.extend(successor_incorporation.operations);
     Ok(ProposedTrunkObservation {
         snapshot: RepositorySnapshot::new(
             repository_trunk,
             reservation_snapshots,
-            predecessor_reachability,
+            successor_incorporation.by_predecessor,
         ),
         operations,
     })
@@ -835,6 +910,8 @@ impl GateReconciliation {
                     operation,
                     JournalOperation::ScopedPatchEquivalenceChecked { .. }
                         | JournalOperation::ScopedPatchComparisonAttempted { .. }
+                        | JournalOperation::SuccessorScopedPatchEquivalenceChecked { .. }
+                        | JournalOperation::SuccessorScopedPatchComparisonAttempted { .. }
                 )
             })
             .collect::<Vec<_>>();
@@ -1239,10 +1316,14 @@ fn append_evidence_and_retention(
         },
     };
     match retention {
-        RetentionDecision::Repair => changes.retention_repairs.push(RetentionRepair {
-            reservation_id: reservation.id(),
-            protected_tip:  protected_tip.clone(),
-        }),
+        RetentionDecision::Repair => {
+            changes
+                .retention_repairs
+                .push(git::ReservationRetentionRefRepair::new(
+                    reservation.id(),
+                    protected_tip.as_ref().clone(),
+                ));
+        },
         RetentionDecision::Delete => changes.retention_deletions.push(reservation.id()),
     }
     let evidence_revalidation = match repository_evidence_observation.revalidation {
@@ -1335,12 +1416,18 @@ enum EvidenceRevalidation<'evidence> {
     NotApplicable,
 }
 
-fn predecessor_descendants(
+#[allow(
+    clippy::too_many_lines,
+    reason = "one grouped pass keeps reachability, cache lookup, scheduling, and snapshot facts coherent"
+)]
+fn successor_incorporation_evidence(
     repository_root: &Path,
+    reservations: &RetainedReservationSet,
     ordering_graph: &OrderingGraph,
     repository_observation_scope: RepositoryObservationScope,
     reservation_snapshots: &[RepositoryReservationSnapshot],
-) -> Vec<(ReservationId, PredecessorReachability)> {
+    evaluation_budget: &mut SuccessorScopedPatchEvaluationBudget,
+) -> Result<SuccessorIncorporationObservation, ReservationReplayError> {
     let snapshots_by_reservation = reservation_snapshots
         .iter()
         .map(|snapshot| (snapshot.reservation_id, snapshot))
@@ -1357,59 +1444,234 @@ fn predecessor_descendants(
             successors.push(after);
         }
     }
-    successors_by_predecessor
-        .into_iter()
-        .filter_map(|(predecessor_id, successors)| {
-            let predecessor_snapshot = snapshots_by_reservation.get(&predecessor_id)?;
-            let protected_tip = match &predecessor_snapshot.evidence {
-                RepositoryReservationEvidence::Outstanding { protected_tip, .. }
-                | RepositoryReservationEvidence::Released { protected_tip, .. } => protected_tip,
+    let mut predecessor_groups = successors_by_predecessor.into_iter().collect::<Vec<_>>();
+    predecessor_groups.sort_by_key(|(predecessor_id, _)| predecessor_id.to_string());
+    let mut evidence_subjects = Vec::new();
+    for (predecessor_id, successors) in predecessor_groups {
+        let Some(predecessor_snapshot) = snapshots_by_reservation.get(&predecessor_id) else {
+            continue;
+        };
+        let (protected_reservation_tip, prior_integration_status) =
+            match &predecessor_snapshot.evidence {
+                RepositoryReservationEvidence::Outstanding {
+                    protected_tip,
+                    integration_status,
+                }
+                | RepositoryReservationEvidence::Released {
+                    protected_tip,
+                    integration_status,
+                    ..
+                } => {
+                    let prior_integration_status = if matches!(
+                        integration_status,
+                        IntegrationEvidenceStatus::Integrated { .. }
+                    ) {
+                        PriorIntegrationStatus::Proven
+                    } else {
+                        PriorIntegrationStatus::Unproven
+                    };
+                    (protected_tip.clone(), prior_integration_status)
+                },
                 RepositoryReservationEvidence::Active
-                | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => return None,
+                | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => continue,
             };
-            let candidate_heads = successors
-                .iter()
-                .filter_map(|successor| {
-                    snapshots_by_reservation
-                        .get(successor)
-                        .and_then(|snapshot| match &snapshot.worktree_head {
-                            WorktreeHead::Resolved(head) => Some(head.clone()),
-                            WorktreeHead::Unavailable => None,
-                        })
-                })
-                .collect::<Vec<_>>();
-            if candidate_heads.is_empty() {
-                return None;
+        let mut candidate_heads = Vec::new();
+        for successor in successors {
+            let Some(successor_snapshot) = snapshots_by_reservation.get(&successor) else {
+                continue;
+            };
+            let WorktreeHead::Resolved(head) = &successor_snapshot.worktree_head else {
+                continue;
+            };
+            if !candidate_heads.contains(head) {
+                candidate_heads.push(head.clone());
             }
-            let predecessor_reachability =
-                git::descendant_commits(repository_root, protected_tip.as_ref(), &candidate_heads)
-                    .map_or(PredecessorReachability::QueryFailed, |query| match query {
-                        DescendantCommitQuery::Classified(candidate_heads) => {
-                            PredecessorReachability::Classified(
-                                candidate_heads
-                                    .into_iter()
-                                    .map(|candidate_head| match candidate_head {
-                                        CandidateHeadReachability::Descendant(head) => {
-                                            (head, SuccessorHeadReachability::ContainsPredecessor)
-                                        },
-                                        CandidateHeadReachability::NotDescendant(head) => (
-                                            head,
-                                            SuccessorHeadReachability::DoesNotContainPredecessor,
-                                        ),
-                                        CandidateHeadReachability::ObjectUnknown(head) => {
-                                            (head, SuccessorHeadReachability::ObjectUnknown)
-                                        },
-                                    })
-                                    .collect(),
-                            )
-                        },
-                        DescendantCommitQuery::AncestorObjectUnknown => {
-                            PredecessorReachability::ObjectUnknown
-                        },
-                    });
-            Some((predecessor_id, predecessor_reachability))
+        }
+        if candidate_heads.is_empty() {
+            continue;
+        }
+        let predecessor = reservations.reservation(predecessor_id)?;
+        evidence_subjects.push(PredecessorSuccessorEvidenceSubject {
+            reservation: predecessor,
+            prior_integration_status,
+            protected_reservation_tip,
+            successor_heads: candidate_heads,
+        });
+    }
+    let protected_tip_successor_heads = evidence_subjects
+        .iter()
+        .map(|subject| {
+            ProtectedTipSuccessorHeads::new(
+                subject.protected_reservation_tip.as_ref(),
+                &subject.successor_heads,
+            )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let descendant_commit_results =
+        git::descendant_commits(repository_root, &protected_tip_successor_heads);
+    let mut by_predecessor = Vec::new();
+    let mut pending_comparisons = Vec::new();
+    match descendant_commit_results {
+        Err(_) => {
+            by_predecessor.extend(evidence_subjects.into_iter().map(|subject| {
+                (
+                    subject.reservation.id(),
+                    PredecessorSuccessorIncorporation::QueryFailed,
+                )
+            }));
+        },
+        Ok(descendant_commit_queries) => {
+            for (evidence_subject, descendant_commit_query) in
+                evidence_subjects.into_iter().zip(descendant_commit_queries)
+            {
+                let predecessor = evidence_subject.reservation;
+                let predecessor_id = predecessor.id();
+                let subject = predecessor.integration_proof_subject_revision();
+                let predecessor_index = by_predecessor.len();
+                let incorporation = match descendant_commit_query {
+                    DescendantCommitQuery::AncestorObjectUnknown => {
+                        PredecessorSuccessorIncorporation::PredecessorObjectUnknown
+                    },
+                    DescendantCommitQuery::Classified(classified_heads) => {
+                        let mut evidence_by_head = HashMap::new();
+                        for classified_head in classified_heads {
+                            match classified_head {
+                                CandidateHeadReachability::Descendant(head) => {
+                                    evidence_by_head.insert(
+                                        head,
+                                        SuccessorIncorporationEvidence::ProtectedTipAncestor,
+                                    );
+                                },
+                                CandidateHeadReachability::ObjectUnknown(head) => {
+                                    evidence_by_head.insert(
+                                        head,
+                                        SuccessorIncorporationEvidence::ObjectUnknown,
+                                    );
+                                },
+                                CandidateHeadReachability::NotDescendant(head) => {
+                                    let evidence = if matches!(
+                                        evidence_subject.prior_integration_status,
+                                        PriorIntegrationStatus::Proven
+                                    ) {
+                                        match predecessor
+                                            .successor_scoped_patch_equivalence_cache()
+                                            .lookup(subject, &head)
+                                        {
+                                            SuccessorScopedPatchEquivalenceCacheLookup::Hit(
+                                                SuccessorScopedPatchEquivalenceVerdict::Equivalent,
+                                            ) => {
+                                                SuccessorIncorporationEvidence::ScopedPatchEquivalent
+                                            },
+                                            SuccessorScopedPatchEquivalenceCacheLookup::Hit(
+                                                SuccessorScopedPatchEquivalenceVerdict::Different,
+                                            ) => {
+                                                SuccessorIncorporationEvidence::NotIncorporated
+                                            },
+                                            SuccessorScopedPatchEquivalenceCacheLookup::Miss => {
+                                                pending_comparisons.push(
+                                                    SuccessorScopedPatchEvaluationCandidate {
+                                                        predecessor_index,
+                                                        predecessor_reservation_id: predecessor_id,
+                                                        subject,
+                                                        phase_start_head: predecessor
+                                                            .phase_start_head()
+                                                            .as_ref()
+                                                            .clone(),
+                                                        scopes: predecessor.scopes().clone(),
+                                                        protected_tip: evidence_subject
+                                                            .protected_reservation_tip
+                                                            .as_ref()
+                                                            .clone(),
+                                                        successor_head: head.clone(),
+                                                        priority: predecessor
+                                                            .successor_scoped_patch_evaluation_priority(
+                                                                &head,
+                                                            ),
+                                                    },
+                                                );
+                                                SuccessorIncorporationEvidence::NotIncorporated
+                                            },
+                                        }
+                                    } else {
+                                        SuccessorIncorporationEvidence::NotIncorporated
+                                    };
+                                    evidence_by_head.insert(head, evidence);
+                                },
+                            }
+                        }
+                        PredecessorSuccessorIncorporation::Classified(evidence_by_head)
+                    },
+                };
+                by_predecessor.push((predecessor_id, incorporation));
+            }
+        },
+    }
+
+    pending_comparisons.sort_by_key(|candidate| {
+        (
+            candidate.priority,
+            candidate.predecessor_reservation_id.to_string(),
+            candidate.successor_head.to_string(),
+        )
+    });
+    let mut operations = Vec::new();
+    for candidate in pending_comparisons {
+        let comparison = evaluation_budget.evaluate(|| {
+            git::scoped_patch_equivalence(
+                repository_root,
+                &candidate.phase_start_head,
+                &candidate.scopes,
+                &candidate.protected_tip,
+                &candidate.successor_head,
+            )
+            .unwrap_or(ScopedPatchComparison::Unavailable)
+        });
+        let SuccessorScopedPatchComparisonObservation::Observed(comparison) = comparison else {
+            continue;
+        };
+        let PredecessorSuccessorIncorporation::Classified(evidence_by_head) =
+            &mut by_predecessor[candidate.predecessor_index].1
+        else {
+            continue;
+        };
+        match comparison {
+            ScopedPatchComparison::Equivalent => {
+                evidence_by_head.insert(
+                    candidate.successor_head.clone(),
+                    SuccessorIncorporationEvidence::ScopedPatchEquivalent,
+                );
+                operations.push(JournalOperation::SuccessorScopedPatchEquivalenceChecked {
+                    predecessor_reservation_id: candidate.predecessor_reservation_id,
+                    subject:                    candidate.subject,
+                    successor_head:             candidate.successor_head,
+                    verdict:                    SuccessorScopedPatchEquivalenceVerdict::Equivalent,
+                });
+            },
+            ScopedPatchComparison::Different => {
+                operations.push(JournalOperation::SuccessorScopedPatchEquivalenceChecked {
+                    predecessor_reservation_id: candidate.predecessor_reservation_id,
+                    subject:                    candidate.subject,
+                    successor_head:             candidate.successor_head,
+                    verdict:                    SuccessorScopedPatchEquivalenceVerdict::Different,
+                });
+            },
+            ScopedPatchComparison::Unavailable => {
+                evidence_by_head.insert(
+                    candidate.successor_head.clone(),
+                    SuccessorIncorporationEvidence::ObjectUnknown,
+                );
+                operations.push(JournalOperation::SuccessorScopedPatchComparisonAttempted {
+                    predecessor_reservation_id: candidate.predecessor_reservation_id,
+                    subject:                    candidate.subject,
+                    successor_head:             candidate.successor_head,
+                });
+            },
+        }
+    }
+    Ok(SuccessorIncorporationObservation {
+        by_predecessor,
+        operations,
+    })
 }
 
 impl ReconciliationAction {
@@ -1437,18 +1699,7 @@ impl ReconciliationAction {
         for reservation_id in self.retention_deletions {
             git::delete_reservation_retention_ref(&self.repository_root, reservation_id)?;
         }
-        for retention_repair in self.retention_repairs {
-            if git::commit_is_available(
-                &self.repository_root,
-                retention_repair.protected_tip.as_ref(),
-            )? {
-                reservation::retain_protected_tip(
-                    &self.repository_root,
-                    retention_repair.reservation_id,
-                    &retention_repair.protected_tip,
-                )?;
-            }
-        }
+        git::repair_reservation_retention_refs(&self.repository_root, &self.retention_repairs)?;
         for marker_context in self.marker_contexts {
             let marker_worktree_id =
                 ledger::read_worktree_identity(marker_context.administrative_directory());
