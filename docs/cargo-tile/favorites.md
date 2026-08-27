@@ -708,311 +708,61 @@ order is load-bearing: `draw`'s index-to-mode `match` mirrors it positionally.
 for an invariant the reader could not act on; renaming `Favorite`, `FavoriteId`, or
 any save/load/delete path, which genuinely are about saved favorites.
 
-### Phase 8 — `u`, undo the last replacement  · status: todo
+### Phase 8 — `u`, undo the last replacement  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** One step back from any of the three actions that replace the current
-parameters wholesale.
+`u` restores the complete attract configuration displaced by the most recent
+wholesale replacement — mode, all three parameter sets, and both presentation
+values — and reports the result as one toast: nothing to undo, an exact restore
+naming the mode, or a restore naming which parameter sets the current terminal
+moved.
 
-**Spec:**
+`Attract::apply_settings` is the single capture site. It sizes every animation,
+captures the configuration it is about to displace into `ReplacementUndoState`,
+then applies. The three replacement paths — `r`, `m`, and `enter` — get undo
+without knowing the checkpoint exists. `ReplacementUndoState` is `Unavailable`
+or `Available(AttractConfigurationBeforeReplacement)`, and restore consumes it,
+so a second `u` says there is nothing to undo.
 
-`r`, `m` and `enter` in the table all replace the current mode's parameters
-wholesale. The failure is the press *after* the good one — something appears that
-you like and your hand has already pressed the key again. Saving first is the
-intended workflow, but the moment you would need it is the moment you do not take
-it.
+`restore_configuration_before_last_replacement` calls neither `apply_settings`
+nor `request_show`. It clears the checkpoint first, sizes every animation,
+applies the three parameter sets through their own `apply` methods, and writes
+mode and both presentation values into the private fields. It returns
+`AttractConfigurationRestoreOutcome`, whose adjusted arm carries
+`AdjustedAttractParameterSets` — the seven nonempty combinations, so "restored
+with adjustments, nothing adjusted" is unrepresentable.
 
-Capture the current mode, **all three parameter sets**, and how the attract screen
-was being presented. `AppGlobalAction::UndoAttractReplacement` on `u` restores them.
-
-**There is exactly one capture site, and it is `Attract::apply_settings`**
-(`attract/mod.rs:448`). Every wholesale replacement already goes through it, and
-nothing else does: `r` at `attract/mod.rs:383`, `enter` at
-`favorites_overlay.rs:135`, `m` at `globals.rs:136`. Each of those is reached only
-once its own candidate is certain — `m` has selected a recognized row, `enter` has
-one under the cursor, `r` has drawn a mode and settings — so the boundary satisfies
-this phase's ordering rule for all three at once. Inside the method the replacement
-begins at `self.mode = requested.mode()` (**452**); the capture goes immediately
-before that line, so what it stores is the configuration being replaced rather than
-the one replacing it. The presentation state it must capture alongside the
-parameters lives on the same `Attract` (**307**, **311**), so it is in reach.
-
-An earlier draft of this phase added the capture at three separate call sites.
-That rule predates `r`, whose replacement happens **inside** `Attract` rather than
-from outside it, and it is now both redundant and fragile: a fourth key added later
-would silently have no undo. **Do not reintroduce per-call-site capture.** The
-constraint that replaces it is: `apply_settings` sizes all modes, captures the mode,
-all three parameter sets and the presentation, then sets the requested mode and
-applies its settings — and **no non-replacement path may call `apply_settings`**.
-The two existing calls at `attract/mod.rs:1069` and **1078** are tests; capture
-there merely populates private undo state and produces no surface.
-
-**Capture after the replacement is certain, not before the key is handled.** `m`
-can find the file `Missing`, in an error state, or holding rows none of which this
-build recognizes, and in each of those it replaces nothing — and in each of those it
-never reaches `apply_settings`, so the single boundary gives this property for free
-rather than by discipline at three sites. Taking the checkpoint on the keypress
-would overwrite a good undo point with the current parameters and leave `u`
-restoring what is already on screen. One step only, and the one-step limit is the
-type's job, not a flag beside it:
-
-```rust
-enum ReplacementUndoState {
-    Unavailable,
-    Available(AttractConfigurationBeforeReplacement),
-}
-```
-
-Taking the checkpoint returns it to `Unavailable`, so a second `u` has nothing to
-restore because there is nothing there — not because a boolean said so.
-
-**`randomize_from_seed` must stop destroying the old mode before it applies.**
-As Phase 7 shipped it (`attract/mod.rs:375`), it assigns the drawn mode to
-`self.mode` at **376**, sizes, draws settings at **378**, and only then calls
-`apply_settings` at **383** — so a capture inside `apply_settings` would store the
-*new* mode against the *old* parameters. Refactor it: size all animations without
-touching `self.mode`, draw a local mode through `AttractMode::draw`, draw the
-settings for that explicit local mode, then call `apply_settings`, which sets the
-mode itself. `draw_random_settings` takes the mode as an argument instead of reading
-`self.mode`. Reuse `AttractMode::ALL` rather than re-listing the modes, and keep
-Phase 7's ordering guarantee — the animation is sized before its parameters are
-drawn — which is what `never_shown_band_is_sized_before_its_random_width_is_drawn`
-pins down.
-
-**Phase 3's sizing boundary is single-mode and this phase needs an all-mode one.**
-`Attract::size_current_animation` (`attract/mod.rs:480`) sizes only the animation
-the current mode selects, which is all Phase 3's save needed. Undo captures and
-restores **all three** parameter sets, so a mode that has never been shown — or one
-that was last sized against a taller terminal — would be captured or restored
-against a stale area. Add an all-mode zero-duration sizing operation beside it in
-`attract/mod.rs`, running the same `advance(area, Duration::ZERO)` pass over each of
-the three animations and recording each in `AnimationSizing`. Run it before the
-capture, before the restore, and before the random draw in `randomize_from_seed`.
-
-**"Whether the screen was up" is not a boolean and `showing()` cannot answer
-it.** `showing()` (`attract/mod.rs:617`) is only `faded != u8::MAX`, so it stays
-true through an entire fade-*out*, and it cannot tell a screen that came up
-because the grid went idle from one the reader explicitly asked for, nor either
-from one the reader dismissed. Restoring from a bool would put the screen into a
-position the reader never had.
-
-**But the presentation is richer than four coarse variants, and undo restores the
-settled position rather than the instant.** `Attract` actually carries four
-separate things: `Asked::{Nothing, For, Against}` (`attract/mod.rs:119`) — the
-reader's own standing instruction; `Standing::{Showing, Leaving, Working,
-Settling(Instant)}` (**143**) — where the screen stands with the roster, including
-two mid-transition positions; `covering` (**311**) — whether the screen replaces the
-grid or lies over it; and `faded` — numeric fade progress. A four-variant enum
-cannot describe that, and the earlier draft of this phase promised to restore a
-mid-fade-out position it had no way to represent.
-
-The rule for this phase is therefore: **capture what is durable, restore the
-reader's own instruction, and do not replay a transition.**
-
-- **Capture verbatim:** the standing instruction, because it is the reader's own
-  and is meaningful at any later moment; and the grid presentation, because it
-  decides whether the restored screen replaces the grid or lies over it.
-- **Do not capture a destination at all.** An earlier draft of this phase stored
-  where the screen was *heading* beside the instruction. That value cannot
-  survive the restore and must not be added. `advance()`
-  (`attract/mod.rs:726`) recomputes the fade direction every frame from the
-  standing instruction alone (`attract/mod.rs:775`): `Show` fades in, `Hide` fades
-  out, and `FollowRoster` hands the answer to the roster's `standing` as it is at
-  that frame. A stored destination is therefore either redundant or unreachable:
-  - Captured `Show` or `Hide`, the reader's own instruction **is** the
-    destination. Writing it back reproduces it exactly, with nothing else stored.
-  - Captured `FollowRoster`, the roster owned the answer when the checkpoint was
-    taken and still owns it now. Restoring `FollowRoster` and letting the roster
-    decide is the faithful restore. Forcing back a destination read a minute ago
-    would put the attract screen over a grid that has started working since — the
-    exact failure `Standing`'s hand-over rule (`attract/mod.rs:143`) exists to
-    prevent.
-- **Do not capture `faded` and do not restore it.** A fade is a transient. Putting
-  back a half-finished one reproduces a glitch rather than a state, and the reader
-  cannot have meant "and leave it 40% faded". The restore puts back the
-  instruction and lets the ordinary fade run on from wherever it stood, exactly
-  as the equivalent keypress would.
-
-**Make the two live fields semantic rather than capturing mirrors of them.**
-`Asked` does not say what is being asked for, and `covering` is a boolean carrying
-two domain positions. Writing a semantic capture type into either would not be a
-direct write, and would leave the vague state alive beside the clear one. So this
-phase changes the fields themselves:
-
-```rust
-enum AttractVisibilityInstruction { FollowRoster, Show, Hide }
-enum AttractGridPresentation { OverGrid, ReplacesGrid }
-
-struct AttractPresentationBeforeReplacement {
-    instruction:  AttractVisibilityInstruction,
-    presentation: AttractGridPresentation,
-}
-```
-
-`AttractVisibilityInstruction` **replaces** `Asked` throughout `Attract` —
-`FollowRoster` for `Nothing`, `Show` for `For`, `Hide` for `Against` — and
-`AttractGridPresentation` **replaces** the `covering: bool` field, with `OverGrid`
-and `ReplacesGrid` written out. Both are private to `attract/mod.rs`, so nothing
-outside cargo-tile sees the change and `crates/tui_pane/` stays byte-identical.
-Capture and restore then copy those two values verbatim, with no second enum
-mirroring a first. No four-variant approximation, no bool, and no separate
-destination.
-
-**The restore needs no transition of its own, and must not add one.** It writes
-the two captured values straight into the fields. That is simpler than a
-transition, it cannot lose them, and it is idempotent for free: writing the same
-two values twice leaves the same state, so a second restore — or restoring a
-screen that is already down — does nothing rather than toggling it.
-
-**The restore must not go through the capture boundary.** `apply_settings` now
-captures, so calling it during undo would overwrite the very checkpoint being
-consumed. The restore instead: moves `ReplacementUndoState` from `Available` to
-`Unavailable` first, runs the all-mode sizing, applies the saved band, text and
-pixel settings directly through their Phase 1 `apply` methods, writes back the mode
-and the two presentation values, and calls **neither `apply_settings` nor
-`request_show`**.
-
-**What `u` tells the reader, in all three of its outcomes.** An exact restore can
-legitimately put back a *hidden* screen, so "it worked" is not always visible and
-a silent `u` would read as a dead key. Every outcome gets a surface:
-
-- **Restored exactly** — a brief confirmation naming the mode that came back. It
-  is the one case where the screen may show nothing, so it is the case that most
-  needs saying.
-- **Restored with adjustments** — the terminal shrank since the checkpoint, so the
-  restore was clamped. Report through `AttractConfigurationRestoreOutcome`, naming
-  which of the three parameter sets moved.
-- **Nothing to undo** — `ReplacementUndoState::Unavailable`. Currently this is an
-  unexplained no-op, which is indistinguishable from a broken key. Say so.
-
-All three are toasts: `u` is a global action with no modal open, so nothing covers
-them. **Each must be registered with `App::schedule_timed_toast` beside its push**
-per the Delegation Context, or it will not animate on this loop.
-
-It covers all three replacing actions, not just the random draw: an undo that
-catches one but not the others is worse than none, because you cannot predict
-which press it will catch. The single boundary is what makes that guarantee
-structural rather than a matter of remembering three sites.
-
-`u` is unbound in every scope. Only `ctrl-u` is taken, by tui_pane's vim
-half-page scroll, and cargo-tile sets no vim mode — so `h` `j` `k` `l` are free
-too.
-
-`globals.rs`'s module doc (**12–22**) **enumerates** the non-grid globals and
-states no total. Name `u` in the group it belongs to and leave every count
-alone: Phase 6's only review finding was a count there that had been wrong since
-Phase 3.
+`AttractVisibilityInstruction` (`FollowRoster` / `Show` / `Hide`) and
+`AttractGridPresentation` (`OverGrid` / `ReplacesGrid`) replace the former
+`Asked` enum and `covering: bool`. They drive fade direction, keyboard
+ownership, the status-line attract note, and whether the grid is drawn — which
+is what makes an undo return the screen the viewer was actually looking at.
 
 **Files:**
-- `crates/cargo-tile/src/globals.rs` — `UndoAttractReplacement` variant, default
-  binding, dispatch arm, the module-doc line naming `u` in the non-grid group, and
-  the three `u` toasts with their `App::schedule_timed_toast` registrations. **No
-  capture goes in this file.** `show_random_favorite_with` (**127**) and
-  `show_random_favorite` (**123**) are unchanged by this phase; `m`'s replacement
-  reaches the capture through `app.attract.apply_settings(settings)` (**136**) like
-  every other one.
-- `crates/cargo-tile/src/attract/mod.rs` — the whole of the mechanism:
-  `AttractVisibilityInstruction` replacing `Asked`, `AttractGridPresentation`
-  replacing `covering: bool`, `ReplacementUndoState`,
-  `AttractConfigurationBeforeReplacement`,
-  `AttractPresentationBeforeReplacement`, `AttractConfigurationRestoreOutcome`, an
-  `Attract`-owned undo field initialized to `ReplacementUndoState::Unavailable`,
-  the all-mode zero-duration sizing operation beside `size_current_animation`
-  (**480**), the capture inside `apply_settings` (**448**, immediately before
-  **452**), the `randomize_from_seed` refactor (**375**), and the restore. No hide
-  transition — see Constraints.
-- `crates/cargo-tile/src/favorites_overlay.rs` — **no capture**. Its `dispatch`
-  (**130**) `FavoritesOverlayActionOutcome::Load(settings)` branch (**134**) already
-  reaches the boundary at `app.attract.apply_settings(settings)` (**135**). Listed
-  because `enter`'s integration tests live here.
-- `crates/cargo-tile/Cargo.toml` — patch version bump
-- `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
+- `crates/cargo-tile/src/attract/mod.rs` — the capture point, the undo state,
+  the restore path, the outcome types, and the two presentation enums.
+- `crates/cargo-tile/src/globals.rs` — the `u` binding and the three toasts.
+- `crates/cargo-tile/src/favorites_overlay.rs` — the `enter` load path's undo
+  coverage.
 
-**Constraints from prior phases:** The snapshot stores the mode plus one
-`BandSettings`, one `TextSettings` and one `PixelSettings`, and the two semantic
-presentation values — never a bool and never an `Option`. Phase 1's `settings()` on
-each animation is what the checkpoint reads, and each animation's `apply` is what
-restores it — an ordered semantic transition, so restoring a checkpoint leaves the
-same runtime state the equivalent keypress would. Phase 3's `size_current_animation`
-(`attract/mod.rs:480`) sizes **only the animation the current mode selects**; this
-phase adds the all-mode counterpart it needs, and Phase 3's
-`App::schedule_timed_toast` must be paired with every toast push here or the notice
-will not animate.
+**Gotchas:**
+- `apply_settings` sizes every animation before it captures. Capturing first
+  stores parameters for modes never shown and therefore never fitted to the
+  terminal, and those values are wrong the moment they are restored.
+- A test that sizes the animations itself cannot see that ordering defect; the
+  capture-order tests must let `apply_settings` perform the first sizing.
+- An undo test asserting only the settings cannot see a presentation value
+  captured in the wrong order; it has to build a non-default hidden-but-
+  grid-replacing state and compare the whole configuration.
+- `faded` is neither captured nor restored: fade progress is transient, and a
+  restore that reset it would visibly jump.
 
-**Phase 5's `Attract::request_show()` (`attract/mod.rs:367`) is a transition, and
-the restore must not call it.** It overwrites the standing instruction with `Show`
-*and* the grid presentation with `ReplacesGrid`, so neither captured value survives
-it, and `advance()` (`attract/mod.rs:775`) then reads the overwritten instruction to
-pick the fade direction — which is why calling it first and writing the captured
-values back afterwards would discard whatever it just did. The restore therefore
-writes both captured values straight into the private fields and calls no transition
-at all. **Do not add a hide transition to pair with `request_show()`**; an earlier
-draft of this constraint asked for one and there is nothing for it to do. Writing
-only the presentation is the other failure that draft invited: a checkpoint holding
-`FollowRoster` or `Hide` would come back as `Show`, so `u` would turn the screen on
-for a reader who had dismissed it or never asked for it. Because both fields are
-private with no setters, the whole restore lives inside `attract/mod.rs`; no caller
-writes either one.
-
-`apply_settings` (`attract/mod.rs:448`) already sizes the requested mode's animation
-itself, so the all-mode sizing this phase adds is additional to that call rather
-than a replacement for it. Its return type, `SettingsApplicationOutcome`, carries
-**one** `AttractSettings` in `AppliedWithAdjustments { requested, effective }` — the
-single mode's parameters that one replacement applied. That type cannot describe
-this phase's restore and must not be reused for it: an undo puts back the mode,
-*all three* parameter sets, and the presentation state, so a report shaped around
-one settings variant would be a name that is not true of its payload.
-
-This phase therefore owns two of its own types: a full semantic configuration
-snapshot — the same shape `AttractConfigurationBeforeReplacement` stores — and
-`AttractConfigurationRestoreOutcome`, which compares the requested and effective
-**full** configurations and names which of the three parameter sets moved. A
-restore that has to be clamped, because the terminal shrank since the checkpoint,
-reports through that outcome rather than applying it silently. Phase 3's
-terminal-area state and zero-duration sizing boundary run before the restore for
-the same reason.
-
-**Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
-
-- A direct call to `apply_settings` captures the immediately preceding full
-  configuration — mode, all three parameter sets, and both presentation values —
-  and leaves `ReplacementUndoState::Available`.
-- After each of the three replacing actions, `u` restores the mode, all three
-  parameter sets, the standing instruction and the grid presentation — proven
-  separately for a screen that came up automatically, one the reader asked for,
-  one the reader dismissed, and one fully hidden.
-- **`r` then `u` across a mode change restores the pre-`r` mode**, not the drawn
-  one: with a fixed seed that draws a different mode than the one showing, the
-  checkpoint holds the mode being replaced.
-- A checkpoint taken mid-fade does **not** put back a partial fade: `faded` is
-  untouched by the restore and the ordinary fade carries on from wherever it
-  stood. Proven separately for each captured instruction — `Show` brings the
-  screen in, `Hide` sends it away, and `FollowRoster` follows the roster as it
-  stands at the moment of the restore rather than as it stood at the checkpoint.
-- All three restore outcomes reach the reader: an exact restore onto a hidden
-  screen still shows a confirmation, an adjusted restore names which parameter
-  sets moved, and `u` with nothing to undo says so instead of doing nothing
-  visible. Each of those toasts animates and expires with updates frozen and no
-  input arriving.
-- A mode that has never been shown is sized before it is captured and before it is
-  restored: capturing on one terminal size, shrinking, then restoring reports the
-  adjustment rather than storing or applying an unsized sentinel.
-- A second `u` does not step back twice: the state is `Unavailable` after the
-  first, and the restore is a no-op rather than a toggle.
-- Restoring onto a terminal smaller than the one the checkpoint was taken on
-  reports the adjustment through `AttractConfigurationRestoreOutcome`, naming
-  which of the three parameter sets moved, instead of correcting silently.
-- **A replacement that never happens leaves the checkpoint alone.** A press of `m`
-  with the file missing, in an error state, or holding no recognized rows, and an
-  `enter` with no selected recognized row, both leave an existing
-  `ReplacementUndoState::Available` exactly as it was, and the following `u` still
-  restores the configuration from before the last real replacement.
-- **Undo composes with an adjusted replacement, proven at both call sites.**
-  `enter` on an out-of-range favorite and `m` drawing one each capture the prior
-  full configuration, keep the adjusted-favorite warning Phase 5 and Phase 6 raise
-  through their own reporters, and leave the favorites TOML byte-identical — the
-  clamp is in the running state, never written back. A following `u` then restores
-  the configuration from before that replacement, not the clamped one. The
-  equivalent exact load at either call site stays quiet and still leaves a usable
-  undo point.
+**Ruled out:**
+- Capturing at each call site rather than inside `apply_settings` — three copies
+  of the same checkpoint, each able to drift.
+- Restoring through `apply_settings` — it would capture a fresh checkpoint from
+  the undo itself, making `u` its own undo target.
+- Renaming `AttractPresentation` to state it holds only the restorable subset —
+  the enclosing `AttractConfiguration` already carries that meaning.
+- Capturing or restoring `faded`.

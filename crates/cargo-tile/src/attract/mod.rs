@@ -43,6 +43,7 @@ mod moving_text;
 mod pixelate;
 
 use std::io;
+use std::mem;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
@@ -52,8 +53,11 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tui_pane::BackdropMonitor;
 use tui_pane::BandDirection;
+use tui_pane::BandSettings;
 use tui_pane::DriftingText;
+use tui_pane::PixelSettings;
 use tui_pane::ResolvingPixels;
+use tui_pane::TextSettings;
 use tui_pane::TravelingBand;
 use tui_pane::pane_background;
 
@@ -107,8 +111,8 @@ pub(crate) enum Work {
     Running,
 }
 
-/// What the reader has said about the strip, which outranks what the
-/// roster says about it.
+/// What the reader has instructed the attract screen to do, which
+/// outranks what the roster says about it.
 ///
 /// Two answers would not be enough. The strip comes on by itself over
 /// an idle grid, so "not asked for" and "asked to go" are the same
@@ -116,16 +120,26 @@ pub(crate) enum Work {
 /// them as one is what left `a` unable to put the strip away at
 /// exactly the moment it is being watched.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum Asked {
-    /// Nothing either way, which leaves it to the roster.
+pub(crate) enum AttractVisibilityInstruction {
+    /// Follow whether the roster is idle or working.
     #[default]
-    Nothing,
-    /// For the strip, which brings it in over a grid with work on it as
-    /// readily as over an empty one.
-    For,
-    /// Against it, which sends it away over an idle grid, where the
-    /// roster would otherwise be keeping it.
-    Against,
+    FollowRoster,
+    /// Show the screen over a grid with work as readily as over an
+    /// empty one.
+    Show,
+    /// Hide the screen even over an idle grid, where the roster would
+    /// otherwise keep it visible.
+    Hide,
+}
+
+/// Whether the attract screen is drawn over the grid or replaces it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum AttractGridPresentation {
+    /// Draw the attract screen over the grid.
+    #[default]
+    OverGrid,
+    /// Leave the grid out while the attract screen has the terminal.
+    ReplacesGrid,
 }
 
 /// Where the screen stands with the roster, which is not the same as
@@ -153,6 +167,128 @@ enum Standing {
     /// and stops inside a couple of seconds does not hand the terminal
     /// over and take it again.
     Settling(Instant),
+}
+
+/// Durable presentation state that survives a wholesale parameter replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AttractPresentation {
+    /// The reader's standing instruction to the attract screen.
+    pub(crate) visibility_instruction: AttractVisibilityInstruction,
+    /// Whether the attract screen covers or replaces the grid.
+    pub(crate) grid_presentation:      AttractGridPresentation,
+}
+
+/// Complete semantic attract configuration at one instant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AttractConfiguration {
+    /// Animation selected for display and keyboard input.
+    pub(crate) mode:         AttractMode,
+    /// Moving-band parameters.
+    pub(crate) band:         BandSettings,
+    /// Moving-text parameters.
+    pub(crate) text:         TextSettings,
+    /// Pixelate parameters.
+    pub(crate) pixels:       PixelSettings,
+    /// Durable presentation state.
+    pub(crate) presentation: AttractPresentation,
+}
+
+/// Complete configuration displaced by the most recent wholesale replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AttractConfigurationBeforeReplacement(AttractConfiguration);
+
+/// Parameter sets adjusted while restoring a complete attract configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AdjustedAttractParameterSets {
+    /// Only moving-band parameters were adjusted.
+    MovingBand,
+    /// Only moving-text parameters were adjusted.
+    MovingText,
+    /// Only pixelate parameters were adjusted.
+    Pixelate,
+    /// Moving-band and moving-text parameters were adjusted.
+    MovingBandAndMovingText,
+    /// Moving-band and pixelate parameters were adjusted.
+    MovingBandAndPixelate,
+    /// Moving-text and pixelate parameters were adjusted.
+    MovingTextAndPixelate,
+    /// All three parameter sets were adjusted.
+    MovingBandAndMovingTextAndPixelate,
+}
+
+impl AdjustedAttractParameterSets {
+    /// Reader-facing names of the parameter sets adjusted during restore.
+    pub(crate) const fn names(self) -> &'static str {
+        match self {
+            Self::MovingBand => "moving band",
+            Self::MovingText => "moving text",
+            Self::Pixelate => "pixelate",
+            Self::MovingBandAndMovingText => "moving band and moving text",
+            Self::MovingBandAndPixelate => "moving band and pixelate",
+            Self::MovingTextAndPixelate => "moving text and pixelate",
+            Self::MovingBandAndMovingTextAndPixelate => "moving band, moving text, and pixelate",
+        }
+    }
+}
+
+/// Availability of the one-step wholesale-replacement undo point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplacementUndoState {
+    /// No wholesale replacement is available to restore.
+    Unavailable,
+    /// The complete configuration displaced by the latest replacement.
+    Available(AttractConfigurationBeforeReplacement),
+}
+
+/// Result of trying to restore the configuration before the latest replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AttractConfigurationRestoreOutcome {
+    /// No replacement was available to undo.
+    NothingToUndo,
+    /// The complete configuration was restored unchanged.
+    RestoredExactly {
+        /// Mode selected by the restored configuration.
+        mode: AttractMode,
+    },
+    /// Current terminal bounds adjusted one or more restored parameter sets.
+    RestoredWithAdjustments {
+        /// Mode selected by the restored configuration.
+        mode:                    AttractMode,
+        /// Parameter sets adjusted to current animation bounds.
+        adjusted_parameter_sets: AdjustedAttractParameterSets,
+    },
+}
+
+impl AttractConfigurationRestoreOutcome {
+    fn from_configurations(
+        requested: AttractConfiguration,
+        effective: AttractConfiguration,
+    ) -> Self {
+        use AdjustedAttractParameterSets as Adjusted;
+
+        let adjusted_parameter_sets = match (
+            requested.band == effective.band,
+            requested.text == effective.text,
+            requested.pixels == effective.pixels,
+        ) {
+            (true, true, true) => {
+                return Self::RestoredExactly {
+                    mode: effective.mode,
+                };
+            },
+            (false, true, true) => Adjusted::MovingBand,
+            (true, false, true) => Adjusted::MovingText,
+            (true, true, false) => Adjusted::Pixelate,
+            (false, false, true) => Adjusted::MovingBandAndMovingText,
+            (false, true, false) => Adjusted::MovingBandAndPixelate,
+            (true, false, false) => Adjusted::MovingTextAndPixelate,
+            (false, false, false) => Adjusted::MovingBandAndMovingTextAndPixelate,
+        };
+        Self::RestoredWithAdjustments {
+            mode: effective.mode,
+            adjusted_parameter_sets,
+        }
+    }
 }
 
 /// Terminal area most recently passed through the app's frame layout.
@@ -268,82 +404,84 @@ impl AnimationSizing {
 /// The attract screen's state between frames.
 pub(crate) struct Attract {
     /// Keeps the captured desktop up to date on a worker thread.
-    monitor:          BackdropMonitor,
+    monitor:                BackdropMonitor,
     /// Which animation is being drawn, and which keymap scope the
     /// reader's keys resolve against while it is on screen.
-    mode:             AttractMode,
+    mode:                   AttractMode,
     /// Terminal area used to size the current animation before its
     /// parameters are read or drawn.
-    laid_out_area:    LaidOutArea,
+    laid_out_area:          LaidOutArea,
     /// Resize input received after the most recent frame layout.
-    pending_resize:   PendingTerminalResize,
+    pending_resize:         PendingTerminalResize,
     /// Last terminal area applied to each animation's internal buffers.
-    animation_sizing: AnimationSizing,
+    animation_sizing:       AnimationSizing,
+    /// Complete configuration displaced by the latest wholesale replacement.
+    replacement_undo:       ReplacementUndoState,
     /// The strip of characters crossing the grid.
-    band:             TravelingBand,
+    band:                   TravelingBand,
     /// The window of characters drifting line by line.
-    text:             DriftingText,
+    text:                   DriftingText,
     /// The desktop drawn as itself, coarsening under a travelling wave.
-    pixels:           ResolvingPixels,
+    pixels:                 ResolvingPixels,
     /// How far into a run of presses of one of the band's steering keys
     /// the reader is, which is what lets a held key move it further per
     /// press.
-    held_band:        HeldKey<MovingBandAction>,
+    held_band:              HeldKey<MovingBandAction>,
     /// The same for the text's own keys. One run each, so turning
     /// between the animations does not hand the second whatever speed
     /// the first was climbing at.
-    held_text:        HeldKey<MovingTextAction>,
+    held_text:              HeldKey<MovingTextAction>,
     /// And the same again for the pixelate screen's.
-    held_pixels:      HeldKey<PixelateAction>,
+    held_pixels:            HeldKey<PixelateAction>,
     /// How far the strip is carried toward the ground it is drawn on,
     /// on the alpha scale [`tui_pane::blend_color`] reads. Starts at
     /// [`u8::MAX`] so the app opens with nothing over its grid.
-    faded:            u8,
+    faded:                  u8,
     /// When the strip was last moved on, so its speed is a speed rather
     /// than a step per frame.
-    advanced_at:      Instant,
-    /// What the reader has said about the strip, which the roster does
+    advanced_at:            Instant,
+    /// What the reader has told the screen to do, which the roster does
     /// not get to overrule either way.
-    asked:            Asked,
-    /// Whether the grid is being left out of the frame altogether. Not
-    /// the same as [`Self::asked_for`]: it outlasts it, by the fade the
-    /// strip takes to leave.
-    covering:         bool,
+    visibility_instruction: AttractVisibilityInstruction,
+    /// Whether the grid is drawn under the attract screen or left out
+    /// of the frame altogether.
+    grid_presentation:      AttractGridPresentation,
     /// Whether the display was being held still when the strip was last
     /// drawn, which is what says the gap since then is not travel the
     /// strip owes.
-    held:             bool,
+    held:                   bool,
     /// Where the screen stands with the roster, which is what keeps a
     /// hand-over from turning around part way through it.
-    standing:         Standing,
+    standing:               Standing,
     /// What the last pass at settling on a window answered, so the
     /// probe notes the answer changing rather than every frame's
     /// repeat of it. [`None`] until the first pass.
-    identified:       Option<bool>,
+    identified:             Option<bool>,
 }
 
 impl Attract {
     /// An attract screen that is not yet showing.
     pub(crate) fn new() -> Self {
         Self {
-            monitor:          BackdropMonitor::new(),
-            mode:             AttractMode::default(),
-            laid_out_area:    LaidOutArea::NeverLaidOut,
-            pending_resize:   PendingTerminalResize::NotReported,
-            animation_sizing: AnimationSizing::default(),
-            band:             TravelingBand::new(),
-            text:             DriftingText::new(),
-            pixels:           ResolvingPixels::new(),
-            held_band:        HeldKey::new(),
-            held_text:        HeldKey::new(),
-            held_pixels:      HeldKey::new(),
-            faded:            u8::MAX,
-            advanced_at:      Instant::now(),
-            asked:            Asked::Nothing,
-            covering:         false,
-            held:             false,
-            standing:         Standing::Showing,
-            identified:       None,
+            monitor:                BackdropMonitor::new(),
+            mode:                   AttractMode::default(),
+            laid_out_area:          LaidOutArea::NeverLaidOut,
+            pending_resize:         PendingTerminalResize::NotReported,
+            animation_sizing:       AnimationSizing::default(),
+            replacement_undo:       ReplacementUndoState::Unavailable,
+            band:                   TravelingBand::new(),
+            text:                   DriftingText::new(),
+            pixels:                 ResolvingPixels::new(),
+            held_band:              HeldKey::new(),
+            held_text:              HeldKey::new(),
+            held_pixels:            HeldKey::new(),
+            faded:                  u8::MAX,
+            advanced_at:            Instant::now(),
+            visibility_instruction: AttractVisibilityInstruction::FollowRoster,
+            grid_presentation:      AttractGridPresentation::OverGrid,
+            held:                   false,
+            standing:               Standing::Showing,
+            identified:             None,
         }
     }
 
@@ -354,28 +492,33 @@ impl Attract {
     /// would show one frame of the grid with the strip over it -- the
     /// very look this is here to avoid.
     pub(crate) const fn toggle(&mut self) {
-        self.asked = match self.asked {
-            Asked::For => Asked::Against,
-            Asked::Nothing | Asked::Against => Asked::For,
+        self.visibility_instruction = match self.visibility_instruction {
+            AttractVisibilityInstruction::Show => AttractVisibilityInstruction::Hide,
+            AttractVisibilityInstruction::FollowRoster | AttractVisibilityInstruction::Hide => {
+                AttractVisibilityInstruction::Show
+            },
         };
-        if matches!(self.asked, Asked::For) {
-            self.covering = true;
+        if matches!(
+            self.visibility_instruction,
+            AttractVisibilityInstruction::Show
+        ) {
+            self.grid_presentation = AttractGridPresentation::ReplacesGrid;
         }
     }
 
     /// Ask for the attract screen regardless of its current fade direction.
     pub(crate) const fn request_show(&mut self) {
-        self.asked = Asked::For;
-        self.covering = true;
+        self.visibility_instruction = AttractVisibilityInstruction::Show;
+        self.grid_presentation = AttractGridPresentation::ReplacesGrid;
     }
 
     /// Draw and apply a fresh mode and parameters, then show the result.
     pub(crate) fn randomize(&mut self) { self.randomize_from_seed(random::clock_seed()); }
 
     fn randomize_from_seed(&mut self, seed: u64) {
-        self.mode = AttractMode::draw(seed);
-        self.size_current_animation();
-        let drawn_settings = self.draw_random_settings(seed);
+        self.size_all_animations();
+        let drawn_mode = AttractMode::draw(seed);
+        let drawn_settings = self.draw_random_settings(drawn_mode, seed);
         // Applied unconditionally: the check below compiles out of release
         // builds, so the call cannot live inside it. An adjusted outcome is a
         // drawing bug rather than something the viewer should be made to see,
@@ -384,13 +527,13 @@ impl Attract {
         debug_assert_eq!(
             outcome,
             SettingsApplicationOutcome::AppliedExactly,
-            "settings drawn after size_current_animation must satisfy the animation bounds",
+            "settings drawn after size_all_animations must satisfy the animation bounds",
         );
         self.request_show();
     }
 
-    fn draw_random_settings(&self, seed: u64) -> AttractSettings {
-        match self.mode {
+    fn draw_random_settings(&self, mode: AttractMode, seed: u64) -> AttractSettings {
+        match mode {
             AttractMode::MovingBand => AttractSettings::MovingBand(self.band.random_settings(seed)),
             AttractMode::MovingText => AttractSettings::MovingText(self.text.random_settings(seed)),
             AttractMode::Pixelate => AttractSettings::Pixelate(self.pixels.random_settings(seed)),
@@ -401,7 +544,12 @@ impl Attract {
     /// is what the status line says: a grid taken off the screen by the
     /// attract screen otherwise looks exactly like a grid with nothing
     /// on it.
-    pub(crate) const fn asked_for(&self) -> bool { matches!(self.asked, Asked::For) }
+    pub(crate) const fn asked_for(&self) -> bool {
+        matches!(
+            self.visibility_instruction,
+            AttractVisibilityInstruction::Show
+        )
+    }
 
     /// Which animation is taking the reader's keys, or [`None`] while
     /// there is a grid on screen for them to mean what they usually do.
@@ -423,7 +571,11 @@ impl Attract {
     /// a developer who has stopped typing has not stopped meaning
     /// "settings".
     pub(crate) const fn keyed_mode(&self) -> Option<AttractMode> {
-        if matches!(self.asked, Asked::For) || self.faded == 0 {
+        if matches!(
+            self.visibility_instruction,
+            AttractVisibilityInstruction::Show
+        ) || self.faded == 0
+        {
             Some(self.mode)
         } else {
             None
@@ -449,8 +601,11 @@ impl Attract {
         &mut self,
         requested: AttractSettings,
     ) -> SettingsApplicationOutcome {
+        self.size_all_animations();
+        self.replacement_undo = ReplacementUndoState::Available(
+            AttractConfigurationBeforeReplacement(self.configuration()),
+        );
         self.mode = requested.mode();
-        self.size_current_animation();
         let effective = match requested {
             AttractSettings::MovingBand(settings) => {
                 self.band.apply(settings);
@@ -475,14 +630,76 @@ impl Attract {
         }
     }
 
+    /// Restore the complete configuration displaced by the latest replacement.
+    pub(crate) fn restore_configuration_before_last_replacement(
+        &mut self,
+    ) -> AttractConfigurationRestoreOutcome {
+        let checkpoint = mem::replace(
+            &mut self.replacement_undo,
+            ReplacementUndoState::Unavailable,
+        );
+        let ReplacementUndoState::Available(AttractConfigurationBeforeReplacement(requested)) =
+            checkpoint
+        else {
+            return AttractConfigurationRestoreOutcome::NothingToUndo;
+        };
+
+        self.size_all_animations();
+        self.band.apply(requested.band);
+        self.text.apply(requested.text);
+        self.pixels.apply(requested.pixels);
+        self.mode = requested.mode;
+        self.visibility_instruction = requested.presentation.visibility_instruction;
+        self.grid_presentation = requested.presentation.grid_presentation;
+
+        AttractConfigurationRestoreOutcome::from_configurations(requested, self.configuration())
+    }
+
+    pub(crate) const fn configuration(&self) -> AttractConfiguration {
+        AttractConfiguration {
+            mode:         self.mode,
+            band:         self.band.settings(),
+            text:         self.text.settings(),
+            pixels:       self.pixels.settings(),
+            presentation: AttractPresentation {
+                visibility_instruction: self.visibility_instruction,
+                grid_presentation:      self.grid_presentation,
+            },
+        }
+    }
+
     /// Size the selected animation to the latest frame or resize area
     /// without moving it.
     fn size_current_animation(&mut self) {
-        let area = match (self.pending_resize, self.laid_out_area) {
-            (PendingTerminalResize::Reported(area), _) | (_, LaidOutArea::LaidOut(area)) => area,
-            (PendingTerminalResize::NotReported, LaidOutArea::NeverLaidOut) => return,
+        let LaidOutArea::LaidOut(area) = self.latest_sizing_area() else {
+            return;
         };
         let attract_mode = self.mode;
+        self.size_animation(attract_mode, area);
+    }
+
+    /// Size every animation to the latest frame or resize area without moving it.
+    fn size_all_animations(&mut self) {
+        let LaidOutArea::LaidOut(area) = self.latest_sizing_area() else {
+            return;
+        };
+        for attract_mode in AttractMode::ALL {
+            self.size_animation(attract_mode, area);
+        }
+    }
+
+    const fn latest_sizing_area(&self) -> LaidOutArea {
+        match (self.pending_resize, self.laid_out_area) {
+            (PendingTerminalResize::Reported(area), _) | (_, LaidOutArea::LaidOut(area)) => {
+                LaidOutArea::LaidOut(area)
+            },
+            (PendingTerminalResize::NotReported, LaidOutArea::NeverLaidOut) => {
+                LaidOutArea::NeverLaidOut
+            },
+        }
+    }
+
+    fn size_animation(&mut self, attract_mode: AttractMode, area: Rect) {
         if self.animation_sizing.area(attract_mode) == LastSizedArea::Sized(area) {
             return;
         }
@@ -596,7 +813,7 @@ impl Attract {
     /// backwards: the panes come back bare under a strip still crossing
     /// them, and only fill once it has gone.
     const fn grid(&self) -> Grid {
-        if !self.covering {
+        if matches!(self.grid_presentation, AttractGridPresentation::OverGrid) {
             return Grid::Full;
         }
         if self.faded == 0 {
@@ -756,9 +973,9 @@ impl Attract {
         // has not been idle since -- so the screen re-arms and comes
         // back by itself once this finishes, as it would have before.
         if work == Work::Running {
-            self.asked = match self.asked {
-                Asked::Against => Asked::Nothing,
-                asked => asked,
+            self.visibility_instruction = match self.visibility_instruction {
+                AttractVisibilityInstruction::Hide => AttractVisibilityInstruction::FollowRoster,
+                instruction => instruction,
             };
         }
         // Asked for, the roster does not get a say: the strip comes in
@@ -772,10 +989,10 @@ impl Attract {
         // standing describes the roster rather than the last frame the
         // roster had the answer.
         let standing = self.stand(work, now);
-        let work = match self.asked {
-            Asked::For => Work::Idle,
-            Asked::Against => Work::Running,
-            Asked::Nothing => standing,
+        let work = match self.visibility_instruction {
+            AttractVisibilityInstruction::Show => Work::Idle,
+            AttractVisibilityInstruction::Hide => Work::Running,
+            AttractVisibilityInstruction::FollowRoster => standing,
         };
         self.faded = match work {
             Work::Idle => self.faded.saturating_sub(ATTRACT_FADE_STEP),
@@ -798,8 +1015,18 @@ impl Attract {
         }
         // The grid comes back only once the strip has gone the whole
         // way, which is also where there is nothing left to draw.
-        self.covering =
-            matches!(self.asked, Asked::For) || (self.covering && self.faded != u8::MAX);
+        self.grid_presentation = if matches!(
+            self.visibility_instruction,
+            AttractVisibilityInstruction::Show
+        ) || (matches!(
+            self.grid_presentation,
+            AttractGridPresentation::ReplacesGrid
+        ) && self.faded != u8::MAX)
+        {
+            AttractGridPresentation::ReplacesGrid
+        } else {
+            AttractGridPresentation::OverGrid
+        };
         if self.faded == u8::MAX {
             self.size_current_animation();
             return self.grid();
@@ -949,7 +1176,7 @@ mod tests {
 
         for seed in 0..=4095 {
             attract.randomize_from_seed(seed);
-            let target = attract.draw_random_settings(seed);
+            let target = attract.draw_random_settings(AttractMode::draw(seed), seed);
 
             assert_eq!(attract.current_settings(), target);
             modes.insert(target.mode());
@@ -1087,6 +1314,250 @@ mod tests {
         assert_eq!(reported, requested);
         assert_ne!(effective, requested);
         assert_eq!(attract.current_settings(), effective);
+    }
+
+    #[test]
+    fn settings_application_captures_the_complete_configuration_it_replaces() {
+        let mut attract = Attract::new();
+        attract.record_terminal_resize(AREA);
+        attract.request_show();
+        let before_first_sizing = attract.configuration();
+        let replacement = AttractSettings::MovingText(attract.text.settings());
+
+        attract.apply_settings(replacement);
+
+        let before = attract.configuration();
+        assert_ne!(
+            before.band, before_first_sizing.band,
+            "the first all-mode sizing adjusts the never-shown moving band before capture"
+        );
+        assert_eq!(
+            attract.replacement_undo,
+            ReplacementUndoState::Available(AttractConfigurationBeforeReplacement(before))
+        );
+        assert_eq!(attract.mode, AttractMode::MovingText);
+    }
+
+    #[test]
+    fn randomize_captures_the_mode_being_replaced_before_drawing_a_new_one() {
+        let mut attract = Attract::new();
+        attract.record_terminal_resize(AREA);
+        attract.size_all_animations();
+        let before = attract.configuration();
+        let Some(seed) = (0..=4095).find(|seed| AttractMode::draw(*seed) != before.mode) else {
+            panic!("the fixed seed corpus should draw a different mode");
+        };
+
+        attract.randomize_from_seed(seed);
+
+        let ReplacementUndoState::Available(AttractConfigurationBeforeReplacement(captured)) =
+            attract.replacement_undo
+        else {
+            panic!("randomization should leave an undo point");
+        };
+        assert_eq!(captured, before);
+        assert_ne!(attract.mode, before.mode);
+
+        assert_eq!(
+            attract.restore_configuration_before_last_replacement(),
+            AttractConfigurationRestoreOutcome::RestoredExactly { mode: before.mode }
+        );
+        assert_eq!(attract.configuration(), before);
+    }
+
+    #[test]
+    fn restore_consumes_the_only_undo_point() {
+        let mut attract = Attract::new();
+        attract.record_terminal_resize(AREA);
+        attract.apply_settings(AttractSettings::MovingBand(attract.band.settings()));
+
+        assert!(matches!(
+            attract.restore_configuration_before_last_replacement(),
+            AttractConfigurationRestoreOutcome::RestoredExactly { .. }
+        ));
+        assert_eq!(attract.replacement_undo, ReplacementUndoState::Unavailable);
+        assert_eq!(
+            attract.restore_configuration_before_last_replacement(),
+            AttractConfigurationRestoreOutcome::NothingToUndo
+        );
+    }
+
+    #[test]
+    fn restore_uses_the_checkpoint_from_the_latest_of_two_replacements() {
+        let mut attract = Attract::new();
+        attract.record_terminal_resize(AREA);
+        attract.size_all_animations();
+        let original = attract.configuration();
+
+        attract.apply_settings(AttractSettings::MovingBand(attract.band.settings()));
+        let between_replacements = attract.configuration();
+        attract.apply_settings(AttractSettings::Pixelate(attract.pixels.settings()));
+        let after_second_replacement = attract.configuration();
+
+        assert_ne!(original, between_replacements);
+        assert_ne!(between_replacements, after_second_replacement);
+        assert_ne!(original, after_second_replacement);
+        assert_eq!(between_replacements.mode, AttractMode::MovingBand);
+        assert_eq!(after_second_replacement.mode, AttractMode::Pixelate);
+
+        assert_eq!(
+            attract.restore_configuration_before_last_replacement(),
+            AttractConfigurationRestoreOutcome::RestoredExactly {
+                mode: between_replacements.mode,
+            }
+        );
+        assert_eq!(attract.configuration(), between_replacements);
+        assert_ne!(attract.configuration(), original);
+    }
+
+    #[test]
+    fn adjusted_parameter_set_names_are_reader_facing_text() {
+        let cases = [
+            (AdjustedAttractParameterSets::MovingBand, "moving band"),
+            (AdjustedAttractParameterSets::MovingText, "moving text"),
+            (AdjustedAttractParameterSets::Pixelate, "pixelate"),
+            (
+                AdjustedAttractParameterSets::MovingBandAndMovingText,
+                "moving band and moving text",
+            ),
+            (
+                AdjustedAttractParameterSets::MovingBandAndPixelate,
+                "moving band and pixelate",
+            ),
+            (
+                AdjustedAttractParameterSets::MovingTextAndPixelate,
+                "moving text and pixelate",
+            ),
+            (
+                AdjustedAttractParameterSets::MovingBandAndMovingTextAndPixelate,
+                "moving band, moving text, and pixelate",
+            ),
+        ];
+
+        for (adjusted_parameter_sets, expected_names) in cases {
+            assert_eq!(adjusted_parameter_sets.names(), expected_names);
+        }
+    }
+
+    #[test]
+    fn shrinking_before_restore_reports_every_parameter_set_that_moves() {
+        const SMALL_AREA: Rect = Rect::new(0, 0, 4, 3);
+
+        let mut attract = Attract::new();
+        attract.record_terminal_resize(AREA);
+        let before_first_sizing = attract.configuration();
+        attract.apply_settings(AttractSettings::MovingBand(attract.band.settings()));
+        let ReplacementUndoState::Available(AttractConfigurationBeforeReplacement(before)) =
+            attract.replacement_undo
+        else {
+            panic!("settings application should leave an undo point");
+        };
+        assert_ne!(
+            before.band, before_first_sizing.band,
+            "the first all-mode sizing adjusts the never-shown moving band before capture"
+        );
+        assert_eq!(
+            attract.animation_sizing,
+            AnimationSizing {
+                band:   LastSizedArea::Sized(AREA),
+                text:   LastSizedArea::Sized(AREA),
+                pixels: LastSizedArea::Sized(AREA),
+            },
+            "even modes never shown are sized before capture"
+        );
+        attract.record_terminal_resize(SMALL_AREA);
+
+        let outcome = attract.restore_configuration_before_last_replacement();
+        let AttractConfigurationRestoreOutcome::RestoredWithAdjustments {
+            mode,
+            adjusted_parameter_sets,
+        } = outcome
+        else {
+            panic!("the smaller terminal should adjust the restored configuration");
+        };
+
+        assert_eq!(mode, before.mode);
+        assert!(adjusted_parameter_sets.names().contains("moving band"));
+        assert_eq!(
+            attract.animation_sizing,
+            AnimationSizing {
+                band:   LastSizedArea::Sized(SMALL_AREA),
+                text:   LastSizedArea::Sized(SMALL_AREA),
+                pixels: LastSizedArea::Sized(SMALL_AREA),
+            },
+            "every animation is sized before restore"
+        );
+    }
+
+    #[test]
+    fn restore_keeps_fade_progress_and_show_instruction_brings_the_screen_in() {
+        let mut attract = Attract::new();
+        attract.record_terminal_resize(AREA);
+        attract.visibility_instruction = AttractVisibilityInstruction::Show;
+        attract.grid_presentation = AttractGridPresentation::ReplacesGrid;
+        attract.faded = 150;
+        attract.apply_settings(AttractSettings::MovingBand(attract.band.settings()));
+        attract.visibility_instruction = AttractVisibilityInstruction::Hide;
+        let fade_at_restore = attract.faded;
+
+        attract.restore_configuration_before_last_replacement();
+
+        assert_eq!(attract.faded, fade_at_restore);
+        assert_eq!(
+            attract.visibility_instruction,
+            AttractVisibilityInstruction::Show
+        );
+        attract.advance(AREA, Work::Running, Updates::Live, Instant::now());
+        assert!(attract.faded < fade_at_restore);
+    }
+
+    #[test]
+    fn restore_keeps_fade_progress_and_hide_instruction_sends_the_screen_out() {
+        let mut attract = Attract::new();
+        attract.record_terminal_resize(AREA);
+        attract.visibility_instruction = AttractVisibilityInstruction::Hide;
+        attract.grid_presentation = AttractGridPresentation::ReplacesGrid;
+        attract.faded = 100;
+        attract.apply_settings(AttractSettings::MovingBand(attract.band.settings()));
+        attract.visibility_instruction = AttractVisibilityInstruction::Show;
+        let fade_at_restore = attract.faded;
+
+        attract.restore_configuration_before_last_replacement();
+
+        assert_eq!(attract.faded, fade_at_restore);
+        assert_eq!(
+            attract.visibility_instruction,
+            AttractVisibilityInstruction::Hide
+        );
+        attract.advance(AREA, Work::Idle, Updates::Live, Instant::now());
+        assert!(attract.faded > fade_at_restore);
+    }
+
+    #[test]
+    fn restored_follow_roster_uses_the_rosters_standing_at_restore_time() {
+        let mut attract = Attract::new();
+        attract.record_terminal_resize(AREA);
+        attract.visibility_instruction = AttractVisibilityInstruction::FollowRoster;
+        attract.grid_presentation = AttractGridPresentation::OverGrid;
+        attract.standing = Standing::Showing;
+        attract.faded = 100;
+        attract.apply_settings(AttractSettings::MovingBand(attract.band.settings()));
+        attract.visibility_instruction = AttractVisibilityInstruction::Show;
+        attract.grid_presentation = AttractGridPresentation::ReplacesGrid;
+        attract.standing = Standing::Working;
+        let fade_at_restore = attract.faded;
+
+        attract.restore_configuration_before_last_replacement();
+
+        assert_eq!(attract.faded, fade_at_restore);
+        assert_eq!(
+            attract.visibility_instruction,
+            AttractVisibilityInstruction::FollowRoster
+        );
+        assert_eq!(attract.grid_presentation, AttractGridPresentation::OverGrid);
+        assert_eq!(attract.standing, Standing::Working);
+        attract.advance(AREA, Work::Running, Updates::Live, Instant::now());
+        assert!(attract.faded > fade_at_restore);
     }
 
     #[test]

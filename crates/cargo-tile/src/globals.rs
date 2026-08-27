@@ -13,7 +13,8 @@
 //! still, which is what makes a screen that repaints four times a
 //! second readable, `a` draws the attract screen over the grid whether
 //! or not anything is running, `r` draws a fresh attract screen at
-//! random, and `p` says how much of each command a cell spells out.
+//! random, `u` restores the attract configuration that replacement
+//! displaced, and `p` says how much of each command a cell spells out.
 //! Three more belong to the attract screen's saved favorites: `ctrl-s`
 //! saves the parameters on screen now, `ctrl-o` opens the saved list,
 //! and `m` shows one of them at random.
@@ -31,6 +32,7 @@ use tui_pane::Globals;
 use tui_pane::KeyBind;
 
 use crate::app::App;
+use crate::attract::AttractConfigurationRestoreOutcome;
 use crate::attract::AttractMode;
 use crate::constants::APP_GLOBALS_SECTION;
 use crate::favorites;
@@ -48,6 +50,8 @@ use crate::tiles::Direction;
 
 const FAVORITE_TOAST_MIN_INTERIOR_LINES: usize = 1;
 const FAVORITE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
+const UNDO_TOAST_MIN_INTERIOR_LINES: usize = 1;
+const UNDO_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -61,6 +65,7 @@ tui_pane::action_enum! {
         Freeze     => ("freeze",      "Freeze the display");
         Attract    => ("attract",     "Show the attract screen");
         RandomizeAttract => ("randomize_attract", "Randomize the attract screen");
+        UndoAttractReplacement => ("undo_attract_replacement", "Undo attract replacement");
         ProcessTree => ("process_tree", "Show whole command lines");
         SaveFavorite => ("save_favorite", "Save attract parameters");
         OpenFavorites => ("open_favorites", "Open attract favorites");
@@ -86,6 +91,7 @@ impl Globals<App> for AppGlobalAction {
             'f' => Self::Freeze,
             'a' => Self::Attract,
             'r' => Self::RandomizeAttract,
+            'u' => Self::UndoAttractReplacement,
             'p' => Self::ProcessTree,
             KeyBind::ctrl('s') => Self::SaveFavorite,
             KeyBind::ctrl('o') => Self::OpenFavorites,
@@ -109,6 +115,7 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
         AppGlobalAction::Attract => app.attract.toggle(),
         AppGlobalAction::RandomizeAttract => app.attract.randomize(),
+        AppGlobalAction::UndoAttractReplacement => undo_attract_replacement(app),
         AppGlobalAction::ProcessTree => app.tree = app.tree.toggled(),
         AppGlobalAction::SaveFavorite => save_favorite(app),
         AppGlobalAction::OpenFavorites => {
@@ -117,6 +124,45 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         },
         AppGlobalAction::RandomFavorite => show_random_favorite(app),
     }
+}
+
+fn undo_attract_replacement(app: &mut App) {
+    let outcome = app.attract.restore_configuration_before_last_replacement();
+    let (title, body) = match outcome {
+        AttractConfigurationRestoreOutcome::NothingToUndo => (
+            "Nothing to undo",
+            "No attract replacement is available to undo".to_string(),
+        ),
+        AttractConfigurationRestoreOutcome::RestoredExactly { mode } => (
+            "Attract restored",
+            format!("{} configuration restored", mode_label(mode)),
+        ),
+        AttractConfigurationRestoreOutcome::RestoredWithAdjustments {
+            mode,
+            adjusted_parameter_sets,
+        } => (
+            "Attract restored with adjustments",
+            format!(
+                "{} configuration restored; terminal size adjusted {} parameters",
+                mode_label(mode),
+                adjusted_parameter_sets.names(),
+            ),
+        ),
+    };
+    let pushed_at = Instant::now();
+    let toast_id = app.framework.toasts.push_timed(
+        title,
+        &body,
+        UNDO_TOAST_VISIBLE,
+        UNDO_TOAST_MIN_INTERIOR_LINES,
+    );
+    app.schedule_timed_toast(
+        toast_id,
+        pushed_at,
+        UNDO_TOAST_VISIBLE,
+        &body,
+        UNDO_TOAST_MIN_INTERIOR_LINES,
+    );
 }
 
 /// Load the current favorites file and show one recognized row at random.
@@ -225,6 +271,8 @@ mod tests {
     use super::*;
     use crate::app::ProcessTree;
     use crate::app::Updates;
+    use crate::attract::AttractGridPresentation;
+    use crate::attract::AttractVisibilityInstruction;
     use crate::favorites::FavoritesMutationError;
     use crate::favorites::parse_rows_for_overlay_test;
     use crate::terminal::VisualDeadline;
@@ -287,6 +335,39 @@ mode = "future_mode"
             .join("\n")
     }
 
+    fn moving_band_settings() -> AttractSettings {
+        draw_recognized_settings(
+            &parse_rows_for_overlay_test(MOVING_BAND_ROW).expect("favorites fixture should parse"),
+            0,
+        )
+        .expect("fixture should contain a recognized favorite")
+    }
+
+    fn assert_only_toast_animates_and_expires(app: &mut App, expected_title: &str) {
+        let now = Instant::now();
+        let toasts = app.framework.toasts.active_views(now);
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].title(), expected_title);
+        assert!(matches!(
+            app.toast_visual_deadline(now, Duration::from_millis(8)),
+            VisualDeadline::At(_)
+        ));
+
+        let at_expiry = now + Duration::from_secs(30);
+        app.framework.toasts.prune(at_expiry);
+        assert_eq!(
+            app.toast_visual_frame_request(at_expiry),
+            VisualFrameRequest::Requested
+        );
+        let after_exit = at_expiry + Duration::from_secs(30);
+        app.framework.toasts.prune(after_exit);
+        assert_eq!(
+            app.toast_visual_frame_request(after_exit),
+            VisualFrameRequest::Requested
+        );
+        assert!(app.framework.toasts.active_views(after_exit).is_empty());
+    }
+
     /// `p` reaches the process-tree toggle, read out of the table the
     /// keymap is actually built from. It shares the scope with the four
     /// arrows and with `+` and `-`, so a key added over one of those
@@ -309,6 +390,63 @@ mode = "future_mode"
             scope.action_for(&KeyBind::from('r')),
             Some(AppGlobalAction::RandomizeAttract),
         );
+    }
+
+    #[test]
+    fn u_undoes_the_latest_attract_replacement() {
+        let scope = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            scope.action_for(&KeyBind::from('u')),
+            Some(AppGlobalAction::UndoAttractReplacement),
+        );
+    }
+
+    #[test]
+    fn exact_hidden_restore_confirms_and_expires_while_frozen() {
+        let mut app = App::new_for_test().expect("test app should build");
+        app.updates = Updates::Frozen;
+        app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
+        let before = app.attract.current_settings();
+        app.attract.apply_settings(moving_band_settings());
+
+        dispatch(AppGlobalAction::UndoAttractReplacement, &mut app);
+
+        assert_eq!(app.attract.current_settings(), before);
+        assert!(
+            !app.attract.showing(),
+            "the exact restore remains fully hidden"
+        );
+        let toasts = app.framework.toasts.active_views(Instant::now());
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].body(), "Moving text configuration restored");
+        assert_only_toast_animates_and_expires(&mut app, "Attract restored");
+    }
+
+    #[test]
+    fn adjusted_restore_names_the_moved_parameter_sets_and_expires_while_frozen() {
+        let mut app = App::new_for_test().expect("test app should build");
+        app.updates = Updates::Frozen;
+        app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
+        app.attract.apply_settings(moving_band_settings());
+        app.attract.record_terminal_resize(Rect::new(0, 0, 4, 3));
+
+        dispatch(AppGlobalAction::UndoAttractReplacement, &mut app);
+
+        let toasts = app.framework.toasts.active_views(Instant::now());
+        assert_eq!(toasts.len(), 1);
+        assert!(toasts[0].body().contains("moving band"));
+        assert_only_toast_animates_and_expires(&mut app, "Attract restored with adjustments");
+    }
+
+    #[test]
+    fn unavailable_undo_says_so_and_expires_while_frozen() {
+        let mut app = App::new_for_test().expect("test app should build");
+        app.updates = Updates::Frozen;
+
+        dispatch(AppGlobalAction::UndoAttractReplacement, &mut app);
+
+        assert_only_toast_animates_and_expires(&mut app, "Nothing to undo");
     }
 
     #[test]
@@ -413,6 +551,32 @@ mode = "future_mode"
     }
 
     #[test]
+    fn failed_random_favorite_loads_preserve_the_existing_undo_point() {
+        let path = PathBuf::from("/tmp/favorites.toml");
+        let cases = [
+            FavoritesFileState::Missing { path: path.clone() },
+            loaded_state(&path, UNRECOGNIZED_ROW),
+            FavoritesFileState::Unparseable {
+                path,
+                error: "bad TOML".to_string(),
+            },
+        ];
+
+        for state in cases {
+            let mut app = App::new_for_test().expect("test app should build");
+            app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
+            let before = app.attract.current_settings();
+            app.attract.apply_settings(moving_band_settings());
+
+            show_random_favorite_with(&mut app, || state, || 0);
+            app.favorites_overlay = crate::favorites_overlay::FavoritesOverlay::default();
+            dispatch(AppGlobalAction::UndoAttractReplacement, &mut app);
+
+            assert_eq!(app.attract.current_settings(), before);
+        }
+    }
+
+    #[test]
     fn a_later_press_observes_a_favorite_saved_after_the_first_load() {
         let directory = TempDir::new().expect("temporary directory should be created");
         let path = directory.path().join("favorites.toml");
@@ -446,7 +610,20 @@ mode = "future_mode"
         let before = fs::read(&path).expect("favorites fixture should be readable");
         let mut app = App::new_for_test().expect("test app should build");
         app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
+        let initial_settings = app.attract.current_settings();
+        app.attract.apply_settings(initial_settings);
+        app.attract.request_show();
+        app.attract.toggle();
 
+        let before_configuration = app.attract.configuration();
+        assert_eq!(
+            before_configuration.presentation.visibility_instruction,
+            AttractVisibilityInstruction::Hide
+        );
+        assert_eq!(
+            before_configuration.presentation.grid_presentation,
+            AttractGridPresentation::ReplacesGrid
+        );
         show_random_favorite_with(&mut app, || load_test_path(&path), || 0);
 
         assert!(app.framework.toasts.active_now().is_empty());
@@ -458,21 +635,25 @@ mode = "future_mode"
             fs::read(&path).expect("favorites fixture should remain readable"),
             before
         );
+
+        dispatch(AppGlobalAction::UndoAttractReplacement, &mut app);
+        assert_eq!(app.attract.configuration(), before_configuration);
     }
 
     #[test]
     fn an_adjusted_random_favorite_schedules_a_lowercase_warning_while_frozen() {
         let oversized = MOVING_BAND_ROW.replace("width = 10", "width = 10000");
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = directory.path().join("favorites.toml");
+        fs::write(&path, &oversized).expect("favorites fixture should be written");
+        let file_before = fs::read(&path).expect("favorites fixture should be readable");
         let mut app = App::new_for_test().expect("test app should build");
         app.updates = Updates::Frozen;
         app.attract.record_terminal_resize(Rect::new(0, 0, 10, 5));
+        let before_settings = app.attract.current_settings();
         let now = Instant::now();
 
-        show_random_favorite_with(
-            &mut app,
-            || loaded_state("/tmp/favorites.toml", &oversized),
-            || 0,
-        );
+        show_random_favorite_with(&mut app, || load_test_path(&path), || 0);
 
         let toasts = app.framework.toasts.active_views(Instant::now());
         assert_eq!(toasts.len(), 1);
@@ -497,6 +678,13 @@ mode = "future_mode"
             VisualFrameRequest::Requested
         );
         assert!(app.framework.toasts.active_views(after_exit).is_empty());
+        assert_eq!(
+            fs::read(&path).expect("favorites fixture should remain readable"),
+            file_before
+        );
+
+        dispatch(AppGlobalAction::UndoAttractReplacement, &mut app);
+        assert_eq!(app.attract.current_settings(), before_settings);
     }
 
     #[test]

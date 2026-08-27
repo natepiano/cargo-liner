@@ -149,10 +149,11 @@ fifo=
 # What makes a finished log worth keeping: cargo's unit counter, or the
 # line it prints while it waits for the lock on the directory it builds
 # into. These are the two things the grid reads, spelled here as an ERE
-# because the shim cannot see the constants the reader uses. The lock
-# line is matched short of the directory's name, which cargo has called
-# both the build directory and the artifact directory.
-worth_keeping='waiting for file lock|\] [0-9]+/[0-9]+:'
+# because the shim cannot see the constants the reader uses. The
+# directory is named in full: cargo takes the package cache under the
+# same wording and hands it straight back, so a log holding only that
+# wait has nothing in it the grid could read.
+worth_keeping='waiting for file lock on build directory|\] [0-9]+/[0-9]+:'
 cleanup() {
     rm -f "$pids/$$"
     if [ -n "$fifo" ]; then rm -f "$fifo"; fi

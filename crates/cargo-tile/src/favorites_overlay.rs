@@ -1821,6 +1821,8 @@ mod tests {
 
     use super::*;
     use crate::app::Updates;
+    use crate::attract::AttractGridPresentation;
+    use crate::attract::AttractVisibilityInstruction;
     use crate::attract::Work;
     use crate::favorites::parse_rows_for_overlay_test;
     use crate::keymap::build_keymap;
@@ -1900,8 +1902,12 @@ fraying = "leading"
     }
 
     fn loaded_state(text: &str) -> FavoritesFileState {
+        loaded_state_at("/tmp/favorites.toml", text)
+    }
+
+    fn loaded_state_at(path: impl Into<PathBuf>, text: &str) -> FavoritesFileState {
         FavoritesFileState::Loaded {
-            path: PathBuf::from("/tmp/favorites.toml"),
+            path: path.into(),
             rows: parse_rows_for_overlay_test(text).expect("favorites fixture should parse"),
         }
     }
@@ -2502,6 +2508,32 @@ travel_left = "界"
     }
 
     #[test]
+    fn load_without_a_selected_recognized_row_preserves_the_existing_undo_point() {
+        let keymap = keymap_from("");
+        let mixed = format!("{MOVING_BAND_ROW}\n{UNRECOGNIZED_ROWS}");
+        let mut overlay = open_at_width(loaded_state(&mixed), &keymap, 100);
+        while overlay.viewport.pos() + 1 < overlay.viewport.len() {
+            overlay.handle_action(FavoritesOverlayAction::SelectNext);
+        }
+        assert_eq!(
+            overlay.selected_favorite(),
+            SelectedFavorite::NoFavoriteSelected
+        );
+        let (_, replacement) =
+            selected(&open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100));
+        let mut app = App::new_for_test().expect("test app should build");
+        app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
+        let before = app.attract.current_settings();
+        app.attract.apply_settings(replacement);
+        app.favorites_overlay = overlay;
+
+        dispatch(FavoritesOverlayAction::Load, &mut app);
+        app.attract.restore_configuration_before_last_replacement();
+
+        assert_eq!(app.attract.current_settings(), before);
+    }
+
+    #[test]
     fn deletion_fade_uses_elapsed_time_and_commits_once() {
         let keymap = keymap_from("");
         let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
@@ -2813,9 +2845,28 @@ travel_left = "界"
     fn adjustment_warning_is_scheduled_after_load_and_exact_load_is_quiet() {
         let keymap = keymap_from("");
         let oversized = MOVING_BAND_ROW.replace("width = 10", "width = 10000");
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let adjusted_path = directory.path().join("adjusted-favorites.toml");
+        fs::write(&adjusted_path, &oversized).expect("favorites fixture should be written");
+        let adjusted_file_before =
+            fs::read(&adjusted_path).expect("favorites fixture should be readable");
         let mut app = App::new_for_test().expect("test app should build");
         app.attract.record_terminal_resize(Rect::new(0, 0, 10, 5));
-        app.favorites_overlay = open_at_width(loaded_state(&oversized), &keymap, 100);
+        let initial_settings = app.attract.current_settings();
+        app.attract.apply_settings(initial_settings);
+        app.attract.request_show();
+        app.attract.toggle();
+        let before_adjusted_load = app.attract.configuration();
+        assert_eq!(
+            before_adjusted_load.presentation.visibility_instruction,
+            AttractVisibilityInstruction::Hide
+        );
+        assert_eq!(
+            before_adjusted_load.presentation.grid_presentation,
+            AttractGridPresentation::ReplacesGrid
+        );
+        app.favorites_overlay =
+            open_at_width(loaded_state_at(&adjusted_path, &oversized), &keymap, 100);
         let now = Instant::now();
 
         dispatch(FavoritesOverlayAction::Load, &mut app);
@@ -2830,18 +2881,55 @@ travel_left = "界"
             app.toast_visual_deadline(now, Duration::from_millis(8)),
             VisualDeadline::At(_)
         ));
+        assert_eq!(
+            fs::read(&adjusted_path).expect("favorites fixture should remain readable"),
+            adjusted_file_before
+        );
+        app.attract.restore_configuration_before_last_replacement();
+        assert_eq!(app.attract.configuration(), before_adjusted_load);
+        assert_eq!(
+            app.framework.toasts.active_views(Instant::now()).len(),
+            1,
+            "undo leaves the favorite adjustment warning in place"
+        );
 
+        let exact_path = directory.path().join("exact-favorites.toml");
+        fs::write(&exact_path, MOVING_BAND_ROW).expect("favorites fixture should be written");
+        let exact_file_before =
+            fs::read(&exact_path).expect("favorites fixture should be readable");
         let mut exact_app = App::new_for_test().expect("test app should build");
         exact_app
             .attract
             .record_terminal_resize(Rect::new(0, 0, 80, 24));
-        exact_app.favorites_overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        let initial_settings = exact_app.attract.current_settings();
+        exact_app.attract.apply_settings(initial_settings);
+        exact_app.attract.request_show();
+        exact_app.attract.toggle();
+        let before_exact_load = exact_app.attract.configuration();
+        assert_eq!(
+            before_exact_load.presentation.visibility_instruction,
+            AttractVisibilityInstruction::Hide
+        );
+        assert_eq!(
+            before_exact_load.presentation.grid_presentation,
+            AttractGridPresentation::ReplacesGrid
+        );
+        exact_app.favorites_overlay =
+            open_at_width(loaded_state_at(&exact_path, MOVING_BAND_ROW), &keymap, 100);
         dispatch(FavoritesOverlayAction::Load, &mut exact_app);
         assert!(exact_app.framework.toasts.active_now().is_empty());
         assert_eq!(
             exact_app.toast_visual_deadline(Instant::now(), Duration::from_millis(8)),
             VisualDeadline::NoVisualChangeScheduled
         );
+        assert_eq!(
+            fs::read(&exact_path).expect("favorites fixture should remain readable"),
+            exact_file_before
+        );
+        exact_app
+            .attract
+            .restore_configuration_before_last_replacement();
+        assert_eq!(exact_app.attract.configuration(), before_exact_load);
     }
 
     #[test]

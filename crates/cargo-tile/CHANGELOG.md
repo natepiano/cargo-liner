@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Press `u` to restore the full attract configuration displaced by the latest random draw or favorite load, with a notice when terminal bounds adjust it or there is nothing to undo.
 - Press `r` to draw a fresh attract mode and all of its parameters at random, and show the result.
 - Press `m` to load and show a random saved attract favorite; unavailable or unusable favorites open the existing diagnostic overlay instead.
 - Load a selected attract favorite with `enter`, reporting any terminal-sized adjustments without rewriting the saved row. Delete with `x`; rows fade before their locked removal, remain visible after a refusal, and finish deleting even when the overlay closes mid-fade.

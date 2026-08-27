@@ -22,3 +22,20 @@ single-line regression proving no entrance repaint is requested before expiry.
 Correctness is unaffected — this is frame economy on a loop the project has
 already tuned for idle cost, which is why it is a backlog item rather than
 remaining feature scope.
+
+## Two attract states are hidden behind bare options
+
+`Attract` keeps `identified: Option<bool>`, which collapses three real states
+into two: the window has not been looked for yet, the search ran and settled on
+nothing, and the search found the window. A reader cannot tell `None` meaning
+"not observed" from `None` meaning "observed and unsettled" without following
+every writer.
+
+`Attract::keyed_mode() -> Option<AttractMode>` has the same problem on the input
+path: `None` means the keystroke passes through to the app rather than "no mode
+exists", and only the caller's shape reveals which.
+
+Replace both with named enums — an identification state carrying the
+not-observed / unsettled / settled distinction, and a key-routing type carrying
+pass-through versus a chosen mode. Neither is a behavior change, both are
+mechanical once the enums exist, and the compiler finds every site.
