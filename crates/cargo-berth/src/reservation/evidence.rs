@@ -53,6 +53,54 @@ pub(crate) enum PriorIntegrationStatus {
     Proven,
 }
 
+/// Whether reconciliation observed the integration status without or through a scoped comparison.
+pub(crate) enum IntegrationEvidenceObservation {
+    /// Reachability alone produced the status.
+    Reachability(IntegrationEvidenceStatus),
+    /// A scoped patch comparison contributed to the status.
+    ScopedPatchComparison(IntegrationEvidenceStatus),
+    /// The bounded comparison was not run after reachability rejected the protected-tip proof.
+    ScopedPatchComparisonDeferred(DeferredScopedPatchIntegrationStatus),
+}
+
+/// The validity of materialized evidence when a scoped patch comparison is deferred.
+pub(crate) enum DeferredScopedPatchIntegrationStatus {
+    /// The materialized status still applies to the observed trunk.
+    StillValid(IntegrationEvidenceStatus),
+    /// A refuted or stale affirmative proof was replaced with non-affirmative evidence.
+    Degraded(IntegrationEvidenceStatus),
+}
+
+impl DeferredScopedPatchIntegrationStatus {
+    fn from_materialized(
+        materialized: &IntegrationEvidenceStatus,
+        observed_trunk_oid: &GitObjectId,
+    ) -> Self {
+        match materialized {
+            IntegrationEvidenceStatus::Integrated {
+                trunk_oid,
+                proof: IntegrationProof::ScopedPatchEquivalent,
+            } if trunk_oid == observed_trunk_oid => Self::StillValid(materialized.clone()),
+            IntegrationEvidenceStatus::Integrated {
+                proof:
+                    IntegrationProof::ProtectedTipAncestor | IntegrationProof::ScopedPatchEquivalent,
+                ..
+            } => Self::Degraded(IntegrationEvidenceStatus::NotIntegrated),
+            IntegrationEvidenceStatus::NotIntegrated
+            | IntegrationEvidenceStatus::TrunkRewritten
+            | IntegrationEvidenceStatus::ObjectUnknown => Self::StillValid(materialized.clone()),
+        }
+    }
+}
+
+/// Whether the bounded reconciliation slot supplied a scoped patch comparison.
+pub(crate) enum ScopedPatchComparisonObservation {
+    /// Git produced this comparison during the current reconciliation.
+    Observed(ScopedPatchComparison),
+    /// Another proof subject received the target's comparison slot.
+    Deferred,
+}
+
 /// Read the full commit currently named by `HEAD`.
 pub(crate) fn current_head(repository_root: &Path) -> Result<GitObjectId, GitError> {
     git::head_object_id(repository_root)
@@ -125,6 +173,93 @@ pub(crate) fn outstanding_integration_status(
         Reachability::Ancestor => Ok(IntegrationEvidenceStatus::NotIntegrated),
         Reachability::NotAncestor => Ok(IntegrationEvidenceStatus::TrunkRewritten),
         Reachability::ObjectUnknown => Ok(IntegrationEvidenceStatus::ObjectUnknown),
+    }
+}
+
+/// Observe integration while allowing reconciliation to defer only the scoped comparison.
+pub(crate) fn observe_integration_status(
+    protected_tip_reachability: Reachability,
+    trunk_oid: &GitObjectId,
+    prior_integration_status: PriorIntegrationStatus,
+    materialized: &IntegrationEvidenceStatus,
+    observe_scoped_patch_comparison: impl FnOnce() -> ScopedPatchComparisonObservation,
+) -> IntegrationEvidenceObservation {
+    match protected_tip_reachability {
+        Reachability::Ancestor => {
+            IntegrationEvidenceObservation::Reachability(IntegrationEvidenceStatus::Integrated {
+                trunk_oid: trunk_oid.clone(),
+                proof:     IntegrationProof::ProtectedTipAncestor,
+            })
+        },
+        Reachability::NotAncestor => match observe_scoped_patch_comparison() {
+            ScopedPatchComparisonObservation::Observed(scoped_patch_comparison) => {
+                IntegrationEvidenceObservation::ScopedPatchComparison(
+                    status_from_scoped_patch_comparison(
+                        scoped_patch_comparison,
+                        trunk_oid,
+                        prior_integration_status,
+                    ),
+                )
+            },
+            ScopedPatchComparisonObservation::Deferred => {
+                IntegrationEvidenceObservation::ScopedPatchComparisonDeferred(
+                    DeferredScopedPatchIntegrationStatus::from_materialized(
+                        materialized,
+                        trunk_oid,
+                    ),
+                )
+            },
+        },
+        Reachability::ObjectUnknown => {
+            IntegrationEvidenceObservation::Reachability(IntegrationEvidenceStatus::ObjectUnknown)
+        },
+    }
+}
+
+/// Observe outstanding integration while deferring only its scoped comparison when bounded.
+pub(crate) fn observe_outstanding_integration_status(
+    protected_tip_reachability: Reachability,
+    previous_trunk_reachability: Reachability,
+    current_trunk_oid: &GitObjectId,
+    materialized: &IntegrationEvidenceStatus,
+    observe_scoped_patch_comparison: impl FnOnce() -> ScopedPatchComparisonObservation,
+) -> IntegrationEvidenceObservation {
+    let observation = observe_integration_status(
+        protected_tip_reachability,
+        current_trunk_oid,
+        PriorIntegrationStatus::Unproven,
+        materialized,
+        observe_scoped_patch_comparison,
+    );
+    let IntegrationEvidenceObservation::ScopedPatchComparison(
+        IntegrationEvidenceStatus::NotIntegrated,
+    ) = observation
+    else {
+        return observation;
+    };
+    let status = match previous_trunk_reachability {
+        Reachability::Ancestor => IntegrationEvidenceStatus::NotIntegrated,
+        Reachability::NotAncestor => IntegrationEvidenceStatus::TrunkRewritten,
+        Reachability::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
+    };
+    IntegrationEvidenceObservation::ScopedPatchComparison(status)
+}
+
+fn status_from_scoped_patch_comparison(
+    scoped_patch_comparison: ScopedPatchComparison,
+    trunk_oid: &GitObjectId,
+    prior_integration_status: PriorIntegrationStatus,
+) -> IntegrationEvidenceStatus {
+    match scoped_patch_comparison {
+        ScopedPatchComparison::Equivalent => IntegrationEvidenceStatus::Integrated {
+            trunk_oid: trunk_oid.clone(),
+            proof:     IntegrationProof::ScopedPatchEquivalent,
+        },
+        ScopedPatchComparison::Different => match prior_integration_status {
+            PriorIntegrationStatus::Unproven => IntegrationEvidenceStatus::NotIntegrated,
+            PriorIntegrationStatus::Proven => IntegrationEvidenceStatus::TrunkRewritten,
+        },
+        ScopedPatchComparison::Unavailable => IntegrationEvidenceStatus::ObjectUnknown,
     }
 }
 

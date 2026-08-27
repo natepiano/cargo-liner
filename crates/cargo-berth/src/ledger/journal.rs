@@ -40,8 +40,10 @@ use crate::ids::WorkPlanPhase;
 use crate::ids::WorktreeId;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::IntegrationProofSubjectRevision;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
+use crate::reservation::ScopedPatchEquivalenceVerdict;
 
 /// One append-only fact in the shared coordination journal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -89,6 +91,11 @@ impl JournalEvent {
 
     /// Return when this journal fact was recorded.
     pub(crate) const fn recorded_at(&self) -> &RecordedAt { &self.at }
+
+    /// Return the projection generation published by this journal fact.
+    pub(crate) const fn projection_generation(&self) -> ProjectionGeneration {
+        self.projection_generation
+    }
 }
 
 /// The durable identity of the actor that made a journal mutation.
@@ -242,6 +249,26 @@ pub(crate) enum JournalOperation {
         status:               IntegrationEvidenceStatus,
         /// The edit decision produced when this evidence was recorded.
         edit_blocking_status: EditBlockingStatus,
+    },
+    /// Record one definitive scoped content comparison for an immutable proof subject.
+    ScopedPatchEquivalenceChecked {
+        /// The reservation whose protected content was checked.
+        reservation_id: ReservationId,
+        /// The semantic revision of the checked baseline, content, and scopes.
+        subject:        IntegrationProofSubjectRevision,
+        /// The trunk object checked by git.
+        target:         GitObjectId,
+        /// The definitive content verdict produced by the check.
+        verdict:        ScopedPatchEquivalenceVerdict,
+    },
+    /// Record a scoped comparison that produced no durable cache verdict.
+    ScopedPatchComparisonAttempted {
+        /// The reservation whose protected content was compared.
+        reservation_id: ReservationId,
+        /// The semantic revision of the compared baseline, content, and scopes.
+        subject:        IntegrationProofSubjectRevision,
+        /// The trunk object supplied to the comparison.
+        target:         GitObjectId,
     },
     /// Convert a previously recorded defer answer into an ordering edge.
     ResolveDefer {

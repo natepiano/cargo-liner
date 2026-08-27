@@ -111,6 +111,8 @@ impl OrderingGraph {
                 | JournalOperation::Release { .. }
                 | JournalOperation::ReplaceReleaseDisposition { .. }
                 | JournalOperation::EvidenceRevalidated { .. }
+                | JournalOperation::ScopedPatchEquivalenceChecked { .. }
+                | JournalOperation::ScopedPatchComparisonAttempted { .. }
                 | JournalOperation::Incursion { .. }
                 | JournalOperation::ResolveIncursion { .. }
                 | JournalOperation::ForcedIntegrationPermit { .. }

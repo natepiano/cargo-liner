@@ -1,18 +1,25 @@
 //! Reservation state derived solely from append-only journal events.
 
+mod constants;
 mod evidence;
 mod lifecycle;
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::time::Duration;
 
+pub(crate) use evidence::DeferredScopedPatchIntegrationStatus;
+pub(crate) use evidence::IntegrationEvidenceObservation;
 pub(crate) use evidence::PriorIntegrationStatus;
 pub(crate) use evidence::ProtectedReservationTip;
+pub(crate) use evidence::ScopedPatchComparisonObservation;
 pub(crate) use evidence::current_head;
 pub(crate) use evidence::current_trunk;
 pub(crate) use evidence::integration_status;
+pub(crate) use evidence::observe_integration_status;
+pub(crate) use evidence::observe_outstanding_integration_status;
 pub(crate) use evidence::outstanding_integration_status;
 pub(crate) use evidence::retain_protected_tip;
 pub(crate) use lifecycle::AbandonmentReason;
@@ -28,6 +35,7 @@ pub(crate) use lifecycle::RewrittenIntegrationTrunkCommit;
 use serde::Deserialize;
 use serde::Serialize;
 
+use self::constants::SCOPED_PATCH_TARGET_RETENTION_LIMIT;
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
@@ -35,6 +43,7 @@ use crate::answer::OverlapScopeRevision;
 use crate::ids::CoordinationRunId;
 use crate::ids::EventId;
 use crate::ids::GitObjectId;
+use crate::ids::ProjectionGeneration;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::ReservationRevision;
@@ -60,6 +69,159 @@ use crate::scope::PathCase;
 use crate::scope::ReservationScope;
 use crate::scope::ReservationScopeSet;
 
+/// The version of the baseline, protected content, and scopes used by a scoped proof.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct IntegrationProofSubjectRevision(u64);
+
+impl IntegrationProofSubjectRevision {
+    const INITIAL: Self = Self(1);
+}
+
+/// A definitive content verdict produced by scoped patch equivalence.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ScopedPatchEquivalenceVerdict {
+    /// The target contains the protected scoped change.
+    Integrated,
+    /// The target does not contain an outstanding protected scoped change.
+    NotIntegrated,
+    /// The target no longer contains a previously integrated scoped change.
+    TrunkRewritten,
+}
+
+/// An immutable scoped patch result that can be reused under a later integration context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DurableScopedPatchComparison {
+    /// The target contains the protected scoped change.
+    Equivalent,
+    /// The target does not contain the protected scoped change.
+    Different,
+}
+
+impl From<ScopedPatchEquivalenceVerdict> for DurableScopedPatchComparison {
+    fn from(verdict: ScopedPatchEquivalenceVerdict) -> Self {
+        match verdict {
+            ScopedPatchEquivalenceVerdict::Integrated => Self::Equivalent,
+            ScopedPatchEquivalenceVerdict::NotIntegrated
+            | ScopedPatchEquivalenceVerdict::TrunkRewritten => Self::Different,
+        }
+    }
+}
+
+/// One definitive scoped patch verdict retained for an immutable target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ScopedPatchEquivalenceCacheEntry {
+    subject: IntegrationProofSubjectRevision,
+    target:  GitObjectId,
+    verdict: ScopedPatchEquivalenceVerdict,
+}
+
+/// The bounded durable verdict cache for the most recently recorded reconciliation targets.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ScopedPatchEquivalenceCache {
+    entries: VecDeque<ScopedPatchEquivalenceCacheEntry>,
+}
+
+/// Whether the durable scoped patch cache answers one requested subject and target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ScopedPatchEquivalenceCacheLookup {
+    /// The stored subject and target match the request.
+    Hit(DurableScopedPatchComparison),
+    /// No stored verdict applies to the request.
+    Miss,
+}
+
+/// The scheduling order for uncached scoped comparisons at one trunk target.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ScopedPatchEvaluationPriority {
+    /// This proof subject has not been compared with the target.
+    NotAttempted,
+    /// This generation last compared the proof subject with the target.
+    LastAttemptedAt(ProjectionGeneration),
+}
+
+/// One comparison attempt retained for target-specific round-robin scheduling.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ScopedPatchComparisonAttempt {
+    subject:    IntegrationProofSubjectRevision,
+    target:     GitObjectId,
+    generation: ProjectionGeneration,
+}
+
+/// The bounded attempt history for the most recently recorded reconciliation targets.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ScopedPatchComparisonAttemptHistory {
+    entries: VecDeque<ScopedPatchComparisonAttempt>,
+}
+
+impl ScopedPatchComparisonAttemptHistory {
+    fn priority(
+        &self,
+        subject: IntegrationProofSubjectRevision,
+        target: &GitObjectId,
+    ) -> ScopedPatchEvaluationPriority {
+        for attempt in &self.entries {
+            if attempt.subject == subject && attempt.target == *target {
+                return ScopedPatchEvaluationPriority::LastAttemptedAt(attempt.generation);
+            }
+        }
+        ScopedPatchEvaluationPriority::NotAttempted
+    }
+
+    fn record(
+        &mut self,
+        subject: IntegrationProofSubjectRevision,
+        target: &GitObjectId,
+        generation: ProjectionGeneration,
+    ) {
+        self.entries
+            .retain(|attempt| attempt.subject != subject || attempt.target != *target);
+        if self.entries.len() == SCOPED_PATCH_TARGET_RETENTION_LIMIT {
+            std::mem::drop(self.entries.pop_front());
+        }
+        self.entries.push_back(ScopedPatchComparisonAttempt {
+            subject,
+            target: target.clone(),
+            generation,
+        });
+    }
+}
+
+impl ScopedPatchEquivalenceCache {
+    /// Look up a verdict only when both immutable proof inputs match.
+    pub(crate) fn lookup(
+        &self,
+        subject: IntegrationProofSubjectRevision,
+        target: &GitObjectId,
+    ) -> ScopedPatchEquivalenceCacheLookup {
+        for entry in &self.entries {
+            if entry.subject == subject && entry.target == *target {
+                return ScopedPatchEquivalenceCacheLookup::Hit(entry.verdict.into());
+            }
+        }
+        ScopedPatchEquivalenceCacheLookup::Miss
+    }
+
+    fn record(
+        &mut self,
+        subject: IntegrationProofSubjectRevision,
+        target: &GitObjectId,
+        verdict: ScopedPatchEquivalenceVerdict,
+    ) {
+        self.entries
+            .retain(|entry| entry.subject != subject || entry.target != *target);
+        if self.entries.len() == SCOPED_PATCH_TARGET_RETENTION_LIMIT {
+            std::mem::drop(self.entries.pop_front());
+        }
+        self.entries.push_back(ScopedPatchEquivalenceCacheEntry {
+            subject,
+            target: target.clone(),
+            verdict,
+        });
+    }
+}
+
 /// Every retained reservation after replaying the journal in append order.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RetainedReservationSet {
@@ -72,6 +234,9 @@ pub(crate) struct RetainedReservationSet {
 pub(crate) struct Reservation {
     id:                         ReservationId,
     revision:                   ReservationRevision,
+    integration_proof_subject:  IntegrationProofSubjectRevision,
+    scoped_patch_verdicts:      ScopedPatchEquivalenceCache,
+    scoped_patch_attempts:      ScopedPatchComparisonAttemptHistory,
     scopes:                     ReservationScopeSet,
     authorizations:             Vec<ConflictAuthorization>,
     source:                     ClaimSource,
@@ -742,6 +907,28 @@ impl RetainedReservationSet {
                 status,
                 ..
             } => self.apply_evidence(*reservation_id, status)?,
+            JournalOperation::ScopedPatchEquivalenceChecked {
+                reservation_id,
+                subject,
+                target,
+                verdict,
+            } => self.apply_scoped_patch_equivalence_check(
+                *reservation_id,
+                *subject,
+                target,
+                *verdict,
+                event.projection_generation(),
+            )?,
+            JournalOperation::ScopedPatchComparisonAttempted {
+                reservation_id,
+                subject,
+                target,
+            } => self.apply_scoped_patch_comparison_attempt(
+                *reservation_id,
+                *subject,
+                target,
+                event.projection_generation(),
+            )?,
             JournalOperation::RebindWorktree {
                 reservation_id,
                 previous_worktree_id,
@@ -904,6 +1091,9 @@ impl RetainedReservationSet {
         self.reservations.push(Reservation {
             id:                         replayed_claim.id,
             revision:                   ReservationRevision::from(1),
+            integration_proof_subject:  IntegrationProofSubjectRevision::INITIAL,
+            scoped_patch_verdicts:      ScopedPatchEquivalenceCache::default(),
+            scoped_patch_attempts:      ScopedPatchComparisonAttemptHistory::default(),
             scopes:                     replayed_claim.scopes.clone(),
             authorizations:             vec![replayed_claim.authorization.clone()],
             source:                     replayed_claim.source.clone(),
@@ -948,6 +1138,7 @@ impl RetainedReservationSet {
         ) {
             reservation.integration_status = IntegrationEvidenceStatus::NotIntegrated;
         }
+        reservation.advance_integration_proof_subject_revision()?;
         reservation.last_activity_at = recorded_at.clone();
         reservation.advance_revision()?;
         reservation.authorizations.push(authorization.clone());
@@ -992,6 +1183,7 @@ impl RetainedReservationSet {
                 trunk_oid,
             } => {
                 if matches!(reservation.lifecycle, ReservationLifecycle::Released { .. }) {
+                    reservation.advance_integration_proof_subject_revision()?;
                     return reservation.advance_revision();
                 }
                 reservation.lifecycle.resnapshot(protected_tip.clone())?;
@@ -1002,6 +1194,7 @@ impl RetainedReservationSet {
                 reservation.integration_status = IntegrationEvidenceStatus::NotIntegrated;
             },
         }
+        reservation.advance_integration_proof_subject_revision()?;
         reservation.advance_revision()
     }
 
@@ -1026,6 +1219,7 @@ impl RetainedReservationSet {
                 trunk_oid: trunk_commit.as_ref().clone(),
                 proof:     IntegrationProof::ProtectedTipAncestor,
             };
+            reservation.advance_integration_proof_subject_revision()?;
         }
         match disposition {
             ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => reservation
@@ -1066,6 +1260,70 @@ impl RetainedReservationSet {
         reservation.advance_revision()
     }
 
+    fn apply_scoped_patch_equivalence_check(
+        &mut self,
+        reservation_id: ReservationId,
+        subject: IntegrationProofSubjectRevision,
+        target: &GitObjectId,
+        verdict: ScopedPatchEquivalenceVerdict,
+        generation: ProjectionGeneration,
+    ) -> Result<(), ReservationReplayError> {
+        let reservation = self.scoped_patch_comparison_subject_mut(reservation_id, subject)?;
+        reservation
+            .scoped_patch_verdicts
+            .record(subject, target, verdict);
+        reservation
+            .scoped_patch_attempts
+            .record(subject, target, generation);
+        reservation.advance_revision()
+    }
+
+    fn apply_scoped_patch_comparison_attempt(
+        &mut self,
+        reservation_id: ReservationId,
+        subject: IntegrationProofSubjectRevision,
+        target: &GitObjectId,
+        generation: ProjectionGeneration,
+    ) -> Result<(), ReservationReplayError> {
+        let reservation = self.scoped_patch_comparison_subject_mut(reservation_id, subject)?;
+        reservation
+            .scoped_patch_attempts
+            .record(subject, target, generation);
+        reservation.advance_revision()
+    }
+
+    fn scoped_patch_comparison_subject_mut(
+        &mut self,
+        reservation_id: ReservationId,
+        subject: IntegrationProofSubjectRevision,
+    ) -> Result<&mut Reservation, ReservationReplayError> {
+        let reservation = self.find_mut(reservation_id)?;
+        match &reservation.lifecycle {
+            ReservationLifecycle::Active => {
+                return Err(ReservationReplayError::ActiveScopedPatchComparison(
+                    reservation_id,
+                ));
+            },
+            ReservationLifecycle::Outstanding { .. } => {},
+            ReservationLifecycle::Released { disposition } => {
+                if matches!(
+                    disposition.revalidation_subject(),
+                    ReleaseRevalidationSubject::None
+                ) {
+                    return Err(ReservationReplayError::DecisionHasNoGitEvidence(
+                        reservation_id,
+                    ));
+                }
+            },
+        }
+        if reservation.integration_proof_subject != subject {
+            return Err(ReservationReplayError::IntegrationProofSubjectMismatch(
+                reservation_id,
+            ));
+        }
+        Ok(reservation)
+    }
+
     fn apply_replacement(
         &mut self,
         reservation_id: ReservationId,
@@ -1087,6 +1345,7 @@ impl RetainedReservationSet {
                 proof:     IntegrationProof::ProtectedTipAncestor,
             };
         }
+        reservation.advance_integration_proof_subject_revision()?;
         reservation.advance_revision()
     }
 
@@ -1255,6 +1514,39 @@ impl Reservation {
             .map(ReservationRevision::from)
             .ok_or(ReservationReplayError::RevisionExhausted(self.id))?;
         Ok(())
+    }
+
+    fn advance_integration_proof_subject_revision(&mut self) -> Result<(), ReservationReplayError> {
+        self.integration_proof_subject = self
+            .integration_proof_subject
+            .0
+            .checked_add(1)
+            .map(IntegrationProofSubjectRevision)
+            .ok_or(ReservationReplayError::IntegrationProofSubjectRevisionExhausted(self.id))?;
+        self.scoped_patch_verdicts = ScopedPatchEquivalenceCache::default();
+        self.scoped_patch_attempts = ScopedPatchComparisonAttemptHistory::default();
+        Ok(())
+    }
+
+    /// Return the revision of the content subject used by scoped patch equivalence.
+    pub(crate) const fn integration_proof_subject_revision(
+        &self,
+    ) -> IntegrationProofSubjectRevision {
+        self.integration_proof_subject
+    }
+
+    /// Borrow the durable scoped patch verdict for this reservation.
+    pub(crate) const fn scoped_patch_equivalence_cache(&self) -> &ScopedPatchEquivalenceCache {
+        &self.scoped_patch_verdicts
+    }
+
+    /// Return this proof subject's scheduling priority for one trunk target.
+    pub(crate) fn scoped_patch_evaluation_priority(
+        &self,
+        target: &GitObjectId,
+    ) -> ScopedPatchEvaluationPriority {
+        self.scoped_patch_attempts
+            .priority(self.integration_proof_subject, target)
     }
 
     /// Return the reservation's owning actor.
@@ -1438,6 +1730,8 @@ pub(crate) enum ReservationReplayError {
     WidenRequiresUnreleased(ReservationId),
     /// A reservation revision counter can no longer advance.
     RevisionExhausted(ReservationId),
+    /// An integration-proof subject revision counter can no longer advance.
+    IntegrationProofSubjectRevisionExhausted(ReservationId),
     /// A lifecycle transition appeared in an invalid order.
     InvalidLifecycleTransition(LifecycleTransitionError),
     /// A snapshot variant disagreed with the reservation lifecycle.
@@ -1446,6 +1740,10 @@ pub(crate) enum ReservationReplayError {
     IntegratedReleaseWithoutEvidence(ReservationId),
     /// Git evidence was materialized for an active reservation.
     ActiveEvidenceRevalidation(ReservationId),
+    /// A scoped patch comparison was recorded for an active reservation.
+    ActiveScopedPatchComparison(ReservationId),
+    /// A scoped patch verdict named a stale proof subject revision.
+    IntegrationProofSubjectMismatch(ReservationId),
     /// A user decision that has no git subject received an evidence event.
     DecisionHasNoGitEvidence(ReservationId),
     /// A checkpointed or released reservation lost its protected tip during replay.
@@ -1506,6 +1804,10 @@ impl Display for ReservationReplayError {
                     "reservation {reservation_id} revision is exhausted"
                 )
             },
+            Self::IntegrationProofSubjectRevisionExhausted(reservation_id) => write!(
+                formatter,
+                "reservation {reservation_id} integration-proof subject revision is exhausted"
+            ),
             Self::InvalidLifecycleTransition(error) => error.fmt(formatter),
             Self::SnapshotStateMismatch(reservation_id) => {
                 write!(
@@ -1520,6 +1822,14 @@ impl Display for ReservationReplayError {
             Self::ActiveEvidenceRevalidation(reservation_id) => write!(
                 formatter,
                 "active reservation {reservation_id} cannot have integration evidence"
+            ),
+            Self::ActiveScopedPatchComparison(reservation_id) => write!(
+                formatter,
+                "active reservation {reservation_id} cannot have a scoped patch comparison"
+            ),
+            Self::IntegrationProofSubjectMismatch(reservation_id) => write!(
+                formatter,
+                "reservation {reservation_id} has a mismatched integration-proof subject"
             ),
             Self::DecisionHasNoGitEvidence(reservation_id) => write!(
                 formatter,
@@ -1562,12 +1872,17 @@ mod tests {
 
     use super::AuthorizedEditingIdentity;
     use super::DriftBlockingCoverage;
+    use super::DurableScopedPatchComparison;
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
     use super::ReservationEvidenceState;
     use super::RetainedReservationSet;
+    use super::ScopedPatchEquivalenceCacheLookup;
+    use super::ScopedPatchEvaluationPriority;
     use super::lifecycle::EditBlockingStatus;
     use crate::ids::CoordinationRunId;
+    use crate::ids::GitObjectId;
+    use crate::ids::ProjectionGeneration;
     use crate::ids::ReservationId;
     use crate::ids::ReservationScopePath;
     use crate::ids::WorktreeId;
@@ -1583,6 +1898,8 @@ mod tests {
     const REPLACEMENT_TIP: &str = "3333333333333333333333333333333333333333";
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
     const SECOND_RUN_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
+    const SECOND_TRUNK_OID: &str = "4444444444444444444444444444444444444444";
+    const THIRD_TRUNK_OID: &str = "5555555555555555555555555555555555555555";
     const TRUNK_OID: &str = "1111111111111111111111111111111111111111";
     const WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
     const SECOND_WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a21";
@@ -1780,6 +2097,170 @@ mod tests {
                 .iter()
                 .any(|scope| scope.path.to_string() == "added.rs")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_retains_positive_and_negative_scoped_patch_verdicts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let target = TRUNK_OID.parse::<GitObjectId>()?;
+        let [claim, checkpoint, ..] = lifecycle_events()?;
+
+        for (verdict_name, expected) in [
+            ("integrated", DurableScopedPatchComparison::Equivalent),
+            ("not_integrated", DurableScopedPatchComparison::Different),
+            ("trunk_rewritten", DurableScopedPatchComparison::Different),
+        ] {
+            let checked = scoped_patch_equivalence_checked(3, 1, verdict_name)?;
+            let reservations =
+                RetainedReservationSet::replay(&[claim.clone(), checkpoint.clone(), checked])?;
+            let reservation = reservations.reservation(reservation_id)?;
+
+            assert_eq!(
+                reservation
+                    .scoped_patch_equivalence_cache()
+                    .lookup(reservation.integration_proof_subject_revision(), &target,),
+                ScopedPatchEquivalenceCacheLookup::Hit(expected)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_patch_history_retains_two_targets_and_evicts_the_oldest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let first_target = TRUNK_OID.parse::<GitObjectId>()?;
+        let second_target = SECOND_TRUNK_OID.parse::<GitObjectId>()?;
+        let third_target = THIRD_TRUNK_OID.parse::<GitObjectId>()?;
+        let [claim, checkpoint, ..] = lifecycle_events()?;
+        let first = scoped_patch_equivalence_checked_at(3, TRUNK_OID, "integrated")?;
+        let second = scoped_patch_equivalence_checked_at(4, SECOND_TRUNK_OID, "not_integrated")?;
+        let first_two = RetainedReservationSet::replay(&[
+            claim.clone(),
+            checkpoint.clone(),
+            first.clone(),
+            second.clone(),
+        ])?;
+        let reservation = first_two.reservation(reservation_id)?;
+
+        assert_eq!(
+            reservation.scoped_patch_equivalence_cache().lookup(
+                reservation.integration_proof_subject_revision(),
+                &first_target
+            ),
+            ScopedPatchEquivalenceCacheLookup::Hit(DurableScopedPatchComparison::Equivalent)
+        );
+        assert_eq!(
+            reservation.scoped_patch_equivalence_cache().lookup(
+                reservation.integration_proof_subject_revision(),
+                &second_target,
+            ),
+            ScopedPatchEquivalenceCacheLookup::Hit(DurableScopedPatchComparison::Different)
+        );
+
+        let third = scoped_patch_equivalence_checked_at(5, THIRD_TRUNK_OID, "integrated")?;
+        let retained = RetainedReservationSet::replay(&[claim, checkpoint, first, second, third])?;
+        let reservation = retained.reservation(reservation_id)?;
+
+        assert_cache_miss(reservation, &first_target);
+        assert_eq!(
+            reservation.scoped_patch_equivalence_cache().lookup(
+                reservation.integration_proof_subject_revision(),
+                &second_target,
+            ),
+            ScopedPatchEquivalenceCacheLookup::Hit(DurableScopedPatchComparison::Different)
+        );
+        assert_eq!(
+            reservation.scoped_patch_equivalence_cache().lookup(
+                reservation.integration_proof_subject_revision(),
+                &third_target,
+            ),
+            ScopedPatchEquivalenceCacheLookup::Hit(DurableScopedPatchComparison::Equivalent)
+        );
+        assert_eq!(
+            reservation.scoped_patch_evaluation_priority(&first_target),
+            ScopedPatchEvaluationPriority::NotAttempted
+        );
+        assert_eq!(
+            reservation.scoped_patch_evaluation_priority(&second_target),
+            ScopedPatchEvaluationPriority::LastAttemptedAt(ProjectionGeneration::from(4))
+        );
+        assert_eq!(
+            reservation.scoped_patch_evaluation_priority(&third_target),
+            ScopedPatchEvaluationPriority::LastAttemptedAt(ProjectionGeneration::from(5))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_subject_changes_invalidate_widen_resnapshot_and_replacement_caches()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let target = TRUNK_OID.parse::<GitObjectId>()?;
+        let [claim, checkpoint, integrated, release, ..] = lifecycle_events()?;
+        let checked = scoped_patch_equivalence_checked(3, 1, "integrated")?;
+        let widen = journal_event(
+            4,
+            &json!({
+                "op": "widen",
+                "reservation_id": RESERVATION_ID,
+                "added_scopes": [{"path": "added.rs", "kind": "file"}],
+                "cause": {"kind": "explicit", "reason": "reviewed scope expansion"},
+                "authorization": {"kind": "no_conflict"},
+                "edit_blocking_status": "blocking"
+            }),
+        )?;
+        let widened = RetainedReservationSet::replay(&[
+            claim.clone(),
+            checkpoint.clone(),
+            checked.clone(),
+            widen,
+        ])?;
+        assert_cache_miss(widened.reservation(reservation_id)?, &target);
+
+        let resnapshot = journal_event(
+            4,
+            &json!({
+                "op": "resnapshot",
+                "reservation_id": RESERVATION_ID,
+                "snapshot": {
+                    "stage": "outstanding",
+                    "protected_tip": REPLACEMENT_TIP,
+                    "trunk_oid": TRUNK_OID
+                }
+            }),
+        )?;
+        let resnapshotted = RetainedReservationSet::replay(&[
+            claim.clone(),
+            checkpoint.clone(),
+            checked.clone(),
+            resnapshot,
+        ])?;
+        assert_cache_miss(resnapshotted.reservation(reservation_id)?, &target);
+
+        let replacement = journal_event(
+            6,
+            &json!({
+                "op": "replace_release_disposition",
+                "reservation_id": RESERVATION_ID,
+                "superseded": {"kind": "integrated"},
+                "replacement": {
+                    "kind": "rewritten_integration",
+                    "evidence": REPLACEMENT_TIP
+                }
+            }),
+        )?;
+        let replaced = RetainedReservationSet::replay(&[
+            claim,
+            checkpoint,
+            integrated,
+            release,
+            checked,
+            replacement,
+        ])?;
+        assert_cache_miss(replaced.reservation(reservation_id)?, &target);
         Ok(())
     }
 
@@ -2086,6 +2567,49 @@ mod tests {
             "the outstanding incident already covers src/lib.rs, so it must not be re-raised"
         );
         Ok(())
+    }
+
+    fn assert_cache_miss(reservation: &super::Reservation, target: &GitObjectId) {
+        assert_eq!(
+            reservation
+                .scoped_patch_equivalence_cache()
+                .lookup(reservation.integration_proof_subject_revision(), target,),
+            ScopedPatchEquivalenceCacheLookup::Miss
+        );
+    }
+
+    fn scoped_patch_equivalence_checked(
+        projection_generation: u64,
+        subject: u64,
+        verdict: &str,
+    ) -> Result<JournalEvent, serde_json::Error> {
+        journal_event(
+            projection_generation,
+            &json!({
+                "op": "scoped_patch_equivalence_checked",
+                "reservation_id": RESERVATION_ID,
+                "subject": subject,
+                "target": TRUNK_OID,
+                "verdict": verdict
+            }),
+        )
+    }
+
+    fn scoped_patch_equivalence_checked_at(
+        projection_generation: u64,
+        target: &str,
+        verdict: &str,
+    ) -> Result<JournalEvent, serde_json::Error> {
+        journal_event(
+            projection_generation,
+            &json!({
+                "op": "scoped_patch_equivalence_checked",
+                "reservation_id": RESERVATION_ID,
+                "subject": 1,
+                "target": target,
+                "verdict": verdict
+            }),
+        )
     }
 
     fn lifecycle_events() -> Result<[JournalEvent; 6], serde_json::Error> {

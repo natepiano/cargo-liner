@@ -41,6 +41,15 @@ const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ]; then
     case "$2" in
         cat-file) printf '%s %s\n' "$2" "$3" >> "$CARGO_BERTH_TEST_GIT_TRACE" ;;
+        merge-base)
+            (
+                command_name="$2"
+                shift 2
+                printf '%s' "$command_name" >> "$CARGO_BERTH_TEST_GIT_TRACE"
+                for argument in "$@"; do printf ' %s' "$argument" >> "$CARGO_BERTH_TEST_GIT_TRACE"; done
+                printf '\n' >> "$CARGO_BERTH_TEST_GIT_TRACE"
+            )
+            ;;
         rev-list) printf '%s\n' "$2" >> "$CARGO_BERTH_TEST_GIT_TRACE" ;;
     esac
 fi
@@ -1178,6 +1187,120 @@ fn permit_consumption_waits_for_committed_and_aborted_does_not_spend_it() {
 }
 
 #[test]
+fn committed_hook_persists_one_scoped_patch_evaluation() {
+    let repository = initialized_repository();
+    let phase_start_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let claimed = claim(
+        repository.path(),
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "docs/scoped-cache.md",
+        "scoped-cache",
+    );
+    let reservation_id = reservation_id(&claimed);
+    fs::write(
+        repository.path().join("src/lib.rs"),
+        "pub fn protected() {}\n",
+    )
+    .expect("protected source should write");
+    git(repository.path(), &["add", "src/lib.rs"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "protected identity",
+        ],
+    );
+    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    assert!(
+        run_berth(repository.path(), &["release", &reservation_id, "--json"])
+            .status
+            .success()
+    );
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "--amend",
+            "-m",
+            "rewritten target",
+        ],
+    );
+    let target = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    assert!(!journal_text(repository.path()).contains("scoped_patch_equivalence_checked"));
+
+    let traced = run_private_hook_with_git_trace(
+        repository.path(),
+        HookPhase::Committed,
+        &format!("{protected_tip} {target} refs/heads/main\n"),
+    );
+    assert!(
+        traced.output.status.success(),
+        "committed hook failed: {}",
+        String::from_utf8_lossy(&traced.output.stderr)
+    );
+    let trace = fs::read_to_string(&traced.trace_path).expect("git trace should read");
+    let scoped_evaluation = format!("merge-base {phase_start_head} {target}");
+    assert_eq!(
+        trace
+            .lines()
+            .filter(|command| *command == scoped_evaluation)
+            .count(),
+        1
+    );
+    assert_eq!(
+        journal_text(repository.path())
+            .matches("\"op\":\"scoped_patch_equivalence_checked\"")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn prepared_gate_advances_each_subject_at_actual_and_proposed_targets() {
+    let fixture = prepared_gate_scoped_comparison_fixture();
+    let input = format!("{} {} refs/heads/main\n", fixture.actual, fixture.proposed);
+
+    for _ in 0..=fixture.reservation_ids.len() {
+        let prepared = run_private_hook(fixture.repository.path(), "prepared", &input);
+        assert!(
+            prepared.status.success(),
+            "prepared hook failed: {}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+        assert_eq!(
+            git_stdout(fixture.repository.path(), &["rev-parse", "HEAD"]),
+            fixture.actual
+        );
+    }
+    for target in [&fixture.actual, &fixture.proposed] {
+        assert_target_compared_each_reservation(&fixture, target);
+    }
+
+    let board = run_berth(fixture.repository.path(), &["board", "--json"]);
+    assert!(board.status.success());
+    let data = &json_output(&board)["payload"]["data"];
+    for reservation_id in &fixture.reservation_ids {
+        let row = reservation_row(data, reservation_id);
+        assert_eq!(
+            row["integration_evidence"]["status"]["status"],
+            "integrated"
+        );
+        assert_eq!(
+            row["integration_evidence"]["status"]["proof"],
+            "scoped_patch_equivalent"
+        );
+    }
+}
+
+#[test]
 fn environment_bypass_precedes_corruption_and_confirmed_reinit_recovers() {
     let repository = initialized_repository();
     let configuration_before =
@@ -1407,6 +1530,7 @@ fn hook_git_cost_scales_with_protected_graph_predecessors() {
 
     let traced = run_private_hook_with_git_trace(
         repository.path(),
+        HookPhase::Prepared,
         &format!("{base} {successor_head} refs/heads/main\n"),
     );
     assert!(
@@ -1420,14 +1544,14 @@ fn hook_git_cost_scales_with_protected_graph_predecessors() {
             .lines()
             .filter(|command| *command == "cat-file --batch-check")
             .count(),
-        1
+        3
     );
     assert_eq!(
         trace
             .lines()
             .filter(|command| *command == "rev-list")
             .count(),
-        2
+        4
     );
 }
 
@@ -1500,6 +1624,135 @@ struct DeferredPair {
     blocked_root: PathBuf,
     blocked_id:   String,
     holder_id:    String,
+}
+
+struct PreparedGateScopedComparisonFixture {
+    repository:      TempDir,
+    _worktrees:      TempDir,
+    reservation_ids: Vec<String>,
+    actual:          String,
+    proposed:        String,
+}
+
+fn prepared_gate_scoped_comparison_fixture() -> PreparedGateScopedComparisonFixture {
+    let repository = initialized_repository();
+    let base = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let scopes = (0..4)
+        .map(|index| format!("src/proposed-{index}.rs"))
+        .collect::<Vec<_>>();
+    let reservation_ids = scopes
+        .iter()
+        .map(|scope| {
+            reservation_id(&claim(
+                repository.path(),
+                &format!("file:{scope}"),
+                FIRST_RUN,
+                "docs/proposed-round-robin.md",
+                "proposed round robin",
+            ))
+        })
+        .collect::<Vec<_>>();
+    let protected_tip =
+        commit_scoped_target(repository.path(), &scopes, "protected proposal subjects");
+    for reservation_id in &reservation_ids {
+        let released = run_berth(repository.path(), &["release", reservation_id, "--json"]);
+        assert!(
+            released.status.success(),
+            "release failed: {}",
+            String::from_utf8_lossy(&released.stderr)
+        );
+    }
+    git(
+        repository.path(),
+        &[
+            "update-ref",
+            "refs/heads/protected-round-robin",
+            &protected_tip,
+        ],
+    );
+    git(
+        repository.path(),
+        &["-c", "core.hooksPath=/dev/null", "reset", "--hard", &base],
+    );
+    let actual = commit_scoped_target(repository.path(), &scopes, "actual equivalent target");
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let proposed_root = worktrees.path().join("uncommitted-proposal");
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            proposed_root
+                .to_str()
+                .expect("proposal worktree path should be UTF-8"),
+            &base,
+        ],
+    );
+    let proposed = commit_scoped_target(&proposed_root, &scopes, "proposed equivalent target");
+    PreparedGateScopedComparisonFixture {
+        repository,
+        _worktrees: worktrees,
+        reservation_ids,
+        actual,
+        proposed,
+    }
+}
+
+fn commit_scoped_target(repository_root: &Path, scopes: &[String], message: &str) -> String {
+    for (index, scope) in scopes.iter().enumerate() {
+        fs::write(
+            repository_root.join(scope),
+            format!("pub fn proposed_{index}() {{}}\n"),
+        )
+        .expect("scoped target source should write");
+    }
+    git(repository_root, &["add", "src"]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ],
+    );
+    git_stdout(repository_root, &["rev-parse", "HEAD"])
+}
+
+fn assert_target_compared_each_reservation(
+    fixture: &PreparedGateScopedComparisonFixture,
+    target: &str,
+) {
+    let records = journal_text(fixture.repository.path())
+        .lines()
+        .map(|record| {
+            serde_json::from_str::<serde_json::Value>(record).expect("journal record should parse")
+        })
+        .filter(|record| {
+            record["op"] == "scoped_patch_equivalence_checked" && record["target"] == target
+        })
+        .collect::<Vec<_>>();
+    let mut compared_reservations = records
+        .iter()
+        .map(|record| {
+            record["reservation_id"]
+                .as_str()
+                .expect("scoped comparison should identify its reservation")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    compared_reservations.sort();
+    let mut expected_reservations = fixture.reservation_ids.clone();
+    expected_reservations.sort();
+    assert_eq!(compared_reservations, expected_reservations);
+    assert!(
+        records
+            .iter()
+            .all(|record| record["verdict"] == "integrated")
+    );
 }
 
 fn deferred_pair(repository_root: &Path) -> DeferredPair {
@@ -1740,6 +1993,21 @@ enum BypassedMergeIdentityEnvironment<'environment> {
     Unset,
 }
 
+#[derive(Clone, Copy)]
+enum HookPhase {
+    Prepared,
+    Committed,
+}
+
+impl HookPhase {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Prepared => "prepared",
+            Self::Committed => "committed",
+        }
+    }
+}
+
 fn update_main(
     repository_root: &Path,
     previous: &str,
@@ -1813,6 +2081,18 @@ fn journal_text(repository_root: &Path) -> String {
 
 fn json_output(output: &Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("command should print JSON")
+}
+
+fn reservation_row<'board>(
+    data: &'board serde_json::Value,
+    reservation_id: &str,
+) -> &'board serde_json::Value {
+    ["ready_now", "unconstrained_reservations", "resolved"]
+        .into_iter()
+        .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
+        .map(|entry| entry.get("reservation").unwrap_or(entry))
+        .find(|row| row["reservation_id"] == reservation_id)
+        .expect("reservation should have a board row")
 }
 
 fn run_private_hook(repository_root: &Path, phase: &str, input: &str) -> Output {
@@ -1911,7 +2191,11 @@ fn run_hook_at_path(
         .expect("managed hook should finish")
 }
 
-fn run_private_hook_with_git_trace(repository_root: &Path, input: &str) -> TracedHook {
+fn run_private_hook_with_git_trace(
+    repository_root: &Path,
+    hook_phase: HookPhase,
+    input: &str,
+) -> TracedHook {
     let directory = tempdir().expect("wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
@@ -1928,7 +2212,11 @@ fn run_private_hook_with_git_trace(repository_root: &Path, input: &str) -> Trace
     )
     .expect("wrapped PATH should join");
     let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(["__reference-transaction", "prepared", "refs/heads/main"])
+        .args([
+            "__reference-transaction",
+            hook_phase.as_str(),
+            "refs/heads/main",
+        ])
         .current_dir(repository_root)
         .env("PATH", wrapped_path)
         .env(REAL_GIT_ENVIRONMENT, git_binary())

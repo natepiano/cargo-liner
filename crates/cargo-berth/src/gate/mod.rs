@@ -618,6 +618,7 @@ fn commit_forced_permit_audits(
                     Ok(decision) => decision,
                     Err(error) => return ReconciliationValidation::Reject(error),
                 };
+                let operations = prepared.into_committed_hook_operations(operations);
                 ReconciliationValidation::Apply {
                     operations,
                     recoverable_operations: Vec::new(),

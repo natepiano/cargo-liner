@@ -4,6 +4,7 @@ mod command;
 mod constants;
 mod refs;
 
+use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -1175,6 +1176,57 @@ pub(crate) fn reachability(
     } else {
         Ok(Reachability::ObjectUnknown)
     }
+}
+
+/// Classify every candidate ancestor against one target with a fixed number of git invocations.
+pub(crate) fn reachability_to_target(
+    repository_root: &Path,
+    candidate_ancestors: &[GitObjectId],
+    target: &GitObjectId,
+) -> Result<Vec<Reachability>, GitError> {
+    if candidate_ancestors.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut queried_objects = Vec::with_capacity(candidate_ancestors.len() + 1);
+    queried_objects.extend(candidate_ancestors.iter().cloned());
+    queried_objects.push(target.clone());
+    let object_availability = commit_availability(repository_root, &queried_objects)?;
+    let Some((target_availability, candidate_availability)) = object_availability.split_last()
+    else {
+        return Err(GitError::InvalidBatchObjectCount {
+            expected: queried_objects.len(),
+            actual:   0,
+        });
+    };
+    if matches!(target_availability, CommitAvailability::ObjectUnknown) {
+        return Ok(vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
+    }
+    let target_text = target.to_string();
+    let arguments = [GIT_REV_LIST_COMMAND.to_owned(), target_text];
+    let output = git_output_dynamic(repository_root, &arguments)?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_LIST_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    let target_history = output_text
+        .lines()
+        .map(str::parse)
+        .collect::<Result<HashSet<GitObjectId>, _>>()
+        .map_err(GitError::InvalidObjectId)?;
+    Ok(candidate_ancestors
+        .iter()
+        .zip(candidate_availability)
+        .map(|(candidate_ancestor, availability)| match availability {
+            CommitAvailability::Available if target_history.contains(candidate_ancestor) => {
+                Reachability::Ancestor
+            },
+            CommitAvailability::Available => Reachability::NotAncestor,
+            CommitAvailability::ObjectUnknown => Reachability::ObjectUnknown,
+        })
+        .collect())
 }
 
 /// Find supplied holder heads that descend from one protected predecessor tip.
