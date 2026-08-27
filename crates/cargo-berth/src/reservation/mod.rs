@@ -82,7 +82,6 @@ pub(crate) struct Reservation {
     retained_protected_tip:     RetainedProtectedTip,
     integration_trunk_snapshot: IntegrationTrunkSnapshot,
     integration_status:         IntegrationEvidenceStatus,
-    edit_blocking_status:       EditBlockingStatus,
     worktree_root:              CanonicalWorktreeRoot,
     worktree_locator:           WorktreeAdministrativeLocator,
     claimed_at:                 RecordedAt,
@@ -702,13 +701,11 @@ impl RetainedReservationSet {
                 reservation_id,
                 added_scopes,
                 authorization,
-                edit_blocking_status,
                 ..
             } => self.apply_widen(
                 *reservation_id,
                 added_scopes,
                 authorization,
-                *edit_blocking_status,
                 event.recorded_at(),
             )?,
             JournalOperation::Checkpoint {
@@ -742,8 +739,8 @@ impl RetainedReservationSet {
             JournalOperation::EvidenceRevalidated {
                 reservation_id,
                 status,
-                edit_blocking_status,
-            } => self.apply_evidence(*reservation_id, status, *edit_blocking_status)?,
+                ..
+            } => self.apply_evidence(*reservation_id, status)?,
             JournalOperation::RebindWorktree {
                 reservation_id,
                 previous_worktree_id,
@@ -919,7 +916,6 @@ impl RetainedReservationSet {
                 replayed_claim.trunk_at_claim.clone(),
             ),
             integration_status:         IntegrationEvidenceStatus::NotIntegrated,
-            edit_blocking_status:       EditBlockingStatus::Blocking,
             worktree_root:              replayed_claim.worktree_root.clone(),
             worktree_locator:           replayed_claim.worktree_locator.clone(),
             claimed_at:                 replayed_claim.recorded_at.clone(),
@@ -933,15 +929,16 @@ impl RetainedReservationSet {
         reservation_id: ReservationId,
         added_scopes: &ReservationScopeAdditionSet,
         authorization: &ConflictAuthorization,
-        edit_blocking_status: EditBlockingStatus,
         recorded_at: &RecordedAt,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
+        if !matches!(reservation.lifecycle, ReservationLifecycle::Active) {
+            return Err(ReservationReplayError::WidenRequiresActive(reservation_id));
+        }
         let mut scopes = reservation.scopes.as_slice().to_vec();
         scopes.extend(added_scopes.as_slice().iter().cloned());
         reservation.scopes = ReservationScopeSet::try_from(scopes)
             .map_err(|_| ReservationReplayError::EmptyScopeSet(reservation_id))?;
-        reservation.edit_blocking_status = edit_blocking_status;
         reservation.last_activity_at = recorded_at.clone();
         reservation.advance_revision()?;
         reservation.authorizations.push(authorization.clone());
@@ -961,7 +958,6 @@ impl RetainedReservationSet {
         reservation.integration_trunk_snapshot =
             IntegrationTrunkSnapshot::AtCheckpoint(trunk_snapshot.clone());
         reservation.integration_status = IntegrationEvidenceStatus::NotIntegrated;
-        reservation.edit_blocking_status = EditBlockingStatus::Blocking;
         reservation.last_activity_at = recorded_at.clone();
         reservation.advance_revision()
     }
@@ -986,13 +982,15 @@ impl RetainedReservationSet {
                 protected_tip,
                 trunk_oid,
             } => {
+                if matches!(reservation.lifecycle, ReservationLifecycle::Released { .. }) {
+                    return reservation.advance_revision();
+                }
                 reservation.lifecycle.resnapshot(protected_tip.clone())?;
                 reservation.retained_protected_tip =
                     RetainedProtectedTip::Retained(protected_tip.clone());
                 reservation.integration_trunk_snapshot =
                     IntegrationTrunkSnapshot::AtCheckpoint(trunk_oid.clone());
                 reservation.integration_status = IntegrationEvidenceStatus::NotIntegrated;
-                reservation.edit_blocking_status = EditBlockingStatus::Blocking;
             },
         }
         reservation.advance_revision()
@@ -1027,7 +1025,6 @@ impl RetainedReservationSet {
                 reservation.lifecycle.release(disposition.clone())?;
             },
         }
-        reservation.edit_blocking_status = EditBlockingStatus::Clear;
         reservation.advance_revision()
     }
 
@@ -1035,7 +1032,6 @@ impl RetainedReservationSet {
         &mut self,
         reservation_id: ReservationId,
         status: &IntegrationEvidenceStatus,
-        edit_blocking_status: EditBlockingStatus,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
         match &reservation.lifecycle {
@@ -1057,7 +1053,6 @@ impl RetainedReservationSet {
             },
         }
         reservation.integration_status = status.clone();
-        reservation.edit_blocking_status = edit_blocking_status;
         reservation.advance_revision()
     }
 
@@ -1081,7 +1076,6 @@ impl RetainedReservationSet {
                 trunk_oid: trunk_commit.as_ref().clone(),
             };
         }
-        reservation.edit_blocking_status = EditBlockingStatus::Clear;
         reservation.advance_revision()
     }
 
@@ -1116,7 +1110,7 @@ impl RetainedReservationSet {
         let observed_at = RecordedAt::now();
         self.reservations
             .iter()
-            .filter(|holder| holder.edit_blocking_status == EditBlockingStatus::Blocking)
+            .filter(|holder| holder.edit_blocking_status() == EditBlockingStatus::Blocking)
             .filter(|holder| holder_is_foreign(holder))
             .filter_map(|holder| {
                 let overlapping_scopes = holder
@@ -1193,7 +1187,7 @@ impl AuthorizedEditingIdentity {
             .iter()
             .filter(|requester| {
                 self.identifies_requester(requester)
-                    && requester.edit_blocking_status == EditBlockingStatus::Blocking
+                    && requester.edit_blocking_status() == EditBlockingStatus::Blocking
                     && requester
                         .scopes
                         .as_slice()
@@ -1283,9 +1277,15 @@ impl Reservation {
         &self.phase_start_head
     }
 
-    /// Return the materialized edit decision.
+    /// Compute whether this reservation currently blocks foreign edits.
     pub(crate) const fn edit_blocking_status(&self) -> EditBlockingStatus {
-        self.edit_blocking_status
+        match self.lifecycle {
+            ReservationLifecycle::Active => EditBlockingStatus::Blocking,
+            ReservationLifecycle::Outstanding { .. } => {
+                self.integration_status.edit_blocking_status()
+            },
+            ReservationLifecycle::Released { .. } => EditBlockingStatus::Clear,
+        }
     }
 
     /// Classify freshness from owner activity events, never unrelated journal traffic.
@@ -1423,6 +1423,8 @@ pub(crate) enum ReservationReplayError {
     IncursionIncidentAlreadyResolved(IncursionIncidentId),
     /// A replayed widen somehow produced an empty scope set.
     EmptyScopeSet(ReservationId),
+    /// A widen operation named a reservation that was no longer active.
+    WidenRequiresActive(ReservationId),
     /// A reservation revision counter can no longer advance.
     RevisionExhausted(ReservationId),
     /// A lifecycle transition appeared in an invalid order.
@@ -1483,6 +1485,10 @@ impl Display for ReservationReplayError {
                     "reservation {reservation_id} replayed with no scopes"
                 )
             },
+            Self::WidenRequiresActive(reservation_id) => write!(
+                formatter,
+                "reservation {reservation_id} cannot widen after leaving active state"
+            ),
             Self::RevisionExhausted(reservation_id) => {
                 write!(
                     formatter,
@@ -1543,6 +1549,7 @@ mod tests {
     use serde_json::Value;
     use serde_json::json;
 
+    use super::AuthorizedEditingIdentity;
     use super::DriftBlockingCoverage;
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
@@ -1611,7 +1618,7 @@ mod tests {
                 ..
             })
         ));
-        let reblocked = RetainedReservationSet::replay(&[
+        let lost_evidence = RetainedReservationSet::replay(&[
             claim.clone(),
             checkpoint.clone(),
             integrated.clone(),
@@ -1619,7 +1626,7 @@ mod tests {
             rewritten.clone(),
         ])?;
         assert!(matches!(
-            reblocked
+            lost_evidence
                 .reservation(reservation_id)
                 .and_then(super::Reservation::evidence_state),
             Ok(ReservationEvidenceState::Released {
@@ -1627,45 +1634,86 @@ mod tests {
                 ..
             })
         ));
-        let recovered = RetainedReservationSet::replay(&[
+        assert_eq!(
+            lost_evidence
+                .reservation(reservation_id)?
+                .edit_blocking_status(),
+            EditBlockingStatus::Clear
+        );
+        let legacy_resnapshot = RetainedReservationSet::replay(&[
             claim, checkpoint, integrated, release, rewritten, resnapshot,
         ])?;
         assert!(matches!(
-            recovered
+            legacy_resnapshot
                 .reservation(reservation_id)
                 .and_then(super::Reservation::evidence_state),
-            Ok(ReservationEvidenceState::Outstanding {
+            Ok(ReservationEvidenceState::Released {
                 protected_tip,
-                integration_status: IntegrationEvidenceStatus::NotIntegrated,
+                integration_status: IntegrationEvidenceStatus::TrunkRewritten,
                 ..
-            }) if protected_tip.to_string() == REPLACEMENT_TIP
+            }) if protected_tip.to_string() == PROTECTED_TIP
         ));
         Ok(())
     }
 
     #[test]
-    fn replay_reads_the_journaled_edit_blocking_status() -> Result<(), Box<dyn std::error::Error>> {
+    fn replay_ignores_a_journaled_blocking_status_after_release()
+    -> Result<(), Box<dyn std::error::Error>> {
         let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
-        let [claim, checkpoint, ..] = lifecycle_events()?;
-        let recorded_blocking_evidence = journal_event(
-            3,
-            &json!({
-                "op": "evidence_revalidated",
-                "reservation_id": RESERVATION_ID,
-                "status": {"status": "integrated", "trunk_oid": TRUNK_OID},
-                "edit_blocking_status": "blocking",
-            }),
-        )?;
+        let [
+            claim,
+            checkpoint,
+            integrated,
+            release,
+            recorded_blocking_evidence,
+            _,
+        ] = lifecycle_events()?;
 
-        let retained_reservations =
-            RetainedReservationSet::replay(&[claim, checkpoint, recorded_blocking_evidence])?;
+        let retained_reservations = RetainedReservationSet::replay(&[
+            claim,
+            checkpoint,
+            integrated,
+            release,
+            recorded_blocking_evidence,
+        ])?;
 
         assert_eq!(
             retained_reservations
                 .reservation(reservation_id)?
-                .edit_blocking_status,
-            EditBlockingStatus::Blocking
+                .edit_blocking_status(),
+            EditBlockingStatus::Clear
         );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_rejects_widen_after_release() -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let [claim, checkpoint, integrated, release, ..] = lifecycle_events()?;
+        let widen = journal_event(
+            5,
+            &json!({
+                "op": "widen",
+                "reservation_id": RESERVATION_ID,
+                "added_scopes": [{"path": "added.rs", "kind": "file"}],
+                "cause": {"kind": "explicit", "reason": "legacy invalid sequence"},
+                "authorization": {"kind": "no_conflict"},
+                "edit_blocking_status": "blocking"
+            }),
+        )?;
+
+        let Err(error) =
+            RetainedReservationSet::replay(&[claim, checkpoint, integrated, release, widen])
+        else {
+            return Err(
+                std::io::Error::other("release followed by widen should be rejected").into(),
+            );
+        };
+        assert!(matches!(
+            error,
+            super::ReservationReplayError::WidenRequiresActive(candidate)
+                if candidate == reservation_id
+        ));
         Ok(())
     }
 
@@ -1761,14 +1809,8 @@ mod tests {
         Ok(())
     }
 
-    /// A worktree must never block itself with a reservation it holds.
-    ///
-    /// A release whose integration proof is later lost returns to blocking, and the next
-    /// session in that checkout mints a new run id. Deciding foreignness by run made the
-    /// holder foreign to its own worktree, which offered the caller only the overlap menu
-    /// — a negotiation between two parties where there was one.
     #[test]
-    fn a_reblocked_reservation_blocks_another_worktree_and_never_its_own()
+    fn a_released_reservation_with_lost_evidence_never_blocks_edits()
     -> Result<(), Box<dyn std::error::Error>> {
         let [claim, checkpoint, integrated, release, rewritten, _] = lifecycle_events()?;
         let reservations =
@@ -1782,8 +1824,75 @@ mod tests {
         assert_eq!(
             reservations
                 .reservation(RESERVATION_ID.parse::<ReservationId>()?)?
-                .edit_blocking_status,
+                .edit_blocking_status(),
+            EditBlockingStatus::Clear
+        );
+
+        assert!(
+            reservations
+                .conflicts_for_first_touch(
+                    &candidate,
+                    second_run_id,
+                    worktree_id,
+                    PathCase::Sensitive,
+                )
+                .is_empty()
+        );
+        assert!(
+            reservations
+                .conflicts_for_claim(&candidate, worktree_id, PathCase::Sensitive)
+                .is_empty()
+        );
+        let foreign_first_touch = reservations.conflicts_for_first_touch(
+            &candidate,
+            second_run_id,
+            second_worktree_id,
+            PathCase::Sensitive,
+        );
+        assert!(foreign_first_touch.is_empty());
+        let foreign_claim =
+            reservations.conflicts_for_claim(&candidate, second_worktree_id, PathCase::Sensitive);
+        assert!(foreign_claim.is_empty());
+        Ok(())
+    }
+
+    /// A worktree must never block itself with an active reservation it holds.
+    ///
+    /// An active holder blocks foreign worktrees, but a later coordination run in the same
+    /// checkout remains the holder's identity. Deciding foreignness by run once made the
+    /// worktree foreign to itself and offered an overlap negotiation where there was only
+    /// one party.
+    #[test]
+    fn an_active_reservation_blocks_another_worktree_and_never_its_own()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let [claim, ..] = lifecycle_events()?;
+        let reservations = RetainedReservationSet::replay(&[claim])?;
+        let candidate = serde_json::from_value::<ReservationScopeSet>(json!([
+            {"path": "src/lib.rs", "kind": "file"}
+        ]))?;
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let second_run_id = SECOND_RUN_ID.parse::<CoordinationRunId>()?;
+        let worktree_id = WORKTREE_ID.parse::<WorktreeId>()?;
+        let second_worktree_id = SECOND_WORKTREE_ID.parse::<WorktreeId>()?;
+        let active_holder = reservations.reservation(reservation_id)?;
+        assert_eq!(
+            active_holder.edit_blocking_status(),
             EditBlockingStatus::Blocking
+        );
+        assert!(
+            AuthorizedEditingIdentity::Run {
+                coordination_run_id: second_run_id,
+                worktree_id,
+            }
+            .identifies_requester(active_holder)
+        );
+        assert!(
+            AuthorizedEditingIdentity::SessionReservation {
+                coordination_run_id: second_run_id,
+                reservation_id,
+                worktree_id,
+            }
+            .identifies_requester(active_holder)
         );
 
         assert!(
@@ -1808,12 +1917,21 @@ mod tests {
             PathCase::Sensitive,
         );
         assert_eq!(
-            foreign_first_touch[0].reservation_id.to_string(),
-            RESERVATION_ID
+            foreign_first_touch
+                .iter()
+                .map(|conflict| conflict.reservation_id)
+                .collect::<Vec<_>>(),
+            [reservation_id]
         );
         let foreign_claim =
             reservations.conflicts_for_claim(&candidate, second_worktree_id, PathCase::Sensitive);
-        assert_eq!(foreign_claim[0].reservation_id.to_string(), RESERVATION_ID);
+        assert_eq!(
+            foreign_claim
+                .iter()
+                .map(|conflict| conflict.reservation_id)
+                .collect::<Vec<_>>(),
+            [reservation_id]
+        );
         Ok(())
     }
 

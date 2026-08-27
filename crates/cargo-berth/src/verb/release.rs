@@ -36,6 +36,7 @@ use crate::output::ReleasePayload;
 use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
+use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
@@ -321,15 +322,13 @@ fn operation_for_state(
         ),
         ReservationEvidenceState::Released {
             protected_tip,
-            trunk_snapshot: _,
             disposition,
-            integration_status,
+            ..
         } => released_evidence_operation(
             &release_repository_context,
             reservation_id,
             &protected_tip,
             &disposition,
-            &integration_status,
         ),
         ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
             Err(ReleaseRejection::AlreadyReleased)
@@ -383,6 +382,7 @@ fn outstanding_operation(
         return Ok(evidence_operation(
             reservation_id,
             IntegrationEvidenceStatus::ObjectUnknown,
+            EditBlockingStatus::Blocking,
             protected_tip.clone(),
         ));
     };
@@ -438,9 +438,11 @@ fn outstanding_operation(
     {
         return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
     }
+    let edit_blocking_status = evidence.edit_blocking_status();
     Ok(evidence_operation(
         reservation_id,
         evidence,
+        edit_blocking_status,
         protected_tip.clone(),
     ))
 }
@@ -477,7 +479,6 @@ fn released_evidence_operation(
     reservation_id: ReservationId,
     protected_tip: &ProtectedReservationTip,
     disposition: &ReleaseDisposition,
-    materialized_status: &IntegrationEvidenceStatus,
 ) -> Result<ReleaseAppend, ReleaseRejection> {
     let revalidation_tip = match disposition.revalidation_subject() {
         ReleaseRevalidationSubject::ProtectedTip => protected_tip.clone(),
@@ -493,6 +494,7 @@ fn released_evidence_operation(
         return Ok(evidence_operation(
             reservation_id,
             IntegrationEvidenceStatus::ObjectUnknown,
+            EditBlockingStatus::Clear,
             protected_tip.clone(),
         ));
     };
@@ -503,23 +505,10 @@ fn released_evidence_operation(
         PriorIntegrationStatus::Proven,
     )
     .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown);
-    if release_repository_context.holder_worktree == HolderWorktree::Invoking
-        && matches!(
-            materialized_status,
-            IntegrationEvidenceStatus::NotIntegrated | IntegrationEvidenceStatus::TrunkRewritten
-        )
-        && matches!(
-            evidence,
-            IntegrationEvidenceStatus::NotIntegrated | IntegrationEvidenceStatus::TrunkRewritten
-        )
-        && reservation::current_head(release_repository_context.repository_root)
-            .is_ok_and(|current_head| current_head != *protected_tip.as_ref())
-    {
-        return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
-    }
     Ok(evidence_operation(
         reservation_id,
         evidence,
+        EditBlockingStatus::Clear,
         protected_tip.clone(),
     ))
 }
@@ -549,9 +538,9 @@ impl HolderWorktree {
 fn evidence_operation(
     reservation_id: ReservationId,
     evidence: IntegrationEvidenceStatus,
+    edit_blocking_status: EditBlockingStatus,
     protected_tip: ProtectedReservationTip,
 ) -> ReleaseAppend {
-    let edit_blocking_status = evidence.edit_blocking_status();
     ReleaseAppend::new(
         JournalOperation::EvidenceRevalidated {
             reservation_id,

@@ -165,14 +165,20 @@ The remaining row enums are scalar strings:
 reblocked_active_constraint | resolved_audit`, and `holder.liveness = live |
 unavailable | orphan_candidate | orphaned | unknown`.
 
+`edit_blocking_status` is a lifecycle-derived projection: active reservations
+are `blocking`, outstanding reservations follow their integration evidence, and
+released reservations are always `clear`. Consequently, newly assembled rows
+never pair `lifecycle.stage = released` with `edit_blocking_status = blocking`;
+the `reblocked_active_constraint` wire value remains reserved for v1
+compatibility but is not emitted for released reservations.
+
 The sections mean:
 
 - `ready_now`: non-resolved endpoints involved in any recorded ordering edge,
   including an edge now listed under `settled_ordering_constraints`, except a
   current waiting successor or either endpoint of an unresolved deferral. Each
   entry wraps the row with `relation = "unordered"`. Non-resolved rows are
-  active, outstanding, or released rows whose evidence made them edit-blocking
-  again.
+  active or outstanding reservations.
 - `waiting`: holding edges. Its action is `predecessor_checkpoint`,
   `predecessor_not_integrated`, `trunk_evidence_rewritten`,
   `predecessor_object_unknown`, or `successor_must_incorporate_predecessor`.
@@ -188,8 +194,8 @@ The sections mean:
   `ordering_created_from_deferral`, `existing_answers_cover_every_overlap`, and
   `widen_without_foreign_overlap` answers with their exact scopes and effects.
 - `unconstrained_reservations`: non-resolved rows not involved in a recorded
-  ordering edge or unresolved deferral. This can include `active`, `outstanding`,
-  and reblocked `released` rows.
+  ordering edge or unresolved deferral. These are `active` and `outstanding`
+  rows; a `released` reservation is always resolved audit history.
 - `resolved`: released reservation audit history. Its four dispositions are
   `integrated`, `rewritten_integration`, `abandoned`, and `retired_orphan`.
   Orphan retirement remains distinct from deliberate abandonment.
@@ -279,9 +285,16 @@ These operation fields use the following tagged values:
   `holder_before_requester`. Each `overlaps` entry is `{ "reservation_id":
   <uuid-v7>, "scope_revision": [scope...], "scopes": [scope...] }`.
 - Widen `cause.kind` is `drift` or `explicit`; `explicit` adds `reason`.
-- `edit_blocking_status` is `blocking` or `clear`.
+- `edit_blocking_status` is `blocking` or `clear`. The field remains in v1
+  `widen` and `evidence_revalidated` records for compatibility and audit, but
+  replay treats it as informational. Effective blocking is derived from the
+  replayed lifecycle and integration evidence, and a released reservation is
+  always effectively `clear` even if a historical record says `blocking`.
 - `snapshot.stage` is `active` with `claim_snapshot`, or `outstanding` with
   `protected_tip` and `trunk_oid`.
+  A resnapshot can update only an active claim snapshot or an outstanding
+  protected tip. Legacy records that resnapshot an already released
+  reservation are consumed without reopening its terminal lifecycle.
 - A release disposition is `{ "kind": "integrated" }`, or has `kind` equal to
   `rewritten_integration`, `abandoned`, or `retired_orphan` plus a scalar
   `evidence` field containing the commit or reason. `superseded` and
@@ -305,4 +318,3 @@ An unknown `schema_version` or `op`, an omitted required field, an empty field
 whose type is documented as non-empty, or an invalid tagged alternative makes
 the journal unreadable; an older binary never skips an operation it cannot
 replay.
-

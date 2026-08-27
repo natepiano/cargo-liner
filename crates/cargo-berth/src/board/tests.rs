@@ -439,7 +439,19 @@ fn assert_trunk_rewritten_action() -> FixtureResult<()> {
         &rewritten.predecessor_actor,
         rewritten.predecessor.reservation_id,
         rewritten_tip.clone(),
-        rewritten_tip,
+        rewritten_tip.clone(),
+    )?;
+    rewritten.board.record_evidence(
+        &rewritten.predecessor_actor,
+        rewritten.predecessor.reservation_id,
+        IntegrationEvidenceStatus::Integrated {
+            trunk_oid: rewritten_tip,
+        },
+    )?;
+    rewritten.board.release(
+        &rewritten.predecessor_actor,
+        rewritten.predecessor.reservation_id,
+        ReleaseDisposition::Integrated,
     )?;
     rewritten.board.amend_trunk()?;
     let rewritten_model = rewritten.model()?;

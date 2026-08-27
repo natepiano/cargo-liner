@@ -583,7 +583,7 @@ fn rewritten_and_unknown_predecessor_evidence_have_distinct_recoveries() {
     clippy::too_many_lines,
     reason = "one scenario compares all four release dispositions before and after one rewrite"
 )]
-fn release_dispositions_move_to_resolved_and_reenter_when_trunk_rewrites() {
+fn release_dispositions_remain_resolved_when_trunk_rewrites() {
     // The CLI records git-backed terminal dispositions only after a real merge. Direct journal
     // facts let this model test cover all four durable variants without coupling it to gate I/O.
     let repository = initialized_repository();
@@ -688,26 +688,22 @@ fn release_dispositions_move_to_resolved_and_reenter_when_trunk_rewrites() {
     let rewritten = board_data(repository.path());
     for reservation_id in &reservation_ids[..2] {
         let row = reservation_row(&rewritten, reservation_id);
-        assert_eq!(row["visibility"], "reblocked_active_constraint");
+        assert_eq!(row["visibility"], "resolved_audit");
+        assert_eq!(row["edit_blocking_status"], "clear");
         assert_eq!(
             row["integration_evidence"]["status"]["status"],
             "trunk_rewritten"
         );
-        assert!(
-            rewritten["resolved"]["entries"]
-                .as_array()
-                .is_some_and(|rows| {
-                    rows.iter()
-                        .all(|row| row["reservation_id"].as_str() != Some(reservation_id.as_str()))
-                })
-        );
     }
     for reservation_id in &reservation_ids[2..] {
-        assert_eq!(
-            reservation_row(&rewritten, reservation_id)["visibility"],
-            "resolved_audit"
-        );
+        let row = reservation_row(&rewritten, reservation_id);
+        assert_eq!(row["visibility"], "resolved_audit");
+        assert_eq!(row["edit_blocking_status"], "clear");
     }
+    assert_eq!(
+        rewritten["resolved"]["entries"].as_array().map(Vec::len),
+        Some(4)
+    );
 }
 
 #[test]

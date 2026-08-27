@@ -60,17 +60,9 @@ impl ReservationLifecycle {
                 *current_tip = protected_tip;
                 Ok(())
             },
-            Self::Released { disposition } => match disposition.revalidation_subject() {
-                ReleaseRevalidationSubject::ProtectedTip
-                | ReleaseRevalidationSubject::RewrittenIntegration(_) => {
-                    *self = Self::Outstanding { protected_tip };
-                    Ok(())
-                },
-                ReleaseRevalidationSubject::None => {
-                    Err(LifecycleTransitionError::ResnapshotRequiresGitEvidence)
-                },
+            Self::Active | Self::Released { .. } => {
+                Err(LifecycleTransitionError::ResnapshotRequiresOutstanding)
             },
-            Self::Active => Err(LifecycleTransitionError::ResnapshotRequiresGitEvidence),
         }
     }
 
@@ -146,7 +138,7 @@ pub(crate) enum IntegrationEvidenceStatus {
 }
 
 impl IntegrationEvidenceStatus {
-    /// Convert this point-in-time result into the state consumed by edit checks.
+    /// Derive the edit decision for an outstanding reservation from its current evidence.
     pub(crate) const fn edit_blocking_status(&self) -> EditBlockingStatus {
         match self {
             Self::Integrated { .. } => EditBlockingStatus::Clear,
@@ -157,13 +149,13 @@ impl IntegrationEvidenceStatus {
     }
 }
 
-/// The journaled edit decision consumed without executing git.
+/// The effective edit decision derived from reservation lifecycle and integration evidence.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EditBlockingStatus {
     /// The reservation still blocks foreign edits.
     Blocking,
-    /// Current materialized evidence permits foreign edits.
+    /// The reservation is released or its outstanding evidence permits foreign edits.
     Clear,
 }
 
@@ -306,7 +298,7 @@ pub(crate) enum LifecycleTransitionError {
     /// A checkpoint operation named a reservation that was not active.
     CheckpointRequiresActive,
     /// A resnapshot operation named a reservation that was not outstanding.
-    ResnapshotRequiresGitEvidence,
+    ResnapshotRequiresOutstanding,
     /// A release operation named a reservation without a protected checkpoint.
     ReleaseRequiresCheckpoint,
     /// A second terminal disposition named an already released reservation.
@@ -323,8 +315,8 @@ impl Display for LifecycleTransitionError {
             Self::CheckpointRequiresActive => {
                 formatter.write_str("checkpoint requires an active reservation")
             },
-            Self::ResnapshotRequiresGitEvidence => {
-                formatter.write_str("resnapshot requires retained git integration evidence")
+            Self::ResnapshotRequiresOutstanding => {
+                formatter.write_str("resnapshot requires an outstanding reservation")
             },
             Self::ReleaseRequiresCheckpoint => {
                 formatter.write_str("release requires a checkpointed reservation")

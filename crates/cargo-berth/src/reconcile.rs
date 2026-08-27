@@ -53,6 +53,7 @@ use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::reservation;
+use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
@@ -720,8 +721,12 @@ fn append_evidence_and_retention(
         ReservationEvidenceState::Active { .. }
         | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => return Ok(()),
     };
-    let edit_blocking_status = evidence.edit_blocking_status();
-    if materialized != *evidence || reservation.edit_blocking_status() != edit_blocking_status {
+    let edit_blocking_status = match reservation.lifecycle() {
+        ReservationLifecycle::Active => EditBlockingStatus::Blocking,
+        ReservationLifecycle::Outstanding { .. } => evidence.edit_blocking_status(),
+        ReservationLifecycle::Released { .. } => EditBlockingStatus::Clear,
+    };
+    if materialized != *evidence {
         changes
             .operations
             .push(JournalOperation::EvidenceRevalidated {

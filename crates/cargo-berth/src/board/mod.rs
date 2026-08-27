@@ -172,7 +172,7 @@ enum BoardIntegrationEvidence {
 enum BoardReservationVisibility {
     /// Live or outstanding work still participates in active constraints.
     ActiveConstraint,
-    /// A released reservation became edit-blocking again after evidence changed.
+    /// Reserved v1 wire value no longer produced for released reservations.
     ReblockedActiveConstraint,
     /// A cleanly released reservation belongs only to retained audit history.
     ResolvedAudit,
@@ -807,13 +807,8 @@ fn reservation_rows(
     Ok((rows, ahead_behind_computations))
 }
 
-fn reservation_visibility(reservation: &Reservation) -> BoardReservationVisibility {
+const fn reservation_visibility(reservation: &Reservation) -> BoardReservationVisibility {
     match reservation.lifecycle() {
-        ReservationLifecycle::Released { .. }
-            if reservation.edit_blocking_status() == EditBlockingStatus::Blocking =>
-        {
-            BoardReservationVisibility::ReblockedActiveConstraint
-        },
         ReservationLifecycle::Released { .. } => BoardReservationVisibility::ResolvedAudit,
         ReservationLifecycle::Active | ReservationLifecycle::Outstanding { .. } => {
             BoardReservationVisibility::ActiveConstraint
