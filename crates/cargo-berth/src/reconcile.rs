@@ -595,6 +595,8 @@ fn repository_evidence(
                     if matches!(materialized, IntegrationEvidenceStatus::Integrated { .. }) {
                         reservation::integration_status(
                             repository_root,
+                            reservation.phase_start_head(),
+                            reservation.scopes(),
                             &protected_tip,
                             current_trunk_oid,
                             PriorIntegrationStatus::Proven,
@@ -602,6 +604,8 @@ fn repository_evidence(
                     } else {
                         reservation::outstanding_integration_status(
                             repository_root,
+                            reservation.phase_start_head(),
+                            reservation.scopes(),
                             &protected_tip,
                             &trunk_snapshot,
                             current_trunk_oid,
@@ -623,13 +627,21 @@ fn repository_evidence(
             ..
         } => {
             let integration_status = match disposition.revalidation_subject() {
-                ReleaseRevalidationSubject::ProtectedTip => {
-                    revalidate_release(repository_root, &protected_tip, repository_trunk)
-                },
+                ReleaseRevalidationSubject::ProtectedTip => revalidate_release(
+                    repository_root,
+                    reservation,
+                    &protected_tip,
+                    repository_trunk,
+                ),
                 ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => {
                     let revalidation_tip =
                         ProtectedReservationTip::from(trunk_commit.as_ref().clone());
-                    revalidate_release(repository_root, &revalidation_tip, repository_trunk)
+                    revalidate_release(
+                        repository_root,
+                        reservation,
+                        &revalidation_tip,
+                        repository_trunk,
+                    )
                 },
                 ReleaseRevalidationSubject::None => materialized,
             };
@@ -647,12 +659,15 @@ fn repository_evidence(
 
 fn revalidate_release(
     repository_root: &Path,
+    reservation: &Reservation,
     protected_tip: &ProtectedReservationTip,
     repository_trunk: &RepositoryTrunk,
 ) -> IntegrationEvidenceStatus {
     match repository_trunk {
         RepositoryTrunk::Resolved(current_trunk_oid) => reservation::integration_status(
             repository_root,
+            reservation.phase_start_head(),
+            reservation.scopes(),
             protected_tip,
             current_trunk_oid,
             PriorIntegrationStatus::Proven,

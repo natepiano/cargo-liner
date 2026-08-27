@@ -131,7 +131,7 @@ fn resolve_reports_failed_session_mapping_retirement() {
 }
 
 #[test]
-fn integrated_evidence_returns_to_blocking_after_trunk_rewrite_without_git_on_check() {
+fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
@@ -178,8 +178,8 @@ fn integrated_evidence_returns_to_blocking_after_trunk_rewrite_without_git_on_ch
         .env(RUN_ENVIRONMENT, SECOND_RUN)
         .output()
         .expect("check should run without git");
-    assert_eq!(check.status.code(), Some(1));
-    assert_eq!(json_output(&check)["status"], "blocked_by_overlap");
+    assert!(check.status.success());
+    assert_eq!(json_output(&check)["status"], "clear");
 }
 
 #[test]
@@ -396,7 +396,7 @@ fn failed_journal_append_does_not_move_the_retention_ref() {
 }
 
 #[test]
-fn unresolvable_trunk_materializes_object_unknown_for_git_free_checks() {
+fn released_reservation_remains_clear_with_unresolvable_trunk_without_git_on_check() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
@@ -445,8 +445,43 @@ fn unresolvable_trunk_materializes_object_unknown_for_git_free_checks() {
         .output()
         .expect("check should run without git");
 
-    assert_eq!(check.status.code(), Some(1));
-    assert_eq!(json_output(&check)["status"], "blocked_by_overlap");
+    assert!(check.status.success());
+    let check_json = json_output(&check);
+    assert_eq!(check_json["status"], "clear");
+    assert_eq!(
+        check_json["payload"]["data"]["acquisition"]["kind"],
+        "appended"
+    );
+    let journal = fs::read_to_string(repository.path().join(JOURNAL_PATH))
+        .expect("journal should contain the first-touch claim");
+    let first_touch_event: serde_json::Value = serde_json::from_str(
+        journal
+            .lines()
+            .next_back()
+            .expect("journal should contain a final event"),
+    )
+    .expect("final journal event should be valid JSON");
+    assert_eq!(
+        first_touch_event["trunk_at_claim"]["reference"],
+        "refs/heads/main"
+    );
+
+    fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
+    assert!(run_berth(repository.path(), &["init"]).status.success());
+    let replayed_check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["check", "file:src/lib.rs", "--json"])
+        .current_dir(&second_root)
+        .env("PATH", empty_path.path())
+        .env(RUN_ENVIRONMENT, SECOND_RUN)
+        .output()
+        .expect("check should run after replay without git");
+    assert!(replayed_check.status.success());
+    let replayed_check_json = json_output(&replayed_check);
+    assert_eq!(replayed_check_json["status"], "clear");
+    assert_eq!(
+        replayed_check_json["payload"]["data"]["acquisition"]["kind"],
+        "already_held"
+    );
 }
 
 #[test]

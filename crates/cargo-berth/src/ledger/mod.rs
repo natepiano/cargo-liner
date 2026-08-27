@@ -64,7 +64,9 @@ pub(crate) use journal::ScopeKind;
 pub(crate) use journal::SkippedDeferral;
 pub(crate) use journal::SkippedIntegrationHoldSet;
 pub(crate) use journal::SkippedOrderingEdge;
+#[cfg(test)]
 pub(crate) use journal::TrunkCommitAtClaim;
+pub(crate) use journal::TrunkObservationAtClaim;
 pub(crate) use journal::WidenCause;
 pub(crate) use journal::WorkPlanReference;
 pub(crate) use journal::WorktreeAdministrativeLocator;

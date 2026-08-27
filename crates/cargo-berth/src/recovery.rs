@@ -41,11 +41,13 @@ use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
 use crate::reservation::AbandonmentReason;
-use crate::reservation::EditBlockingStatus;
 use crate::reservation::IncursionIncident;
+use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::OrphanRetirementReason;
 use crate::reservation::ReleaseDisposition;
+use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::Reservation;
+use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
@@ -554,24 +556,36 @@ fn recovery_operation(
         },
         ReservationRecoveryDecision::IntegratedAs(trunk_commit) => {
             let disposition = ReleaseDisposition::RewrittenIntegration(trunk_commit);
-            let operation = match reservation.lifecycle() {
-                ReservationLifecycle::Outstanding { .. } => JournalOperation::Release {
+            let evidence_state = reservation
+                .evidence_state()
+                .map_err(RecoveryRejection::Replay)?;
+            let operation = match evidence_state {
+                ReservationEvidenceState::Outstanding { .. } => JournalOperation::Release {
                     reservation_id,
                     disposition: disposition.clone(),
                 },
-                ReservationLifecycle::Released {
+                ReservationEvidenceState::Released {
                     disposition: superseded,
-                } if reservation.edit_blocking_status() == EditBlockingStatus::Blocking => {
+                    integration_status:
+                        IntegrationEvidenceStatus::TrunkRewritten
+                        | IntegrationEvidenceStatus::ObjectUnknown,
+                    ..
+                } if !matches!(
+                    superseded.revalidation_subject(),
+                    ReleaseRevalidationSubject::None
+                ) =>
+                {
                     JournalOperation::ReplaceReleaseDisposition {
                         reservation_id,
-                        superseded: superseded.clone(),
+                        superseded,
                         replacement: disposition.clone(),
                     }
                 },
-                ReservationLifecycle::Released { .. } => {
+                ReservationEvidenceState::Released { .. }
+                | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
                     return Err(RecoveryRejection::AlreadyResolved);
                 },
-                ReservationLifecycle::Active => {
+                ReservationEvidenceState::Active { .. } => {
                     return Err(RecoveryRejection::CheckpointRequired);
                 },
             };

@@ -54,7 +54,29 @@ Field evidence for every defect below: [`berth-fix-evidence.md`](berth-fix-evide
   - `/Users/natemccoy/.claude/scripts/berth/install/hooks/berth_session_start.sh` — canonical SessionStart shim.
   - `/Users/natemccoy/.claude/commands/plan/delegate.md` — `/plan:delegate`; recovery call (~L1641), lifecycle classification (~L1659).
 - **Build:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`
-- **Test:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`
+- **Test:** every one of these eleven commands, all green. The first runs the
+  crate's own unit tests; the other ten are the integration suites in
+  `crates/cargo-berth/tests/`.
+  ```
+  bash ~/.claude/scripts/delegate/verify.sh test cargo-berth
+  bash ~/.claude/scripts/delegate/verify.sh test cargo-berth answers
+  bash ~/.claude/scripts/delegate/verify.sh test cargo-berth board
+  bash ~/.claude/scripts/delegate/verify.sh test cargo-berth drift
+  bash ~/.claude/scripts/delegate/verify.sh test cargo-berth edges
+  bash ~/.claude/scripts/delegate/verify.sh test cargo-berth gate
+  bash ~/.claude/scripts/delegate/verify.sh test cargo-berth ledger
+  bash ~/.claude/scripts/delegate/verify.sh test cargo-berth lifecycle
+  bash ~/.claude/scripts/delegate/verify.sh test cargo-berth liveness
+  bash ~/.claude/scripts/delegate/verify.sh test cargo-berth overlap
+  ```
+  **The bare `verify.sh test cargo-berth` line is not the test gate on its own.**
+  It resolves targets through `target_flags`, which selects only lib and bin
+  targets, so it cannot see `crates/cargo-berth/tests/` at all. Phase 1 passed its
+  gate that way and shipped four failing integration tests: a released
+  reservation's blocking contract in `lifecycle.rs` (two), the
+  `resolve --integrated-as` recovery gate in `liveness.rs`, and a widen against an
+  outstanding reservation in `answers.rs`. Naming each target is what makes them
+  visible.
 - **Lint:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth`
 - **Style:** `phase-end /clippy style-only auto-proceed`
 - **Invariants:**
@@ -93,74 +115,32 @@ Field evidence for every defect below: [`berth-fix-evidence.md`](berth-fix-evide
 
 **Ruled out:** Guarding `apply_evidence` instead of removing the retained field — it leaves the invalid `Released` + `Blocking` pair constructible from every other writer and from replay. Reopening a released reservation when its integration evidence is lost — settled with the user 2026-08-26: vanished work is announced, not gated, because a wrong evidence verdict otherwise becomes a permanent phantom blocker with no operator path to clear it.
 
-### Phase 2 — Scoped patch equivalence as integration proof  · status: todo
+### Phase 2 — Scoped patch equivalence as integration proof  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** An amended or rebased commit stops destroying integration proof, without accepting unrelated content as proof.
-
-**Spec:**
-
-`reservation/evidence.rs:65 integration_status` treats integration proof as commit identity: it demotes a `Proven` reservation to `TrunkRewritten` once its protected tip stops being an ancestor of trunk. `git commit --amend` therefore evaporates the proof even though every changed line is still on trunk, and `/validate_and_push` amends by design on essentially every push.
-
-**"Scopes are present on trunk" is not a sufficient predicate**, and all five reviewers said so independently. Path existence accepts a file that predated the reservation whose edits were later removed. Whole-blob equality rejects proof as soon as trunk legitimately edits the same file again. Define the fallback as **scoped patch equivalence**:
-
-> Every change the reservation made within its own scopes, between `phase_start_head` and the protected tip, has an equivalent in current trunk history.
-
-The baseline is `phase_start_head` **only**. The checkpoint trunk snapshot (`ReservationEvidenceState::{Outstanding, Released}::trunk_snapshot`) records what trunk looked like when the checkpoint was taken; it is not an interchangeable patch baseline, and diffing from it would attribute trunk's own concurrent commits to the reservation.
-
-Required behaviours:
-- Paths still exist but the reservation's edits are absent → `TrunkRewritten`.
-- The commit was amended or rebased and the scoped changes remain → `Integrated`.
-- Later unrelated edits to the same files do not erase proof.
-- A reservation-authored **deletion** is provable; renames are handled as delete/add pairs; mode changes are compared.
-- A **tree scope** expands to the reservation's own affected paths, not every later descendant. Partial survival of a tree scope is `TrunkRewritten`.
-- Trunk touching every reserved path with **different** content must not certify.
-
-Record which proof the status rests on, so the board and later phases can tell them apart:
-
-```rust
-enum IntegrationProof {
-    ProtectedTipAncestor,
-    ScopedPatchEquivalent,
-}
-
-IntegrationEvidenceStatus::Integrated {
-    trunk_oid: GitObjectId,
-    proof: IntegrationProof,
-}
-```
-
-Deserialize older records as `ProtectedTipAncestor`. The backward-compatible `#[serde(default)]` belongs on the new `proof` field in `reservation/lifecycle.rs`, where `IntegrationEvidenceStatus` is defined — not in `reservation/mod.rs`. Update `docs/cargo-berth/json-contract.md`.
-
-`integration_status` currently receives neither the scopes nor the phase baseline:
-
-```rust
-pub(crate) fn integration_status(
-    repository_root: &Path,
-    protected_tip: &ProtectedReservationTip,
-    trunk_oid: &GitObjectId,
-    prior_integration_status: PriorIntegrationStatus,
-) -> Result<IntegrationEvidenceStatus, GitError>
-```
-
-Thread `phase_start_head` and the `ReservationScopeSet` through it and through `outstanding_integration_status` (`evidence.rs:85`). Call sites hold the reservation already: `verb/release.rs:393,400,499` and `reconcile.rs:595,602,653`.
-
-**Batch every scope into one git query on the ancestry-failure branch** — never one subprocess per scope. This fallback runs only when ancestry fails, so the common path is unchanged.
-
-Reuse the positional safeguards already documented by `rewritten_phase_anchor`; one equivalent commit is not sufficient proof on its own.
+- Integration proof is scoped patch equivalence, not commit identity: when a reservation's protected tip stops being an ancestor of trunk, the change the reservation made inside its own scopes — measured from `phase_start_head` — is compared against current trunk history. An amended, rebased, or squashed commit whose scoped content survives still certifies; the same paths carrying different content do not.
+- `IntegrationEvidenceStatus::Integrated { trunk_oid, proof }` carries `proof: IntegrationProof`, with variants `ProtectedTipAncestor` and `ScopedPatchEquivalent`. Records written before the field existed decode as `ProtectedTipAncestor` via `#[serde(default)]` on `lifecycle.rs`.
+- `integration_status` and `outstanding_integration_status` (`reservation/evidence.rs`) take `phase_start_head` and a `ReservationScopeSet`. The ancestry-success path issues no extra git subprocess; the ancestry-failure fallback batches every scope into one comparison composed of merge-base, rev-list, tree/index, merge-tree, and diff — roughly a dozen git invocations per evaluation, run once per retained reservation during reconciliation.
+- Every one of those subprocesses routes through the typed `GitCommandExecution` boundary, so a git that could not start stays distinct from a git that ran and answered no: merge-base exit 1 (unrelated histories) and merge-tree exit 1 (conflict) both resolve to a definitive `Different`, never `Unavailable`.
+- `apply_widen` resets an `Outstanding` reservation's `integration_status` to `NotIntegrated` whenever its scopes grow, so a widened reservation blocks again until re-proven.
+- First-touch claim acquisition (`verb/claim.rs`) records `TrunkObservationAtClaim` — a resolved commit or an unresolvable reference — persisted in the claim record and threaded through the ledger and reservation replay. A released reservation with an unresolvable trunk reference answers `clear` instead of failing with `ledger_unreadable`.
 
 **Files:**
-- `crates/cargo-berth/src/reservation/evidence.rs` — the equivalence predicate; new parameters on both functions
-- `crates/cargo-berth/src/reservation/lifecycle.rs` — `IntegrationProof`; `Integrated` carries it; `#[serde(default)]` on the new `proof` field
-- `crates/cargo-berth/src/reconcile.rs` — pass scopes and phase start (~L595, L602, L653)
-- `crates/cargo-berth/src/verb/release.rs` — same (~L393, L400, L499)
-- `crates/cargo-berth/src/git/mod.rs` — the batched content query
-- `docs/cargo-berth/json-contract.md` — `IntegrationProof` variant
+- `crates/cargo-berth/src/reservation/evidence.rs` — the scoped equivalence predicate and both status entry points
+- `crates/cargo-berth/src/reservation/lifecycle.rs` — `IntegrationProof`; `Integrated` carries it
+- `crates/cargo-berth/src/reservation/mod.rs` — `apply_widen`'s evidence reset; `TrunkObservationAtClaim` in replay
+- `crates/cargo-berth/src/git/mod.rs`, `git/command.rs`, `git/constants.rs` — the batched content query behind `GitCommandExecution`
+- `crates/cargo-berth/src/ledger/journal.rs`, `ledger/mod.rs` — `TrunkObservationAtClaim` in the claim record
+- `crates/cargo-berth/src/verb/claim.rs` — records the trunk observation at first-touch acquisition
+- `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/src/verb/release.rs` — pass scopes and phase start into the status calls
+- `docs/cargo-berth/json-contract.md` — `IntegrationProof` variants and the untagged `trunk_at_claim` union
 
-**Constraints from prior phases:** Phase 1 made `edit_blocking_status` a computed projection of `(lifecycle, integration_status)` and made `Released` terminal, so a wrong verdict here can no longer re-arm a block on a released reservation — but it still governs `Outstanding` reservations, which do block. `IntegrationEvidenceStatus::edit_blocking_status` is unchanged by Phase 1 and still maps `NotIntegrated | TrunkRewritten | ObjectUnknown` to `Blocking`.
+**Binds later work:** `apply_widen`'s reset to `NotIntegrated` on scope growth must be preserved by any later cache or persisted proof built on `IntegrationEvidenceStatus`, or a stale `Clear` verdict will extend to scope the proof never checked. `IntegrationEvidenceStatus::Integrated`'s `proof` field is not yet asserted anywhere in `tests/board.rs` — the board's JSON rendering of `integration_evidence.status` still needs that coverage.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green, with fixtures for: amend; rebase; rename; reservation-authored deletion; tree-prefix scope; unrelated later descendant edit; mode change; **same paths on trunk with different content (must not certify)**; partial scoped integration. The ancestry-success path issues no additional git subprocess.
+**Gotchas:** `verify.sh test <package>` resolves targets through `target_flags`, which selects only lib and bin targets — it cannot see `crates/cargo-berth/tests/`, so a scoped package test run reports green while integration suites go unrun. `GitCommandExecution` is `pub(super)` in `git/command.rs` and unreachable outside the `git` module; `drift/git_output.rs` and `verb/claim.rs` still spawn git directly and cannot express the spawn-failure distinction.
+
+**Ruled out:** Path existence as the fallback predicate — it accepts a file whose reservation edits were later removed. Whole-blob equality as the fallback predicate — it rejects proof the moment trunk legitimately edits the same file again. The checkpoint trunk snapshot as the patch baseline — it would attribute trunk's own concurrent commits to the reservation. Rewriting `tests/lifecycle.rs` to match a `ledger_unreadable` answer — the wrong component was named; the defect was fixed at its cause in first-touch acquisition instead.
 
 ### Phase 3 — Cache the equivalence proof against what proved it  · status: todo
 
@@ -176,20 +156,41 @@ Measured on this repository: one path-limited diff over a 500-commit range costs
 
 Persist the content proof together with **the trunk object id and the scope revision it was checked against**. When both are unchanged, return the stored proof without invoking git. A new trunk object triggers one path check, which then updates the stored proof.
 
-**The existing revision counter is the wrong key.** `advance_revision` (`reservation/mod.rs:1240`) advances for evidence and lifecycle events as well as scope changes, so it invalidates a still-valid proof on every revalidation. Introduce a semantic `IntegrationProofScopeRevision` that advances only when the reservation's scope set changes, and key the cache on `(trunk_oid, IntegrationProofScopeRevision)`.
+**The existing revision counter is the wrong key.** `advance_revision` (`reservation/mod.rs:1240`) advances for evidence and lifecycle events as well as scope changes, so it invalidates a still-valid proof on every revalidation.
+
+**Key on the proof subject, not on the scope set alone.** A scoped proof is a claim about *what content, from which baseline, over which scopes* — so the cache key must advance whenever any of those change, not only on a scope edit. Introduce a semantic `IntegrationProofSubjectRevision` that advances on `Widen`, on `Resnapshot`, and on release-disposition replacement, and key the cache on `(trunk_oid, IntegrationProofSubjectRevision)`.
+
+**A widen can follow a cached proof — the earlier premise that it cannot is false.** Phase 2 made `apply_widen` accept an `Outstanding` reservation and reset its `integration_status` to `NotIntegrated` for exactly this reason: widening extends a reservation's scopes past what any prior proof covered, and inheriting that proof is a false positive. A cache layered on top that does not follow the same reset reintroduces the defect Phase 2 fixed. The subject revision is the mechanism that makes it follow, and it must be exercised after a widen, not merely defended as reachable.
 
 **Cache both verdicts, not only proofs.** A `TrunkRewritten` verdict is as expensive to recompute as an `Integrated` one and is the verdict a rewritten reservation actually holds, so caching only the positive result leaves the costly case uncached.
 
-A scoped proof exists only from checkpoint onward, and Phase 1 made `Widen` reject outside `Active` — so a widen can never follow a cached proof, and "one more check after a widen" is unreachable. The scope-revision key still earns its place by making the cache correct against a pre-checkpoint widen rather than by being exercised after one.
+**Cache only definitive verdicts.** `Integrated { proof: ScopedPatchEquivalent }` and `TrunkRewritten` are answers about content. A comparison that could not run — a git spawn failure surfacing as `ObjectUnknown` — is a transient environment fact, and storing it would make one failed subprocess durable across restarts. Model the stored value as a semantic state rather than an absent one:
+
+```rust
+enum ScopedPatchEquivalenceCacheState {
+    Unchecked,
+    Checked {
+        subject: IntegrationProofSubjectRevision,
+        target:  GitObjectId,
+        verdict: ScopedPatchEquivalenceVerdict,
+    },
+}
+```
+
+`Unchecked` is the state of a reservation whose proof has never been evaluated, and it is a different fact from "evaluated, and the answer was different" — a bare `Option<T>` states neither.
+
+**The cache is durable, so it is journalled and replayed.** Persist it through a journal operation and prove it survives a restart. `EvidenceRevalidated` currently stores only a status, and `reconcile.rs:744` appends nothing when a new target produces the same `TrunkRewritten` verdict — so a cache that rides on that operation alone silently loses its key on the very path it exists to make cheap. Name the operation that carries the cached subject, target, and verdict, and give replay an equivalent successor state.
 
 **Files:**
-- `crates/cargo-berth/src/reservation/mod.rs` — the stored proof, its keys, and its invalidation
-- `crates/cargo-berth/src/reconcile.rs` — consult the cache before calling `integration_status` (~L348-395, ~L580-660)
-- `docs/cargo-berth/json-contract.md` — the persisted proof record
+- `crates/cargo-berth/src/reservation/mod.rs` — `IntegrationProofSubjectRevision`, `ScopedPatchEquivalenceCacheState`, and the invalidation that advances the subject
+- `crates/cargo-berth/src/ledger/journal.rs` — the journal operation carrying the cached subject, target, and verdict, and its replay
+- `crates/cargo-berth/src/reconcile.rs` — consult the cache before calling `integration_status`, and append when a new target produces a verdict (~L348-395, ~L580-660, ~L744)
+- `crates/cargo-berth/tests/board.rs` — the rendered proof shape in `board --json`
+- `docs/cargo-berth/json-contract.md` — the persisted proof record and the new journal operation
 
-**Constraints from prior phases:** Phase 2 added `IntegrationProof::{ProtectedTipAncestor, ScopedPatchEquivalent}` to `IntegrationEvidenceStatus::Integrated`, threaded `phase_start_head` and `ReservationScopeSet` into `integration_status` and `outstanding_integration_status`, and made the fallback a single batched git query on the ancestry-failure branch. Only `ScopedPatchEquivalent` proofs need caching — `ProtectedTipAncestor` is already one cheap reachability call.
+**Constraints from prior phases:** Phase 2 added `IntegrationProof::{ProtectedTipAncestor, ScopedPatchEquivalent}` to `IntegrationEvidenceStatus::Integrated`, threaded `phase_start_head` and `ReservationScopeSet` into `integration_status` and `outstanding_integration_status`, and batched every scope into one content query on the ancestry-failure branch. Only `ScopedPatchEquivalent` proofs need caching — `ProtectedTipAncestor` is already one cheap reachability call. Phase 2 also made `apply_widen` accept an `Outstanding` reservation and reset its `integration_status` to `NotIntegrated`; the cache must follow that reset or it reintroduces the false positive. **The fallback is not one subprocess.** It composes merge-base, rev-list, tree/index, merge-tree, and diff operations — roughly a dozen git invocations per evaluation — and reconciliation calls it once per retained reservation, so the cold cost this phase is sized against is an order of magnitude larger than the earlier single-diff estimate. Phase 2 left the `ScopedPatchEquivalent` proof unasserted in `board --json`; this phase owns that coverage.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green. A `git` shim proves: exactly one path check on the first reconciliation after a trunk rewrite; **zero** across twenty subsequent calls at unchanged trunk and scopes; exactly one more after a later trunk move. Both a positive (`ScopedPatchEquivalent`) and a negative (`TrunkRewritten`) verdict are cache hits on the second call. A unit fixture at the same trunk oid with a different `IntegrationProofScopeRevision` is a cache **miss**.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green. A `git` shim proves: exactly one evaluation on the first reconciliation after a trunk rewrite; **zero** across twenty subsequent calls at unchanged trunk and subject; exactly one more after a later trunk move. Both a positive (`ScopedPatchEquivalent`) and a negative (`TrunkRewritten`) verdict are cache hits on the second call, and both survive a process restart from the journal alone. Warm a positive and a negative entry, then perform each of `Widen`, `Resnapshot`, and release-disposition replacement at the same trunk target: each is a cache **miss** that re-evaluates. An `ObjectUnknown` comparison is **not** cached. `board --json` renders the `scoped_patch_equivalent` proof and a fixture asserts that shape. The shim also reports **total git argv** for a cold positive and a cold negative evaluation across one reservation and twenty reservations; if twenty reservations do not meet the plan-wide non-scaling invariant, the cold path is bounded or batched here rather than the invariant being relaxed.
 
 ### Phase 4 — Successor edges use scoped patch equivalence  · status: todo
 
@@ -214,48 +215,53 @@ match repository_snapshot.successor_reachability(self.before, self.after)? {
 
 Apply the same scoped-patch-equivalence evidence to successor incorporation: a successor holding equivalent rewritten content, without the original protected tip, is `Fulfilled`.
 
+**Do not add an equivalence variant to `SuccessorHeadReachability`.** Equivalent content is neither reachability nor containment of the predecessor tip, so a type defined as containment would then carry a value that is not containment — the exact class of vague naming Phase 16 exists to repair. Introduce a role-bearing type that says what the fact is:
+
+```rust
+enum SuccessorIncorporationEvidence {
+    ProtectedTipAncestor,
+    ScopedPatchEquivalent,
+    NotIncorporated,
+    ObjectUnknown,
+}
+```
+
+`SuccessorHeadReachability` either stays as the narrow reachability fact this new type is projected from, or is replaced by it outright — but the two facts are never merged into one enum whose name states only the first.
+
+**The equivalence predicate must accept more than one target.** `predecessor_descendants` (`reconcile.rs:771`) currently classifies **all** successor heads with one batched reachability invocation, while Phase 2's scoped-equivalence predicate accepts a single target commit. Taking the shipped single-target form as-is turns one batched call into one call per successor and loses the batching Phase 2 established. Either widen the predicate to multiple targets in one invocation or bound the per-pass invocation count some other way, and prove it at scale rather than on a single edge.
+
 **`Edge::readiness` is not where the git work happens.** It reads a `repository_snapshot`; the grouped reachability facts in that snapshot are produced by `reconcile.rs::predecessor_descendants` (~L756, called from ~L398). The equivalence check and its cache both belong there, or the batching Phase 2 established is lost to one query per edge.
 
 Cache a typed successor-equivalence verdict — positive and negative alike — keyed by the predecessor's `IntegrationProofScopeRevision` and the successor head. This is a distinct key from Phase 3's trunk-keyed cache and needs its own persistent owner alongside it.
 
 **Files:**
 - `crates/cargo-berth/src/edge/mod.rs` — `Edge::readiness` consults the snapshot's equivalent-content outcome (~L350)
-- `crates/cargo-berth/src/edge/snapshot.rs` — `SuccessorHeadReachability` gains the equivalent-content outcome (~L67)
+- `crates/cargo-berth/src/edge/snapshot.rs` — `SuccessorIncorporationEvidence`, projected from or replacing `SuccessorHeadReachability` (~L67)
 - `crates/cargo-berth/src/reconcile.rs` — `predecessor_descendants` produces the equivalence verdict in the same batched pass (~L398, ~L756)
-- `crates/cargo-berth/src/reservation/mod.rs` — the persistent successor-equivalence cache, keyed by predecessor scope revision and successor head
+- `crates/cargo-berth/src/reservation/mod.rs` — the persistent successor-equivalence cache, keyed by the predecessor's proof-subject revision and the successor head
+- `crates/cargo-berth/src/ledger/journal.rs` — the journal operation carrying the successor cache entries, and its replay
 - `crates/cargo-berth/tests/edges.rs` — the new fixtures
+- `docs/cargo-berth/json-contract.md` — the successor cache record
 
-**Constraints from prior phases:** Phase 2 defined scoped patch equivalence and exposed it as a reusable predicate taking `phase_start_head`, a `ReservationScopeSet`, a protected tip, and a target commit; the baseline is `phase_start_head` only, never the checkpoint trunk snapshot. Phase 3 introduced `IntegrationProofScopeRevision` — advancing only on scope change, unlike `advance_revision` — and cached both the positive and negative verdict against `(trunk_oid, IntegrationProofScopeRevision)`. The successor path needs its own cache key, because it compares against the successor head rather than trunk.
+**Constraints from prior phases:** Phase 2 defined scoped patch equivalence and exposed it as a reusable predicate taking `phase_start_head`, a `ReservationScopeSet`, a protected tip, and a target commit; the baseline is `phase_start_head` only, never the checkpoint trunk snapshot. **That predicate accepts one target and composes roughly a dozen git invocations per evaluation**, so calling it per successor is what this phase must avoid. Phase 3 established the shared proof-subject and cache model: `IntegrationProofSubjectRevision` advances on `Widen`, `Resnapshot`, and release-disposition replacement; `ScopedPatchEquivalenceCacheState` is a semantic state rather than an absent value; only definitive verdicts are cached, never a comparison that could not run; and the cache is journalled and replayed. Follow all four here. The successor path needs its own cache key, because it compares against the successor head rather than trunk. **This phase runs after Phase 3** because it reuses that model rather than inventing a second one.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green, with a fixture where the successor carries equivalent rewritten content and does **not** contain the predecessor's original protected tip, and the edge reports `Fulfilled`. A negative fixture where the successor lacks the content keeps `AwaitingSuccessorIncorporation`. A `git` shim proves both verdicts are cached: one equivalence query on the first readiness call and **zero** across twenty subsequent calls at unchanged successor head and predecessor scope revision, for the positive and the negative fixture alike.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green, with a fixture where the successor carries equivalent rewritten content and does **not** contain the predecessor's original protected tip, and the edge reports `Fulfilled`. A negative fixture where the successor lacks the content keeps `AwaitingSuccessorIncorporation`. A `git` shim proves both verdicts are cached: one equivalence query on the first readiness call and **zero** across twenty subsequent calls at unchanged successor head and predecessor proof subject, for the positive and the negative fixture alike, and both survive a process restart from the journal alone. An `ObjectUnknown` comparison is **not** cached. The shim reports total git argv for **one** successor and for **twenty** successors on a cold pass; twenty successors must not cost twenty times one.
 
 ### Phase 5 — Lost-evidence alert and `--integrated-as` eligibility  · status: todo
 
 #### Work Order
 
-**Goal:** Lost integration evidence is visible to a hook-only agent and repairable by command, now that it no longer blocks.
+**Goal:** Lost integration evidence is visible to a hook-only agent, now that it no longer blocks, and its repair path covers every eligible row.
 
 **Spec:**
 
-Two gaps opened by Phase 1.
-
-**1. `--integrated-as` must survive.** `recovery_operation` (`recovery.rs:~555`) admits replacement evidence only when the lifecycle is `Released` **and** the blocking status is `Blocking`:
-
-```rust
-ReservationLifecycle::Released { disposition: superseded }
-    if reservation.edit_blocking_status() == EditBlockingStatus::Blocking => { ... }
-```
-
-Otherwise it returns `AlreadyResolved`. Phase 1 abolished that combination — a `Released` reservation now reports `Clear` unconditionally, so this guard is unreachable and `cargo-berth resolve <id> --integrated-as <oid>` can no longer repair a released reservation's evidence. The fix would remove the only repair path for the condition it stops blocking on.
-
-**Key eligibility on lost Git evidence, not on blocking status.** Match on `reservation.evidence_state().map_err(RecoveryRejection::Replay)?` (`reservation/mod.rs:1306`) rather than on lifecycle plus a blocking test:
+**1. `--integrated-as` eligibility already keys on lost Git evidence — audit what is left.** This half of the phase was largely absorbed while Phase 2's trunk-observation defect was being fixed. `recovery_operation` (`recovery.rs:520`) already resolves `reservation.evidence_state().map_err(RecoveryRejection::Replay)?` and matches:
 
 ```rust
 ReservationEvidenceState::Released {
     disposition: superseded,
     integration_status:
-        IntegrationEvidenceStatus::NotIntegrated
-        | IntegrationEvidenceStatus::TrunkRewritten
+        IntegrationEvidenceStatus::TrunkRewritten
         | IntegrationEvidenceStatus::ObjectUnknown,
     ..
 } if !matches!(
@@ -264,7 +270,9 @@ ReservationEvidenceState::Released {
 ) => { ... }
 ```
 
-The `revalidation_subject` guard (`reservation/lifecycle.rs:178`) is what keeps `--integrated-as` from overwriting an `Abandoned` or `RetiredOrphan` disposition: those return `ReleaseRevalidationSubject::None`, meaning there was never Git-backed evidence to lose. `ReleasedWithoutCheckpoint` is excluded by construction — it carries no `integration_status` at all.
+It no longer tests blocking status, it rejects a non-Git disposition through `revalidation_subject` (`reservation/lifecycle.rs:178`), and both the success and the rejection paths have coverage. `ReleasedWithoutCheckpoint` is excluded by construction — it carries no `integration_status` at all.
+
+**What remains is the `NotIntegrated` row.** The shipped matcher admits `TrunkRewritten` and `ObjectUnknown` but not `NotIntegrated`, which is the narrower, false-negative-safe direction. Decide it on evidence rather than by widening the matcher on sight: either produce a fixture in which a `Released` reservation whose disposition has a revalidation subject legitimately holds `NotIntegrated` — in which case admit the row and cover it — or record in the as-built why that combination is unconstructible and leave the matcher as it stands. Do not add the row without the fixture that reaches it.
 
 **2. Lost evidence must be visible.** `Alert` (`alert.rs:23`) carries only `OrphanedOutstanding`. PostToolUse validates that `.payload.alerts` is an array (`berth_post_bash.sh:21`) but `typed_drift_feedback` (~L172) never renders its entries, so a trunk rewrite detected mid-session is invisible to an agent that sees only hook output.
 
@@ -303,9 +311,9 @@ and `ResolveTrunkFirst`:
 - `/Users/natemccoy/.claude/scripts/berth/install/hooks/berth_session_start.sh` — surfaces outstanding alerts
 - `docs/cargo-berth/json-contract.md` — the new alert variant
 
-**Constraints from prior phases:** Phase 1 made `Released` terminal and `edit_blocking_status` computed, so `Released` always reports `Clear` unconditionally — this is exactly why the `recovery_operation` gate must key on `ReservationEvidenceState` instead. Phase 1 also added `ReservationReplayError::WidenRequiresActive` and renamed `ResnapshotRequiresGitEvidence` to `ResnapshotRequiresOutstanding`; `evidence_state` returns a replay error, so the repair path must map it rather than assume success. Phase 1 further made legacy release-then-resnapshot records replay without reopening — those records raise this alert. Phase 2 added `IntegrationProof` and the `ScopedPatchEquivalent` verdict; the alert fires only when *no* proof is available, not when equivalence proved integration.
+**Constraints from prior phases:** Phase 1 made `Released` terminal and `edit_blocking_status` computed, so `Released` always reports `Clear` unconditionally — this is exactly why the `recovery_operation` gate keys on `ReservationEvidenceState` instead, which it already does. Phase 1 also added `ReservationReplayError::WidenRequiresUnreleased` (the variant is named for the release boundary, not the active one — Phase 2 widened it to accept `Outstanding`) and renamed `ResnapshotRequiresGitEvidence` to `ResnapshotRequiresOutstanding`; `evidence_state` returns a replay error, so the repair path must map it rather than assume success. Phase 1 further made legacy release-then-resnapshot records replay without reopening — those records raise this alert. Phase 2 added `IntegrationProof` and the `ScopedPatchEquivalent` verdict; the alert fires only when *no* proof is available, not when equivalence proved integration.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green. A fixture releases a reservation `integrated`, rewrites trunk so no proof survives, and asserts: `edit_blocking_status` stays `Clear`; the typed alert appears in `board --json` and in **the first** drift envelope that detects the loss; and `cargo-berth resolve <id> --integrated-as <oid>` succeeds. Separate fixtures cover an unresolved trunk (`ObjectUnknown` → `ResolveTrunkFirst`, and `--integrated-as` unavailable), an unresolved protected tip, a legacy release-then-resnapshot record replaying to the alert without reopening, and `--integrated-as` **rejected** against an `Abandoned` and a `RetiredOrphan` disposition. The PostToolUse shim renders both recovery variants' text.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green. A fixture releases a reservation `integrated`, rewrites trunk so no proof survives, and asserts: `edit_blocking_status` stays `Clear`; the typed alert appears in `board --json` and in **the first** drift envelope that detects the loss; and `cargo-berth resolve <id> --integrated-as <oid>` succeeds. Separate fixtures cover an unresolved trunk (`ObjectUnknown` → `ResolveTrunkFirst`, and `--integrated-as` unavailable), an unresolved protected tip, and a legacy release-then-resnapshot record replaying to the alert without reopening. The PostToolUse shim renders both recovery variants' text. The eligibility half is complete when the `NotIntegrated` row is either covered by a fixture that constructs it or recorded as unconstructible with the reason; the already-covered `Abandoned` and `RetiredOrphan` rejections need no new fixture.
 
 ### Phase 6 — Worktree identity: reproduce first, then one helper  · status: todo
 
@@ -354,7 +362,7 @@ Preserve filesystem discovery when git environment variables are absent — the 
 
 **Constraints from prior phases:** None binding — this phase is independent of Phases 1–5.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green. A reproducer exists that fails before the fix and passes after, **or** the phase reports that the hypothesis did not reproduce and names the demonstrated cause. Fixtures cover main checkout, linked worktree, separate git dir, submodule, unset and relative environment variables, and the retained bare-repository rejection. Every command fixture asserts the journalled actor equals the invocation worktree.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green. A reproducer exists that fails before the fix and passes after, **or** the phase reports that the hypothesis did not reproduce and names the demonstrated cause. Fixtures cover main checkout, linked worktree, separate git dir, submodule, unset and relative environment variables, and the retained bare-repository rejection. Every command fixture asserts the journalled actor equals the invocation worktree.
 
 ### Phase 7 — Report a resolve by what it accomplished  · status: todo
 
@@ -366,7 +374,7 @@ Preserve filesystem discovery when git environment variables are absent — the 
 
 Observed: a resolve of a live incident returned `exit_code: 5`, `status: invalid_input`, "incursion incident … is already resolved", while the journal recorded exactly one `resolve_incursion` event within seconds of that call. The caller cannot distinguish "you already did this" from "another actor did this" from "this succeeded and is being described badly", and exit 5 makes any wrapper treat a completed resolve as a failure.
 
-`LedgerTransactionOutcome::Appended` already proves the current invocation wrote the resolution and already returns success, so the work is entirely in the **pre-existing-resolution** branch (`recovery.rs:~802`).
+`LedgerTransactionOutcome::Appended` already proves the current invocation wrote the resolution and already returns success, so the work is entirely in the **pre-existing-resolution** branch — the `else` arm at `recovery.rs:287-298` that yields `RecoveryRejection::IncursionIncidentAlreadyResolved`, not the `Display` text at `recovery.rs:816`.
 
 `IncursionIncidentStatus::Resolved` (`reservation/mod.rs:131`) retains only:
 
@@ -387,8 +395,8 @@ Gate the PostToolUse `STOP. Resolve with …` text on the incident's live resolv
 Exit-code safety is already verified: the three hook shims invoke `check`, `drift`, and `board` rather than `resolve`, and `claim_state.py` already maps `incursion_resolved`/`resolve` to exit 0 and `invalid_input` to exit 5.
 
 **Files:**
-- `crates/cargo-berth/src/recovery.rs` — the three outcomes (~L104, ~L264, ~L802)
-- `crates/cargo-berth/src/reservation/mod.rs` — `IncursionIncidentStatus::Resolved` retains the actor (~L131)
+- `crates/cargo-berth/src/recovery.rs` — the three outcomes (~L104, ~L264, ~L287-298)
+- `crates/cargo-berth/src/reservation/mod.rs` — `IncursionIncidentStatus::Resolved` retains the actor (~L133)
 - `crates/cargo-berth/src/ledger/journal.rs` — actor lookup by event id if not retained
 - `crates/cargo-berth/src/output.rs` — the two new success payloads and the enriched rejection
 - `/Users/natemccoy/.claude/scripts/berth/install/hooks/berth_post_bash.sh` — STOP text gated on live resolved state
@@ -396,7 +404,7 @@ Exit-code safety is already verified: the three hook shims invoke `check`, `drif
 
 **Constraints from prior phases:** **Depends on Phase 6.** Deciding "this caller is responsible" compares worktree and run ids, which is exactly the identity Phase 6 establishes is resolved through `resolve_identity(&WorktreeContext)`. Until that lands, a resolve issued from a linked worktree can be attributed to the main checkout and misclassified as foreign, preserving the original exit-5 failure in the very worktrees where it was observed.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green. **Linked-worktree** fixtures for first resolve (exit 0, `recorded_now`), same-actor repeat (exit 0, `already_recorded_by_same_coordination_actor`), and foreign-actor repeat (exit 5, `invalid_input`, foreign actor named in the payload). The PostToolUse shim emits no STOP text for an incident already resolved.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green. **Linked-worktree** fixtures for first resolve (exit 0, `recorded_now`), same-actor repeat (exit 0, `already_recorded_by_same_coordination_actor`), and foreign-actor repeat (exit 5, `invalid_input`, foreign actor named in the payload). The PostToolUse shim emits no STOP text for an incident already resolved.
 
 ### Phase 8 — Git-hook phase/ref dispatch table  · status: todo
 
@@ -408,7 +416,7 @@ Exit-code safety is already verified: the three hook shims invoke `check`, `drif
 
 A 3-commit rebase in this repository costs 0.23s with hooks disabled and 7.97s with them live; the same rebase in a hookless repository is 0.03s. Git delivers 75 `reference-transaction` invocations for those three commits, and `gate/install.rs:214 ManagedHook::script` spawns the binary for all of them before anything is known about whether they matter. `CARGO_BERTH_BYPASS=1` is not a fast path: its branch runs `cargo-berth __reference-transaction` on every invocation — 5.2 of the 5.44 seconds that mode costs — because the bypass binary call at `gate/install.rs:236` sits **above** the existing prepared-phase marker filter.
 
-**The source report's premise was wrong and three reviewers caught it independently.** It claimed berth answers `Clear` for every phase except `prepared`. It does not. `evaluate_reference_transaction` (`gate/mod.rs:327`) runs `branch_rewrites` (~L360) on `Committed` — which reanchors active reservation phase starts after **any** local branch rewrite, and whose own comment says omitting it makes rebases look like newly authored work and creates false incursions — then `commit_forced_permit_audits` (~L400) for committed trunk updates and `reanchor_rewritten_phases` (~L417) for detected rewrites. `tests/gate.rs:1167-1176` explicitly requires the `committed` phase and verifies permit consumption. A prepared-only filter would leave stale phase anchors and reusable forced-integration permits. The "about 1 invocation" target is invalid.
+**The source report's premise was wrong and three reviewers caught it independently.** It claimed berth answers `Clear` for every phase except `prepared`. It does not. `evaluate_reference_transaction` (`gate/mod.rs:328`) runs `branch_rewrites` (~L437) on `Committed` — which reanchors active reservation phase starts after **any** local branch rewrite, and whose own comment says omitting it makes rebases look like newly authored work and creates false incursions — then `reanchor_rewritten_phases` (~L474) for detected rewrites and `commit_forced_permit_audits` (~L566) for committed trunk updates. `tests/gate.rs:1167-1176` explicitly requires the `committed` phase and verifies permit consumption. A prepared-only filter would leave stale phase anchors and reusable forced-integration permits. The "about 1 invocation" target is invalid.
 
 Implement a **phase/ref dispatch table** in the generated script:
 
@@ -431,9 +439,9 @@ Required properties:
 - `crates/cargo-berth/src/cli.rs` — trunk-ref refresh path (~L994-999)
 - `crates/cargo-berth/tests/gate.rs` — the fixtures below
 
-**Constraints from prior phases:** None binding — independent of Phases 1–7.
+**Constraints from prior phases:** No behavioral dependency on Phases 1–7. One boundary does bind: Phase 2 routed every git subprocess it added through a single typed execution boundary in `git/command.rs`, which is what keeps "git could not start" distinct from "git ran and answered no". Any git invocation this phase adds on the engine side goes through that boundary rather than spawning directly, and must preserve the same distinction.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green, including the existing `tests/gate.rs:1167-1176` committed-phase permit test. Fixtures cover: prefix refs (`main-old` vs `main`), trunk rename, detached HEAD, fetch/push remote refs, malformed records, **stdin byte preservation**, committed rebase reanchoring, and committed permit consumption. An instrumented no-op `reference-transaction` hook reports scenario-specific invocation counts for a prepared trunk update, a committed feature-branch rebase, and a committed forced trunk integration — not one universal number. At least ten no-hook, filtered-bypass, and filtered-live rebases report median and maximum wall time. A missing executable still permits with the printed warning.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green, including the existing `tests/gate.rs:1167-1176` committed-phase permit test. Fixtures cover: prefix refs (`main-old` vs `main`), trunk rename, detached HEAD, fetch/push remote refs, malformed records, **stdin byte preservation**, committed rebase reanchoring, and committed permit consumption. An instrumented no-op `reference-transaction` hook reports scenario-specific invocation counts for a prepared trunk update, a committed feature-branch rebase, and a committed forced trunk integration — not one universal number. At least ten no-hook, filtered-bypass, and filtered-live rebases report median and maximum wall time. A missing executable still permits with the printed warning.
 
 ### Phase 9 — Scoped hook suppression on retention-ref writes  · status: todo
 
@@ -443,26 +451,37 @@ Required properties:
 
 **Spec:**
 
-`git/command.rs:14-21` builds every subprocess as `git --no-optional-locks -C <root> …` with no hook suppression, so `drift --full`'s two `update-ref` calls fire `reference-transaction` — 8 more `cargo-berth` process spawns per drift run, berth gate-evaluating its own bookkeeping. This is a correctness point as much as a cost one: berth's internal ref writes are not user history.
+`git_command` (`git/command.rs:30`) builds every subprocess as `git --no-optional-locks -C <root> …` with no hook suppression, so `drift --full`'s two `update-ref` calls fire `reference-transaction` — 8 more `cargo-berth` process spawns per drift run, berth gate-evaluating its own bookkeeping. This is a correctness point as much as a cost one: berth's internal ref writes are not user history.
 
 **Do not put the suppression in `git_command`.** Three reviewers found three separate harms from blanket suppression:
 
-1. `hooks_directory()` (`git/mod.rs:119`) asks `git rev-parse --git-path hooks`, which is where hooks are installed — suppressing it breaks `cargo-berth init` hook discovery (`gate/install.rs:109`).
-2. `git::update_local_branch` (`git/mod.rs:350-383`) uses the same constructor and `cargo-berth integrate` (`verb/integrate.rs:114`) uses it to move trunk — suppressing it stops the committed transaction that consumes a forced-integration permit.
+1. `hooks_directory()` (`git/mod.rs:238`) asks `git rev-parse --git-path hooks`, which is where hooks are installed — suppressing it breaks `cargo-berth init` hook discovery (`gate/install.rs:109`).
+2. `git::update_local_branch` (`git/mod.rs:1015`) uses the same constructor and `cargo-berth integrate` (`verb/integrate.rs:114`) uses it to move trunk — suppressing it stops the committed transaction that consumes a forced-integration permit.
 3. It would silently skip a user's **unmanaged** hook during a real trunk update. Berth deliberately preserves an unmanaged hook already occupying the hook path.
 
 Apply hook suppression **only** to the private retention-ref writes and deletions in `git/refs.rs:36-75`, through an explicit hook-policy command mode. That is an in-process selection, no extra subprocess.
 
+**Name the policy for what it means, not for how it is represented.** A boolean parameter or a bare optional setting states nothing about which writes may suppress hooks or why:
+
+```rust
+enum GitHookExecutionPolicy {
+    Enabled,
+    SuppressedForRetentionRef,
+}
+```
+
+Every existing helper and every helper Phase 2 added stays `Enabled` by default; only retention-ref writes name `SuppressedForRetentionRef`.
+
 **The suppression value is `/dev/null`, not the empty string.** Probed on both Homebrew git 2.55.0 and Apple git 2.50.1, an empty `core.hooksPath` resolves to `./`, so a repo-root executable named `reference-transaction` would still run; `/dev/null` resolves to `/dev/null`. The test must place such a repo-root sentinel, so suppression is proved rather than passing by the sentinel's absence.
 
 **Files:**
-- `crates/cargo-berth/src/git/command.rs` — the explicit hook-policy mode; default stays hook-enabled (~L14-21)
+- `crates/cargo-berth/src/git/command.rs` — `GitHookExecutionPolicy`; `git_command` default stays `Enabled` (~L30)
 - `crates/cargo-berth/src/git/refs.rs` — retention-ref writes and deletions opt into suppression (~L36-75)
 - `crates/cargo-berth/tests/gate.rs` — the sentinel fixtures
 
-**Constraints from prior phases:** Phase 8 rewrote the generated `reference-transaction` script to filter by phase and ref before spawning the binary. That reduces how often berth's own `update-ref` calls reach the binary but does not stop the hook from firing at all — this phase does. Measure the two independently.
+**Constraints from prior phases:** Phase 2 added several git helpers behind the typed execution boundary in `git/command.rs`; all of them stay hook-enabled, and the suppression added here is opt-in per call site rather than a change to the shared constructor's default. Phase 8 rewrote the generated `reference-transaction` script to filter by phase and ref before spawning the binary. That reduces how often berth's own `update-ref` calls reach the binary but does not stop the hook from firing at all — this phase does. Measure the two independently.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green. With an executable sentinel `reference-transaction` at the repository root: retention-ref writes and deletions record **zero** hook fires; `cargo-berth integrate` records **one** transaction lifecycle for the trunk update and consumes its forced permit; `cargo-berth init` discovers a configured custom hooks directory and installs successfully.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green. With an executable sentinel `reference-transaction` at the repository root: retention-ref writes and deletions record **zero** hook fires; `cargo-berth integrate` records **one** transaction lifecycle for the trunk update and consumes its forced permit; `cargo-berth init` discovers a configured custom hooks directory and installs successfully.
 
 ### Phase 10 — Fixed subprocess count for drift provenance  · status: todo
 
@@ -472,7 +491,7 @@ Apply hook suppression **only** to the private retention-ref writes and deletion
 
 **Spec:**
 
-With a 33-path incursion outstanding, `drift --full` spawns 62 git subprocesses taking about 1.5s — `commits_for_paths` calls `path_commits` (`drift/provenance.rs:80-105`) once per committed incursion path, and `commit_origin` (~L124-145) performs one ancestry query per unique commit. After the incursions were resolved the same command spawned 17, with `log` at zero. **The subprocess count is the incursion's path count**, so an incursion left open makes every later commit slower without bound.
+With a 33-path incursion outstanding, `drift --full` spawns 62 git subprocesses taking about 1.5s — `commits_for_paths` (`drift/provenance.rs:80`) calls `path_commits` (~L129) once per committed incursion path, and `commit_origin` (~L109) performs one ancestry query per unique commit. After the incursions were resolved the same command spawned 17, with `log` at zero. **The subprocess count is the incursion's path count**, so an incursion left open makes every later commit slower without bound.
 
 **Batch with pathspecs retained, not dropped.** An unqualified `git log <base>..HEAD --name-only` walks and emits every changed path in the range and **regresses the common case**. Measured in this repository:
 
@@ -507,14 +526,16 @@ Keep the two `<base>` concepts distinct: the log range uses each reservation's *
 Replace the per-commit ancestry queries with one `git rev-list <base>..HEAD` and set membership: measured 9–10 ms over both 25- and 500-commit ranges against roughly 120–127 ms for fourteen warmed `merge-base` calls.
 
 **Files:**
-- `crates/cargo-berth/src/drift/provenance.rs` — batched `commits_for_paths`; `commit_origin` via `rev-list` set membership (~L80-145); `trunk_object_id` returns `CommitOriginTrunk` (~L73)
-- `crates/cargo-berth/src/drift/git_output.rs` — the typed stale-anchor result
+- `crates/cargo-berth/src/drift/provenance.rs` — batched `commits_for_paths` (~L80); `commit_origin` via `rev-list` set membership (~L109); `path_commits` retired (~L129); `trunk_object_id` returns `CommitOriginTrunk` (~L73)
+- `crates/cargo-berth/src/drift/git_output.rs` — spawn through the `git` module's typed execution boundary; the typed stale-anchor result (~L68)
+- `crates/cargo-berth/src/git/command.rs` — `GitCommandExecution` and the facade that makes it reachable from `drift` (~L16, ~L30)
+- `crates/cargo-berth/src/git/mod.rs` — the batched log/rev-list invocations behind that boundary
 - `crates/cargo-berth/src/drift/constants.rs` — the git argument constants for the batched form
 - `crates/cargo-berth/tests/drift.rs` — differential and shim fixtures
 
-**Constraints from prior phases:** None binding — independent of Phases 1–9. Phase 15 measures the PostToolUse budget and depends on this landing first.
+**Constraints from prior phases:** **This phase is not independent of Phase 2.** Phase 2 routed every git subprocess it added through one typed execution boundary — `GitCommandExecution` in `git/command.rs`, currently `pub(super)` and therefore reachable only inside the `git` module — so that a spawn failure and a completed non-zero exit stay distinct outcomes. `drift/git_output.rs:68` still spawns `Command::new(GIT_BINARY)` directly and so cannot express that distinction. The batched invocations this phase introduces route through that boundary, which means either widening its visibility or adding a public facade in `git`; a second private spawn path is not an option. Phase 15 measures the PostToolUse budget and depends on this landing first.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green, including `a_committed_incursion_names_the_commits_that_introduced_its_paths`. A `git` shim varying path count and unique commit count independently (paths 0/1/4/33 crossed with commits 0/1/14/100) shows a **fixed** process count per distinct phase-start/trunk pair. A benchmark matrix over short and long ranges shows the one-path cell not regressing while the 33-path cell improves. Differential fixtures against the current per-path implementation cover merges, conflict-resolution-only paths, renames, deletions, tabs, newlines, and non-ASCII names. A fixture with an unresolved trunk reports `CommitOriginTrunk::CannotClassifyOrigin` rather than an absent value, and a non-ancestor phase start returns the typed stale-anchor result instead of attributing. No `Option<GitObjectId>` remains in `trunk_object_id`, `commits_for_paths`, or `commit_origin`.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green, including `a_committed_incursion_names_the_commits_that_introduced_its_paths`. A `git` shim varying path count and unique commit count independently (paths 0/1/4/33 crossed with commits 0/1/14/100) shows a **fixed** process count per distinct phase-start/trunk pair. A benchmark matrix over short and long ranges shows the one-path cell not regressing while the 33-path cell improves. Differential fixtures against the current per-path implementation cover merges, conflict-resolution-only paths, renames, deletions, tabs, newlines, and non-ASCII names. A fixture with an unresolved trunk reports `CommitOriginTrunk::CannotClassifyOrigin` rather than an absent value, and a non-ancestor phase start returns the typed stale-anchor result instead of attributing. No `Option<GitObjectId>` remains in `trunk_object_id`, `commits_for_paths`, or `commit_origin`. Separate fixtures prove the boundary distinction survives on the new path: a git binary that cannot be spawned and a git invocation that completes with a non-zero exit produce **different** typed outcomes, not one collapsed failure.
 
 ### Phase 11 — Typed coordination-identity rejections  · status: todo
 
@@ -581,7 +602,7 @@ Each variant carries typed `recovery_actions` with `argv` and `cwd`, serialized 
 
 **Constraints from prior phases:** Phase 6 established `resolve_identity(&WorktreeContext)` as the single identity entry point returning per-worktree and shared-ledger paths as distinct types — the validator here uses it to obtain `issuing_worktree_id` and `issuing_root`, and must not re-derive them.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green. Fixtures prove all three rejection paths across claim, check, drift, sequence, integrate, and the git gate; each carries `recovery_actions` with `argv` and `cwd`; **none recommends an unqualified rerun**. `cargo-berth identity clear-session --json` removes only the current session entry and leaves other mappings intact.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green. Fixtures prove all three rejection paths across claim, check, drift, sequence, integrate, and the git gate; each carries `recovery_actions` with `argv` and `cwd`; **none recommends an unqualified rerun**. `cargo-berth identity clear-session --json` removes only the current session entry and leaves other mappings intact.
 
 ### Phase 12 — Front ends render recovery actions without parsing messages  · status: todo
 
@@ -634,7 +655,7 @@ enum ReservationLifecycleSnapshot {
 
 **`ReservationLifecycleSnapshot`, not `NamedReservationLifecycle`.** "Named" states how the value was obtained — by id rather than by board placement — which is the caller's business, not the type's. The type is a point-in-time reading of one reservation's lifecycle, and the name should say so.
 
-**Project it from `ReservationEvidenceState`; do not restate the lifecycle rules.** `Reservation::evidence_state` (`reservation/mod.rs:1306`) already returns exactly these four classifications — `Active`, `Outstanding`, `Released`, `ReleasedWithoutCheckpoint` (`reservation/mod.rs:211`) — each carrying its protected tip where one exists. Map from it and drop the evidence fields this caller does not need. A second hand-written lifecycle match is a second place for the Phase 1 invariant to drift out of.
+**Project it from `ReservationEvidenceState`; do not restate the lifecycle rules.** `Reservation::evidence_state` (`reservation/mod.rs:1317`) already returns exactly these four classifications — `Active`, `Outstanding`, `Released`, `ReleasedWithoutCheckpoint` (`reservation/mod.rs:212`) — each carrying its protected tip where one exists. Map from it and drop the evidence fields this caller does not need. A second hand-written lifecycle match is a second place for the Phase 1 invariant to drift out of.
 
 An unknown id is a typed invalid-input result, never `Option`. The caller needs the exact protected tip and which of the four states applies; it does **not** need current integration evidence.
 
@@ -651,7 +672,7 @@ Its validator requires the echoed id, exactly one lifecycle alternative, the pro
 - `crates/cargo-berth/src/cli.rs` — the `--reservation` selector on `board`
 - `crates/cargo-berth/src/verb/board.rs` — board execution and response dispatch route the new selector
 - `crates/cargo-berth/src/board/mod.rs` — the placement-independent lookup (~L625)
-- `crates/cargo-berth/src/reservation/mod.rs` — `ReservationLifecycleSnapshot`, projected from `evidence_state` (~L211, ~L1306)
+- `crates/cargo-berth/src/reservation/mod.rs` — `ReservationLifecycleSnapshot`, projected from `evidence_state` (~L212, ~L1317)
 - `crates/cargo-berth/src/output.rs` — the payload and the typed unknown-id rejection
 - `crates/cargo-berth/tests/board.rs` — waiting-successor and both overlap-endpoint fixtures
 - `/Users/natemccoy/.claude/scripts/berth/claim_state.py` — the `reservation` entry point and validator (~L2027)
@@ -660,7 +681,7 @@ Its validator requires the echoed id, exactly one lifecycle alternative, the pro
 
 **Constraints from prior phases:** Phase 1 made `edit_blocking_status` computed and `Released` terminal, so `ReleasedAfterCheckpoint` and `ReleasedWithoutCheckpoint` are genuinely terminal states here. `Reservation::evidence_state` already supplies the four classifications this phase projects — do not duplicate the lifecycle match. Phase 5's lost-evidence alert directs the reader to plain `board --json`, **not** to this selector, precisely so Phase 5 does not depend on this phase; do not retarget that alert text here. Phase 12 established that front ends render typed payload fields without parsing `message` — the coordinator validator follows the same rule.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green. Fixtures cover a waiting successor and both unresolved-overlap endpoints — all three omitted from board rows, all three resolvable by id. Existing board JSON stays byte-compatible. The coordinator entry point returns exit 0 for a known id and a typed invalid-input reason for an unknown one.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green. Fixtures cover a waiting successor and both unresolved-overlap endpoints — all three omitted from board rows, all three resolvable by id. Existing board JSON stays byte-compatible. The coordinator entry point returns exit 0 for a known id and a typed invalid-input reason for an unknown one.
 
 ### Phase 14 — Generated status, exit-code, and payload contract  · status: todo
 
@@ -680,7 +701,7 @@ Its validator requires the echoed id, exactly one lifecycle alternative, the pro
 4. Generate the Python tables and the static `jq` validation fragments from that contract, check them in, and **byte-compare regenerated output** in engine tests.
 5. Execute Python and `jq` against generated valid and invalid fixture envelopes in tests.
 
-**Generation alone cannot type Phase 1's new replay failures.** `ReservationReplayError::WidenRequiresActive` and `::ResnapshotRequiresOutstanding` currently collapse into one `ledger_unreadable` status, exit code 4, a `NoFacts` payload, and free-form message text — so there is no typed payload for a schema to expose, and generating the contract over today's shape would freeze the ambiguity. Add a semantic replay-failure payload carrying the offending reservation id and the exact reason, and enumerate it in the generated contract.
+**Generation alone cannot type Phase 1's new replay failures.** `ReservationReplayError::WidenRequiresUnreleased` and `::ResnapshotRequiresOutstanding` currently collapse into one `ledger_unreadable` status, exit code 4, a `NoFacts` payload, and free-form message text — so there is no typed payload for a schema to expose, and generating the contract over today's shape would freeze the ambiguity. Add a semantic replay-failure payload carrying the offending reservation id and the exact reason, and enumerate it in the generated contract.
 
 Both are **hard stops**: the ledger cannot be replayed, so no reconciling command can proceed. A consumer must be able to tell that from the payload and route the operator to journal review or a confirmed reinitialization without parsing `message`.
 
@@ -706,9 +727,9 @@ Item 5 of the Spec as originally written said "Keep canonical hook templates in 
 
 This one reaches the user because it changes how a berth installation is maintained outside this repository, and a wrong choice is not a one-line revert. Until it is settled, this phase generates the contract and the artifacts but does not relocate the shims.
 
-**Constraints from prior phases:** **Must follow Phases 1, 5, 7, 11, 12, and 13** — every one adds statuses or payload variants that this contract must enumerate. Specifically: Phase 1 added `ReservationReplayError::{WidenRequiresActive, ResnapshotRequiresOutstanding}`, both currently untyped in the envelope, and retained `reblocked_active_constraint` as a reserved-but-unreachable board wire value; Phase 5 added the lost-evidence alert with its two `LostEvidenceRecovery` variants; Phase 7 added `recorded_now` and `already_recorded_by_same_coordination_actor` success payloads and an enriched `invalid_input` rejection; Phase 11 added `CoordinationIdentityRejection` with `recovery_actions`; Phase 13 added `ReservationLifecycleSnapshot` and a typed unknown-id rejection. Unifying the contract before these land means doing it twice.
+**Constraints from prior phases:** **Must follow Phases 1, 5, 7, 11, 12, and 13** — every one adds statuses or payload variants that this contract must enumerate. Specifically: Phase 1 added `ReservationReplayError::{WidenRequiresUnreleased, ResnapshotRequiresOutstanding}` — the widen failure is named for the release boundary, and Phase 2 widened it to accept an `Outstanding` reservation, so every fixture and message must say "unreleased", never "active" — both currently untyped in the envelope, and retained `reblocked_active_constraint` as a reserved-but-unreachable board wire value; Phase 2 added the nested `IntegrationProof` variants and the untagged `trunk_at_claim` alternatives, which the generated inventory must cover; Phase 5 added the lost-evidence alert with its two `LostEvidenceRecovery` variants; Phase 7 added `recorded_now` and `already_recorded_by_same_coordination_actor` success payloads and an enriched `invalid_input` rejection; Phase 11 added `CoordinationIdentityRejection` with `recovery_actions`; Phase 13 added `ReservationLifecycleSnapshot` and a typed unknown-id rejection. Unifying the contract before these land means doing it twice.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green. Adding a new `OutputStatus` variant fails engine tests until the generated Python and `jq` artifacts are regenerated and checked in. Malformed status/payload/exit combinations remain rejected. Python and `jq` validators execute against generated valid and invalid fixture envelopes. No hook invocation reads a manifest at runtime. A fixture per replay failure — a `Release` → `Widen` journal and a `Released` `Resnapshot` journal — proves each is distinguishable from the payload alone, names its reservation, and identifies itself as a hard stop without reading `message`. The generated board contract accepts `reblocked_active_constraint` as a reserved value while no fresh engine fixture emits it.
+**Acceptance gate:** **Every `Test` command in Delegation Context** green. Adding a new `OutputStatus` variant fails engine tests until the generated Python and `jq` artifacts are regenerated and checked in. Malformed status/payload/exit combinations remain rejected. Python and `jq` validators execute against generated valid and invalid fixture envelopes. No hook invocation reads a manifest at runtime. A fixture per replay failure — a `Release` → `Widen` journal and a `Released` `Resnapshot` journal — proves each is distinguishable from the payload alone, names its reservation, and identifies itself as a hard stop without reading `message`. The generated board contract accepts `reblocked_active_constraint` as a reserved value while no fresh engine fixture emits it. The generated inventory also proves that **nested** enum variants stay synchronized across all three consumers, not only top-level statuses: `IntegrationProof::{ProtectedTipAncestor, ScopedPatchEquivalent}` inside `IntegrationEvidenceStatus::Integrated`, and the untagged `trunk_at_claim` alternatives, must appear in the Rust envelope, the generated Python tables, and the generated `jq` validators, and adding a variant to any nested enum must fail engine tests until all three regenerate.
 
 ### Phase 15 — Prove the PostToolUse path stays inside 0.20 seconds  · status: todo
 
@@ -730,31 +751,39 @@ Using the globally registered canonical path and production JSON, take at least 
 
 The lost-evidence alert is not a free ninth row: it adds envelope validation and rendering to the PostToolUse path, and its own generation runs against post-reconciliation evidence. "Every outcome" excludes it only if it is never measured.
 
-Record **child executable and git argv counts alongside wall time**: clear and widen execute zero provenance `log`/`rev-list` calls; incursion attribution executes exactly one of each.
+**Separate the two temperatures the word "cold" hides.** Process-cache temperature (first invocation versus a warmed page cache) and durable proof-cache state (a cache entry that has never been evaluated versus one already stored in the journal) are independent, and a matrix that conflates them cannot tell a slow first run from a cache that is not working. Label every sample with both.
+
+Four expensive outcomes Phase 2 and its cachers introduced belong in the matrix as their own rows, each measured at both proof-cache states: trunk scoped-equivalence **positive** and **negative**, and successor-equivalence **positive** and **negative**. A miss on any of them composes roughly a dozen git invocations, so a single uncached retained reservation can consume a large share of the whole budget on its own.
+
+Record **child executable and git argv counts alongside wall time**: clear and widen execute zero provenance `log`/`rev-list` calls; incursion attribution executes exactly one of each; a proof-cache hit executes zero equivalence invocations.
 
 **Files:**
 - `/Users/natemccoy/.claude/scripts/berth/install/hooks/berth_post_bash.sh` — reduce fixed process count where the measurement shows it dominates
 - `crates/cargo-berth/src/drift/execution.rs` — any engine-side cost the measurement isolates
+- `crates/cargo-berth/src/git/mod.rs` — the scoped-equivalence invocations, if the measurement shows the cold path over budget
+- `crates/cargo-berth/src/reconcile.rs` — the per-reservation reconciliation pass and its cache consultation
+- `crates/cargo-berth/src/reservation/mod.rs` — the proof caches, if their key or storage is what the measurement isolates
 - `crates/cargo-berth/tests/drift.rs` — the subprocess-count assertions
 
-**Constraints from prior phases:** **Must follow Phases 3, 4, 5, 8, 9, 10, 12, and 14** — each changes what this path costs or what it must render. Phase 3 cached the scoped-equivalence proof so reconcile stops issuing a per-reservation diff on every call. Phase 4 added the successor-equivalence query and its own cache to the same reconcile pass. Phase 5 added the lost-evidence alert, which this phase must time as a ninth outcome. Phase 8 filtered the generated git-hook script by phase and ref before spawning the binary. Phase 9 stopped berth's own retention-ref writes from firing `reference-transaction` (8 spawns per drift run). Phase 10 gave provenance a fixed subprocess count. Phase 12 changed what the shims render for every rejection. Phase 14 replaced the shims' hand-kept `jq` validation with generated fragments, which is what actually executes per call. Measuring before these land measures the wrong thing.
+**Constraints from prior phases:** **Must follow Phases 3, 4, 5, 8, 9, 10, 12, and 14** — each changes what this path costs or what it must render. Phase 3 cached the scoped-equivalence proof so reconcile stops issuing a per-reservation diff on every call. Phase 4 added the successor-equivalence query and its own cache to the same reconcile pass. Phase 5 added the lost-evidence alert, which this phase must time as one of its outcomes. Phase 8 filtered the generated git-hook script by phase and ref before spawning the binary. Phase 9 stopped berth's own retention-ref writes from firing `reference-transaction` (8 spawns per drift run). Phase 10 gave provenance a fixed subprocess count. Phase 12 changed what the shims render for every rejection. Phase 14 replaced the shims' hand-kept `jq` validation with generated fragments, which is what actually executes per call. Measuring before these land measures the wrong thing.
 
-**Acceptance gate:** All nine outcomes finish within 0.20 seconds across five cold and five warm samples each, from independently restored state. Child executable and git argv counts are recorded per outcome and match the stated expectations. The shim fixtures pass; `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green.
+**Acceptance gate:** All thirteen outcomes — the original nine plus trunk-equivalence positive and negative and successor-equivalence positive and negative — finish within 0.20 seconds across five samples at each combination of process-cache temperature and durable proof-cache state, from independently restored state. Child executable and git argv counts are recorded per outcome and match the stated expectations. The shim fixtures pass; **Every `Test` command in Delegation Context** and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green.
 
 ### Phase 16 — Semantic roles and bounded optionality  · status: todo
 
 #### Work Order
 
-**Goal:** Three types name what they are, and six bare `Option<T>` parameters become one semantic type at the boundary.
+**Goal:** Four types name what they are, and six bare `Option<T>` parameters become one semantic type at the boundary.
 
 **Spec:**
 
-`PriorClassification` does not name its pre-lock foreign-path role; `ReservationRow` names a display representation rather than what it holds; and `CommandExecution` does not state who owns presenting the result. `overlap_authorization_request` exposes six bare `Option<T>` parameters and `EditAuthorization::resolve_from_sources` accepts `Option<OsString>`, so readers must infer overlap-selection and environment-identity states from representation and control flow.
+`PriorClassification` does not name its pre-lock foreign-path role; `ReservationRow` names a display representation rather than what it holds; `CommandExecution` does not state who owns presenting the result; and `GitCommandExecution` (`git/command.rs:16`), added by Phase 2, names an action when its actual guarantee is whether a completed process output exists — `CouldNotRun` versus a completed `Output`, which is precisely an availability, not an execution. `overlap_authorization_request` exposes six bare `Option<T>` parameters and `EditAuthorization::resolve_from_sources` accepts `Option<OsString>`, so readers must infer overlap-selection and environment-identity states from representation and control flow.
 
 Renames:
 - `PriorClassification` → `PreLockForeignPathClassification`
 - `ReservationRow` → **`BoardReservationSnapshot`**
 - `CommandExecution` → `CommandOutputOwnership::{CallerRendersResponse, BoardPresentedAndTerminalRestored}`
+- `GitCommandExecution` → `GitCommandOutputAvailability::{Available(Output), Unavailable}`
 
 **`BoardReservationSnapshot`, not `BoardReservationState`.** The type (`board/mod.rs:131`) combines journal-derived lifecycle with computed integration evidence, visibility, freshness, holder liveness, and live `ahead_behind_main`:
 
@@ -777,17 +806,19 @@ These are two independent boundaries, not one — overlap selection and environm
 
 Leave bare `Option<T>` only in clap-owned fields and externally required trait signatures. Keep serialized payloads unchanged.
 
-**The three renames are global and mechanical — hand them to the user to run in their editor rather than performing them by hand.**
+**The four renames are global and mechanical — hand them to the user to run in their editor rather than performing them by hand.**
 
 **Files:**
 - `crates/cargo-berth/src/drift/classification.rs` — `PreLockForeignPathClassification`
 - `crates/cargo-berth/src/board/mod.rs` — `BoardReservationSnapshot` (~L131, ~L788)
 - `crates/cargo-berth/src/cli.rs` — `CommandOutputOwnership`, `OverlapSelection`
 - `crates/cargo-berth/src/ledger/mod.rs` — `EnvironmentRunSelection`
+- `crates/cargo-berth/src/git/command.rs` — `GitCommandOutputAvailability` (~L16)
+- `crates/cargo-berth/src/git/mod.rs` — its call sites
 
-**Constraints from prior phases:** Phase 1 made `edit_blocking_status` a computed method on `Reservation` and removed the retained field; `BoardReservationSnapshot` populates its field by calling that method, which the shipped `reservation_visibility` already does — the requirement is satisfied and this rename must not reintroduce stored state. Phase 1 also left `BoardReservationVisibility::ReblockedActiveConstraint` in place as a reserved wire value that is unreachable for a released reservation; the rename keeps the variant. Phase 2 added `IntegrationProof` inside `IntegrationEvidenceStatus::Integrated`, which `BoardIntegrationEvidence` surfaces. Phase 11 introduced `CoordinationIdentityRejection` — do not duplicate its identity concepts in `EnvironmentRunSelection`.
+**Constraints from prior phases:** Phase 1 made `edit_blocking_status` a computed method on `Reservation` and removed the retained field; `BoardReservationSnapshot` populates its field by calling that method, which the shipped `reservation_visibility` already does — the requirement is satisfied and this rename must not reintroduce stored state. Phase 1 also left `BoardReservationVisibility::ReblockedActiveConstraint` in place as a reserved wire value that is unreachable for a released reservation; the rename keeps the variant. Phase 2 added `IntegrationProof` inside `IntegrationEvidenceStatus::Integrated`, which `BoardIntegrationEvidence` surfaces, and introduced `GitCommandExecution` — the fourth rename subject, whose two cases are a completed process output and no output at all. Phase 3 introduced `ScopedPatchEquivalenceCacheState` and Phase 4 the successor-equivalence cache; Phase 9 introduced `GitHookExecutionPolicy`. All three were specified as semantic states rather than bare optionals or booleans, so this phase audits rather than repairs them. Phase 11 introduced `CoordinationIdentityRejection` — do not duplicate its identity concepts in `EnvironmentRunSelection`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green. Serialized payloads are byte-identical before and after — proved by the existing board and drift JSON fixtures. No bare `Option<T>` remains in `overlap_authorization_request` or `EditAuthorization::resolve_from_sources`, and no reservation id is dropped on the way through `OverlapSelection`.
+**Acceptance gate:** **Every `Test` command in Delegation Context** and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green. Serialized payloads are byte-identical before and after — proved by the existing board and drift JSON fixtures. No bare `Option<T>` remains in `overlap_authorization_request` or `EditAuthorization::resolve_from_sources`, and no reservation id is dropped on the way through `OverlapSelection`. An audit of the caches and policies added by Phases 3, 4, and 9 confirms none carries a bare `Option<T>` for a domain state or a representation-level boolean for the hook policy; any that does is repaired here.
 
 ### Phase 17 — Typed coordinator classifiers  · status: todo
 

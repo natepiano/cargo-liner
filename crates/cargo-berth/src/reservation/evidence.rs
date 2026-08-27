@@ -10,12 +10,16 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::lifecycle::IntegrationEvidenceStatus;
+use super::lifecycle::IntegrationProof;
 use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
+use crate::git::ScopedPatchComparison;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::ReservationId;
+use crate::ledger::ProtectedPhaseStartHead;
+use crate::scope::ReservationScopeSet;
 
 /// The fixed checkpoint commit used for ordinary integration evidence.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -65,6 +69,8 @@ pub(crate) fn current_trunk(
 /// Revalidate a protected tip against current trunk.
 pub(crate) fn integration_status(
     repository_root: &Path,
+    phase_start_head: &ProtectedPhaseStartHead,
+    scopes: &ReservationScopeSet,
     protected_tip: &ProtectedReservationTip,
     trunk_oid: &GitObjectId,
     prior_integration_status: PriorIntegrationStatus,
@@ -72,10 +78,24 @@ pub(crate) fn integration_status(
     match git::reachability(repository_root, protected_tip.as_ref(), trunk_oid)? {
         Reachability::Ancestor => Ok(IntegrationEvidenceStatus::Integrated {
             trunk_oid: trunk_oid.clone(),
+            proof:     IntegrationProof::ProtectedTipAncestor,
         }),
-        Reachability::NotAncestor => match prior_integration_status {
-            PriorIntegrationStatus::Unproven => Ok(IntegrationEvidenceStatus::NotIntegrated),
-            PriorIntegrationStatus::Proven => Ok(IntegrationEvidenceStatus::TrunkRewritten),
+        Reachability::NotAncestor => match git::scoped_patch_equivalence(
+            repository_root,
+            phase_start_head.as_ref(),
+            scopes,
+            protected_tip.as_ref(),
+            trunk_oid,
+        )? {
+            ScopedPatchComparison::Equivalent => Ok(IntegrationEvidenceStatus::Integrated {
+                trunk_oid: trunk_oid.clone(),
+                proof:     IntegrationProof::ScopedPatchEquivalent,
+            }),
+            ScopedPatchComparison::Different => match prior_integration_status {
+                PriorIntegrationStatus::Unproven => Ok(IntegrationEvidenceStatus::NotIntegrated),
+                PriorIntegrationStatus::Proven => Ok(IntegrationEvidenceStatus::TrunkRewritten),
+            },
+            ScopedPatchComparison::Unavailable => Ok(IntegrationEvidenceStatus::ObjectUnknown),
         },
         Reachability::ObjectUnknown => Ok(IntegrationEvidenceStatus::ObjectUnknown),
     }
@@ -84,12 +104,16 @@ pub(crate) fn integration_status(
 /// Revalidate an outstanding tip and distinguish trunk replacement from ordinary non-integration.
 pub(crate) fn outstanding_integration_status(
     repository_root: &Path,
+    phase_start_head: &ProtectedPhaseStartHead,
+    scopes: &ReservationScopeSet,
     protected_tip: &ProtectedReservationTip,
     previous_trunk_oid: &GitObjectId,
     current_trunk_oid: &GitObjectId,
 ) -> Result<IntegrationEvidenceStatus, GitError> {
     let status = integration_status(
         repository_root,
+        phase_start_head,
+        scopes,
         protected_tip,
         current_trunk_oid,
         PriorIntegrationStatus::Unproven,

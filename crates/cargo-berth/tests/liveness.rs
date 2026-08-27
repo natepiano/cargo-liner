@@ -996,6 +996,27 @@ fn recovery_dispositions_validate_evidence_and_remain_distinct_after_replay() {
             .code(),
         Some(5)
     );
+    let trunk_commit = git_stdout(repository.path(), &["rev-parse", "main"]);
+    for reservation_id in [&abandoned_id, &retired_id] {
+        let rejected = run_berth(
+            repository.path(),
+            &[
+                "resolve",
+                reservation_id,
+                "--integrated-as",
+                &trunk_commit,
+                "--json",
+            ],
+        );
+        let rejected_json = json_output(&rejected);
+
+        assert_eq!(rejected.status.code(), Some(5));
+        assert_eq!(rejected_json["status"], "invalid_input");
+        assert_eq!(
+            rejected_json["message"],
+            "the reservation is already resolved"
+        );
+    }
 }
 
 fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) {

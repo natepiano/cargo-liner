@@ -13,6 +13,17 @@ use super::evidence::ProtectedReservationTip;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 
+/// The git fact supporting an integrated evidence status.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum IntegrationProof {
+    /// Current trunk contains the protected commit itself.
+    #[default]
+    ProtectedTipAncestor,
+    /// Current trunk contains every protected scoped patch under an equivalent commit identity.
+    ScopedPatchEquivalent,
+}
+
 /// How far a reservation has progressed through the coordination protocol.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "stage", rename_all = "snake_case")]
@@ -130,6 +141,9 @@ pub(crate) enum IntegrationEvidenceStatus {
     Integrated {
         /// The current trunk commit that was checked.
         trunk_oid: GitObjectId,
+        /// The git fact that established integration.
+        #[serde(default)]
+        proof:     IntegrationProof,
     },
     /// Trunk no longer contains evidence that was previously verified.
     TrunkRewritten,

@@ -40,6 +40,7 @@ use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
 use crate::ledger::CommittedActionValidation;
 use crate::ledger::EditAuthorization;
+use crate::ledger::FullRefName;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
@@ -52,7 +53,7 @@ use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeAdditionSet;
 use crate::ledger::TransactionValidation;
-use crate::ledger::TrunkCommitAtClaim;
+use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WidenCause;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
@@ -167,7 +168,7 @@ struct PreparedClaim {
     scopes:                          ReservationScopeSet,
     source:                          ClaimSource,
     purpose:                         ReservationPurpose,
-    trunk_at_claim:                  TrunkCommitAtClaim,
+    trunk_at_claim:                  TrunkObservationAtClaim,
     head_snapshot:                   ClaimHeadSnapshot,
     phase_start_head:                ProtectedPhaseStartHead,
     worktree_root:                   CanonicalWorktreeRoot,
@@ -1273,18 +1274,25 @@ fn read_trunk_commit(
     worktree_context: &WorktreeContext,
     trunk: &str,
     source: &ClaimSource,
-) -> Result<TrunkCommitAtClaim, ClaimError> {
+) -> Result<TrunkObservationAtClaim, ClaimError> {
     let trunk_ref = format!("{HEADS_REF_PREFIX}{trunk}");
     match source {
         ClaimSource::FirstTouch => {
-            read_reference_from_files(worktree_context.common_git_directory(), &trunk_ref)
+            match read_reference_from_files(worktree_context.common_git_directory(), &trunk_ref) {
+                Ok(trunk_commit) => Ok(TrunkObservationAtClaim::from(trunk_commit)),
+                Err(ClaimError::MissingReference(reference)) => reference
+                    .parse::<FullRefName>()
+                    .map(TrunkObservationAtClaim::from)
+                    .map_err(|_| ClaimError::InvalidTrunkReference),
+                Err(error) => Err(error),
+            }
         },
         ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => read_git_object_id(
             worktree_context.repository_root(),
             &[GIT_REV_PARSE_COMMAND, &trunk_ref],
-        ),
+        )
+        .map(TrunkObservationAtClaim::from),
     }
-    .map(TrunkCommitAtClaim::from)
 }
 
 fn read_head_snapshot_from_files(
@@ -1466,6 +1474,7 @@ pub(crate) enum ClaimError {
     InvalidUtf8(FromUtf8Error),
     GitCommandFailed(String),
     InvalidHeadReference,
+    InvalidTrunkReference,
     MissingReference(String),
     InvalidStoredReference(String),
     SymbolicReferenceDepthExceeded { reference: String, maximum: u8 },
@@ -1498,6 +1507,9 @@ impl Display for ClaimError {
             Self::GitCommandFailed(stderr) => write!(formatter, "git command failed: {stderr}"),
             Self::InvalidHeadReference => {
                 formatter.write_str("git returned an invalid full HEAD reference")
+            },
+            Self::InvalidTrunkReference => {
+                formatter.write_str("the configured trunk is not a valid full git reference")
             },
             Self::MissingReference(reference) => {
                 write!(formatter, "git reference {reference} does not exist")

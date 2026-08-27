@@ -37,40 +37,20 @@ pub(super) fn contains(
     candidate: &ReservationScope,
     path_case: PathCase,
 ) -> bool {
-    match holder.kind {
-        ScopeKind::File => {
-            candidate.kind == ScopeKind::File
-                && paths_equal(
-                    &holder.path.to_string(),
-                    &candidate.path.to_string(),
-                    path_case,
-                )
-        },
-        ScopeKind::Tree => path_is_component_ancestor(
-            &holder.path.to_string(),
-            &candidate.path.to_string(),
-            path_case,
-        ),
-    }
-}
-
-fn paths_equal(left: &str, right: &str, path_case: PathCase) -> bool {
-    let left_components = left.split('/');
-    let right_components = right.split('/');
-    left_components
-        .zip(right_components)
-        .all(|(left, right)| path_case.component_eq(left, right))
-        && left.split('/').count() == right.split('/').count()
-}
-
-fn path_is_component_ancestor(ancestor: &str, descendant: &str, path_case: PathCase) -> bool {
-    let ancestor_components = ancestor.split('/').collect::<Vec<_>>();
-    let descendant_components = descendant.split('/').collect::<Vec<_>>();
-    ancestor_components.len() <= descendant_components.len()
-        && ancestor_components
-            .iter()
-            .zip(descendant_components)
-            .all(|(ancestor, descendant)| path_case.component_eq(ancestor, descendant))
+    let candidate_path = candidate.path.to_string();
+    (holder.kind == ScopeKind::Tree || candidate.kind == ScopeKind::File)
+        && holder.covers_path_by(
+            candidate_path.as_bytes(),
+            |holder_component, candidate_component| {
+                let (Ok(holder_component), Ok(candidate_component)) = (
+                    str::from_utf8(holder_component),
+                    str::from_utf8(candidate_component),
+                ) else {
+                    return false;
+                };
+                path_case.component_eq(holder_component, candidate_component)
+            },
+        )
 }
 
 #[cfg(test)]

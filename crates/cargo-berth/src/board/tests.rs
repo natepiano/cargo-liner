@@ -60,6 +60,7 @@ use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::AbandonmentReason;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::IntegrationProof;
 use crate::reservation::OrphanRetirementReason;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
@@ -301,6 +302,7 @@ fn release_dispositions_remain_typed_in_resolved_rows() -> FixtureResult<()> {
         integrated.reservation_id,
         IntegrationEvidenceStatus::Integrated {
             trunk_oid: trunk.clone(),
+            proof:     IntegrationProof::ProtectedTipAncestor,
         },
     )?;
     fixture.release(
@@ -321,6 +323,7 @@ fn release_dispositions_remain_typed_in_resolved_rows() -> FixtureResult<()> {
         rewritten.reservation_id,
         IntegrationEvidenceStatus::Integrated {
             trunk_oid: trunk.clone(),
+            proof:     IntegrationProof::ProtectedTipAncestor,
         },
     )?;
     fixture.release(
@@ -446,6 +449,7 @@ fn assert_trunk_rewritten_action() -> FixtureResult<()> {
         rewritten.predecessor.reservation_id,
         IntegrationEvidenceStatus::Integrated {
             trunk_oid: rewritten_tip,
+            proof:     IntegrationProof::ProtectedTipAncestor,
         },
     )?;
     rewritten.board.release(

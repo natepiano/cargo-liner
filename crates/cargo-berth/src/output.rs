@@ -1433,7 +1433,7 @@ impl OutputEnvelope {
                 IntegrationEvidenceStatus::NotIntegrated => format!(
                     "Reservation {reservation_id} remains outstanding; its protected tip is not in trunk."
                 ),
-                IntegrationEvidenceStatus::Integrated { trunk_oid } => format!(
+                IntegrationEvidenceStatus::Integrated { trunk_oid, .. } => format!(
                     "Reservation {reservation_id} has integration evidence in trunk commit {trunk_oid}."
                 ),
                 IntegrationEvidenceStatus::TrunkRewritten => format!(

@@ -26,6 +26,7 @@ use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
+use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::WorktreeContext;
@@ -42,9 +43,11 @@ use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReleaseRevalidationSubject;
+use crate::reservation::Reservation;
 use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
+use crate::scope::ReservationScopeSet;
 use crate::session::SessionIdentityMappingPublication;
 
 /// A parsed request to checkpoint or revalidate one reservation.
@@ -250,9 +253,8 @@ fn validate_release_transaction(
     let release_append = match operation_for_state(
         context.repository_root,
         context.trunk_branch,
-        context.reservation_id,
         context.invoking_worktree_id,
-        reservation.actor().worktree,
+        reservation,
         evidence_state,
     ) {
         Ok(release_append) => release_append,
@@ -295,15 +297,20 @@ fn release_retention_deletions(
 fn operation_for_state(
     repository_root: &Path,
     trunk_branch: &str,
-    reservation_id: ReservationId,
     invoking_worktree_id: WorktreeId,
-    holder_worktree_id: WorktreeId,
+    reservation: &Reservation,
     evidence_state: ReservationEvidenceState,
 ) -> Result<ReleaseAppend, ReleaseRejection> {
+    let reservation_id = reservation.id();
     let release_repository_context = ReleaseRepositoryContext {
         repository_root,
         trunk_branch,
-        holder_worktree: HolderWorktree::classify(invoking_worktree_id, holder_worktree_id),
+        holder_worktree: HolderWorktree::classify(
+            invoking_worktree_id,
+            reservation.actor().worktree,
+        ),
+        phase_start_head: reservation.phase_start_head(),
+        scopes: reservation.scopes(),
     };
     match evidence_state {
         ReservationEvidenceState::Active { .. } => {
@@ -392,6 +399,8 @@ fn outstanding_operation(
     ) {
         reservation::integration_status(
             release_repository_context.repository_root,
+            release_repository_context.phase_start_head,
+            release_repository_context.scopes,
             protected_tip,
             &current_trunk,
             PriorIntegrationStatus::Proven,
@@ -399,6 +408,8 @@ fn outstanding_operation(
     } else {
         reservation::outstanding_integration_status(
             release_repository_context.repository_root,
+            release_repository_context.phase_start_head,
+            release_repository_context.scopes,
             protected_tip,
             trunk_snapshot,
             &current_trunk,
@@ -500,6 +511,8 @@ fn released_evidence_operation(
     };
     let evidence = reservation::integration_status(
         release_repository_context.repository_root,
+        release_repository_context.phase_start_head,
+        release_repository_context.scopes,
         &revalidation_tip,
         &current_trunk,
         PriorIntegrationStatus::Proven,
@@ -514,9 +527,11 @@ fn released_evidence_operation(
 }
 
 struct ReleaseRepositoryContext<'repository> {
-    repository_root: &'repository Path,
-    trunk_branch:    &'repository str,
-    holder_worktree: HolderWorktree,
+    repository_root:  &'repository Path,
+    trunk_branch:     &'repository str,
+    holder_worktree:  HolderWorktree,
+    phase_start_head: &'repository ProtectedPhaseStartHead,
+    scopes:           &'repository ReservationScopeSet,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

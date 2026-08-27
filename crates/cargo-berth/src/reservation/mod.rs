@@ -18,6 +18,7 @@ pub(crate) use evidence::retain_protected_tip;
 pub(crate) use lifecycle::AbandonmentReason;
 pub(crate) use lifecycle::EditBlockingStatus;
 pub(crate) use lifecycle::IntegrationEvidenceStatus;
+pub(crate) use lifecycle::IntegrationProof;
 pub(crate) use lifecycle::LifecycleTransitionError;
 pub(crate) use lifecycle::OrphanRetirementReason;
 pub(crate) use lifecycle::ReleaseDisposition;
@@ -53,7 +54,7 @@ use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeAdditionSet;
 use crate::ledger::ReservationSnapshot;
-use crate::ledger::TrunkCommitAtClaim;
+use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::scope::PathCase;
 use crate::scope::ReservationScope;
@@ -184,7 +185,7 @@ enum RetainedProtectedTip {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum IntegrationTrunkSnapshot {
     /// The trunk commit observed when the reservation was acquired.
-    AtClaim(TrunkCommitAtClaim),
+    AtClaim(TrunkObservationAtClaim),
     /// The trunk commit observed with the protected tip.
     AtCheckpoint(GitObjectId),
 }
@@ -196,7 +197,7 @@ struct ReplayedClaim<'event> {
     scopes:           &'event ReservationScopeSet,
     source:           &'event ClaimSource,
     purpose:          &'event ReservationPurpose,
-    trunk_at_claim:   &'event TrunkCommitAtClaim,
+    trunk_at_claim:   &'event TrunkObservationAtClaim,
     head_snapshot:    &'event ClaimHeadSnapshot,
     phase_start_head: &'event ProtectedPhaseStartHead,
     actor:            &'event JournalActor,
@@ -212,7 +213,7 @@ pub(crate) enum ReservationEvidenceState {
     /// Active work has no protected integration subject.
     Active {
         /// The trunk commit observed when the reservation was acquired.
-        trunk_at_claim: TrunkCommitAtClaim,
+        trunk_at_claim: TrunkObservationAtClaim,
     },
     /// A protected checkpoint awaits or has gained integration evidence.
     Outstanding {
@@ -932,13 +933,21 @@ impl RetainedReservationSet {
         recorded_at: &RecordedAt,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
-        if !matches!(reservation.lifecycle, ReservationLifecycle::Active) {
-            return Err(ReservationReplayError::WidenRequiresActive(reservation_id));
+        if matches!(reservation.lifecycle, ReservationLifecycle::Released { .. }) {
+            return Err(ReservationReplayError::WidenRequiresUnreleased(
+                reservation_id,
+            ));
         }
         let mut scopes = reservation.scopes.as_slice().to_vec();
         scopes.extend(added_scopes.as_slice().iter().cloned());
         reservation.scopes = ReservationScopeSet::try_from(scopes)
             .map_err(|_| ReservationReplayError::EmptyScopeSet(reservation_id))?;
+        if matches!(
+            reservation.lifecycle,
+            ReservationLifecycle::Outstanding { .. }
+        ) {
+            reservation.integration_status = IntegrationEvidenceStatus::NotIntegrated;
+        }
         reservation.last_activity_at = recorded_at.clone();
         reservation.advance_revision()?;
         reservation.authorizations.push(authorization.clone());
@@ -1015,6 +1024,7 @@ impl RetainedReservationSet {
         if let ReleaseDisposition::RewrittenIntegration(trunk_commit) = disposition {
             reservation.integration_status = IntegrationEvidenceStatus::Integrated {
                 trunk_oid: trunk_commit.as_ref().clone(),
+                proof:     IntegrationProof::ProtectedTipAncestor,
             };
         }
         match disposition {
@@ -1074,6 +1084,7 @@ impl RetainedReservationSet {
         if let ReleaseDisposition::RewrittenIntegration(trunk_commit) = replacement {
             reservation.integration_status = IntegrationEvidenceStatus::Integrated {
                 trunk_oid: trunk_commit.as_ref().clone(),
+                proof:     IntegrationProof::ProtectedTipAncestor,
             };
         }
         reservation.advance_revision()
@@ -1424,7 +1435,7 @@ pub(crate) enum ReservationReplayError {
     /// A replayed widen somehow produced an empty scope set.
     EmptyScopeSet(ReservationId),
     /// A widen operation named a reservation that was no longer active.
-    WidenRequiresActive(ReservationId),
+    WidenRequiresUnreleased(ReservationId),
     /// A reservation revision counter can no longer advance.
     RevisionExhausted(ReservationId),
     /// A lifecycle transition appeared in an invalid order.
@@ -1485,9 +1496,9 @@ impl Display for ReservationReplayError {
                     "reservation {reservation_id} replayed with no scopes"
                 )
             },
-            Self::WidenRequiresActive(reservation_id) => write!(
+            Self::WidenRequiresUnreleased(reservation_id) => write!(
                 formatter,
-                "reservation {reservation_id} cannot widen after leaving active state"
+                "reservation {reservation_id} cannot widen after release"
             ),
             Self::RevisionExhausted(reservation_id) => {
                 write!(
@@ -1711,9 +1722,64 @@ mod tests {
         };
         assert!(matches!(
             error,
-            super::ReservationReplayError::WidenRequiresActive(candidate)
+            super::ReservationReplayError::WidenRequiresUnreleased(candidate)
                 if candidate == reservation_id
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn widening_outstanding_scopes_invalidates_scoped_patch_integration_evidence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let [claim, checkpoint, ..] = lifecycle_events()?;
+        let integrated = journal_event(
+            3,
+            &json!({
+                "op": "evidence_revalidated",
+                "reservation_id": RESERVATION_ID,
+                "status": {
+                    "status": "integrated",
+                    "trunk_oid": TRUNK_OID,
+                    "proof": "scoped_patch_equivalent"
+                },
+                "edit_blocking_status": "clear"
+            }),
+        )?;
+        let widen = journal_event(
+            4,
+            &json!({
+                "op": "widen",
+                "reservation_id": RESERVATION_ID,
+                "added_scopes": [{"path": "added.rs", "kind": "file"}],
+                "cause": {"kind": "explicit", "reason": "reviewed scope expansion"},
+                "authorization": {"kind": "no_conflict"},
+                "edit_blocking_status": "clear"
+            }),
+        )?;
+
+        let retained_reservations =
+            RetainedReservationSet::replay(&[claim, checkpoint, integrated, widen])?;
+        let reservation = retained_reservations.reservation(reservation_id)?;
+
+        assert!(matches!(
+            reservation.evidence_state(),
+            Ok(ReservationEvidenceState::Outstanding {
+                integration_status: IntegrationEvidenceStatus::NotIntegrated,
+                ..
+            })
+        ));
+        assert_eq!(
+            reservation.edit_blocking_status(),
+            EditBlockingStatus::Blocking
+        );
+        assert!(
+            reservation
+                .scopes()
+                .as_slice()
+                .iter()
+                .any(|scope| scope.path.to_string() == "added.rs")
+        );
         Ok(())
     }
 

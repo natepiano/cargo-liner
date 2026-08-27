@@ -155,7 +155,9 @@ of generations or offsets. Reservation rows occur at
 - `integration_evidence.kind`: `active_work`; `released_without_checkpoint`; or
   `current` with a nested `status`. That nested value has its own `status`
   discriminator: `integration_evidence.status.status` is `not_integrated`;
-  `integrated` with `trunk_oid`; `trunk_rewritten`; or `object_unknown`.
+  `integrated` with `trunk_oid` and `proof`; `trunk_rewritten`; or
+  `object_unknown`. Integrated `proof` is `protected_tip_ancestor` or
+  `scoped_patch_equivalent`.
 - `freshness.status`: `fresh` or `stale`, both with `last_activity_at`.
 - `ahead_behind_main.status`: `counts` with `ahead` and `behind`; `unrelated`;
   or `unavailable`.
@@ -278,6 +280,13 @@ These operation fields use the following tagged values:
   "explained", "explanation": <non-empty string> }`.
 - `head_snapshot` is `{ "kind": "branch", "full_ref": <refs/... string>,
   "head": <oid> }` or `{ "kind": "detached", "head": <oid> }`.
+- `trunk_at_claim` is untagged: either a bare git object id string, meaning the
+  configured trunk resolved to that commit, or `{ "reference": <refs/... string>
+  }`, meaning the configured trunk reference existed but resolved to no commit.
+  Records written before the object form was widened are bare oid strings and
+  decode unchanged. An unresolved trunk reference is a recorded observation, not
+  a corrupt journal: replay accepts it and later commands answer from the
+  reservation's lifecycle instead of reporting the ledger unreadable.
 - `authorization.kind` is `no_conflict`; `sequence` with `overlaps`, `blocker`,
   `direction`, `edge_id`, and `reason`; `defer` or `override` with `overlaps`,
   `blocker`, and `reason`; or `existing_answers_cover_every_overlap` with
@@ -300,7 +309,9 @@ These operation fields use the following tagged values:
   `evidence` field containing the commit or reason. `superseded` and
   `replacement` use the same format.
 - Integration evidence `status.status` is `not_integrated`; `integrated` with
-  `trunk_oid`; `trunk_rewritten`; or `object_unknown`.
+  `trunk_oid` and `proof`; `trunk_rewritten`; or `object_unknown`. Integrated
+  `proof` is `protected_tip_ancestor` or `scoped_patch_equivalent`. Records
+  written before `proof` was added decode as `protected_tip_ancestor`.
 - Incursion `foreign_reservation_ids` and `paths` are non-empty arrays of
   reservation-id strings and repository-relative path strings, respectively.
 - `skipped_holds.kind` is `ordering_edges` with non-empty `edges`; `deferrals`
