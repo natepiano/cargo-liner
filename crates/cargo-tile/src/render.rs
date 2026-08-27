@@ -188,12 +188,13 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
             pane_focus_state: PaneFocusState::Inactive,
         },
     );
+    app.favorites_overlay.render(frame);
 
     match app.framework.overlay() {
         Some(FrameworkOverlayId::Settings) => draw_settings(frame, app),
         Some(FrameworkOverlayId::Keymap) => draw_keymap(frame, app, keymap),
         Some(FrameworkOverlayId::GlobalShortcuts) => draw_global_shortcuts(frame, app, keymap),
-        _ => (),
+        None => (),
     }
 }
 

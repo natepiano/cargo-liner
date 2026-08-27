@@ -89,18 +89,23 @@
     `ctrl-s`, so any later phase that reports a different mutation has to
     generalise it rather than call it as it stands.
   - `crates/cargo-tile/src/keymap.rs` — `build_keymap` (64), scope registrations (75–83).
-  - `crates/cargo-tile/src/terminal.rs` — `handle_key` (**705**);
-    `if let Some(overlay) = app.framework.overlay()` (**708**), whose condition
-    runs to 719; `|| matches!(action, GlobalAction::Dismiss))` (**713**);
-    `dispatch_overlay_key` (**751**); `if app.updates == Updates::Frozen {`
+  - `crates/cargo-tile/src/terminal.rs` — `handle_key` (**705**), which now
+    dispatches an open favorites overlay **first**, at **708–710**, and returns
+    before the framework is consulted; the framework branch
+    `if let Some(overlay) = app.framework.overlay()` (**712**), whose
+    open-overlay toggle runs at **714–719** and carries **no**
+    `GlobalAction::Dismiss` fallback — Phase 4 removed that clause;
+    `dispatch_overlay_key` (**754**); `if app.updates == Updates::Frozen {`
     (**496**), its `else` (**498**), the attract frame request **inside** that
     else (**543**). Phase 3 put the toast prune and the shared visual frame
     request **after** the recv match and outside the `Frozen` branch, and the
     toast deadline shortens the loop's wait through `VisualDeadline::limit_wait`.
   - `crates/cargo-tile/src/render.rs` — `draw` (**137**); the toast stack drawn
-    through `ToastsRenderCtx` immediately **before** the overlay match, so toasts
-    render *beneath* every overlay; `match app.framework.overlay()` (**192**); its
-    `_ => ()` arm (**196**).
+    through `ToastsRenderCtx` at **183–190**, immediately **before** the overlay
+    match, so toasts render *beneath* every overlay; the favorites overlay drawn
+    at **191**; `match app.framework.overlay()` (**193**), which Phase 4 narrowed
+    to an exhaustive match ending in `None => ()` (**197**) — there is no
+    wildcard arm left to widen.
   - `crates/cargo-tile/src/app.rs` — `APP_PANE_DISPLAY_ORDER` (35), `AppPaneId`
     (47), `Updates` (65), `App` (116), `App::new` (157), `AppContext` impl (214),
     `type ToastAction = NoToastAction` (216). Phase 3 added the private
@@ -130,7 +135,9 @@ loop next. `globals.rs`'s `save_favorite` is the worked example.
     (176), `KEYMAP_TOML_HEADER` (184).
   - `crates/cargo-tile/src/interaction.rs` — `Picked` (28), `handle_click` (45),
     `overlay_row` (54, exhaustive on `FrameworkOverlayId`), `HitTestRegistry` (67),
-    `InputContext` (87), `app_modal_overlay_hit` returning `ModalHit::Closed` (94).
+    `InputContext` (87), `app_modal_overlay_hit` (**94–100**), which Phase 4 made
+    return `ModalHit::MissedRow` while the favorites overlay is open and
+    `ModalHit::Closed` otherwise.
   - `crates/tui_pane/Cargo.toml` — version (12), `[features] backdrop` (21),
     `serde` (**31**), macOS-only deps (42).
   - `crates/cargo-tile/Cargo.toml` — version (12), `chrono` (18), `toml` (25),
@@ -362,293 +369,105 @@ to record a clamped value — the file keeps what the reader wrote.
 - Restoring mid-fade progress on undo — a fade is a transient, and replaying a partial one reproduces a glitch rather than a state.
 - Raising deletion refusals as toasts — toasts render beneath overlays and the favorites modal stays open on a refused delete.
 
-### Phase 4 — the favorites overlay: modal shell and table  · status: todo
+### Phase 4 — the favorites overlay: modal shell and table  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `ctrl-o` opens a scrolling, mode-grouped table of saved favorites that
-consumes every key while it is open.
-
-**Spec:**
-
-`AppGlobalAction::OpenFavorites` on `ctrl-o` (free in every scope), added to
-`globals.rs` the same way Phase 3 added `SaveFavorite`.
-
-**One controller owns everything.** `favorites_overlay.rs` holds a
-`FavoritesOverlay` owning open state, the row list, selection, the `Viewport`,
-the cached line plan, rendering and input handling. `App` owns exactly one
-instance. **This phase has no time-driven state and therefore adds no frame
-request**: the table redraws on the events that change it. The `advance(now)` /
-frame-owed half belongs to Phase 5, which introduces the first thing here that
-moves on its own — the deletion fade — and it is specified there. Spreading state across `App`, drawing across two files,
-input across `terminal.rs` and fade scheduling elsewhere is how the one-frame
-repaint defect gets reintroduced — the demand-driven loop repaints nothing unless
-something asks.
-
-**The overlay is a complete modal, not a key-order tweak.**
-`AppOverlay::{Closed, Favorites(FavoritesOverlayContent)}` with a registered
-`FavoritesOverlayAction` scope and `AppPaneId::Favorites`, following
-`docs/cargo-port/style/adding-a-keybinding.md`, so the footer labels follow
-rebinding like every other surface. `Closed` is a variant of that enum, not an
-absent `Option<AppOverlay>` beside it — the closed position is a state of the
-overlay, and naming it keeps the positions in one exhaustive match. While an
-`AppOverlay` other than `Closed` is open its scope is dispatched and **every** key
-is consumed, unmatched ones as no-ops, ahead of the
-framework overlay check at `terminal.rs:708`. Taking only the recognized keys
-would leave `r` randomizing behind the popup and `?` opening a framework overlay
-on top of it. At most one app or framework modal is open at a time.
-
-**What the overlay is showing is its own named state, not a second boolean.**
-The gate below requires five `FavoritesFileState` variants plus an
-all-unrecognized file to render distinctly. A two-variant `{Favorites,
-NoFavorites}` open state cannot carry that, so the controller would have to keep
-the real answer in a private field and readers would have to go find it. Name it
-instead — one exhaustive type owned by `favorites_overlay.rs`, whose variants
-cover exactly the positions a reader can be in:
-
-```rust
-enum FavoritesOverlayContent {
-    Rows(FavoriteRowsView),          // at least one recognized row
-    NoneSaved,                       // the file is Missing
-    OnlyUnrecognized(...),           // rows exist; this build understood none
-    LocationUnavailable,             // the config directory does not resolve
-    Unparseable { path: PathBuf, error: String },
-    Unreadable  { path: PathBuf, error: String },
-}
-```
-
-`AppOverlay::Favorites` carries one of these. Every notice this overlay can show
-is then a match arm rather than a branch on hidden state, and Phase 6 opens the
-matching variant for each way `m` can fail to load. The variant names above are
-the required *distinctions*; spell them however reads best against
-`FavoritesFileState`, but do not collapse two of them into one.
-
-`InputContext::app_modal_overlay_hit` (`interaction.rs:94`) returns
-`ModalHit::Closed` unconditionally today; it must report the app modal as open so
-a click does not fall through to the grid. The doc comment above it
-(`interaction.rs:96`) states "Toasts are the framework's, and this app raises
-none" — Phase 3 made that false, so correct the comment while editing the
-function. Mouse selection inside the overlay stays out of scope.
-
-**Layout.** Modes hold disjoint parameters, so one flat table would be mostly
-blanks. Group by mode: a heading per mode that has favorites, its own column
-header, then its rows. Selection walks every row across every section as one
-list, so scrolling behaves as a single list regardless of the grouping.
-
-```
-  Favorites                                                    3 saved
-
-  Attract: Pixelate
-    Saved              Direction  Speed  Wave  Block  Resolve  Fill
-                       ←↑↓→       ,/.    [/]   -/+    v        t
-  ▸ 26 Aug 14:31:05    left        24    145      6  scatter   solid
-    25 Aug 22:07:19    up          12     60      3  blend     shade
-
-  Attract: Moving Band
-    Saved              Direction  Width  Speed  Tail   Fraying
-                       ←↑↓→       -/+    </>    [/]    v
-    26 Aug 09:02:44    right         12     40     96  both
-
-  ↑↓ move   esc close
-```
-
-**The footer names only what this phase built.** `enter load` and `x delete`
-belong to Phase 5 and their labels appear there, not here — a footer that offers
-a key which does nothing is worse than a shorter footer. This phase's footer
-carries movement, horizontal paging when the table is wider than the terminal,
-and close.
-
-The key line under each header is read from the **live keymap** — via the scope
-for `AppPaneId::Attract(mode)`, resolved with `Keymap::key_for_toml_key`
-(`keymap/mod.rs:331`) and rendered with `KeySequence::display_short()`
-(`key_sequence.rs:70`), **not** `KeyBind::display_short` — so a rebound key shows
-through rather than a hardcoded label going stale.
-
-**The overlay's own action scope, in full.** `FavoritesOverlayAction` is
-registered like any other scope, and its variants, TOML names and default binds
-are part of this Work Order rather than left to the implementer:
-
-| Variant | TOML name | Default | Notes |
-| --- | --- | --- | --- |
-| `SelectPrevious` | `select_previous` | `up`, `k` | walks every row across sections as one list |
-| `SelectNext` | `select_next` | `down`, `j` | same |
-| `PageColumnsLeft` | `page_columns_left` | `left`, `h` | horizontal paging, one whole column |
-| `PageColumnsRight` | `page_columns_right` | `right`, `l` | same |
-| `Close` | `close` | `esc` | the only way out in this phase |
-
-`Load` and `Delete` are **not** added here — Phase 5 adds them to this same enum
-along with their footer labels. Nothing else is bound; every other key is consumed
-as a no-op per the modal rule above.
-
-**The semantic binding conversion covers every label on the surface, not just the
-parameter columns.** `Keymap::key_for_toml_key` returns an external
-`Option<KeySequence>` at three places in this phase — the column key lines, the
-footer's own action labels, and the save label inside the empty notice — and all
-three convert at that boundary into the same named bound/unbound state. Give the
-type a general name, because it is not column-specific — `ResolvedBinding::{Bound(
-KeySequence), Unbound}` — and use it for all three, so an unbound action renders
-as a blank by matching a variant rather than by unwrapping an optional anywhere on
-this surface.
-
-The per-column half needs an explicit **per-column descriptor**, because the mapping is not
-one-to-one and **"one action or an action pair" is not a wide enough shape**.
-Direction is four actions, not two — up, down, left and right — and Pixelate
-spells its travel actions `sweep_*` where the other two modes use `travel_*`, so
-a descriptor keyed on a shared spelling silently resolves nothing for one mode.
-Enumerate the complete matrix explicitly in the descriptor table: every column of
-all three modes, with the exact action name each half or quarter resolves
-through. Do not derive one mode's spelling from another's.
-
-The policy is primary-binding-per-action, and the conversion is the shared
-`ResolvedBinding` named above. `key_for_toml_key` is `tui_pane`'s
-`RuntimeScope` trait method and cargo-port calls it too, so its signature does
-**not** change; the conversion is cargo-tile's. The sketch above is deliberately wrong as a warning: it puts Tail
-on `</>` and Speed on `,/.`, while the real defaults (`attract/moving_band.rs:95`)
-are Speed `</>` and Tail `[/]`. A descriptor plus a test against the resolved
-keymap is what prevents exactly that class of error.
-
-Timestamps display to the second, and carry the year when the row is not from the
-current year. Minute precision cannot tell two saves of a similar parameter set
-apart.
-
-**Narrow terminals are their own problem.** `ColumnWidths`
-(`layout/column_widths.rs:36`) only grows columns to observed content — it has no
-notion of a total width budget — and the keymap overlay's private
-`columns_that_fit` (`keymap_ui.rs:512`) reduces the number of side-by-side
-*sections*. Neither makes a seven-column row fit a terminal narrower than the
-row. So: `Saved` and the selection marker pin to the left edge; the parameter
-columns page horizontally with left/right, one whole column at a time; the
-header, key line and cells are all built from the same visible-column slice.
-Chosen over clipping or dropping columns by priority — paging is the only one of
-the three where you can still see the value you are about to load.
-
-The empty case is a non-selectable line, not an empty table. Both key names in it
-come from the live keymap, and **the instruction has to close the overlay first**:
-this modal consumes every key, so `ctrl-s` pressed over it saves nothing. The
-notice reads `No favorites saved -- press <live close label>, then <live save
-label> while the attract screen is up`. Resolve the close label from the
-`FavoritesOverlayAction` scope and the save label from
-`AppGlobalAction::SaveFavorite`, through the same descriptor machinery the column
-key lines use — a hardcoded `ctrl-s` here goes stale on rebinding exactly like a
-hardcoded column label. A list with one mode renders that mode's section only,
-with no others stubbed in.
-
-**A row the file holds but this build does not understand is shown, not
-swallowed.** `FavoriteRows::iter()` yields `FavoriteRowRecognition::Unrecognized(
-UnrecognizedFavoriteValue { key, spelling })` for a row carrying an unknown mode
-or a misspelled enum. Phase 2 keeps those rows on disk verbatim, so the only
-thing left to decide is whether the reader is told. They are: render each one as
-a **non-selectable diagnostic line** naming the key and the spelling that was not
-recognized, in its own section below the mode groups. Skipping them silently
-means a reader who typos one value in `favorites.toml` sees a shorter list with
-no explanation and no way to find out why. A file whose rows are *all*
-unrecognized is therefore not the empty case — see the gate.
-
-**Row rendering is cached, not rebuilt per frame.** `keymap_ui.rs`'s
-`prepare_overlay_inputs` (126) / `render_overlay` (173) build, format and measure
-every row before applying the scroll offset; copied here, each of Phase 5's fade
-frames would do O(total favorites) of string work to animate one row. Build the
-grouped line plan and the formatted cells on open, on mutation and on width
-change; a frame renders only the lines intersecting the viewport. A keymap
-replacement needs no rebuild trigger of its own: an app modal and a framework
-modal cannot be open at once, so the keymap overlay is always closed before this
-one opens, and every open rebuilds. Measurement uses `ColumnWidths`; scrolling uses `Viewport`
-(`layout/viewport.rs:62`). No count or file-size cap is imposed — a reviewer
-proposed one and it is declined: with the cache in place the per-frame cost is
-O(visible rows), and refusing a save is a worse experience than a slower open.
-
-**Two ladder corrections land here.**
-
-- Narrow `render.rs:196`'s `_ => ()` to `None => ()`. The match at 192 currently
-  swallows a future `FrameworkOverlayId` variant along with `None`, so a new
-  framework overlay would compile with no draw arm. `terminal.rs`'s
-  `dispatch_overlay_key` (751) already matches every variant.
-- Drop the `|| matches!(action, GlobalAction::Dismiss))` clause at
-  **`terminal.rs:713`** (inside the `if let` beginning at 708). That clause lets
-  any `Dismiss`-bound key through an open framework overlay, which is what makes
-  `x` close every overlay in the app — and what would make a reflexive `x` over
-  the favorites table destroy a saved row in Phase 5. Removing it leaves the
-  condition as `if let Some(action) = … && !in_text_mode &&
-  matches_open_overlay_toggle(action, overlay)`. `esc` already closes those
-  overlays through each one's own cancel binding (`overlays/settings.rs:139`), so
-  nothing is lost, and `s` / `ctrl-k` / `?` still toggle their own overlay shut
-  through the surviving clause. **tui_pane's defaults are not touched** — see the
-  Invariants; cargo-port keeps `x` for its own dismiss fallback. Left as is: with
-  no overlay open, `x` still clears a visible toast, since that path does not run
-  through the removed clause.
+- `ctrl-o` opens `FavoritesOverlay` (`favorites_overlay.rs`), the sole controller
+  for the modal: open state, content, selection, viewport, cached line plan,
+  rendering, and key handling. `App` holds exactly one instance; the surface has
+  no time-driven state and requests no frames.
+- `AppOverlay::{Closed, Favorites(FavoritesOverlayContent)}` makes closed a named
+  variant, not an absent `Option`. `FavoritesOverlayContent` has six variants —
+  `Rows`, `NoneSaved`, `OnlyUnrecognized`, `LocationUnavailable`, `Unparseable`,
+  `Unreadable` — built by `from_file_state` as an exhaustive match with no
+  wildcard arm.
+- App-modal dispatch runs ahead of the framework overlay check in
+  `terminal.rs::handle_key` (708–710); the framework's global `x => Dismiss`
+  fallback is removed, so a framework overlay now closes only through its own
+  toggle or cancel binding. `render.rs`'s overlay match is exhaustive, ending
+  `None => ()`. `interaction.rs::app_modal_overlay_hit` reports the modal as open
+  so clicks never reach the grid underneath.
+- `FavoritesOverlayAction` scope: `SelectPrevious`/`SelectNext` (`up`/`k`,
+  `down`/`j`), `PageColumnsLeft`/`PageColumnsRight` (`left`/`h`, `right`/`l`),
+  `Close` (`esc`). Every other key is consumed as a no-op while the modal is
+  open.
+- Each mode's column key line, the footer labels, and the empty-notice's
+  close/save labels resolve through one conversion, `ResolvedBinding::{
+  Bound(KeySequence), Unbound}`, fed by a column-descriptor table enumerating
+  every column of all three attract modes explicitly (see Gotchas).
+- Horizontal paging is bounded by `last_horizontal_column_page`, a measured value
+  cached on the line plan (max across present mode sections), not a
+  column-count constant; the footer advertises paging only when it is nonzero.
+  `visible_parameter_columns` budgets one `COLUMN_GAP` per rendered column and
+  always keeps the first parameter column visible, even in a window too narrow
+  for it.
+- Column widths and padding are measured in terminal display cells via
+  `unicode-width` (`measured_saved_width`, `push_display_padded`); no
+  `chars().count()` or `{:<}`/`{:>}` width formatting remains on this surface.
+- Timestamps render to the second, with the year appended when the row predates
+  the current year.
 
 **Files:**
-- `crates/cargo-tile/src/favorites_overlay.rs` — new file holding `FavoritesOverlay`: open state, `FavoritesOverlayContent`, rows, selection, `Viewport`, cached line plan, column descriptors, `ResolvedBinding`, `FavoritesOverlayAction`, rendering, input
-- `crates/cargo-tile/src/app.rs` — `App` owns one `FavoritesOverlay`; `AppOverlay::{Closed, Favorites(FavoritesOverlayContent)}`; `AppPaneId::Favorites` (47) and `APP_PANE_DISPLAY_ORDER` (35)
-- `crates/cargo-tile/src/globals.rs` — `OpenFavorites` variant, default binding, dispatch arm
-- `crates/cargo-tile/src/keymap.rs` — register the `FavoritesOverlayAction` scope (75–83)
-- `crates/cargo-tile/src/render.rs` — draw the overlay; narrow `_ => ()` (196) to `None => ()`
-- `crates/cargo-tile/src/terminal.rs` — app-modal dispatch ahead of the framework check (708); drop the `Dismiss` clause (713)
-- `crates/cargo-tile/src/interaction.rs` — `app_modal_overlay_hit` (94) reports the app modal as open; correct the stale "this app raises none" toast comment above it (96)
-- `crates/cargo-tile/src/favorites.rs` — correct `FavoriteRowRecognition::Unrecognized`'s doc comment (134), which says the row is "omitted from display and loading"; this phase displays it, and only loading still excludes it
-- `crates/cargo-tile/src/main.rs` — declare `mod favorites_overlay;` in the `mod` block at 4–30
-- `crates/cargo-tile/Cargo.toml` — patch version bump
-- `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added` / `### Changed`
+- `crates/cargo-tile/src/favorites_overlay.rs` — the whole modal: content
+  states, the two-index line plan, viewport scrolling, column budgeting/paging,
+  display-cell measurement, rendering, key handling, and its tests.
+- `crates/cargo-tile/src/favorites.rs` — unchanged parsing/recognition;
+  `FavoriteRows::iter()` is what the overlay reads.
+- `crates/cargo-tile/src/terminal.rs` — app-modal dispatch ahead of the
+  framework check; the `Dismiss` fallback removed.
+- `crates/cargo-tile/src/render.rs` — draws the overlay above the toast stack;
+  exhaustive framework-overlay match.
+- `crates/cargo-tile/src/interaction.rs` — click absorption while the modal is
+  open.
+- `crates/cargo-tile/src/globals.rs`, `keymap.rs`, `app.rs`, `main.rs` — the
+  `ctrl-o` binding, the `Favorites` app pane, and the module declaration.
+- `crates/cargo-tile/Cargo.toml`, `Cargo.lock` — `unicode-width` added.
 
-**Constraints from prior phases:** Phase 2 provides `favorites::load()` and its
-five-variant `FavoritesFileState` — the overlay renders the unparseable and
-unreadable states as the path plus the error, and the unresolvable-config-directory
-state as its own notice, never as an empty list. Rows are addressed by
-`FavoriteId`, never by storage index.
+**Binds later work:** The line plan carries two indices: `selectable_line_index`
+holds recognized favorite rows only, `navigation_line_index` holds those plus
+every line after the last recognized row so the cursor can scroll into the
+unrecognized-diagnostics block. `SelectedFavorite::{NoFavoriteSelected,
+Selected(FavoriteId)}` is derived from `navigation_line_index`;
+`NoFavoriteSelected` is a reachable on-screen cursor position, not an error.
+`CachedOverlayLine::{Static(Line), Favorite { id, tail }}` applies selection
+styling at draw time from the cached `tail`, so a per-frame restyle needs no
+plan rebuild; `rebuild_line_plan` itself runs only on open, on surface-width
+change, and on horizontal-page change. `close()` resets the cached plan to
+default and calls `Viewport::clear_surface`, so anything that must be committed
+on close has to run before that reset — "`enter` loads, `x` deletes with a
+fade" depends on this ordering. `FavoritesOverlayContent::from_file_state` is
+the exhaustive load mapping: a loaded-but-empty file reaches `NoneSaved`, a
+loaded file with no recognized rows reaches `OnlyUnrecognized`;
+`open_file_state` is the single entry point that applies it — "`m`, a random
+saved favorite" reuses it. `unicode-width` is now a cargo-tile dependency, and
+every label added to this surface must be measured with it. The footer is
+built from live bindings (`FavoritesSurfaceBindings::footer`), not hardcoded
+labels.
 
-**Phase 2 already owns ordering; do not sort again here.**
-`FavoriteRows::recognized()` yields `&Favorite` grouped by mode and newest first
-within a mode, which is exactly this table's layout — a second sort in the
-overlay is duplicated logic that can only drift. `FavoriteRows::iter()` yields
-`&FavoriteRowRecognition` and is the one that also carries the unrecognized rows;
-use `iter()` here, because this phase renders both. `FavoriteSettings::mode()`
-returns the `AttractMode`, so the grouping reads the mode off the variant rather
-than re-deriving it.
+**Gotchas:**
+- The three attract modes do not share column action names: Pixelate binds
+  `sweep_left/up/down/right` while Moving Band and Moving Text bind `travel_*`;
+  Speed is `<`/`>` and Tail is `[`/`]`. A descriptor keyed on the wrong names
+  renders a table that looks right but shows the wrong keys.
+- `FavoriteRows::iter()` is already grouped by attract mode then newest-first
+  (`compare_recognitions`: mode order, then `saved` descending, then id, every
+  `Unrecognized` after every `Recognized`) — no second sort belongs in the
+  overlay.
+- `Viewport::set_len` clamps `pos` and `clear_surface` resets it to 0, so
+  closing and reopening with fewer rows needs no extra bookkeeping.
 
-**Call `load()` on every open, not once.** Another cargo-tile instance can save
-or delete a row while this one is idle; an overlay populated from a cache taken
-at startup would show a list the file no longer has.
-
-**Phase 3 facts this phase relies on.** The toast stack is drawn immediately
-*before* the framework overlay match in `render.rs`, so toasts render **beneath**
-every overlay — a message shown while this modal is open would be hidden by it, so
-this phase reports through the overlay's own `FavoritesOverlayContent` rather than
-through a toast. Phase 3 also established the shared visual deadline in
-`terminal::event_loop` after the recv match and outside the `Updates::Frozen`
-branch; this phase adds nothing to it, and Phase 5 is where the overlay first joins
-it. `Attract::size_current_animation` sizes only the animation the current mode
-selects.
-
-**Acceptance gate:** `verify.sh check/test/lint cargo-tile` all green, plus:
-
-- The table groups by mode with per-mode headers, and the live key labels match
-  the resolved keymap column by column — including after a rebinding.
-- Selection walks every row across sections as one list.
-- A list too tall to fit scrolls and keeps the cursor visible.
-- A table wider than the terminal pages its parameter columns with `Saved` pinned,
-  and the header, key line and cells stay aligned across a page.
-- Each of the five `FavoritesFileState` variants maps to its own
-  `FavoritesOverlayContent` variant and renders distinctly: `Loaded` shows the
-  table, `Missing` shows the empty notice, `Unparseable` and `Unreadable` each
-  show the path together with the failure text, and `LocationUnavailable` shows
-  its own notice. Neither failure state renders as an empty list, and the match
-  over `FavoritesOverlayContent` is exhaustive with no wildcard arm.
-- An empty list shows the notice naming the **live** close and save labels in that
-  order, and both change when either action is rebound. `esc` dismisses it.
-- The footer offers movement, paging and close only — no `enter` or `x` label
-  appears until Phase 5.
-- A file holding an unknown mode and a misspelled enum renders one diagnostic line
-  per unrecognized row, naming its key and spelling; those lines cannot be
-  selected, and a file whose rows are all unrecognized shows them rather than the
-  empty notice.
-- Reopening the overlay after another process appends a row shows that row.
-- Column key labels cover the full matrix: direction resolves all four of its
-  actions, and Pixelate resolves through `sweep_*` while the other two modes
-  resolve through `travel_*`.
-- A key bound to an app or framework global action does nothing while the overlay
-  is open.
-- `x` over an open settings, keymap or global-shortcuts overlay leaves it open,
-  while `esc` still closes it.
+**Ruled out:**
+- One selection index for both selection and scrolling — the diagnostics block
+  must be reachable by the cursor but can never be selected.
+- Bounding horizontal paging by a column-count constant — the real limit depends
+  on measured widths and differs per mode section.
+- Measuring column text with `chars().count()` — a wide character then
+  misaligns every column to its right.
+- Dropping the first parameter column in a window too narrow for it — a clipped
+  first column beats showing the date alone.
+- Rewriting the removed global `Dismiss` clause into an exception rather than
+  deleting it — the exception would have re-entered on the next overlay.
 
 ### Phase 5 — `enter` loads, `x` deletes with a fade  · status: todo
 
@@ -713,6 +532,16 @@ alpha reaches `u8::MAX` the file is rewritten by calling `remove` **with the row
 `FavoriteId`**, and only a successful `remove` drops the row and lays the table
 out again without it.
 
+**Dropping a row can change which content variant the overlay is in.**
+`FavoritesOverlayContent::Rows` guarantees at least one recognized row, so
+deleting the last one must not leave `Rows` holding an empty table. After every
+successful removal, normalize the content: to `OnlyUnrecognized` when
+unrecognized diagnostic rows remain, and to `NoneSaved` when none do. Several
+rows may be `Removing` at once, because the cursor advances off each one as its
+fade starts and the next `x` can land before the first fade ends; every matured
+removal is committed exactly once, and `close()` commits every in-flight row
+before it resets the controller.
+
 **A refused deletion puts the row back.** `remove` returns
 `Result<(), FavoritesMutationError>` and can fail five different ways — another
 instance holds the lock, the file became unparseable or unreadable, the config
@@ -733,6 +562,21 @@ would see the row reappear with no explanation. The rule for this phase:
 - **Overlay open → the overlay says it.** Add a notice line owned by
   `FavoritesOverlay`, rendered inside the modal, naming the cause. That covers
   every `x` refusal and any adjustment warning raised before the overlay closes.
+  The notice is a state on the controller, not a string that may or may not be
+  there:
+
+  ```rust
+  enum FavoritesOverlayNotice {
+      NoNotice,
+      DeletionRefused { message: String },
+      FavoriteAdjusted { message: String },
+  }
+  ```
+
+  It is cleared on open, on close, and at the start of every new mutation
+  attempt, and it is removed once that attempt succeeds — so a refusal stays
+  readable until the reader does something about it, and a successful retry is
+  what makes it disappear.
 - **Overlay already closed → a scheduled toast.** The two cases are `enter`'s
   adjustment warning (the overlay closes as part of the load) and a
   close-mid-fade commit that fails after the modal is gone. Both use Phase 3's
@@ -741,14 +585,29 @@ would see the row reappear with no explanation. The rule for this phase:
   this loop.
 
 **The refusal formatter has to be generalised before it can be reused.**
-`favorite_refusal_message` (`globals.rs:131`) is private to that file and its text
+`favorite_refusal_message` (`globals.rs:138`) is private to that file and its text
 hardcodes the word "save" and a literal `ctrl-s`, so it cannot report a deletion
 as it stands. Move it somewhere both call sites reach — `favorites.rs` alongside
 `FavoritesMutationError` is the natural home — and parameterise it by two things:
 a named mutation operation (`FavoritesMutation::{Save, Delete}`, so the message
-says which one was refused) and the live retry binding resolved from the keymap,
-so `LockUnavailable` names the key that actually retries rather than always
-`ctrl-s`. Keep the match exhaustive over all five `FavoritesMutationError`
+says which one was refused) and a retry instruction.
+
+**The retry instruction is not always a single key, so it cannot be a single
+binding.** A refused save is retried by pressing `ctrl-s` again, and a refused
+delete is retried by pressing `x` again — but only while the overlay is still
+open. A close-mid-fade commit that fails reports after the modal is gone, and at
+that point `x` is not routed to `Delete` at all: the reader has to reopen with
+`ctrl-o`, select the row, and then press `x`. Naming a live binding there would
+name a key that does nothing. So the formatter takes
+
+```rust
+enum FavoritesRetryInstruction {
+    Press(ResolvedBinding),
+    ReopenThenPress { open: ResolvedBinding, retry: ResolvedBinding },
+}
+```
+
+and `LockUnavailable` describes whichever of the two the reader actually has. Keep the match exhaustive over all five `FavoritesMutationError`
 variants with no wildcard arm — that exhaustiveness is what makes a new variant a
 compile error instead of a generic message — and keep the existing
 "every refusal names a distinct cause" test passing across both operations.
@@ -795,11 +654,10 @@ Three details decide whether it is actually met:
 
 **Files:**
 - `crates/cargo-tile/src/favorites_overlay.rs` — `Load` and `Delete` added to `FavoritesOverlayAction` with their footer labels, `enter` and `x` handling, the in-overlay refusal notice, `FavoriteRowLifecycle::{Active, Removing { since }}`, `advance(now) -> FavoritesOverlayFrameOutcome`, elapsed-time alpha, close-mid-fade commit
-- `crates/cargo-tile/src/favorites.rs` — generalise the refusal formatter: move it here, parameterise by `FavoritesMutation::{Save, Delete}` and the live retry binding, keep the match exhaustive
+- `crates/cargo-tile/src/favorites.rs` — generalise the refusal formatter: move it here, parameterise by `FavoritesMutation::{Save, Delete}` and `FavoritesRetryInstruction`, keep the match exhaustive; delete the three now-obsolete `#[expect(dead_code, reason = "deleting a favorite starts in the next phase")]` attributes — on `FavoriteRows::remove` (238), the public `remove` (386), and `remove_from_location` (469)
 - `crates/cargo-tile/src/globals.rs` — `save_favorite` calls the moved formatter instead of the local one
 - `crates/cargo-tile/src/attract/mod.rs` — `Attract::apply_favorite()` returning `FavoriteApplicationOutcome`, `Attract::request_show()`
 - `crates/cargo-tile/src/terminal.rs` — call `advance` outside the `Frozen` branch, composing its outcome with Phase 3's toast frame request; fold the overlay's fade deadline into `VisualDeadline`
-- `crates/cargo-tile/src/main.rs` — delete the `#[expect(dead_code, …)]` above `mod favorites` (9–12)
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
 
@@ -810,18 +668,48 @@ frame request. Phase 4's `FavoritesOverlayAction` already carries movement, pagi
 and close; `Load` and `Delete` join that same enum here, with TOML names `load`
 and `delete` and defaults `enter` and `x`. The cached line plan is rebuilt on
 mutation, so a removal invalidates it. Phase 4 already dropped the `Dismiss`
-clause at `terminal.rs:713`, so `x` closes nothing and is free to delete here.
+clause at `terminal.rs:716`, so `x` closes nothing and is free to delete here.
 Phase 2's `remove` addresses the row by `FavoriteId` and does its own locked
 read-modify-write with an atomic replace; it returns
 `Result<(), FavoritesMutationError>` and every one of that enum's five variants is
 a refusal this phase has to survive.
 
-**This phase makes the last item in `favorites.rs` live, so it must delete
-`#[expect(dead_code, reason = …)]` from `mod favorites` at
-`crates/cargo-tile/src/main.rs:9-12`.** Phase 3 made `push` live and Phase 4 made
-`load` live; `remove` is the third and last of the module's three entry points.
-An expectation whose lint has stopped firing is itself an error under
-`-D warnings`, so leaving it in fails `verify.sh lint cargo-tile`. Phase 1's `apply` is an ordered
+**What Phase 4 actually shipped, that this phase builds on.** The overlay keeps
+**two** line indices, not one. `selectable_line_index` holds recognized favorite
+rows only; `navigation_line_index` holds those plus every line after the last
+recognized row, so the cursor can scroll into the unrecognized-diagnostics block.
+The cursor's identity is
+`SelectedFavorite::{NoFavoriteSelected, Selected(FavoriteId)}`, derived from
+`navigation_line_index`, so **`NoFavoriteSelected` is a reachable position with a
+live cursor on screen** — `enter` and `x` must both no-op there rather than
+assuming a row.
+
+**The typed settings `enter` needs are not on the row yet.** `FavoriteRowView`
+(`favorites_overlay.rs:220`) keeps only `id`, a formatted `saved` timestamp and
+formatted display `cells`; the `FavoriteSettings` they were rendered from is
+dropped in `from_favorite`. So this phase gives `FavoriteRowView` a
+`settings: FavoriteSettings` field and widens the cursor to
+`SelectedFavorite::{NoFavoriteSelected, Selected { id, settings }}`. `enter` and
+`x` match that one semantic state; `enter` applies the retained typed settings
+and never reconstructs a value by parsing a display string, and no `Option`
+appears in either the row or the cursor.
+
+A line is `CachedOverlayLine::{Static(Line), Favorite { id, tail }}`
+and `rendered_line` applies selection styling at draw time from the cached `tail`
+string, which is what lets a per-frame fade restyle a row **without** rebuilding
+the plan. `rebuild_line_plan` runs only on open, on surface-width change, and on
+horizontal page change; `render` takes `&mut self` and rebuilds when the width
+moved, so `advance(now)` stays a separate call. `close()` resets the cached plan
+to default and calls `Viewport::clear_surface`, so a close-mid-fade commit has to
+run before that reset. `crates/cargo-tile/Cargo.toml` already depends on
+`unicode-width`; measure any new label for this surface in display cells, never
+`chars().count()`. `FavoritesSurfaceBindings::footer` builds the footer from live
+bindings and already varies on whether paging is available, so `Load` and
+`Delete` labels join it there.
+
+**`mod favorites` in `main.rs` already carries no `#[expect(dead_code, …)]`** —
+Phase 4 removed it when `load` went live, so this phase touches `main.rs` not at
+all. Phase 1's `apply` is an ordered
 semantic transition through the private clamp setters. Phase 3 established the
 shared visual deadline outside the `Updates::Frozen` branch, cargo-tile's
 terminal-area state updated ahead of `Attract::advance`'s early return, the
@@ -837,6 +725,16 @@ minimum interior lines.
 - `enter` loads: the mode changes, the animation's `settings()` equals the row's
   settings, and the attract screen comes up **even when the load lands during a
   fade-out**.
+- `enter` applies the settings the row retained, proven by loading a favorite
+  whose display string is lossy for at least one field and asserting the applied
+  value matches the file rather than the rendered cell.
+- With the cursor parked on the unrecognized-diagnostics block, both `enter` and
+  `x` do nothing: no mode change, no file write, no notice.
+- Deleting the last recognized row leaves the overlay in `NoneSaved` when no
+  unrecognized rows remain, and in `OnlyUnrecognized` when they do — never in
+  `Rows` with an empty table.
+- Two `x` presses in quick succession, the second landing before the first fade
+  ends, remove both rows and write each exactly once.
 - `x` fades the row and rewrites the file **with the attract screen fully hidden,
   with updates frozen, and with no other events arriving**.
 - The fade's duration is driven by elapsed time: extra draws from unrelated
@@ -849,9 +747,14 @@ minimum interior lines.
   the overlay still shows the row.
 - The same holds for a `WriteFailed` refusal.
 - The refusal text names the operation: a refused deletion does not say "save",
-  and `LockUnavailable` names the live retry binding rather than a hardcoded
-  `ctrl-s`. All five error variants still produce distinct messages, for both
-  operations.
+  and `LockUnavailable` names a usable retry rather than a hardcoded `ctrl-s`.
+  All five error variants still produce distinct messages, for both operations.
+- The three refusal surfaces are tested separately, because they do not name the
+  same keys: a refused save says press the save key again; a refused delete with
+  the overlay open says press the delete key again; and a refused close-mid-fade
+  commit, reported after the modal is gone, says to reopen and then press it.
+- A refusal notice stays readable until the reader acts on it, and a successful
+  retry clears it.
 - Every timed toast this phase raises is registered with the visual schedule: with
   updates frozen and no input arriving, `enter`'s adjustment warning opens, holds
   and expires on its own.
@@ -903,9 +806,14 @@ generator's range; reject and redraw the short tail instead.
 **The bound is a nonempty type, not a `usize` checked at the top and not an
 `Option<usize>` returned from the bottom.** "Pick one of none" has no answer, so
 the draw must not be reachable with an empty list at all. Introduce a small
-semantic bound — a wrapper around `NonZeroUsize`, or an equivalent constructed
-fallibly from a slice — so the empty case is decided once, by the caller, at the
-point where it already has a different job to do (open the empty notice). A draw
+semantic bound with a fallible constructor and no domain-owned `Option` — the
+contract is `NonZeroIndexBound::try_from_len(usize) -> Result<NonZeroIndexBound,
+EmptyIndexDomain>`, and `NonZeroUsize::new`'s external `Option` is converted
+inside that constructor and never leaves it. The empty case is then decided
+once, by the caller, at the point where it already has a different job to do
+(open the empty notice). Do not store a `NonZeroIndexBound` in an `Option`
+anywhere; the absence of a bound is `EmptyIndexDomain`, which says what the
+absence means. A draw
 that returns `Option<usize>` pushes that decision to every call site and invites
 an `unwrap`; a draw that takes a bare `usize` and guards internally has to invent
 an answer for a case that has none.
@@ -924,14 +832,26 @@ inventing a second notice surface with its own owner:
 | --- | --- |
 | `Loaded`, at least one recognized row | nothing — draws the favorite |
 | `Missing` | `FavoritesOverlayContent::NoneSaved` |
-| `Loaded`, no recognized row | `FavoritesOverlayContent::OnlyUnrecognized` |
+| `Loaded`, no rows at all | `FavoritesOverlayContent::NoneSaved` |
+| `Loaded`, rows present but none recognized | `FavoritesOverlayContent::OnlyUnrecognized` |
 | `LocationUnavailable` | `FavoritesOverlayContent::LocationUnavailable` |
 | `Unparseable` | `FavoritesOverlayContent::Unparseable` |
 | `Unreadable` | `FavoritesOverlayContent::Unreadable` |
 
-`esc` dismisses each of them through the same app-modal route. The mapping is an
-exhaustive match with no wildcard arm, so a sixth `FavoritesFileState` variant
-would be a compile error here rather than a silent fall-through to "no favorites".
+**This mapping already exists — reuse it, do not restate it.**
+`FavoritesOverlayContent::from_file_state` (`favorites_overlay.rs:141`) is the
+exhaustive match Phase 4 shipped, and it is what draws the loaded/empty
+distinction above: a `Loaded` file with no rows at all falls to `NoneSaved`,
+while `Loaded` with rows that this build understood none of falls to
+`OnlyUnrecognized`. Writing that mapping a second time in `globals.rs` would put
+the two copies one refactor apart from disagreeing. So `m` hands its
+`FavoritesFileState` straight to `FavoritesOverlay::open_file_state` (569), which
+already runs `from_file_state`, resolves the surface bindings and rebuilds the
+line plan. Six source positions therefore reach five content variants, and a
+seventh `FavoritesFileState` variant is a compile error inside `from_file_state`
+rather than a silent fall-through to "no favorites".
+
+`esc` dismisses each of them through the same app-modal route.
 
 Because the overlay opens on failure and stays closed on success, `m`'s own
 adjustment warning is a **toast** — nothing is covering it — and it must be
@@ -948,8 +868,9 @@ falls through to the app globals below.
 **Files:**
 - `crates/cargo-tile/src/globals.rs` — `RandomFavorite` variant, default binding, dispatch arm
 - `crates/cargo-tile/src/random.rs` — new file: `clock_seed()`, the nonempty bound type, and the pure unbiased `bounded_index(seed, bound)`
-- `crates/cargo-tile/src/main.rs` — declare `mod random;` in the `mod` block at 4–30
-- `crates/cargo-tile/src/favorites_overlay.rs` — a constructor that opens the overlay directly into a given `FavoritesOverlayContent`, so `m` can raise each failure state
+- `crates/cargo-tile/src/main.rs` — declare `mod random;` in the `mod` block at 4–27
+- `crates/cargo-tile/src/favorites_overlay.rs` — widen Phase 4's existing `FavoritesOverlay::open_file_state(FavoritesFileState, &Keymap<App>)` (569) to `pub(crate)` so `m` can hand it the very `FavoritesFileState` it already loaded; add no second constructor
+- `crates/cargo-tile/src/favorites.rs` — delete the now-obsolete `#[expect(dead_code, reason = "loading a favorite starts in the next phase")]` attribute on `recognized()` (153)
 - `crates/cargo-tile/Cargo.toml` — patch version bump
 - `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` → `### Added`
 
@@ -987,11 +908,14 @@ keys and spellings failed, rather than claiming no favorites are saved. Phase 5'
   corpus**, not by pressing the key until the row changes — a valid list can
   legitimately return the same row twice, so "repeated presses visibly move" is a
   flaky condition.
-- Each of the five non-loadable positions opens its own `FavoritesOverlayContent`
-  variant, and each renders and consumes `esc` through the app overlay route ahead
-  of framework handling.
+- All six non-loadable source positions reach their content variant through
+  Phase 4's own `open_file_state`, and each renders and consumes `esc` through
+  the app overlay route ahead of framework handling. Six positions map into five
+  variants, because a missing file and a loaded-but-empty file both reach
+  `NoneSaved`.
 - A file holding only unrecognized rows does **not** report "no favorites": it
-  opens `OnlyUnrecognized`, distinctly from the `Missing` case.
+  opens `OnlyUnrecognized`, distinctly from both the `Missing` case and the
+  loaded-but-empty case, which are asserted separately.
 - Pressing `m` after another process saves a favorite can draw that favorite.
 - `m`'s adjustment warning toast animates and expires with updates frozen and no
   input arriving, which proves it was registered with the visual schedule.
@@ -1001,8 +925,9 @@ keys and spellings failed, rather than claiming no favorites are saved. Phase 5'
   short tail and assert the redraw happens, or exhaust a reduced-width generator
   model over every possible state and assert each index is produced an equal
   number of times.
-- The bound cannot be constructed from an empty list, so the empty case is
-  unreachable inside the draw rather than guarded there.
+- `NonZeroIndexBound::try_from_len(0)` returns `EmptyIndexDomain`, so the empty
+  case is unreachable inside the draw rather than guarded there, and no
+  `Option<NonZeroIndexBound>` appears in any signature or field.
 
 ### Phase 7 — `r`, randomize everything  · status: todo
 
@@ -1144,9 +1069,28 @@ settled destination, and do not replay a transition.**
   cannot have meant "and leave it 40% faded". The restore sets the destination and
   lets the ordinary fade run to it, exactly as the equivalent keypress would.
 
-Name the captured shape accordingly — one type carrying the standing instruction,
-the destination and the covering flag — rather than a four-variant approximation
-or a bool.
+Name the captured shape accordingly, and name each of its three parts for what
+it means rather than for the field it came from. `Asked` does not say what is
+being asked for, and "covering" is a boolean carrying two domain positions, so
+neither survives into the captured type as it stands:
+
+```rust
+enum AttractVisibilityInstruction { FollowRoster, Show, Hide }
+enum AttractVisibilityDestination { Shown, Hidden }
+enum AttractGridPresentation { OverGrid, ReplacesGrid }
+
+struct PreviousAttractPresentation {
+    instruction: AttractVisibilityInstruction,
+    destination: AttractVisibilityDestination,
+    presentation: AttractGridPresentation,
+}
+```
+
+`AttractVisibilityInstruction` is the reader's own standing instruction captured
+verbatim from `Asked`; `AttractVisibilityDestination` is where the screen was
+heading, not where it was; and `AttractGridPresentation` replaces the `covering`
+flag with its two meanings written out. No four-variant approximation, and no
+bool.
 
 Restoring a hidden destination needs a hide transition to match Phase 5's
 `request_show()` — idempotent in the same way, so restoring twice or restoring a

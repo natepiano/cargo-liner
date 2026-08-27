@@ -21,6 +21,8 @@ use crate::attract::AttractMode;
 use crate::config;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
+use crate::favorites_overlay::FavoritesOverlay;
+use crate::favorites_overlay::FavoritesOverlayContent;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::roster::Roster;
@@ -32,11 +34,12 @@ use crate::tiles::TileGrid;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
 /// [`AppPaneId`] belongs here or its pane-local shortcuts go unlisted.
-const APP_PANE_DISPLAY_ORDER: [AppPaneId; 4] = [
+const APP_PANE_DISPLAY_ORDER: [AppPaneId; 5] = [
     AppPaneId::Main,
     AppPaneId::Attract(AttractMode::MovingBand),
     AppPaneId::Attract(AttractMode::MovingText),
     AppPaneId::Attract(AttractMode::Pixelate),
+    AppPaneId::Favorites,
 ];
 
 /// The panes this app supplies to the framework; one variant per
@@ -52,6 +55,16 @@ pub(crate) enum AppPaneId {
     /// terminal -- but a scope of its own, so each animation binds its
     /// own keys and `keymap.toml` keeps a table for each.
     Attract(AttractMode),
+    /// The app-owned favorites modal and its local keymap scope.
+    Favorites,
+}
+
+/// Position of the app-owned modal layer.
+pub(crate) enum AppOverlay {
+    /// No app modal is open.
+    Closed,
+    /// The favorites modal is open with this complete content state.
+    Favorites(FavoritesOverlayContent),
 }
 
 /// Whether the display takes new work in as it arrives or is being
@@ -115,41 +128,43 @@ impl ProcessTree {
 /// Top-level application state.
 pub(crate) struct App {
     /// Framework state — overlays, panes, toasts, settings pane.
-    pub(crate) framework:     Framework<Self>,
+    pub(crate) framework:         Framework<Self>,
     /// Timed-toast transitions that still require event-loop wakes.
-    toast_visual_schedule:    ToastVisualSchedule,
+    toast_visual_schedule:        ToastVisualSchedule,
     /// Resolved bindings.
     ///
     /// Behind an [`Rc`] because dispatch needs `&Keymap<App>` and
     /// `&mut App` at once, and because rebinding a key in the keymap
     /// overlay replaces this whole map mid-dispatch.
-    pub(crate) keymap:        Rc<Keymap<Self>>,
+    pub(crate) keymap:            Rc<Keymap<Self>>,
     /// Parsed `config.toml` and any parse error, surfaced in the
     /// settings overlay.
-    pub(crate) loaded_config: LoadedConfig,
+    pub(crate) loaded_config:     LoadedConfig,
     /// Theme-resolution note from startup (a configured theme id that
     /// no file or built-in supplies), surfaced in the settings overlay.
-    pub(crate) startup_note:  Option<String>,
+    pub(crate) startup_note:      Option<String>,
     /// The commands the display is holding: what the last scan found,
     /// plus whatever has finished and is still fading out of it.
-    pub(crate) roster:        Roster,
+    pub(crate) roster:            Roster,
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
-    pub(crate) tiles:         TileGrid,
+    pub(crate) tiles:             TileGrid,
     /// What sccache last reported, for the summary cell's top border,
     /// and where the poll that refreshes it stands.
-    pub(crate) sccache:       SccacheStats,
+    pub(crate) sccache:           SccacheStats,
     /// Message shown on the keymap overlay's selected row after a
     /// rejected capture.
-    inline_error:             Option<String>,
+    inline_error:                 Option<String>,
     /// When the app started, for the status line's uptime segment.
-    pub(crate) started:       Instant,
+    pub(crate) started:           Instant,
     /// Whether the display is taking new work in or being held still.
-    pub(crate) updates:       Updates,
+    pub(crate) updates:           Updates,
     /// The attract screen shown over the grid while nothing is running.
-    pub(crate) attract:       Attract,
+    pub(crate) attract:           Attract,
+    /// App-owned modal for browsing attract-screen favorites.
+    pub(crate) favorites_overlay: FavoritesOverlay,
     /// How much of each command a cell spells out.
-    pub(crate) tree:          ProcessTree,
+    pub(crate) tree:              ProcessTree,
 }
 
 impl App {
@@ -158,8 +173,16 @@ impl App {
         loaded_config: LoadedConfig,
         startup_note: Option<String>,
     ) -> Result<Self, KeymapError> {
+        Self::new_with_keymap_path(loaded_config, startup_note, config::keymap_path())
+    }
+
+    fn new_with_keymap_path(
+        loaded_config: LoadedConfig,
+        startup_note: Option<String>,
+        keymap_path: Option<PathBuf>,
+    ) -> Result<Self, KeymapError> {
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
-        let keymap = keymap::build_keymap(&mut framework, config::keymap_path())?;
+        let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
             framework,
             toast_visual_schedule: ToastVisualSchedule::default(),
@@ -173,8 +196,21 @@ impl App {
             started: Instant::now(),
             updates: Updates::Live,
             attract: Attract::new(),
+            favorites_overlay: FavoritesOverlay::default(),
             tree: ProcessTree::default(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Result<Self, KeymapError> {
+        Self::new_with_keymap_path(
+            LoadedConfig {
+                config: crate::config::Config::default(),
+                error:  None,
+            },
+            None,
+            None,
+        )
     }
 
     /// Record the rendered lifecycle of a newly-pushed timed toast.

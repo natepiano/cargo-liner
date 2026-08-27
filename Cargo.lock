@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-tile"
-version = "0.2.56-dev"
+version = "0.2.57-dev"
 dependencies = [
  "chrono",
  "clap",
@@ -520,6 +520,7 @@ dependencies = [
  "tempfile",
  "toml 1.1.4+spec-1.1.0",
  "tui_pane",
+ "unicode-width",
  "uuid",
 ]
 

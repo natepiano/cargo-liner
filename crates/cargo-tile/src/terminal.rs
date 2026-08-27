@@ -705,12 +705,15 @@ fn force_repaint(terminal: &mut Terminal<Backend>) {
 fn handle_key(app: &mut App, key: KeyEvent) {
     let keymap = Rc::clone(&app.keymap);
     let bind = KeyBind::from(key);
+    if app.favorites_overlay.is_open() {
+        let _ = keymap.dispatch_app_pane(AppPaneId::Favorites, &bind, app);
+        return;
+    }
     if let Some(overlay) = app.framework.overlay() {
         let in_text_mode = overlay_is_in_text_mode(&app.framework, overlay);
         if let Some(action) = keymap.framework_globals().action_for(&bind)
             && !in_text_mode
-            && (matches_open_overlay_toggle(action, overlay)
-                || matches!(action, GlobalAction::Dismiss))
+            && matches_open_overlay_toggle(action, overlay)
         {
             keymap.dispatch_framework_global(action, app);
             return;
@@ -842,7 +845,12 @@ fn restart_self() {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
+    use crossterm::event::KeyModifiers;
     use tui_pane::Toasts;
 
     use super::*;
@@ -854,6 +862,61 @@ mod tests {
             .filter(|view| view.id() == toast_id)
             .map(|view| view.desired_height())
             .collect()
+    }
+
+    fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
+
+    #[test]
+    fn app_modal_consumes_app_and_framework_globals_until_escape() {
+        let mut app = App::new_for_test().expect("test app should build");
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        );
+        assert!(app.favorites_overlay.is_open());
+
+        handle_key(&mut app, key(KeyCode::Char('f')));
+        handle_key(&mut app, key(KeyCode::Char('?')));
+        assert_eq!(app.updates, Updates::Live);
+        assert_eq!(app.framework.overlay(), None);
+        assert!(app.favorites_overlay.is_open());
+
+        handle_key(&mut app, key(KeyCode::Esc));
+        assert!(!app.favorites_overlay.is_open());
+    }
+
+    #[test]
+    fn x_leaves_each_framework_overlay_open_while_escape_closes_it() {
+        let mut app = App::new_for_test().expect("test app should build");
+        for (overlay, opener) in [
+            (FrameworkOverlayId::Settings, key(KeyCode::Char('s'))),
+            (
+                FrameworkOverlayId::Keymap,
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            ),
+            (FrameworkOverlayId::GlobalShortcuts, key(KeyCode::Char('?'))),
+        ] {
+            handle_key(&mut app, opener);
+            assert_eq!(app.framework.overlay(), Some(overlay));
+            handle_key(&mut app, key(KeyCode::Char('x')));
+            assert_eq!(app.framework.overlay(), Some(overlay));
+            handle_key(&mut app, key(KeyCode::Esc));
+            assert_eq!(app.framework.overlay(), None);
+        }
+    }
+
+    #[test]
+    fn framework_modal_prevents_a_second_app_modal_from_opening() {
+        let mut app = App::new_for_test().expect("test app should build");
+        handle_key(&mut app, key(KeyCode::Char('s')));
+        assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Settings));
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Settings));
+        assert!(!app.favorites_overlay.is_open());
     }
 
     #[test]

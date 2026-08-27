@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Open a mode-grouped, scrolling favorites table with `ctrl-o`; its live key labels follow rebinding, and narrow terminals page parameter columns while keeping the saved timestamp visible.
 - Save the current attract-screen parameters as a favorite with `ctrl-s`, including while the animation is hidden, and report the result in an expiring toast.
 - Persist attract-screen parameter favorites in a lossless `favorites.toml`, with UUID-addressed rows, tolerant recognition of newer values, locked mutations, and atomic replacement.
 - The keymap overlay draws its sections side by side where the terminal is wide enough, so the whole keymap is read at once instead of scrolled past. With three attract screens listed it no longer fits one column on any ordinary window.
@@ -74,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report the state of an invocation the lead command is driving, not just the lead's own. A nested cargo -- `cargo doc` under a `cargo port` lint run, say -- waiting on the build-directory lock now says `blocked` on its own row; before, every row but the lead was left blank. A row with no capture of its own stays blank rather than borrowing the reading from the row above it.
 
 ### Changed
+- App-owned modals now consume every key and click ahead of framework overlays and the grid. Framework overlays close through their own toggle or cancel binding, so `x` no longer dismisses one globally.
 - The moving-text attract screen's fast and slow runs of lines now merge into one another instead of meeting at a hard edge. The speed change was concentrated into a narrow run of lines in the middle of each span, which read as a boundary between two blocks; it is spread across the whole span now.
 - The moving-text attract screen starts a quarter slower than it did.
 - The moving-text attract screen draws its bands at varying thicknesses rather than all one size, so the field reads as a field instead of a ruled grid.

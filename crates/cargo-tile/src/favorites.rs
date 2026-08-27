@@ -131,7 +131,7 @@ impl UnrecognizedFavoriteValue {
 pub(crate) enum FavoriteRowRecognition {
     /// The table contains one complete, recognized favorite.
     Recognized(Favorite),
-    /// The table is retained but omitted from display and loading.
+    /// The table is retained and diagnosed in the overlay, but excluded from loading.
     Unrecognized(UnrecognizedFavoriteValue),
 }
 
@@ -150,6 +150,10 @@ impl FavoriteRows {
     }
 
     /// Recognized favorites, grouped by mode and newest first within each mode.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "loading a favorite starts in the next phase")
+    )]
     pub(crate) fn recognized(&self) -> impl Iterator<Item = &Favorite> {
         self.recognitions
             .iter()
@@ -229,6 +233,10 @@ impl FavoriteRows {
         favorite
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "deleting a favorite starts in the next phase")
+    )]
     fn remove(&mut self, favorite_id: FavoriteId) {
         let row = self.tables.iter().position(|table| {
             matches!(
@@ -375,11 +383,17 @@ pub(crate) fn push(settings: FavoriteSettings) -> Result<Favorite, FavoritesMuta
 /// # Errors
 ///
 /// Returns the read-only file state or the lock, directory, serialization, or write failure.
+#[expect(dead_code, reason = "deleting a favorite starts in the next phase")]
 pub(crate) fn remove(favorite_id: FavoriteId) -> Result<(), FavoritesMutationError> {
     remove_from_location(
         FavoritesLocation::from(config::favorites_path()),
         favorite_id,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn parse_rows_for_overlay_test(text: &str) -> Result<FavoriteRows, String> {
+    FavoriteRows::parse(text)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -450,6 +464,10 @@ fn push_to_location(
     edit_at_location(location, |rows| rows.push(favorite))
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "deleting a favorite starts in the next phase")
+)]
 fn remove_from_location(
     location: FavoritesLocation,
     favorite_id: FavoriteId,

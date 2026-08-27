@@ -31,6 +31,7 @@ use crate::app::AppPaneId;
 use crate::attract::MovingBandPane;
 use crate::attract::MovingTextPane;
 use crate::attract::PixelatePane;
+use crate::favorites_overlay::FavoritesOverlayPane;
 use crate::globals::AppGlobalAction;
 use crate::navigation::AppNavigation;
 
@@ -80,6 +81,7 @@ pub(crate) fn build_keymap(
         .register(MovingBandPane)
         .register(MovingTextPane)
         .register(PixelatePane)
+        .register(FavoritesOverlayPane)
         .build_into(framework)
 }
 

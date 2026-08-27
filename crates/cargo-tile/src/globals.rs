@@ -18,6 +18,7 @@
 //! To add another, give the enum a variant, bind a default key in
 //! [`Globals::defaults`], and handle it in [`dispatch`].
 
+use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -49,6 +50,7 @@ tui_pane::action_enum! {
         Attract    => ("attract",     "Show the attract screen");
         ProcessTree => ("process_tree", "Show whole command lines");
         SaveFavorite => ("save_favorite", "Save attract parameters");
+        OpenFavorites => ("open_favorites", "Open attract favorites");
     }
 }
 
@@ -71,6 +73,7 @@ impl Globals<App> for AppGlobalAction {
             'a' => Self::Attract,
             'p' => Self::ProcessTree,
             KeyBind::ctrl('s') => Self::SaveFavorite,
+            KeyBind::ctrl('o') => Self::OpenFavorites,
         }
     }
 
@@ -91,6 +94,10 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::Attract => app.attract.toggle(),
         AppGlobalAction::ProcessTree => app.tree = app.tree.toggled(),
         AppGlobalAction::SaveFavorite => save_favorite(app),
+        AppGlobalAction::OpenFavorites => {
+            let keymap = Rc::clone(&app.keymap);
+            app.favorites_overlay.open(&keymap);
+        },
     }
 }
 
@@ -173,6 +180,16 @@ mod tests {
         assert_eq!(
             scope.action_for(&KeyBind::ctrl('s')),
             Some(AppGlobalAction::SaveFavorite),
+        );
+    }
+
+    #[test]
+    fn control_o_opens_favorites() {
+        let scope = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            scope.action_for(&KeyBind::ctrl('o')),
+            Some(AppGlobalAction::OpenFavorites),
         );
     }
 
