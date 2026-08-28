@@ -36,9 +36,9 @@
   - `crates/cargo-tile/src/constants.rs` — `ATTRACT_NO_BACKDROP_NOTICE` (`:39`), `ATTRACT_FRAME_INTERVAL` (`:346`), `PROBE_THRESHOLD` (`:354`). 810 lines, no test module.
   - `crates/cargo-tile/src/terminal.rs` — input dispatch ladder; `ToastVisualTimeline` (`:105`, impl `:120`), `ToastVisualSchedule` (`:204`, `record` `:234`), overlay consumes every key (`:720`), `keyed_mode` caller (`:744`), `Dismiss` dispatch (`:801`, `:821`). 1146 lines, tests at 859 (schedule tests `:971`, `:1066`, `:1114`).
   - `crates/cargo-tile/src/app.rs` — `App` holds `toast_visual_schedule` (`:133`, init `:188`), `schedule_timed_toast` (`:217`), imports (`:30`).
-  - `crates/cargo-tile/src/attract/mod.rs` — `AttractSettings`, `current_settings()` (`:614`), `AttractMode::draw` index-then-match (`:343`), `identified: Option<bool>` (`:456`, written `:886`), `keyed_mode` (`:602`), `backdrop_overdue` (`:1141`), `render` passing one `Backdrop` to all three renderers (`:1157`), automatic-attract steering regression test (`:1773`). 1913 lines, tests at 1182.
+  - `crates/cargo-tile/src/attract/mod.rs` — `AttractSettings`, `current_settings()` (`:697`), `AttractMode::draw` index-then-match (`:427`), `noted_backdrop: BackdropDiagnostic` written on transition in `identify` (`:964`), `keyed_mode` (`:680`), `backdrop_notice(now) -> BackdropNotice` (`:1227`), `render` passing one `Backdrop` to all three renderers (`:1251`), automatic-attract steering regression test in the test module. 2120 lines, tests at 1280.
   - `crates/cargo-tile/src/attract/{moving_band,moving_text,pixelate,held_key}.rs` — key bindings only; none of them render.
-  - `crates/cargo-tile/src/render.rs` — the pane background the band currently falls back to. 3177 lines, tests at 2033.
+  - `crates/cargo-tile/src/render.rs` — the pane background the band currently falls back to; `draw_backdrop_notice` (`:216`) writes the attract notice on the body's last row, called from the attract branch (`:184`). 3178 lines.
   - `crates/cargo-tile/src/keymap.rs` — keymap assembly; `x` dismiss arrives from `GlobalAction` defaults.
   - `crates/cargo-tile/src/config.rs` — `<os config dir>/cargo-tile/` paths.
   - `crates/cargo-tile/README.md` — 475 lines; `AppGlobalAction` "starts with no variants" (`:70`–73), `## configuration` "Three files" (`:75`–78), `### keys` (`:430`), attract-keys claim (`:465`–469).
@@ -122,41 +122,32 @@ cargo-tile's `Attract` holds `window_identification: WindowIdentification` (`att
 - Returning a bare `Option<u32>` from `captured_window_id`, or widening `Desktop::window_id()` past `pub(super)`.
 - Keeping a private per-call-site pass argument in the mapping — removing it is what let the report key on spent attempts alone.
 
-### Phase 3 — The attract notice names the real cause  · status: todo
+### Phase 3 — The attract notice names the real cause  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** A missing desktop capture reports the permission only when the permission is actually denied.
-
-**Spec:**
-
-`ATTRACT_NO_BACKDROP_NOTICE` (`cargo-tile/src/constants.rs:39`) reads `attract: no desktop capture -- allow Screen Recording for this terminal in System Settings > Privacy & Security`. `Attract::backdrop_overdue` (`attract/mod.rs:1138`) knows only that the grace period elapsed with no backdrop, so every cause inherits that text — including the reproduced case where a second window of an already-permitted iTerm2 gets no capture and the user is sent to a settings pane with nothing to change.
-
-Consume the `BackdropStatus` Phase 1 exposed. Show the existing permission notice only when the latest attempt failed with `CaptureFailure::ScreenRecordingAccessNotGranted`, and add a second constant beside it for every other cause: it must not name a setting, and it must not imply the user did something wrong — the capture is unavailable and the reason is recorded, that is all the user can act on. The access variant covers a process that has never been asked as well as one that refused, so even the permission text reads as an instruction, never an accusation. Keep both inside the existing grace period: `backdrop_overdue` (`attract/mod.rs:1138`) deliberately waits so a slow capture is not called a missing one, and that stays.
-
-The choice is not two booleans. Name it — a private enum in `attract/mod.rs` with one variant per outcome, and one pure function mapping the inputs to it. The inputs are whether the grace period has elapsed, whether a current backdrop exists, and the latest `BackdropStatus`. The complete mapping:
-
-- grace period not yet elapsed → no notice, whatever the status.
-- overdue, no current backdrop, still waiting for a first result → the generic notice.
-- overdue, no current backdrop, failed at the access stage → the permission notice.
-- overdue, no current backdrop, failed at any other stage → the generic notice.
-- overdue, no current backdrop, status ready → the generic notice. A capture that succeeded but has not been placed yet is not a permission problem.
-- a current backdrop exists → no notice, even when the newest attempt failed. The user is looking at a desktop; telling them there is none is wrong.
-
-`BackdropMonitor` calls the window server and cannot be constructed in a state a test chooses, so this function takes those three inputs as plain values rather than reading the monitor. Call it from the render path — a classifier nothing uses in production proves nothing — and test it directly.
-
-Log the failing `CaptureFailure` stage, the `WindowIdentification` Phase 2 reports, and the window id capture used, where cargo-tile already logs attract diagnostics. The identification report is already logged on transition at `attract/mod.rs:892`-897 — extend that site rather than adding a second transition check, so the two-window reproduction in the final phase has the evidence its Spec asks for by name. Log on transition only: an unchanged stage is not logged again, because this path runs every 33ms (Invariant 3). The user-facing notice stays one short line.
+- `classify_backdrop_notice(BackdropGracePeriod, CurrentBackdrop, BackdropStatus) -> BackdropNotice` in `attract/mod.rs` is a pure, total mapping over grace-period elapsed state, current-backdrop presence, and the latest capture status; called every frame from the render path.
+- `BackdropNotice::{None, ScreenRecordingAccessInstruction, CaptureUnavailable}` is `pub(crate)` (not private — `render.rs` is a sibling module and names the variants directly). The Settings instruction fires only on `CaptureFailure::ScreenRecordingAccessNotGranted`; every other failure, a still-waiting status, or a ready-but-unplaced capture takes the neutral `CaptureUnavailable` line; a current backdrop suppresses either notice even when the newest capture attempt failed.
+- `Attract::backdrop_overdue` is gone, replaced by `Attract::backdrop_notice(now) -> BackdropNotice` (`attract/mod.rs:1227`). The bare `backdrop_missing_since: Option<Instant>` field is gone, replaced by `BackdropWait::{NotWaiting, WaitingSince(Instant)}`.
+- `BackdropDiagnostic { window_identification, backdrop_status, captured_window_id }` replaces the bare `WindowIdentification` field on `Attract`. The transition probe inside `identify` (`attract/mod.rs:964`) logs `backdrop: report=… capture_status=… captured_window_id=…` whenever the discriminant of any of the three fields changes — not on every frame.
+- `render.rs` draws the notice via `draw_backdrop_notice` (`:216`, called from `:184`), on the body's last row, after the animation draws.
 
 **Files:**
-- `crates/cargo-tile/src/constants.rs` — second notice constant beside `ATTRACT_NO_BACKDROP_NOTICE:39`
-- `crates/cargo-tile/src/attract/mod.rs` — `backdrop_overdue` selects on `BackdropStatus`; the failing stage reaches the diagnostic log
-- `crates/cargo-tile/src/render.rs` — only if the status line renders the notice through it
+- `crates/cargo-tile/src/attract/mod.rs` — the notice classifier, `BackdropWait`, `BackdropDiagnostic`, the transition probe, five tests.
+- `crates/cargo-tile/src/constants.rs` — both notice strings, including `ATTRACT_BACKDROP_UNAVAILABLE_NOTICE`.
+- `crates/cargo-tile/src/render.rs` — `draw_backdrop_notice`, the notice row on the body's last line.
 
-**Constraints from prior phases:** Phase 1 gave `BackdropMonitor` a `BackdropStatus` — waiting for a first result, ready, or failed carrying a `CaptureFailure` whose variants name the stage — and a last successful desktop held separately, so a failure never removes a desktop already on screen. There is no preflight: `SCShareableContent::get()` runs first, because that is the call that raises the macOS permission prompt, and `CGPreflightScreenCaptureAccess` classifies only a query that already failed. That call answers `false` for a process never asked exactly as for one that refused, so the access variant means "not granted". A later success clears a stored failure. Phase 2 added `WindowIdentification`, whose `Fallback` variant means window *selection* fell back to frontmost or size matching; it is not a capture failure and must not select the failure notice. Phase 2 also renamed the access variant to `ScreenRecordingAccessNotGranted` (`desktop.rs:40`); select the permission text on that variant. The window id a capture used is `BackdropMonitor::captured_window_id()` (`monitor.rs:460`), which returns `LastSuccessfulCaptureWindowId` — either `WaitingForFirstSuccess` or `Available { window_id: u32 }`, so the log renders both and never assumes an id exists; `Desktop::window_id()` stays `pub(super)`. `Attract` already holds the report as `window_identification: WindowIdentification` (`attract/mod.rs:463`, initialized `:512`, written `:892`-897).
+**Binds later work:** The `backdrop:` probe line (`report=`, `capture_status=`, `captured_window_id=`, emitted only on a field transition) is the evidence the two-window capture reproduction work reads; it requires `CARGO_TILE_FRAME_LOG` set to a distinct path per process instance, since each process truncates that file on its own first write and two instances sharing one path erase each other.
 
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` — with tests over the pure classifier covering every outcome in the Spec's mapping, including that a current backdrop suppresses the notice while the newest attempt is failed, that a ready-but-unplaced capture does not select the permission text, and that nothing appears before the grace period elapses
-- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
+**Gotchas:**
+- `BackdropNotice` is `pub(crate)`, not private — cross-module callers must name the variants.
+- The transition probe compares `std::mem::discriminant`, not the value: a change of instant alone is not a transition, only waiting↔not-waiting is.
+- `probe::note` records nothing unless `CARGO_TILE_FRAME_LOG` is set.
+- The `CaptureFailure` test list (`CAPTURE_FAILURES`) enumerates all eight variants with an exhaustive inner `match` guarding a ninth.
+
+**Ruled out:**
+- A second transition-check site for capture status — extending the existing identification probe keeps the evidence on one line instead of two.
+- Promising a recording in the neutral notice's text — the frame log is off by default, so the line names the environment variable that enables it instead.
 
 ### Phase 4 — The moving band paints the desktop across the pane  · status: todo
 
@@ -182,7 +173,7 @@ Colors go through `theme::blend_color` and the theme accessors — no new hardco
 - `crates/tui_pane/src/backdrop/band.rs` — full-area composition, multi-cell edge falloff, glyph-versus-background derivation
 - `crates/tui_pane/src/backdrop/constants.rs` — band fade strength and any new falloff width constant, each documented
 
-**Constraints from prior phases:** none of Phases 1–3 change the render path. Phase 1's `Result` return on `Desktop::capture` does not reach `TravelingBand::render`, which receives an already-built `Backdrop`.
+**Constraints from prior phases:** Phase 1's `Result` return on `Desktop::capture` does not reach `TravelingBand::render`, which receives an already-built `Backdrop`. Phase 3 added `draw_backdrop_notice` to `cargo-tile/src/render.rs` (`:216`, called `:184`), which writes one line on the body's last row *after* the attract animation has drawn — so a full-area band paints under it and must not assume the last row is its own. Nothing in `tui_pane`'s renderers changed.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`
@@ -203,7 +194,7 @@ Colors go through `theme::blend_color` and the theme accessors — no new hardco
 
 Model whether an entrance interval exists rather than computing a start that may not be one: an entrance is either absent — begin in the static phase and schedule only expiry — or scheduled with a start and an end. Exit boundaries are unchanged.
 
-Put the deadline in `tui_pane::toasts::manager`, which owns `created_at`, the phase, the wrapping and the minimum height: one query returning the next moment a toast's rendering can change — the next line-height boundary, the exit boundary, or expiry. `Toasts` already tracks active toasts, so this is a scan over them, constant work per toast, no allocation.
+Put the deadline in `tui_pane::toasts::manager`, which owns `created_at`, the phase, the wrapping and the minimum height: one query returning `ToastVisualDeadline::{NoVisualChangeScheduled, At(Instant)}` — the next line-height boundary, the exit boundary, or expiry. Name the absent-or-scheduled entrance `ToastEntranceSchedule`. Neither may be a bare `Option<Instant>`: "no deadline" and "a deadline" are the two answers the caller acts on differently, and the caller must not have to recover that from an option. `Toasts` already tracks active toasts, so this is a scan over them, constant work per toast, no allocation.
 
 Then delete the duplicates. `cargo-tile` reconstructs target height and durations at `terminal.rs:120` and `:277` and pairs every push with `schedule_timed_toast` by hand (`globals.rs:155`, `:230`, `favorites_overlay.rs:1180`, `app.rs:217`); `ToastVisualSchedule` (`terminal.rs:204`) and `ToastVisualTimeline` both go, and `App::toast_visual_schedule` (`app.rs:133`, `:188`) with them. `cargo-port` has the mirror-image workaround: `is_animating` (`app/mod.rs:465`) returns true whenever any toast is active (`:470`), keeping the 80ms `ANIMATION_TICK` heartbeat alive for the toast's whole lifetime including its static interval — replace that clause with the framework deadline in `animation_timeout` (`:452`).
 
@@ -259,7 +250,7 @@ Tests travel with the types they cover; the `#[expect(clippy::expect_used, clipp
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` — every existing favorites test passes unchanged; a moved test that needed editing means the move was not a move
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
-- No file outside `crates/cargo-tile/src/favorites/` changes, since `mod.rs` re-exports the same names.
+- The only paths that change are `crates/cargo-tile/src/favorites/` and the deletion of `crates/cargo-tile/src/favorites.rs`, which the move requires. No other path changes, since `mod.rs` re-exports the same names.
 
 ### Phase 7 — An unrecognized row gets a locator that survives a concurrent edit  · status: todo
 
@@ -278,7 +269,7 @@ Deleting a broken favorite from the overlay is the decided behavior, and none of
 
 Deleting an unrecognized row means removing its whole raw `[[favorite]]` table, not the one field that failed to parse.
 
-Add an opaque locator type minted while loading, before the display sort, carrying the raw table index plus enough of the table's own content to re-verify it identifies the same table after the locked re-read. Give removal a target that distinguishes a recognized `FavoriteId` from an unrecognized locator rather than overloading `FavoriteId`. When the locator no longer identifies exactly one table, refuse the removal and report it — a concurrent edit fails loudly rather than deleting the wrong row.
+Add `UnrecognizedFavoriteRemovalLocator`, an opaque locator minted while loading, before the display sort, carrying the raw table index plus enough of the table's own content to re-verify it identifies the same table after the locked re-read. Give removal `FavoriteRemovalTarget`, distinguishing a recognized `FavoriteId` from an unrecognized locator rather than overloading `FavoriteId`. Both names are contract surface for Phase 9; do not rename them there. When the locator no longer identifies exactly one table, refuse the removal and report it — a concurrent edit fails loudly rather than deleting the wrong row.
 
 The locator is minted on load and checked only during deletion, so it costs nothing per frame (Invariant 3).
 
@@ -326,7 +317,7 @@ Move only — no signature changes, no behavior changes. `self_named_module_file
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` — all 34 existing overlay tests pass unchanged
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
-- No file outside `crates/cargo-tile/src/favorites_overlay/` changes.
+- The only paths that change are `crates/cargo-tile/src/favorites_overlay/` and the deletion of `crates/cargo-tile/src/favorites_overlay.rs`, which the move requires. No other path changes.
 
 ### Phase 9 — Rows know what they are, and the footer offers only what will work  · status: todo
 
@@ -344,25 +335,27 @@ Three complaints that rewrite the same row contract — the cached line variants
 
 Build them together:
 
-- Give the cached line a row **kind** — static, recognized, or diagnostic — carrying the row's identity: a `FavoriteId` for recognized, the Phase 7 locator for diagnostic. Keep selection and currency out of the variant; they are render-time state, not row identity.
-- Put only real rows in the navigation index — recognized and diagnostic — never blank lines or headings.
-- Make the selection type distinguish recognized, diagnostic and nothing, replacing today's recognized-or-nothing `FavoriteSelection`.
-- Render selection styling on diagnostic rows exactly as on recognized ones. They are selectable.
-- Delete reaches both kinds, routing a diagnostic row through the Phase 7 removal target. Load stays recognized-only and refuses on a diagnostic row. Confirm before deleting a diagnostic row: it may be valid data written by a newer cargo-tile rather than a broken one.
-- Derive the footer from the selection kind — load and delete on a recognized row, delete only on a diagnostic row, neither on nothing — and drop the movement hint when there is only one navigation position. Cache the footer and rebuild it when bindings, page, content state or selection kind change, rather than reconstructing the `String` every render (Invariant 3).
+- Separate the lines that are not rows — blanks and section headings — from the lines that are. A row carries `FavoriteRowIdentity::{Recognized(FavoriteId), Unrecognized(UnrecognizedFavoriteRemovalLocator)}`; a non-row line carries no identity at all. Do not spell this as a three-variant row kind: `static` is a fact about rendering rather than a state a row can be in, and `diagnostic` is untruthful for a row that may simply have been written by a newer cargo-tile. Keep selection and currency out of the identity; they are render-time state.
+- Put only real rows in the navigation index — recognized and unrecognized — never blank lines or headings.
+- Make the selection carry a `FavoriteRowIdentity` or nothing, replacing today's recognized-or-nothing `FavoriteSelection`.
+- Render selection styling on unrecognized rows exactly as on recognized ones. They are selectable.
+- Delete reaches both kinds, routing an unrecognized row through the Phase 7 `FavoriteRemovalTarget`. Load stays recognized-only and refuses on an unrecognized row.
+- Deletion already confirms, and this phase re-keys that rather than inventing a second interaction. `FavoriteRemovalCommitState` arms on the first delete press and commits only on a second press of the same key (`favorites_overlay.rs:653`, `:829`, `:872` pre-split), and opening, reloading or moving the cursor clears it (`:732`, `:802`). Re-key it on `FavoriteRowIdentity` so it covers both kinds and so arming on one row can never commit a delete on another. While it is armed the overlay says a second press confirms; any other key cancels, writing nothing. An unrecognized row confirms for the same reason a recognized one does — it may be valid data written by a newer cargo-tile rather than a broken row.
+- A refusal from the Phase 7 locator re-verification reaches the user as an overlay notice naming that the file changed and nothing was deleted. Swallowing it would leave the row on screen with no explanation.
+- Derive the footer from the selection — load and delete on a recognized row, delete only on an unrecognized row, neither on nothing — and drop the movement hint when there is only one navigation position. Cache the footer and rebuild it when bindings, page, content state or selection kind change, rather than reconstructing the `String` every render (Invariant 3).
 
 **Files:**
-- `crates/cargo-tile/src/favorites_overlay/line_plan.rs` — row kinds on the cached line, navigation index over real rows only, selection styling for diagnostic rows, `append_unrecognized` emitting diagnostic rows
+- `crates/cargo-tile/src/favorites_overlay/line_plan.rs` — `FavoriteRowIdentity` on the cached line and non-row lines carrying none, navigation index over real rows only, selection styling for unrecognized rows, `append_unrecognized` emitting identified rows
 - `crates/cargo-tile/src/favorites_overlay/bindings.rs` — capability-derived footer, cached
-- `crates/cargo-tile/src/favorites_overlay/mod.rs` — the selection type, delete routing by kind, load refusal, the confirmation for a diagnostic deletion
+- `crates/cargo-tile/src/favorites_overlay/mod.rs` — the selection type, delete routing by identity, load refusal, `FavoriteRemovalCommitState` re-keyed on `FavoriteRowIdentity`, the refusal notice
 - `crates/cargo-tile/src/favorites_overlay/content.rs` — carry the locator onto the unrecognized row view
 
-**Constraints from prior phases:** Phase 7 added an opaque locator minted before the display sort and a removal target enum distinguishing a recognized `FavoriteId` from an unrecognized locator, both exported from `favorites/mod.rs`; the unrecognized removal path re-verifies under the lock and refuses when the locator no longer identifies exactly one table — surface that refusal to the user rather than swallowing it. Phase 8 split the overlay into `favorites_overlay/{mod,content,bindings,line_plan}.rs` with `line_plan` depending on `content` and `bindings`; the line refs in this Spec are to the pre-split file, so locate by item name.
+**Constraints from prior phases:** Phase 7 added `UnrecognizedFavoriteRemovalLocator`, minted before the display sort, and `FavoriteRemovalTarget` distinguishing a recognized `FavoriteId` from that locator, both exported from `favorites/mod.rs`; the unrecognized removal path re-verifies under the lock and refuses when the locator no longer identifies exactly one table — surface that refusal to the user rather than swallowing it. Phase 8 split the overlay into `favorites_overlay/{mod,content,bindings,line_plan}.rs` with `line_plan` depending on `content` and `bindings`; the line refs in this Spec are to the pre-split file, so locate by item name.
 
 **Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with tests covering: a diagnostic row rendering with the selection marker and style; the navigation index skipping blanks and headings; delete on a diagnostic row reaching the locator path; load on a diagnostic row refusing; and the footer omitting load on a diagnostic row and both actions on nothing
+- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with tests covering: an unrecognized row rendering with the selection marker and style; the navigation index skipping blanks and headings; delete on an unrecognized row reaching the locator path; load on an unrecognized row refusing; the footer omitting load on an unrecognized row and both actions on nothing; a single delete press writing nothing and a second press deleting; a delete armed on one row not committing when the cursor has moved to another; and a locator that no longer matches leaving the file intact while the refusal reaches the overlay notice
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
-- Hands-on: with a malformed entry in `favorites.toml`, open `ctrl-o`, arrow into the diagnostic block, watch the row highlight, and delete it.
+- Hands-on: with a malformed entry in `favorites.toml`, open `ctrl-o`, arrow into the unrecognized block, watch the row highlight, and delete it with two presses.
 
 ### Phase 10 — A row that matches the running parameters is marked  · status: todo
 
@@ -374,23 +367,25 @@ Build them together:
 
 Opening the favorites table while the attract screen runs a set of parameters that exactly matches a saved favorite gives no sign of it.
 
-`rendered_line` writes a two-cell prefix — `"▸ "` when selected, `"  "` otherwise — which is one glyph plus a separator. Selection and currency are independent: the running row may or may not be under the cursor and both must be visible at once. Widen the prefix to three cells: selection, currency, separator. The four combinations are one value, not two booleans, so the two columns cannot disagree — neither, selected, current, or both, each mapping to a fixed three-character string. Update the width budget accordingly.
+`rendered_line` writes a two-cell prefix — `"▸ "` when selected, `"  "` otherwise — which is one glyph plus a separator. Selection and currency are independent: the running row may or may not be under the cursor and both must be visible at once. Widen the prefix to three cells: selection, currency, separator. The four combinations are one value, not two booleans, so the two columns cannot disagree. The three cells are selection, currency, separator, and the four strings are fixed: `"   "` for neither, `"▸  "` for selected, `" ● "` for current, `"▸● "` for both. `▸` is the marker already in use; `●` is the currency mark, single-width, so the budget grows by exactly one cell. Update the width budget accordingly.
 
 `Attract::current_settings()` (`attract/mod.rs:614`) supplies the comparison. Snapshot it when the overlay opens, compare it against each recognized row once while building the line plan, and cache the result on the view. The overlay consumes every key while open (`terminal.rs:720`), so steering cannot stale the snapshot; a resize that reclamps settings recomputes it. This is one comparison per recognized row on open and on resize, none per frame, no allocation.
 
-**What the mark claims.** `Attract` keeps settings, not the `FavoriteId` they came from — loading returns `AttractSettings` alone — and a hand-edited file can hold several rows with equal settings and different ids, which `push` does not normalize. So the honest claim is "this row matches the current parameters", and **every** matching row is marked. Say so where the user can see it — a legend in the heading or footer. A single authoritative "the favorite that is running" would mean carrying `FavoriteId` provenance through load, steer, randomize, undo and save and clearing it on every edit; that is a different, larger feature and is not this phase.
+**What the mark claims.** `Attract` keeps settings, not the `FavoriteId` they came from — loading returns `AttractSettings` alone — and a hand-edited file can hold several rows with equal settings and different ids, which `push` does not normalize. So the honest claim is "this row matches the current parameters", and **every** matching row is marked. Say so where the user can see it: a legend reading `● matches the current parameters`, in the overlay heading. That exact glyph and wording are what Phase 13 documents, so a test asserts them. A single authoritative "the favorite that is running" would mean carrying `FavoriteId` provenance through load, steer, randomize, undo and save and clearing it on every edit; that is a different, larger feature and is not this phase.
 
 The comparison is derived `PartialEq` on `AttractSettings`, the same equality `FavoriteRows::push` already uses to recognize a repeat save. A new settings field breaks the exhaustive constructors, so it cannot slip past this silently; a separate comparison key would duplicate the persistence schema.
 
 **Files:**
 - `crates/cargo-tile/src/favorites_overlay/line_plan.rs` — three-cell prefix, the four-state marker value, width budget, per-row match cached on the view
-- `crates/cargo-tile/src/favorites_overlay/mod.rs` — snapshot `current_settings()` on open and on resize; the legend
+- `crates/cargo-tile/src/favorites_overlay/mod.rs` — hold the snapshot, compare it while building the plan, render the legend
 - `crates/cargo-tile/src/favorites_overlay/content.rs` — the match flag on the recognized row view
+- `crates/cargo-tile/src/globals.rs` — the overlay-open handler (`:117`) is the only place that holds both `App::attract` and the overlay, so the snapshot is taken there and passed into `open`
+- `crates/cargo-tile/src/terminal.rs` — the resize branch (`:664`) already reclamps attract settings; it re-snapshots into the open overlay from the same place
 
-**Constraints from prior phases:** Phase 9 gave the cached line a row kind carrying identity, put only real rows in the navigation index, made the selection type distinguish recognized from diagnostic, and kept selection out of the row variant as render-time state — currency joins it there. The prefix Phase 9 renders is still two cells; this phase widens it. Diagnostic rows never carry a currency mark: they have no settings to compare.
+**Constraints from prior phases:** Phase 9 gave the cached line a `FavoriteRowIdentity::{Recognized(FavoriteId), Unrecognized(UnrecognizedFavoriteRemovalLocator)}` with non-row lines carrying none, put only real rows in the navigation index, made the selection carry that identity or nothing, and kept selection out of the identity as render-time state — currency joins it there. The prefix Phase 9 renders is still two cells; this phase widens it. Unrecognized rows never carry a currency mark: they have no settings to compare. `Attract::current_settings()` takes `&mut self` (`attract/mod.rs:697`), so the caller must hold the attract state mutably — which is why the snapshot is taken in `globals.rs` and `terminal.rs` rather than inside the overlay.
 
 **Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with tests covering all four selected/current combinations rendering distinct three-cell prefixes, every matching row marked when two rows share settings, no mark on a diagnostic row, and the width budget accounting for the wider prefix
+- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with tests covering all four selected/current combinations rendering their exact three-cell prefixes, the legend text as written above, every matching row marked when two rows share settings, no mark on an unrecognized row, the width budget accounting for the wider prefix, and a resize while the overlay is open recomputing the marks against the reclamped settings
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
 - Hands-on: steer the attract screen to a saved favorite's parameters, open `ctrl-o`, see the mark.
 
@@ -404,7 +399,7 @@ The comparison is derived `PartialEq` on `AttractSettings`, the same equality `F
 
 `FavoriteRows::push` already distinguishes the two: an exact settings match keeps the existing row's id and updates only its timestamp; a new set appends a row. The public result throws that distinction away, so both paths toast the same "saved" text, and a user who saves twice and then opens the overlay finds one row and no explanation. Nothing is wrong with the file — this is the dedup working — the confirmation is what misleads.
 
-Return a named outcome — added or refreshed — from the save entry point, and give each its own confirmation text through the existing toast path. The branch that decides it has already done the equality comparison, so this costs one enum variant.
+Return `FavoriteSaveOutcome::{Added, Refreshed}` from the save entry point, and give each its own confirmation text through the existing toast path. Not a boolean and not an `Option`: both answers are ordinary successes and the caller renders different text for each. The branch that decides it has already done the equality comparison, so this costs one enum variant.
 
 **Files:**
 - `crates/cargo-tile/src/favorites/rows.rs` — `push` returns the named outcome
@@ -428,7 +423,7 @@ Return a named outcome — added or refreshed — from the save entry point, and
 
 `column_descriptors(mode)` and `favorite_cells(settings)` are independent vectors matched only by index, so reordering one silently misaligns every row with no compiler complaint. Give `ParameterColumnDescriptor` the function that renders its own column's value and delete the parallel vector. It runs while rebuilding the plan, not per frame (Invariant 3).
 
-`AttractMode::draw` (`attract/mod.rs:343`) has the same shape: it computes an index bounded by `AttractMode::ALL`, then maps `0`, `1` and everything else through a separate match, so a fourth mode would silently draw as `Pixelate`. Index `ALL` directly so adding a mode updates selection by construction. No trait and no generic — the array length is already the bound.
+`AttractMode::draw` (`attract/mod.rs:427`) has the same shape: it computes an index bounded by `AttractMode::ALL`, then maps `0`, `1` and everything else through a separate match, so a fourth mode would silently draw as `Pixelate`. Index `ALL` directly so adding a mode updates selection by construction. No trait and no generic — the array length is already the bound.
 
 **Files:**
 - `crates/cargo-tile/src/favorites_overlay/bindings.rs` — `ParameterColumnDescriptor` carries its value renderer; `column_descriptors` updated
@@ -452,10 +447,10 @@ Return a named outcome — added or refreshed — from the save entry point, and
 `crates/cargo-tile/README.md` documents the attract steering keys in detail and never uses the word "favorite"; `ctrl-s`, `ctrl-o`, `m`, `r` and `u` do not appear. Three statements already in the file are false and sit next to where the new section goes, so they are fixed in the same pass:
 
 - `## configuration` says there are three files and omits `favorites.toml` (`:75`–78).
-- The attract section says steering keys do not work when the screen appears on its own (`:465`–469). `keyed_mode` returns a mode when the screen was requested **or** has fully arrived at `faded == 0` (`attract/mod.rs:602`), and a regression test covers it (`:1773`).
+- The attract section says steering keys do not work when the screen appears on its own (`:465`–469). `keyed_mode` returns a mode when the screen was requested **or** has fully arrived at `faded == 0` (`attract/mod.rs:680`), and a regression test in that file's test module covers it.
 - The template section says `AppGlobalAction` starts with no variants (`:70`–73); it now has many.
 
-Add a favorites section beside the existing attract one, in the same voice: what a favorite stores (the attract mode and its steerable parameters, not the animation's instantaneous position); where the file lives (`<os config dir>/cargo-tile/favorites.toml`); `ctrl-s` to save and `ctrl-o` to open the table; `m` for a random favorite, `r` to randomize the current parameters, `u` to undo the last replacement; in the overlay, arrows to move, enter to load, `x` to delete, left/right to page the parameter columns, esc to close; what the three-cell row prefix means, including the currency mark; that rows this version cannot read are kept, shown as diagnostics, and can be deleted; and that saving the same parameters twice refreshes the existing row rather than adding one. State that the listed keys are defaults and can be rebound.
+Add a favorites section beside the existing attract one, in the same voice: what a favorite stores (the attract mode and its steerable parameters, not the animation's instantaneous position); where the file lives (`<os config dir>/cargo-tile/favorites.toml`); `ctrl-s` to save and `ctrl-o` to open the table; `m` for a random favorite, `r` to randomize the current parameters, `u` to undo the last replacement; in the overlay, arrows to move, enter to load, `x` to delete, left/right to page the parameter columns, esc to close; what the three-cell row prefix means, quoting the legend `● matches the current parameters` exactly as Phase 10 renders it and saying that every matching row is marked rather than one running favorite; that rows this version cannot read are kept, shown in their own block, selectable, and deletable with two presses of the delete key; and that saving the same parameters twice refreshes the existing row rather than adding one. State that the listed keys are defaults and can be rebound.
 
 Also filter the `x` Dismiss row out of cargo-tile's rendered keymap. `GlobalAction::Dismiss` is bound to `'x'` as a shared framework default (`global_action.rs:70`, `:241`) that `cargo-port` relies on, while cargo-tile's tests require `x` not to close framework overlays — so the fix is in cargo-tile's keymap assembly, not in the shared default (Invariant 2 reasoning applies: do not change what the other consumer depends on).
 
@@ -463,7 +458,7 @@ Also filter the `x` Dismiss row out of cargo-tile's rendered keymap. `GlobalActi
 - `crates/cargo-tile/README.md` — favorites section; configuration table; attract-steering paragraph; the `AppGlobalAction` claim
 - `crates/cargo-tile/src/keymap.rs` — filter the inactive `x` Dismiss row from the rendered keymap
 
-**Constraints from prior phases:** Phase 9 made diagnostic rows selectable and deletable and gave the footer capability-derived hints; Phase 10 widened the row prefix to three cells and defined the currency mark as "matches the current parameters", marking every matching row rather than one authoritative running favorite; Phase 11 named the save outcome added versus refreshed. Document what those phases actually shipped — read them before writing the section rather than describing the plan.
+**Constraints from prior phases:** Phase 9 made unrecognized rows selectable and deletable behind the existing two-press confirmation and gave the footer capability-derived hints; do not call them diagnostics in the README, since a row this version cannot read may have been written by a newer cargo-tile. Phase 10 widened the row prefix to three cells — `"   "`, `"▸  "`, `" ● "`, `"▸● "` — and renders the legend `● matches the current parameters`, marking every matching row rather than one authoritative running favorite; Phase 11 named the save outcome `FavoriteSaveOutcome::{Added, Refreshed}`. Document what those phases actually shipped — read them before writing the section rather than describing the plan.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` — the keymap filter has a test; the README has no test, so verify it by reading each corrected claim against the code it describes and saying so in the report
@@ -483,7 +478,13 @@ Running `cargo tile` in two windows of the same iTerm2 — an app that already h
 
 **There is no first-caller-wins path to find.** Every `BackdropMonitor::new` builds its own channels, workers, pinned window and cached desktop (`monitor.rs:129`–184), and capture resolves the pinned id across all visible windows (`desktop.rs:494`–495). Nothing is shared or app-keyed. What produced the *appearance* of ownership was diagnosis, not exclusivity: a monitor holding an earlier successful capture kept showing it while a newly started monitor that never got a first capture showed nothing, and both looked identical from outside.
 
-Phases 1 and 3 make the real cause observable. Before writing any fix, run both instances and record, from outside the program, the windows the window server reports, each instance's selected window id, and the `CaptureFailure` stage the second instance logs. Reasoning from branches is what the last two backdrop defects both defeated; enumerate first.
+Phases 1 and 3 make the real cause observable, but not yet completely. **Instrument first, then reproduce.**
+
+What Phase 3 already logs, on transition only, is one `backdrop:` line carrying `report` (the `WindowIdentification`), `capture_status` (the `BackdropStatus`, whose failed form names the `CaptureFailure` stage) and `captured_window_id` (the `LastSuccessfulCaptureWindowId`). What it cannot tell you is the id the *failing* instance aimed at: `captured_window_id` is `WaitingForFirstSuccess` for an instance that has never captured, which is exactly the instance under investigation, and `WindowIdentification::Fallback` says selection fell back without saying to what. Since "which window did each instance pick" is the question this phase exists to answer, add attempt-level recording before reproducing — for every capture attempt, the window id it targeted and whether that id came from the pinned selection or from the frontmost-then-size heuristic, logged on transition like the rest.
+
+Then run both instances and record, from outside the program, the windows the window server reports, alongside each instance's targeted window id and the `CaptureFailure` stage the second instance logs. Reasoning from branches is what the last two backdrop defects both defeated; enumerate first.
+
+**Running the reproduction.** The frame log is off unless `CARGO_TILE_FRAME_LOG` names a path (`cargo-tile/src/probe.rs:76`), so neither instance records anything by default. Each process truncates the file on its own first write (`probe.rs:181`–191), so the two instances **must** be given different paths or they will erase each other's evidence. Give each instance its own path, keep both logs, and preserve every `backdrop:` line from both — those lines and the attempt-level records above are the phase's evidence.
 
 Phase 1 already deduplicated the exclusion list, which was the standing suspect — a sibling terminal window above the selected one appeared both in the owned-windows set and the windows-above set. If the reproduction now succeeds, this phase is closed by evidence rather than by code, and that is a legitimate outcome to report.
 
@@ -493,12 +494,12 @@ Otherwise fix what the recorded stage names, in `tui_pane` where it lives.
 - `crates/tui_pane/src/backdrop/desktop.rs` — window resolution, filter construction, or capture, as the evidence directs
 - `crates/tui_pane/src/backdrop/monitor.rs` — window pinning and identification, if the evidence points there
 
-**Constraints from prior phases:** Phase 1 typed the capture failure per stage and made `Desktop::capture` return `Result<Desktop, CaptureFailure>` (`desktop.rs:201`, platform implementation at `:470`). It shipped **no preflight**: `SCShareableContent::get()` runs first, because that call is the one that raises the macOS permission prompt, and `CGPreflightScreenCaptureAccess` classifies only a query that already failed (`desktop.rs:446`–453, called at `:475`). That call answers `false` for a process never asked exactly as for one that refused, so the access variant means "not granted", not "the user said no"; in `objc2-core-graphics` 0.3.2 it is declared safe and carries no unsafe annotation. Phase 1 also deduplicated the exclusion window ids (`desktop.rs:458`, called at `:536`) and split the last successful desktop from the latest attempt status on `BackdropMonitor` (`monitor.rs:129`–184). Phase 2 renamed the access variant to `ScreenRecordingAccessNotGranted` (`desktop.rs:40`) and made a successful capture report the window id it used: `BackdropMonitor::captured_window_id()` (`monitor.rs:460`) returns `LastSuccessfulCaptureWindowId`, either `WaitingForFirstSuccess` or `Available { window_id: u32 }`. This phase's Spec asks for that id by name, and Phase 3 puts it in the log; a second window that never captures reports the waiting state, which is itself evidence. Phase 2 added `WindowIdentification`, whose `Fallback` means window selection gave up on pinning and fell back to frontmost or size matching — a strong candidate for what the second window hits. Phase 3 routes the failing stage and the identification outcome into cargo-tile's attract diagnostics, logging on transition only, which is where the reproduction reads them.
+**Constraints from prior phases:** Phase 1 typed the capture failure per stage and made `Desktop::capture` return `Result<Desktop, CaptureFailure>` (`desktop.rs:201`, platform implementation at `:470`). It shipped **no preflight**: `SCShareableContent::get()` runs first, because that call is the one that raises the macOS permission prompt, and `CGPreflightScreenCaptureAccess` classifies only a query that already failed (`desktop.rs:446`–453, called at `:475`). That call answers `false` for a process never asked exactly as for one that refused, so the access variant means "not granted", not "the user said no"; in `objc2-core-graphics` 0.3.2 it is declared safe and carries no unsafe annotation. Phase 1 also deduplicated the exclusion window ids (`desktop.rs:458`, called at `:536`) and split the last successful desktop from the latest attempt status on `BackdropMonitor` (`monitor.rs:129`–184). Phase 2 renamed the access variant to `ScreenRecordingAccessNotGranted` (`desktop.rs:40`) and made a successful capture report the window id it used: `BackdropMonitor::captured_window_id()` (`monitor.rs:460`) returns `LastSuccessfulCaptureWindowId`, either `WaitingForFirstSuccess` or `Available { window_id: u32 }`. This phase's Spec asks for that id by name, and Phase 3 puts it in the log; a second window that never captures reports the waiting state, which is itself evidence. Phase 2 added `WindowIdentification`, whose `Fallback` means window selection gave up on pinning and fell back to frontmost or size matching — a strong candidate for what the second window hits. Phase 3 routes the failing stage and the identification outcome into cargo-tile's attract diagnostics, logging on transition only, which is where the reproduction reads them: `probe::note` emits one `backdrop: report=… capture_status=… captured_window_id=…` line from `Attract::identify` (`attract/mod.rs:964`) whenever any of the three changes. That call is gated on `CARGO_TILE_FRAME_LOG`, and the attract screen's own neutral notice now names that variable rather than promising a recording an ordinary run never makes.
 
 **Acceptance gate:**
 - Both instances draw their own desktop capture, confirmed by eye in two simultaneous windows
 - `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `lint cargo-tile`, `test tui_pane`, `check cargo-port`
-- A regression test at whatever level the cause allows, or an explicit statement that the cause is a window-server interaction no unit test can reach
+- A regression test at whatever level the cause allows, or an explicit statement that the cause is a window-server interaction no unit test can reach. Per Invariant 1 the listed `test tui_pane` line does not compile `backdrop/**`, so a test landing there is named in the report and run out of band with the feature enabled before this phase closes, then again at the final workspace gate; behavior that must actually execute per phase needs a cargo-tile-side test instead
 
 ### Phase 15 — Window selection stops being a bare optional number  · status: todo
 
@@ -510,15 +511,17 @@ Otherwise fix what the recorded stage names, in `tui_pane` where it lives.
 
 Three owned values spell window selection as `Option<u32>`, and in each the `None` means "no window has been settled on, so fall back to frontmost, then size" — a rule the type does not state and every reader has to recover from `Desktop::capture`'s body: `BackdropMonitor::pinned` (`monitor.rs:157`), `Request::window` (`:193`, built at `:436`), and the `pinned` parameter of `Desktop::capture` (`desktop.rs:201`, threaded to the platform implementation at `:470`–472).
 
-Introduce one private enum in `backdrop/` naming the three states the capture path actually distinguishes: an exact window settled on, a search still running with nothing settled yet, and a search that gave up and left the heuristic in charge. Thread it through the monitor's field, the worker request, and the capture parameter, replacing all three options. `Desktop::capture` resolves it once at the top and its body stops re-deriving what `None` meant.
+The three sites look alike and are not one domain, so one type threaded through all of them would hand the capture path a state it cannot act on. `BackdropMonitor::pinned` is about **identification progress**: its `None` means the search is still running or has been exhausted, and only `attempts` on the monitor tells those apart. `Request::window` and `Desktop::capture`'s parameter are about the **capture target**: each means an exact id or "use the heuristic now", and neither can behave differently for a search still in flight.
 
-Keep it private to the crate unless a consumer needs it: `WindowIdentification` is already the public report on the same subject, and nothing outside `tui_pane` reads the capture parameter.
+So introduce one private `CaptureWindowTarget::{Identified(u32), FrontmostOrSizeHeuristic}` in `backdrop/` for the worker request and the capture parameter, and leave identification progress where it belongs — in `WindowIdentification` or an equivalent monitor-owned state that names pending and exhausted separately, rather than encoding them in an option the capture path then has to interpret. The monitor derives the target at the boundary where it builds the request; `Desktop::capture` matches it once at the top and its body stops re-deriving what `None` meant.
+
+Keep `CaptureWindowTarget` private to the crate: `WindowIdentification` is already the public report on the same subject, and nothing outside `tui_pane` reads the capture parameter.
 
 Do not change what any of the three currently do. This phase is a type change with no behavior change, and its gate is that every existing test still passes unmodified.
 
 **Files:**
-- `crates/tui_pane/src/backdrop/desktop.rs` — the new enum, `capture`'s parameter, and the resolution at `:494`–495
-- `crates/tui_pane/src/backdrop/monitor.rs` — `pinned` and `Request::window` hold it; `identify` writes it
+- `crates/tui_pane/src/backdrop/desktop.rs` — `CaptureWindowTarget`, `capture`'s parameter, and the resolution at `:494`–495
+- `crates/tui_pane/src/backdrop/monitor.rs` — `Request::window` holds the target; `pinned` keeps identification progress and derives the target where the request is built
 
 **Constraints from prior phases:** Phase 2 made `WindowIdentification::Identified` carry the settled window id and added `LastSuccessfulCaptureWindowId` for the id a capture used, deliberately leaving these three options alone so this phase could be designed after the second-window cause was known. Both are public reports on window selection and capture; the enum this phase introduces is the private third one that the capture path itself threads. Phase 14 either found that cause and fixed it in `desktop.rs`/`monitor.rs`, or closed on evidence that Phase 1's exclusion-id deduplication already fixed it; read its as-built record before touching the capture path, because a fix landing there changes what the three states mean.
 
@@ -527,4 +530,4 @@ Do not change what any of the three currently do. This phase is a type change wi
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
 - `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`
 - `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`
-- Every existing backdrop test passes with no edit to its body. A test that had to change means behavior changed, which this phase forbids.
+- Every existing backdrop test passes with no edit to its body. A test that had to change means behavior changed, which this phase forbids. Per Invariant 1 the listed `test tui_pane` line compiles none of them: `check cargo-tile` proves they still build, and the feature-enabled suite is run out of band before this phase closes and again at the final workspace gate. Name in the report how many backdrop tests ran and that none were edited.

@@ -69,6 +69,7 @@ use crate::constants::ANCESTRY_LEVEL_INDENT;
 use crate::constants::ANCESTRY_MIN_ELIDED_ROWS;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
+use crate::constants::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 use crate::constants::ATTRACT_NO_BACKDROP_NOTICE;
 use crate::constants::ATTRACT_NOTE_LABEL;
 use crate::constants::COMMAND_COLUMN;
@@ -206,27 +207,27 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// so with no capture there is nothing to put on the screen and the
 /// screen puts nothing there -- which reads as an attract screen that
 /// never came on, over a grid that is still sitting where it was. One
-/// line is what separates the two, and it names the cause the wait
-/// almost always has.
+/// line is what separates the two. It gives the Screen Recording
+/// instruction only when the capture status reports that access was not
+/// granted; every other failure points to the recorded diagnostics.
 ///
 /// On the last row of the body, which is the row furthest from anything
 /// an idle grid has to say.
 fn draw_backdrop_notice(frame: &mut Frame, app: &App, body: Rect) {
-    if !app.attract.backdrop_overdue(Instant::now()) {
-        return;
-    }
+    let notice = match app.attract.backdrop_notice(Instant::now()) {
+        attract::BackdropNotice::None => return,
+        attract::BackdropNotice::ScreenRecordingAccessInstruction => ATTRACT_NO_BACKDROP_NOTICE,
+        attract::BackdropNotice::CaptureUnavailable => ATTRACT_BACKDROP_UNAVAILABLE_NOTICE,
+    };
     let Some(row) = body.bottom().checked_sub(1) else {
         return;
     };
     // `set_string` stops at the edge of the buffer, so a terminal too
     // narrow for the whole notice gets as much of it as it can hold
     // rather than a panic or a wrapped second line over the grid.
-    frame.buffer_mut().set_string(
-        body.left(),
-        row,
-        ATTRACT_NO_BACKDROP_NOTICE,
-        Style::default().fg(label_color()),
-    );
+    frame
+        .buffer_mut()
+        .set_string(body.left(), row, notice, Style::default().fg(label_color()));
 }
 
 /// Whether the panes are drawn with what is in them.

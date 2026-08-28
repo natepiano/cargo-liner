@@ -53,9 +53,12 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tui_pane::BackdropMonitor;
+use tui_pane::BackdropStatus;
 use tui_pane::BandDirection;
 use tui_pane::BandSettings;
+use tui_pane::CaptureFailure;
 use tui_pane::DriftingText;
+use tui_pane::LastSuccessfulCaptureWindowId;
 use tui_pane::PixelSettings;
 use tui_pane::ResolvingPixels;
 use tui_pane::TextSettings;
@@ -112,6 +115,79 @@ pub(crate) enum Work {
     Idle,
     /// Something is running, so the attract screen gives it back.
     Running,
+}
+
+/// What the status line should say about a missing desktop capture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BackdropNotice {
+    /// Do not draw a notice.
+    None,
+    /// Tell the reader how to grant Screen Recording access.
+    ScreenRecordingAccessInstruction,
+    /// Report that capture is unavailable and diagnostics recorded why.
+    CaptureUnavailable,
+}
+
+/// Whether the missing-backdrop grace period has elapsed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackdropGracePeriod {
+    /// The grace period still gives the capture worker time to reply.
+    Remaining,
+    /// The grace period has elapsed without a current backdrop.
+    Elapsed,
+}
+
+/// Whether the attract screen is waiting for a desktop backdrop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackdropWait {
+    /// A desktop is on screen, so no missing backdrop is being timed.
+    NotWaiting,
+    /// No desktop has been available since this instant.
+    WaitingSince(Instant),
+}
+
+/// Whether the monitor has a desktop that renderers can use now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CurrentBackdrop {
+    /// No usable desktop is available.
+    Missing,
+    /// A usable desktop is available, including one retained after a later failure.
+    Available,
+}
+
+/// Values written together when attract backdrop diagnostics change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BackdropDiagnostic {
+    /// The most recent window-selection report.
+    window_identification: WindowIdentification,
+    /// The capture worker's latest completed result.
+    backdrop_status:       BackdropStatus,
+    /// The window id used by the last successful capture, if one has succeeded.
+    captured_window_id:    LastSuccessfulCaptureWindowId,
+}
+
+/// Select the status-line outcome from capture timing, availability, and status.
+const fn classify_backdrop_notice(
+    grace_period: BackdropGracePeriod,
+    current_backdrop: CurrentBackdrop,
+    backdrop_status: BackdropStatus,
+) -> BackdropNotice {
+    match (grace_period, current_backdrop, backdrop_status) {
+        (_, CurrentBackdrop::Available, _)
+        | (BackdropGracePeriod::Remaining, CurrentBackdrop::Missing, _) => BackdropNotice::None,
+        (
+            BackdropGracePeriod::Elapsed,
+            CurrentBackdrop::Missing,
+            BackdropStatus::Failed(CaptureFailure::ScreenRecordingAccessNotGranted),
+        ) => BackdropNotice::ScreenRecordingAccessInstruction,
+        (
+            BackdropGracePeriod::Elapsed,
+            CurrentBackdrop::Missing,
+            BackdropStatus::WaitingForFirstResult
+            | BackdropStatus::Ready
+            | BackdropStatus::Failed(_),
+        ) => BackdropNotice::CaptureUnavailable,
+    }
 }
 
 /// What the reader has instructed the attract screen to do, which
@@ -454,13 +530,11 @@ pub(crate) struct Attract {
     /// Where the screen stands with the roster, which is what keeps a
     /// hand-over from turning around part way through it.
     standing:               Standing,
-    /// When the screen last wanted a backdrop and had none, so a wait
-    /// that has gone on too long can be said out loud rather than drawn
-    /// as nothing. Cleared the moment a capture arrives.
-    backdrop_missing_since: Option<Instant>,
-    /// What the last pass at selecting a window reported, so the probe
-    /// notes the report changing rather than every frame's repeat of it.
-    window_identification:  WindowIdentification,
+    /// Whether the screen is waiting for a backdrop, including when that wait began.
+    backdrop_wait:          BackdropWait,
+    /// The attract backdrop values most recently written to the probe, so
+    /// unchanged capture and window-selection results do not repeat every frame.
+    noted_backdrop:         BackdropDiagnostic,
     /// The last reading written to the frame log, so the log carries a
     /// line where the screen changed its mind rather than one per
     /// frame. See [`Attract::note_standing`].
@@ -508,8 +582,12 @@ impl Attract {
             grid_presentation:      AttractGridPresentation::OverGrid,
             held:                   false,
             standing:               Standing::Showing,
-            backdrop_missing_since: None,
-            window_identification:  WindowIdentification::NotAttempted,
+            backdrop_wait:          BackdropWait::NotWaiting,
+            noted_backdrop:         BackdropDiagnostic {
+                window_identification: WindowIdentification::NotAttempted,
+                backdrop_status:       BackdropStatus::WaitingForFirstResult,
+                captured_window_id:    LastSuccessfulCaptureWindowId::WaitingForFirstSuccess,
+            },
             noted:                  None,
         }
     }
@@ -889,12 +967,21 @@ impl Attract {
         }
         // Cheap once it has settled: the monitor answers from what it
         // found and asks the window server nothing more.
-        let window_identification = self.monitor.identify(&mut io::stdout());
-        // Noted when the report changes, so paced `Pending` replies do
-        // not write one probe line per frame while a retry is waiting.
-        if self.window_identification != window_identification {
-            self.window_identification = window_identification;
-            probe::note(&format!("identify: {window_identification:?}"));
+        let backdrop_diagnostic = BackdropDiagnostic {
+            window_identification: self.monitor.identify(&mut io::stdout()),
+            backdrop_status:       self.monitor.status(),
+            captured_window_id:    self.monitor.captured_window_id(),
+        };
+        // Noted when any reported value changes, so paced identification
+        // retries and an unchanged capture failure do not write one line per frame.
+        if self.noted_backdrop != backdrop_diagnostic {
+            self.noted_backdrop = backdrop_diagnostic;
+            probe::note(&format!(
+                "backdrop: report={:?} capture_status={:?} captured_window_id={:?}",
+                backdrop_diagnostic.window_identification,
+                backdrop_diagnostic.backdrop_status,
+                backdrop_diagnostic.captured_window_id,
+            ));
         }
     }
 
@@ -1065,16 +1152,19 @@ impl Attract {
         // timer, so having none for a moment is ordinary. Having none
         // for longer than that is the animation drawing nothing at all,
         // which from outside is indistinguishable from an attract
-        // screen that never came on -- see [`Self::backdrop_overdue`].
-        let missing = match (self.monitor.current(), self.backdrop_missing_since) {
-            (Some(_), _) => None,
-            (None, Some(since)) => Some(since),
-            (None, None) => Some(now),
+        // screen that never came on -- see [`Self::backdrop_notice`].
+        let backdrop_wait = match (self.monitor.current(), self.backdrop_wait) {
+            (Some(_), _) => BackdropWait::NotWaiting,
+            (None, BackdropWait::WaitingSince(since)) => BackdropWait::WaitingSince(since),
+            (None, BackdropWait::NotWaiting) => BackdropWait::WaitingSince(now),
         };
-        if missing.is_some() != self.backdrop_missing_since.is_some() {
-            probe::note(&format!("attract: backdrop={}", missing.is_none()));
+        if std::mem::discriminant(&backdrop_wait) != std::mem::discriminant(&self.backdrop_wait) {
+            probe::note(&format!(
+                "attract: backdrop={}",
+                matches!(backdrop_wait, BackdropWait::NotWaiting),
+            ));
         }
-        self.backdrop_missing_since = missing;
+        self.backdrop_wait = backdrop_wait;
         // Only the animation on screen is carried forward. The other
         // holds wherever it was left, which is what makes turning
         // between them a turn rather than a restart.
@@ -1124,22 +1214,32 @@ impl Attract {
         ));
     }
 
-    /// Whether the screen has wanted a backdrop for longer than one is
-    /// ever reasonably slow in coming.
+    /// What the status line should report about a missing desktop capture.
     ///
     /// Every animation here draws in the colours of the desktop behind
     /// the terminal, so with no capture there is nothing to draw and
     /// [`Self::render`] returns having drawn none of it. Left at that,
     /// an attract screen that is running perfectly well and simply has
-    /// no picture looks exactly like one that never started -- and the
-    /// usual cause, Screen Recording not being allowed for the terminal,
-    /// is nowhere on the screen. So the wait is reported once it is long
-    /// enough to mean something.
-    pub(crate) fn backdrop_overdue(&self, now: Instant) -> bool {
-        self.showing()
-            && self
-                .backdrop_missing_since
-                .is_some_and(|since| now.duration_since(since) >= ATTRACT_BACKDROP_GRACE)
+    /// no picture looks exactly like one that never started. The wait is
+    /// reported once it is long enough to mean something, and the latest
+    /// capture status selects the notice. A retained current backdrop
+    /// suppresses the notice even when the latest attempt failed.
+    pub(crate) fn backdrop_notice(&self, now: Instant) -> BackdropNotice {
+        let grace_period = match self.backdrop_wait {
+            BackdropWait::WaitingSince(since)
+                if self.showing() && now.duration_since(since) >= ATTRACT_BACKDROP_GRACE =>
+            {
+                BackdropGracePeriod::Elapsed
+            },
+            BackdropWait::NotWaiting | BackdropWait::WaitingSince(_) => {
+                BackdropGracePeriod::Remaining
+            },
+        };
+        let current_backdrop = match self.monitor.current() {
+            Some(_) => CurrentBackdrop::Available,
+            None => CurrentBackdrop::Missing,
+        };
+        classify_backdrop_notice(grace_period, current_backdrop, self.monitor.status())
     }
 
     /// Draw the strip where it currently stands, moving nothing.
@@ -1205,6 +1305,17 @@ mod tests {
     /// covers several seconds -- long enough to outlast the quiet a
     /// screen waits before coming back.
     const POLL: Duration = Duration::from_millis(FRAME_POLL_MILLIS);
+    /// Capture failure stages exercised by the notice classifier.
+    const CAPTURE_FAILURES: [CaptureFailure; 8] = [
+        CaptureFailure::UnsupportedPlatform,
+        CaptureFailure::ScreenRecordingAccessNotGranted,
+        CaptureFailure::ShareableContentQueryFailed,
+        CaptureFailure::TerminalWindowNotFound,
+        CaptureFailure::DisplayNotFound,
+        CaptureFailure::ScreenshotCaptureFailed,
+        CaptureFailure::PixelExtractionFailed,
+        CaptureFailure::ImageReductionFailed,
+    ];
 
     /// Carry `attract` forward until the strip is the whole of what is
     /// on the screen, and answer how it went.
@@ -1734,36 +1845,134 @@ mod tests {
         );
     }
 
-    /// A screen that came on by itself takes the reader's keys once it
-    /// has arrived. The animations fill the window, so an arrow reaching
-    /// An attract screen with no desktop capture draws none of itself,
-    /// which from outside is an attract screen that never came on. The
-    /// two are fixed in different places, so the wait is reported once
-    /// it has stood long enough to mean something.
+    /// A showing attract screen reports no notice when its backdrop wait starts,
+    /// then reports the unavailable capture at the exact grace-period boundary.
     #[test]
     fn a_screen_with_no_backdrop_to_draw_says_so_rather_than_drawing_nothing() {
         let mut attract = Attract::new();
         let started = Instant::now();
+        let grace_elapsed = started + ATTRACT_BACKDROP_GRACE;
 
-        // No capture ever arrives here: the monitor has no window
-        // server to ask, which is the same position a terminal without
-        // Screen Recording permission is in.
-        attract.advance(AREA, Work::Idle, Updates::Live, started);
-        assert!(attract.showing(), "the screen is on");
-        assert!(
-            !attract.backdrop_overdue(started),
-            "and a capture is not late the instant it is wanted"
+        attract.backdrop_wait = BackdropWait::WaitingSince(started);
+        assert_eq!(
+            attract.backdrop_notice(grace_elapsed),
+            BackdropNotice::None,
+            "a hidden screen does not report a missing backdrop",
         );
 
-        let overdue = started + ATTRACT_BACKDROP_GRACE;
-        attract.advance(AREA, Work::Idle, Updates::Live, overdue);
-
-        assert!(
-            attract.backdrop_overdue(overdue),
-            "but a capture still missing once the grace is out is reported"
+        attract.backdrop_wait = BackdropWait::NotWaiting;
+        attract.advance(AREA, Work::Idle, Updates::Live, started);
+        assert!(attract.showing(), "the screen is on");
+        assert_eq!(
+            attract.backdrop_notice(started),
+            BackdropNotice::None,
+            "a capture is not late the instant it is wanted",
+        );
+        assert_eq!(
+            attract.backdrop_notice(grace_elapsed),
+            BackdropNotice::CaptureUnavailable,
+            "a capture missing at the grace boundary is reported",
         );
     }
 
+    #[test]
+    fn backdrop_notice_waits_for_the_grace_period_for_every_status() {
+        for backdrop_status in [BackdropStatus::WaitingForFirstResult, BackdropStatus::Ready] {
+            assert_eq!(
+                classify_backdrop_notice(
+                    BackdropGracePeriod::Remaining,
+                    CurrentBackdrop::Missing,
+                    backdrop_status,
+                ),
+                BackdropNotice::None,
+                "backdrop_status={backdrop_status:?}",
+            );
+        }
+        for failure in CAPTURE_FAILURES {
+            assert_eq!(
+                classify_backdrop_notice(
+                    BackdropGracePeriod::Remaining,
+                    CurrentBackdrop::Missing,
+                    BackdropStatus::Failed(failure),
+                ),
+                BackdropNotice::None,
+                "failure={failure:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn overdue_missing_backdrop_reports_waiting_and_ready_as_unavailable() {
+        for backdrop_status in [BackdropStatus::WaitingForFirstResult, BackdropStatus::Ready] {
+            assert_eq!(
+                classify_backdrop_notice(
+                    BackdropGracePeriod::Elapsed,
+                    CurrentBackdrop::Missing,
+                    backdrop_status,
+                ),
+                BackdropNotice::CaptureUnavailable,
+                "backdrop_status={backdrop_status:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn only_access_failure_selects_the_screen_recording_instruction() {
+        for failure in CAPTURE_FAILURES {
+            let expected = match failure {
+                CaptureFailure::ScreenRecordingAccessNotGranted => {
+                    BackdropNotice::ScreenRecordingAccessInstruction
+                },
+                CaptureFailure::UnsupportedPlatform
+                | CaptureFailure::ShareableContentQueryFailed
+                | CaptureFailure::TerminalWindowNotFound
+                | CaptureFailure::DisplayNotFound
+                | CaptureFailure::ScreenshotCaptureFailed
+                | CaptureFailure::PixelExtractionFailed
+                | CaptureFailure::ImageReductionFailed => BackdropNotice::CaptureUnavailable,
+            };
+            assert_eq!(
+                classify_backdrop_notice(
+                    BackdropGracePeriod::Elapsed,
+                    CurrentBackdrop::Missing,
+                    BackdropStatus::Failed(failure),
+                ),
+                expected,
+                "failure={failure:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn current_backdrop_suppresses_notice_after_the_latest_attempt_failed() {
+        for grace_period in [BackdropGracePeriod::Remaining, BackdropGracePeriod::Elapsed] {
+            for backdrop_status in [BackdropStatus::WaitingForFirstResult, BackdropStatus::Ready] {
+                assert_eq!(
+                    classify_backdrop_notice(
+                        grace_period,
+                        CurrentBackdrop::Available,
+                        backdrop_status,
+                    ),
+                    BackdropNotice::None,
+                    "grace_period={grace_period:?} backdrop_status={backdrop_status:?}",
+                );
+            }
+            for failure in CAPTURE_FAILURES {
+                assert_eq!(
+                    classify_backdrop_notice(
+                        grace_period,
+                        CurrentBackdrop::Available,
+                        BackdropStatus::Failed(failure),
+                    ),
+                    BackdropNotice::None,
+                    "grace_period={grace_period:?} failure={failure:?}",
+                );
+            }
+        }
+    }
+
+    /// A screen that came on by itself takes the reader's keys once it
+    /// has arrived. The animations fill the window, so an arrow reaching
     /// the grid instead would move a focus ring nobody can see around
     /// cells with nothing in them -- an idle grid is what brought the
     /// screen on in the first place.

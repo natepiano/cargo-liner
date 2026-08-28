@@ -32,10 +32,16 @@ pub(crate) const ATTRACT_RETURN_QUIET: Duration = Duration::from_secs(3);
 /// animation drawing nothing, which looks from outside exactly like one
 /// that never came on.
 pub(crate) const ATTRACT_BACKDROP_GRACE: Duration = Duration::from_secs(2);
+/// What the screen says when desktop capture is unavailable for a reason
+/// the user cannot grant their way out of. The frame log is off unless
+/// its variable is set, so the line names the variable rather than
+/// promising a recording an ordinary run never makes.
+pub(crate) const ATTRACT_BACKDROP_UNAVAILABLE_NOTICE: &str =
+    "attract: desktop capture unavailable -- set CARGO_TILE_FRAME_LOG to record why";
 /// What the screen says while it has no desktop to draw in the colours
-/// of. Names the cause it almost always is: the capture is a macOS
-/// screen recording, and the permission belongs to the terminal the app
-/// is drawn in rather than to the app itself.
+/// of because Screen Recording access is not granted. The permission
+/// belongs to the terminal the app is drawn in rather than to the app
+/// itself.
 pub(crate) const ATTRACT_NO_BACKDROP_NOTICE: &str = "attract: no desktop capture -- allow Screen Recording for this terminal in System Settings \u{203a} Privacy & Security";
 /// TOML table the moving band's keys are read from and written back to.
 /// Stable -- `keymap.toml` is hand-edited.
