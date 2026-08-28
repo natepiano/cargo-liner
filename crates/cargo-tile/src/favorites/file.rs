@@ -20,6 +20,7 @@ use super::rows::AttractSettings;
 use super::rows::Favorite;
 use super::rows::FavoriteId;
 use super::rows::FavoriteRows;
+use super::rows::FavoriteSaveOutcome;
 use super::rows::UnrecognizedFavoriteRemoval;
 use crate::config;
 use crate::constants::FAVORITES_FILENAME;
@@ -276,16 +277,16 @@ pub(crate) fn load() -> FavoritesFileState {
     load_from(FavoritesLocation::from(config::favorites_path()))
 }
 
-/// Save one parameter set, updating an identical row's timestamp instead of duplicating it.
+/// Save one parameter set and report whether it added or refreshed a row.
 ///
 /// # Errors
 ///
 /// Returns the read-only file state or the lock, directory, serialization, or write failure.
-pub(crate) fn push(settings: AttractSettings) -> Result<Favorite, FavoritesMutationError> {
-    push_to_location(
-        FavoritesLocation::from(config::favorites_path()),
-        Favorite::now(settings),
-    )
+pub(crate) fn push(
+    settings: AttractSettings,
+) -> Result<FavoriteSaveOutcome, FavoritesMutationError> {
+    let favorite = Favorite::now(settings);
+    push_to_location(FavoritesLocation::from(config::favorites_path()), &favorite)
 }
 
 /// Remove `target` after re-reading and re-verifying it under the file lock.
@@ -337,8 +338,8 @@ fn load_from(location: FavoritesLocation) -> FavoritesFileState {
 
 fn push_to_location(
     location: FavoritesLocation,
-    favorite: Favorite,
-) -> Result<Favorite, FavoritesMutationError> {
+    favorite: &Favorite,
+) -> Result<FavoriteSaveOutcome, FavoritesMutationError> {
     edit_at_location(location, |rows| Ok(rows.push(favorite)))
 }
 
@@ -1118,7 +1119,7 @@ future_parameter = 41
             Err(FavoritesMutationError::LocationUnavailable)
         );
         assert_eq!(
-            push_to_location(FavoritesLocation::Unavailable, favorite),
+            push_to_location(FavoritesLocation::Unavailable, &favorite),
             Err(FavoritesMutationError::LocationUnavailable)
         );
         assert_eq!(
@@ -1131,7 +1132,7 @@ future_parameter = 41
     }
 
     #[test]
-    fn identical_settings_update_saved_time_without_changing_id() {
+    fn first_save_adds_and_identical_second_save_refreshes_one_row() {
         let directory = TempDir::new().expect("temporary directory should be created");
         let path = favorites_path(&directory);
         let first = Favorite {
@@ -1145,18 +1146,20 @@ future_parameter = 41
             settings: band_settings(),
         };
 
-        let inserted = push_to_location(location(&path), first.clone())
-            .expect("first favorite should be written");
-        let updated =
-            push_to_location(location(&path), second).expect("identical favorite should update");
+        let first_outcome =
+            push_to_location(location(&path), &first).expect("first favorite should be written");
+        let second_outcome =
+            push_to_location(location(&path), &second).expect("identical favorite should update");
 
-        assert_eq!(inserted, first);
-        assert_eq!(updated.id, first.id);
-        assert_eq!(updated.saved, saved(SECOND_SAVED));
+        assert_eq!(first_outcome, FavoriteSaveOutcome::Added);
+        assert_eq!(second_outcome, FavoriteSaveOutcome::Refreshed);
         let state = load_from(location(&path));
         let favorites: Vec<_> = loaded_rows(&state).recognized().collect();
         assert_eq!(favorites.len(), 1);
-        assert_eq!(favorites[0], &updated);
+        assert_eq!(favorites[0].id, first.id);
+        assert_eq!(favorites[0].saved, saved(SECOND_SAVED));
+        assert_ne!(favorites[0].saved, first.saved);
+        assert_eq!(favorites[0].settings, first.settings);
         let text = fs::read_to_string(path).expect("updated favorites should be readable");
         assert!(text.contains(FIRST_ID));
         assert!(!text.contains(SECOND_ID));
@@ -1168,12 +1171,13 @@ future_parameter = 41
         let path = favorites_path(&directory);
         let favorite = Favorite::now(band_settings());
 
-        let inserted =
-            push_to_location(location(&path), favorite).expect("live favorite should be written");
+        let outcome =
+            push_to_location(location(&path), &favorite).expect("live favorite should be written");
         let state = load_from(location(&path));
         let loaded: Vec<_> = loaded_rows(&state).recognized().collect();
 
-        assert_eq!(loaded, [&inserted]);
+        assert_eq!(outcome, FavoriteSaveOutcome::Added);
+        assert_eq!(loaded, [&favorite]);
     }
 
     #[test]
@@ -1200,7 +1204,7 @@ future_parameter = 41
         let path = favorites_path(&directory);
         push_to_location(
             location(&path),
-            Favorite {
+            &Favorite {
                 id:       favorite_id(FIRST_ID),
                 saved:    saved(FIRST_SAVED),
                 settings: band_settings(),

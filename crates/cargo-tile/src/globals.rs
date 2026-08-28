@@ -38,6 +38,7 @@ use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::favorites;
 use crate::favorites::AttractSettings;
 use crate::favorites::FavoriteRows;
+use crate::favorites::FavoriteSaveOutcome;
 use crate::favorites::FavoritesFileState;
 use crate::favorites::FavoritesMutation;
 use crate::favorites::FavoritesRetryInstruction;
@@ -192,11 +193,20 @@ fn draw_recognized_settings(
 
 /// Persist the selected attract parameters and show the result.
 fn save_favorite(app: &mut App) {
-    let result = favorites::push(app.attract.current_settings());
+    let settings = app.attract.current_settings();
+    let attract_mode = settings.mode();
+    let result = favorites::push(settings);
     let (title, body) = match result {
-        Ok(favorite) => (
-            "Favorite saved",
-            format!("{} parameters saved", mode_label(favorite.settings.mode())),
+        Ok(FavoriteSaveOutcome::Added) => (
+            "Favorite added",
+            format!("{} parameters added to favorites", mode_label(attract_mode)),
+        ),
+        Ok(FavoriteSaveOutcome::Refreshed) => (
+            "Favorite refreshed",
+            format!(
+                "{} parameters were already saved, so the existing favorite's timestamp was refreshed rather than a second row being added",
+                mode_label(attract_mode)
+            ),
         ),
         Err(error) => {
             let binding = app

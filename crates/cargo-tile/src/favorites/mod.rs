@@ -20,6 +20,7 @@ pub(crate) use rows::Favorite;
 pub(crate) use rows::FavoriteId;
 pub(crate) use rows::FavoriteRowRecognition;
 pub(crate) use rows::FavoriteRows;
+pub(crate) use rows::FavoriteSaveOutcome;
 pub(crate) use rows::UnrecognizedFavoriteRemovalLocator;
 pub(crate) use rows::UnrecognizedFavoriteValue;
 #[cfg(test)]

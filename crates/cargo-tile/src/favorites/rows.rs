@@ -98,6 +98,15 @@ impl Favorite {
     }
 }
 
+/// Successful effect of saving one attract parameter set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FavoriteSaveOutcome {
+    /// A new favorite row was appended.
+    Added,
+    /// An existing row with identical settings received the new timestamp.
+    Refreshed,
+}
+
 /// The file key and spelling that prevented a favorite row from being recognized.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct UnrecognizedFavoriteValue {
@@ -263,30 +272,25 @@ impl FavoriteRows {
         self.recognitions.sort_by(compare_recognitions);
     }
 
-    pub(super) fn push(&mut self, candidate: Favorite) -> Favorite {
-        let existing = self.tables.iter().enumerate().find_map(|(index, table)| {
-            match recognize_favorite(table) {
-                Ok(favorite) if favorite.settings == candidate.settings => Some((index, favorite)),
-                Ok(_) | Err(_) => None,
-            }
+    pub(super) fn push(&mut self, candidate: &Favorite) -> FavoriteSaveOutcome {
+        let existing_index = self.tables.iter().position(|table| {
+            matches!(
+                recognize_favorite(table),
+                Ok(favorite) if favorite.settings == candidate.settings
+            )
         });
-        let saved = candidate.saved;
-        let favorite = if let Some((index, existing)) = existing {
+        let outcome = if let Some(index) = existing_index {
             self.tables[index].insert(
                 FAVORITE_SAVED_KEY.to_string(),
-                Value::String(timestamp_spelling(saved)),
+                Value::String(timestamp_spelling(candidate.saved)),
             );
-            Favorite {
-                id: existing.id,
-                saved,
-                settings: candidate.settings,
-            }
+            FavoriteSaveOutcome::Refreshed
         } else {
-            self.tables.push(table_from_favorite(&candidate));
-            candidate
+            self.tables.push(table_from_favorite(candidate));
+            FavoriteSaveOutcome::Added
         };
         self.refresh_recognitions();
-        favorite
+        outcome
     }
 
     pub(super) fn remove_recognized(&mut self, favorite_id: FavoriteId) {
