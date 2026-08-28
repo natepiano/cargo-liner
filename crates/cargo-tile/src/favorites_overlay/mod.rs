@@ -1,63 +1,63 @@
 //! App-owned modal for browsing attract-screen favorites.
 
+mod bindings;
+mod content;
+mod line_plan;
+
 use std::mem;
-use std::ops::Range;
-use std::path::Path;
-use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
-use chrono::Datelike;
-use chrono::Local;
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
-use tui_pane::Action;
-use tui_pane::BandDirection;
-use tui_pane::BandFraying;
 use tui_pane::Bindings;
-use tui_pane::ColumnSpec;
-use tui_pane::ColumnWidths;
 use tui_pane::Keymap;
 use tui_pane::Mode;
 use tui_pane::Pane;
-use tui_pane::PaneFocusState;
-use tui_pane::PixelFill;
-use tui_pane::PixelResolve;
 use tui_pane::PopupFrame;
 use tui_pane::Shortcuts;
 use tui_pane::TabStop;
-use tui_pane::TextDrift;
-use tui_pane::TextFill;
 use tui_pane::ToastStyle;
 use tui_pane::Viewport;
 use tui_pane::ViewportOverflow;
-use tui_pane::blend_color;
 use tui_pane::error_color;
 use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
-use tui_pane::selection_style;
-use tui_pane::text_default;
 use tui_pane::title_color;
 use tui_pane::warning_color;
-use unicode_width::UnicodeWidthStr;
 
+use self::bindings::FavoritesSurfaceBindings;
+use self::content::FavoriteRowLifecycle;
+use self::content::FavoriteRowLookup;
+use self::content::FavoriteRowLookupMut;
+pub(crate) use self::content::FavoritesOverlayContent;
+pub(crate) use self::content::UnrecognizedFavoritesView;
+use self::content::direction_name;
+use self::content::drift_name;
+use self::content::fraying_name;
+use self::content::pixel_fill_name;
+use self::content::pixel_resolve_name;
+use self::content::text_fill_name;
+use self::line_plan::CachedLinePlan;
+use self::line_plan::CachedOverlayLine;
+use self::line_plan::CachedSurfaceWidth;
+use self::line_plan::FavoriteSelection;
+use self::line_plan::build_line_plan;
+use self::line_plan::popup_height_cap;
+use self::line_plan::popup_width;
+use self::line_plan::rendered_line;
+use self::line_plan::row_lifecycle;
+use self::line_plan::wrapped_notice_height;
 use crate::app::App;
 use crate::app::AppOverlay;
 use crate::app::AppPaneId;
-use crate::attract;
-use crate::attract::AttractMode;
 use crate::attract::SettingsApplicationOutcome;
-use crate::constants::COLUMN_GAP;
 use crate::constants::CONTENT_MIN_HEIGHT;
-use crate::constants::CURSOR_WIDTH;
 use crate::constants::FAVORITE_REMOVAL_FADE;
 use crate::constants::FAVORITES_SCOPE;
 use crate::constants::FAVORITES_SECTION;
@@ -66,22 +66,14 @@ use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
 use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
-use crate::constants::POPUP_MAX_WIDTH;
-use crate::constants::POPUP_SIDE_MARGIN;
 use crate::favorites;
 use crate::favorites::AttractSettings;
-use crate::favorites::Favorite;
 use crate::favorites::FavoriteId;
 use crate::favorites::FavoriteRemovalTarget;
-use crate::favorites::FavoriteRowRecognition;
-use crate::favorites::FavoriteRows;
 use crate::favorites::FavoritesFileState;
 use crate::favorites::FavoritesMutation;
 use crate::favorites::FavoritesMutationError;
 use crate::favorites::FavoritesRetryInstruction;
-use crate::favorites::ResolvedBinding;
-use crate::favorites::UnrecognizedFavoriteValue;
-use crate::globals::AppGlobalAction;
 use crate::terminal::VisualDeadline;
 
 tui_pane::action_enum! {
@@ -142,500 +134,6 @@ fn dispatch(action: FavoritesOverlayAction, app: &mut App) {
         FavoritesOverlayActionOutcome::Close => close_overlay(&mut overlay, app),
     }
     app.favorites_overlay = overlay;
-}
-
-/// The content carried by an open favorites modal.
-#[derive(Clone, Debug)]
-pub(crate) enum FavoritesOverlayContent {
-    /// At least one recognized favorite, with any unrecognized rows retained below it.
-    Rows(FavoriteRowsView),
-    /// No favorites file has been created yet, or its loaded row list is empty.
-    NoneSaved,
-    /// The file has rows, but this build recognizes none of them.
-    OnlyUnrecognized(UnrecognizedFavoritesView),
-    /// The operating system supplied no configuration directory.
-    LocationUnavailable,
-    /// The file exists but its TOML or row structure is invalid.
-    Unparseable {
-        /// Path holding the invalid content.
-        path:  PathBuf,
-        /// Parse failure text.
-        error: String,
-    },
-    /// The file exists but could not be read.
-    Unreadable {
-        /// Path that could not be read.
-        path:  PathBuf,
-        /// File-system failure text.
-        error: String,
-    },
-}
-
-impl From<FavoritesFileState> for FavoritesOverlayContent {
-    fn from(state: FavoritesFileState) -> Self {
-        match state {
-            FavoritesFileState::LocationUnavailable => Self::LocationUnavailable,
-            FavoritesFileState::Missing { .. } => Self::NoneSaved,
-            FavoritesFileState::Loaded { rows, .. } => {
-                let view = FavoriteRowsView::from(&rows);
-                if view.saved_count() > 0 {
-                    Self::Rows(view)
-                } else if view.unrecognized.is_empty() {
-                    Self::NoneSaved
-                } else {
-                    Self::OnlyUnrecognized(UnrecognizedFavoritesView {
-                        rows: view.unrecognized,
-                    })
-                }
-            },
-            FavoritesFileState::Unparseable { path, error } => Self::Unparseable { path, error },
-            FavoritesFileState::Unreadable { path, error } => Self::Unreadable { path, error },
-        }
-    }
-}
-
-impl FavoritesOverlayContent {
-    fn saved_count(&self) -> usize {
-        match self {
-            Self::Rows(rows) => rows.saved_count(),
-            Self::NoneSaved
-            | Self::OnlyUnrecognized(_)
-            | Self::LocationUnavailable
-            | Self::Unparseable { .. }
-            | Self::Unreadable { .. } => 0,
-        }
-    }
-}
-
-/// Cached, display-ready recognized favorites and diagnostics.
-#[derive(Clone, Debug)]
-pub(crate) struct FavoriteRowsView {
-    sections:     Vec<FavoriteModeSection>,
-    unrecognized: Vec<UnrecognizedFavoriteView>,
-}
-
-impl From<&FavoriteRows> for FavoriteRowsView {
-    fn from(rows: &FavoriteRows) -> Self {
-        let mut sections: Vec<FavoriteModeSection> = Vec::new();
-        let mut unrecognized = Vec::new();
-        for recognition in rows.iter() {
-            match recognition {
-                FavoriteRowRecognition::Recognized(favorite) => {
-                    let mode = favorite.settings.mode();
-                    if let Some(section) = sections.iter_mut().find(|section| section.mode == mode)
-                    {
-                        section.rows.push(FavoriteRowView::from(favorite));
-                    } else {
-                        sections.push(FavoriteModeSection {
-                            mode,
-                            rows: vec![FavoriteRowView::from(favorite)],
-                        });
-                    }
-                },
-                FavoriteRowRecognition::Unrecognized { diagnostic, .. } => {
-                    unrecognized.push(UnrecognizedFavoriteView::from(diagnostic));
-                },
-            }
-        }
-        Self {
-            sections,
-            unrecognized,
-        }
-    }
-}
-
-impl FavoriteRowsView {
-    fn saved_count(&self) -> usize { self.sections.iter().map(|section| section.rows.len()).sum() }
-
-    fn row(&self, favorite_id: FavoriteId) -> FavoriteRowLookup<'_> {
-        self.sections
-            .iter()
-            .flat_map(|section| &section.rows)
-            .find(|row| row.id == favorite_id)
-            .map_or(FavoriteRowLookup::Missing, FavoriteRowLookup::Found)
-    }
-
-    fn row_mut(&mut self, favorite_id: FavoriteId) -> FavoriteRowLookupMut<'_> {
-        self.sections
-            .iter_mut()
-            .flat_map(|section| &mut section.rows)
-            .find(|row| row.id == favorite_id)
-            .map_or(FavoriteRowLookupMut::Missing, FavoriteRowLookupMut::Found)
-    }
-
-    fn remove(&mut self, favorite_id: FavoriteId) {
-        for section in &mut self.sections {
-            section.rows.retain(|row| row.id != favorite_id);
-        }
-        self.sections.retain(|section| !section.rows.is_empty());
-    }
-
-    fn removing_ids(&self) -> Vec<FavoriteId> {
-        self.sections
-            .iter()
-            .flat_map(|section| &section.rows)
-            .filter_map(|row| match row.lifecycle {
-                FavoriteRowLifecycle::Active => None,
-                FavoriteRowLifecycle::Removing { .. } => Some(row.id),
-            })
-            .collect()
-    }
-}
-
-enum FavoriteRowLookup<'a> {
-    Found(&'a FavoriteRowView),
-    Missing,
-}
-
-enum FavoriteRowLookupMut<'a> {
-    Found(&'a mut FavoriteRowView),
-    Missing,
-}
-
-#[derive(Clone, Debug)]
-struct FavoriteModeSection {
-    mode: AttractMode,
-    rows: Vec<FavoriteRowView>,
-}
-
-#[derive(Clone, Debug)]
-struct FavoriteRowView {
-    id:        FavoriteId,
-    settings:  AttractSettings,
-    saved:     String,
-    cells:     Vec<String>,
-    lifecycle: FavoriteRowLifecycle,
-}
-
-impl From<&Favorite> for FavoriteRowView {
-    fn from(favorite: &Favorite) -> Self {
-        Self {
-            id:        favorite.id,
-            settings:  favorite.settings,
-            saved:     format_timestamp(favorite),
-            cells:     favorite_cells(favorite.settings),
-            lifecycle: FavoriteRowLifecycle::Active,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FavoriteRowLifecycle {
-    Active,
-    Removing { since: Instant },
-}
-
-/// Display-ready rows a newer or misspelled file left unrecognized.
-#[derive(Clone, Debug)]
-pub(crate) struct UnrecognizedFavoritesView {
-    rows: Vec<UnrecognizedFavoriteView>,
-}
-
-#[derive(Clone, Debug)]
-struct UnrecognizedFavoriteView {
-    key:      String,
-    spelling: String,
-}
-
-impl From<&UnrecognizedFavoriteValue> for UnrecognizedFavoriteView {
-    fn from(value: &UnrecognizedFavoriteValue) -> Self {
-        Self {
-            key:      value.key.clone(),
-            spelling: value.spelling.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ParameterColumnDescriptor {
-    heading:      &'static str,
-    action_names: &'static [&'static str],
-    separator:    &'static str,
-}
-
-const BAND_COLUMNS: [ParameterColumnDescriptor; 5] = [
-    ParameterColumnDescriptor {
-        heading:      "Direction",
-        action_names: &["travel_left", "travel_up", "travel_down", "travel_right"],
-        separator:    "",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Width",
-        action_names: &["thinner", "wider"],
-        separator:    "/",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Speed",
-        action_names: &["slower", "faster"],
-        separator:    "/",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Tail",
-        action_names: &["tail_slower", "tail_faster"],
-        separator:    "/",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Fraying",
-        action_names: &["cycle_fraying"],
-        separator:    "",
-    },
-];
-
-const TEXT_COLUMNS: [ParameterColumnDescriptor; 5] = [
-    ParameterColumnDescriptor {
-        heading:      "Direction",
-        action_names: &["travel_left", "travel_up", "travel_down", "travel_right"],
-        separator:    "",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Speed",
-        action_names: &["slower", "faster"],
-        separator:    "/",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Spread",
-        action_names: &["spread_narrower", "spread_wider"],
-        separator:    "/",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Drift",
-        action_names: &["cycle_drift"],
-        separator:    "",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Fill",
-        action_names: &["cycle_fill"],
-        separator:    "",
-    },
-];
-
-const PIXEL_COLUMNS: [ParameterColumnDescriptor; 6] = [
-    ParameterColumnDescriptor {
-        heading:      "Direction",
-        action_names: &["sweep_left", "sweep_up", "sweep_down", "sweep_right"],
-        separator:    "",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Speed",
-        action_names: &["slower", "faster"],
-        separator:    "/",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Wave",
-        action_names: &["wave_narrower", "wave_wider"],
-        separator:    "/",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Block",
-        action_names: &["sharper", "coarser"],
-        separator:    "/",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Resolve",
-        action_names: &["cycle_resolve"],
-        separator:    "",
-    },
-    ParameterColumnDescriptor {
-        heading:      "Fill",
-        action_names: &["cycle_fill"],
-        separator:    "",
-    },
-];
-
-const fn column_descriptors(mode: AttractMode) -> &'static [ParameterColumnDescriptor] {
-    match mode {
-        AttractMode::MovingBand => &BAND_COLUMNS,
-        AttractMode::MovingText => &TEXT_COLUMNS,
-        AttractMode::Pixelate => &PIXEL_COLUMNS,
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ModeColumnBindings {
-    mode:   AttractMode,
-    labels: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-struct FavoritesSurfaceBindings {
-    columns:  Vec<ModeColumnBindings>,
-    previous: ResolvedBinding,
-    next:     ResolvedBinding,
-    left:     ResolvedBinding,
-    right:    ResolvedBinding,
-    load:     ResolvedBinding,
-    delete:   ResolvedBinding,
-    close:    ResolvedBinding,
-    save:     ResolvedBinding,
-    open:     ResolvedBinding,
-}
-
-impl Default for FavoritesSurfaceBindings {
-    fn default() -> Self {
-        Self {
-            columns:  Vec::new(),
-            previous: ResolvedBinding::for_action("select_previous", None),
-            next:     ResolvedBinding::for_action("select_next", None),
-            left:     ResolvedBinding::for_action("page_columns_left", None),
-            right:    ResolvedBinding::for_action("page_columns_right", None),
-            load:     ResolvedBinding::for_action("load", None),
-            delete:   ResolvedBinding::for_action("delete", None),
-            close:    ResolvedBinding::for_action("close", None),
-            save:     ResolvedBinding::for_action("save_favorite", None),
-            open:     ResolvedBinding::for_action("open_favorites", None),
-        }
-    }
-}
-
-impl FavoritesSurfaceBindings {
-    fn resolve(keymap: &Keymap<App>) -> Self {
-        let columns = [
-            AttractMode::MovingBand,
-            AttractMode::MovingText,
-            AttractMode::Pixelate,
-        ]
-        .into_iter()
-        .map(|mode| ModeColumnBindings {
-            mode,
-            labels: column_descriptors(mode)
-                .iter()
-                .map(|descriptor| resolve_column_label(keymap, mode, *descriptor))
-                .collect(),
-        })
-        .collect();
-        Self {
-            columns,
-            previous: resolve_pane_binding(keymap, AppPaneId::Favorites, "select_previous"),
-            next: resolve_pane_binding(keymap, AppPaneId::Favorites, "select_next"),
-            left: resolve_pane_binding(keymap, AppPaneId::Favorites, "page_columns_left"),
-            right: resolve_pane_binding(keymap, AppPaneId::Favorites, "page_columns_right"),
-            load: resolve_pane_binding(keymap, AppPaneId::Favorites, "load"),
-            delete: resolve_pane_binding(keymap, AppPaneId::Favorites, "delete"),
-            close: resolve_pane_binding(keymap, AppPaneId::Favorites, "close"),
-            save: resolve_global_binding(keymap, "save_favorite"),
-            open: resolve_global_binding(keymap, "open_favorites"),
-        }
-    }
-
-    fn column_labels(&self, mode: AttractMode) -> &[String] {
-        self.columns
-            .iter()
-            .find(|bindings| bindings.mode == mode)
-            .map_or(&[], |bindings| bindings.labels.as_slice())
-    }
-
-    fn footer(&self, last_horizontal_column_page: usize) -> String {
-        let movement = format!(
-            "{}/{} move",
-            self.previous.display_short(),
-            self.next.display_short(),
-        );
-        let mutations = format!(
-            "{} load   {} delete",
-            self.load.display_short(),
-            self.delete.display_short(),
-        );
-        let close = format!("{} close", self.close.display_short());
-        if last_horizontal_column_page == 0 {
-            format!("{movement}   {mutations}   {close}")
-        } else {
-            format!(
-                "{movement}   {}/{} page   {mutations}   {close}",
-                self.left.display_short(),
-                self.right.display_short(),
-            )
-        }
-    }
-
-    fn empty_notice(&self) -> String {
-        format!(
-            "No favorites saved -- press {}, then {} while the attract screen is up",
-            self.close.display_short(),
-            self.save.display_short(),
-        )
-    }
-
-    fn delete_retry(&self) -> FavoritesRetryInstruction {
-        FavoritesRetryInstruction::Press(self.delete.clone())
-    }
-
-    fn close_delete_retry(&self) -> FavoritesRetryInstruction {
-        FavoritesRetryInstruction::ReopenThenPress {
-            open:  self.open.clone(),
-            retry: self.delete.clone(),
-        }
-    }
-}
-
-fn resolve_pane_binding(
-    keymap: &Keymap<App>,
-    pane: AppPaneId,
-    action_name: &'static str,
-) -> ResolvedBinding {
-    ResolvedBinding::for_action(action_name, keymap.key_for_toml_key(pane, action_name))
-}
-
-fn resolve_global_binding(keymap: &Keymap<App>, action_name: &'static str) -> ResolvedBinding {
-    let binding = AppGlobalAction::from_toml_key(action_name).and_then(|action| {
-        keymap
-            .globals::<AppGlobalAction>()
-            .and_then(|scope| scope.key_for(action))
-            .cloned()
-    });
-    ResolvedBinding::for_action(action_name, binding)
-}
-
-fn resolve_column_label(
-    keymap: &Keymap<App>,
-    mode: AttractMode,
-    descriptor: ParameterColumnDescriptor,
-) -> String {
-    descriptor
-        .action_names
-        .iter()
-        .map(|action| {
-            resolve_pane_binding(keymap, AppPaneId::Attract(mode), action).display_short()
-        })
-        .collect::<Vec<_>>()
-        .join(descriptor.separator)
-}
-
-#[derive(Clone, Debug)]
-enum CachedOverlayLine {
-    Static(Line<'static>),
-    Favorite { id: FavoriteId, tail: String },
-}
-
-#[derive(Clone, Debug, Default)]
-struct CachedLinePlan {
-    lines:                       Vec<CachedOverlayLine>,
-    selectable_line_index:       Vec<usize>,
-    navigation_line_index:       Vec<usize>,
-    last_horizontal_column_page: usize,
-}
-
-impl CachedLinePlan {
-    fn finish_navigation(&mut self) {
-        self.navigation_line_index
-            .clone_from(&self.selectable_line_index);
-        if let Some(last_favorite_line) = self
-            .lines
-            .iter()
-            .rposition(|line| matches!(line, CachedOverlayLine::Favorite { .. }))
-        {
-            self.navigation_line_index
-                .extend(last_favorite_line.saturating_add(1)..self.lines.len());
-        } else {
-            self.navigation_line_index.extend(0..self.lines.len());
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum CachedSurfaceWidth {
-    #[default]
-    NeverRendered,
-    Rendered(u16),
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1304,502 +802,6 @@ fn normalize_content_after_removal(content: &mut FavoritesOverlayContent) {
     };
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FavoriteSelection {
-    Nothing,
-    Row {
-        id:       FavoriteId,
-        settings: AttractSettings,
-    },
-}
-
-fn rendered_line(
-    line: &CachedOverlayLine,
-    selected: FavoriteSelection,
-    lifecycle: FavoriteRowLifecycle,
-    now: Instant,
-) -> Line<'static> {
-    match line {
-        CachedOverlayLine::Static(line) => line.clone(),
-        CachedOverlayLine::Favorite { id, tail } => {
-            let is_selected =
-                matches!(selected, FavoriteSelection::Row { id: selected, .. } if selected == *id);
-            let marker = if is_selected { "▸ " } else { "  " };
-            let line = Line::from(vec![Span::raw(marker), Span::raw(tail.clone())]);
-            if is_selected {
-                line.style(selection_style(PaneFocusState::Active))
-            } else {
-                line.style(Style::default().fg(blend_color(
-                    text_default(),
-                    attract::ground(),
-                    removal_alpha(lifecycle, now),
-                )))
-            }
-        },
-    }
-}
-
-fn row_lifecycle(state: &AppOverlay, line: &CachedOverlayLine) -> FavoriteRowLifecycle {
-    let CachedOverlayLine::Favorite { id, .. } = line else {
-        return FavoriteRowLifecycle::Active;
-    };
-    let AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)) = state else {
-        return FavoriteRowLifecycle::Active;
-    };
-    match rows.row(*id) {
-        FavoriteRowLookup::Found(row) => row.lifecycle,
-        FavoriteRowLookup::Missing => FavoriteRowLifecycle::Active,
-    }
-}
-
-fn removal_alpha(lifecycle: FavoriteRowLifecycle, now: Instant) -> u8 {
-    let FavoriteRowLifecycle::Removing { since } = lifecycle else {
-        return 0;
-    };
-    let elapsed = now.duration_since(since);
-    if elapsed >= FAVORITE_REMOVAL_FADE {
-        return u8::MAX;
-    }
-    let scaled =
-        elapsed.as_nanos().saturating_mul(u128::from(u8::MAX)) / FAVORITE_REMOVAL_FADE.as_nanos();
-    u8::try_from(scaled).unwrap_or(u8::MAX)
-}
-
-fn build_line_plan(
-    content: &FavoritesOverlayContent,
-    bindings: &FavoritesSurfaceBindings,
-    width: u16,
-    horizontal_page: usize,
-) -> CachedLinePlan {
-    let mut plan = CachedLinePlan::default();
-    match content {
-        FavoritesOverlayContent::Rows(rows) => {
-            let table_layouts = rows
-                .sections
-                .iter()
-                .map(|section| FavoriteSectionTableLayout::measure(section, bindings))
-                .collect::<Vec<_>>();
-            plan.last_horizontal_column_page = table_layouts
-                .iter()
-                .map(|layout| layout.last_horizontal_column_page(width))
-                .max()
-                .unwrap_or(0);
-            let horizontal_page = horizontal_page.min(plan.last_horizontal_column_page);
-            for (section, table_layout) in rows.sections.iter().zip(&table_layouts) {
-                append_section(
-                    &mut plan,
-                    section,
-                    table_layout,
-                    bindings,
-                    width,
-                    horizontal_page,
-                );
-            }
-            append_unrecognized(&mut plan, &rows.unrecognized);
-        },
-        FavoritesOverlayContent::NoneSaved => plan.lines.push(static_line(
-            bindings.empty_notice(),
-            Style::default().fg(text_default()),
-        )),
-        FavoritesOverlayContent::OnlyUnrecognized(rows) => {
-            append_unrecognized(&mut plan, &rows.rows);
-        },
-        FavoritesOverlayContent::LocationUnavailable => plan.lines.push(static_line(
-            "Favorites location unavailable -- no OS configuration directory".to_string(),
-            Style::default().fg(error_color()),
-        )),
-        FavoritesOverlayContent::Unparseable { path, error } => {
-            append_failure(&mut plan, "Favorites file is unparseable", path, error);
-        },
-        FavoritesOverlayContent::Unreadable { path, error } => {
-            append_failure(&mut plan, "Favorites file is unreadable", path, error);
-        },
-    }
-    plan.finish_navigation();
-    plan
-}
-
-fn append_failure(plan: &mut CachedLinePlan, heading: &str, path: &Path, error: &str) {
-    plan.lines.push(static_line(
-        heading.to_string(),
-        Style::default()
-            .fg(error_color())
-            .add_modifier(Modifier::BOLD),
-    ));
-    plan.lines.push(static_line(
-        format!("  {}: {error}", path.display()),
-        Style::default().fg(text_default()),
-    ));
-}
-
-fn append_section(
-    plan: &mut CachedLinePlan,
-    section: &FavoriteModeSection,
-    table_layout: &FavoriteSectionTableLayout,
-    bindings: &FavoritesSurfaceBindings,
-    width: u16,
-    horizontal_page: usize,
-) {
-    if !plan.lines.is_empty() {
-        plan.lines
-            .push(static_line(String::new(), Style::default()));
-    }
-    plan.lines.push(static_line(
-        format!("Attract: {}", mode_label(section.mode)),
-        Style::default()
-            .fg(title_color())
-            .add_modifier(Modifier::BOLD),
-    ));
-
-    let descriptors = column_descriptors(section.mode);
-    let key_labels = bindings.column_labels(section.mode);
-    let visible = table_layout.visible_parameter_columns(horizontal_page, width);
-    let headings = descriptors
-        .iter()
-        .map(|descriptor| descriptor.heading)
-        .collect::<Vec<_>>();
-    plan.lines.push(static_line(
-        format_table_line(
-            "Saved",
-            &headings,
-            table_layout.saved_width,
-            &table_layout.parameter_widths,
-            visible.clone(),
-        ),
-        Style::default()
-            .fg(label_color())
-            .add_modifier(Modifier::BOLD),
-    ));
-    plan.lines.push(static_line(
-        format_table_line(
-            "",
-            key_labels,
-            table_layout.saved_width,
-            &table_layout.parameter_widths,
-            visible.clone(),
-        ),
-        Style::default().fg(label_color()),
-    ));
-    for row in &section.rows {
-        let line_index = plan.lines.len();
-        if row.lifecycle == FavoriteRowLifecycle::Active {
-            plan.selectable_line_index.push(line_index);
-        }
-        plan.lines.push(CachedOverlayLine::Favorite {
-            id:   row.id,
-            tail: format_table_tail(
-                &row.saved,
-                &row.cells,
-                table_layout.saved_width,
-                &table_layout.parameter_widths,
-                visible.clone(),
-            ),
-        });
-    }
-}
-
-fn append_unrecognized(plan: &mut CachedLinePlan, rows: &[UnrecognizedFavoriteView]) {
-    if rows.is_empty() {
-        return;
-    }
-    if !plan.lines.is_empty() {
-        plan.lines
-            .push(static_line(String::new(), Style::default()));
-    }
-    plan.lines.push(static_line(
-        "Unrecognized favorites".to_string(),
-        Style::default()
-            .fg(error_color())
-            .add_modifier(Modifier::BOLD),
-    ));
-    plan.lines.extend(rows.iter().map(|row| {
-        static_line(
-            format!("  {} = {:?} is not recognized", row.key, row.spelling),
-            Style::default().fg(error_color()),
-        )
-    }));
-}
-
-fn static_line(text: String, style: Style) -> CachedOverlayLine {
-    CachedOverlayLine::Static(Line::from(text).style(style))
-}
-
-#[derive(Clone, Debug)]
-struct FavoriteSectionTableLayout {
-    saved_width:      u16,
-    parameter_widths: ColumnWidths,
-}
-
-impl FavoriteSectionTableLayout {
-    fn measure(section: &FavoriteModeSection, bindings: &FavoritesSurfaceBindings) -> Self {
-        let descriptors = column_descriptors(section.mode);
-        let key_labels = bindings.column_labels(section.mode);
-        Self {
-            saved_width:      measured_saved_width(&section.rows),
-            parameter_widths: measured_parameter_widths(descriptors, key_labels, &section.rows),
-        }
-    }
-
-    fn visible_parameter_columns(&self, horizontal_page: usize, width: u16) -> Range<usize> {
-        visible_parameter_columns(
-            horizontal_page,
-            width,
-            self.saved_width,
-            &self.parameter_widths,
-        )
-    }
-
-    fn last_horizontal_column_page(&self, width: u16) -> usize {
-        let column_count = self.parameter_widths.to_constraints().len();
-        (0..column_count)
-            .find(|page| self.visible_parameter_columns(*page, width).end == column_count)
-            .unwrap_or_else(|| column_count.saturating_sub(1))
-    }
-}
-
-fn measured_saved_width(rows: &[FavoriteRowView]) -> u16 {
-    rows.iter().fold(5_u16, |width, row| {
-        width.max(u16::try_from(UnicodeWidthStr::width(row.saved.as_str())).unwrap_or(u16::MAX))
-    })
-}
-
-fn measured_parameter_widths(
-    descriptors: &[ParameterColumnDescriptor],
-    key_labels: &[String],
-    rows: &[FavoriteRowView],
-) -> ColumnWidths {
-    let specs = descriptors
-        .iter()
-        .map(|descriptor| {
-            ColumnSpec::fit(
-                u16::try_from(UnicodeWidthStr::width(descriptor.heading)).unwrap_or(u16::MAX),
-            )
-        })
-        .collect();
-    let mut widths = ColumnWidths::new(specs);
-    for (column, label) in key_labels.iter().enumerate() {
-        widths.observe_cell_usize(column, UnicodeWidthStr::width(label.as_str()));
-    }
-    for row in rows {
-        for (column, cell) in row.cells.iter().enumerate() {
-            widths.observe_cell_usize(column, UnicodeWidthStr::width(cell.as_str()));
-        }
-    }
-    widths
-}
-
-fn visible_parameter_columns(
-    horizontal_page: usize,
-    width: u16,
-    saved_width: u16,
-    parameter_widths: &ColumnWidths,
-) -> Range<usize> {
-    let column_count = parameter_widths.to_constraints().len();
-    if column_count == 0 {
-        return 0..0;
-    }
-    let start = horizontal_page.min(column_count - 1);
-    let pinned = CURSOR_WIDTH.saturating_add(usize::from(saved_width));
-    let available = usize::from(width).saturating_sub(pinned);
-    let mut used: usize = 0;
-    let mut end = start;
-    for column in start..column_count {
-        let cost = usize::from(parameter_widths.get(column)).saturating_add(COLUMN_GAP);
-        if end > start && used.saturating_add(cost) > available {
-            break;
-        }
-        used = used.saturating_add(cost);
-        end = column + 1;
-    }
-    start..end
-}
-
-fn format_table_line<T: AsRef<str>>(
-    saved: &str,
-    cells: &[T],
-    saved_width: u16,
-    parameter_widths: &ColumnWidths,
-    visible: Range<usize>,
-) -> String {
-    format!(
-        "  {}",
-        format_table_tail(saved, cells, saved_width, parameter_widths, visible)
-    )
-}
-
-fn format_table_tail<T: AsRef<str>>(
-    saved: &str,
-    cells: &[T],
-    saved_width: u16,
-    parameter_widths: &ColumnWidths,
-    visible: Range<usize>,
-) -> String {
-    let mut line = String::new();
-    push_display_padded(&mut line, saved, usize::from(saved_width));
-    for column in visible {
-        line.push_str(&" ".repeat(COLUMN_GAP));
-        if let Some(cell) = cells.get(column) {
-            push_display_padded(
-                &mut line,
-                cell.as_ref(),
-                usize::from(parameter_widths.get(column)),
-            );
-        }
-    }
-    line
-}
-
-fn push_display_padded(line: &mut String, value: &str, width: usize) {
-    line.push_str(value);
-    line.push_str(&" ".repeat(width.saturating_sub(UnicodeWidthStr::width(value))));
-}
-
-fn popup_width(area: Rect) -> u16 {
-    area.width
-        .saturating_sub(POPUP_SIDE_MARGIN)
-        .min(POPUP_MAX_WIDTH)
-        .max(area.width.min(POPUP_CHROME_WIDTH))
-}
-
-fn popup_height_cap(area: Rect) -> u16 {
-    let eighty_percent = u32::from(area.height).saturating_mul(80) / 100;
-    u16::try_from(eighty_percent)
-        .unwrap_or(u16::MAX)
-        .max((POPUP_CHROME_HEIGHT + FOOTER_HEIGHT).min(area.height))
-}
-
-fn wrapped_notice_height(message: &str, surface_width: u16) -> u16 {
-    let available_width = usize::from(surface_width);
-    if message.is_empty() || available_width == 0 {
-        return 0;
-    }
-
-    let mut wrapped_lines = 0_usize;
-    for logical_line in message.split('\n') {
-        wrapped_lines = wrapped_lines.saturating_add(1);
-        let mut used_width = 0_usize;
-        for word in logical_line.split_whitespace() {
-            let word_width = UnicodeWidthStr::width(word);
-            let separator_width = usize::from(used_width > 0);
-            if used_width
-                .saturating_add(separator_width)
-                .saturating_add(word_width)
-                <= available_width
-            {
-                used_width = used_width
-                    .saturating_add(separator_width)
-                    .saturating_add(word_width);
-                continue;
-            }
-
-            if used_width > 0 {
-                wrapped_lines = wrapped_lines.saturating_add(1);
-            }
-            let full_lines = word_width / available_width;
-            let remainder = word_width % available_width;
-            if remainder == 0 && full_lines > 0 {
-                wrapped_lines = wrapped_lines.saturating_add(full_lines.saturating_sub(1));
-                used_width = available_width;
-            } else {
-                wrapped_lines = wrapped_lines.saturating_add(full_lines);
-                used_width = remainder;
-            }
-        }
-    }
-
-    u16::try_from(wrapped_lines).unwrap_or(u16::MAX)
-}
-
-fn format_timestamp(favorite: &Favorite) -> String {
-    if favorite.saved.year() == Local::now().year() {
-        favorite.saved.format("%d %b %H:%M:%S").to_string()
-    } else {
-        favorite.saved.format("%d %b %Y %H:%M:%S").to_string()
-    }
-}
-
-fn favorite_cells(settings: AttractSettings) -> Vec<String> {
-    match settings {
-        AttractSettings::MovingBand(settings) => vec![
-            direction_name(settings.direction).to_string(),
-            settings.width.to_string(),
-            settings.speed.to_string(),
-            settings.tail_speed.to_string(),
-            fraying_name(settings.fraying).to_string(),
-        ],
-        AttractSettings::MovingText(settings) => vec![
-            direction_name(settings.direction).to_string(),
-            settings.speed.to_string(),
-            settings.spread.to_string(),
-            drift_name(settings.drift).to_string(),
-            text_fill_name(settings.fill).to_string(),
-        ],
-        AttractSettings::Pixelate(settings) => vec![
-            direction_name(settings.direction).to_string(),
-            settings.speed.to_string(),
-            settings.wave_percent.to_string(),
-            settings.block_columns.to_string(),
-            pixel_resolve_name(settings.resolve).to_string(),
-            pixel_fill_name(settings.fill).to_string(),
-        ],
-    }
-}
-
-const fn mode_label(mode: AttractMode) -> &'static str {
-    match mode {
-        AttractMode::MovingBand => "Moving Band",
-        AttractMode::MovingText => "Moving Text",
-        AttractMode::Pixelate => "Pixelate",
-    }
-}
-
-const fn direction_name(direction: BandDirection) -> &'static str {
-    match direction {
-        BandDirection::Left => "left",
-        BandDirection::Right => "right",
-        BandDirection::Up => "up",
-        BandDirection::Down => "down",
-    }
-}
-
-const fn fraying_name(fraying: BandFraying) -> &'static str {
-    match fraying {
-        BandFraying::Trailing => "trailing",
-        BandFraying::Both => "both",
-        BandFraying::Leading => "leading",
-        BandFraying::Neither => "neither",
-    }
-}
-
-const fn drift_name(drift: TextDrift) -> &'static str {
-    match drift {
-        TextDrift::Together => "together",
-        TextDrift::Apart => "apart",
-    }
-}
-
-const fn text_fill_name(fill: TextFill) -> &'static str {
-    match fill {
-        TextFill::Bars => "bars",
-        TextFill::Glyphs => "glyphs",
-    }
-}
-
-const fn pixel_resolve_name(resolve: PixelResolve) -> &'static str {
-    match resolve {
-        PixelResolve::Blend => "blend",
-        PixelResolve::Step => "step",
-        PixelResolve::Scatter => "scatter",
-    }
-}
-
-const fn pixel_fill_name(fill: PixelFill) -> &'static str {
-    match fill {
-        PixelFill::Solid => "solid",
-        PixelFill::Shades => "shades",
-    }
-}
-
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -1809,24 +811,34 @@ const fn pixel_fill_name(fill: PixelFill) -> &'static str {
 )]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use tempfile::TempDir;
+    use tui_pane::BandDirection;
+    use tui_pane::BandFraying;
     use tui_pane::FocusedPane;
     use tui_pane::Framework;
     use tui_pane::KeyBind;
-    use tui_pane::KeySequence;
     use tui_pane::PixelFill;
     use tui_pane::PixelResolve;
     use tui_pane::ToastVisualDeadline;
+    use unicode_width::UnicodeWidthStr;
 
+    use super::bindings::BAND_COLUMNS_FOR_TEST as BAND_COLUMNS;
+    use super::content::FavoriteRowsView;
+    use super::line_plan::FavoriteSectionTableLayoutForTest;
+    use super::line_plan::favorite_section_table_layout_for_test;
+    use super::line_plan::removal_alpha_for_test as removal_alpha;
     use super::*;
     use crate::app::Updates;
     use crate::attract::AttractGridPresentation;
     use crate::attract::AttractVisibilityInstruction;
     use crate::attract::Work;
+    use crate::constants::COLUMN_GAP;
+    use crate::constants::CURSOR_WIDTH;
     use crate::favorites;
     use crate::keymap;
 
@@ -1937,12 +949,12 @@ fraying = "leading"
         UnicodeWidthStr::width(&line[..byte_index])
     }
 
-    fn moving_band_table_layout(keymap: &Keymap<App>) -> FavoriteSectionTableLayout {
+    fn moving_band_table_layout(keymap: &Keymap<App>) -> FavoriteSectionTableLayoutForTest {
         let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
             .expect("moving-band fixture should parse");
         let view = FavoriteRowsView::from(&rows);
         let bindings = FavoritesSurfaceBindings::resolve(keymap);
-        FavoriteSectionTableLayout::measure(&view.sections[0], &bindings)
+        favorite_section_table_layout_for_test(&view.sections[0], &bindings)
     }
 
     fn open_at_width(
@@ -2019,68 +1031,6 @@ fraying = "leading"
     }
 
     #[test]
-    fn column_descriptors_resolve_the_complete_default_matrix() {
-        let keymap = keymap_from("");
-        let bindings = FavoritesSurfaceBindings::resolve(&keymap);
-
-        assert_eq!(
-            bindings.column_labels(AttractMode::MovingBand),
-            ["←↑↓→", "-/+", "</>", "[/]", "v"]
-        );
-        assert_eq!(
-            bindings.column_labels(AttractMode::MovingText),
-            ["←↑↓→", "</>", "[/]", "v", "t"]
-        );
-        assert_eq!(
-            bindings.column_labels(AttractMode::Pixelate),
-            ["←↑↓→", "</>", "[/]", "-/+", "v", "t"]
-        );
-        assert_eq!(PIXEL_COLUMNS[0].action_names[0], "sweep_left");
-        assert_eq!(BAND_COLUMNS[0].action_names[0], "travel_left");
-        assert_eq!(TEXT_COLUMNS[0].action_names[0], "travel_left");
-    }
-
-    #[test]
-    fn column_footer_and_empty_labels_follow_rebinding() {
-        let keymap = keymap_from(
-            r#"
-[global]
-save_favorite = "y"
-
-[favorites]
-select_previous = "w"
-select_next = "s"
-page_columns_left = "a"
-page_columns_right = "d"
-close = "z"
-
-[attract_pixelate]
-sweep_left = "a"
-sweep_up = "u"
-sweep_down = "n"
-sweep_right = "r"
-"#,
-        );
-        let bindings = FavoritesSurfaceBindings::resolve(&keymap);
-
-        assert_eq!(bindings.column_labels(AttractMode::Pixelate)[0], "aunr");
-        assert_eq!(
-            bindings.footer(1),
-            "w/s move   a/d page   enter load   x delete   z close"
-        );
-        assert_eq!(
-            bindings.footer(0),
-            "w/s move   enter load   x delete   z close"
-        );
-        assert_eq!(
-            bindings.empty_notice(),
-            "No favorites saved -- press z, then y while the attract screen is up"
-        );
-        assert!(bindings.footer(1).contains("enter load"));
-        assert!(bindings.footer(1).contains("x delete"));
-    }
-
-    #[test]
     fn every_file_state_maps_to_a_distinct_rendered_position() {
         let keymap = keymap_from("");
         let cases = [
@@ -2133,7 +1083,7 @@ sweep_right = "r"
         ));
         assert!(rendered.contains("mode = \"future_mode\" is not recognized"));
         assert!(rendered.contains("resolve = \"mist\" is not recognized"));
-        assert!(overlay.line_plan.selectable_line_index.is_empty());
+        assert!(overlay.line_plan.selectable_line_index().is_empty());
         assert_eq!(overlay.viewport.len(), overlay.line_plan.lines.len());
         assert!(!rendered.contains("No favorites saved"));
     }
@@ -2162,7 +1112,7 @@ sweep_right = "r"
         let mut overlay = open_at_width(loaded_state(&mixed_rows), &keymap, 100);
         let last_favorite_line = overlay
             .line_plan
-            .selectable_line_index
+            .selectable_line_index()
             .last()
             .copied()
             .expect("mixed fixture should contain recognized favorites");
@@ -2189,9 +1139,9 @@ sweep_right = "r"
         let mut overlay = open_at_width(loaded_state(RECOGNIZED_ROWS), &keymap, 100);
 
         assert_eq!(overlay.viewport.len(), 3);
-        let first_line = overlay.line_plan.selectable_line_index[0];
-        let second_line = overlay.line_plan.selectable_line_index[1];
-        let pixel_line = overlay.line_plan.selectable_line_index[2];
+        let first_line = overlay.line_plan.selectable_line_index()[0];
+        let second_line = overlay.line_plan.selectable_line_index()[1];
+        let pixel_line = overlay.line_plan.selectable_line_index()[2];
         assert!(first_line < second_line && second_line < pixel_line);
         let rendered = plan_text(&overlay.line_plan);
         assert!(rendered[first_line].contains("10"));
@@ -2205,45 +1155,6 @@ sweep_right = "r"
         assert!(active_line < overlay.viewport.scroll_offset() + overlay.viewport.visible_rows());
         overlay.handle_action(FavoritesOverlayAction::SelectPrevious);
         assert_eq!(overlay.viewport.pos(), 1);
-    }
-
-    #[test]
-    fn timestamps_keep_seconds_and_add_the_year_only_when_needed() {
-        let current_year = Local::now().year();
-        let old_year = current_year - 1;
-        let rows = favorites::parse_rows_for_overlay_test(&format!(
-            r#"
-[[favorite]]
-id = "01a03f64-9c14-7b41-8a02-1de4c7c9b336"
-saved = "{current_year}-01-02T03:04:05-05:00"
-mode = "moving_band"
-direction = "left"
-width = 10
-speed = 32
-tail_speed = 72
-fraying = "leading"
-
-[[favorite]]
-id = "01a03f65-9c14-7b41-8a02-1de4c7c9b337"
-saved = "{old_year}-01-02T03:04:05-05:00"
-mode = "moving_band"
-direction = "right"
-width = 12
-speed = 40
-tail_speed = 96
-fraying = "both"
-"#
-        ))
-        .expect("timestamp fixture should parse");
-        let view = FavoriteRowsView::from(&rows);
-        let saved = view.sections[0]
-            .rows
-            .iter()
-            .map(|row| row.saved.as_str())
-            .collect::<Vec<_>>();
-
-        assert!(saved.contains(&"02 Jan 03:04:05"));
-        assert!(saved.contains(&format!("02 Jan {old_year} 03:04:05").as_str()));
     }
 
     #[test]
@@ -2329,29 +1240,6 @@ fraying = "both"
     }
 
     #[test]
-    fn exactly_fitting_parameter_column_is_visible() {
-        let keymap = keymap_from("");
-        let table_layout = moving_band_table_layout(&keymap);
-        let width = u16::try_from(
-            CURSOR_WIDTH
-                + usize::from(table_layout.saved_width)
-                + COLUMN_GAP
-                + usize::from(table_layout.parameter_widths.get(0)),
-        )
-        .expect("exact table width should fit u16");
-
-        assert_eq!(table_layout.visible_parameter_columns(0, width), 0..1);
-        let header = format_table_line(
-            "Saved",
-            &BAND_COLUMNS.map(|descriptor| descriptor.heading),
-            table_layout.saved_width,
-            &table_layout.parameter_widths,
-            0..1,
-        );
-        assert_eq!(UnicodeWidthStr::width(header.as_str()), usize::from(width));
-    }
-
-    #[test]
     fn wide_binding_keeps_headers_keys_and_cells_aligned() {
         let keymap = keymap_from(
             r#"
@@ -2378,59 +1266,6 @@ travel_left = "界"
             display_column(key_line, "-/+")
         );
         assert_eq!(display_column(header, "Width"), display_column(row, "10"));
-    }
-
-    #[test]
-    fn too_narrow_table_still_renders_one_clipped_parameter_column() {
-        let keymap = keymap_from("");
-        let table_layout = moving_band_table_layout(&keymap);
-        let exact_width = usize::from(table_layout.saved_width)
-            + CURSOR_WIDTH
-            + COLUMN_GAP
-            + usize::from(table_layout.parameter_widths.get(0));
-        let width = u16::try_from(exact_width - 1).expect("narrow table width should fit u16");
-        let visible = table_layout.visible_parameter_columns(0, width);
-
-        assert_eq!(visible, 0..1);
-        let headings = BAND_COLUMNS.map(|descriptor| descriptor.heading);
-        let labels = FavoritesSurfaceBindings::resolve(&keymap)
-            .column_labels(AttractMode::MovingBand)
-            .to_vec();
-        let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
-            .expect("moving-band fixture should parse");
-        let view = FavoriteRowsView::from(&rows);
-        let row = &view.sections[0].rows[0];
-        let header = format_table_line(
-            "Saved",
-            &headings,
-            table_layout.saved_width,
-            &table_layout.parameter_widths,
-            visible.clone(),
-        );
-        let key_line = format_table_line(
-            "",
-            &labels,
-            table_layout.saved_width,
-            &table_layout.parameter_widths,
-            visible.clone(),
-        );
-        let cell_line = format_table_line(
-            &row.saved,
-            &row.cells,
-            table_layout.saved_width,
-            &table_layout.parameter_widths,
-            visible,
-        );
-
-        assert!(UnicodeWidthStr::width(header.as_str()) > usize::from(width));
-        assert_eq!(
-            display_column(&header, "Direction"),
-            display_column(&key_line, "←↑↓→")
-        );
-        assert_eq!(
-            display_column(&header, "Direction"),
-            display_column(&cell_line, "left")
-        );
     }
 
     #[test]
@@ -3031,23 +1866,5 @@ travel_left = "界"
         });
         assert_eq!(loads, 2);
         assert_eq!(overlay.viewport.len(), 3);
-    }
-
-    #[test]
-    fn unbound_labels_cross_the_same_named_boundary_as_bound_labels() {
-        let unbound = ResolvedBinding::for_action("save_favorite", None);
-        let bound = ResolvedBinding::for_action(
-            "save_favorite",
-            Some(KeySequence::from(KeyBind::ctrl('s'))),
-        );
-
-        assert_eq!(
-            unbound,
-            ResolvedBinding::Unbound {
-                action_name: "save_favorite",
-            }
-        );
-        assert_eq!(unbound.display_short(), "");
-        assert_eq!(bound.display_short(), "⌃s");
     }
 }
