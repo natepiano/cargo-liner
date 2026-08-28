@@ -146,3 +146,30 @@ The capture lives in `tui_pane`'s `backdrop` feature, not in cargo-tile, so the
 fix belongs there — a framework that only works for the first caller to ask is
 the framework's defect, not the caller's, and `cargo-port` wants the same
 behavior. Fix it where it lives rather than working around it from cargo-tile.
+
+## The unrecognized block gives the arrow keys nothing to land on
+
+Scrolling past the last recognized favorite carries the view down into the
+unrecognized block, and from there the arrow keys look like they are moving a
+cursor nobody can see: presses are absorbed, the view shifts, and no row ever
+takes the highlight that every recognized row takes.
+
+Nothing is actually broken underneath. `FavoritesOverlayContent::saved_count`
+counts only recognized rows, so the viewport bounds the selection to those, and
+the block's lines are built by `append_unrecognized` as `CachedOverlayLine::Static`
+— which `rendered_line` returns untouched, with neither the `▸ ` marker nor
+`selection_style`. A static line cannot show selection by construction, and it is
+not supposed to, because it is not selectable. The gap is that the overlay never
+says so, and the scrolling makes it look like it should be.
+
+Make the broken rows selectable and deletable. A favorite the overlay can show
+you but cannot let you remove sends you to a text editor to fix your own config,
+which is the one thing the overlay exists to spare you — and delete is the action
+that makes sense for an entry nothing can load. That means giving each
+unrecognized row its own `CachedOverlayLine::Favorite`-style variant carrying the
+row's identity, counting them in the viewport length, and letting the delete key
+reach them while load continues to refuse.
+
+If they are instead left unselectable, the block needs to say so — keep the
+selected row visible while the view scrolls past it, or mark the block plainly as
+a diagnostic rather than a list — so the arrows stop implying a cursor is there.
