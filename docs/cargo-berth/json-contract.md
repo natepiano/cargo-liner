@@ -265,6 +265,33 @@ Journal, claim, and widen payloads use
 "existing_answers_cover_every_overlap"` for
 `RecordedAnswer::ExistingAnswersCoverEveryOverlap`.
 
+## Resolve incursion outcomes
+
+A one-incident `resolve` response carries `payload.kind = "resolve"`. Its
+`payload.data.status` reports whether this invocation appended the disposition
+or found a durable disposition from a coordination actor:
+
+- `recorded_now` carries `reservation_id` and `incident_id`. The envelope has
+  `status = "incursion_resolved"` and `exit_code = 0`.
+- `already_recorded_by_same_coordination_actor` carries `reservation_id` and
+  `incident_id`. It means the resolution event's recorded worktree and
+  coordination-run ids equal the invoking actor's resolved ids. The envelope
+  has `status = "incursion_resolved"` and `exit_code = 0`.
+- `already_recorded_by_different_coordination_actor` carries `reservation_id`,
+  `incident_id`, `resolving_worktree_id`,
+  `resolving_coordination_run_id`, `resolution_event_id`, and `resolved_at`.
+  The envelope has `status = "invalid_input"` and `exit_code = 5`.
+
+The actor comparison describes only the ids recorded in the journal. It does
+not assert that two calls were the same process or that a historical actor was
+physically attributed to the correct worktree. A same-actor repeat does not
+append another journal event.
+
+The historical `incursion_resolved` payload alternative remains decodable for
+wire compatibility. `every_incursion_resolved` remains the successful payload
+for `resolve --every-incursion` and carries `reservation_id` plus
+`incident_ids`.
+
 ## The journal record
 
 `.git/cargo-berth/journal.ndjson` contains one complete JSON object per line.

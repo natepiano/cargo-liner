@@ -34,9 +34,11 @@ use crate::gate::install::ActiveManagedHookInstallation;
 use crate::gate::install::ManagedHookActivationOutcome;
 use crate::gate::install::ManagedHookInstallation;
 use crate::ids::CoordinationRunId;
+use crate::ids::EventId;
 use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
 use crate::ids::ProjectionGeneration;
+use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
@@ -418,6 +420,35 @@ pub(crate) enum ResolvePayload {
         reservation_id: ReservationId,
         /// The incident answered by the appended disposition.
         incident_id:    IncursionIncidentId,
+    },
+    /// This invocation appended the requested incursion disposition.
+    RecordedNow {
+        /// The reservation whose drift produced the incident.
+        reservation_id: ReservationId,
+        /// The incident answered by this invocation.
+        incident_id:    IncursionIncidentId,
+    },
+    /// This worktree coordination run had already appended the disposition.
+    AlreadyRecordedBySameCoordinationActor {
+        /// The reservation whose drift produced the incident.
+        reservation_id: ReservationId,
+        /// The incident already answered by this coordination actor.
+        incident_id:    IncursionIncidentId,
+    },
+    /// Another worktree coordination run had already appended the disposition.
+    AlreadyRecordedByDifferentCoordinationActor {
+        /// The reservation whose drift produced the incident.
+        reservation_id:                ReservationId,
+        /// The incident already answered by another coordination actor.
+        incident_id:                   IncursionIncidentId,
+        /// The worktree identity recorded on the resolution event.
+        resolving_worktree_id:         WorktreeId,
+        /// The coordination run recorded on the resolution event.
+        resolving_coordination_run_id: CoordinationRunId,
+        /// The journal append that answered the incident.
+        resolution_event_id:           EventId,
+        /// When the disposition was recorded.
+        resolved_at:                   RecordedAt,
     },
     /// A user disposition answered every incident outstanding for one reservation.
     EveryIncursionResolved {
@@ -1474,6 +1505,41 @@ impl OutputEnvelope {
                 OutputStatus::IncursionResolved,
                 format!("Incursion incident {incident_id} is resolved."),
             ),
+            ResolvePayload::RecordedNow {
+                reservation_id,
+                incident_id,
+            } => (
+                *reservation_id,
+                OutputStatus::IncursionResolved,
+                format!("Incursion incident {incident_id} was recorded as resolved."),
+            ),
+            ResolvePayload::AlreadyRecordedBySameCoordinationActor {
+                reservation_id,
+                incident_id,
+            } => (
+                *reservation_id,
+                OutputStatus::IncursionResolved,
+                format!(
+                    "Incursion incident {incident_id} was already resolved by this worktree coordination run."
+                ),
+            ),
+            ResolvePayload::AlreadyRecordedByDifferentCoordinationActor {
+                reservation_id,
+                incident_id,
+                resolving_worktree_id,
+                resolving_coordination_run_id,
+                resolution_event_id,
+                resolved_at,
+            } => {
+                return Self::incursion_resolution_recorded_by_different_actor(
+                    *reservation_id,
+                    *incident_id,
+                    *resolving_worktree_id,
+                    *resolving_coordination_run_id,
+                    *resolution_event_id,
+                    resolved_at.clone(),
+                );
+            },
             ResolvePayload::EveryIncursionResolved {
                 reservation_id,
                 incident_ids,
@@ -1524,6 +1590,37 @@ impl OutputEnvelope {
             blocked_by: Vec::new(),
             message,
             payload: OutputPayload::from_facts(OutputFacts::Resolve(resolve_payload)),
+        }
+    }
+
+    /// Build a typed rejection for an incident resolved by another coordination actor.
+    pub(crate) fn incursion_resolution_recorded_by_different_actor(
+        reservation_id: ReservationId,
+        incident_id: IncursionIncidentId,
+        resolving_worktree_id: WorktreeId,
+        resolving_coordination_run_id: CoordinationRunId,
+        resolution_event_id: EventId,
+        resolved_at: RecordedAt,
+    ) -> Self {
+        Self {
+            verb:         CommandVerb::Resolve,
+            status:       OutputStatus::InvalidInput,
+            exit_code:    BerthExit::UsageError,
+            reservations: vec![reservation_id],
+            blocked_by:   Vec::new(),
+            message:      format!(
+                "Incursion incident {incident_id} was already resolved by worktree {resolving_worktree_id} in coordination run {resolving_coordination_run_id}, event {resolution_event_id} at {resolved_at}."
+            ),
+            payload:      OutputPayload::from_facts(OutputFacts::Resolve(
+                ResolvePayload::AlreadyRecordedByDifferentCoordinationActor {
+                    reservation_id,
+                    incident_id,
+                    resolving_worktree_id,
+                    resolving_coordination_run_id,
+                    resolution_event_id,
+                    resolved_at,
+                },
+            )),
         }
     }
 

@@ -414,6 +414,8 @@ pub(crate) enum IncursionIncidentStatus {
     Outstanding,
     /// One later journal event recorded the incident's disposition.
     Resolved {
+        /// The worktree coordination run that recorded the disposition.
+        resolving_actor:     JournalActor,
         /// The journal append that answered the incident.
         resolution_event_id: EventId,
         /// When the disposition was recorded.
@@ -1116,9 +1118,12 @@ impl RetainedReservationSet {
                 foreign_reservation_ids,
                 paths,
             ),
-            JournalOperation::ResolveIncursion { incident_id } => {
-                self.apply_incursion_resolution(*incident_id, event.event_id(), event.recorded_at())
-            },
+            JournalOperation::ResolveIncursion { incident_id } => self.apply_incursion_resolution(
+                *incident_id,
+                &event.actor,
+                event.event_id(),
+                event.recorded_at(),
+            ),
             _ => Ok(()),
         }
     }
@@ -1153,6 +1158,7 @@ impl RetainedReservationSet {
     fn apply_incursion_resolution(
         &mut self,
         incident_id: IncursionIncidentId,
+        resolving_actor: &JournalActor,
         resolution_event_id: EventId,
         resolved_at: &RecordedAt,
     ) -> Result<(), ReservationReplayError> {
@@ -1169,6 +1175,7 @@ impl RetainedReservationSet {
             ));
         }
         incident.status = IncursionIncidentStatus::Resolved {
+            resolving_actor: resolving_actor.clone(),
             resolution_event_id,
             resolved_at: resolved_at.clone(),
         };
@@ -2063,6 +2070,7 @@ mod tests {
     use super::AuthorizedEditingIdentity;
     use super::DriftBlockingCoverage;
     use super::DurableScopedPatchComparison;
+    use super::IncursionIncidentStatus;
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
     use super::IntegrationProofSubjectRevision;
@@ -2079,6 +2087,7 @@ mod tests {
     use crate::ids::ReservationId;
     use crate::ids::ReservationScopePath;
     use crate::ids::WorktreeId;
+    use crate::ledger::IncursionIncidentId;
     use crate::ledger::IncursionPathSet;
     use crate::ledger::JournalEvent;
     use crate::scope::PathCase;
@@ -2730,6 +2739,7 @@ mod tests {
             3,
             &json!({"op": "resolve_incursion", "incident_id": INCIDENT_ID}),
         )?;
+        let resolving_actor = resolution.actor.clone();
 
         let outstanding = RetainedReservationSet::replay(&[claim.clone(), incursion.clone()])?;
         let incident = outstanding
@@ -2744,6 +2754,16 @@ mod tests {
         ));
 
         let answered = RetainedReservationSet::replay(&[claim, incursion, resolution])?;
+        let answered_incident =
+            answered.incursion_incident(INCIDENT_ID.parse::<IncursionIncidentId>()?)?;
+        let IncursionIncidentStatus::Resolved {
+            resolving_actor: replayed_resolving_actor,
+            ..
+        } = answered_incident.status()
+        else {
+            return Err("the resolution event should answer the incident".into());
+        };
+        assert_eq!(replayed_resolving_actor, &resolving_actor);
         assert!(
             matches!(
                 answered.observe_incursion(reservation_id, &foreign_reservation_ids, &paths),

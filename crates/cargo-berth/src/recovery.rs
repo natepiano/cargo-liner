@@ -16,12 +16,15 @@ use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
 use crate::ids::CoordinationRunId;
+use crate::ids::EventId;
+use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::CommittedActionValidation;
 use crate::ledger::IncursionIncidentId;
+use crate::ledger::JournalActor;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
@@ -41,6 +44,7 @@ use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
 use crate::reservation::AbandonmentReason;
 use crate::reservation::IncursionIncident;
+use crate::reservation::IncursionIncidentStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::OrphanRetirementReason;
 use crate::reservation::ReleaseDisposition;
@@ -125,7 +129,12 @@ pub(crate) fn resolve(resolve_request: ResolveRequest) -> OutputEnvelope {
         };
     let output_envelope = match execute_resolution(resolve_request) {
         Ok(Enrollment::Enrolled(resolve_payload)) => {
-            if !matches!(resolve_payload, ResolvePayload::IncursionResolved { .. }) {
+            if !matches!(
+                resolve_payload,
+                ResolvePayload::IncursionResolved { .. }
+                    | ResolvePayload::RecordedNow { .. }
+                    | ResolvePayload::AlreadyRecordedBySameCoordinationActor { .. }
+            ) {
                 reconciliation_report
                     .alerts
                     .retain(|alert| alert.reservation_id() != resolved_reservation_id);
@@ -274,29 +283,59 @@ fn execute_one_incursion_resolution(
             let reservations = match RetainedReservationSet::replay(state.events()) {
                 Ok(reservations) => reservations,
                 Err(error) => {
-                    return TransactionValidation::Reject(RecoveryRejection::Replay(error));
+                    return TransactionValidation::Reject(
+                        IncursionResolutionNotAppended::Rejected(RecoveryRejection::Replay(error)),
+                    );
                 },
             };
-            let Some(incident) = reservations
-                .outstanding_incursion_incidents()
-                .find(|incident| incident.id() == incident_id)
-            else {
-                let rejection = match reservations.incursion_incident(incident_id) {
-                    Ok(_) => RecoveryRejection::IncursionIncidentAlreadyResolved(incident_id),
-                    Err(ReservationReplayError::UnknownIncursionIncident(_)) => {
-                        RecoveryRejection::UnknownIncursionIncident(incident_id)
-                    },
-                    Err(error) => RecoveryRejection::Replay(error),
-                };
-                return TransactionValidation::Reject(rejection);
+            let incident = match reservations.incursion_incident(incident_id) {
+                Ok(incident) => incident,
+                Err(ReservationReplayError::UnknownIncursionIncident(_)) => {
+                    return TransactionValidation::Reject(
+                        IncursionResolutionNotAppended::Rejected(
+                            RecoveryRejection::UnknownIncursionIncident(incident_id),
+                        ),
+                    );
+                },
+                Err(error) => {
+                    return TransactionValidation::Reject(
+                        IncursionResolutionNotAppended::Rejected(RecoveryRejection::Replay(error)),
+                    );
+                },
             };
             if incident.reservation_id() != reservation_id {
                 return TransactionValidation::Reject(
-                    RecoveryRejection::IncursionReservationMismatch {
-                        incident_id,
-                        reservation_id,
-                    },
+                    IncursionResolutionNotAppended::Rejected(
+                        RecoveryRejection::IncursionReservationMismatch {
+                            incident_id,
+                            reservation_id,
+                        },
+                    ),
                 );
+            }
+            if let IncursionIncidentStatus::Resolved {
+                resolving_actor,
+                resolution_event_id,
+                resolved_at,
+            } = incident.status()
+            {
+                if resolving_actor.has_coordination_identity(
+                    journal_mutation_actor.worktree_id,
+                    journal_mutation_actor.coordination_run_id,
+                ) {
+                    return TransactionValidation::Reject(
+                        IncursionResolutionNotAppended::AlreadyRecordedBySameCoordinationActor,
+                    );
+                }
+                return TransactionValidation::Reject(IncursionResolutionNotAppended::Rejected(
+                    RecoveryRejection::IncursionIncidentAlreadyResolvedByDifferentCoordinationActor {
+                        reservation_id,
+                        incident_id,
+                        resolving_actor: resolving_actor.clone(),
+                        resolution_event_id: *resolution_event_id,
+                        resolved_at: resolved_at.clone(),
+                    },
+                ));
             }
             TransactionValidation::Append(Box::new(JournalOperation::ResolveIncursion {
                 incident_id,
@@ -304,11 +343,19 @@ fn execute_one_incursion_resolution(
         },
     )?;
     match outcome {
-        LedgerTransactionOutcome::Appended { .. } => Ok(ResolvePayload::IncursionResolved {
+        LedgerTransactionOutcome::Appended { .. } => Ok(ResolvePayload::RecordedNow {
             reservation_id,
             incident_id,
         }),
-        LedgerTransactionOutcome::Rejected(rejection) => Err(RecoveryError::Rejected(rejection)),
+        LedgerTransactionOutcome::Rejected(
+            IncursionResolutionNotAppended::AlreadyRecordedBySameCoordinationActor,
+        ) => Ok(ResolvePayload::AlreadyRecordedBySameCoordinationActor {
+            reservation_id,
+            incident_id,
+        }),
+        LedgerTransactionOutcome::Rejected(IncursionResolutionNotAppended::Rejected(rejection)) => {
+            Err(RecoveryError::Rejected(rejection))
+        },
     }
 }
 
@@ -702,7 +749,13 @@ impl ResolvePayloadSeed {
 enum RecoveryRejection {
     UnknownReservation,
     UnknownIncursionIncident(IncursionIncidentId),
-    IncursionIncidentAlreadyResolved(IncursionIncidentId),
+    IncursionIncidentAlreadyResolvedByDifferentCoordinationActor {
+        reservation_id:      ReservationId,
+        incident_id:         IncursionIncidentId,
+        resolving_actor:     JournalActor,
+        resolution_event_id: EventId,
+        resolved_at:         RecordedAt,
+    },
     IncursionReservationMismatch {
         incident_id:    IncursionIncidentId,
         reservation_id: ReservationId,
@@ -715,6 +768,12 @@ enum RecoveryRejection {
     UnreachableIntegrationEvidence,
     Git(GitError),
     EdgeReplay(EdgeReplayError),
+}
+
+#[derive(Debug)]
+enum IncursionResolutionNotAppended {
+    AlreadyRecordedBySameCoordinationActor,
+    Rejected(RecoveryRejection),
 }
 
 #[derive(Debug)]
@@ -747,6 +806,22 @@ impl RecoveryError {
             Self::Rejected(RecoveryRejection::EdgeReplay(error)) => {
                 OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
             },
+            Self::Rejected(
+                RecoveryRejection::IncursionIncidentAlreadyResolvedByDifferentCoordinationActor {
+                    reservation_id,
+                    incident_id,
+                    resolving_actor,
+                    resolution_event_id,
+                    resolved_at,
+                },
+            ) => OutputEnvelope::incursion_resolution_recorded_by_different_actor(
+                reservation_id,
+                incident_id,
+                resolving_actor.worktree,
+                resolving_actor.run,
+                resolution_event_id,
+                resolved_at,
+            ),
             Self::Rejected(rejection) => {
                 OutputEnvelope::invalid_input(command_verb, &rejection.to_string())
             },
@@ -778,9 +853,18 @@ impl Display for RecoveryRejection {
             Self::UnknownIncursionIncident(incident_id) => {
                 write!(formatter, "incursion incident {incident_id} does not exist")
             },
-            Self::IncursionIncidentAlreadyResolved(incident_id) => {
-                write!(formatter, "incursion incident {incident_id} is already resolved")
-            },
+            Self::IncursionIncidentAlreadyResolvedByDifferentCoordinationActor {
+                incident_id,
+                resolving_actor,
+                resolution_event_id,
+                resolved_at,
+                ..
+            } => write!(
+                formatter,
+                "incursion incident {incident_id} was already resolved by worktree {} in coordination run {}, event {resolution_event_id} at {resolved_at}",
+                resolving_actor.worktree,
+                resolving_actor.run
+            ),
             Self::IncursionReservationMismatch {
                 incident_id,
                 reservation_id,

@@ -364,7 +364,12 @@ fn incursion_incident_round_trip_deduplicates_and_resolves() {
         ],
     );
     assert!(resolved.status.success());
-    assert_eq!(json_output(&resolved)["status"], "incursion_resolved");
+    let resolved_envelope = json_output(&resolved);
+    assert_eq!(resolved_envelope["status"], "incursion_resolved");
+    assert_eq!(
+        resolved_envelope["payload"]["data"]["status"],
+        "recorded_now"
+    );
     let resolved_events = journal_events(incursion_repository.path());
     assert_eq!(
         resolved_events
@@ -382,6 +387,169 @@ fn incursion_incident_round_trip_deduplicates_and_resolves() {
     );
 
     assert_resolution_silences_the_same_overlap(&incursion_repository, &subject_id, &incident_id);
+}
+
+#[test]
+fn linked_worktree_resolve_reports_recorded_same_actor_and_foreign_actor_outcomes() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let subject_root = add_worktree(repository.path(), worktrees.path(), "resolve-subject");
+    let foreign_root = add_worktree(repository.path(), worktrees.path(), "resolve-foreign");
+    let subject_id = claim(&subject_root, "file:owned.txt", FIRST_RUN);
+    let wrong_subject_id = claim(&subject_root, "file:not-the-incident-owner.txt", FIRST_RUN);
+    let _foreign_id = claim(&foreign_root, "tree:shared", SECOND_RUN);
+    fs::create_dir_all(subject_root.join("shared")).expect("shared directory should exist");
+    fs::write(subject_root.join("shared/entered.txt"), "incursion\n")
+        .expect("incursion path should write");
+
+    let incursion = drift(&subject_root, &["--full", "--reservation", &subject_id]);
+    assert_eq!(json_output(&incursion)["status"], "incursion");
+    let incident_id = journal_events(repository.path())
+        .into_iter()
+        .find(|event| event["op"] == "incursion")
+        .and_then(|event| event["incident_id"].as_str().map(str::to_owned))
+        .expect("drift should append an incident");
+
+    let first = run_berth(
+        &subject_root,
+        &[
+            "resolve",
+            &subject_id,
+            "--incursion",
+            &incident_id,
+            "--json",
+        ],
+    );
+    assert_successful_incursion_resolution(&first, &subject_id, &incident_id, "recorded_now");
+
+    let resolution_event = journal_events(repository.path())
+        .into_iter()
+        .find(|event| event["op"] == "resolve_incursion")
+        .expect("the first resolve should append its decision");
+    assert_eq!(resolution_event["actor"]["run"], FIRST_RUN);
+
+    let same_actor_repeat = run_berth(
+        &subject_root,
+        &[
+            "resolve",
+            &subject_id,
+            "--incursion",
+            &incident_id,
+            "--json",
+        ],
+    );
+    assert_successful_incursion_resolution(
+        &same_actor_repeat,
+        &subject_id,
+        &incident_id,
+        "already_recorded_by_same_coordination_actor",
+    );
+
+    let same_actor_wrong_reservation = run_berth(
+        &subject_root,
+        &[
+            "resolve",
+            &wrong_subject_id,
+            "--incursion",
+            &incident_id,
+            "--json",
+        ],
+    );
+    assert_eq!(same_actor_wrong_reservation.status.code(), Some(5));
+    let mismatch_envelope = json_output(&same_actor_wrong_reservation);
+    assert_eq!(mismatch_envelope["status"], "invalid_input");
+    assert_eq!(mismatch_envelope["payload"]["kind"], "no_facts");
+    assert_eq!(
+        mismatch_envelope["message"],
+        format!(
+            "incursion incident {incident_id} does not belong to reservation {wrong_subject_id}"
+        )
+    );
+
+    let foreign_actor_repeat = run_berth(
+        &foreign_root,
+        &[
+            "resolve",
+            &subject_id,
+            "--incursion",
+            &incident_id,
+            "--json",
+        ],
+    );
+    assert_foreign_incursion_resolution_rejection(
+        &foreign_actor_repeat,
+        &subject_id,
+        &incident_id,
+        &resolution_event,
+    );
+    assert_eq!(
+        journal_events(repository.path())
+            .iter()
+            .filter(|event| event["op"] == "resolve_incursion")
+            .count(),
+        1,
+        "replayed repeat resolves must not append another disposition"
+    );
+}
+
+fn assert_successful_incursion_resolution(
+    output: &Output,
+    reservation_id: &str,
+    incident_id: &str,
+    expected_payload_status: &str,
+) {
+    assert!(
+        output.status.success(),
+        "resolve failed: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let envelope = json_output(output);
+    assert_eq!(envelope["exit_code"], 0);
+    assert_eq!(envelope["status"], "incursion_resolved");
+    assert_eq!(envelope["payload"]["kind"], "resolve");
+    assert_eq!(
+        envelope["payload"]["data"]["status"],
+        expected_payload_status
+    );
+    assert_eq!(
+        envelope["payload"]["data"]["reservation_id"],
+        reservation_id
+    );
+    assert_eq!(envelope["payload"]["data"]["incident_id"], incident_id);
+}
+
+fn assert_foreign_incursion_resolution_rejection(
+    output: &Output,
+    reservation_id: &str,
+    incident_id: &str,
+    resolution_event: &serde_json::Value,
+) {
+    assert_eq!(output.status.code(), Some(5));
+    let envelope = json_output(output);
+    assert_eq!(envelope["exit_code"], 5);
+    assert_eq!(envelope["status"], "invalid_input");
+    assert_eq!(envelope["payload"]["kind"], "resolve");
+    let rejection = &envelope["payload"]["data"];
+    assert_eq!(
+        rejection["status"],
+        "already_recorded_by_different_coordination_actor"
+    );
+    assert_eq!(rejection["reservation_id"], reservation_id);
+    assert_eq!(rejection["incident_id"], incident_id);
+    assert_eq!(
+        rejection["resolving_worktree_id"],
+        resolution_event["actor"]["worktree"]
+    );
+    assert_eq!(
+        rejection["resolving_coordination_run_id"],
+        resolution_event["actor"]["run"]
+    );
+    assert_eq!(
+        rejection["resolution_event_id"],
+        resolution_event["event_id"]
+    );
+    assert_eq!(rejection["resolved_at"], resolution_event["at"]);
+    assert_eq!(envelope["blocked_by"], serde_json::json!([]));
 }
 
 /// The straying edit stays on disk, so a disposition has to settle the overlap for good.

@@ -1254,6 +1254,7 @@ fn incursion_sections(
                 },
             }),
             IncursionIncidentStatus::Resolved {
+                resolving_actor: _,
                 resolution_event_id,
                 resolved_at,
             } => recorded.push(RecordedIncursionAnswer {

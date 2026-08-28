@@ -122,6 +122,17 @@ pub(crate) struct JournalActor {
     pub(crate) run:        CoordinationRunId,
 }
 
+impl JournalActor {
+    /// Return whether this record names the same worktree coordination run.
+    pub(crate) fn has_coordination_identity(
+        &self,
+        worktree_id: WorktreeId,
+        coordination_run_id: CoordinationRunId,
+    ) -> bool {
+        self.worktree == worktree_id && self.run == coordination_run_id
+    }
+}
+
 /// The process inputs that can explain one journal mutation actor resolution.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
