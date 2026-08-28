@@ -461,6 +461,29 @@ pub(crate) struct Attract {
     /// as nothing. Cleared the moment a capture arrives.
     backdrop_missing_since: Option<Instant>,
     identified:             Option<bool>,
+    /// The last reading written to the frame log, so the log carries a
+    /// line where the screen changed its mind rather than one per
+    /// frame. See [`Attract::note_standing`].
+    noted:                  Option<Reading>,
+}
+
+/// What the screen decided on a frame, in the terms that decide whether
+/// it is on the terminal at all.
+///
+/// The three together are the whole of that answer: what the roster
+/// said, what the reader said over the top of it, and where the fade
+/// ended up between them. Kept as a value so a frame that decided the
+/// same thing as the one before writes nothing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Reading {
+    /// What the fade was moved toward.
+    work:        Work,
+    /// Where the screen stands with the roster.
+    standing:    Standing,
+    /// What the reader has instructed.
+    instruction: AttractVisibilityInstruction,
+    /// Whether the screen is anywhere on the terminal.
+    showing:     bool,
 }
 
 impl Attract {
@@ -487,6 +510,7 @@ impl Attract {
             standing:               Standing::Showing,
             backdrop_missing_since: None,
             identified:             None,
+            noted:                  None,
         }
     }
 
@@ -1003,6 +1027,7 @@ impl Attract {
             Work::Idle => self.faded.saturating_sub(ATTRACT_FADE_STEP),
             Work::Running => self.faded.saturating_add(ATTRACT_FADE_STEP),
         };
+        self.note_standing(work);
         // Once the strip is the whole of what is on the screen, rather
         // than on the first frame it shows on. The frames either side
         // of that are the fade, which draws the grid underneath as
@@ -1043,11 +1068,15 @@ impl Attract {
         // for longer than that is the animation drawing nothing at all,
         // which from outside is indistinguishable from an attract
         // screen that never came on -- see [`Self::backdrop_overdue`].
-        self.backdrop_missing_since = match (self.monitor.current(), self.backdrop_missing_since) {
+        let missing = match (self.monitor.current(), self.backdrop_missing_since) {
             (Some(_), _) => None,
             (None, Some(since)) => Some(since),
             (None, None) => Some(now),
         };
+        if missing.is_some() != self.backdrop_missing_since.is_some() {
+            probe::note(&format!("attract: backdrop={}", missing.is_none()));
+        }
+        self.backdrop_missing_since = missing;
         // Only the animation on screen is carried forward. The other
         // holds wherever it was left, which is what makes turning
         // between them a turn rather than a restart.
@@ -1068,6 +1097,33 @@ impl Attract {
         }
         self.animation_sizing.record(attract_mode, area);
         self.grid()
+    }
+
+    /// Write this frame's reading to the frame log, where it differs
+    /// from the last one written.
+    ///
+    /// An attract screen that never comes on looks from outside exactly
+    /// like one that came on with nothing to draw, and the two are
+    /// fixed in different places -- the first upstream in what the
+    /// roster reports, the second in the desktop capture. Nothing on
+    /// the terminal separates them, so the separation is recorded here
+    /// instead. Costs nothing with the probe off, and with it on writes
+    /// a line where the answer changed rather than one per frame.
+    fn note_standing(&mut self, work: Work) {
+        let reading = Reading {
+            work,
+            standing: self.standing,
+            instruction: self.visibility_instruction,
+            showing: self.showing(),
+        };
+        if self.noted == Some(reading) {
+            return;
+        }
+        self.noted = Some(reading);
+        probe::note(&format!(
+            "attract: work={:?} standing={:?} instruction={:?} showing={} faded={}",
+            reading.work, reading.standing, reading.instruction, reading.showing, self.faded,
+        ));
     }
 
     /// Whether the screen has wanted a backdrop for longer than one is
