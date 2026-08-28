@@ -275,6 +275,32 @@ invocation, carrying that invocation under it, and closes through the usual fade
 once the invocation ends. The list is only for commands that outlast their work:
 anything that finishes on its own already leaves the grid by finishing.
 
+Other commands are cargo by spelling and not by purpose. A subcommand fired from
+an editor hook several times a second finishes inside one poll and compiles
+nothing, so each invocation opens a cell with no rows in it and closes again
+before the opening animation has run — several at once, and the grid spends its
+whole time animating cells that never draw anything. Name those and the scan
+drops them before anything is built out of them:
+
+```toml
+[commands]
+excluded = ["berth"]
+```
+
+This is the stronger of the two lists. `hidden_when_idle` withholds the cell and
+keeps the summary line; `excluded` means not tracked at all — no cell, no summary
+line, no CPU or compiler attribution. Excluded commands go transparent rather
+than opaque: a cargo invocation running underneath one is attributed to whatever
+stands above it and keeps its own cell, so excluding a command never hides real
+work done under it. The list is keyed on the subcommand word, so one entry covers
+both `cargo berth` and a direct `cargo-berth`, and a `+toolchain` selector in
+front of it changes nothing.
+
+Capture is decided separately. The shim carries its own short list of
+subcommands it does not open a log for — `tile`, `port` and `berth` — because a
+POSIX shell cannot read this file. Adding a command to `excluded` keeps it off
+the grid; keeping it out of the capture logs means editing that list too.
+
 A command finishing in the middle takes its cell with it and the grid closes over
 the space: the cell above it and the cell below come together, and everything
 after moves up one place in the same travel. One change at a time, though — a

@@ -201,7 +201,7 @@ fn restore_terminal(
 /// app costs essentially nothing.
 fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()> {
     let input = spawn_input_thread();
-    let scans = processes::spawn();
+    let scans = processes::spawn(app.loaded_config.config.commands.excluded.clone());
     // Each due read runs on a worker of its own and replies here, so a
     // server that has wedged parks that one thread rather than the loop.
     let (sccache_reads, sccache_replies) = mpsc::channel();

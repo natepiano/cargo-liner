@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::constants::CONFIG_DIRNAME;
 use crate::constants::CONFIG_FILENAME;
 use crate::constants::DEFAULT_DARK_THEME;
+use crate::constants::DEFAULT_EXCLUDED;
 use crate::constants::DEFAULT_FADE_SECONDS;
 use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
 use crate::constants::DEFAULT_INITIAL_ROWS;
@@ -53,10 +54,20 @@ impl Default for AppearanceConfig {
     }
 }
 
-/// Which commands the grid holds back until they have work under them.
+/// Which commands the grid holds back until they have work under them,
+/// and which it never watches at all.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct CommandsConfig {
+    /// Cargo subcommands the scan drops on sight, so they reach neither
+    /// the summary nor the grid. For commands that are cargo by
+    /// spelling and not by purpose: a hook firing `cargo berth` four
+    /// times a second opens and closes a cell for each one, and the
+    /// cell has nothing to draw because the command compiles nothing.
+    /// Stronger than [`hidden_when_idle`](Self::hidden_when_idle),
+    /// which keeps the summary line -- an excluded command is not
+    /// tracked at all.
+    pub(crate) excluded:         Vec<String>,
     /// Cargo subcommands that earn a cell of their own only while they
     /// are driving other cargo invocations. A terminal UI reached as a
     /// subcommand -- `cargo port` -- is open all day and compiles
@@ -70,6 +81,10 @@ pub(crate) struct CommandsConfig {
 impl Default for CommandsConfig {
     fn default() -> Self {
         Self {
+            excluded:         DEFAULT_EXCLUDED
+                .iter()
+                .map(|subcommand| (*subcommand).to_string())
+                .collect(),
             hidden_when_idle: DEFAULT_HIDDEN_WHEN_IDLE
                 .iter()
                 .map(|subcommand| (*subcommand).to_string())

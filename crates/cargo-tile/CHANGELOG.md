@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `commands.excluded` in `config.toml` names cargo subcommands the scan drops entirely — no cell, no summary line, no attribution. Defaults to `["berth"]`, whose hook fires several times a second and opened a cell per invocation that closed before it could draw. The capture shim skips the same command.
 - Press `u` to restore the full attract configuration displaced by the latest random draw or favorite load, with a notice when terminal bounds adjust it or there is nothing to undo.
 - Press `r` to draw a fresh attract mode and all of its parameters at random, and show the result.
 - Press `m` to load and show a random saved attract favorite; unavailable or unusable favorites open the existing diagnostic overlay instead.

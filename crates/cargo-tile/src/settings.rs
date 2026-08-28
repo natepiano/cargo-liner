@@ -147,6 +147,12 @@ pub(crate) fn rows(app: &App) -> SettingsRows {
     push_value(
         &mut out,
         &mut widths,
+        "excluded",
+        list(&app.loaded_config.config.commands.excluded),
+    );
+    push_value(
+        &mut out,
+        &mut widths,
         "hidden when idle",
         list(&app.loaded_config.config.commands.hidden_when_idle),
     );

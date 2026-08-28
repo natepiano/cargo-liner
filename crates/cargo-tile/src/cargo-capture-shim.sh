@@ -86,6 +86,16 @@ case $first in
     tile | port)
         capture=0
         ;;
+    # This workspace's coordination sibling, reached as `cargo berth`.
+    # It is fired from an editor hook several times a second and exits
+    # in well under a poll interval, so capturing it opens a log per
+    # invocation for a run with no build in it to mirror. The grid
+    # leaves it out through `commands.excluded`; this is the same
+    # decision on the capture side, kept here because a POSIX shell
+    # cannot read the TOML the grid reads.
+    berth)
+        capture=0
+        ;;
 esac
 # A nested cargo -- a build script, or cargo driving cargo -- is already
 # inside a captured run and must not open a second one. The flag carries

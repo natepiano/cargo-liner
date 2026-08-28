@@ -107,6 +107,14 @@ pub(crate) const CONFIG_FILENAME: &str = "config.toml";
 /// default. Defined in [`crate::theme`], not in `tui_pane`: theme
 /// content belongs to the app.
 pub(crate) const DEFAULT_DARK_THEME: &str = "Default Dark";
+/// The `commands.excluded` default: subcommands the scan drops before
+/// anything is built out of it, so they reach neither the summary nor
+/// the grid. The coordination sibling is the case it exists for -- it
+/// is fired from an editor hook several times a second, finishes inside
+/// one poll interval, and compiles nothing, so every invocation opens a
+/// cell with no rows in it and closes again before the opening
+/// animation has finished.
+pub(crate) const DEFAULT_EXCLUDED: [&str; 1] = [COORDINATION_SUBCOMMAND_NAME];
 /// Id of the built-in high-contrast dark variant.
 pub(crate) const DEFAULT_HC_DARK_THEME: &str = "High Contrast Dark";
 /// Id of the built-in high-contrast light variant.
@@ -231,6 +239,15 @@ pub(crate) const SUBCOMMAND_NAME: &str = "tile";
 /// [`DEFAULT_HIDDEN_WHEN_IDLE`] names, being the command that runs all
 /// day without compiling anything.
 pub(crate) const SIBLING_SUBCOMMAND_NAME: &str = "port";
+/// The coordination sibling in this workspace, reached as `cargo
+/// berth`. Unlike [`SIBLING_SUBCOMMAND_NAME`] it does not run all day:
+/// it is fired from a hook, does its work in well under one
+/// [`PROCESS_POLL_MILLIS`] and exits. Withholding its cell until it has
+/// work under it would not help, because it never has any -- what it
+/// needs is to be left out of the scan altogether, which is what
+/// [`DEFAULT_EXCLUDED`] names it for. The capture shim skips it for the
+/// matching reason: a run that short has no build to mirror.
+pub(crate) const COORDINATION_SUBCOMMAND_NAME: &str = "berth";
 
 // iterm2
 /// Environment variable naming the terminal emulator in use.
