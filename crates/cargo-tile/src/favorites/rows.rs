@@ -116,13 +116,72 @@ impl UnrecognizedFavoriteValue {
     }
 }
 
+/// Opaque identity for removing one unrecognized raw favorite table.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct UnrecognizedFavoriteRemovalLocator {
+    raw_table_index: usize,
+    fingerprint:     String,
+}
+
+impl UnrecognizedFavoriteRemovalLocator {
+    fn new(raw_table_index: usize, table: &Table) -> Self {
+        Self {
+            raw_table_index,
+            fingerprint: table.to_string(),
+        }
+    }
+
+    fn locate(&self, tables: &[Table]) -> UnrecognizedFavoriteTableLocation {
+        if tables
+            .get(self.raw_table_index)
+            .is_some_and(|table| self.matches(table))
+        {
+            return UnrecognizedFavoriteTableLocation::ExactlyOne(self.raw_table_index);
+        }
+
+        let mut matching_indices = tables
+            .iter()
+            .enumerate()
+            .filter_map(|(index, table)| self.matches(table).then_some(index));
+        let Some(candidate_index) = matching_indices.next() else {
+            return UnrecognizedFavoriteTableLocation::NotExactlyOne;
+        };
+        if matching_indices.next().is_some() {
+            UnrecognizedFavoriteTableLocation::NotExactlyOne
+        } else {
+            UnrecognizedFavoriteTableLocation::ExactlyOne(candidate_index)
+        }
+    }
+
+    fn matches(&self, table: &Table) -> bool { table.to_string() == self.fingerprint }
+}
+
+enum UnrecognizedFavoriteTableLocation {
+    ExactlyOne(usize),
+    NotExactlyOne,
+}
+
+/// Outcome of checking and removing an unrecognized favorite locator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum UnrecognizedFavoriteRemoval {
+    /// The locator still named one table, which was removed.
+    Removed,
+    /// The locator matched zero or multiple tables, so none was removed.
+    LocatorStale,
+}
+
 /// Typed recognition result for one raw favorite table.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum FavoriteRowRecognition {
     /// The table contains one complete, recognized favorite.
     Recognized(Favorite),
     /// The table is retained and diagnosed in the overlay, but excluded from loading.
-    Unrecognized(UnrecognizedFavoriteValue),
+    Unrecognized {
+        /// The first field value that could not be recognized.
+        diagnostic:      UnrecognizedFavoriteValue,
+        /// Identity used to re-verify the raw table during deletion.
+        removal_locator: UnrecognizedFavoriteRemovalLocator,
+    },
 }
 
 /// Raw favorite tables together with their ordered typed interpretations.
@@ -145,7 +204,7 @@ impl FavoriteRows {
             .iter()
             .filter_map(|recognition| match recognition {
                 FavoriteRowRecognition::Recognized(favorite) => Some(favorite),
-                FavoriteRowRecognition::Unrecognized(_) => None,
+                FavoriteRowRecognition::Unrecognized { .. } => None,
             })
     }
 
@@ -187,16 +246,18 @@ impl FavoriteRows {
         self.recognitions = self
             .tables
             .iter()
-            .map(|table| match recognize_favorite(table) {
-                FavoriteRowRecognition::Recognized(favorite)
-                    if !recognized_ids.insert(favorite.id) =>
-                {
-                    FavoriteRowRecognition::Unrecognized(UnrecognizedFavoriteValue::new(
+            .enumerate()
+            .map(|(raw_table_index, table)| match recognize_favorite(table) {
+                Ok(favorite) if !recognized_ids.insert(favorite.id) => unrecognized_row(
+                    raw_table_index,
+                    table,
+                    UnrecognizedFavoriteValue::new(
                         FAVORITE_ID_KEY,
                         format!("{} (duplicate)", favorite.id),
-                    ))
-                },
-                recognition => recognition,
+                    ),
+                ),
+                Ok(favorite) => FavoriteRowRecognition::Recognized(favorite),
+                Err(diagnostic) => unrecognized_row(raw_table_index, table, diagnostic),
             })
             .collect();
         self.recognitions.sort_by(compare_recognitions);
@@ -205,14 +266,8 @@ impl FavoriteRows {
     pub(super) fn push(&mut self, candidate: Favorite) -> Favorite {
         let existing = self.tables.iter().enumerate().find_map(|(index, table)| {
             match recognize_favorite(table) {
-                FavoriteRowRecognition::Recognized(favorite)
-                    if favorite.settings == candidate.settings =>
-                {
-                    Some((index, favorite))
-                },
-                FavoriteRowRecognition::Recognized(_) | FavoriteRowRecognition::Unrecognized(_) => {
-                    None
-                },
+                Ok(favorite) if favorite.settings == candidate.settings => Some((index, favorite)),
+                Ok(_) | Err(_) => None,
             }
         });
         let saved = candidate.saved;
@@ -234,16 +289,29 @@ impl FavoriteRows {
         favorite
     }
 
-    pub(super) fn remove(&mut self, favorite_id: FavoriteId) {
+    pub(super) fn remove_recognized(&mut self, favorite_id: FavoriteId) {
         let row = self.tables.iter().position(|table| {
-            matches!(
-                recognize_favorite(table),
-                FavoriteRowRecognition::Recognized(Favorite { id, .. }) if id == favorite_id
-            )
+            matches!(recognize_favorite(table), Ok(Favorite { id, .. }) if id == favorite_id)
         });
         if let Some(index) = row {
             self.tables.remove(index);
             self.refresh_recognitions();
+        }
+    }
+
+    pub(super) fn remove_unrecognized(
+        &mut self,
+        removal_locator: &UnrecognizedFavoriteRemovalLocator,
+    ) -> UnrecognizedFavoriteRemoval {
+        match removal_locator.locate(&self.tables) {
+            UnrecognizedFavoriteTableLocation::ExactlyOne(index) => {
+                self.tables.remove(index);
+                self.refresh_recognitions();
+                UnrecognizedFavoriteRemoval::Removed
+            },
+            UnrecognizedFavoriteTableLocation::NotExactlyOne => {
+                UnrecognizedFavoriteRemoval::LocatorStale
+            },
         }
     }
 }
@@ -280,15 +348,27 @@ fn compare_recognitions(left: &FavoriteRowRecognition, right: &FavoriteRowRecogn
                 .then_with(|| right.saved.cmp(&left.saved))
                 .then_with(|| right.id.cmp(&left.id))
         },
-        (FavoriteRowRecognition::Recognized(_), FavoriteRowRecognition::Unrecognized(_)) => {
+        (FavoriteRowRecognition::Recognized(_), FavoriteRowRecognition::Unrecognized { .. }) => {
             Ordering::Less
         },
-        (FavoriteRowRecognition::Unrecognized(_), FavoriteRowRecognition::Recognized(_)) => {
+        (FavoriteRowRecognition::Unrecognized { .. }, FavoriteRowRecognition::Recognized(_)) => {
             Ordering::Greater
         },
-        (FavoriteRowRecognition::Unrecognized(_), FavoriteRowRecognition::Unrecognized(_)) => {
-            Ordering::Equal
-        },
+        (
+            FavoriteRowRecognition::Unrecognized { .. },
+            FavoriteRowRecognition::Unrecognized { .. },
+        ) => Ordering::Equal,
+    }
+}
+
+fn unrecognized_row(
+    raw_table_index: usize,
+    table: &Table,
+    diagnostic: UnrecognizedFavoriteValue,
+) -> FavoriteRowRecognition {
+    FavoriteRowRecognition::Unrecognized {
+        diagnostic,
+        removal_locator: UnrecognizedFavoriteRemovalLocator::new(raw_table_index, table),
     }
 }
 
@@ -300,26 +380,20 @@ const fn attract_mode_order(attract_mode: AttractMode) -> u8 {
     }
 }
 
-fn recognize_favorite(table: &Table) -> FavoriteRowRecognition {
-    let favorite = (|| {
-        let id = recognize_favorite_id(table).into_result()?;
-        let saved = recognize_saved(table).into_result()?;
-        let attract_mode = recognize_attract_mode(table).into_result()?;
-        let settings = match attract_mode {
-            AttractMode::MovingBand => AttractSettings::MovingBand(recognize_band_settings(table)?),
-            AttractMode::MovingText => AttractSettings::MovingText(recognize_text_settings(table)?),
-            AttractMode::Pixelate => AttractSettings::Pixelate(recognize_pixel_settings(table)?),
-        };
-        Ok(Favorite {
-            id,
-            saved,
-            settings,
-        })
-    })();
-    match favorite {
-        Ok(favorite) => FavoriteRowRecognition::Recognized(favorite),
-        Err(value) => FavoriteRowRecognition::Unrecognized(value),
-    }
+fn recognize_favorite(table: &Table) -> Result<Favorite, UnrecognizedFavoriteValue> {
+    let id = recognize_favorite_id(table).into_result()?;
+    let saved = recognize_saved(table).into_result()?;
+    let attract_mode = recognize_attract_mode(table).into_result()?;
+    let settings = match attract_mode {
+        AttractMode::MovingBand => AttractSettings::MovingBand(recognize_band_settings(table)?),
+        AttractMode::MovingText => AttractSettings::MovingText(recognize_text_settings(table)?),
+        AttractMode::Pixelate => AttractSettings::Pixelate(recognize_pixel_settings(table)?),
+    };
+    Ok(Favorite {
+        id,
+        saved,
+        settings,
+    })
 }
 
 fn recognize_band_settings(table: &Table) -> Result<BandSettings, UnrecognizedFavoriteValue> {
@@ -666,7 +740,10 @@ fill = "solid"
         assert_eq!(recognitions.len(), 2);
         assert!(matches!(
             recognitions[1],
-            FavoriteRowRecognition::Unrecognized(UnrecognizedFavoriteValue { key, spelling })
+            FavoriteRowRecognition::Unrecognized {
+                diagnostic: UnrecognizedFavoriteValue { key, spelling },
+                ..
+            }
                 if key == FAVORITE_ID_KEY && spelling == &format!("{FIRST_ID} (duplicate)")
         ));
     }

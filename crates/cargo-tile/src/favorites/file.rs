@@ -15,10 +15,12 @@ use std::thread;
 
 use tui_pane::KeySequence;
 
+use super::UnrecognizedFavoriteRemovalLocator;
 use super::rows::AttractSettings;
 use super::rows::Favorite;
 use super::rows::FavoriteId;
 use super::rows::FavoriteRows;
+use super::rows::UnrecognizedFavoriteRemoval;
 use crate::config;
 use crate::constants::FAVORITES_FILENAME;
 use crate::constants::FAVORITES_LOCK_RETRY_ATTEMPTS;
@@ -129,6 +131,8 @@ pub(crate) enum FavoritesMutationError {
         /// Lock failure text.
         error: String,
     },
+    /// An unrecognized-row locator no longer matched exactly one raw table.
+    UnrecognizedFavoriteChanged,
     /// The directory, temporary file, or atomic rename could not be written.
     WriteFailed {
         /// Favorites path the mutation was intended to update.
@@ -136,6 +140,21 @@ pub(crate) enum FavoritesMutationError {
         /// Write failure text.
         error: String,
     },
+}
+
+/// Identity of the recognized or unrecognized favorite row to remove.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum FavoriteRemovalTarget {
+    /// A recognized row named by its stable identifier.
+    Recognized(FavoriteId),
+    /// An unrecognized row named by its load-time raw-table locator.
+    Unrecognized(UnrecognizedFavoriteRemovalLocator),
+}
+
+impl From<UnrecognizedFavoriteRemovalLocator> for FavoriteRemovalTarget {
+    fn from(removal_locator: UnrecognizedFavoriteRemovalLocator) -> Self {
+        Self::Unrecognized(removal_locator)
+    }
 }
 
 /// Favorites-file mutation being reported to the reader.
@@ -199,6 +218,7 @@ pub(crate) fn favorite_refusal_message(
         FavoritesMutationError::LocationUnavailable
         | FavoritesMutationError::Unparseable { .. }
         | FavoritesMutationError::Unreadable { .. }
+        | FavoritesMutationError::UnrecognizedFavoriteChanged
         | FavoritesMutationError::WriteFailed { .. } => {
             format!("Favorites refused the {}: {error}", mutation.label())
         },
@@ -233,6 +253,10 @@ impl Display for FavoritesMutationError {
                     path.display()
                 )
             },
+            Self::UnrecognizedFavoriteChanged => write!(
+                formatter,
+                "the unrecognized favorite changed after it was loaded"
+            ),
             Self::WriteFailed { path, error } => {
                 write!(
                     formatter,
@@ -264,16 +288,14 @@ pub(crate) fn push(settings: AttractSettings) -> Result<Favorite, FavoritesMutat
     )
 }
 
-/// Remove the row with `favorite_id` after re-reading it under the file lock.
+/// Remove `target` after re-reading and re-verifying it under the file lock.
 ///
 /// # Errors
 ///
-/// Returns the read-only file state or the lock, directory, serialization, or write failure.
-pub(crate) fn remove(favorite_id: FavoriteId) -> Result<(), FavoritesMutationError> {
-    remove_from_location(
-        FavoritesLocation::from(config::favorites_path()),
-        favorite_id,
-    )
+/// Returns a stale unrecognized-row locator, read-only file state, or the lock, directory,
+/// serialization, or write failure.
+pub(crate) fn remove(target: FavoriteRemovalTarget) -> Result<(), FavoritesMutationError> {
+    remove_from_location(FavoritesLocation::from(config::favorites_path()), target)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -317,19 +339,32 @@ fn push_to_location(
     location: FavoritesLocation,
     favorite: Favorite,
 ) -> Result<Favorite, FavoritesMutationError> {
-    edit_at_location(location, |rows| rows.push(favorite))
+    edit_at_location(location, |rows| Ok(rows.push(favorite)))
 }
 
 fn remove_from_location(
     location: FavoritesLocation,
-    favorite_id: FavoriteId,
+    target: FavoriteRemovalTarget,
 ) -> Result<(), FavoritesMutationError> {
-    edit_at_location(location, |rows| rows.remove(favorite_id))
+    edit_at_location(location, |rows| match target {
+        FavoriteRemovalTarget::Recognized(favorite_id) => {
+            rows.remove_recognized(favorite_id);
+            Ok(())
+        },
+        FavoriteRemovalTarget::Unrecognized(removal_locator) => {
+            match rows.remove_unrecognized(&removal_locator) {
+                UnrecognizedFavoriteRemoval::Removed => Ok(()),
+                UnrecognizedFavoriteRemoval::LocatorStale => {
+                    Err(FavoritesMutationError::UnrecognizedFavoriteChanged)
+                },
+            }
+        },
+    })
 }
 
 fn edit_at_location<T>(
     location: FavoritesLocation,
-    edit: impl FnOnce(&mut FavoriteRows) -> T,
+    edit: impl FnOnce(&mut FavoriteRows) -> Result<T, FavoritesMutationError>,
 ) -> Result<T, FavoritesMutationError> {
     let FavoritesLocation::Path(path) = location else {
         return Err(FavoritesMutationError::LocationUnavailable);
@@ -356,7 +391,7 @@ fn edit_at_location<T>(
             return Err(FavoritesMutationError::Unreadable { path, error });
         },
     };
-    let result = edit(&mut rows);
+    let result = edit(&mut rows)?;
     atomic_replace(&path, &rows)?;
     Ok(result)
 }
@@ -472,7 +507,7 @@ mod tests {
     const SECOND_ID: &str = "01a03f60-2e8b-77c2-858f-476ee413d81c";
     const SECOND_SAVED: &str = "2026-08-26T14:31:05.412-07:00";
 
-    fn mutation_errors() -> [FavoritesMutationError; 5] {
+    fn mutation_errors() -> [FavoritesMutationError; 6] {
         let path = PathBuf::from("/tmp/favorites.toml");
         [
             FavoritesMutationError::LocationUnavailable,
@@ -488,6 +523,7 @@ mod tests {
                 path:  path.clone(),
                 error: "favorites are in use".to_string(),
             },
+            FavoritesMutationError::UnrecognizedFavoriteChanged,
             FavoritesMutationError::WriteFailed {
                 path,
                 error: "disk is read-only".to_string(),
@@ -577,7 +613,7 @@ mod tests {
     /// Rewrite the file under its lock without changing a row, exercising the
     /// read-modify-write path on its own.
     fn save_to_location(location: FavoritesLocation) -> Result<(), FavoritesMutationError> {
-        edit_at_location(location, |_| ())
+        edit_at_location(location, |_| Ok(()))
     }
 
     fn write_favorites(path: &Path, text: &str) {
@@ -597,6 +633,20 @@ mod tests {
             FavoritesFileState::Loaded { rows, .. } => rows,
             _ => panic!("expected loaded favorites, got {state:?}"),
         }
+    }
+
+    fn unrecognized_locators(
+        state: &FavoritesFileState,
+    ) -> Vec<UnrecognizedFavoriteRemovalLocator> {
+        loaded_rows(state)
+            .iter()
+            .filter_map(|recognition| match recognition {
+                FavoriteRowRecognition::Recognized(_) => None,
+                FavoriteRowRecognition::Unrecognized {
+                    removal_locator, ..
+                } => Some(removal_locator.clone()),
+            })
+            .collect()
     }
 
     fn band_settings() -> AttractSettings {
@@ -701,7 +751,7 @@ fill = "solid"
             .iter()
             .filter_map(|recognition| match recognition {
                 FavoriteRowRecognition::Recognized(_) => None,
-                FavoriteRowRecognition::Unrecognized(value) => Some(value),
+                FavoriteRowRecognition::Unrecognized { diagnostic, .. } => Some(diagnostic),
             })
             .collect();
         assert!(
@@ -722,8 +772,11 @@ fill = "solid"
         assert!(after_save.contains("direction = \"sideways\""));
         assert!(after_save.contains("future_glow = \"amber\""));
 
-        remove_from_location(location(&path), favorite_id(SECOND_ID))
-            .expect("recognized favorite should be removed");
+        remove_from_location(
+            location(&path),
+            FavoriteRemovalTarget::Recognized(favorite_id(SECOND_ID)),
+        )
+        .expect("recognized favorite should be removed");
         let after_delete = fs::read_to_string(&path).expect("favorites should remain readable");
         assert!(after_delete.contains("future_mode"));
         assert!(after_delete.contains("future_parameter = 88"));
@@ -735,6 +788,247 @@ fill = "solid"
                 .recognized()
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn unrecognized_deletion_survives_a_row_inserted_ahead_of_the_target() {
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = favorites_path(&directory);
+        let target = format!(
+            r#"[[favorite]]
+id = "{FIRST_ID}"
+saved = "{FIRST_SAVED}"
+mode = "future_mode"
+future_parameter = 88
+"#
+        );
+        write_favorites(&path, &target);
+        let state = load_from(location(&path));
+        let locator = unrecognized_locators(&state)
+            .into_iter()
+            .next()
+            .expect("unrecognized target should have a locator");
+        let inserted_ahead = format!(
+            r#"[[favorite]]
+id = "{SECOND_ID}"
+saved = "{SECOND_SAVED}"
+mode = "future_mode"
+future_parameter = 41
+
+{target}"#
+        );
+        write_favorites(&path, &inserted_ahead);
+
+        remove_from_location(
+            location(&path),
+            FavoriteRemovalTarget::Unrecognized(locator),
+        )
+        .expect("shifted unrecognized favorite should be removed");
+
+        let remaining = fs::read_to_string(&path).expect("favorites should remain readable");
+        assert!(remaining.contains(SECOND_ID));
+        assert!(remaining.contains("future_parameter = 41"));
+        assert!(!remaining.contains(FIRST_ID));
+        assert!(!remaining.contains("future_parameter = 88"));
+    }
+
+    #[test]
+    fn duplicate_id_row_deletion_preserves_the_recognized_twin() {
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = favorites_path(&directory);
+        let duplicate_rows = format!(
+            r#"[[favorite]]
+id = "{FIRST_ID}"
+saved = "{FIRST_SAVED}"
+mode = "moving_band"
+direction = "right"
+width = 12
+speed = 40
+tail_speed = 96
+fraying = "both"
+
+[[favorite]]
+id = "{FIRST_ID}"
+saved = "{SECOND_SAVED}"
+mode = "pixelate"
+direction = "left"
+speed = 24
+wave_percent = 145
+block_columns = 6
+resolve = "scatter"
+fill = "solid"
+"#
+        );
+        write_favorites(&path, &duplicate_rows);
+        let state = load_from(location(&path));
+        let locator = unrecognized_locators(&state)
+            .into_iter()
+            .next()
+            .expect("duplicate-id row should have a locator");
+
+        remove_from_location(
+            location(&path),
+            FavoriteRemovalTarget::Unrecognized(locator),
+        )
+        .expect("duplicate-id row should be removed");
+
+        let after = load_from(location(&path));
+        let recognized = loaded_rows(&after).recognized().collect::<Vec<_>>();
+        assert_eq!(recognized.len(), 1);
+        assert_eq!(recognized[0].id, favorite_id(FIRST_ID));
+        let text = fs::read_to_string(path).expect("favorites should remain readable");
+        assert_eq!(text.matches(FIRST_ID).count(), 1);
+        assert!(text.contains(FIRST_SAVED));
+        assert!(!text.contains(SECOND_SAVED));
+    }
+
+    #[test]
+    fn byte_identical_unrecognized_rows_are_deleted_one_at_a_time() {
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = favorites_path(&directory);
+        let target = format!(
+            r#"[[favorite]]
+id = "{FIRST_ID}"
+saved = "{FIRST_SAVED}"
+mode = "future_mode"
+future_parameter = 17
+"#
+        );
+        let text = format!("{target}\n{target}");
+        write_favorites(&path, &text);
+        let state = load_from(location(&path));
+        let locators = unrecognized_locators(&state);
+        assert_eq!(locators.len(), 2);
+
+        remove_from_location(
+            location(&path),
+            FavoriteRemovalTarget::Unrecognized(locators[0].clone()),
+        )
+        .expect("first unrecognized favorite should be removed");
+        let after_first = load_from(location(&path));
+        assert_eq!(loaded_rows(&after_first).iter().count(), 1);
+
+        remove_from_location(
+            location(&path),
+            FavoriteRemovalTarget::Unrecognized(locators[1].clone()),
+        )
+        .expect("second unrecognized favorite should be removed after its index changes");
+        let after_second = load_from(location(&path));
+        assert_eq!(loaded_rows(&after_second).iter().count(), 0);
+    }
+
+    #[test]
+    fn unrecognized_nan_value_is_deletable_after_an_unchanged_reload() {
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = favorites_path(&directory);
+        let target = format!(
+            r#"[[favorite]]
+id = "{FIRST_ID}"
+saved = "{FIRST_SAVED}"
+mode = "moving_band"
+direction = "right"
+width = 12
+speed = nan
+tail_speed = 96
+fraying = "both"
+"#
+        );
+        write_favorites(&path, &target);
+        let state = load_from(location(&path));
+        let locator = unrecognized_locators(&state)
+            .into_iter()
+            .next()
+            .expect("NaN row should have an unrecognized locator");
+
+        remove_from_location(
+            location(&path),
+            FavoriteRemovalTarget::Unrecognized(locator),
+        )
+        .expect("unchanged NaN row should be removed after reloading");
+
+        let after = load_from(location(&path));
+        assert_eq!(loaded_rows(&after).iter().count(), 0);
+    }
+
+    #[test]
+    fn unrecognized_deletion_refuses_after_the_target_body_changes() {
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = favorites_path(&directory);
+        let target = format!(
+            r#"[[favorite]]
+id = "{FIRST_ID}"
+saved = "{FIRST_SAVED}"
+mode = "moving_band"
+direction = "right"
+width = 12
+speed = -0.0
+tail_speed = 96
+fraying = "both"
+"#
+        );
+        write_favorites(&path, &target);
+        let state = load_from(location(&path));
+        let locator = unrecognized_locators(&state)
+            .into_iter()
+            .next()
+            .expect("negative-zero row should have an unrecognized locator");
+        let edited = target.replace("speed = -0.0", "speed = 0.0");
+        write_favorites(&path, &edited);
+
+        assert_eq!(
+            remove_from_location(
+                location(&path),
+                FavoriteRemovalTarget::Unrecognized(locator),
+            ),
+            Err(FavoritesMutationError::UnrecognizedFavoriteChanged)
+        );
+        assert_eq!(
+            fs::read_to_string(path).expect("refused favorites should remain readable"),
+            edited
+        );
+    }
+
+    #[test]
+    fn unrecognized_deletion_refuses_an_ambiguous_stale_locator() {
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = favorites_path(&directory);
+        let target = format!(
+            r#"[[favorite]]
+id = "{FIRST_ID}"
+saved = "{FIRST_SAVED}"
+mode = "future_mode"
+future_parameter = 88
+"#
+        );
+        write_favorites(&path, &target);
+        let state = load_from(location(&path));
+        let locator = unrecognized_locators(&state)
+            .into_iter()
+            .next()
+            .expect("unrecognized target should have a locator");
+        let moved_and_duplicated = format!(
+            r#"[[favorite]]
+id = "{SECOND_ID}"
+saved = "{SECOND_SAVED}"
+mode = "future_mode"
+future_parameter = 41
+
+{target}
+{target}"#
+        );
+        write_favorites(&path, &moved_and_duplicated);
+
+        assert_eq!(
+            remove_from_location(
+                location(&path),
+                FavoriteRemovalTarget::Unrecognized(locator),
+            ),
+            Err(FavoritesMutationError::UnrecognizedFavoriteChanged)
+        );
+        assert_eq!(
+            fs::read_to_string(path).expect("refused favorites should remain readable"),
+            moved_and_duplicated
         );
     }
 
@@ -756,7 +1050,10 @@ fill = "solid"
                 if failed_path == &path
         ));
         assert!(matches!(
-            remove_from_location(location(&path), favorite_id(FIRST_ID)),
+            remove_from_location(
+                location(&path),
+                FavoriteRemovalTarget::Recognized(favorite_id(FIRST_ID)),
+            ),
             Err(FavoritesMutationError::Unparseable { path: ref failed_path, .. })
                 if failed_path == &path
         ));
@@ -794,7 +1091,10 @@ fill = "solid"
                 if failed_path == &path
         ));
         assert!(matches!(
-            remove_from_location(location(&path), favorite_id(FIRST_ID)),
+            remove_from_location(
+                location(&path),
+                FavoriteRemovalTarget::Recognized(favorite_id(FIRST_ID)),
+            ),
             Err(FavoritesMutationError::Unreadable { path: ref failed_path, .. })
                 if failed_path == &path
         ));
@@ -822,7 +1122,10 @@ fill = "solid"
             Err(FavoritesMutationError::LocationUnavailable)
         );
         assert_eq!(
-            remove_from_location(FavoritesLocation::Unavailable, favorite_id(FIRST_ID)),
+            remove_from_location(
+                FavoritesLocation::Unavailable,
+                FavoriteRemovalTarget::Recognized(favorite_id(FIRST_ID)),
+            ),
             Err(FavoritesMutationError::LocationUnavailable)
         );
     }

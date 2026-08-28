@@ -58,6 +58,7 @@ use crate::constants::FULL_REPAINT_SECONDS;
 use crate::constants::PROBE_THRESHOLD;
 use crate::constants::REPAINT_SENTINEL;
 use crate::favorites;
+use crate::favorites::FavoriteRemovalTarget;
 use crate::favorites_overlay::FavoritesOverlayFrameOutcome;
 use crate::globals::AppGlobalAction;
 use crate::interaction;
@@ -288,7 +289,7 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
             FavoritesOverlayFrameOutcome::Quiet => {},
             FavoritesOverlayFrameOutcome::Repaint => dirty = true,
             FavoritesOverlayFrameOutcome::CommitRemoval(favorite_id) => {
-                let result = favorites::remove(favorite_id);
+                let result = favorites::remove(FavoriteRemovalTarget::Recognized(favorite_id));
                 app.favorites_overlay.finish_removal(favorite_id, result);
                 dirty = true;
             },

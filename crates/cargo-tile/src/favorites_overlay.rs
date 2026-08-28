@@ -72,6 +72,7 @@ use crate::favorites;
 use crate::favorites::AttractSettings;
 use crate::favorites::Favorite;
 use crate::favorites::FavoriteId;
+use crate::favorites::FavoriteRemovalTarget;
 use crate::favorites::FavoriteRowRecognition;
 use crate::favorites::FavoriteRows;
 use crate::favorites::FavoritesFileState;
@@ -231,8 +232,8 @@ impl From<&FavoriteRows> for FavoriteRowsView {
                         });
                     }
                 },
-                FavoriteRowRecognition::Unrecognized(value) => {
-                    unrecognized.push(UnrecognizedFavoriteView::from(value));
+                FavoriteRowRecognition::Unrecognized { diagnostic, .. } => {
+                    unrecognized.push(UnrecognizedFavoriteView::from(diagnostic));
                 },
             }
         }
@@ -1119,11 +1120,11 @@ fn close_overlay(overlay: &mut FavoritesOverlay, app: &mut App) {
 fn close_overlay_with(
     overlay: &mut FavoritesOverlay,
     app: &mut App,
-    mut remove: impl FnMut(FavoriteId) -> Result<(), FavoritesMutationError>,
+    mut remove: impl FnMut(FavoriteRemovalTarget) -> Result<(), FavoritesMutationError>,
 ) {
     let close_commit = overlay.begin_close();
     for favorite_id in close_commit.favorite_ids {
-        if let Err(error) = remove(favorite_id) {
+        if let Err(error) = remove(FavoriteRemovalTarget::Recognized(favorite_id)) {
             let message = favorites::favorite_refusal_message(
                 FavoritesMutation::Delete,
                 &close_commit.retry,
@@ -2801,7 +2802,7 @@ travel_left = "界"
             Ok(())
         });
 
-        assert_eq!(removed, [favorite_id]);
+        assert_eq!(removed, [FavoriteRemovalTarget::Recognized(favorite_id)]);
         assert!(!overlay.is_open());
         assert!(overlay.line_plan.lines.is_empty());
     }
