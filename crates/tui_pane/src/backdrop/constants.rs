@@ -381,17 +381,6 @@ pub(super) const CAPTURE_REFRESH: Duration = Duration::from_millis(1000);
 /// a window parked off every display is not asking the window server
 /// for a full capture every frame.
 pub(super) const CAPTURE_RETRY: Duration = Duration::from_millis(150);
-/// How many times the window server is asked which window is wearing
-/// the marker title within one pass, before that pass gives up and
-/// [`IDENTIFY_PASSES`] decides whether there is another.
-///
-/// These are not paced. A round trip is a fraction of a millisecond,
-/// so all of them together cover a few milliseconds at most -- nowhere
-/// near long enough for a title to reach the emulator, be drawn and
-/// reach the window server. Waiting for that is what the passes are
-/// for; this run is only there to catch a title that has already
-/// arrived.
-pub(super) const IDENTIFY_ATTEMPTS: u32 = 5;
 /// How many passes are made before the window is given up on and the
 /// size heuristic carries the run.
 ///
@@ -406,9 +395,13 @@ pub(super) const IDENTIFY_ATTEMPTS: u32 = 5;
 pub(super) const IDENTIFY_PASSES: u32 = 10;
 /// How long the app waits before looking for its window again.
 ///
-/// Long enough that a busy emulator has drained what was queued ahead
-/// of the marker, and short enough that ten of them are over inside
-/// the first few seconds of the animation.
+/// This is the whole of the waiting. Asking the window server costs a
+/// fraction of a millisecond, so nothing else in a pass takes any time
+/// at all, and a title needs far longer than that to reach the
+/// emulator, be drawn, and be seen. Long enough that a busy emulator
+/// has drained what was queued ahead of the marker, and short enough
+/// that ten of them are over inside the first few seconds of the
+/// animation.
 pub(super) const IDENTIFY_RETRY: Duration = Duration::from_millis(500);
 /// What the marker title this app briefly wears begins with, before
 /// the process id that makes it this process's alone.

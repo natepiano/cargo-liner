@@ -36,7 +36,6 @@ use ratatui::layout::Rect;
 use super::Backdrop;
 use super::constants::CAPTURE_REFRESH;
 use super::constants::CAPTURE_RETRY;
-use super::constants::IDENTIFY_ATTEMPTS;
 use super::constants::IDENTIFY_MARKER;
 use super::constants::IDENTIFY_PASSES;
 use super::constants::IDENTIFY_RETRY;
@@ -101,6 +100,14 @@ pub struct BackdropMonitor {
     /// the wait starts, and a terminal that did not answer it then
     /// does not know it.
     asked:        bool,
+    /// What every window was titled before this app's own put the
+    /// marker on, so that the window found wearing it can be given its
+    /// title back.
+    ///
+    /// Read once, on the pass that sets the marker, and kept because
+    /// the marker outlives that pass -- see
+    /// [`identify`](Self::identify).
+    titles:       Option<Vec<(u32, Option<String>)>>,
 }
 
 /// One capture, as the worker is asked for it.
@@ -156,6 +163,7 @@ impl BackdropMonitor {
             attempts: 0,
             attempted_at: None,
             asked: false,
+            titles: None,
         }
     }
 
@@ -189,11 +197,12 @@ impl BackdropMonitor {
     ///
     /// # Cost
     ///
-    /// One round trip over the pty, then one to the window server. A
-    /// terminal that does not answer costs the wait for a reply and
-    /// several more round trips to the window server -- a few hundred
-    /// milliseconds in all. It belongs where the backdrop is first
-    /// wanted rather than in a frame that has to be drawn on time.
+    /// One round trip over the pty, then two to the window server. The
+    /// window server is asked the cheap way, so what this costs is very
+    /// nearly all the pty: a terminal that answers costs the reply, and
+    /// one that does not costs the wait for a reply that never comes.
+    /// It belongs where the backdrop is first wanted rather than in a
+    /// frame that has to be drawn on time.
     ///
     /// # Invariants
     ///
@@ -224,8 +233,8 @@ impl BackdropMonitor {
         self.attempted_at = Some(Instant::now());
         // Asking the emulator where it is comes first, and settles it
         // outright where the emulator answers. Nothing below runs then
-        // -- no title is set, and the window server is asked once
-        // instead of half a dozen times.
+        // -- no title is set, and no window wears a marker that has to
+        // be taken off again.
         if !self.asked {
             self.asked = true;
             self.pinned = query::window_origin(out).and_then(desktop::window_at);
@@ -234,25 +243,48 @@ impl BackdropMonitor {
             }
         }
         let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
-        // What every window is titled now, so that the one found to be
-        // wearing the marker can be given its own title back.
-        let titles = desktop::window_titles();
-        if set_title(out, &marker).is_err() {
-            return false;
+        // The marker goes on once and is left on until something
+        // answers it.
+        //
+        // What a pass is waiting for is the emulator drawing the title
+        // and the window server coming to see it, and the pause between
+        // passes is the only part of this long enough for that to
+        // happen. A marker put on and taken off inside one pass is worn
+        // for as long as the asking takes -- a fraction of a
+        // millisecond, now that the window server is asked the cheap
+        // way -- and no emulator is quick enough to be caught wearing
+        // it.
+        if self.titles.is_none() {
+            // What every window is titled now, so that the one found to
+            // be wearing the marker can be given its own title back.
+            // Read before the marker goes on, and kept only once it
+            // has: a marker that could not be set is not worn, and a
+            // pass that took this for worn would look for a title
+            // nothing ever wore.
+            let titles = desktop::window_titles();
+            if set_title(out, &marker).is_err() {
+                return false;
+            }
+            self.titles = Some(titles);
         }
-        // The title has to reach the emulator, be drawn, and reach the
-        // window server before it can be asked about, and none of that
-        // is instant. Nothing paces the attempts because each one is
-        // itself a long round trip.
-        let found = (0..IDENTIFY_ATTEMPTS).find_map(|_| desktop::window_titled(&marker));
-        let restored = found
-            .and_then(|window| titles.iter().find(|(id, _)| *id == window))
-            .and_then(|(_, title)| title.as_deref());
-        // An empty title is what a window that had none goes back to,
-        // and it is also all there is to offer for a window the window
-        // server would not describe -- the emulator settles what to
-        // show in its place.
-        let _ = set_title(out, restored.unwrap_or(""));
+        let found = desktop::window_titled(&marker);
+        // The marker comes off once it has been answered, and once
+        // there is no pass left to answer it. Nothing else takes it
+        // off, so a run ending between those two leaves the emulator
+        // wearing the marker until whatever usually writes the title --
+        // a shell prompt, in every ordinary setup -- writes it again.
+        // That is the price of the marker being worn long enough to be
+        // seen at all.
+        if found.is_some() || self.attempts >= IDENTIFY_PASSES {
+            let restored = found
+                .and_then(|window| self.titles.as_ref()?.iter().find(|(id, _)| *id == window))
+                .and_then(|(_, title)| title.as_deref());
+            // An empty title is what a window that had none goes back
+            // to, and it is also all there is to offer for a window the
+            // window server would not describe -- the emulator settles
+            // what to show in its place.
+            let _ = set_title(out, restored.unwrap_or(""));
+        }
         self.pinned = found;
         found.is_some()
     }

@@ -354,6 +354,7 @@ mod platform {
     use objc2_core_foundation::CFArray;
     use objc2_core_foundation::CFDictionary;
     use objc2_core_foundation::CFNumber;
+    use objc2_core_foundation::CFString;
     use objc2_core_foundation::CFType;
     use objc2_core_foundation::CGRect as CoreGraphicsRect;
     use objc2_core_graphics::CGDisplayBounds;
@@ -362,8 +363,13 @@ mod platform {
     use objc2_core_graphics::CGRectMakeWithDictionaryRepresentation;
     use objc2_core_graphics::CGWindowListCopyWindowInfo;
     use objc2_core_graphics::CGWindowListOption;
+    use objc2_core_graphics::kCGNullWindowID;
     use objc2_core_graphics::kCGWindowBounds;
+    use objc2_core_graphics::kCGWindowLayer;
+    use objc2_core_graphics::kCGWindowName;
     use objc2_core_graphics::kCGWindowNumber;
+    use objc2_core_graphics::kCGWindowOwnerName;
+    use objc2_core_graphics::kCGWindowOwnerPID;
     use ratatui::style::Color;
     use screencapturekit::cg::CGPoint;
     use screencapturekit::cg::CGRect;
@@ -506,35 +512,42 @@ mod platform {
     }
 
     /// See [`super::window_titles`].
+    ///
+    /// CoreGraphics rather than `ScreenCaptureKit`, for the reason
+    /// [`Listed::on_screen`] gives: this is called from the thread that
+    /// draws.
     pub(super) fn window_titles() -> Vec<(u32, Option<String>)> {
-        let Ok(content) = SCShareableContent::get() else {
-            return Vec::new();
-        };
-        let windows = content.windows();
-        terminal_windows(&windows)
+        terminal_windows(&Listed::on_screen())
             .into_iter()
-            .map(|window| (window.window_id(), window.title()))
+            .map(|window| (window.number, window.title.clone()))
             .collect()
     }
 
     /// See [`super::window_titled`].
+    ///
+    /// CoreGraphics rather than `ScreenCaptureKit`, for the reason
+    /// [`Listed::on_screen`] gives.
     pub(super) fn window_titled(marker: &str) -> Option<u32> {
-        let content = SCShareableContent::get().ok()?;
-        let windows = content.windows();
-        terminal_windows(&windows)
+        terminal_windows(&Listed::on_screen())
             .into_iter()
-            .find(|window| window.title().is_some_and(|title| title.contains(marker)))
-            .map(SCWindow::window_id)
+            .find(|window| {
+                window
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| title.contains(marker))
+            })
+            .map(|window| window.number)
     }
 
     /// See [`super::window_at`].
+    ///
+    /// CoreGraphics rather than `ScreenCaptureKit`, for the reason
+    /// [`Listed::on_screen`] gives. Nothing here filters for windows
+    /// that are on screen because the list asked for holds no others.
     pub(super) fn window_at(origin: (f64, f64)) -> Option<u32> {
-        let content = SCShareableContent::get().ok()?;
-        let windows = content.windows();
-        terminal_windows(&windows)
+        terminal_windows(&Listed::on_screen())
             .into_iter()
-            .filter(|window| window.is_on_screen())
-            .map(|window| (window.window_id(), away(window.frame(), origin)))
+            .map(|window| (window.number, away(window.bounds, origin)))
             .filter(|(_, away)| *away <= POSITION_TOLERANCE)
             .min_by(|(_, left), (_, right)| left.total_cmp(right))
             .map(|(window, _)| window)
@@ -547,7 +560,7 @@ mod platform {
     /// question is which of a handful of windows is nearest, and every
     /// ordering that answers it agrees; a square root would only cost
     /// what it does not settle.
-    fn away(frame: CGRect, origin: (f64, f64)) -> f64 {
+    fn away(frame: CoreGraphicsRect, origin: (f64, f64)) -> f64 {
         (frame.origin.x - origin.0).abs() + (frame.origin.y - origin.1).abs()
     }
 
@@ -631,7 +644,63 @@ mod platform {
         value.downcast_ref::<CFDictionary>()
     }
 
-    /// A window's own number, out of the dictionary describing it.
+    /// Which of the entries describing a window is wanted.
+    ///
+    /// The names are `CFString` constants the framework builds as it
+    /// loads, and reading an `extern` static is unchecked -- so they
+    /// are read in the one place below rather than at every use.
+    #[derive(Clone, Copy)]
+    enum Key {
+        /// The window server's own number for the window.
+        Number,
+        /// Where the window stands and how big it is.
+        Bounds,
+        /// Which layer it is drawn on. Ordinary windows are on nought;
+        /// the menu bar, the dock and the desktop picture are not.
+        Layer,
+        /// The pid of the application that owns it.
+        Owner,
+        /// The name that application answers to.
+        OwnerName,
+        /// What the window is titled.
+        Title,
+    }
+
+    impl Key {
+        /// The CoreGraphics constant naming this entry.
+        #[allow(
+            unsafe_code,
+            reason = "an `extern` static has no safe binding; the SAFETY \
+                      comment below covers every one of them at once"
+        )]
+        fn name(self) -> &'static CFString {
+            // SAFETY: reading an `extern` static is unchecked because
+            // nothing on this side knows the symbol was ever
+            // initialised. These are `CFString` constants CoreGraphics
+            // builds as the framework loads -- which is before any code
+            // that could reach this line -- and keeps for the life of
+            // the process, so whichever reference is read out is live
+            // and cannot dangle while the caller holds it.
+            unsafe {
+                match self {
+                    Self::Number => kCGWindowNumber,
+                    Self::Bounds => kCGWindowBounds,
+                    Self::Layer => kCGWindowLayer,
+                    Self::Owner => kCGWindowOwnerPID,
+                    Self::OwnerName => kCGWindowOwnerName,
+                    Self::Title => kCGWindowName,
+                }
+            }
+        }
+    }
+
+    /// What a window's dictionary holds under `key`, or [`None`] where
+    /// it holds nothing under it.
+    ///
+    /// A window server that will not answer a question leaves the entry
+    /// out rather than emptying it, so this is missing far more often
+    /// than it looks: [`Key::Title`] is absent for every window the
+    /// process has no Screen Recording permission to read.
     ///
     /// # Invariants
     ///
@@ -643,31 +712,51 @@ mod platform {
                   accessors hand back untyped pointers, and the caller \
                   carries the invariant above in their place"
     )]
-    fn number(described: &CFDictionary) -> Option<u32> {
-        // SAFETY: reading an `extern` static is unchecked because
-        // nothing on this side knows the symbol was ever initialised.
-        // This one is a `CFString` constant CoreGraphics builds as the
-        // framework loads -- which is before any code that could reach
-        // this line -- and keeps for the life of the process, so the
-        // reference read out is live and the pointer taken to it cannot
-        // dangle while the call below runs.
-        let key = unsafe { std::ptr::from_ref(&**kCGWindowNumber) }.cast::<c_void>();
+    fn value(described: &CFDictionary, key: Key) -> Option<&CFType> {
+        let key = std::ptr::from_ref(key.name()).cast::<c_void>();
         // SAFETY: `CFDictionaryGetValue` wants a valid key pointer,
-        // which is what `key` was just made, and a dictionary whose
-        // generic matches its contents, which an untyped `CFDictionary`
-        // has no way to fail. It answers null for a key the dictionary
-        // does not hold.
+        // which is what `key` was just made from a live constant, and a
+        // dictionary whose generic matches its contents, which an
+        // untyped `CFDictionary` has no way to fail. It answers null for
+        // a key the dictionary does not hold.
         let value = unsafe { described.value(key) };
         // SAFETY: the value is a Core Foundation object by this
         // function's invariant, so a non-null pointer to one points at a
         // live `CFType`, and `as_ref` answers `None` for the null.
         // `described` holds a reference to it and outlives this call.
-        let value = unsafe { value.cast::<CFType>().as_ref() }?;
-        // Documented to be a number, and asked rather than assumed for
-        // the same reason the bounds are. A window number is a `u32`
-        // that CoreGraphics reports as a signed one.
-        let number = value.downcast_ref::<CFNumber>()?.as_i32()?;
-        u32::try_from(number).ok()
+        unsafe { value.cast::<CFType>().as_ref() }
+    }
+
+    /// A whole number out of a window's dictionary.
+    ///
+    /// The type is asked rather than assumed, here and in every reader
+    /// below it: `downcast_ref` compares `CFGetTypeID` and hands back
+    /// `None` for anything else, so a window server answering something
+    /// other than what it documents costs a missing field and not a
+    /// misread one.
+    fn integer(described: &CFDictionary, key: Key) -> Option<i32> {
+        value(described, key)?.downcast_ref::<CFNumber>()?.as_i32()
+    }
+
+    /// A string out of a window's dictionary.
+    fn text(described: &CFDictionary, key: Key) -> Option<String> {
+        Some(
+            value(described, key)?
+                .downcast_ref::<CFString>()?
+                .to_string(),
+        )
+    }
+
+    /// A window's own number, out of the dictionary describing it.
+    ///
+    /// # Invariants
+    ///
+    /// `described` must be one of [`entry`]'s dictionaries, and so must
+    /// hold Core Foundation objects for the same reason its array does.
+    fn number(described: &CFDictionary) -> Option<u32> {
+        // A window number is a `u32` that CoreGraphics reports as a
+        // signed one.
+        u32::try_from(integer(described, Key::Number)?).ok()
     }
 
     /// A window's bounds, out of the dictionary describing it.
@@ -678,35 +767,16 @@ mod platform {
     /// hold Core Foundation objects for the same reason its array does.
     #[allow(
         unsafe_code,
-        reason = "CoreFoundation collections have no safe binding: their \
-                  accessors hand back untyped pointers, and the caller \
-                  carries the invariant above in their place"
+        reason = "`CGRectMakeWithDictionaryRepresentation` has no safe \
+                  binding: it writes through an out pointer, which the \
+                  caller supplies and the SAFETY comment below covers"
     )]
     fn bounds(described: &CFDictionary) -> Option<CoreGraphicsRect> {
-        // SAFETY: reading an `extern` static is unchecked because
-        // nothing on this side knows the symbol was ever initialised.
-        // This one is a `CFString` constant CoreGraphics builds as the
-        // framework loads -- which is before any code that could reach
-        // this line -- and keeps for the life of the process, so the
-        // reference read out is live and the pointer taken to it cannot
-        // dangle while the call below runs.
-        let key = unsafe { std::ptr::from_ref(&**kCGWindowBounds) }.cast::<c_void>();
-        // SAFETY: `CFDictionaryGetValue` wants a valid key pointer,
-        // which is what `key` was just made, and a dictionary whose
-        // generic matches its contents, which an untyped `CFDictionary`
-        // has no way to fail. It answers null for a key the dictionary
-        // does not hold.
-        let value = unsafe { described.value(key) };
-        // SAFETY: the value is a Core Foundation object by this
-        // function's invariant, so a non-null pointer to one points at a
-        // live `CFType`, and `as_ref` answers `None` for the null.
-        // `described` holds a reference to it and outlives this call.
-        let value = unsafe { value.cast::<CFType>().as_ref() }?;
         // Documented to be a rect in dictionary form, and asked rather
         // than assumed, because the call below is undefined on something
         // that is not a dictionary at all. Given one that is but does
         // not describe a rect, it answers false and writes nothing.
-        let value = value.downcast_ref::<CFDictionary>()?;
+        let value = value(described, Key::Bounds)?.downcast_ref::<CFDictionary>()?;
         let mut rect = CoreGraphicsRect::default();
         // SAFETY: the out pointer is to a live, aligned, already
         // initialised `CGRect` in this frame, so it stays valid to write
@@ -804,11 +874,136 @@ mod platform {
         Some(colors)
     }
 
+    /// What the two window-server APIs agree on, so that the search
+    /// for the emulator's windows is written once and runs over
+    /// either.
+    ///
+    /// They are asked for in different places because of what they
+    /// cost. `SCShareableContent` describes every window on the machine
+    /// and takes tens of milliseconds, which the capture is already
+    /// paying on a worker thread; a `CGWindowList` answer is some five
+    /// hundred times cheaper and is what the drawing thread can afford.
+    /// The search itself is a heuristic that has been wrong before and
+    /// was expensive to get right, so it exists once and the two
+    /// implementations below are all that differs.
+    trait Window {
+        /// The pid of the application that owns it, where the window
+        /// server will say.
+        fn owner(&self) -> Option<i32>;
+
+        /// Every name that application answers to, folded ready to
+        /// compare. `SCShareableContent` knows its bundle identifier as
+        /// well as its name; a `CGWindowList` answer carries the name
+        /// alone.
+        fn names(&self) -> Vec<String>;
+
+        /// Whether this window could be the one in front.
+        ///
+        /// Answered differently by the two, because they are told
+        /// different things: `SCShareableContent` marks the windows of
+        /// the active application, where a `CGWindowList` answer
+        /// carries no such mark but arrives ordered front to back.
+        /// Either way the caller takes the first window accepted, which
+        /// is what the ordering makes true of the second.
+        fn frontmost(&self) -> bool;
+    }
+
+    impl Window for SCWindow {
+        fn owner(&self) -> Option<i32> {
+            self.owning_application()
+                .map(|application| application.process_id())
+        }
+
+        fn names(&self) -> Vec<String> {
+            self.owning_application()
+                .map(|application| {
+                    vec![
+                        folded(&application.application_name()),
+                        folded(&application.bundle_identifier()),
+                    ]
+                })
+                .unwrap_or_default()
+        }
+
+        fn frontmost(&self) -> bool {
+            self.is_active() && self.is_on_screen() && self.window_layer() == 0
+        }
+    }
+
+    /// One window of a `CGWindowList` answer, read out of the
+    /// dictionary describing it.
+    struct Listed {
+        /// The window server's own number for it.
+        number: u32,
+        /// The pid of the application that owns it.
+        owner:  Option<i32>,
+        /// The name that application answers to, folded.
+        name:   Option<String>,
+        /// What it is titled, where the window server will say -- which
+        /// it will not without Screen Recording permission. Nothing
+        /// here can make it answer, and [`window_at`] is the path that
+        /// does not need it to.
+        title:  Option<String>,
+        /// Where it stands, in the space `CGDisplayBounds` measures.
+        bounds: CoreGraphicsRect,
+        /// Which layer it is drawn on.
+        layer:  i32,
+    }
+
+    impl Listed {
+        /// Every window on screen, in the front-to-back order the
+        /// window server lists them in.
+        ///
+        /// This is the cheap way of asking, and the reason the drawing
+        /// thread can ask at all: `SCShareableContent::get` describes
+        /// the same windows and takes about seventy milliseconds over
+        /// it, which is a frame lost every time it is called and was
+        /// several frames lost every pass. A run that cannot draw looks
+        /// exactly like one whose screen never came on. See
+        /// [`window_frame`] for the same comparison.
+        fn on_screen() -> Vec<Self> {
+            let Some(list) =
+                CGWindowListCopyWindowInfo(CGWindowListOption::OptionOnScreenOnly, kCGNullWindowID)
+            else {
+                return Vec::new();
+            };
+            (0..list.count())
+                .filter_map(|index| Self::read(entry(&list, index)?))
+                .collect()
+        }
+
+        /// One window, out of the dictionary describing it.
+        ///
+        /// [`None`] where the window server named no number for it or
+        /// would not say where it stands, since neither the search nor
+        /// the caller has any use for a window it cannot name or place.
+        /// Everything else is optional here because it is optional
+        /// there.
+        fn read(described: &CFDictionary) -> Option<Self> {
+            Some(Self {
+                number: number(described)?,
+                owner:  integer(described, Key::Owner),
+                name:   text(described, Key::OwnerName).map(|name| folded(&name)),
+                title:  text(described, Key::Title),
+                bounds: bounds(described)?,
+                layer:  integer(described, Key::Layer).unwrap_or_default(),
+            })
+        }
+    }
+
+    impl Window for Listed {
+        fn owner(&self) -> Option<i32> { self.owner }
+
+        fn names(&self) -> Vec<String> { self.name.clone().into_iter().collect() }
+
+        fn frontmost(&self) -> bool { self.layer == 0 }
+    }
+
     /// Every on-screen window belonging to this process or one of its
     /// ancestors -- which is how the terminal emulator hosting this app
     /// is found, since the window is the emulator's and not this
     /// process's.
-    fn terminal_windows(windows: &[SCWindow]) -> Vec<&SCWindow> {
+    fn terminal_windows<W: Window>(windows: &[W]) -> Vec<&W> {
         let ancestors = ancestor_pids();
         let owned = owned_by(windows, |pid| ancestors.contains(&pid));
         if !owned.is_empty() {
@@ -848,7 +1043,7 @@ mod platform {
     ///
     /// Empty where the variable is unset, where it names nothing on
     /// screen, or where this is not a terminal at all.
-    fn named_emulator_windows(windows: &[SCWindow]) -> Vec<&SCWindow> {
+    fn named_emulator_windows<W: Window>(windows: &[W]) -> Vec<&W> {
         let Ok(program) = env::var(TERM_PROGRAM_ENV) else {
             return Vec::new();
         };
@@ -867,10 +1062,10 @@ mod platform {
         windows
             .iter()
             .filter(|window| {
-                window.owning_application().is_some_and(|application| {
-                    names_agree(&wanted, &folded(&application.application_name()))
-                        || names_agree(&wanted, &folded(&application.bundle_identifier()))
-                })
+                window
+                    .names()
+                    .iter()
+                    .any(|found| names_agree(&wanted, found))
             })
             .collect()
     }
@@ -903,14 +1098,10 @@ mod platform {
     }
 
     /// Every window whose owning application's pid `wanted` accepts.
-    fn owned_by(windows: &[SCWindow], wanted: impl Fn(i32) -> bool) -> Vec<&SCWindow> {
+    fn owned_by<W: Window>(windows: &[W], wanted: impl Fn(i32) -> bool) -> Vec<&W> {
         windows
             .iter()
-            .filter(|window| {
-                window
-                    .owning_application()
-                    .is_some_and(|application| wanted(application.process_id()))
-            })
+            .filter(|window| window.owner().is_some_and(&wanted))
             .collect()
     }
 
@@ -978,14 +1169,11 @@ mod platform {
 
     /// The pid of the application owning the active window, which is the
     /// one the reader is looking at.
-    fn frontmost_owner(windows: &[SCWindow]) -> Option<i32> {
+    fn frontmost_owner<W: Window>(windows: &[W]) -> Option<i32> {
         windows
             .iter()
-            .find(|window| {
-                window.is_active() && window.is_on_screen() && window.window_layer() == 0
-            })
-            .and_then(SCWindow::owning_application)
-            .map(|application| application.process_id())
+            .find(|window| window.frontmost())
+            .and_then(Window::owner)
     }
 
     /// This process's pid and every pid above it, as the window server
