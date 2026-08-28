@@ -38,6 +38,8 @@ use constants::GIT_EXCLUDE_REVISION_PREFIX;
 use constants::GIT_EXISTS_ARG;
 use constants::GIT_FIRST_PARENT_ANCESTOR_INFIX;
 use constants::GIT_FIRST_PARENT_ARG;
+use constants::GIT_FOR_EACH_REF_COMMAND;
+use constants::GIT_FULL_REF_FORMAT_ARG;
 use constants::GIT_HEAD_REVISION;
 use constants::GIT_HOOKS_PATH;
 use constants::GIT_IGNORE_MISSING_ARG;
@@ -49,6 +51,7 @@ use constants::GIT_LEFT_RIGHT_ARG;
 use constants::GIT_LITERAL_TOP_PATHSPEC_PREFIX;
 use constants::GIT_LOCAL_BRANCH_REF_PREFIX;
 use constants::GIT_MAX_COUNT_ARG_PREFIX;
+use constants::GIT_MAX_COUNT_ONE_ARG;
 use constants::GIT_MERGE_BASE_ARG_PREFIX;
 use constants::GIT_MERGE_BASE_COMMAND;
 use constants::GIT_MERGE_TREE_CLEAN_EXIT_CODE;
@@ -67,11 +70,15 @@ use constants::GIT_PARENTS_ARG;
 use constants::GIT_PATH_ARG;
 use constants::GIT_PATH_FORMAT_ABSOLUTE_ARG;
 use constants::GIT_PATHSPEC_SEPARATOR;
+use constants::GIT_POINTS_AT_ARG_PREFIX;
 use constants::GIT_PORCELAIN_ARG;
 use constants::GIT_RAW_ARG;
 use constants::GIT_READ_TREE_COMMAND;
 use constants::GIT_REBASE_APPLY_STATE_PATH;
 use constants::GIT_REBASE_MERGE_STATE_PATH;
+use constants::GIT_REFLOG_COMMAND;
+use constants::GIT_REFLOG_SHOW_ARG;
+use constants::GIT_REFLOG_SUBJECT_FORMAT_ARG;
 use constants::GIT_REV_LIST_COMMAND;
 use constants::GIT_REV_PARSE_COMMAND;
 use constants::GIT_SHOW_TOPLEVEL_ARG;
@@ -91,6 +98,7 @@ use uuid::Uuid;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::ReservationId;
+use crate::ledger::FullRefName;
 use crate::scope::ReservationScopeSet;
 
 /// A worktree's live relationship to the configured trunk.
@@ -318,6 +326,109 @@ pub(crate) fn branch_object_id(
         repository_root,
         &format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"),
     )
+}
+
+/// The reflog-proven replacement refs found at one deleted local branch's object tip.
+pub(crate) enum LocalBranchReplacementTipMatches {
+    /// No local branch at the object records a rename from the deleted branch.
+    NoMatches,
+    /// Exactly one local branch at the object records the rename.
+    ExactlyOne(FullRefName),
+    /// More than one local branch at the object records the rename.
+    MultipleMatches,
+}
+
+/// Whether a local branch's newest reflog entry proves it replaced a deleted branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LocalBranchRenameProof {
+    /// The newest reflog entry records the candidate's rename from the deleted branch.
+    Recorded,
+    /// The candidate has no matching newest reflog entry.
+    NotRecorded,
+}
+
+/// Find whether exactly one local branch at `tip` has proof it replaced the deleted branch.
+pub(crate) fn local_branch_replacement_tip_matches(
+    repository_root: &Path,
+    tip: &GitObjectId,
+    deleted_reference: &FullRefName,
+) -> Result<LocalBranchReplacementTipMatches, GitError> {
+    let arguments = vec![
+        GIT_FOR_EACH_REF_COMMAND.to_owned(),
+        GIT_FULL_REF_FORMAT_ARG.to_owned(),
+        format!("{GIT_POINTS_AT_ARG_PREFIX}{tip}"),
+        GIT_LOCAL_BRANCH_REF_PREFIX.to_owned(),
+    ];
+    let output = git_output_dynamic(repository_root, &arguments)?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_FOR_EACH_REF_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let references = String::from_utf8(output.stdout)
+        .map_err(GitError::InvalidOutput)?
+        .lines()
+        .map(|reference| {
+            reference
+                .parse::<FullRefName>()
+                .map_err(|_| GitError::InvalidReferenceName {
+                    reference: reference.to_owned(),
+                })
+        })
+        .filter(|reference| {
+            reference
+                .as_ref()
+                .map_or(true, |reference| reference != deleted_reference)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut proven_replacements = LocalBranchReplacementTipMatches::NoMatches;
+    for reference in references {
+        match local_branch_rename_proof(repository_root, deleted_reference, &reference)? {
+            LocalBranchRenameProof::Recorded => match proven_replacements {
+                LocalBranchReplacementTipMatches::NoMatches => {
+                    proven_replacements = LocalBranchReplacementTipMatches::ExactlyOne(reference);
+                },
+                LocalBranchReplacementTipMatches::ExactlyOne(_)
+                | LocalBranchReplacementTipMatches::MultipleMatches => {
+                    return Ok(LocalBranchReplacementTipMatches::MultipleMatches);
+                },
+            },
+            LocalBranchRenameProof::NotRecorded => {},
+        }
+    }
+    Ok(proven_replacements)
+}
+
+/// Read whether `candidate_reference` records a rename from `deleted_reference`.
+pub(crate) fn local_branch_rename_proof(
+    repository_root: &Path,
+    deleted_reference: &FullRefName,
+    candidate_reference: &FullRefName,
+) -> Result<LocalBranchRenameProof, GitError> {
+    let candidate_reference = candidate_reference.to_string();
+    let output = git_output(
+        repository_root,
+        [
+            GIT_REFLOG_COMMAND,
+            GIT_REFLOG_SHOW_ARG,
+            GIT_MAX_COUNT_ONE_ARG,
+            GIT_REFLOG_SUBJECT_FORMAT_ARG,
+            &candidate_reference,
+        ],
+    )?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REFLOG_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let subject = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    let expected_subject = format!("Branch: renamed {deleted_reference} to {candidate_reference}");
+    Ok(match subject.lines().next() {
+        Some(subject) if subject == expected_subject => LocalBranchRenameProof::Recorded,
+        Some(_) | None => LocalBranchRenameProof::NotRecorded,
+    })
 }
 
 /// Return every commit that would become reachable from `proposed` but not `previous`.
@@ -1566,6 +1677,8 @@ pub(crate) enum GitError {
     InvalidOutput(FromUtf8Error),
     /// Git printed text that was not a full object id.
     InvalidObjectId(InvalidGitObjectId),
+    /// Git printed text that was not a valid full reference name.
+    InvalidReferenceName { reference: String },
     /// `cat-file --batch-check` did not classify every submitted object.
     InvalidBatchObjectCount { expected: usize, actual: usize },
     /// The expected branch object is not an ancestor of the proposed object.
@@ -1599,6 +1712,9 @@ impl Display for GitError {
             },
             Self::InvalidObjectId(error) => {
                 write!(formatter, "git printed an invalid object id: {error}")
+            },
+            Self::InvalidReferenceName { reference } => {
+                write!(formatter, "git printed an invalid ref name: {reference:?}")
             },
             Self::InvalidBatchObjectCount { expected, actual } => write!(
                 formatter,

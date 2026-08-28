@@ -12,8 +12,11 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Read;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
 use std::process::ExitCode;
+use std::process::Stdio;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
@@ -48,6 +51,7 @@ use crate::gate::GateDecision;
 use crate::gate::GateError;
 use crate::gate::GateResult;
 use crate::gate::IntegrationRequest;
+use crate::gate::ManagedTrunkDeletion;
 use crate::gate::ReferenceTransaction;
 use crate::gate::ReferenceTransactionParseError;
 use crate::gate::ReferenceTransactionPhase;
@@ -55,6 +59,7 @@ use crate::gate::TrunkReferencePresence;
 use crate::gate::permit::EnvironmentBypassRetentionOutcome;
 use crate::git;
 use crate::ids::CoordinationRunId;
+use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::WorkPlanPhase;
 use crate::ledger::ClaimSource;
@@ -202,6 +207,9 @@ enum Command {
     /// Private dispatch used only by the installed git hook.
     #[command(name = "__reference-transaction", hide = true)]
     ReferenceTransaction(ReferenceTransactionArguments),
+    /// Private refresh worker scheduled after a committed trunk-ref deletion.
+    #[command(name = "__refresh-managed-hook-after-trunk-deletion", hide = true)]
+    RefreshManagedHookAfterTrunkDeletion(ManagedHookRefreshArguments),
 }
 
 /// The `--json` flag shared by every verb.
@@ -241,6 +249,15 @@ struct ReferenceTransactionArguments {
     phase:           ReferenceTransactionPhase,
     /// The full configured trunk ref captured when the hook was installed.
     trunk_reference: FullRefName,
+}
+
+/// The deleted managed trunk ref and the object its replacement must still name.
+#[derive(Debug, Args)]
+struct ManagedHookRefreshArguments {
+    /// The configured trunk ref whose committed deletion scheduled this worker.
+    deleted_reference: FullRefName,
+    /// The object tip the deleted trunk ref named.
+    previous_tip:      GitObjectId,
 }
 
 /// Why git's reference-transaction input could not be classified.
@@ -554,6 +571,9 @@ impl Cli {
             Command::ReferenceTransaction(arguments) => {
                 return run_reference_transaction(arguments.phase, arguments.trunk_reference);
             },
+            Command::RefreshManagedHookAfterTrunkDeletion(arguments) => {
+                return run_managed_hook_refresh_worker(&arguments);
+            },
             command => command,
         };
         let output_format = command.output_format();
@@ -642,10 +662,12 @@ impl Command {
             Self::Renew(reservation_arguments) => {
                 recovery::renew(reservation_arguments.into_renew_request())
             },
-            Self::ReferenceTransaction(_) => OutputEnvelope::invalid_input(
-                CommandVerb::Integrate,
-                "the private reference-transaction dispatch cannot use the public envelope path",
-            ),
+            Self::ReferenceTransaction(_) | Self::RefreshManagedHookAfterTrunkDeletion(_) => {
+                OutputEnvelope::invalid_input(
+                    CommandVerb::Integrate,
+                    "a private hook dispatch cannot use the public envelope path",
+                )
+            },
         };
         CommandExecution::Response(Box::new(output_envelope))
     }
@@ -664,7 +686,9 @@ impl Command {
             Self::Sequence(sequence_arguments) => sequence_arguments.json_output.output_format(),
             Self::Integrate(integrate_arguments) => integrate_arguments.json_output.output_format(),
             Self::Resolve(resolve_arguments) => resolve_arguments.json_output.output_format(),
-            Self::ReferenceTransaction(_) => CliOutputFormat::Text,
+            Self::ReferenceTransaction(_) | Self::RefreshManagedHookAfterTrunkDeletion(_) => {
+                CliOutputFormat::Text
+            },
         }
     }
 
@@ -679,7 +703,9 @@ impl Command {
             Self::Drift(_) => CommandVerb::Drift,
             Self::Release(_) => CommandVerb::Release,
             Self::Sequence(_) => CommandVerb::Sequence,
-            Self::Integrate(_) | Self::ReferenceTransaction(_) => CommandVerb::Integrate,
+            Self::Integrate(_)
+            | Self::ReferenceTransaction(_)
+            | Self::RefreshManagedHookAfterTrunkDeletion(_) => CommandVerb::Integrate,
             Self::Resolve(_) => CommandVerb::Resolve,
             Self::Renew(_) => CommandVerb::Renew,
         }
@@ -1072,6 +1098,7 @@ fn run_reference_transaction(
             return BerthExit::UsageError.into();
         },
     };
+    let managed_trunk_deletion = transaction.managed_trunk_deletion(&trunk_reference);
     let invocation_directory = match env::current_dir() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
@@ -1083,9 +1110,10 @@ fn run_reference_transaction(
     };
     let remaining = TOTAL_GATE_DEADLINE.saturating_sub(started_at.elapsed());
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let gate_invocation_directory = invocation_directory.clone();
     let gate_worker = std::thread::spawn(move || {
         let result = gate::evaluate_reference_transaction(
-            &invocation_directory,
+            &gate_invocation_directory,
             &transaction,
             &trunk_reference,
         );
@@ -1113,7 +1141,147 @@ fn run_reference_transaction(
         ));
         return BerthExit::LedgerUnreadable.into();
     }
+    schedule_managed_hook_refresh_after_trunk_deletion(
+        &invocation_directory,
+        managed_trunk_deletion,
+    );
     exit_for_reference_transaction_results(results)
+}
+
+fn schedule_managed_hook_refresh_after_trunk_deletion(
+    invocation_directory: &Path,
+    deletion: ManagedTrunkDeletion,
+) {
+    let ManagedTrunkDeletion::Deleted {
+        reference: deleted_reference,
+        previous_tip,
+    } = deletion
+    else {
+        return;
+    };
+    let executable = match env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth could not schedule its managed-hook refresh after {deleted_reference} was deleted: {error}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
+            ));
+            return;
+        },
+    };
+    let deleted_reference = deleted_reference.to_string();
+    let previous_tip = previous_tip.to_string();
+    match ProcessCommand::new(executable)
+        .args([
+            "__refresh-managed-hook-after-trunk-deletion",
+            &deleted_reference,
+            &previous_tip,
+        ])
+        .current_dir(invocation_directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+    {
+        Ok(refresh_worker) => drop(refresh_worker),
+        Err(error) => write_reference_transaction_diagnostic(format_args!(
+            "cargo-berth could not schedule its managed-hook refresh after {deleted_reference} was deleted: {error}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
+        )),
+    }
+}
+
+fn run_managed_hook_refresh_worker(arguments: &ManagedHookRefreshArguments) -> ExitCode {
+    let invocation_directory = match env::current_dir() {
+        Ok(invocation_directory) => invocation_directory,
+        Err(error) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth could not refresh its managed hook after {} was deleted: {error}",
+                arguments.deleted_reference
+            ));
+            return BerthExit::Clear.into();
+        },
+    };
+    refresh_managed_hook_after_trunk_deletion(
+        &invocation_directory,
+        &arguments.deleted_reference,
+        &arguments.previous_tip,
+    );
+    BerthExit::Clear.into()
+}
+
+fn refresh_managed_hook_after_trunk_deletion(
+    invocation_directory: &Path,
+    deleted_reference: &FullRefName,
+    previous_tip: &GitObjectId,
+) {
+    const MAXIMUM_REPLACEMENT_LOOKUP_ATTEMPTS: usize = 20;
+    const REPLACEMENT_LOOKUP_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+    let worktree_context = match crate::ledger::WorktreeContext::discover(invocation_directory) {
+        Ok(worktree_context) => worktree_context,
+        Err(error) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth could not inspect the repository after {deleted_reference} was deleted: {error}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
+            ));
+            return;
+        },
+    };
+    let mut renamed_reference = git::LocalBranchReplacementTipMatches::NoMatches;
+    for attempt in 0..MAXIMUM_REPLACEMENT_LOOKUP_ATTEMPTS {
+        renamed_reference = match git::local_branch_replacement_tip_matches(
+            worktree_context.repository_root(),
+            previous_tip,
+            deleted_reference,
+        ) {
+            Ok(git::LocalBranchReplacementTipMatches::NoMatches)
+                if attempt + 1 < MAXIMUM_REPLACEMENT_LOOKUP_ATTEMPTS =>
+            {
+                std::thread::sleep(REPLACEMENT_LOOKUP_RETRY_INTERVAL);
+                continue;
+            },
+            Ok(matches) => matches,
+            Err(error) => {
+                write_reference_transaction_diagnostic(format_args!(
+                    "cargo-berth could not verify a reflog rename from {deleted_reference}: {error}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
+                ));
+                return;
+            },
+        };
+        break;
+    }
+    let renamed_reference = match renamed_reference {
+        git::LocalBranchReplacementTipMatches::ExactlyOne(reference) => reference,
+        git::LocalBranchReplacementTipMatches::NoMatches => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth found no local branch with reflog proof that it was renamed from {deleted_reference}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
+            ));
+            return;
+        },
+        git::LocalBranchReplacementTipMatches::MultipleMatches => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth found multiple local branches with reflog proof that they were renamed from {deleted_reference}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
+            ));
+            return;
+        },
+    };
+    let installations = gate::install::install_managed_hooks(
+        worktree_context.common_git_directory(),
+        worktree_context.repository_root(),
+        &renamed_reference.to_string(),
+    );
+    let refresh_failed = installations.iter().find(|installation| {
+        installation.name() == "reference-transaction"
+            && !matches!(
+                installation.activation(),
+                gate::install::ManagedHookActivationOutcome::Active { .. }
+            )
+    });
+    if let Some(refresh_failed) = refresh_failed {
+        write_reference_transaction_diagnostic(format_args!(
+            "cargo-berth could not refresh its {} hook after the trunk ref was renamed to {renamed_reference}: {:?}. The existing hook was left unchanged; rerun cargo berth init after correcting the installation failure.",
+            refresh_failed.name(),
+            refresh_failed.activation(),
+        ));
+    }
 }
 
 fn read_reference_transaction(
@@ -1131,6 +1299,15 @@ fn run_environment_bypassed_reference_transaction(
     phase: ReferenceTransactionPhase,
     trunk_reference: &FullRefName,
 ) -> ExitCode {
+    if phase == ReferenceTransactionPhase::Committed {
+        if let Ok(transaction) = read_reference_transaction(phase) {
+            let deletion = transaction.managed_trunk_deletion(trunk_reference);
+            if let Ok(invocation_directory) = env::current_dir() {
+                schedule_managed_hook_refresh_after_trunk_deletion(&invocation_directory, deletion);
+            }
+        }
+        return BerthExit::Clear.into();
+    }
     if phase != ReferenceTransactionPhase::Prepared {
         return BerthExit::Clear.into();
     }

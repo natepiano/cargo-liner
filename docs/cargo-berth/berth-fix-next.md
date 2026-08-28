@@ -68,3 +68,14 @@ error — not a change to the successor cache, whose bound the Phase 4 Work Orde
 required. `config.rs` owns it; no phase does.
 
 Surfaced by the Phase 4 architect review and verified against the live tree.
+
+## Keep the configured trunk and managed hook synchronized after a proven trunk rename
+
+Phase 8 refreshes the managed `reference-transaction` hook after a proven trunk rename but leaves `.claude/config/berth.toml` naming the deleted branch, so a later `cargo berth init` silently restores the stale hook value.
+
+When the detached refresh finds one uniquely proven rename target, atomically compare-and-replace the configured `trunk` from the deleted branch to that target before installing the refreshed hook. Do not overwrite a concurrent configuration change; if configuration replacement or hook installation fails, retain the previous hook, emit a diagnostic, and preserve its stale-reference fail-safe.
+
+Acceptance renames `main` to `renamed` and proves both `berth.toml` and the managed hook name `renamed`, a subsequent `cargo berth init` leaves both unchanged, ambiguous or unproven targets change neither, and configuration-write failure or a concurrent trunk edit never installs a hook that disagrees with the authoritative configuration.
+
+Surfaced by the Phase 8 state-and-consequence audit and confirmed independently
+by the Phase 8 architect review; reproduced during phase 8 smoke.

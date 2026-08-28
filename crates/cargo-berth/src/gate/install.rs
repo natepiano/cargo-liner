@@ -9,6 +9,7 @@ use std::io::ErrorKind;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::path::PathBuf;
 
 use super::permit::PENDING_BYPASS_FILE_PREFIX;
 use super::permit::PENDING_BYPASS_FILE_SUFFIX;
@@ -190,25 +191,62 @@ fn install_managed_hook(
         policy_worktree,
         trunk_reference,
     );
-    if existing.as_deref() != Some(script.as_bytes()) {
-        let mut hook_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&hook_path)?;
-        hook_file.write_all(script.as_bytes())?;
-        hook_file.sync_all()?;
+    if existing.as_deref() == Some(script.as_bytes()) {
+        let mut permissions = fs::metadata(&hook_path)?.permissions();
+        permissions.set_mode(EXECUTABLE_PERMISSIONS);
+        fs::set_permissions(&hook_path, permissions)?;
+    } else {
+        PendingManagedHookReplacement::create(hooks_directory, hook.name)?
+            .activate(&hook_path, script.as_bytes())?;
     }
-    let mut permissions = fs::metadata(&hook_path)?.permissions();
-    permissions.set_mode(EXECUTABLE_PERMISSIONS);
-    fs::set_permissions(&hook_path, permissions)?;
-    fs::File::open(hooks_directory)?.sync_all()?;
+    let _ = fs::File::open(hooks_directory).and_then(|directory| directory.sync_all());
     let installation = if was_present {
         ActiveManagedHookInstallation::Current
     } else {
         ActiveManagedHookInstallation::Installed
     };
     Ok(ManagedHookActivationOutcome::Active { installation })
+}
+
+/// A fully written replacement that is not visible at the managed hook path yet.
+struct PendingManagedHookReplacement {
+    path: PathBuf,
+    file: fs::File,
+}
+
+impl PendingManagedHookReplacement {
+    fn create(hooks_directory: &Path, hook_name: &str) -> std::io::Result<Self> {
+        const MAXIMUM_CREATE_ATTEMPTS: u16 = 1_024;
+
+        for attempt in 0..MAXIMUM_CREATE_ATTEMPTS {
+            let path = hooks_directory.join(format!(
+                ".cargo-berth-{hook_name}-{}-{attempt}.tmp",
+                std::process::id()
+            ));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => return Ok(Self { path, file }),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {},
+                Err(error) => return Err(error),
+            }
+        }
+        Err(std::io::Error::new(
+            ErrorKind::AlreadyExists,
+            format!("could not allocate a temporary replacement for hook {hook_name}"),
+        ))
+    }
+
+    fn activate(mut self, hook_path: &Path, script: &[u8]) -> std::io::Result<()> {
+        self.file.write_all(script)?;
+        let mut permissions = self.file.metadata()?.permissions();
+        permissions.set_mode(EXECUTABLE_PERMISSIONS);
+        self.file.set_permissions(permissions)?;
+        self.file.sync_all()?;
+        fs::rename(&self.path, hook_path)
+    }
+}
+
+impl Drop for PendingManagedHookReplacement {
+    fn drop(&mut self) { let _ = fs::remove_file(&self.path); }
 }
 
 impl ManagedHook {
@@ -232,11 +270,219 @@ impl ManagedHook {
             ManagedHookDispatch::PostCommit => format!(
                 "#!/bin/sh\n{POST_COMMIT_MARKER}\nif [ \"${{CARGO_BERTH_BYPASS:-}}\" = \"1\" ]; then\n    exit 0\nfi\nif [ ! -x {executable} ]; then\n    printf '%s\\n' 'cargo-berth could not check this commit drift because its executable is unavailable. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\n    exit 0\nfi\nCARGO_BERTH_POST_COMMIT=1 {executable} drift --full\nstatus=$?\nif [ \"$status\" -eq 126 ] || [ \"$status\" -eq 127 ]; then\n    printf '%s\\n' 'cargo-berth could not run the post-commit drift check. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\nfi\nexit 0\n"
             ),
-            ManagedHookDispatch::ReferenceTransaction => format!(
-                "#!/bin/sh\n{REFERENCE_TRANSACTION_MARKER}\nif [ -d {policy_worktree} ]; then\n    cd {policy_worktree}\nfi\nbypassed_merge_id=\"${{CARGO_BERTH_BYPASSED_MERGE_ID:-git-process-${{PPID:-$$}}}}\"\ncase \"$bypassed_merge_id\" in\n    ''|*[!A-Za-z0-9_-]*) bypassed_merge_id=\"git-process-${{PPID:-$$}}\" ;;\nesac\nif [ \"${{CARGO_BERTH_BYPASS:-}}\" = \"1\" ]; then\n    if [ -x {executable} ]; then\n        CARGO_BERTH_BYPASSED_MERGE_ID=\"$bypassed_merge_id\" {executable} __reference-transaction \"$@\" {trunk_reference}\n        status=$?\n        if [ \"$status\" -eq 0 ]; then\n            exit 0\n        fi\n        printf '%s\\n' 'cargo-berth could not record this bypass; permitting this ref transaction and leaving a marker to report it later. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2\n    else\n        printf '%s\\n' 'cargo-berth trunk gate executable is unavailable; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2\n    fi\n    if [ \"$1\" = \"prepared\" ]; then\n        if occurred_at=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null); then\n            case \"$occurred_at\" in\n                [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z) marker_contents='{{\"cause\":{{\"kind\":\"environment_override\",\"bypassed_merge\":\"'\"$bypassed_merge_id\"'\"}},\"occurrence_time\":{{\"status\":\"known\",\"at\":\"'\"$occurred_at\"'\"}}}}' ;;\n                *) marker_contents='{{\"cause\":{{\"kind\":\"environment_override\",\"bypassed_merge\":\"'\"$bypassed_merge_id\"'\"}},\"occurrence_time\":{{\"status\":\"unavailable\"}}}}' ;;\n            esac\n        else\n            marker_contents='{{\"cause\":{{\"kind\":\"environment_override\",\"bypassed_merge\":\"'\"$bypassed_merge_id\"'\"}},\"occurrence_time\":{{\"status\":\"unavailable\"}}}}'\n        fi\n        marker_base={pending_marker_prefix}\"$$\"\n        marker=\"$marker_base\"{pending_marker_suffix}\n        sequence=0\n        while [ -e \"$marker\" ]; do\n            sequence=$((sequence + 1))\n            marker=\"$marker_base-$sequence\"{pending_marker_suffix}\n        done\n        (umask 077; set -C; printf '%s\\n' \"$marker_contents\" > \"$marker\") 2>/dev/null || :\n    fi\n    exit 0\nfi\nif [ ! -x {executable} ]; then\n    printf '%s\\n' 'cargo-berth trunk gate executable is unavailable; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2\n    exit 0\nfi\n{executable} __reference-transaction \"$@\" {trunk_reference}\nstatus=$?\nif [ \"$status\" -eq 126 ] || [ \"$status\" -eq 127 ]; then\n    printf '%s\\n' 'cargo-berth trunk gate executable could not run; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2\n    exit 0\nfi\nexit \"$status\"\n"
+            ManagedHookDispatch::ReferenceTransaction => reference_transaction_script(
+                &executable,
+                &pending_marker_prefix,
+                &pending_marker_suffix,
+                &policy_worktree,
+                &trunk_reference,
             ),
         }
     }
+}
+
+const REFERENCE_TRANSACTION_SCRIPT_TEMPLATE: &str = r#"#!/bin/sh
+__REFERENCE_TRANSACTION_MARKER__
+if [ -d __POLICY_WORKTREE__ ]; then
+    cd __POLICY_WORKTREE__
+fi
+cargo_berth_trunk_reference=__TRUNK_REFERENCE__
+case "${1:-}" in
+    preparing|aborted) exit 0 ;;
+    prepared|committed) ;;
+    *) exit 0 ;;
+esac
+
+transaction_input=''
+transaction_buffered=0
+buffered_transaction_input=''
+if buffered_transaction_input=$(umask 077; mktemp "${TMPDIR:-/tmp}/cargo-berth-reference-transaction.XXXXXX") 2>/dev/null; then
+    transaction_input=$buffered_transaction_input
+    trap 'rm -f "$transaction_input"' EXIT HUP INT TERM
+    if ! cat > "$transaction_input"; then
+        printf '%s\n' 'cargo-berth could not preserve the complete ref transaction; refusing to decide from partial input. Retry the git command after correcting temporary-file access.' >&2
+        exit 1
+    fi
+    transaction_buffered=1
+fi
+
+if [ "$transaction_buffered" -eq 1 ]; then
+    LC_ALL=C grep -q '[^	 -~]' "$transaction_input"
+    transaction_byte_scan_status=$?
+    if [ "$transaction_byte_scan_status" -eq 1 ]; then
+        LC_ALL=C awk -v phase="$1" -v trunk="$cargo_berth_trunk_reference" '
+        function valid_transaction_bytes(value, byte_index, byte) {
+            for (byte_index = 1; byte_index <= length(value); byte_index += 1) {
+                byte = substr(value, byte_index, 1)
+                if (byte != tab && byte !~ /^[ -~]$/) {
+                    return 0
+                }
+            }
+            return 1
+        }
+        function valid_full_ref(value, suffix, count, components, component_index, component) {
+            if (substr(value, 1, 5) != "refs/" || length(value) == 5 || value ~ /\.\./ || index(value, "@{") != 0 || substr(value, length(value), 1) == ".") {
+                return 0
+            }
+            if (value ~ /[^!-~]/ || value ~ /[~^:?*\[\\]/) {
+                return 0
+            }
+            suffix = substr(value, 6)
+            count = split(suffix, components, "/")
+            for (component_index = 1; component_index <= count; component_index += 1) {
+                component = components[component_index]
+                if (component == "" || substr(component, 1, 1) == "." || component ~ /\.lock$/) {
+                    return 0
+                }
+            }
+            return 1
+        }
+        function valid_object(value, length_) {
+            if (substr(value, 1, 4) == "ref:") {
+                return valid_full_ref(substr(value, 5))
+            }
+            length_ = length(value)
+            return (length_ == 40 || length_ == 64) && value !~ /[^0-9a-f]/
+        }
+        BEGIN {
+            decision = 1
+            tab = sprintf("%c", 9)
+        }
+        {
+            if (!valid_transaction_bytes($0) || NF != 3) {
+                malformed = 1
+                next
+            }
+            if (substr($3, 1, 11) == "refs/heads/") {
+                if (!valid_object($1) || !valid_object($2) || !valid_full_ref($3)) {
+                    malformed = 1
+                }
+                if (phase == "committed") {
+                    decision = 0
+                }
+            }
+            if (phase == "prepared" && $3 == trunk) {
+                decision = 0
+            }
+        }
+        END {
+            if (malformed) {
+                exit 2
+            }
+            exit decision
+        }
+        ' "$transaction_input"
+        dispatch_status=$?
+    else
+        dispatch_status=2
+    fi
+    case "$dispatch_status" in
+        0|2) ;;
+        1)
+            if [ "$1" = "prepared" ] && ! git show-ref --verify --quiet "$cargo_berth_trunk_reference" >/dev/null 2>&1; then
+                :
+            else
+                exit 0
+            fi
+            ;;
+        *) ;;
+    esac
+fi
+
+bypassed_merge_id="${CARGO_BERTH_BYPASSED_MERGE_ID:-git-process-${PPID:-$$}}"
+case "$bypassed_merge_id" in
+    ''|*[!A-Za-z0-9_-]*) bypassed_merge_id="git-process-${PPID:-$$}" ;;
+esac
+if [ "${CARGO_BERTH_BYPASS:-}" = "1" ]; then
+    if [ -x __EXECUTABLE__ ]; then
+        if [ "$transaction_buffered" -eq 1 ]; then
+            CARGO_BERTH_BYPASSED_MERGE_ID="$bypassed_merge_id" __EXECUTABLE__ __reference-transaction "$@" "$cargo_berth_trunk_reference" < "$transaction_input"
+        else
+            CARGO_BERTH_BYPASSED_MERGE_ID="$bypassed_merge_id" __EXECUTABLE__ __reference-transaction "$@" "$cargo_berth_trunk_reference"
+        fi
+        status=$?
+        if [ "$status" -eq 0 ]; then
+            exit 0
+        fi
+        printf '%s\n' 'cargo-berth could not record this bypass; permitting this ref transaction and leaving a marker to report it later. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2
+    else
+        printf '%s\n' 'cargo-berth trunk gate executable is unavailable; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2
+    fi
+    if [ "$1" = "prepared" ]; then
+        if occurred_at=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null); then
+            case "$occurred_at" in
+                [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z) marker_contents='{"cause":{"kind":"environment_override","bypassed_merge":"'"$bypassed_merge_id"'"},"occurrence_time":{"status":"known","at":"'"$occurred_at"'"}}' ;;
+                *) marker_contents='{"cause":{"kind":"environment_override","bypassed_merge":"'"$bypassed_merge_id"'"},"occurrence_time":{"status":"unavailable"}}' ;;
+            esac
+        else
+            marker_contents='{"cause":{"kind":"environment_override","bypassed_merge":"'"$bypassed_merge_id"'"},"occurrence_time":{"status":"unavailable"}}'
+        fi
+        marker_base=__PENDING_MARKER_PREFIX__"$$"
+        marker="$marker_base"__PENDING_MARKER_SUFFIX__
+        sequence=0
+        while [ -e "$marker" ]; do
+            sequence=$((sequence + 1))
+            marker="$marker_base-$sequence"__PENDING_MARKER_SUFFIX__
+        done
+        (umask 077; set -C; printf '%s\n' "$marker_contents" > "$marker") 2>/dev/null || :
+    fi
+    exit 0
+fi
+if [ ! -x __EXECUTABLE__ ]; then
+    printf '%s\n' 'cargo-berth trunk gate executable is unavailable; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2
+    exit 0
+fi
+if [ "$transaction_buffered" -eq 1 ]; then
+    __EXECUTABLE__ __reference-transaction "$@" "$cargo_berth_trunk_reference" < "$transaction_input"
+else
+    __EXECUTABLE__ __reference-transaction "$@" "$cargo_berth_trunk_reference"
+fi
+status=$?
+if [ "$status" -eq 126 ] || [ "$status" -eq 127 ]; then
+    printf '%s\n' 'cargo-berth trunk gate executable could not run; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2
+    exit 0
+fi
+exit "$status"
+"#;
+
+fn reference_transaction_script(
+    executable: &str,
+    pending_marker_prefix: &str,
+    pending_marker_suffix: &str,
+    policy_worktree: &str,
+    trunk_reference: &str,
+) -> String {
+    render_reference_transaction_template(&[
+        (
+            "__REFERENCE_TRANSACTION_MARKER__",
+            REFERENCE_TRANSACTION_MARKER,
+        ),
+        ("__POLICY_WORKTREE__", policy_worktree),
+        ("__TRUNK_REFERENCE__", trunk_reference),
+        ("__EXECUTABLE__", executable),
+        ("__PENDING_MARKER_PREFIX__", pending_marker_prefix),
+        ("__PENDING_MARKER_SUFFIX__", pending_marker_suffix),
+    ])
+}
+
+fn render_reference_transaction_template(substitutions: &[(&str, &str)]) -> String {
+    let mut rendered = String::with_capacity(REFERENCE_TRANSACTION_SCRIPT_TEMPLATE.len());
+    let mut remaining = REFERENCE_TRANSACTION_SCRIPT_TEMPLATE;
+    while let Some((offset, placeholder, replacement)) = substitutions
+        .iter()
+        .filter_map(|(placeholder, replacement)| {
+            remaining
+                .find(*placeholder)
+                .map(|offset| (offset, *placeholder, *replacement))
+        })
+        .min_by_key(|(offset, _, _)| *offset)
+    {
+        rendered.push_str(&remaining[..offset]);
+        rendered.push_str(replacement);
+        remaining = &remaining[offset + placeholder.len()..];
+    }
+    rendered.push_str(remaining);
+    rendered
 }
 
 /// Render the reference-transaction script for marker compatibility tests.
@@ -283,4 +529,27 @@ impl From<std::io::Error> for HookInstallationError {
 
 impl From<GitError> for HookInstallationError {
     fn from(error: GitError) -> Self { Self::Git(error) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reference_transaction_script;
+
+    #[test]
+    fn template_rendering_does_not_rescan_inserted_placeholder_text() {
+        let values = [
+            "'/bin/__TRUNK_REFERENCE__'",
+            "'/git/__PENDING_MARKER_SUFFIX__'",
+            "'.json.__POLICY_WORKTREE__'",
+            "'/repo/__EXECUTABLE__'",
+            "'refs/heads/__PENDING_MARKER_PREFIX__'",
+        ];
+
+        let script =
+            reference_transaction_script(values[0], values[1], values[2], values[3], values[4]);
+
+        for value in values {
+            assert!(script.contains(value), "rendering changed {value}");
+        }
+    }
 }

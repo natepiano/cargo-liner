@@ -5,6 +5,7 @@
 
 //! End-to-end tests for installation, enforcement, release valves, and gate cost.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -159,6 +160,41 @@ fn init_reports_hook_installation_failure_without_claiming_the_ledger_is_unreada
         payload["payload"]["data"]["hooks"][0]["activation"]["reason"]["diagnostic"]
             .as_str()
             .is_some_and(|diagnostic| diagnostic.contains("managed hook installation failed"))
+    );
+}
+
+#[test]
+fn failed_managed_hook_refresh_leaves_the_previous_hook_unchanged() {
+    let repository = initialized_repository();
+    let hook_path = repository.path().join(HOOK_PATH);
+    let previous_hook = fs::read(&hook_path).expect("managed hook should read");
+    let configuration_path = repository.path().join(CONFIGURATION_PATH);
+    let configuration = fs::read_to_string(&configuration_path).expect("configuration should read");
+    let renamed_configuration = configuration.replace("trunk = \"main\"", "trunk = \"renamed\"");
+    assert_ne!(renamed_configuration, configuration);
+    fs::write(&configuration_path, renamed_configuration).expect("configuration should update");
+    let hooks_directory = hook_path.parent().expect("hook should have a parent");
+    let original_permissions = fs::metadata(hooks_directory)
+        .expect("hooks directory metadata should read")
+        .permissions();
+    let mut read_only_permissions = original_permissions.clone();
+    read_only_permissions.set_mode(0o555);
+    fs::set_permissions(hooks_directory, read_only_permissions)
+        .expect("hooks directory should become read-only");
+
+    let refreshed = run_berth(repository.path(), &["init", "--json"]);
+
+    fs::set_permissions(hooks_directory, original_permissions)
+        .expect("hooks directory permissions should restore");
+    assert!(refreshed.status.success());
+    let payload = json_output(&refreshed);
+    assert_eq!(
+        payload["payload"]["data"]["hooks"][0]["activation"]["status"],
+        "inactive"
+    );
+    assert_eq!(
+        fs::read(&hook_path).expect("managed hook should remain readable"),
+        previous_hook
     );
 }
 
@@ -522,6 +558,451 @@ fn init_installs_into_the_effective_core_hooks_path() {
             .windows("__reference-transaction".len())
             .any(|window| window == b"__reference-transaction")
     );
+}
+
+#[test]
+fn managed_hook_dispatches_only_actionable_phase_and_reference_pairs() {
+    let repository = initialized_repository();
+    let spy = replace_managed_hook_executable_with_spy(repository.path());
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    let trunk = format!("{base} {base} refs/heads/main\n");
+    let prefix = format!("{base} {base} refs/heads/main-old\n");
+    let detached = format!("{base} {base} HEAD\n");
+    let remote = format!("{base} {base} refs/remotes/origin/main\n");
+    let local_feature = format!("{base} {base} refs/heads/feature\n");
+
+    for (phase, input) in [
+        ("preparing", trunk.as_str()),
+        ("aborted", trunk.as_str()),
+        ("future-phase", trunk.as_str()),
+        ("prepared", prefix.as_str()),
+        ("prepared", detached.as_str()),
+        ("prepared", remote.as_str()),
+        ("committed", detached.as_str()),
+        ("committed", remote.as_str()),
+    ] {
+        assert!(
+            run_hook_script(repository.path(), phase, input, ReleaseValve::Unset)
+                .status
+                .success()
+        );
+    }
+    assert!(!spy.phase_log.exists());
+
+    assert!(
+        run_hook_script(repository.path(), "prepared", &trunk, ReleaseValve::Unset,)
+            .status
+            .success()
+    );
+    assert!(
+        run_hook_script(
+            repository.path(),
+            "committed",
+            &local_feature,
+            ReleaseValve::Set,
+        )
+        .status
+        .success()
+    );
+    assert!(
+        run_hook_script(
+            repository.path(),
+            "prepared",
+            "one-field\n",
+            ReleaseValve::Unset,
+        )
+        .status
+        .success()
+    );
+    assert!(
+        run_hook_script(
+            repository.path(),
+            "prepared",
+            "invalid invalid refs/heads/feature\n",
+            ReleaseValve::Unset,
+        )
+        .status
+        .success()
+    );
+
+    assert_eq!(
+        fs::read_to_string(&spy.phase_log)
+            .expect("spy phase log should read")
+            .lines()
+            .collect::<Vec<_>>(),
+        ["prepared", "committed", "prepared", "prepared"]
+    );
+}
+
+#[test]
+fn managed_hook_reports_scenario_specific_binary_invocation_counts() {
+    let prepared_trunk_update = prepared_trunk_update_hook_phases();
+    let committed_feature_rebase = committed_feature_rebase_hook_phases();
+    let committed_forced_trunk_integration = committed_forced_trunk_integration_hook_phases();
+
+    eprintln!(
+        "reference-transaction binary invocations: prepared trunk update={}, committed feature rebase={}, committed forced trunk integration={}",
+        prepared_trunk_update.len(),
+        committed_feature_rebase.len(),
+        committed_forced_trunk_integration.len(),
+    );
+    assert_eq!(prepared_trunk_update, ["prepared", "committed"]);
+    assert_eq!(committed_feature_rebase, ["committed"]);
+    assert_eq!(
+        committed_forced_trunk_integration,
+        ["prepared", "committed"]
+    );
+}
+
+#[test]
+fn managed_hook_replays_unchanged_transaction_bytes_into_the_binary() {
+    let repository = initialized_repository();
+    let spy = replace_managed_hook_executable_with_spy(repository.path());
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    let input = format!("{base}\t{base}  refs/heads/main");
+
+    let dispatched = run_hook_script(repository.path(), "prepared", &input, ReleaseValve::Unset);
+
+    assert!(dispatched.status.success());
+    assert_eq!(
+        fs::read(&spy.stdin_log).expect("spy stdin log should read"),
+        input.as_bytes()
+    );
+}
+
+#[test]
+fn managed_hook_sends_non_ascii_and_control_bytes_to_the_binary() {
+    for reference_suffix in [
+        b"control\x01byte".as_slice(),
+        b"delete\x7fbyte".as_slice(),
+        b"non-utf8\xff".as_slice(),
+        b"feature\0refs/heads/main".as_slice(),
+    ] {
+        let repository = initialized_repository();
+        let spy = replace_managed_hook_executable_with_spy(repository.path());
+        let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+        let mut input = format!("{base} {base} refs/heads/").into_bytes();
+        input.extend_from_slice(reference_suffix);
+        input.push(b'\n');
+
+        let dispatched = run_hook_script_bytes(repository.path(), "prepared", &input);
+
+        assert!(dispatched.status.success());
+        assert_eq!(
+            fs::read_to_string(&spy.phase_log)
+                .expect("spy phase log should read")
+                .trim(),
+            "prepared"
+        );
+        assert_eq!(
+            fs::read(&spy.stdin_log).expect("spy stdin log should read"),
+            input
+        );
+    }
+}
+
+#[test]
+fn managed_hook_never_replays_a_partial_transaction_after_buffering_fails() {
+    let repository = initialized_repository();
+    let spy = replace_managed_hook_executable_with_spy(repository.path());
+    let command_directory = tempdir().expect("command directory should exist");
+    let failing_cat = command_directory.path().join("cat");
+    fs::write(
+        &failing_cat,
+        "#!/bin/sh\nIFS= read -r ignored || :\nprintf '%s' partial\nexit 1\n",
+    )
+    .expect("failing cat should write");
+    let mut permissions = fs::metadata(&failing_cat)
+        .expect("failing cat metadata should read")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&failing_cat, permissions).expect("failing cat should be executable");
+    let inherited_path = std::env::var_os("PATH").expect("test PATH should exist");
+    let command_search_path = std::env::join_paths(
+        std::iter::once(command_directory.path().to_path_buf())
+            .chain(std::env::split_paths(&inherited_path)),
+    )
+    .expect("command search path should join");
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    let input = format!("{base} {base} refs/heads/main\n");
+
+    let rejected = run_hook_script_bytes_with_command_search_path(
+        repository.path(),
+        "prepared",
+        input.as_bytes(),
+        &command_search_path,
+    );
+
+    assert!(!rejected.status.success());
+    assert!(!spy.phase_log.exists());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("partial input"));
+}
+
+#[test]
+fn renamed_trunk_refreshes_dispatch_before_next_prepared_update() {
+    let repository = initialized_repository();
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+
+    let renamed = git_output(repository.path(), &["branch", "-m", "main", "renamed"]);
+
+    assert!(
+        renamed.status.success(),
+        "trunk rename failed: {}",
+        String::from_utf8_lossy(&renamed.stderr)
+    );
+    let hook_path = repository.path().join(HOOK_PATH);
+    let refreshed = fs::read_to_string(&hook_path).expect("refreshed hook should read");
+    assert!(
+        refreshed.contains("cargo_berth_trunk_reference='refs/heads/renamed'"),
+        "hook did not refresh after branch rename: {}",
+        String::from_utf8_lossy(&renamed.stderr)
+    );
+    assert!(!refreshed.contains("cargo_berth_trunk_reference='refs/heads/main'"));
+
+    let spy = replace_managed_hook_executable_with_spy(repository.path());
+    let prepared = run_hook_script(
+        repository.path(),
+        "prepared",
+        &format!("{base} {base} refs/heads/renamed\n"),
+        ReleaseValve::Unset,
+    );
+    assert!(prepared.status.success());
+    assert_eq!(
+        fs::read_to_string(spy.phase_log)
+            .expect("spy phase log should read")
+            .trim(),
+        "prepared"
+    );
+}
+
+#[test]
+fn deleting_trunk_with_one_unrelated_same_tip_branch_leaves_dispatch_unchanged() {
+    let repository = initialized_repository();
+    git(
+        repository.path(),
+        &["checkout", "--quiet", "-b", "unrelated", "main"],
+    );
+    let hook_path = repository.path().join(HOOK_PATH);
+    let installed = fs::read(&hook_path).expect("managed hook should read");
+
+    let deleted = git_output(repository.path(), &["branch", "-D", "main"]);
+
+    assert!(
+        deleted.status.success(),
+        "trunk deletion failed: {}",
+        String::from_utf8_lossy(&deleted.stderr)
+    );
+    let retained = fs::read(&hook_path).expect("retained hook should read");
+    assert_eq!(retained, installed);
+    assert!(
+        String::from_utf8_lossy(&retained)
+            .contains("cargo_berth_trunk_reference='refs/heads/main'")
+    );
+}
+
+#[test]
+fn deleting_trunk_with_two_proven_same_tip_renames_leaves_dispatch_unchanged() {
+    let repository = initialized_repository();
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "branch",
+            "-m",
+            "main",
+            "candidate-a",
+        ],
+    );
+    for candidate in ["main", "candidate-b", "candidate-c"] {
+        git(
+            repository.path(),
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "branch",
+                candidate,
+                "candidate-a",
+            ],
+        );
+    }
+    let hook_path = repository.path().join(HOOK_PATH);
+    let installed = fs::read(&hook_path).expect("managed hook should read");
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "branch",
+            "-m",
+            "main",
+            "candidate-d",
+        ],
+    );
+    for candidate in ["candidate-a", "candidate-d"] {
+        let candidate_reference = format!("refs/heads/{candidate}");
+        assert_eq!(
+            git_stdout(
+                repository.path(),
+                &[
+                    "reflog",
+                    "show",
+                    "--max-count=1",
+                    "--format=%gs",
+                    &candidate_reference,
+                ],
+            ),
+            format!("Branch: renamed refs/heads/main to {candidate_reference}")
+        );
+    }
+    let deleted_object_id = "0".repeat(base.len());
+
+    let refreshed = run_hook_script(
+        repository.path(),
+        "committed",
+        &format!("{base} {deleted_object_id} refs/heads/main\n"),
+        ReleaseValve::Unset,
+    );
+
+    assert!(
+        refreshed.status.success(),
+        "committed trunk deletion hook failed: {}",
+        String::from_utf8_lossy(&refreshed.stderr)
+    );
+    let retained = fs::read(&hook_path).expect("retained hook should read");
+    assert_eq!(retained, installed);
+    assert!(
+        String::from_utf8_lossy(&retained)
+            .contains("cargo_berth_trunk_reference='refs/heads/main'")
+    );
+}
+
+#[test]
+fn stale_trunk_reference_invokes_for_a_prepared_local_update() {
+    let repository = initialized_repository();
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    let renamed = git_output(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "branch",
+            "-m",
+            "main",
+            "renamed",
+        ],
+    );
+    assert!(renamed.status.success());
+    let spy = replace_managed_hook_executable_with_spy(repository.path());
+
+    let prepared = run_hook_script(
+        repository.path(),
+        "prepared",
+        &format!("{base} {base} refs/heads/renamed\n"),
+        ReleaseValve::Unset,
+    );
+
+    assert!(prepared.status.success());
+    assert_eq!(
+        fs::read_to_string(spy.phase_log)
+            .expect("spy phase log should read")
+            .trim(),
+        "prepared"
+    );
+}
+
+#[test]
+fn filtered_three_commit_rebases_report_median_and_maximum_wall_time() {
+    const SAMPLE_COUNT: usize = 10;
+
+    let repository = initialized_repository();
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "-b",
+            "rebase-source",
+        ],
+    );
+    for commit_index in 0..3 {
+        let path = format!("rebase-{commit_index}.txt");
+        fs::write(repository.path().join(&path), format!("{commit_index}\n"))
+            .expect("rebase source should write");
+        git(repository.path(), &["add", &path]);
+        git(
+            repository.path(),
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                &format!("rebase source {commit_index}"),
+            ],
+        );
+    }
+    let source_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "main",
+        ],
+    );
+    fs::write(repository.path().join("upstream-rebase.txt"), "upstream\n")
+        .expect("upstream source should write");
+    git(repository.path(), &["add", "upstream-rebase.txt"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "upstream rebase base",
+        ],
+    );
+
+    let mut no_hook_samples = Vec::with_capacity(SAMPLE_COUNT);
+    let mut filtered_bypass_samples = Vec::with_capacity(SAMPLE_COUNT);
+    let mut filtered_live_samples = Vec::with_capacity(SAMPLE_COUNT);
+    for _ in 0..SAMPLE_COUNT {
+        no_hook_samples.push(run_three_commit_rebase_sample(
+            repository.path(),
+            &source_tip,
+            RebaseHookMode::Disabled,
+        ));
+        filtered_bypass_samples.push(run_three_commit_rebase_sample(
+            repository.path(),
+            &source_tip,
+            RebaseHookMode::FilteredBypass,
+        ));
+        filtered_live_samples.push(run_three_commit_rebase_sample(
+            repository.path(),
+            &source_tip,
+            RebaseHookMode::FilteredLive,
+        ));
+    }
+
+    for (label, samples) in [
+        ("no-hook", no_hook_samples),
+        ("filtered-bypass", filtered_bypass_samples),
+        ("filtered-live", filtered_live_samples),
+    ] {
+        let summary = RebaseTimingSummary::from_samples(samples);
+        eprintln!(
+            "three-commit rebase {label}: median={:?}, maximum={:?}",
+            summary.median, summary.maximum
+        );
+    }
 }
 
 #[test]
@@ -1164,9 +1645,10 @@ fn permit_consumption_waits_for_committed_and_aborted_does_not_spend_it() {
         &hook_path,
         repository.path(),
         "aborted",
-        &format!("{base} {blocked_head} refs/heads/main\n"),
+        format!("{base} {blocked_head} refs/heads/main\n").as_bytes(),
         ReleaseValve::Unset,
         BypassedMergeIdentityEnvironment::Unset,
+        HookCommandSearchPath::Inherited,
     );
     assert!(abort_phase.status.success());
     assert!(
@@ -1619,6 +2101,33 @@ struct TracedHook {
     _directory: TempDir,
 }
 
+struct ManagedHookSpy {
+    phase_log: PathBuf,
+    stdin_log: PathBuf,
+}
+
+#[derive(Clone, Copy)]
+enum RebaseHookMode {
+    Disabled,
+    FilteredBypass,
+    FilteredLive,
+}
+
+struct RebaseTimingSummary {
+    median:  Duration,
+    maximum: Duration,
+}
+
+impl RebaseTimingSummary {
+    fn from_samples(mut samples: Vec<Duration>) -> Self {
+        samples.sort_unstable();
+        Self {
+            median:  samples[samples.len() / 2],
+            maximum: samples[samples.len() - 1],
+        }
+    }
+}
+
 struct DeferredPair {
     worktrees:    TempDir,
     blocked_root: PathBuf,
@@ -1994,6 +2503,12 @@ enum BypassedMergeIdentityEnvironment<'environment> {
 }
 
 #[derive(Clone, Copy)]
+enum HookCommandSearchPath<'environment> {
+    Inherited,
+    Explicit(&'environment OsStr),
+}
+
+#[derive(Clone, Copy)]
 enum HookPhase {
     Prepared,
     Committed,
@@ -2128,9 +2643,39 @@ fn run_hook_script(
         &repository_root.join(HOOK_PATH),
         repository_root,
         phase,
-        input,
+        input.as_bytes(),
         release_valve,
         BypassedMergeIdentityEnvironment::Unset,
+        HookCommandSearchPath::Inherited,
+    )
+}
+
+fn run_hook_script_bytes(repository_root: &Path, phase: &str, input: &[u8]) -> Output {
+    run_hook_at_path(
+        &repository_root.join(HOOK_PATH),
+        repository_root,
+        phase,
+        input,
+        ReleaseValve::Unset,
+        BypassedMergeIdentityEnvironment::Unset,
+        HookCommandSearchPath::Inherited,
+    )
+}
+
+fn run_hook_script_bytes_with_command_search_path(
+    repository_root: &Path,
+    phase: &str,
+    input: &[u8],
+    command_search_path: &OsStr,
+) -> Output {
+    run_hook_at_path(
+        &repository_root.join(HOOK_PATH),
+        repository_root,
+        phase,
+        input,
+        ReleaseValve::Unset,
+        BypassedMergeIdentityEnvironment::Unset,
+        HookCommandSearchPath::Explicit(command_search_path),
     )
 }
 
@@ -2145,9 +2690,10 @@ fn run_hook_script_with_bypassed_merge_identity(
         &repository_root.join(HOOK_PATH),
         repository_root,
         phase,
-        input,
+        input.as_bytes(),
         release_valve,
         BypassedMergeIdentityEnvironment::Inherited(bypassed_merge_identity),
+        HookCommandSearchPath::Inherited,
     )
 }
 
@@ -2155,9 +2701,10 @@ fn run_hook_at_path(
     hook_path: &Path,
     repository_root: &Path,
     phase: &str,
-    input: &str,
+    input: &[u8],
     release_valve: ReleaseValve,
     bypassed_merge_identity_environment: BypassedMergeIdentityEnvironment<'_>,
+    command_search_path: HookCommandSearchPath<'_>,
 ) -> Output {
     let mut command = Command::new(hook_path);
     command
@@ -2179,12 +2726,18 @@ fn run_hook_at_path(
             command.env_remove(BYPASSED_MERGE_IDENTITY_ENVIRONMENT);
         },
     }
+    match command_search_path {
+        HookCommandSearchPath::Inherited => {},
+        HookCommandSearchPath::Explicit(path) => {
+            command.env("PATH", path);
+        },
+    }
     let mut child = command.spawn().expect("managed hook should start");
     child
         .stdin
         .take()
         .expect("managed hook stdin should exist")
-        .write_all(input.as_bytes())
+        .write_all(input)
         .expect("managed hook stdin should write");
     child
         .wait_with_output()
@@ -2299,6 +2852,260 @@ fn run_berth_with_input_and_environment(
         .write_all(input.as_bytes())
         .expect("cargo-berth stdin should write");
     child.wait_with_output().expect("cargo-berth should finish")
+}
+
+fn replace_managed_hook_executable_with_spy(repository_root: &Path) -> ManagedHookSpy {
+    let spy_path = repository_root.join(".git/cargo-berth-hook-spy");
+    let phase_log = repository_root.join(".git/cargo-berth-hook-spy-phases");
+    let stdin_log = repository_root.join(".git/cargo-berth-hook-spy-stdin");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$2\" >> {}\ncat >> {}\n",
+        shell_single_quoted(&phase_log),
+        shell_single_quoted(&stdin_log),
+    );
+    fs::write(&spy_path, script).expect("hook spy should write");
+    let mut permissions = fs::metadata(&spy_path)
+        .expect("hook spy metadata should read")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&spy_path, permissions).expect("hook spy should be executable");
+
+    let hook_path = repository_root.join(HOOK_PATH);
+    let installed = fs::read_to_string(&hook_path).expect("managed hook should read");
+    let executable = shell_single_quoted(Path::new(env!("CARGO_BIN_EXE_cargo-berth")));
+    let spy_executable = shell_single_quoted(&spy_path);
+    let instrumented = installed.replace(&executable, &spy_executable);
+    assert_ne!(instrumented, installed);
+    fs::write(hook_path, instrumented).expect("instrumented hook should write");
+
+    ManagedHookSpy {
+        phase_log,
+        stdin_log,
+    }
+}
+
+impl ManagedHookSpy {
+    fn invoked_phases(&self) -> Vec<String> {
+        fs::read_to_string(&self.phase_log)
+            .expect("spy phase log should read")
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+fn prepared_trunk_update_hook_phases() -> Vec<String> {
+    let repository = initialized_repository();
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "-b",
+            "prepared-target",
+        ],
+    );
+    let target = commit_work_without_hooks(
+        repository.path(),
+        "prepared-target.txt",
+        "prepared target\n",
+        "prepared target",
+    );
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "main",
+        ],
+    );
+    let spy = replace_managed_hook_executable_with_spy(repository.path());
+
+    let updated = update_main(repository.path(), &base, &target, ReleaseValve::Unset);
+
+    assert!(
+        updated.status.success(),
+        "prepared trunk update failed: {}",
+        String::from_utf8_lossy(&updated.stderr)
+    );
+    spy.invoked_phases()
+}
+
+fn committed_feature_rebase_hook_phases() -> Vec<String> {
+    let repository = initialized_repository();
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "-b",
+            "rebase-source",
+        ],
+    );
+    for commit_index in 0..3 {
+        commit_work_without_hooks(
+            repository.path(),
+            &format!("rebase-{commit_index}.txt"),
+            &format!("{commit_index}\n"),
+            &format!("rebase source {commit_index}"),
+        );
+    }
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "main",
+        ],
+    );
+    commit_work_without_hooks(
+        repository.path(),
+        "upstream-rebase.txt",
+        "upstream\n",
+        "upstream rebase base",
+    );
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "rebase-source",
+        ],
+    );
+    let spy = replace_managed_hook_executable_with_spy(repository.path());
+
+    let rebased = git_output(repository.path(), &["rebase", "main"]);
+
+    assert!(
+        rebased.status.success(),
+        "feature rebase failed: {}",
+        String::from_utf8_lossy(&rebased.stderr)
+    );
+    spy.invoked_phases()
+}
+
+fn committed_forced_trunk_integration_hook_phases() -> Vec<String> {
+    let repository = initialized_repository();
+    let deferred_pair = deferred_pair(repository.path());
+    commit_work(
+        &deferred_pair.blocked_root,
+        "src/lib.rs",
+        "pub fn forced_work() {}\n",
+        "forced integration work",
+    );
+    set_gate_mode(repository.path(), "enforce");
+    let spy = replace_managed_hook_executable_with_spy(repository.path());
+
+    let integrated = run_berth(
+        &deferred_pair.blocked_root,
+        &[
+            "integrate",
+            &deferred_pair.blocked_id,
+            "--force",
+            "--why",
+            "exercise forced integration dispatch",
+            "--json",
+        ],
+    );
+
+    assert!(
+        integrated.status.success(),
+        "forced integration failed: {}",
+        String::from_utf8_lossy(&integrated.stdout)
+    );
+    spy.invoked_phases()
+}
+
+fn commit_work_without_hooks(
+    repository_root: &Path,
+    path: &str,
+    contents: &str,
+    message: &str,
+) -> String {
+    fs::write(repository_root.join(path), contents).expect("work source should write");
+    git(repository_root, &["add", path]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ],
+    );
+    git_stdout(repository_root, &["rev-parse", "HEAD"])
+}
+
+fn run_three_commit_rebase_sample(
+    repository_root: &Path,
+    source_tip: &str,
+    hook_mode: RebaseHookMode,
+) -> Duration {
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "branch",
+            "--force",
+            "rebase-trial",
+            source_tip,
+        ],
+    );
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "rebase-trial",
+        ],
+    );
+    let started_at = Instant::now();
+    let mut command = Command::new(GIT_BINARY);
+    command.arg("--no-optional-locks");
+    if matches!(hook_mode, RebaseHookMode::Disabled) {
+        command.args(["-c", "core.hooksPath=/dev/null"]);
+    }
+    command
+        .args(["rebase", "main"])
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT);
+    if matches!(hook_mode, RebaseHookMode::FilteredBypass) {
+        command.env(BYPASS_ENVIRONMENT, "1");
+    }
+    let rebased = command.output().expect("timed rebase should run");
+    let elapsed = started_at.elapsed();
+    assert!(
+        rebased.status.success(),
+        "timed rebase failed: {}",
+        String::from_utf8_lossy(&rebased.stderr)
+    );
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--quiet",
+            "main",
+        ],
+    );
+    elapsed
 }
 
 fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {

@@ -115,6 +115,17 @@ pub(crate) enum TrunkReferencePresence {
     NotNamed,
 }
 
+/// Whether a committed transaction deleted the trunk ref embedded in the managed hook.
+pub(crate) enum ManagedTrunkDeletion {
+    /// The transaction did not commit a deletion of the embedded trunk ref.
+    NotDeleted,
+    /// The transaction deleted this embedded ref from its previous object tip.
+    Deleted {
+        reference:    FullRefName,
+        previous_tip: GitObjectId,
+    },
+}
+
 /// One parsed old-object, new-object, and full-reference update.
 #[derive(Clone)]
 struct ReferenceUpdate {
@@ -271,6 +282,37 @@ impl ReferenceTransaction {
         } else {
             TrunkReferencePresence::NotNamed
         }
+    }
+
+    /// Report a committed deletion of the trunk ref embedded in the managed hook.
+    pub(crate) fn managed_trunk_deletion(
+        &self,
+        trunk_reference: &FullRefName,
+    ) -> ManagedTrunkDeletion {
+        if self.phase != ReferenceTransactionPhase::Committed {
+            return ManagedTrunkDeletion::NotDeleted;
+        }
+        self.entries
+            .iter()
+            .find_map(|entry| match entry {
+                ReferenceTransactionEntry::LocalBranch(update)
+                    if &update.reference == trunk_reference
+                        && matches!(&update.proposed, ReferenceObject::Absent) =>
+                {
+                    match &update.previous {
+                        ReferenceObject::Object(previous_tip) => {
+                            Some(ManagedTrunkDeletion::Deleted {
+                                reference:    update.reference.clone(),
+                                previous_tip: previous_tip.clone(),
+                            })
+                        },
+                        ReferenceObject::Symbolic(_) | ReferenceObject::Absent => None,
+                    }
+                },
+                ReferenceTransactionEntry::LocalBranch(_)
+                | ReferenceTransactionEntry::OutsideLocalBranchNamespace => None,
+            })
+            .unwrap_or(ManagedTrunkDeletion::NotDeleted)
     }
 }
 

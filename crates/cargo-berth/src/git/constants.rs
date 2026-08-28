@@ -7,12 +7,16 @@ pub(super) const GIT_BINARY: &str = "git";
 pub(super) const GIT_CAT_FILE_COMMAND: &str = "cat-file";
 /// The `diff` subcommand.
 pub(super) const GIT_DIFF_COMMAND: &str = "diff";
+/// The `for-each-ref` subcommand.
+pub(super) const GIT_FOR_EACH_REF_COMMAND: &str = "for-each-ref";
 /// The `merge-base` subcommand.
 pub(super) const GIT_MERGE_BASE_COMMAND: &str = "merge-base";
 /// The `merge-tree` subcommand.
 pub(super) const GIT_MERGE_TREE_COMMAND: &str = "merge-tree";
 /// The `read-tree` subcommand.
 pub(super) const GIT_READ_TREE_COMMAND: &str = "read-tree";
+/// The `reflog` subcommand.
+pub(super) const GIT_REFLOG_COMMAND: &str = "reflog";
 /// The `rev-list` subcommand.
 pub(super) const GIT_REV_LIST_COMMAND: &str = "rev-list";
 /// The `rev-parse` subcommand.
@@ -55,12 +59,16 @@ pub(super) const GIT_IS_ANCESTOR_ARG: &str = "--is-ancestor";
 pub(super) const GIT_LEFT_RIGHT_ARG: &str = "--left-right";
 /// Prefix bounding a revision walk to a number of commits.
 pub(super) const GIT_MAX_COUNT_ARG_PREFIX: &str = "--max-count=";
+/// Read only the newest reflog entry.
+pub(super) const GIT_MAX_COUNT_ONE_ARG: &str = "--max-count=1";
 /// Supply an explicit merge base to `merge-tree`.
 pub(super) const GIT_MERGE_BASE_ARG_PREFIX: &str = "--merge-base=";
 /// Print only affected repository paths.
 pub(super) const GIT_NAME_ONLY_ARG: &str = "--name-only";
 /// Print full object ids in raw diff records.
 pub(super) const GIT_NO_ABBREV_ARG: &str = "--no-abbrev";
+/// Print the complete reference name from `for-each-ref`.
+pub(super) const GIT_FULL_REF_FORMAT_ARG: &str = "--format=%(refname)";
 /// Omit merge commits, which carry no patch of their own to compare.
 pub(super) const GIT_NO_MERGES_ARG: &str = "--no-merges";
 /// Disable git's optional locks for read-only calls.
@@ -77,10 +85,16 @@ pub(super) const GIT_PATH_FORMAT_ABSOLUTE_ARG: &str = "--path-format=absolute";
 pub(super) const GIT_PATH_ARG: &str = "--git-path";
 /// Separate revision arguments from repository pathspecs.
 pub(super) const GIT_PATHSPEC_SEPARATOR: &str = "--";
+/// Prefix a `for-each-ref` object-tip filter.
+pub(super) const GIT_POINTS_AT_ARG_PREFIX: &str = "--points-at=";
 /// Request a stable machine-readable worktree listing.
 pub(super) const GIT_PORCELAIN_ARG: &str = "--porcelain";
 /// Print raw diff records with object modes and ids.
 pub(super) const GIT_RAW_ARG: &str = "--raw";
+/// Show entries from the named reflog.
+pub(super) const GIT_REFLOG_SHOW_ARG: &str = "show";
+/// Print only each reflog entry's subject.
+pub(super) const GIT_REFLOG_SUBJECT_FORMAT_ARG: &str = "--format=%gs";
 /// Ask `rev-parse` for the repository worktree root.
 pub(super) const GIT_SHOW_TOPLEVEL_ARG: &str = "--show-toplevel";
 /// Read revision arguments from standard input.
