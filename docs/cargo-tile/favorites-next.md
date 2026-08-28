@@ -116,19 +116,6 @@ desktop rather than being laid on top of it.
 Worth checking whether `moving_text.rs` wants the same treatment; it has the same
 flat-background problem wherever its characters stop.
 
-## Saving the same settings twice should not make a second favorite
-
-`ctrl-s` writes a favorite every time it is pressed, so pressing it twice without
-changing anything leaves two rows in the favorites file that load identically.
-The overlay then shows duplicates the user has no way to tell apart, and the list
-grows every time they come back to a setup they liked.
-
-`favorites.rs` already recognizes a repeated *id* and marks it, but nothing
-compares the settings themselves. Before appending, compare the settings being
-saved against every favorite already in the file; if one matches, keep the
-existing row rather than adding a second, and say so in the toast so the press
-still gets an acknowledgement.
-
 ## A second terminal window loses the desktop capture and gets told it is a permissions problem
 
 Running `cargo tile` in two windows of the same iTerm2 — an app that already has
