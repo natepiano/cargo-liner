@@ -53,6 +53,7 @@ use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationConflict;
+use crate::reservation::ReservationLifecycleSnapshot;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::session::CurrentSessionMappingRemoval;
@@ -224,6 +225,8 @@ enum OutputFacts {
     Reinitialize(ReinitializationPayload),
     /// Facts returned by the headless reservation board.
     Board(Box<BoardModel>),
+    /// One reservation's lifecycle or a typed unknown-id rejection.
+    Reservation(ReservationLifecycleQueryPayload),
     /// Facts returned by `check`.
     Check(CheckPayload),
     /// Facts returned by `claim`.
@@ -339,6 +342,40 @@ enum RepairedProjection {
 enum ProjectionRepairJournalEffect {
     /// `journal.ndjson` remained byte-identical.
     Unchanged,
+}
+
+/// The result of selecting one reservation independently of board placement.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+enum ReservationLifecycleQueryPayload {
+    /// The selected reservation and its current lifecycle.
+    Snapshot {
+        /// The reservation selected by the caller.
+        reservation_id: ReservationId,
+        /// Its point-in-time lifecycle reading.
+        lifecycle:      ReservationLifecycleSnapshot,
+    },
+    /// A typed caller-correctable rejection.
+    Rejected(ReservationLifecycleQueryRejection),
+}
+
+/// Why a named reservation lifecycle query was rejected.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum ReservationLifecycleQueryRejection {
+    /// No retained reservation has this non-recyclable identity.
+    UnknownReservation {
+        /// The reservation identity supplied by the caller.
+        reservation_id: ReservationId,
+    },
+}
+
+impl ReservationLifecycleQueryRejection {
+    const fn reservation_id(self) -> ReservationId {
+        match self {
+            Self::UnknownReservation { reservation_id } => reservation_id,
+        }
+    }
 }
 
 /// The initialization outcome for one durable resource.
@@ -828,6 +865,45 @@ impl OutputEnvelope {
             blocked_by: Vec::new(),
             message: BOARD_READY_MESSAGE.to_owned(),
             payload: OutputPayload::from_facts(OutputFacts::Board(Box::new(board))),
+        }
+    }
+
+    /// Build a successful placement-independent reservation lifecycle response.
+    pub(crate) fn reservation_lifecycle(
+        reservation_id: ReservationId,
+        reservation_lifecycle_snapshot: ReservationLifecycleSnapshot,
+    ) -> Self {
+        Self {
+            verb:         CommandVerb::Board,
+            status:       OutputStatus::BoardReady,
+            exit_code:    BerthExit::Clear,
+            reservations: vec![reservation_id],
+            blocked_by:   Vec::new(),
+            message:      format!("Reservation {reservation_id} lifecycle was read."),
+            payload:      OutputPayload::from_facts(OutputFacts::Reservation(
+                ReservationLifecycleQueryPayload::Snapshot {
+                    reservation_id,
+                    lifecycle: reservation_lifecycle_snapshot,
+                },
+            )),
+        }
+    }
+
+    /// Build a typed rejection for an unknown reservation lifecycle query.
+    pub(crate) fn reservation_lifecycle_query_rejected(
+        rejection: ReservationLifecycleQueryRejection,
+    ) -> Self {
+        let reservation_id = rejection.reservation_id();
+        Self {
+            verb:         CommandVerb::Board,
+            status:       OutputStatus::InvalidInput,
+            exit_code:    BerthExit::UsageError,
+            reservations: vec![reservation_id],
+            blocked_by:   Vec::new(),
+            message:      format!("Reservation {reservation_id} does not exist."),
+            payload:      OutputPayload::from_facts(OutputFacts::Reservation(
+                ReservationLifecycleQueryPayload::Rejected(rejection),
+            )),
         }
     }
 

@@ -92,6 +92,7 @@ use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::verb::board;
 use crate::verb::board::BoardDisplayOutcome;
+use crate::verb::board::BoardOutputSelection;
 use crate::verb::check;
 use crate::verb::check::CheckRequest;
 use crate::verb::claim;
@@ -186,7 +187,7 @@ enum Command {
     Init(InitArguments),
     /// Inspect reservations and integration constraints.
     #[command(long_about = BOARD_LONG_ABOUT)]
-    Board(JsonOutput),
+    Board(BoardArguments),
     /// Check exact files or explicitly prefixed trees for foreign reservations.
     #[command(long_about = CHECK_LONG_ABOUT)]
     Check(PathArguments),
@@ -222,6 +223,21 @@ struct JsonOutput {
     /// Emit the frozen JSON response envelope.
     #[arg(long = JSON_ARGUMENT)]
     json: bool,
+}
+
+/// Complete-board or named-reservation board arguments.
+#[derive(Debug, Args)]
+struct BoardArguments {
+    /// Read one reservation's lifecycle independently of its board placement.
+    #[arg(
+        long = RESERVATION_ARGUMENT,
+        value_name = RESERVATION_VALUE_NAME,
+        requires = JSON_ARGUMENT
+    )]
+    reservation: Option<ReservationId>,
+    /// The output representation requested for this command.
+    #[command(flatten)]
+    json_output: JsonOutput,
 }
 
 /// Coordination identity management commands.
@@ -352,6 +368,16 @@ impl From<bool> for CliOutputFormat {
 impl JsonOutput {
     /// Convert clap's flag value into the command's output representation.
     fn output_format(&self) -> CliOutputFormat { self.json.into() }
+}
+
+impl BoardArguments {
+    /// Convert clap's optional flag into the board's domain selection.
+    fn into_output_selection(self) -> BoardOutputSelection {
+        self.reservation.map_or(
+            BoardOutputSelection::CompleteBoard,
+            BoardOutputSelection::ReservationLifecycleFor,
+        )
+    }
 }
 
 /// A command whose first argument is one or more repository paths.
@@ -642,8 +668,9 @@ impl Command {
             Self::Init(init_arguments) => {
                 initialize_ledger(init_arguments.initialization_request())
             },
-            Self::Board(_) => {
-                return match board::execute(output_format) {
+            Self::Board(board_arguments) => {
+                return match board::execute(board_arguments.into_output_selection(), output_format)
+                {
                     BoardDisplayOutcome::HeadlessResponse(output_envelope)
                     | BoardDisplayOutcome::TerminalDidNotOpen(output_envelope)
                     | BoardDisplayOutcome::TerminalFailedAfterOpening(output_envelope)
@@ -709,7 +736,7 @@ impl Command {
     fn output_format(&self) -> CliOutputFormat {
         match self {
             Self::Init(init_arguments) => init_arguments.json_output.output_format(),
-            Self::Board(json_output) => json_output.output_format(),
+            Self::Board(board_arguments) => board_arguments.json_output.output_format(),
             Self::Check(path_arguments) => path_arguments.json_output.output_format(),
             Self::Claim(claim_arguments) => claim_arguments.json_output.output_format(),
             Self::Drift(drift_arguments) => drift_arguments.json_output.output_format(),
@@ -1679,6 +1706,7 @@ mod tests {
 
     use clap::Error;
     use clap::Parser;
+    use clap::error::ErrorKind;
 
     use super::BINARY_NAME;
     use super::CARGO_SUBCOMMAND_NAME;
@@ -1691,6 +1719,7 @@ mod tests {
     use super::exit_for_parser_error;
     use super::without_subcommand_name;
     use crate::exit::BerthExit;
+    use crate::verb::board::BoardOutputSelection;
     use crate::verb::claim::ClaimRequest;
 
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
@@ -1795,6 +1824,29 @@ mod tests {
             ],
             CommandVerb::Integrate,
         );
+    }
+
+    #[test]
+    fn named_reservation_board_requires_json_and_becomes_a_domain_selection() {
+        assert!(
+            board_output_selection(&[BINARY_NAME, "board", "--reservation", RESERVATION_ID,])
+                .is_err()
+        );
+        assert!(matches!(
+            board_output_selection(&[
+                BINARY_NAME,
+                "board",
+                "--reservation",
+                RESERVATION_ID,
+                "--json",
+            ]),
+            Ok(BoardOutputSelection::ReservationLifecycleFor(reservation_id))
+                if reservation_id.to_string() == RESERVATION_ID
+        ));
+        assert!(matches!(
+            board_output_selection(&[BINARY_NAME, "board", "--json"]),
+            Ok(BoardOutputSelection::CompleteBoard)
+        ));
     }
 
     #[test]
@@ -1973,6 +2025,19 @@ mod tests {
         match cli.command {
             super::Command::Claim(claim_arguments) => claim_arguments.into_claim_request(),
             _ => Err("expected claim command".to_owned()),
+        }
+    }
+
+    fn board_output_selection(arguments: &[&str]) -> Result<BoardOutputSelection, Error> {
+        let cli = Cli::try_parse_from(without_subcommand_name(
+            arguments.iter().map(OsString::from).collect(),
+        ))?;
+        match cli.command {
+            super::Command::Board(board_arguments) => Ok(board_arguments.into_output_selection()),
+            _ => Err(Error::raw(
+                ErrorKind::InvalidSubcommand,
+                "test arguments must select board",
+            )),
         }
     }
 

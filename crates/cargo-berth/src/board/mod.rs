@@ -77,6 +77,7 @@ use crate::reservation::ReleaseDisposition;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationFreshness;
 use crate::reservation::ReservationLifecycle;
+use crate::reservation::ReservationLifecycleSnapshot;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::scope::ReservationScope;
@@ -740,6 +741,18 @@ impl BoardModel {
             .iter()
             .map(PendingBypassMarkerId::file_name)
     }
+}
+
+/// Read one retained reservation independently of its complete-board placement.
+pub(crate) fn reservation_lifecycle_snapshot(
+    report: &ReconciliationReport,
+    reservation_id: ReservationId,
+) -> Result<ReservationLifecycleSnapshot, ReservationReplayError> {
+    let reservations = RetainedReservationSet::replay(report.journal_snapshot.events())?;
+    reservations
+        .reservation(reservation_id)?
+        .evidence_state()
+        .map(ReservationLifecycleSnapshot::from)
 }
 
 impl<Entry> BoardSection<Entry> {

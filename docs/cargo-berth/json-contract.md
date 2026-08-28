@@ -265,6 +265,61 @@ Journal, claim, and widen payloads use
 "existing_answers_cover_every_overlap"` for
 `RecordedAnswer::ExistingAnswersCoverEveryOverlap`.
 
+## Named reservation lifecycle
+
+`cargo-berth board --reservation <reservation-id> --json` reads one retained
+reservation independently of complete-board placement. A known reservation
+returns `verb = "board"`, `status = "board_ready"`, `exit_code = 0`, and
+`payload.kind = "reservation"`. The envelope's `reservations` array contains
+only the requested id, `blocked_by` is empty, and the payload echoes the id:
+
+```json
+{
+  "kind": "reservation",
+  "data": {
+    "reservation_id": "01a036fb-1629-7712-96b7-1672b64a151f",
+    "lifecycle": {
+      "status": "outstanding",
+      "protected_tip": "1111111111111111111111111111111111111111"
+    }
+  },
+  "alerts": []
+}
+```
+
+`lifecycle` is exactly one of these tagged alternatives:
+
+- `status = "active"`, with no additional fields;
+- `status = "outstanding"`, with `protected_tip`;
+- `status = "released_after_checkpoint"`, with `protected_tip` and
+  `disposition`;
+- `status = "released_without_checkpoint"`, with `disposition`.
+
+The disposition is the same tagged value used by board rows: `kind =
+"integrated"`; or `rewritten_integration`, `abandoned`, or `retired_orphan`
+with `evidence`. The lifecycle payload deliberately omits current integration
+evidence. A waiting successor and either endpoint of an unresolved overlap can
+therefore be selected even though the complete board omits their reservation
+rows. The selector has no terminal representation and requires `--json`.
+
+An unknown id returns `status = "invalid_input"`, `exit_code = 5`, and the same
+envelope reservation-id rules. Its typed payload is:
+
+```json
+{
+  "kind": "reservation",
+  "data": {
+    "status": "unknown_reservation",
+    "reservation_id": "01a036fb-1629-7712-96b7-1672b64a15ff"
+  },
+  "alerts": []
+}
+```
+
+Adding this payload kind does not change the serialized bytes of plain
+`cargo-berth board --json`; that command continues to return `payload.kind =
+"board"` and the complete board object documented above.
+
 ## Coordination identity rejections
 
 Claim, check, drift, and sequence return a shared identity rejection with

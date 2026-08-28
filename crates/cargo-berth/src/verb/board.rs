@@ -1,15 +1,28 @@
 //! Board command over one reconciled locked replay shared by both renderers.
 
 use crate::board::BoardModel;
+use crate::board::reservation_lifecycle_snapshot;
 use crate::board::tui;
 use crate::board::tui::BoardTerminalViewRunFailure;
 use crate::board::tui::TerminalAttachment;
 use crate::cli::CliOutputFormat;
 use crate::config::Enrollment;
+use crate::ids::ReservationId;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
+use crate::output::ReservationLifecycleQueryRejection;
 use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
+use crate::reservation::ReservationReplayError;
+
+/// Which read-only board result the caller selected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BoardOutputSelection {
+    /// Assemble the complete board and use its selected renderer.
+    CompleteBoard,
+    /// Read one reservation's lifecycle independently of board placement.
+    ReservationLifecycleFor(ReservationId),
+}
 
 /// How the resolved board output mode completed.
 pub(crate) enum BoardDisplayOutcome {
@@ -26,7 +39,10 @@ pub(crate) enum BoardDisplayOutcome {
 }
 
 /// Reconcile current repository facts and dispatch the resolved output mode.
-pub(crate) fn execute(output_format: CliOutputFormat) -> BoardDisplayOutcome {
+pub(crate) fn execute(
+    output_selection: BoardOutputSelection,
+    output_format: CliOutputFormat,
+) -> BoardDisplayOutcome {
     let invocation_directory = match std::env::current_dir() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
@@ -51,7 +67,22 @@ pub(crate) fn execute(output_format: CliOutputFormat) -> BoardDisplayOutcome {
             return BoardDisplayOutcome::FactsUnavailable(error.into_output(CommandVerb::Board));
         },
     };
-    let board = match BoardModel::build(&invocation_directory, &report) {
+    match output_selection {
+        BoardOutputSelection::CompleteBoard => {
+            execute_complete_board(&invocation_directory, &report, output_format)
+        },
+        BoardOutputSelection::ReservationLifecycleFor(reservation_id) => {
+            execute_reservation_lifecycle(&report, reservation_id)
+        },
+    }
+}
+
+fn execute_complete_board(
+    invocation_directory: &std::path::Path,
+    report: &reconcile::ReconciliationReport,
+    output_format: CliOutputFormat,
+) -> BoardDisplayOutcome {
+    let board = match BoardModel::build(invocation_directory, report) {
         Ok(board) => board,
         Err(error) => {
             return BoardDisplayOutcome::FactsUnavailable(OutputEnvelope::ledger_unreadable(
@@ -88,5 +119,27 @@ pub(crate) fn execute(output_format: CliOutputFormat) -> BoardDisplayOutcome {
                 },
             },
         },
+    }
+}
+
+fn execute_reservation_lifecycle(
+    report: &reconcile::ReconciliationReport,
+    reservation_id: ReservationId,
+) -> BoardDisplayOutcome {
+    match reservation_lifecycle_snapshot(report, reservation_id) {
+        Ok(reservation_lifecycle_snapshot) => BoardDisplayOutcome::HeadlessResponse(
+            OutputEnvelope::reservation_lifecycle(reservation_id, reservation_lifecycle_snapshot),
+        ),
+        Err(ReservationReplayError::UnknownReservation(reservation_id)) => {
+            BoardDisplayOutcome::HeadlessResponse(
+                OutputEnvelope::reservation_lifecycle_query_rejected(
+                    ReservationLifecycleQueryRejection::UnknownReservation { reservation_id },
+                ),
+            )
+        },
+        Err(error) => BoardDisplayOutcome::FactsUnavailable(OutputEnvelope::ledger_unreadable(
+            CommandVerb::Board,
+            &error.to_string(),
+        )),
     }
 }

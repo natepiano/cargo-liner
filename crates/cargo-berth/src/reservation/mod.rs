@@ -523,6 +523,53 @@ pub(crate) enum ReservationEvidenceState {
     },
 }
 
+/// A point-in-time reading of one reservation's lifecycle.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum ReservationLifecycleSnapshot {
+    /// Work remains active without a protected checkpoint.
+    Active,
+    /// A protected checkpoint awaits integration or terminal resolution.
+    Outstanding {
+        /// The retained checkpoint commit.
+        protected_tip: ProtectedReservationTip,
+    },
+    /// A terminal disposition followed a protected checkpoint.
+    ReleasedAfterCheckpoint {
+        /// The retained checkpoint commit.
+        protected_tip: ProtectedReservationTip,
+        /// The recorded terminal disposition.
+        disposition:   ReleaseDisposition,
+    },
+    /// A terminal disposition ended work that never reached a checkpoint.
+    ReleasedWithoutCheckpoint {
+        /// The recorded terminal disposition.
+        disposition: ReleaseDisposition,
+    },
+}
+
+impl From<ReservationEvidenceState> for ReservationLifecycleSnapshot {
+    fn from(evidence_state: ReservationEvidenceState) -> Self {
+        match evidence_state {
+            ReservationEvidenceState::Active { .. } => Self::Active,
+            ReservationEvidenceState::Outstanding { protected_tip, .. } => {
+                Self::Outstanding { protected_tip }
+            },
+            ReservationEvidenceState::Released {
+                protected_tip,
+                disposition,
+                ..
+            } => Self::ReleasedAfterCheckpoint {
+                protected_tip,
+                disposition,
+            },
+            ReservationEvidenceState::ReleasedWithoutCheckpoint { disposition } => {
+                Self::ReleasedWithoutCheckpoint { disposition }
+            },
+        }
+    }
+}
+
 /// One foreign holder whose retained reservation intersects requested scopes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ReservationConflict {

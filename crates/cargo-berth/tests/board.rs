@@ -83,6 +83,237 @@ fn empty_board_is_headless_and_declares_no_integration_order() {
     assert!(!String::from_utf8_lossy(&text.stdout).contains("ReservationRow"));
 }
 
+#[test]
+fn waiting_successor_lifecycle_is_queryable_while_omitted_from_board_rows() {
+    let fixture = ordered_fixture();
+    fs::write(
+        fixture.successor_root.join("src/lib.rs"),
+        "pub fn successor() {}\n",
+    )
+    .expect("successor source should write");
+    git(&fixture.successor_root, &["add", "src/lib.rs"]);
+    git(
+        &fixture.successor_root,
+        &["commit", "--quiet", "-m", "successor work"],
+    );
+    let protected_tip = git_stdout(&fixture.successor_root, &["rev-parse", "HEAD"]);
+    let released = run_berth_with_run(
+        &fixture.successor_root,
+        &["release", &fixture.successor_id, "--json"],
+        SECOND_RUN,
+    );
+    assert!(released.status.success());
+
+    let complete_board = board_data(fixture.repository.path());
+    assert_eq!(
+        complete_board["waiting"]["entries"][0]["successor"],
+        fixture.successor_id
+    );
+    assert!(!has_reservation_row(&complete_board, &fixture.successor_id));
+    assert_reservation_lifecycle(
+        fixture.repository.path(),
+        &fixture.successor_id,
+        "outstanding",
+        &protected_tip,
+    );
+
+    let text_selector = run_berth(
+        fixture.repository.path(),
+        &["board", "--reservation", &fixture.successor_id],
+    );
+    assert_eq!(text_selector.status.code(), Some(5));
+    assert!(String::from_utf8_lossy(&text_selector.stderr).contains("--json"));
+}
+
+#[test]
+fn both_unresolved_overlap_endpoints_are_queryable_while_omitted_from_board_rows() {
+    let repository = initialized_repository();
+    let (_blocker_directory, blocker_root) = foreign_worktree(&repository, "blocker");
+    let (_deferred_directory, deferred_root) = foreign_worktree(&repository, "deferred");
+    let blocker = claim(&blocker_root, "file:src/lib.rs", FIRST_RUN);
+    let blocker_id = reservation_id(&blocker);
+    let deferred = defer_claim(&deferred_root, "file:src/lib.rs", SECOND_RUN, &blocker_id);
+    let deferred_id = reservation_id(&deferred);
+
+    fs::write(blocker_root.join("src/lib.rs"), "pub fn blocker() {}\n")
+        .expect("blocker source should write");
+    git(&blocker_root, &["add", "src/lib.rs"]);
+    git(&blocker_root, &["commit", "--quiet", "-m", "blocker work"]);
+    let blocker_tip = git_stdout(&blocker_root, &["rev-parse", "HEAD"]);
+    assert!(
+        run_berth_with_run(
+            &blocker_root,
+            &["release", &blocker_id, "--json"],
+            FIRST_RUN,
+        )
+        .status
+        .success()
+    );
+
+    fs::write(deferred_root.join("src/lib.rs"), "pub fn deferred() {}\n")
+        .expect("deferred source should write");
+    git(&deferred_root, &["add", "src/lib.rs"]);
+    git(
+        &deferred_root,
+        &["commit", "--quiet", "-m", "deferred work"],
+    );
+    let deferred_tip = git_stdout(&deferred_root, &["rev-parse", "HEAD"]);
+    assert!(
+        run_berth_with_run(
+            &deferred_root,
+            &["release", &deferred_id, "--json"],
+            SECOND_RUN,
+        )
+        .status
+        .success()
+    );
+
+    let complete_board = board_data(repository.path());
+    let overlap = &complete_board["unresolved_overlaps"]["entries"][0];
+    assert_eq!(overlap["blocker"], blocker_id);
+    assert_eq!(overlap["deferred"], deferred_id);
+    for reservation_id in [&blocker_id, &deferred_id] {
+        assert!(!has_reservation_row(&complete_board, reservation_id));
+    }
+    assert_reservation_lifecycle(repository.path(), &blocker_id, "outstanding", &blocker_tip);
+    assert_reservation_lifecycle(
+        repository.path(),
+        &deferred_id,
+        "outstanding",
+        &deferred_tip,
+    );
+}
+
+#[test]
+fn unknown_reservation_lifecycle_is_a_typed_invalid_input() {
+    let repository = initialized_repository();
+    let reservation_id = uuid::Uuid::now_v7().to_string();
+    let output = run_berth(
+        repository.path(),
+        &["board", "--reservation", &reservation_id, "--json"],
+    );
+    assert_eq!(output.status.code(), Some(5));
+    let envelope = json_output(&output);
+    assert_eq!(envelope["verb"], "board");
+    assert_eq!(envelope["status"], "invalid_input");
+    assert_eq!(envelope["exit_code"], 5);
+    assert_eq!(
+        envelope["reservations"],
+        serde_json::json!([reservation_id])
+    );
+    assert_eq!(envelope["payload"]["kind"], "reservation");
+    assert_eq!(
+        envelope["payload"]["data"],
+        serde_json::json!({
+            "status": "unknown_reservation",
+            "reservation_id": reservation_id,
+        })
+    );
+}
+
+#[test]
+fn reservation_lifecycle_query_distinguishes_all_four_states() {
+    let repository = initialized_repository();
+    let (_checkpoint_directory, checkpoint_root) =
+        foreign_worktree(&repository, "checkpoint-lifecycle");
+    let checkpointed = claim(&checkpoint_root, "file:src/lib.rs", FIRST_RUN);
+    let checkpointed_id = reservation_id(&checkpointed);
+    assert_eq!(
+        reservation_lifecycle(repository.path(), &checkpointed_id),
+        serde_json::json!({"status": "active"})
+    );
+
+    fs::write(
+        checkpoint_root.join("src/lib.rs"),
+        "pub fn checkpointed() {}\n",
+    )
+    .expect("checkpointed source should write");
+    git(&checkpoint_root, &["add", "src/lib.rs"]);
+    git(
+        &checkpoint_root,
+        &["commit", "--quiet", "-m", "checkpointed work"],
+    );
+    let protected_tip = git_stdout(&checkpoint_root, &["rev-parse", "HEAD"]);
+    assert!(
+        run_berth_with_run(
+            &checkpoint_root,
+            &["release", &checkpointed_id, "--json"],
+            FIRST_RUN,
+        )
+        .status
+        .success()
+    );
+    assert_eq!(
+        reservation_lifecycle(repository.path(), &checkpointed_id),
+        serde_json::json!({
+            "status": "outstanding",
+            "protected_tip": protected_tip,
+        })
+    );
+    assert!(
+        run_berth_with_run(
+            &checkpoint_root,
+            &[
+                "resolve",
+                &checkpointed_id,
+                "--abandon",
+                "--why",
+                "checkpointed work is deliberately discarded",
+                "--json",
+            ],
+            FIRST_RUN,
+        )
+        .status
+        .success()
+    );
+    assert_eq!(
+        reservation_lifecycle(repository.path(), &checkpointed_id),
+        serde_json::json!({
+            "status": "released_after_checkpoint",
+            "protected_tip": protected_tip,
+            "disposition": {
+                "kind": "abandoned",
+                "evidence": "checkpointed work is deliberately discarded",
+            },
+        })
+    );
+
+    let (_uncheckpointed_directory, uncheckpointed_root) =
+        foreign_worktree(&repository, "uncheckpointed-lifecycle");
+    let uncheckpointed = claim(
+        &uncheckpointed_root,
+        "file:src/uncheckpointed.rs",
+        SECOND_RUN,
+    );
+    let uncheckpointed_id = reservation_id(&uncheckpointed);
+    assert!(
+        run_berth_with_run(
+            &uncheckpointed_root,
+            &[
+                "resolve",
+                &uncheckpointed_id,
+                "--abandon",
+                "--why",
+                "uncheckpointed work is deliberately discarded",
+                "--json",
+            ],
+            SECOND_RUN,
+        )
+        .status
+        .success()
+    );
+    assert_eq!(
+        reservation_lifecycle(repository.path(), &uncheckpointed_id),
+        serde_json::json!({
+            "status": "released_without_checkpoint",
+            "disposition": {
+                "kind": "abandoned",
+                "evidence": "uncheckpointed work is deliberately discarded",
+            },
+        })
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn human_board_uses_and_restores_an_attached_terminal() {
@@ -930,6 +1161,53 @@ fn reservation_row<'board>(
         .map(|entry| entry.get("reservation").unwrap_or(entry))
         .find(|row| row["reservation_id"] == reservation_id)
         .expect("reservation should have a board row")
+}
+
+fn has_reservation_row(data: &serde_json::Value, reservation_id: &str) -> bool {
+    ["ready_now", "unconstrained_reservations", "resolved"]
+        .into_iter()
+        .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
+        .map(|entry| entry.get("reservation").unwrap_or(entry))
+        .any(|row| row["reservation_id"] == reservation_id)
+}
+
+fn assert_reservation_lifecycle(
+    repository_root: &Path,
+    reservation_id: &str,
+    expected_status: &str,
+    protected_tip: &str,
+) {
+    let lifecycle = reservation_lifecycle(repository_root, reservation_id);
+    assert_eq!(lifecycle["status"], expected_status);
+    assert_eq!(lifecycle["protected_tip"], protected_tip);
+}
+
+fn reservation_lifecycle(repository_root: &Path, reservation_id: &str) -> serde_json::Value {
+    let output = run_berth(
+        repository_root,
+        &["board", "--reservation", reservation_id, "--json"],
+    );
+    assert!(
+        output.status.success(),
+        "reservation lifecycle query failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = json_output(&output);
+    assert_eq!(envelope["verb"], "board");
+    assert_eq!(envelope["status"], "board_ready");
+    assert_eq!(envelope["exit_code"], 0);
+    assert_eq!(
+        envelope["reservations"],
+        serde_json::json!([reservation_id])
+    );
+    assert_eq!(envelope["payload"]["kind"], "reservation");
+    assert_eq!(
+        envelope["payload"]["data"]["reservation_id"],
+        reservation_id
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(ENTER_ALTERNATE_SCREEN));
+    envelope["payload"]["data"]["lifecycle"].clone()
 }
 
 fn assert_integration_statuses(
@@ -2782,6 +3060,7 @@ struct OrderedFixture {
     predecessor_root: PathBuf,
     successor_root:   PathBuf,
     predecessor_id:   String,
+    successor_id:     String,
 }
 
 fn persistent_unavailable_comparison_fixture() -> PersistentUnavailableComparisonFixture {
@@ -3621,12 +3900,14 @@ fn ordered_fixture() -> OrderedFixture {
         "predecessor must land first",
     );
     assert!(successor.status.success());
+    let successor_id = reservation_id(&successor);
     OrderedFixture {
         repository,
         _worktrees: worktrees,
         predecessor_root,
         successor_root,
         predecessor_id,
+        successor_id,
     }
 }
 
