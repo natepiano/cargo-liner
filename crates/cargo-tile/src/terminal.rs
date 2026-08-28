@@ -58,7 +58,6 @@ use crate::constants::FULL_REPAINT_SECONDS;
 use crate::constants::PROBE_THRESHOLD;
 use crate::constants::REPAINT_SENTINEL;
 use crate::favorites;
-use crate::favorites::FavoriteRemovalTarget;
 use crate::favorites_overlay::FavoritesOverlayFrameOutcome;
 use crate::globals::AppGlobalAction;
 use crate::interaction;
@@ -288,9 +287,9 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
         match app.favorites_overlay.advance(now) {
             FavoritesOverlayFrameOutcome::Quiet => {},
             FavoritesOverlayFrameOutcome::Repaint => dirty = true,
-            FavoritesOverlayFrameOutcome::CommitRemoval(favorite_id) => {
-                let result = favorites::remove(FavoriteRemovalTarget::Recognized(favorite_id));
-                app.favorites_overlay.finish_removal(favorite_id, result);
+            FavoritesOverlayFrameOutcome::CommitRemoval(removal_target) => {
+                let result = favorites::remove(removal_target.clone());
+                app.favorites_overlay.finish_removal(removal_target, result);
                 dirty = true;
             },
         }
@@ -513,7 +512,9 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     let keymap = Rc::clone(&app.keymap);
     let bind = KeyBind::from(key);
     if app.favorites_overlay.is_open() {
-        let _ = keymap.dispatch_app_pane(AppPaneId::Favorites, &bind, app);
+        if keymap.dispatch_app_pane(AppPaneId::Favorites, &bind, app) == KeyOutcome::Unhandled {
+            app.favorites_overlay.handle_unmapped_key();
+        }
         return;
     }
     if let Some(overlay) = app.framework.overlay() {
@@ -657,9 +658,25 @@ fn restart_self() {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::fs;
+
     use crossterm::event::KeyModifiers;
+    use ratatui::backend::TestBackend;
+    use tempfile::TempDir;
 
     use super::*;
+
+    const FAVORITE_ROW: &str = r#"
+[[favorite]]
+id = "01a03f60-9c14-7b41-8a02-1de4c7c9b332"
+saved = "2026-08-26T11:02:44-07:00"
+mode = "moving_band"
+direction = "left"
+width = 10
+speed = 32
+tail_speed = 72
+fraying = "leading"
+"#;
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
@@ -680,6 +697,54 @@ mod tests {
 
         handle_key(&mut app, key(KeyCode::Esc));
         assert!(!app.favorites_overlay.is_open());
+    }
+
+    #[test]
+    fn unmapped_modal_key_cancels_delete_confirmation_without_writing() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = directory.path().join("favorites.toml");
+        fs::write(&path, FAVORITE_ROW).expect("favorite fixture should be written");
+        let original = fs::read(&path).expect("favorite fixture should be readable");
+        let rows = favorites::parse_rows_for_overlay_test(FAVORITE_ROW)
+            .expect("favorite fixture should parse");
+        let keymap = Rc::clone(&app.keymap);
+        app.favorites_overlay.open_file_state(
+            favorites::FavoritesFileState::Loaded {
+                path: path.clone(),
+                rows,
+            },
+            &keymap,
+        );
+        let mut terminal =
+            Terminal::new(TestBackend::new(100, 30)).expect("test terminal should be created");
+        terminal
+            .draw(|frame| app.favorites_overlay.render(frame))
+            .expect("favorites overlay should render");
+
+        handle_key(&mut app, key(KeyCode::Char('x')));
+        assert!(
+            app.favorites_overlay
+                .deletion_confirmation_is_armed_for_test()
+        );
+        assert!(
+            app.favorites_overlay
+                .deletion_confirmation_notice_is_visible_for_test()
+        );
+        handle_key(&mut app, key(KeyCode::Char('z')));
+
+        assert!(
+            !app.favorites_overlay
+                .deletion_confirmation_is_armed_for_test()
+        );
+        assert!(
+            !app.favorites_overlay
+                .deletion_confirmation_notice_is_visible_for_test()
+        );
+        assert_eq!(
+            fs::read(&path).expect("favorite fixture should remain readable"),
+            original
+        );
     }
 
     #[test]

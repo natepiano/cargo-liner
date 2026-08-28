@@ -122,6 +122,30 @@ struct ModeColumnBindings {
     labels: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SelectedFavoriteActions {
+    NoFavoriteSelected,
+    DeleteOnly,
+    LoadAndDelete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FavoritesFooterRequest {
+    has_multiple_navigation_positions: bool,
+    last_horizontal_column_page:       usize,
+    selected_favorite_actions:         SelectedFavoriteActions,
+}
+
+#[derive(Clone, Debug, Default)]
+enum CachedFavoritesFooter {
+    #[default]
+    NeedsRebuild,
+    Current {
+        request: FavoritesFooterRequest,
+        text:    String,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct FavoritesSurfaceBindings {
     columns:  Vec<ModeColumnBindings>,
@@ -134,6 +158,7 @@ pub(super) struct FavoritesSurfaceBindings {
     close:    ResolvedBinding,
     save:     ResolvedBinding,
     open:     ResolvedBinding,
+    footer:   CachedFavoritesFooter,
 }
 
 impl Default for FavoritesSurfaceBindings {
@@ -149,6 +174,7 @@ impl Default for FavoritesSurfaceBindings {
             close:    ResolvedBinding::for_action("close", None),
             save:     ResolvedBinding::for_action("save_favorite", None),
             open:     ResolvedBinding::for_action("open_favorites", None),
+            footer:   CachedFavoritesFooter::NeedsRebuild,
         }
     }
 }
@@ -180,6 +206,7 @@ impl FavoritesSurfaceBindings {
             close: resolve_pane_binding(keymap, AppPaneId::Favorites, "close"),
             save: resolve_global_binding(keymap, "save_favorite"),
             open: resolve_global_binding(keymap, "open_favorites"),
+            footer: CachedFavoritesFooter::NeedsRebuild,
         }
     }
 
@@ -190,27 +217,94 @@ impl FavoritesSurfaceBindings {
             .map_or(&[], |bindings| bindings.labels.as_slice())
     }
 
-    pub(super) fn footer(&self, last_horizontal_column_page: usize) -> String {
-        let movement = format!(
-            "{}/{} move",
-            self.previous.display_short(),
-            self.next.display_short(),
-        );
-        let mutations = format!(
-            "{} load   {} delete",
-            self.load.display_short(),
-            self.delete.display_short(),
-        );
-        let close = format!("{} close", self.close.display_short());
-        if last_horizontal_column_page == 0 {
-            format!("{movement}   {mutations}   {close}")
-        } else {
-            format!(
-                "{movement}   {}/{} page   {mutations}   {close}",
-                self.left.display_short(),
-                self.right.display_short(),
-            )
+    pub(super) fn invalidate_footer(&mut self) {
+        self.footer = CachedFavoritesFooter::NeedsRebuild;
+    }
+
+    pub(super) fn refresh_footer(
+        &mut self,
+        navigation_position_count: usize,
+        last_horizontal_column_page: usize,
+        selected_favorite_actions: SelectedFavoriteActions,
+    ) {
+        let request = FavoritesFooterRequest {
+            has_multiple_navigation_positions: navigation_position_count > 1,
+            last_horizontal_column_page,
+            selected_favorite_actions,
+        };
+        if matches!(
+            &self.footer,
+            CachedFavoritesFooter::Current { request: current, .. } if *current == request
+        ) {
+            return;
         }
+
+        let mut segments = Vec::with_capacity(5);
+        if request.has_multiple_navigation_positions
+            && let (
+                ResolvedBinding::Bound {
+                    sequence: previous, ..
+                },
+                ResolvedBinding::Bound { sequence: next, .. },
+            ) = (&self.previous, &self.next)
+        {
+            segments.push(format!(
+                "{}/{} move",
+                previous.display_short(),
+                next.display_short(),
+            ));
+        }
+        if request.last_horizontal_column_page > 0
+            && let (
+                ResolvedBinding::Bound { sequence: left, .. },
+                ResolvedBinding::Bound {
+                    sequence: right, ..
+                },
+            ) = (&self.left, &self.right)
+        {
+            segments.push(format!(
+                "{}/{} page",
+                left.display_short(),
+                right.display_short(),
+            ));
+        }
+        match request.selected_favorite_actions {
+            SelectedFavoriteActions::NoFavoriteSelected => {},
+            SelectedFavoriteActions::DeleteOnly => {
+                if let ResolvedBinding::Bound { sequence, .. } = &self.delete {
+                    segments.push(format!("{} delete", sequence.display_short()));
+                }
+            },
+            SelectedFavoriteActions::LoadAndDelete => {
+                if let ResolvedBinding::Bound { sequence, .. } = &self.load {
+                    segments.push(format!("{} load", sequence.display_short()));
+                }
+                if let ResolvedBinding::Bound { sequence, .. } = &self.delete {
+                    segments.push(format!("{} delete", sequence.display_short()));
+                }
+            },
+        }
+        if let ResolvedBinding::Bound { sequence, .. } = &self.close {
+            segments.push(format!("{} close", sequence.display_short()));
+        }
+        self.footer = CachedFavoritesFooter::Current {
+            request,
+            text: segments.join("   "),
+        };
+    }
+
+    pub(super) fn footer(&self) -> &str {
+        match &self.footer {
+            CachedFavoritesFooter::NeedsRebuild => "",
+            CachedFavoritesFooter::Current { text, .. } => text,
+        }
+    }
+
+    pub(super) fn delete_confirmation_notice(&self) -> String {
+        format!(
+            "Press {} again to confirm deletion",
+            self.delete.display_short()
+        )
     }
 
     pub(super) fn empty_notice(&self) -> String {
@@ -345,23 +439,63 @@ sweep_down = "n"
 sweep_right = "r"
 "#,
         );
-        let bindings = FavoritesSurfaceBindings::resolve(&keymap);
+        let mut bindings = FavoritesSurfaceBindings::resolve(&keymap);
 
         assert_eq!(bindings.column_labels(AttractMode::Pixelate)[0], "aunr");
+        bindings.refresh_footer(2, 1, SelectedFavoriteActions::LoadAndDelete);
         assert_eq!(
-            bindings.footer(1),
+            bindings.footer(),
             "w/s move   a/d page   enter load   x delete   z close"
         );
+        bindings.refresh_footer(2, 0, SelectedFavoriteActions::LoadAndDelete);
         assert_eq!(
-            bindings.footer(0),
+            bindings.footer(),
             "w/s move   enter load   x delete   z close"
         );
         assert_eq!(
             bindings.empty_notice(),
             "No favorites saved -- press z, then y while the attract screen is up"
         );
-        assert!(bindings.footer(1).contains("enter load"));
-        assert!(bindings.footer(1).contains("x delete"));
+        assert!(bindings.footer().contains("enter load"));
+        assert!(bindings.footer().contains("x delete"));
+    }
+
+    #[test]
+    fn footer_names_only_actions_the_selection_can_run() {
+        let keymap = keymap_from("");
+        let mut bindings = FavoritesSurfaceBindings::resolve(&keymap);
+
+        bindings.refresh_footer(2, 0, SelectedFavoriteActions::DeleteOnly);
+        assert_eq!(bindings.footer(), "↑/↓ move   x delete   Esc close");
+        assert!(!bindings.footer().contains("load"));
+
+        bindings.refresh_footer(0, 0, SelectedFavoriteActions::NoFavoriteSelected);
+        assert_eq!(bindings.footer(), "Esc close");
+        assert!(!bindings.footer().contains("load"));
+        assert!(!bindings.footer().contains("delete"));
+
+        bindings.refresh_footer(1, 0, SelectedFavoriteActions::LoadAndDelete);
+        assert_eq!(bindings.footer(), "enter load   x delete   Esc close");
+        assert!(!bindings.footer().contains("move"));
+    }
+
+    #[test]
+    fn footer_omits_every_segment_with_an_unbound_action() {
+        let keymap = keymap_from(
+            r#"
+[favorites]
+select_previous = ""
+page_columns_right = ""
+load = ""
+delete = ""
+close = ""
+"#,
+        );
+        let mut bindings = FavoritesSurfaceBindings::resolve(&keymap);
+
+        bindings.refresh_footer(2, 1, SelectedFavoriteActions::LoadAndDelete);
+
+        assert_eq!(bindings.footer(), "");
     }
 
     #[test]

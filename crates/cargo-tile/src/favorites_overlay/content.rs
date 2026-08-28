@@ -19,6 +19,7 @@ use crate::favorites::FavoriteId;
 use crate::favorites::FavoriteRowRecognition;
 use crate::favorites::FavoriteRows;
 use crate::favorites::FavoritesFileState;
+use crate::favorites::UnrecognizedFavoriteRemovalLocator;
 use crate::favorites::UnrecognizedFavoriteValue;
 
 /// The content carried by an open favorites modal.
@@ -82,6 +83,17 @@ impl FavoritesOverlayContent {
             | Self::Unreadable { .. } => 0,
         }
     }
+
+    pub(super) fn navigable_row_count(&self) -> usize {
+        match self {
+            Self::Rows(rows) => rows.navigable_row_count(),
+            Self::OnlyUnrecognized(rows) => rows.rows.len(),
+            Self::NoneSaved
+            | Self::LocationUnavailable
+            | Self::Unparseable { .. }
+            | Self::Unreadable { .. } => 0,
+        }
+    }
 }
 
 /// Cached, display-ready recognized favorites and diagnostics.
@@ -109,8 +121,14 @@ impl From<&FavoriteRows> for FavoriteRowsView {
                         });
                     }
                 },
-                FavoriteRowRecognition::Unrecognized { diagnostic, .. } => {
-                    unrecognized.push(UnrecognizedFavoriteView::from(diagnostic));
+                FavoriteRowRecognition::Unrecognized {
+                    diagnostic,
+                    removal_locator,
+                } => {
+                    unrecognized.push(UnrecognizedFavoriteView::new(
+                        diagnostic,
+                        removal_locator.clone(),
+                    ));
                 },
             }
         }
@@ -124,6 +142,10 @@ impl From<&FavoriteRows> for FavoriteRowsView {
 impl FavoriteRowsView {
     pub(super) fn saved_count(&self) -> usize {
         self.sections.iter().map(|section| section.rows.len()).sum()
+    }
+
+    pub(super) fn navigable_row_count(&self) -> usize {
+        self.saved_count().saturating_add(self.unrecognized.len())
     }
 
     pub(super) fn row(&self, favorite_id: FavoriteId) -> FavoriteRowLookup<'_> {
@@ -147,6 +169,14 @@ impl FavoriteRowsView {
             section.rows.retain(|row| row.id != favorite_id);
         }
         self.sections.retain(|section| !section.rows.is_empty());
+    }
+
+    pub(super) fn remove_unrecognized(
+        &mut self,
+        removal_locator: &UnrecognizedFavoriteRemovalLocator,
+    ) {
+        self.unrecognized
+            .retain(|row| row.removal_locator != *removal_locator);
     }
 
     pub(super) fn removing_ids(&self) -> Vec<FavoriteId> {
@@ -212,15 +242,22 @@ pub(crate) struct UnrecognizedFavoritesView {
 
 #[derive(Clone, Debug)]
 pub(super) struct UnrecognizedFavoriteView {
-    pub(super) key:      String,
-    pub(super) spelling: String,
+    pub(super) removal_locator: UnrecognizedFavoriteRemovalLocator,
+    pub(super) key:             String,
+    pub(super) spelling:        String,
+    pub(super) lifecycle:       FavoriteRowLifecycle,
 }
 
-impl From<&UnrecognizedFavoriteValue> for UnrecognizedFavoriteView {
-    fn from(value: &UnrecognizedFavoriteValue) -> Self {
+impl UnrecognizedFavoriteView {
+    fn new(
+        value: &UnrecognizedFavoriteValue,
+        removal_locator: UnrecognizedFavoriteRemovalLocator,
+    ) -> Self {
         Self {
-            key:      value.key.clone(),
+            removal_locator,
+            key: value.key.clone(),
             spelling: value.spelling.clone(),
+            lifecycle: FavoriteRowLifecycle::Active,
         }
     }
 }
