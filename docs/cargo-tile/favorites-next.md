@@ -155,5 +155,7 @@ that appears only with two windows of one app is a disambiguation bug, and the
 last two backdrop defects were both found this way rather than by reading
 branches. Then give the notice a second message for the non-permission case.
 
-Note the capture lives in `tui_pane`'s `backdrop` feature, not in cargo-tile, so
-a fix likely lands in a crate that `cargo-port` also depends on.
+The capture lives in `tui_pane`'s `backdrop` feature, not in cargo-tile, so the
+fix belongs there — a framework that only works for the first caller to ask is
+the framework's defect, not the caller's, and `cargo-port` wants the same
+behavior. Fix it where it lives rather than working around it from cargo-tile.
