@@ -1517,19 +1517,24 @@ pub(crate) fn write_reservation_retention_ref(
     refs::write(repository_root, reservation_id, protected_tip)
 }
 
-/// Rewrite every readable protected-tip retention ref with at most two git invocations.
-pub(crate) fn repair_reservation_retention_refs(
+/// Apply all retention-ref repairs and deletions in one ref-mutating transaction.
+pub(crate) fn update_reservation_retention_refs(
     repository_root: &Path,
     repairs: &[ReservationRetentionRefRepair],
+    deletions: &[ReservationId],
 ) -> Result<(), GitError> {
-    if repairs.is_empty() {
+    if repairs.is_empty() && deletions.is_empty() {
         return Ok(());
     }
     let protected_tips = repairs
         .iter()
         .map(|repair| repair.protected_tip.clone())
         .collect::<Vec<_>>();
-    let availability = commit_availability(repository_root, &protected_tips)?;
+    let availability = if protected_tips.is_empty() {
+        Vec::new()
+    } else {
+        commit_availability(repository_root, &protected_tips)?
+    };
     let input = repairs.iter().zip(availability).fold(
         String::new(),
         |mut input, (repair, availability)| {
@@ -1544,32 +1549,19 @@ pub(crate) fn repair_reservation_retention_refs(
             input
         },
     );
+    let input = deletions.iter().fold(input, |mut input, reservation_id| {
+        let _ = writeln!(input, "delete {}", refs::name(*reservation_id));
+        input
+    });
     if input.is_empty() {
         return Ok(());
     }
-    let arguments = [GIT_UPDATE_REF_COMMAND.to_owned(), GIT_STDIN_ARG.to_owned()];
-    let output = git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(GitError::CommandFailed {
-            command: GIT_UPDATE_REF_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        })
-    }
+    refs::apply_transaction(repository_root, &input)
 }
 
 /// Return the full private ref used to retain one reservation's protected tip.
 pub(crate) fn reservation_retention_ref_name(reservation_id: ReservationId) -> String {
     refs::name(reservation_id)
-}
-
-/// Delete a reservation's retention ref.
-pub(crate) fn delete_reservation_retention_ref(
-    repository_root: &Path,
-    reservation_id: ReservationId,
-) -> Result<(), GitError> {
-    refs::delete(repository_root, reservation_id)
 }
 
 fn object_id(repository_root: &Path, revision: &str) -> Result<GitObjectId, GitError> {

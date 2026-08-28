@@ -1693,10 +1693,11 @@ impl ReconciliationAction {
                     .push(pending_import.into_recovered_marker());
             }
         }
-        for reservation_id in self.retention_deletions {
-            git::delete_reservation_retention_ref(&self.repository_root, reservation_id)?;
-        }
-        git::repair_reservation_retention_refs(&self.repository_root, &self.retention_repairs)?;
+        git::update_reservation_retention_refs(
+            &self.repository_root,
+            &self.retention_repairs,
+            &self.retention_deletions,
+        )?;
         for marker_context in self.marker_contexts {
             let marker_worktree_id =
                 ledger::read_worktree_identity(marker_context.administrative_directory());

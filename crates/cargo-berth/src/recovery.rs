@@ -693,12 +693,11 @@ impl RecoveryCommittedAction {
         self,
         worktree_context: &WorktreeContext,
     ) -> Result<ResolvePayloadSeed, RecoveryError> {
-        for reservation_id in self.retention_deletions {
-            git::delete_reservation_retention_ref(
-                worktree_context.repository_root(),
-                reservation_id,
-            )?;
-        }
+        git::update_reservation_retention_refs(
+            worktree_context.repository_root(),
+            &[],
+            &self.retention_deletions,
+        )?;
         match self.committed_action {
             RecoveryAction::None => {},
             RecoveryAction::PublishMarker(coordination_run_id) => {

@@ -7,7 +7,8 @@ use std::path::Path;
 
 use super::GitError;
 use super::command;
-use super::constants::GIT_DELETE_REF_ARG;
+use super::command::GitHookExecutionPolicy;
+use super::constants::GIT_STDIN_ARG;
 use super::constants::GIT_UPDATE_REF_COMMAND;
 use super::constants::RESERVATION_RETENTION_REF_PREFIX;
 use crate::ids::GitObjectId;
@@ -41,9 +42,15 @@ pub(super) fn write(
 ) -> Result<(), GitError> {
     let retention_ref = name(reservation_id);
     let protected_tip = protected_tip.to_string();
-    let output = command::git_output(
+    let arguments = [
+        GIT_UPDATE_REF_COMMAND.to_owned(),
+        retention_ref,
+        protected_tip,
+    ];
+    let output = command::git_output_dynamic_with_hook_execution_policy(
         repository_root,
-        [GIT_UPDATE_REF_COMMAND, &retention_ref, &protected_tip],
+        &arguments,
+        GitHookExecutionPolicy::SuppressedForRetentionRef,
     )?;
     if output.status.success() {
         Ok(())
@@ -55,15 +62,14 @@ pub(super) fn write(
     }
 }
 
-/// Delete a reservation retention ref.
-pub(super) fn delete(
-    repository_root: &Path,
-    reservation_id: ReservationId,
-) -> Result<(), GitError> {
-    let retention_ref = name(reservation_id);
-    let output = command::git_output(
+/// Apply one transaction containing only retention-ref writes and deletions.
+pub(super) fn apply_transaction(repository_root: &Path, input: &str) -> Result<(), GitError> {
+    let arguments = [GIT_UPDATE_REF_COMMAND.to_owned(), GIT_STDIN_ARG.to_owned()];
+    let output = command::git_output_dynamic_with_hook_execution_policy_and_input(
         repository_root,
-        [GIT_UPDATE_REF_COMMAND, GIT_DELETE_REF_ARG, &retention_ref],
+        &arguments,
+        GitHookExecutionPolicy::SuppressedForRetentionRef,
+        input.as_bytes(),
     )?;
     if output.status.success() {
         Ok(())

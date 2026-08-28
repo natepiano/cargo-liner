@@ -43,8 +43,6 @@ pub(super) const GIT_CHERRY_MARK_ARG: &str = "--cherry-mark";
 pub(super) const GIT_COMMON_DIRECTORY_ARG: &str = "--git-common-dir";
 /// Report only the number of selected commits.
 pub(super) const GIT_COUNT_ARG: &str = "--count";
-/// Delete the named ref through `update-ref`.
-pub(super) const GIT_DELETE_REF_ARG: &str = "-d";
 /// Test whether an object can be read without printing it.
 pub(super) const GIT_EXISTS_ARG: &str = "-e";
 /// Follow only the first parent, so a walk stays on one branch's own line.

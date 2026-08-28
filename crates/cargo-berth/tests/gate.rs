@@ -6,6 +6,7 @@
 //! End-to-end tests for installation, enforcement, release valves, and gate cost.
 
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -38,6 +39,14 @@ const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
+const RAW_TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
+printf 'git' >> "$CARGO_BERTH_TEST_GIT_TRACE"
+for argument in "$@"; do
+    printf '\037%s' "$argument" >> "$CARGO_BERTH_TEST_GIT_TRACE"
+done
+printf '\036' >> "$CARGO_BERTH_TEST_GIT_TRACE"
+exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
+"#;
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ]; then
     case "$2" in
@@ -558,6 +567,88 @@ fn init_installs_into_the_effective_core_hooks_path() {
             .windows("__reference-transaction".len())
             .any(|window| window == b"__reference-transaction")
     );
+}
+
+#[test]
+fn retention_ref_writes_and_deletions_suppress_the_repository_root_hook() {
+    let repository = initialized_repository();
+    let sentinel_log = install_repository_root_reference_transaction_sentinel(repository.path());
+    let control_ref = "refs/hook-sentinel/control";
+    git(repository.path(), &["update-ref", control_ref, "HEAD"]);
+    let control_entries =
+        fs::read_to_string(&sentinel_log).expect("reference-transaction sentinel log should read");
+    assert!(
+        control_entries
+            .lines()
+            .any(|entry| entry.ends_with(control_ref)),
+        "reference-transaction sentinel did not observe the control ref: {control_entries}"
+    );
+
+    let claimed = claim(
+        repository.path(),
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "docs/retention-suppression.md",
+        "retention suppression",
+    );
+    assert!(claimed.status.success());
+    let reservation_id = reservation_id(&claimed);
+    let retention_ref = format!("refs/cargo-berth/reservations/{reservation_id}");
+
+    let checkpointed = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+    assert!(checkpointed.status.success());
+    assert_eq!(
+        json_output(&checkpointed)["payload"]["data"]["status"],
+        "checkpointed"
+    );
+    assert!(reference_exists(repository.path(), &retention_ref));
+
+    let evidence = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+    assert!(evidence.status.success());
+    assert_eq!(
+        json_output(&evidence)["payload"]["data"]["status"],
+        "evidence_revalidated"
+    );
+    let released = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+    assert!(released.status.success());
+    assert_eq!(
+        json_output(&released)["payload"]["data"]["status"],
+        "released"
+    );
+    assert!(reference_exists(repository.path(), &retention_ref));
+
+    let reconciled = run_berth(repository.path(), &["board", "--json"]);
+    assert!(reconciled.status.success());
+    assert!(!reference_exists(repository.path(), &retention_ref));
+    let sentinel_entries = fs::read_to_string(sentinel_log)
+        .expect("reference-transaction sentinel log should read after retention operations");
+    let retention_entries = sentinel_entries
+        .lines()
+        .filter(|entry| entry.contains(" refs/cargo-berth/"))
+        .collect::<Vec<_>>();
+    assert!(
+        retention_entries.is_empty(),
+        "sentinel observed retention refs: {retention_entries:#?}"
+    );
+}
+
+#[test]
+fn retention_ref_transactions_have_constant_git_invocations_across_cardinalities() {
+    let one_repair = trace_retention_ref_reconciliation(1, RetentionRefPass::RepairOnly);
+    let twenty_repairs = trace_retention_ref_reconciliation(20, RetentionRefPass::RepairOnly);
+    let one_deletion = trace_retention_ref_reconciliation(1, RetentionRefPass::DeletionOnly);
+    let twenty_deletions = trace_retention_ref_reconciliation(20, RetentionRefPass::DeletionOnly);
+
+    assert_same_git_invocation_sequence(&one_repair, &twenty_repairs);
+    assert_same_git_invocation_sequence(&one_deletion, &twenty_deletions);
+    for trace in [
+        &one_repair,
+        &twenty_repairs,
+        &one_deletion,
+        &twenty_deletions,
+    ] {
+        assert_one_suppressed_ref_transaction(trace);
+    }
 }
 
 #[test]
@@ -2101,6 +2192,17 @@ struct TracedHook {
     _directory: TempDir,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct RawGitInvocation {
+    arguments: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+enum RetentionRefPass {
+    RepairOnly,
+    DeletionOnly,
+}
+
 struct ManagedHookSpy {
     phase_log: PathBuf,
     stdin_log: PathBuf,
@@ -2798,6 +2900,47 @@ fn run_private_hook_with_git_trace(
     }
 }
 
+fn run_berth_with_raw_git_trace(
+    repository_root: &Path,
+    arguments: &[&str],
+) -> (Output, Vec<RawGitInvocation>) {
+    let directory = tempdir().expect("wrapper directory should exist");
+    let wrapper_path = directory.path().join(GIT_BINARY);
+    let trace_path = directory.path().join("raw-trace");
+    fs::write(&wrapper_path, RAW_TRACING_GIT_WRAPPER).expect("git wrapper should write");
+    let mut permissions = fs::metadata(&wrapper_path)
+        .expect("git wrapper metadata should read")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
+    let wrapped_path = std::env::join_paths(
+        std::iter::once(directory.path().to_path_buf())
+            .chain(std::env::split_paths(&original_path)),
+    )
+    .expect("wrapped PATH should join");
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env("PATH", wrapped_path)
+        .env(REAL_GIT_ENVIRONMENT, git_binary())
+        .env(TRACE_ENVIRONMENT, &trace_path)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("cargo-berth should run");
+    let trace = fs::read_to_string(&trace_path).expect("raw git trace should read");
+    let invocations = trace
+        .split('\u{1e}')
+        .filter(|record| !record.is_empty())
+        .map(|record| RawGitInvocation {
+            arguments: record.split('\u{1f}').map(str::to_owned).collect(),
+        })
+        .collect();
+    (output, invocations)
+}
+
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
@@ -3005,7 +3148,7 @@ fn committed_forced_trunk_integration_hook_phases() -> Vec<String> {
         "forced integration work",
     );
     set_gate_mode(repository.path(), "enforce");
-    let spy = replace_managed_hook_executable_with_spy(repository.path());
+    let phase_log = wrap_managed_hook_with_phase_log(repository.path());
 
     let integrated = run_berth(
         &deferred_pair.blocked_root,
@@ -3024,7 +3167,219 @@ fn committed_forced_trunk_integration_hook_phases() -> Vec<String> {
         "forced integration failed: {}",
         String::from_utf8_lossy(&integrated.stdout)
     );
-    spy.invoked_phases()
+    assert_forced_permit_consumed(repository.path());
+    let lifecycle = fs::read_to_string(phase_log)
+        .expect("forced-integration phase log should read")
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(lifecycle, ["preparing", "prepared", "committed"]);
+    lifecycle
+        .into_iter()
+        .filter(|phase| phase != "preparing")
+        .collect()
+}
+
+fn wrap_managed_hook_with_phase_log(repository_root: &Path) -> PathBuf {
+    let hook_path = repository_root.join(HOOK_PATH);
+    let original_hook_path = repository_root.join(".git/reference-transaction.original");
+    fs::copy(&hook_path, &original_hook_path).expect("managed hook should copy");
+    let phase_log = repository_root.join(".git/reference-transaction-phases.log");
+    let wrapper = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$1\" >> {}\nexec {} \"$@\"\n",
+        shell_single_quoted(&phase_log),
+        shell_single_quoted(&original_hook_path),
+    );
+    fs::write(&hook_path, wrapper).expect("managed hook wrapper should write");
+    let mut permissions = fs::metadata(&hook_path)
+        .expect("managed hook wrapper metadata should read")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&hook_path, permissions)
+        .expect("managed hook wrapper should be executable");
+    phase_log
+}
+
+fn install_repository_root_reference_transaction_sentinel(repository_root: &Path) -> PathBuf {
+    let hooks_directory = repository_root.join("repository-root-hooks");
+    fs::create_dir(&hooks_directory).expect("repository-root hooks directory should exist");
+    git(
+        repository_root,
+        &[
+            "config",
+            "core.hooksPath",
+            hooks_directory
+                .to_str()
+                .expect("repository-root hooks path should be UTF-8"),
+        ],
+    );
+    let sentinel_path = hooks_directory.join("reference-transaction");
+    let sentinel_log = repository_root.join("reference-transaction-sentinel.log");
+    let script = format!(
+        "#!/bin/sh\nwhile read -r old_object new_object reference; do\n    printf '%s %s\\n' \"$1\" \"$reference\" >> {}\ndone\n",
+        shell_single_quoted(&sentinel_log),
+    );
+    fs::write(&sentinel_path, script).expect("repository-root sentinel should write");
+    let mut permissions = fs::metadata(&sentinel_path)
+        .expect("repository-root sentinel metadata should read")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&sentinel_path, permissions)
+        .expect("repository-root sentinel should be executable");
+    sentinel_log
+}
+
+fn trace_retention_ref_reconciliation(
+    reservation_count: usize,
+    pass: RetentionRefPass,
+) -> Vec<RawGitInvocation> {
+    let repository = initialized_repository();
+    let reservation_ids = checkpointed_reservations(repository.path(), reservation_count);
+    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    match pass {
+        RetentionRefPass::RepairOnly => {
+            let transaction =
+                reservation_ids
+                    .iter()
+                    .fold(String::new(), |mut transaction, reservation_id| {
+                        let _ = writeln!(
+                            transaction,
+                            "delete refs/cargo-berth/reservations/{reservation_id}"
+                        );
+                        transaction
+                    });
+            apply_test_ref_transaction(repository.path(), &transaction);
+        },
+        RetentionRefPass::DeletionOnly => {
+            let observed = run_berth(repository.path(), &["board", "--json"]);
+            assert!(observed.status.success());
+            for reservation_id in &reservation_ids {
+                let released = run_berth(repository.path(), &["release", reservation_id, "--json"]);
+                assert!(released.status.success());
+                assert_eq!(
+                    json_output(&released)["payload"]["data"]["status"],
+                    "released"
+                );
+            }
+            let transaction =
+                reservation_ids
+                    .iter()
+                    .fold(String::new(), |mut transaction, reservation_id| {
+                        let _ = writeln!(
+                            transaction,
+                            "update refs/cargo-berth/reservations/{reservation_id} {protected_tip}"
+                        );
+                        transaction
+                    });
+            apply_test_ref_transaction(repository.path(), &transaction);
+        },
+    }
+    let sentinel_log = install_repository_root_reference_transaction_sentinel(repository.path());
+    let (output, invocations) =
+        run_berth_with_raw_git_trace(repository.path(), &["board", "--json"]);
+    assert!(
+        output.status.success(),
+        "traced reconciliation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!sentinel_log.exists());
+    invocations
+}
+
+fn checkpointed_reservations(repository_root: &Path, count: usize) -> Vec<String> {
+    let reservation_ids = (0..count)
+        .map(|index| {
+            let claimed = claim(
+                repository_root,
+                &format!("file:retention-trace-{index}"),
+                FIRST_RUN,
+                "docs/retention-trace.md",
+                "retention trace",
+            );
+            assert!(claimed.status.success());
+            reservation_id(&claimed)
+        })
+        .collect::<Vec<_>>();
+    for reservation_id in &reservation_ids {
+        let checkpointed = run_berth(repository_root, &["release", reservation_id, "--json"]);
+        assert!(checkpointed.status.success());
+        assert_eq!(
+            json_output(&checkpointed)["payload"]["data"]["status"],
+            "checkpointed"
+        );
+    }
+    reservation_ids
+}
+
+fn apply_test_ref_transaction(repository_root: &Path, input: &str) {
+    let mut child = Command::new(GIT_BINARY)
+        .arg("--no-optional-locks")
+        .args(["-c", "core.hooksPath=/dev/null", "update-ref", "--stdin"])
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("test ref transaction should start");
+    child
+        .stdin
+        .take()
+        .expect("test ref transaction stdin should exist")
+        .write_all(input.as_bytes())
+        .expect("test ref transaction stdin should write");
+    let output = child
+        .wait_with_output()
+        .expect("test ref transaction should finish");
+    assert!(
+        output.status.success(),
+        "test ref transaction failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_one_suppressed_ref_transaction(invocations: &[RawGitInvocation]) {
+    let transactions = invocations
+        .iter()
+        .filter(|invocation| {
+            invocation
+                .arguments
+                .iter()
+                .any(|argument| argument == "update-ref")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(transactions.len(), 1, "raw git trace: {invocations:#?}");
+    assert_eq!(
+        transactions[0].arguments,
+        ["git", "--no-optional-locks", "update-ref", "--stdin"]
+    );
+}
+
+fn assert_same_git_invocation_sequence(left: &[RawGitInvocation], right: &[RawGitInvocation]) {
+    assert_eq!(left.len(), right.len(), "left={left:#?}\nright={right:#?}");
+    for (left_invocation, right_invocation) in left.iter().zip(right) {
+        assert_eq!(
+            left_invocation.arguments.len(),
+            right_invocation.arguments.len(),
+            "left={left:#?}\nright={right:#?}"
+        );
+        for (left_argument, right_argument) in left_invocation
+            .arguments
+            .iter()
+            .zip(&right_invocation.arguments)
+        {
+            assert!(
+                left_argument == right_argument
+                    || (is_full_git_object_id(left_argument)
+                        && is_full_git_object_id(right_argument)),
+                "left={left:#?}\nright={right:#?}"
+            );
+        }
+    }
+}
+
+fn is_full_git_object_id(argument: &str) -> bool {
+    matches!(argument.len(), 40 | 64) && argument.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn commit_work_without_hooks(

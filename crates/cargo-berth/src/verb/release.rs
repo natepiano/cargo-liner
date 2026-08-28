@@ -630,9 +630,7 @@ impl ReleaseCommittedAction {
         repository_root: &Path,
         worktree_context: &WorktreeContext,
     ) -> Result<ReleasePayloadPreparation, ReleaseError> {
-        for reservation_id in self.retention_deletions {
-            git::delete_reservation_retention_ref(repository_root, reservation_id)?;
-        }
+        git::update_reservation_retention_refs(repository_root, &[], &self.retention_deletions)?;
         self.protected_tip_retention.commit(repository_root)?;
         let marker = self.marker_plan.finish(worktree_context);
         Ok(ReleasePayloadPreparation {
