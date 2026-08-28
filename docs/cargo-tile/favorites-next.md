@@ -173,3 +173,22 @@ reach them while load continues to refuse.
 If they are instead left unselectable, the block needs to say so — keep the
 selected row visible while the view scrolls past it, or mark the block plainly as
 a diagnostic rather than a list — so the arrows stop implying a cursor is there.
+
+## The README does not mention favorites at all
+
+`crates/cargo-tile/README.md` documents the attract screen's steering keys in
+detail — the arrows, `>` and `<`, `+` and `-`, `v`, `t`, and `1`/`2`/`3` — and
+says nothing about the feature built on top of them. The word "favorite" does not
+appear in the file. Neither does `ctrl-s`, `ctrl-o`, `m`, `r`, or `u`.
+
+So every key this work added is undiscoverable outside the keymap overlay: saving
+the current parameters, opening the favorites table, loading a random favorite
+(`RandomFavorite`), randomizing the current settings (`RandomizeAttract`), and
+undoing the last replacement (`UndoAttractReplacement`).
+
+Add a favorites section beside the existing attract one, in the same voice:
+what a favorite is, where the file lives
+(`<os config dir>/cargo-tile/favorites.toml`), the keys that write and read it,
+what happens to entries a newer version wrote that this one cannot read, and the
+fact that saving the same parameters twice updates the existing row rather than
+adding a second.
