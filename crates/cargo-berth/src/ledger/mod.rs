@@ -2132,12 +2132,13 @@ mod tests {
         .expect("projection should decode");
         assert_eq!(projection["generation"], 1);
         assert_eq!(projection["journal_end_offset"], journal.len());
+        assert!(projection.get("events").is_none());
         assert_eq!(
-            projection["events"]
-                .as_array()
-                .expect("projection events should be an array")
+            projection
+                .as_object()
+                .expect("projection should be an object")
                 .len(),
-            1
+            5
         );
     }
 

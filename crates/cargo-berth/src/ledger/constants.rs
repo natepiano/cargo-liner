@@ -38,7 +38,9 @@ pub(super) const MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES: usize = 256;
 pub(super) const LEDGER_DIRECTORY_NAME: &str = "cargo-berth";
 
 // wire format
+/// The schema version written by new projection caches.
+pub(super) const CURRENT_PROJECTION_SCHEMA_VERSION: u32 = 3;
+/// The schema version written by new append-only journal records.
+pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;
 /// The oldest journal and projection schema this binary can decode.
 pub(super) const MINIMUM_SUPPORTED_SCHEMA_VERSION: u32 = 1;
-/// The schema version written by new journal records and projections.
-pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;

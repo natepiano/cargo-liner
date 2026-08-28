@@ -24,12 +24,18 @@ const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const MAIN_COORDINATION_RUN_ID: &str = "01a03f63-03e7-7fb2-ae63-5b297177f59f";
 const MAIN_WORKTREE_ID: &str = "01a03f08-e197-7a83-9b7c-bc7c555d0c00";
 const OVERSIZED_IDENTITY_INPUT_BYTES: usize = 32 * 1_024;
+const PREVIOUS_PROJECTION_SCHEMA_VERSION: u64 = 2;
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
+const PROJECTION_REPLAY_METADATA_FIELDS: [&str; 3] =
+    ["generation", "journal_end_offset", "journal_fingerprint"];
+const PROJECTION_SIZE_ADDITIONAL_RENEWALS: usize = 9;
+const PROJECTION_SIZE_INITIAL_RENEWALS: usize = 18;
 const RECORDED_INCIDENT_COORDINATION_RUN_ID: &str = "01a03f60-2e87-7b93-b933-e3dc5e9211d9";
 const RECORDED_INCIDENT_WORKTREE_ID: &str = "01a03f1f-6d9c-7383-8389-a6fd541e79d5";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const RUN_MARKER_FILE_NAME: &str = "cargo-berth-run-id";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+const UNKNOWN_RESERVATION_ID: &str = "01a03f08-e197-7a83-9b7c-bc7c555d0c01";
 const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
 
 #[test]
@@ -108,6 +114,152 @@ fn deleted_projection_rebuilds_byte_for_byte_from_the_journal() {
         fs::read(projection_path).expect("rebuilt projection should read"),
         first_projection
     );
+}
+
+#[test]
+fn projection_size_does_not_grow_with_journal_event_count() -> Result<(), Box<dyn std::error::Error>>
+{
+    let repository = initialized_repository();
+    let reservation_id = claim(
+        repository.path(),
+        "file:projection-size.rs",
+        MAIN_COORDINATION_RUN_ID,
+        "projection-size",
+    );
+
+    for _ in 0..PROJECTION_SIZE_INITIAL_RENEWALS {
+        let renewed = run_berth_with_session(
+            repository.path(),
+            &["renew", &reservation_id, "--json"],
+            "projection-size",
+        );
+        assert!(renewed.status.success());
+    }
+    let short_journal_events = journal_events(repository.path());
+    let short_projection_size = projection_size_with_replay_metadata_normalized(&fs::read(
+        repository.path().join(PROJECTION_PATH),
+    )?)?;
+
+    for _ in 0..PROJECTION_SIZE_ADDITIONAL_RENEWALS {
+        let renewed = run_berth_with_session(
+            repository.path(),
+            &["renew", &reservation_id, "--json"],
+            "projection-size",
+        );
+        assert!(renewed.status.success());
+    }
+    let long_journal_events = journal_events(repository.path());
+    let long_projection_size = projection_size_with_replay_metadata_normalized(&fs::read(
+        repository.path().join(PROJECTION_PATH),
+    )?)?;
+
+    assert!(long_journal_events.len() > short_journal_events.len());
+    assert_eq!(
+        short_journal_events
+            .iter()
+            .filter(|event| event["op"] == "claim")
+            .count(),
+        1
+    );
+    assert_eq!(
+        long_journal_events
+            .iter()
+            .filter(|event| event["op"] == "claim")
+            .count(),
+        1
+    );
+    assert!(
+        short_journal_events
+            .iter()
+            .all(|event| event["op"] != "release")
+    );
+    assert!(
+        long_journal_events
+            .iter()
+            .all(|event| event["op"] != "release")
+    );
+    assert_eq!(short_projection_size, long_projection_size);
+    Ok(())
+}
+
+#[test]
+fn previous_projection_schema_rebuilds_without_changing_the_journal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let repository = initialized_repository();
+    let reservation_id = claim(
+        repository.path(),
+        "file:old-projection.rs",
+        MAIN_COORDINATION_RUN_ID,
+        "old-projection",
+    );
+    let projection_path = repository.path().join(PROJECTION_PATH);
+    let journal_path = repository.path().join(JOURNAL_PATH);
+    let journal_before = fs::read(&journal_path)?;
+    let events_before = journal_events(repository.path());
+    assert!(
+        events_before
+            .iter()
+            .any(|event| { event["op"] == "claim" && event["reservation_id"] == reservation_id })
+    );
+    let mut previous_projection: serde_json::Value =
+        serde_json::from_slice(&fs::read(&projection_path)?)?;
+    assert_eq!(previous_projection["schema_version"], 3);
+    previous_projection["schema_version"] = serde_json::json!(PREVIOUS_PROJECTION_SCHEMA_VERSION);
+    previous_projection["events"] = serde_json::Value::Array(events_before.clone());
+    let mut serialized_previous_projection = serde_json::to_vec_pretty(&previous_projection)?;
+    serialized_previous_projection.push(b'\n');
+    fs::write(&projection_path, serialized_previous_projection)?;
+
+    let rebuilt = run_berth_with_session(
+        repository.path(),
+        &["renew", UNKNOWN_RESERVATION_ID, "--json"],
+        "old-projection",
+    );
+
+    assert_eq!(rebuilt.status.code(), Some(5));
+    let rebuilt_projection: serde_json::Value =
+        serde_json::from_slice(&fs::read(projection_path)?)?;
+    assert_eq!(rebuilt_projection["schema_version"], 3);
+    assert!(rebuilt_projection.get("events").is_none());
+    assert_eq!(
+        rebuilt_projection
+            .as_object()
+            .ok_or("projection should be an object")?
+            .len(),
+        5
+    );
+    assert_eq!(fs::read(journal_path)?, journal_before);
+    assert_eq!(journal_events(repository.path()), events_before);
+    Ok(())
+}
+
+#[test]
+fn unsupported_projection_schema_rebuilds_without_changing_the_journal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let repository = initialized_repository();
+    let projection_path = repository.path().join(PROJECTION_PATH);
+    let journal_path = repository.path().join(JOURNAL_PATH);
+    let projection_before = fs::read(&projection_path)?;
+    let journal_before = fs::read(&journal_path)?;
+    let mut unsupported_projection: serde_json::Value = serde_json::from_slice(&projection_before)?;
+    let current_schema_version = unsupported_projection["schema_version"]
+        .as_u64()
+        .ok_or("projection schema version should be an unsigned integer")?;
+    unsupported_projection["schema_version"] = serde_json::json!(current_schema_version + 1);
+    let mut serialized_unsupported_projection = serde_json::to_vec_pretty(&unsupported_projection)?;
+    serialized_unsupported_projection.push(b'\n');
+    fs::write(&projection_path, serialized_unsupported_projection)?;
+
+    let rebuilt = run_berth_with_session(
+        repository.path(),
+        &["renew", UNKNOWN_RESERVATION_ID, "--json"],
+        "unsupported-projection",
+    );
+
+    assert_eq!(rebuilt.status.code(), Some(5));
+    assert_eq!(fs::read(projection_path)?, projection_before);
+    assert_eq!(fs::read(journal_path)?, journal_before);
+    Ok(())
 }
 
 #[test]
@@ -919,6 +1071,23 @@ fn journal_events_at(journal_path: &Path) -> Vec<serde_json::Value> {
         .lines()
         .map(|line| serde_json::from_str(line).expect("journal event should decode"))
         .collect()
+}
+
+fn projection_size_with_replay_metadata_normalized(
+    serialized_projection: &[u8],
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let mut projection: serde_json::Value = serde_json::from_slice(serialized_projection)?;
+    assert!(projection.get("events").is_none());
+    let projection_fields = projection
+        .as_object_mut()
+        .ok_or("projection should be an object")?;
+    for field in PROJECTION_REPLAY_METADATA_FIELDS {
+        let field_value = projection_fields
+            .get_mut(field)
+            .ok_or("projection should contain all replay metadata fields")?;
+        *field_value = serde_json::Value::from(0);
+    }
+    Ok(serde_json::to_vec(&projection)?.len())
 }
 
 fn last_journal_operation(repository_root: &Path, operation: &str) -> serde_json::Value {

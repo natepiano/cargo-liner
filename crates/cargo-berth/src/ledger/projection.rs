@@ -12,10 +12,9 @@ use std::path::Path;
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::constants::CURRENT_SCHEMA_VERSION;
+use super::constants::CURRENT_PROJECTION_SCHEMA_VERSION;
 use super::constants::MINIMUM_SUPPORTED_SCHEMA_VERSION;
 use super::constants::PROJECTION_TEMPORARY_FILE_NAME;
-use super::journal::JournalEvent;
 use super::journal::JournalFingerprint;
 use super::journal::JournalReplay;
 use crate::ids::JournalByteOffset;
@@ -23,10 +22,16 @@ use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
 use crate::ids::SchemaVersion;
 
+/// The version field that determines whether this binary can decode a projection cache.
+#[derive(Deserialize)]
+struct ProjectionSchemaHeader {
+    schema_version: SchemaVersion,
+}
+
 /// The serialized cache reconstructed solely from the journal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) struct Projection {
-    /// The journal schema used to create this projection.
+    /// The projection schema used to create this cache.
     schema_version:      SchemaVersion,
     /// The clone identity that owns this ledger.
     repo_instance_id:    RepoInstanceId,
@@ -36,20 +41,17 @@ pub(super) struct Projection {
     generation:          ProjectionGeneration,
     /// A digest that detects journal changes without trusting cache contents.
     journal_fingerprint: JournalFingerprint,
-    /// The replayed facts, including materialized edit-blocking evidence.
-    events:              Vec<JournalEvent>,
 }
 
 impl Projection {
     /// Derive a projection from a complete replay.
     pub(super) fn from_replay(repo_instance_id: RepoInstanceId, replay: &JournalReplay) -> Self {
         Self {
-            schema_version: SchemaVersion::from(CURRENT_SCHEMA_VERSION),
+            schema_version: SchemaVersion::from(CURRENT_PROJECTION_SCHEMA_VERSION),
             repo_instance_id,
             journal_end_offset: replay.end_offset,
             generation: replay.generation,
             journal_fingerprint: replay.fingerprint,
-            events: replay.events.clone(),
         }
     }
 
@@ -81,15 +83,7 @@ impl Projection {
         repo_instance_id: RepoInstanceId,
         replay: &JournalReplay,
     ) -> Result<(), ProjectionError> {
-        let minimum_schema_version = SchemaVersion::from(MINIMUM_SUPPORTED_SCHEMA_VERSION);
-        let current_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
-        if self.schema_version < minimum_schema_version
-            || self.schema_version > current_schema_version
-        {
-            return Err(ProjectionError::UnsupportedSchemaVersion(
-                self.schema_version,
-            ));
-        }
+        validate_projection_schema_version(self.schema_version)?;
         if self.repo_instance_id != repo_instance_id {
             return Err(ProjectionError::RepositoryIdentityMismatch);
         }
@@ -108,7 +102,7 @@ impl Projection {
     }
 
     fn uses_current_schema(&self) -> bool {
-        self.schema_version == SchemaVersion::from(CURRENT_SCHEMA_VERSION)
+        self.schema_version == SchemaVersion::from(CURRENT_PROJECTION_SCHEMA_VERSION)
     }
 
     fn claims_more_journal_bytes_than(&self, replay: &JournalReplay) -> bool {
@@ -144,13 +138,17 @@ pub(super) enum ProjectionSynchronization {
 }
 
 /// Read the projection once and validate it against the locked journal replay.
+///
+/// An unsupported projection schema requires a rebuild because the journal replay is independent
+/// of this disposable cache. Malformed projection bytes and repository identity mismatches remain
+/// errors because they do not establish that the file is a projection for this repository.
 pub(super) fn read_validated(
     projection_path: &Path,
     repo_instance_id: RepoInstanceId,
     replay: &JournalReplay,
 ) -> Result<ProjectionSynchronization, ProjectionError> {
-    match read_once(projection_path)? {
-        ProjectionRead::Present(projection) => {
+    match read_once(projection_path) {
+        Ok(ProjectionRead::Present(projection)) => {
             projection.validate_against(repo_instance_id, replay)?;
             if projection.matches_replay_point(replay) && projection.uses_current_schema() {
                 Ok(ProjectionSynchronization::Current)
@@ -158,7 +156,10 @@ pub(super) fn read_validated(
                 Ok(ProjectionSynchronization::RebuildRequired)
             }
         },
-        ProjectionRead::Missing => Ok(ProjectionSynchronization::RebuildRequired),
+        Ok(ProjectionRead::Missing) | Err(ProjectionError::UnsupportedSchemaVersion(_)) => {
+            Ok(ProjectionSynchronization::RebuildRequired)
+        },
+        Err(error) => Err(error),
     }
 }
 
@@ -170,9 +171,23 @@ fn read_once(projection_path: &Path) -> Result<ProjectionRead, ProjectionError> 
         },
         Err(error) => return Err(ProjectionError::Io(error)),
     };
+    let schema_header = serde_json::from_slice::<ProjectionSchemaHeader>(&contents)
+        .map_err(ProjectionError::Deserialization)?;
+    validate_projection_schema_version(schema_header.schema_version)?;
     serde_json::from_slice(&contents)
         .map(ProjectionRead::Present)
         .map_err(ProjectionError::Deserialization)
+}
+
+fn validate_projection_schema_version(
+    schema_version: SchemaVersion,
+) -> Result<(), ProjectionError> {
+    let minimum_schema_version = SchemaVersion::from(MINIMUM_SUPPORTED_SCHEMA_VERSION);
+    let current_schema_version = SchemaVersion::from(CURRENT_PROJECTION_SCHEMA_VERSION);
+    if schema_version < minimum_schema_version || schema_version > current_schema_version {
+        return Err(ProjectionError::UnsupportedSchemaVersion(schema_version));
+    }
+    Ok(())
 }
 
 fn sync_directory(directory: &Path) -> Result<(), ProjectionError> {
@@ -189,7 +204,7 @@ pub(crate) enum ProjectionError {
     Serialization(serde_json::Error),
     /// The projection could not be decoded.
     Deserialization(serde_json::Error),
-    /// The projection names an unsupported journal schema.
+    /// The projection names an unsupported cache schema.
     UnsupportedSchemaVersion(SchemaVersion),
     /// The projection belongs to a different repository instance.
     RepositoryIdentityMismatch,
@@ -233,4 +248,36 @@ impl std::error::Error for ProjectionError {}
 
 impl From<std::io::Error> for ProjectionError {
     fn from(error: std::io::Error) -> Self { Self::Io(error) }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::ProjectionError;
+    use super::read_once;
+    use crate::ids::SchemaVersion;
+    use crate::ledger::constants::CURRENT_PROJECTION_SCHEMA_VERSION;
+    use crate::ledger::constants::PROJECTION_FILE_NAME;
+
+    #[test]
+    fn unsupported_schema_precedes_full_projection_decoding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary_directory = tempdir()?;
+        let projection_path = temporary_directory.path().join(PROJECTION_FILE_NAME);
+        let unsupported_schema_version = CURRENT_PROJECTION_SCHEMA_VERSION + 1;
+        fs::write(
+            &projection_path,
+            format!(r#"{{"schema_version":{unsupported_schema_version}}}"#),
+        )?;
+
+        assert!(matches!(
+            read_once(&projection_path),
+            Err(ProjectionError::UnsupportedSchemaVersion(version))
+                if version == SchemaVersion::from(unsupported_schema_version)
+        ));
+        Ok(())
+    }
 }

@@ -1060,10 +1060,8 @@ fn active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint() 
         .status
         .success()
     );
-    let projection = fs::read_to_string(repository.path().join(PROJECTION_PATH))
-        .expect("repaired projection should read");
-    assert!(projection.contains("confirmed active orphan abandonment"));
-    assert!(projection.contains("confirmed active orphan retirement"));
+    assert!(journal.contains("confirmed active orphan abandonment"));
+    assert!(journal.contains("confirmed active orphan retirement"));
     assert_eq!(
         run_berth(
             repository.path(),
@@ -1092,12 +1090,12 @@ fn recovery_dispositions_validate_evidence_and_remain_distinct_after_replay() {
 
     fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
     assert!(run_berth(repository.path(), &["init"]).status.success());
-    let replayed_projection = fs::read_to_string(repository.path().join(PROJECTION_PATH))
-        .expect("replayed projection should read");
-    assert!(replayed_projection.contains("user confirmed discard"));
-    assert!(replayed_projection.contains("\"kind\": \"abandoned\""));
-    assert!(replayed_projection.contains("user confirmed retirement"));
-    assert!(replayed_projection.contains("\"kind\": \"retired_orphan\""));
+    let replayed_journal = fs::read_to_string(repository.path().join(JOURNAL_PATH))
+        .expect("journal should read after projection rebuild");
+    assert!(replayed_journal.contains("user confirmed discard"));
+    assert!(replayed_journal.contains("\"kind\":\"abandoned\""));
+    assert!(replayed_journal.contains("user confirmed retirement"));
+    assert!(replayed_journal.contains("\"kind\":\"retired_orphan\""));
     assert_eq!(
         run_berth(repository.path(), &["renew", &abandoned_id, "--json"])
             .status
