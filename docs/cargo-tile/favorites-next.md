@@ -128,3 +128,32 @@ compares the settings themselves. Before appending, compare the settings being
 saved against every favorite already in the file; if one matches, keep the
 existing row rather than adding a second, and say so in the toast so the press
 still gets an acknowledgement.
+
+## A second terminal window loses the desktop capture and gets told it is a permissions problem
+
+Running `cargo tile` in two windows of the same iTerm2 — an app that already has
+Screen Recording permission — leaves the second one with no desktop capture. The
+attract screen there draws nothing, and after the grace period the status line
+says `attract: no desktop capture -- allow Screen Recording for this terminal in
+System Settings > Privacy & Security`. The first window keeps its capture.
+
+The message is wrong in this case, and wrong in the most expensive way: it sends
+the user to a settings pane to grant a permission that is already granted, where
+they will find nothing to change. Whatever the capture is failing on, it is not
+the permission.
+
+The reporting itself is sound — `backdrop_overdue` deliberately waits out a grace
+period so a slow capture is not mistaken for a missing one, and a screen drawing
+nothing says why instead of looking like it never started. What is missing is a
+second cause: the notice assumes the only reason a capture never arrives is the
+permission, so every other reason inherits that text.
+
+Two things to find out, in this order. First enumerate the windows the window
+server actually reports while both instances are running, from outside the
+program, and see how each instance resolves its own window among them — a bug
+that appears only with two windows of one app is a disambiguation bug, and the
+last two backdrop defects were both found this way rather than by reading
+branches. Then give the notice a second message for the non-permission case.
+
+Note the capture lives in `tui_pane`'s `backdrop` feature, not in cargo-tile, so
+a fix likely lands in a crate that `cargo-port` also depends on.
