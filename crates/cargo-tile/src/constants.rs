@@ -706,6 +706,18 @@ pub(crate) const PROGRESS_HEADING_PHASE_MARGIN: u16 = 1;
 /// Bytes of a run log's end to read for the counter. Sized to hold the
 /// bar's last redraw across a burst of diagnostics printed over it.
 pub(crate) const RUN_LOG_TAIL_BYTES: u64 = 64 * 1024;
+/// Run logs one scan will delete before leaving the rest to the next
+/// one.
+///
+/// A log outlives every use it has the moment its run ends -- nothing
+/// reads a finished run's capture -- so each scan clears what it finds,
+/// and in the ordinary way of things that is nothing at all. A
+/// directory that has been accumulating since before the sweep existed
+/// is the exception: at roughly 60 microseconds an unlink, clearing
+/// sixty thousand in one pass would hold the scan for the better part
+/// of four seconds. Bounded, the backlog goes in well under a minute
+/// of ordinary scans and no single one of them is held up noticeably.
+pub(crate) const CAPTURE_SWEEP_LIMIT: usize = 512;
 /// What a run log's name starts with, ahead of its timestamp and pid.
 pub(crate) const RUN_LOG_PREFIX: &str = "run-";
 /// What a run log's name ends with.

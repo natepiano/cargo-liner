@@ -59,6 +59,7 @@ use crate::constants::BUILD_FINISHED_MARKER;
 use crate::constants::CAPTURE_LIVE_RUNS_DIR;
 use crate::constants::CAPTURE_ROOT;
 use crate::constants::CAPTURE_ROOT_ENV;
+use crate::constants::CAPTURE_SWEEP_LIMIT;
 use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::PHASE_BUILDING;
 use crate::constants::PHASE_TESTING;
@@ -197,13 +198,13 @@ pub(crate) struct Capture {
 
 impl Capture {
     /// Take stock of the capture directory: which runs are still live,
-    /// and which log belongs to each.
+    /// which log belongs to each, and which logs are finished with.
     ///
     /// The live set is read first because it is the cheap half and it
-    /// decides the rest: logs are never deleted, so the directory holds
-    /// every run since the last reboot, and matching against a live pid
-    /// is what keeps a finished run's log from being read as a running
-    /// one that happens to have inherited its pid.
+    /// decides the rest: a log is only ever read while the run that is
+    /// writing it is alive, so matching against a live pid is what
+    /// keeps a finished run's log from being read as a running one that
+    /// happens to have inherited its pid.
     ///
     /// `liveness` answers for each pid registered under `state/pids`.
     /// A registration outliving its process would otherwise stand as a
@@ -216,34 +217,64 @@ impl Capture {
 
     /// [`Capture::take`] against a given directory, which is what makes
     /// the directory layout testable without moving the real one.
+    ///
+    /// The pass that decides what to read decides what to delete, from
+    /// the same two facts, because they are the same question asked
+    /// once: a log this scan will not read is a log no scan ever will.
+    /// See [`Capture::discard`].
     pub(crate) fn take_from(root: &Path, liveness: impl Fn(u32) -> RunLiveness) -> Self {
         let live = live_runs(root, liveness);
-        if live.is_empty() {
-            return Self::default();
-        }
         let Ok(entries) = fs::read_dir(root) else {
             return Self::default();
         };
-        let logs = entries
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                let pid = log_pid(&path)?;
-                live.contains(&pid).then_some((pid, path))
-            })
-            .fold(HashMap::new(), |mut logs, (pid, path)| {
-                match logs.entry(pid) {
-                    Entry::Vacant(slot) => {
-                        slot.insert(path);
-                    },
-                    Entry::Occupied(mut held) if newer(&path, held.get()) => {
-                        held.insert(path);
-                    },
-                    Entry::Occupied(_) => {},
-                }
-                logs
-            });
+        let mut logs: HashMap<u32, PathBuf> = HashMap::new();
+        let mut swept = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(pid) = log_pid(&path) else {
+                continue;
+            };
+            // A run that has ended is finished with its log, whatever
+            // the log recorded. Nothing reads a capture after its run,
+            // so this is the whole of what retires one.
+            if !live.contains(&pid) {
+                Self::discard(&path, &mut swept);
+                continue;
+            }
+            // Two logs under one live pid means the pid came round
+            // again, and the older is a run that ended days ago. The
+            // newest is the one being written now -- so the other is
+            // retired here rather than passed over on every scan for
+            // the rest of the session.
+            match logs.entry(pid) {
+                Entry::Vacant(slot) => {
+                    slot.insert(path);
+                },
+                Entry::Occupied(mut held) if newer(&path, held.get()) => {
+                    Self::discard(held.get(), &mut swept);
+                    held.insert(path);
+                },
+                Entry::Occupied(_) => Self::discard(&path, &mut swept),
+            }
+        }
         Self { logs }
+    }
+
+    /// Delete a log nothing will read again, up to
+    /// [`CAPTURE_SWEEP_LIMIT`] of them in one pass.
+    ///
+    /// A failure is passed over rather than reported: another grid
+    /// sweeping the same directory, or a run tidying up after itself,
+    /// gets there first often enough that the race is ordinary, and
+    /// what either of them did is what this wanted done. `swept`
+    /// carries the count across one pass, so the bound is on the scan
+    /// rather than on any one call.
+    fn discard(path: &Path, swept: &mut usize) {
+        if *swept >= CAPTURE_SWEEP_LIMIT {
+            return;
+        }
+        *swept = swept.saturating_add(1);
+        let _ = fs::remove_file(path);
     }
 
     /// What the run captured under `pid` last reported, or `None` when
@@ -618,6 +649,88 @@ mod tests {
             Some(25)
         );
         assert_eq!(capture.read(70001), None);
+    }
+
+    /// Nothing reads a capture once its run has ended, so a log that
+    /// outlives its run is a file with no reader that every later scan
+    /// pays to walk past.
+    #[test]
+    fn a_log_whose_run_has_ended_is_deleted_rather_than_walked_past_forever() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[]);
+        let log = root.path().join(format!(
+            "{RUN_LOG_PREFIX}20260822-101500{PID_SEPARATOR}33395{RUN_LOG_SUFFIX}"
+        ));
+        assert!(log.exists(), "the log is there to begin with");
+
+        Capture::take_from(root.path(), |_| RunLiveness::Running);
+
+        assert!(!log.exists(), "and the scan that passed it over retired it");
+    }
+
+    /// The older of two logs under one live pid belongs to a run that
+    /// ended days ago. Reading the newest is what keeps it from being
+    /// reported; deleting it is what stops the choice having to be made
+    /// again on every scan for the rest of the session.
+    #[test]
+    fn the_older_of_two_logs_under_one_live_pid_is_retired_not_merely_passed_over() {
+        let root = tempdir().unwrap();
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        fs::create_dir_all(&markers).unwrap();
+        fs::write(markers.join("94218"), "").unwrap();
+        let names: Vec<PathBuf> = [
+            ("20260823-154410", CAPTURED_TALLY),
+            ("20260827-155740", CAPTURED_REDRAW),
+        ]
+        .iter()
+        .map(|(stamp, output)| {
+            let path = root.path().join(format!(
+                "{RUN_LOG_PREFIX}{stamp}{PID_SEPARATOR}94218{RUN_LOG_SUFFIX}"
+            ));
+            fs::write(&path, output).unwrap();
+            path
+        })
+        .collect();
+
+        Capture::take_from(root.path(), |_| RunLiveness::Running);
+
+        assert!(!names[0].exists(), "the run that ended days ago is retired");
+        assert!(
+            names[1].exists(),
+            "and the one being written now is left alone"
+        );
+    }
+
+    /// A directory that accumulated before the sweep existed holds tens
+    /// of thousands of logs, and clearing them in one pass would hold
+    /// the scan up for seconds. The backlog goes over several scans
+    /// instead, and no one of them is held up noticeably.
+    #[test]
+    fn a_backlog_is_cleared_over_several_scans_rather_than_holding_one_up() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        let backlog = CAPTURE_SWEEP_LIMIT + CAPTURE_SWEEP_LIMIT / 2;
+        for index in 0..backlog {
+            let name =
+                format!("{RUN_LOG_PREFIX}20260823-154410{PID_SEPARATOR}{index}{RUN_LOG_SUFFIX}");
+            fs::write(root.path().join(name), CAPTURED_REDRAW).unwrap();
+        }
+
+        Capture::take_from(root.path(), |_| RunLiveness::Ended);
+        let after_one = fs::read_dir(root.path()).unwrap().count();
+
+        assert_eq!(
+            after_one,
+            backlog - CAPTURE_SWEEP_LIMIT + 1,
+            "one scan takes its bound and no more, leaving the state directory"
+        );
+
+        Capture::take_from(root.path(), |_| RunLiveness::Ended);
+
+        assert_eq!(
+            fs::read_dir(root.path()).unwrap().count(),
+            1,
+            "and the next clears the rest, leaving the state directory"
+        );
     }
 
     /// A run killed before it could clear its own registration leaves
