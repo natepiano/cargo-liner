@@ -60,6 +60,7 @@ use tui_pane::PixelSettings;
 use tui_pane::ResolvingPixels;
 use tui_pane::TextSettings;
 use tui_pane::TravelingBand;
+use tui_pane::WindowIdentification;
 use tui_pane::pane_background;
 
 use self::held_key::HeldKey;
@@ -453,14 +454,13 @@ pub(crate) struct Attract {
     /// Where the screen stands with the roster, which is what keeps a
     /// hand-over from turning around part way through it.
     standing:               Standing,
-    /// What the last pass at settling on a window answered, so the
-    /// probe notes the answer changing rather than every frame's
-    /// repeat of it. [`None`] until the first pass.
     /// When the screen last wanted a backdrop and had none, so a wait
     /// that has gone on too long can be said out loud rather than drawn
     /// as nothing. Cleared the moment a capture arrives.
     backdrop_missing_since: Option<Instant>,
-    identified:             Option<bool>,
+    /// What the last pass at selecting a window reported, so the probe
+    /// notes the report changing rather than every frame's repeat of it.
+    window_identification:  WindowIdentification,
     /// The last reading written to the frame log, so the log carries a
     /// line where the screen changed its mind rather than one per
     /// frame. See [`Attract::note_standing`].
@@ -509,7 +509,7 @@ impl Attract {
             held:                   false,
             standing:               Standing::Showing,
             backdrop_missing_since: None,
-            identified:             None,
+            window_identification:  WindowIdentification::NotAttempted,
             noted:                  None,
         }
     }
@@ -889,14 +889,12 @@ impl Attract {
         }
         // Cheap once it has settled: the monitor answers from what it
         // found and asks the window server nothing more.
-        let settled = self.monitor.identify(&mut io::stdout());
-        // Noted when the answer changes rather than on the first frame,
-        // because the first frame is the one most likely to say `false`
-        // and be overtaken -- a pass taken while the animation still
-        // has a screen of frames queued ahead of the marker.
-        if self.identified != Some(settled) {
-            self.identified = Some(settled);
-            probe::note(&format!("identify: settled={settled}"));
+        let window_identification = self.monitor.identify(&mut io::stdout());
+        // Noted when the report changes, so paced `Pending` replies do
+        // not write one probe line per frame while a retry is waiting.
+        if self.window_identification != window_identification {
+            self.window_identification = window_identification;
+            probe::note(&format!("identify: {window_identification:?}"));
         }
     }
 

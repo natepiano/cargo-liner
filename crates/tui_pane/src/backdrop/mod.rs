@@ -47,6 +47,8 @@ use desktop::Desktop;
 use desktop::Placement;
 pub use monitor::BackdropMonitor;
 pub use monitor::BackdropStatus;
+pub use monitor::LastSuccessfulCaptureWindowId;
+pub use monitor::WindowIdentification;
 pub use pixels::PixelFill;
 pub use pixels::PixelResolve;
 pub use pixels::PixelSettings;

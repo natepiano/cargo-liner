@@ -47,6 +47,45 @@ use super::desktop::Metrics;
 use super::desktop::Placement;
 use super::query;
 
+/// Progress toward selecting the terminal window whose desktop should be captured.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WindowIdentification {
+    /// No identification pass has been attempted.
+    NotAttempted,
+    /// Identification is still retrying.
+    Pending,
+    /// Identification settled on this window-server id.
+    Identified {
+        /// The selected window-server id.
+        window_id: u32,
+    },
+    /// Identification attempts are exhausted, so capture uses frontmost-or-size selection.
+    ///
+    /// This describes window selection and does not report whether a capture succeeded.
+    Fallback,
+}
+
+/// The window id used by the most recent successful capture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LastSuccessfulCaptureWindowId {
+    /// No capture has succeeded yet.
+    WaitingForFirstSuccess,
+    /// The most recent successful capture used this window-server id.
+    Available {
+        /// The window-server id used by the capture.
+        window_id: u32,
+    },
+}
+
+/// Whether an identification pass settled on a window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowSearchOutcome {
+    /// No window was found.
+    NotFound,
+    /// A window was found with this window-server id.
+    Found { window_id: u32 },
+}
+
 /// The result of the capture worker's latest completed attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BackdropStatus {
@@ -204,10 +243,9 @@ impl BackdropMonitor {
 
     /// Settle which of the emulator's windows this app is drawn in.
     ///
-    /// Answers whether a window has been settled on. Without one the
-    /// window is picked by size, and two windows of the same size
-    /// cannot be told apart that way: what arrives then is the desktop
-    /// behind a sibling window rather than behind this one.
+    /// Answers whether identification has not started, is pending, has
+    /// settled on a window, or has exhausted its passes and handed
+    /// selection to the frontmost-or-size fallback.
     ///
     /// Two ways of asking, in order of how much they can be trusted.
     ///
@@ -247,12 +285,12 @@ impl BackdropMonitor {
     /// no title and leaves its tail on the screen; the query is
     /// answered on this app's own input, and a second reader takes the
     /// bytes this one is waiting for.
-    pub fn identify(&mut self, out: &mut impl Write) -> bool {
-        if self.pinned.is_some() {
-            return true;
+    pub fn identify(&mut self, out: &mut impl Write) -> WindowIdentification {
+        if let Some(window_id) = self.pinned {
+            return window_identification(self.attempts, WindowSearchOutcome::Found { window_id });
         }
         if self.attempts >= IDENTIFY_PASSES {
-            return false;
+            return window_identification(self.attempts, WindowSearchOutcome::NotFound);
         }
         // Paced rather than run back to back: what a pass is waiting on
         // is the emulator draining whatever stands between it and the
@@ -262,7 +300,7 @@ impl BackdropMonitor {
             .attempted_at
             .is_some_and(|at| at.elapsed() < IDENTIFY_RETRY)
         {
-            return false;
+            return window_identification(self.attempts, WindowSearchOutcome::NotFound);
         }
         self.attempts += 1;
         self.attempted_at = Some(Instant::now());
@@ -273,8 +311,11 @@ impl BackdropMonitor {
         if !self.asked {
             self.asked = true;
             self.pinned = query::window_origin(out).and_then(desktop::window_at);
-            if self.pinned.is_some() {
-                return true;
+            if let Some(window_id) = self.pinned {
+                return window_identification(
+                    self.attempts,
+                    WindowSearchOutcome::Found { window_id },
+                );
             }
         }
         let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
@@ -298,7 +339,7 @@ impl BackdropMonitor {
             // nothing ever wore.
             let titles = desktop::window_titles();
             if set_title(out, &marker).is_err() {
-                return false;
+                return window_identification(self.attempts, WindowSearchOutcome::NotFound);
             }
             self.titles = Some(titles);
         }
@@ -321,7 +362,10 @@ impl BackdropMonitor {
             let _ = set_title(out, restored.unwrap_or(""));
         }
         self.pinned = found;
-        found.is_some()
+        let window_search_outcome = found.map_or(WindowSearchOutcome::NotFound, |window_id| {
+            WindowSearchOutcome::Found { window_id }
+        });
+        window_identification(self.attempts, window_search_outcome)
     }
 
     /// Take delivery of anything either worker has finished, read `area`
@@ -345,12 +389,8 @@ impl BackdropMonitor {
         // means the position worker is still on the last ask -- which
         // is what a capture in flight ahead of it leaves -- and the
         // frame already in hand carries this frame instead.
-        if let Some(window) = self
-            .last_successful_desktop
-            .available()
-            .map(Desktop::window)
-        {
-            let _ = self.watches.try_send(window);
+        if let LastSuccessfulCaptureWindowId::Available { window_id } = self.captured_window_id() {
+            let _ = self.watches.try_send(window_id);
         }
         let metrics = Metrics::read();
         // A capture whose placement cannot be read is one whose window
@@ -409,9 +449,38 @@ impl BackdropMonitor {
     #[must_use]
     pub const fn current(&self) -> Option<&Backdrop> { self.current.as_ref() }
 
+    /// The window id used by the most recent successful capture.
+    ///
+    /// A later capture failure does not discard this id because the monitor retains the last
+    /// successful desktop separately from the latest attempt status.
+    #[must_use]
+    pub const fn captured_window_id(&self) -> LastSuccessfulCaptureWindowId {
+        match self.last_successful_desktop.available() {
+            Some(desktop) => LastSuccessfulCaptureWindowId::Available {
+                window_id: desktop.window_id(),
+            },
+            None => LastSuccessfulCaptureWindowId::WaitingForFirstSuccess,
+        }
+    }
+
     /// The result of the latest capture attempt completed by the worker.
     #[must_use]
     pub const fn status(&self) -> BackdropStatus { self.status }
+}
+
+/// Map consumed identification attempts to the progress reported to callers.
+const fn window_identification(
+    attempts_consumed: u32,
+    window_search_outcome: WindowSearchOutcome,
+) -> WindowIdentification {
+    match window_search_outcome {
+        WindowSearchOutcome::Found { window_id } => WindowIdentification::Identified { window_id },
+        WindowSearchOutcome::NotFound => match attempts_consumed {
+            0 => WindowIdentification::NotAttempted,
+            IDENTIFY_PASSES.. => WindowIdentification::Fallback,
+            _ => WindowIdentification::Pending,
+        },
+    }
 }
 
 /// Worker loop: capture the display for each cell size asked for and
@@ -455,5 +524,62 @@ fn position_loop(watches: &Receiver<u32>, frames: &Sender<Option<Frame>>) {
         if frames.send(desktop::window_frame(window)).is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IDENTIFY_PASSES;
+    use super::WindowIdentification;
+    use super::WindowSearchOutcome;
+    use super::window_identification;
+
+    const WINDOW_ID: u32 = 42;
+
+    #[test]
+    fn identification_is_not_attempted_before_a_pass_runs() {
+        assert_eq!(
+            window_identification(0, WindowSearchOutcome::NotFound),
+            WindowIdentification::NotAttempted,
+        );
+    }
+
+    #[test]
+    fn a_found_window_is_identified_with_its_window_id() {
+        assert_eq!(
+            window_identification(
+                1,
+                WindowSearchOutcome::Found {
+                    window_id: WINDOW_ID,
+                },
+            ),
+            WindowIdentification::Identified {
+                window_id: WINDOW_ID,
+            },
+        );
+    }
+
+    #[test]
+    fn the_first_spent_allowance_stays_pending() {
+        assert_eq!(
+            window_identification(1, WindowSearchOutcome::NotFound),
+            WindowIdentification::Pending,
+        );
+    }
+
+    #[test]
+    fn the_last_remaining_allowance_stays_pending() {
+        assert_eq!(
+            window_identification(IDENTIFY_PASSES - 1, WindowSearchOutcome::NotFound),
+            WindowIdentification::Pending,
+        );
+    }
+
+    #[test]
+    fn exhausting_every_allowance_uses_fallback() {
+        assert_eq!(
+            window_identification(IDENTIFY_PASSES, WindowSearchOutcome::NotFound),
+            WindowIdentification::Fallback,
+        );
     }
 }

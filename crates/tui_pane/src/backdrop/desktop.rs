@@ -34,8 +34,10 @@ use ratatui::style::Color;
 pub enum CaptureFailure {
     /// This platform has no desktop-capture backend.
     UnsupportedPlatform,
-    /// The shareable-content query failed and this process lacks Screen Recording access.
-    PermissionDenied,
+    /// The shareable-content query failed while the Screen Recording access check reported that
+    /// access was not granted. The check gives the same answer when the process has never prompted
+    /// for access and when the user has refused it.
+    ScreenRecordingAccessNotGranted,
     /// `ScreenCaptureKit` could not list the shareable displays and windows.
     ShareableContentQueryFailed,
     /// No window could be matched to the terminal running the app.
@@ -159,22 +161,22 @@ pub(super) struct Desktop {
     /// The window the terminal's grid is drawn in, as the window server
     /// numbers it. Reading its position back is the one window-server
     /// call the render thread makes.
-    window:  u32,
+    window_id: u32,
     /// What the terminal reported when this capture was reduced.
-    metrics: Metrics,
+    metrics:   Metrics,
     /// The display's top-left corner in the window server's global
     /// point space, which is what a window's position is measured
     /// against.
-    origin:  (f64, f64),
+    origin:    (f64, f64),
     /// One character cell in the display's points, which is what turns
     /// a window's position into a column and a row.
-    cell:    (f64, f64),
+    cell:      (f64, f64),
     /// Cells across.
-    columns: u16,
+    columns:   u16,
     /// Cells down.
-    rows:    u16,
+    rows:      u16,
     /// Row-major, `columns * rows` entries.
-    colors:  Vec<Color>,
+    colors:    Vec<Color>,
 }
 
 impl Desktop {
@@ -203,7 +205,7 @@ impl Desktop {
     /// The window this capture was taken for, as the window server
     /// numbers it, so that its position can be asked for from a thread
     /// that is not holding the capture.
-    pub(super) const fn window(&self) -> u32 { self.window }
+    pub(super) const fn window_id(&self) -> u32 { self.window_id }
 
     /// Where the terminal's grid sits on this display, given the frame
     /// its window was last seen standing at.
@@ -368,7 +370,7 @@ impl std::fmt::Debug for Desktop {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Desktop")
-            .field("window", &self.window)
+            .field("window_id", &self.window_id)
             .field("metrics", &self.metrics)
             .field("origin", &self.origin)
             .field("cell", &self.cell)
@@ -448,7 +450,7 @@ mod platform {
         if access_granted {
             CaptureFailure::ShareableContentQueryFailed
         } else {
-            CaptureFailure::PermissionDenied
+            CaptureFailure::ScreenRecordingAccessNotGranted
         }
     }
 
@@ -493,7 +495,7 @@ mod platform {
                 .and_then(|pinned| windows.iter().find(|window| window.window_id() == pinned))
                 .or_else(|| frontmost_window(&terminal_windows, &displays, metrics.text_area)),
         )?;
-        let window = chosen.window_id();
+        let window_id = chosen.window_id();
 
         let display = CaptureFailure::DisplayNotFound
             .classify_option(display_under(&displays, chosen.frame()))?;
@@ -523,7 +525,7 @@ mod platform {
         // window does not leave a hole where it stood, it composites
         // the display as though the window were not there at all, and
         // that answer does not depend on where the window is.
-        let above = windows_above(window);
+        let above = windows_above(window_id);
         // Asked of the application that owns the window this app is
         // drawn in, rather than of whichever one is in front, for the
         // same reason the window itself is.
@@ -566,7 +568,7 @@ mod platform {
         let pixels = CaptureFailure::PixelExtractionFailed.classify_result(captured.rgba_data())?;
         let (columns, rows, colors) = reduce_capture(&pixels, image, cell)?;
         Ok(Desktop {
-            window,
+            window_id,
             metrics,
             origin: (display_frame.origin.x, display_frame.origin.y),
             cell,
@@ -1404,7 +1406,7 @@ mod platform {
         fn failed_shareable_content_query_without_access_reports_permission_denial() {
             assert_eq!(
                 shareable_content_failure(false),
-                CaptureFailure::PermissionDenied
+                CaptureFailure::ScreenRecordingAccessNotGranted
             );
         }
 
@@ -1597,7 +1599,7 @@ mod tests {
     fn the_reduce_grid_covers_every_cell_the_window_has() {
         let cell = RETINA.cell_points(SCALE);
         let desktop = Desktop {
-            window: 0,
+            window_id: 0,
             metrics: RETINA,
             origin: (0.0, 0.0),
             cell,

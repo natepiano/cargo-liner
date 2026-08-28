@@ -90,71 +90,37 @@
 - An `#[expect(unsafe_code)]` block and `// SAFETY:` comment around the preflight call — the function is safe.
 - Tests asserting the generic `classify_*` helpers rather than the production classification path; they restate their own argument.
 
-### Phase 2 — Window identification says whether it is still trying  · status: todo
+### Phase 2 — Window identification says whether it is still trying  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `BackdropMonitor::identify` reports its progress instead of returning the same `false` for "retrying" and "gave up".
+`BackdropMonitor::identify` (`monitor.rs:288`) returns `WindowIdentification` (`monitor.rs:52`) rather than a bare boolean: `NotAttempted`, `Pending`, `Identified { window_id: u32 }`, or `Fallback`. `Fallback` means pinning is exhausted and capture is using frontmost-or-size selection — it describes window *selection*, not capture, and must never be read or reported as a capture failure.
 
-**Spec:**
+The report is decided by a pure `const fn window_identification(attempts_consumed: u32, WindowSearchOutcome) -> WindowIdentification` (`monitor.rs:475`) called at every exit of `identify`, so it depends only on attempts already spent: `0` is not attempted, below `IDENTIFY_PASSES` is pending, at or above it is fallback, and a found window is identified whatever the count. `identify` increments before the marker-title write, so a failed write on the final allowance reports `Fallback` on that same call rather than a frame later. `WindowSearchOutcome` (`monitor.rs:80`) — `NotFound` or `Found { window_id: u32 }` — is private to the module.
 
-`identify() -> bool` (`monitor.rs:250`) returns `false` when attempts are exhausted (`:254`), when a retry is merely paced by the backoff (`:261`–265), and when the marker title fails to write (`:299`). A caller cannot tell a search still running from one that has given up and fallen back to frontmost or size selection.
+A successful capture reports the window id it used. `BackdropMonitor::captured_window_id()` (`monitor.rs:460`) returns `LastSuccessfulCaptureWindowId` (`monitor.rs:70`) — `WaitingForFirstSuccess` or `Available { window_id: u32 }` — reading the retained last successful desktop, so a later capture failure does not discard the id. `Desktop::window_id()` (`desktop.rs:208`) stays `pub(super) -> u32`. Both public types are re-exported through `backdrop/mod.rs` and `lib.rs` under `#[cfg(feature = "backdrop")]`.
 
-Replace the return with a public `WindowIdentification` enum in `backdrop/monitor.rs`: not attempted, pending, identified, and fallback — the last meaning pinning is exhausted and frontmost or size selection is in use. `Fallback` describes window *selection*, not capture: it must not read as, or be reported as, a capture failure. Re-export it with the other backdrop types, feature-gated.
+`CaptureFailure::ScreenRecordingAccessNotGranted` (`desktop.rs:40`) replaces `PermissionDenied`; its doc comment states that the access check answers alike for a process that has never been asked and one that refused. No `PermissionDenied` remains in the workspace. `BackdropStatus` keeps its name — it is read as `monitor.status()`, where the receiver already says what it is the status of.
 
-Every branch of `identify` maps to exactly one variant, and this list is the mapping — none of it is left to the implementer's reading:
-
-- `pinned` already settled (`:251`–253) → `Identified`.
-- attempts already exhausted on entry (`:254`) → `Fallback`.
-- a retry inside `IDENTIFY_RETRY` (`:261`–265) → `Pending`.
-- the emulator's own position query answering (`:275`–279) → `Identified`.
-- the marker title failing to write (`:299`) → `Pending`. Attempts remain, so this is a lost race rather than a surrender.
-- the last pass finding no window (`:313`–322, `attempts >= IDENTIFY_PASSES` with nothing found) → `Fallback` **on that same pass**. It must not answer `Pending` and make the caller wait another frame to learn the search is over.
-- any earlier pass finding no window → `Pending`.
-- before any pass has run → `NotAttempted`.
-
-`identify` writes to the terminal and calls the window server, so nothing can drive it from a test. Extract the mapping as a pure private function over the state a pass ends in — passes made, whether a window was found, whether a pass ran at all — and call it from `identify`, so the production path and the test read the same code. A seam nothing calls in production proves nothing.
-
-On the `cargo-tile` side, `Attract::identified: Option<bool>` (`attract/mod.rs:463`, initialized `:512`, written `:897`–898) becomes a field holding the reported `WindowIdentification`. Note that the original complaint about this field was wrong and the Spec is not a bug fix: `Option<bool>` has three representable values and all three are in use — `None` before any report, `Some(false)` unsettled, `Some(true)` settled. The gain here is that the states are named at the boundary that produces them. Preserve the existing behavior at every read site.
+cargo-tile's `Attract` holds `window_identification: WindowIdentification` (`attract/mod.rs:463`, initialized `NotAttempted` at `:512`) and writes one probe line only when the report changes (`:892`–897), because that path runs every 33ms.
 
 **Files:**
-- `crates/tui_pane/src/backdrop/monitor.rs` — `WindowIdentification`, `identify` returns it, backoff and exhaustion map to distinct variants
-- `crates/tui_pane/src/backdrop/mod.rs` — re-export
-- `crates/tui_pane/src/lib.rs` — feature-gated re-export
-- `crates/cargo-tile/src/attract/mod.rs` — `identified` holds the reported value; every read site preserved
+- `crates/tui_pane/src/backdrop/monitor.rs` — both public report types, the private search outcome, the pure mapping and its five tests, `identify`, `captured_window_id`
+- `crates/tui_pane/src/backdrop/desktop.rs` — the renamed access variant; `Desktop` holds and exposes the window id its capture used
+- `crates/tui_pane/src/backdrop/mod.rs`, `crates/tui_pane/src/lib.rs` — feature-gated re-exports of both public types
+- `crates/cargo-tile/src/attract/mod.rs` — the named identification field and its transition-only probe line
 
-**Constraints from prior phases:** Phase 1 added `CaptureFailure` and `BackdropStatus` to `backdrop/desktop.rs` and `backdrop/monitor.rs`, re-exported through `backdrop/mod.rs` and `lib.rs` under `#[cfg(feature = "backdrop")]`, and made `BackdropMonitor` hold the last successful desktop separately from the latest attempt status. `WindowIdentification` is a third, independent report on the same monitor — do not fold it into `BackdropStatus`, which is about capture, not window selection. Phase 1 left `identify` itself untouched: the window it settles on lives in `pinned` (`monitor.rs:118`), and the window id capture actually uses is computed inside `Desktop::capture` (`desktop.rs:491`–496) and never returned to any caller.
+**Binds later work:** The window id a capture used is reached only through `BackdropMonitor::captured_window_id()`, which answers `WaitingForFirstSuccess` or `Available { window_id: u32 }` — a consumer that logs or reports the id renders both, and a window that never captures reports the waiting state, which is itself diagnostic evidence. `WindowIdentification::Fallback` is a selection outcome and must not select a capture-failure notice. The permission notice selects on `CaptureFailure::ScreenRecordingAccessNotGranted`. The attract probe already notes the identification report on transition, so a consumer adding capture diagnostics extends that site rather than adding a second transition check. `BackdropMonitor::pinned`, `Request::window`, and `Desktop::capture`'s `pinned` parameter are all still `Option<u32>`, deliberately left for the phase that replaces them with one named selection type.
 
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` — the attract tests exercise `identified` through the consumer that enables the feature
-- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
-- `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`
-- A cargo-tile test asserting that a paced retry and an exhausted search are distinguishable at `Attract`'s field, which `Option<bool>` could not express by name.
-- Unit tests in `monitor.rs` over the pure mapping function, one per transition listed in the Spec, including that the last failing pass reports `Fallback` rather than `Pending`. `monitor.rs` has no test module today, so this adds one. Per Invariant 1 these compile but do not execute until the final workspace gate — name them in the report so that gate covers them.
+**Gotchas:**
+- `verify.sh test tui_pane` never compiles `backdrop/**` (the feature is opt-in), and `verify.sh test cargo-tile` only *compiles* the mapping tests. They execute only under a backdrop-enabled `tui_pane` test run — name them at the final workspace gate.
+- `WindowIdentification::NotAttempted` is unreachable from `identify` itself: every path returns `Found` or has spent at least one attempt. It exists for the cargo-tile field's initial value, which is what "before any pass has run" means.
+- The mapping's inputs are coarser than the call sites that reach it. Naming a test after a call site rather than after the input it passes produces silent duplicates the moment a distinguishing argument is removed.
 
-**Pending decision: two questions about the backdrop's public vocabulary and shape, both cheapest to settle before this phase writes more code against it**
-
-Actual problem:
-**(a) Names.** The architect review of Phase 1 holds that `BackdropStatus` (`tui_pane/src/backdrop/monitor.rs:103`) and `CaptureFailure::PermissionDenied` (`desktop.rs:90`) both promise more than they mean, and that Phases 2, 3 and 14 will spread them. `BackdropStatus` reports the newest capture *attempt*, not whether a backdrop is available — a monitor whose status is failed still renders its last good desktop. `PermissionDenied` is set by classifying an already-failed shareable-content query with `CGPreflightScreenCaptureAccess`, and that call answers `false` for a process that has never been asked exactly as it does for one that refused, so the variant means "Screen Recording access is not granted", never "the user denied it".
-
-**(b) The capture boundary.** Phase 14 must record "each instance's selected window id" and today cannot: the id capture actually uses is resolved inside `Desktop::capture` and never leaves it (`desktop.rs:491`–496). Separately, three owned values spell window selection as a bare option whose `None` means "nothing settled, use frontmost or size" — `BackdropMonitor::pinned` (`monitor.rs:118`), `Request::window` (`:154`), and the `pinned` parameter of `Desktop::capture` (`desktop.rs:468`). This phase's `WindowIdentification` names the *search's* progress; it does not name what the capture then selected, and as written `Identified` need not even carry the id it settled on.
-
-What exists now:
-- `pub enum BackdropStatus { WaitingForFirstResult, Ready, Failed(CaptureFailure) }` and `CaptureFailure::PermissionDenied`, documented as "The shareable-content query failed and this process lacks Screen Recording access.", both re-exported from `backdrop/mod.rs` and `lib.rs`.
-- Nothing outside `tui_pane` reads either name yet; `cargo-tile` first consumes them in Phase 3.
-- `identify` sets `self.pinned`, and this phase turns its `bool` into `WindowIdentification` with no requirement that `Identified` carry a window id.
-- `capture(metrics, pinned: Option<u32>)` resolves the pinned id, falls back to frontmost, then to size, and returns a `Desktop` that says nothing about which window was chosen.
-- Phase 14's Spec asks for the selected id by name as reproduction evidence; Phase 3's Spec logs only the failing `CaptureFailure` stage and the identification outcome.
-
-What should change:
-- **(a)** Rename the variant to say access is not granted rather than that permission was denied, and decide the same question for the type — for example `ScreenRecordingAccessNotGranted` and `LatestCaptureAttempt`. The architect's own suggestions (`LatestCaptureAttemptStatus`, `ShareableContentQueryFailedWithoutScreenRecordingAccess`) put a whole sentence in the identifier and read worse than what they replace. Or keep both names and rely on the doc comments, accepting that Phase 3's notice logic and Phase 14's diagnosis each read a variant that means something narrower than it says.
-- **(b) Narrow:** require `Identified { window_id }` to carry the settled id, and have the capture outcome report the id it actually used, so Phase 3 can log it. The public surface grows by one field and one accessor, and nothing existing changes shape. **Wide:** additionally replace all three bare options with one named selection type distinguishing an exact pinned window, a search still running, and an exhausted fallback, threading it through `Desktop::capture`'s signature — the type-design answer, and a changed public signature every backdrop caller compiles against.
-
-Recommendation:
-**(a)** Rename the variant; leave the type alone. `PermissionDenied` is the one that will actually mislead — it is the variant Phase 3 selects the "open System Settings" text on, and sending a user who has simply never been asked to a settings pane with nothing to change is the exact defect this plan exists to fix. `BackdropStatus` is read as `monitor.status()` at every call site, where the receiver already answers "status of what", so renaming it costs the same edit and buys much less. Either way this is cheapest now: no consumer outside the crate exists yet, and every later phase adds one. If approved, it is a whole-word rename across the workspace, which your editor applies faster and more accurately than an edit pass.
-
-**(b)** Take the narrow change in this phase and leave the wide one out. The narrow change is precisely what Phase 14 is blocked on, and it is additive. The wide change rewrites the capture entry point while Phase 14 still has no reproduction — and Phase 14 may yet conclude that Phase 1's exclusion-id deduplication already fixed the second-window failure, at which point what shape this seam wants is a different question from the one it looks like today.
+**Ruled out:**
+- Folding window identification into `BackdropStatus` — that type is about capture, this is about selection.
+- Returning a bare `Option<u32>` from `captured_window_id`, or widening `Desktop::window_id()` past `pub(super)`.
+- Keeping a private per-call-site pass argument in the mapping — removing it is what let the report key on spent attempts alone.
 
 ### Phase 3 — The attract notice names the real cause  · status: todo
 
@@ -164,9 +130,9 @@ Recommendation:
 
 **Spec:**
 
-`ATTRACT_NO_BACKDROP_NOTICE` (`cargo-tile/src/constants.rs:39`) reads `attract: no desktop capture -- allow Screen Recording for this terminal in System Settings > Privacy & Security`. `Attract::backdrop_overdue` (`attract/mod.rs:1141`) knows only that the grace period elapsed with no backdrop, so every cause inherits that text — including the reproduced case where a second window of an already-permitted iTerm2 gets no capture and the user is sent to a settings pane with nothing to change.
+`ATTRACT_NO_BACKDROP_NOTICE` (`cargo-tile/src/constants.rs:39`) reads `attract: no desktop capture -- allow Screen Recording for this terminal in System Settings > Privacy & Security`. `Attract::backdrop_overdue` (`attract/mod.rs:1138`) knows only that the grace period elapsed with no backdrop, so every cause inherits that text — including the reproduced case where a second window of an already-permitted iTerm2 gets no capture and the user is sent to a settings pane with nothing to change.
 
-Consume the `BackdropStatus` Phase 1 exposed. Show the existing permission notice only when the latest attempt failed at the Screen Recording access stage, and add a second constant beside it for every other cause: it must not name a setting, and it must not imply the user did something wrong — the capture is unavailable and the reason is recorded, that is all the user can act on. The access variant covers a process that has never been asked as well as one that refused, so even the permission text reads as an instruction, never an accusation. Keep both inside the existing grace period: `backdrop_overdue` (`attract/mod.rs:1141`) deliberately waits so a slow capture is not called a missing one, and that stays.
+Consume the `BackdropStatus` Phase 1 exposed. Show the existing permission notice only when the latest attempt failed with `CaptureFailure::ScreenRecordingAccessNotGranted`, and add a second constant beside it for every other cause: it must not name a setting, and it must not imply the user did something wrong — the capture is unavailable and the reason is recorded, that is all the user can act on. The access variant covers a process that has never been asked as well as one that refused, so even the permission text reads as an instruction, never an accusation. Keep both inside the existing grace period: `backdrop_overdue` (`attract/mod.rs:1138`) deliberately waits so a slow capture is not called a missing one, and that stays.
 
 The choice is not two booleans. Name it — a private enum in `attract/mod.rs` with one variant per outcome, and one pure function mapping the inputs to it. The inputs are whether the grace period has elapsed, whether a current backdrop exists, and the latest `BackdropStatus`. The complete mapping:
 
@@ -179,14 +145,14 @@ The choice is not two booleans. Name it — a private enum in `attract/mod.rs` w
 
 `BackdropMonitor` calls the window server and cannot be constructed in a state a test chooses, so this function takes those three inputs as plain values rather than reading the monitor. Call it from the render path — a classifier nothing uses in production proves nothing — and test it directly.
 
-Log the failing `CaptureFailure` stage and the `WindowIdentification` Phase 2 reports where cargo-tile already logs attract diagnostics, so the two-window reproduction in the final phase has evidence to read. If Phase 2's pending decision resolves in favour of the capture outcome reporting the window id it used, log that too — Phase 14's Spec asks for it by name. Log on transition only: an unchanged stage is not logged again, because this path runs every 33ms (Invariant 3). The user-facing notice stays one short line.
+Log the failing `CaptureFailure` stage, the `WindowIdentification` Phase 2 reports, and the window id capture used, where cargo-tile already logs attract diagnostics. The identification report is already logged on transition at `attract/mod.rs:892`-897 — extend that site rather than adding a second transition check, so the two-window reproduction in the final phase has the evidence its Spec asks for by name. Log on transition only: an unchanged stage is not logged again, because this path runs every 33ms (Invariant 3). The user-facing notice stays one short line.
 
 **Files:**
 - `crates/cargo-tile/src/constants.rs` — second notice constant beside `ATTRACT_NO_BACKDROP_NOTICE:39`
 - `crates/cargo-tile/src/attract/mod.rs` — `backdrop_overdue` selects on `BackdropStatus`; the failing stage reaches the diagnostic log
 - `crates/cargo-tile/src/render.rs` — only if the status line renders the notice through it
 
-**Constraints from prior phases:** Phase 1 gave `BackdropMonitor` a `BackdropStatus` — waiting for a first result, ready, or failed carrying a `CaptureFailure` whose variants name the stage — and a last successful desktop held separately, so a failure never removes a desktop already on screen. There is no preflight: `SCShareableContent::get()` runs first, because that is the call that raises the macOS permission prompt, and `CGPreflightScreenCaptureAccess` classifies only a query that already failed. That call answers `false` for a process never asked exactly as for one that refused, so the access variant means "not granted". A later success clears a stored failure. Phase 2 added `WindowIdentification`, whose `Fallback` variant means window *selection* fell back to frontmost or size matching; it is not a capture failure and must not select the failure notice. Phase 2 also carries a pending decision on whether the capture outcome reports the window id it used, which is the only thing that could put that id in this phase's log.
+**Constraints from prior phases:** Phase 1 gave `BackdropMonitor` a `BackdropStatus` — waiting for a first result, ready, or failed carrying a `CaptureFailure` whose variants name the stage — and a last successful desktop held separately, so a failure never removes a desktop already on screen. There is no preflight: `SCShareableContent::get()` runs first, because that is the call that raises the macOS permission prompt, and `CGPreflightScreenCaptureAccess` classifies only a query that already failed. That call answers `false` for a process never asked exactly as for one that refused, so the access variant means "not granted". A later success clears a stored failure. Phase 2 added `WindowIdentification`, whose `Fallback` variant means window *selection* fell back to frontmost or size matching; it is not a capture failure and must not select the failure notice. Phase 2 also renamed the access variant to `ScreenRecordingAccessNotGranted` (`desktop.rs:40`); select the permission text on that variant. The window id a capture used is `BackdropMonitor::captured_window_id()` (`monitor.rs:460`), which returns `LastSuccessfulCaptureWindowId` — either `WaitingForFirstSuccess` or `Available { window_id: u32 }`, so the log renders both and never assumes an id exists; `Desktop::window_id()` stays `pub(super)`. `Attract` already holds the report as `window_identification: WindowIdentification` (`attract/mod.rs:463`, initialized `:512`, written `:892`-897).
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` — with tests over the pure classifier covering every outcome in the Spec's mapping, including that a current backdrop suppresses the notice while the newest attempt is failed, that a ready-but-unplaced capture does not select the permission text, and that nothing appears before the grace period elapses
@@ -515,7 +481,7 @@ Also filter the `x` Dismiss row out of cargo-tile's rendered keymap. `GlobalActi
 
 Running `cargo tile` in two windows of the same iTerm2 — an app that already has Screen Recording permission — leaves the second one with no desktop capture while the first keeps its own.
 
-**There is no first-caller-wins path to find.** Every `BackdropMonitor::new` builds its own channels, workers, pinned window and cached desktop (`monitor.rs:90`–145), and capture resolves the pinned id across all visible windows (`desktop.rs:491`–494). Nothing is shared or app-keyed. What produced the *appearance* of ownership was diagnosis, not exclusivity: a monitor holding an earlier successful capture kept showing it while a newly started monitor that never got a first capture showed nothing, and both looked identical from outside.
+**There is no first-caller-wins path to find.** Every `BackdropMonitor::new` builds its own channels, workers, pinned window and cached desktop (`monitor.rs:129`–184), and capture resolves the pinned id across all visible windows (`desktop.rs:494`–495). Nothing is shared or app-keyed. What produced the *appearance* of ownership was diagnosis, not exclusivity: a monitor holding an earlier successful capture kept showing it while a newly started monitor that never got a first capture showed nothing, and both looked identical from outside.
 
 Phases 1 and 3 make the real cause observable. Before writing any fix, run both instances and record, from outside the program, the windows the window server reports, each instance's selected window id, and the `CaptureFailure` stage the second instance logs. Reasoning from branches is what the last two backdrop defects both defeated; enumerate first.
 
@@ -527,9 +493,38 @@ Otherwise fix what the recorded stage names, in `tui_pane` where it lives.
 - `crates/tui_pane/src/backdrop/desktop.rs` — window resolution, filter construction, or capture, as the evidence directs
 - `crates/tui_pane/src/backdrop/monitor.rs` — window pinning and identification, if the evidence points there
 
-**Constraints from prior phases:** Phase 1 typed the capture failure per stage and made `Desktop::capture` return `Result<Desktop, CaptureFailure>` (`desktop.rs:468`). It shipped **no preflight**: `SCShareableContent::get()` runs first, because that call is the one that raises the macOS permission prompt, and `CGPreflightScreenCaptureAccess` classifies only a query that already failed (`desktop.rs:443`–454, called at `:473`). That call answers `false` for a process never asked exactly as for one that refused, so the access variant means "not granted", not "the user said no"; in `objc2-core-graphics` 0.3.2 it is declared safe and carries no unsafe annotation. Phase 1 also deduplicated the exclusion window ids (`desktop.rs:456`, called at `:534`) and split the last successful desktop from the latest attempt status on `BackdropMonitor` (`monitor.rs:90`–145). The window id capture actually selects is still local to `desktop.rs:491`–496; whether it reaches a log at all is settled by Phase 2's pending decision on the capture boundary, and this phase's Spec asks for it by name. Phase 2 added `WindowIdentification`, whose `Fallback` means window selection gave up on pinning and fell back to frontmost or size matching — a strong candidate for what the second window hits. Phase 3 routes the failing stage and the identification outcome into cargo-tile's attract diagnostics, logging on transition only, which is where the reproduction reads them.
+**Constraints from prior phases:** Phase 1 typed the capture failure per stage and made `Desktop::capture` return `Result<Desktop, CaptureFailure>` (`desktop.rs:201`, platform implementation at `:470`). It shipped **no preflight**: `SCShareableContent::get()` runs first, because that call is the one that raises the macOS permission prompt, and `CGPreflightScreenCaptureAccess` classifies only a query that already failed (`desktop.rs:446`–453, called at `:475`). That call answers `false` for a process never asked exactly as for one that refused, so the access variant means "not granted", not "the user said no"; in `objc2-core-graphics` 0.3.2 it is declared safe and carries no unsafe annotation. Phase 1 also deduplicated the exclusion window ids (`desktop.rs:458`, called at `:536`) and split the last successful desktop from the latest attempt status on `BackdropMonitor` (`monitor.rs:129`–184). Phase 2 renamed the access variant to `ScreenRecordingAccessNotGranted` (`desktop.rs:40`) and made a successful capture report the window id it used: `BackdropMonitor::captured_window_id()` (`monitor.rs:460`) returns `LastSuccessfulCaptureWindowId`, either `WaitingForFirstSuccess` or `Available { window_id: u32 }`. This phase's Spec asks for that id by name, and Phase 3 puts it in the log; a second window that never captures reports the waiting state, which is itself evidence. Phase 2 added `WindowIdentification`, whose `Fallback` means window selection gave up on pinning and fell back to frontmost or size matching — a strong candidate for what the second window hits. Phase 3 routes the failing stage and the identification outcome into cargo-tile's attract diagnostics, logging on transition only, which is where the reproduction reads them.
 
 **Acceptance gate:**
 - Both instances draw their own desktop capture, confirmed by eye in two simultaneous windows
 - `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `lint cargo-tile`, `test tui_pane`, `check cargo-port`
 - A regression test at whatever level the cause allows, or an explicit statement that the cause is a window-server interaction no unit test can reach
+
+### Phase 15 — Window selection stops being a bare optional number  · status: todo
+
+#### Work Order
+
+**Goal:** One named type carries which window the backdrop is capturing behind, replacing three owned options whose `None` means "nothing settled, use frontmost or size".
+
+**Spec:**
+
+Three owned values spell window selection as `Option<u32>`, and in each the `None` means "no window has been settled on, so fall back to frontmost, then size" — a rule the type does not state and every reader has to recover from `Desktop::capture`'s body: `BackdropMonitor::pinned` (`monitor.rs:157`), `Request::window` (`:193`, built at `:436`), and the `pinned` parameter of `Desktop::capture` (`desktop.rs:201`, threaded to the platform implementation at `:470`–472).
+
+Introduce one private enum in `backdrop/` naming the three states the capture path actually distinguishes: an exact window settled on, a search still running with nothing settled yet, and a search that gave up and left the heuristic in charge. Thread it through the monitor's field, the worker request, and the capture parameter, replacing all three options. `Desktop::capture` resolves it once at the top and its body stops re-deriving what `None` meant.
+
+Keep it private to the crate unless a consumer needs it: `WindowIdentification` is already the public report on the same subject, and nothing outside `tui_pane` reads the capture parameter.
+
+Do not change what any of the three currently do. This phase is a type change with no behavior change, and its gate is that every existing test still passes unmodified.
+
+**Files:**
+- `crates/tui_pane/src/backdrop/desktop.rs` — the new enum, `capture`'s parameter, and the resolution at `:494`–495
+- `crates/tui_pane/src/backdrop/monitor.rs` — `pinned` and `Request::window` hold it; `identify` writes it
+
+**Constraints from prior phases:** Phase 2 made `WindowIdentification::Identified` carry the settled window id and added `LastSuccessfulCaptureWindowId` for the id a capture used, deliberately leaving these three options alone so this phase could be designed after the second-window cause was known. Both are public reports on window selection and capture; the enum this phase introduces is the private third one that the capture path itself threads. Phase 14 either found that cause and fixed it in `desktop.rs`/`monitor.rs`, or closed on evidence that Phase 1's exclusion-id deduplication already fixed it; read its as-built record before touching the capture path, because a fix landing there changes what the three states mean.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile` — the only gate that compiles `backdrop/**` (Invariant 1)
+- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
+- `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`
+- `bash ~/.claude/scripts/delegate/verify.sh check cargo-port`
+- Every existing backdrop test passes with no edit to its body. A test that had to change means behavior changed, which this phase forbids.

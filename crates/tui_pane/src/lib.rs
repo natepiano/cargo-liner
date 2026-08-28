@@ -49,6 +49,8 @@ pub use backdrop::CaptureFailure;
 #[cfg(feature = "backdrop")]
 pub use backdrop::DriftingText;
 #[cfg(feature = "backdrop")]
+pub use backdrop::LastSuccessfulCaptureWindowId;
+#[cfg(feature = "backdrop")]
 pub use backdrop::PixelFill;
 #[cfg(feature = "backdrop")]
 pub use backdrop::PixelResolve;
@@ -64,6 +66,8 @@ pub use backdrop::TextFill;
 pub use backdrop::TextSettings;
 #[cfg(feature = "backdrop")]
 pub use backdrop::TravelingBand;
+#[cfg(feature = "backdrop")]
+pub use backdrop::WindowIdentification;
 pub use bar::BarPalette;
 pub use bar::BarRegion;
 pub use bar::BarSlot;
