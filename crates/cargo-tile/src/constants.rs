@@ -189,6 +189,8 @@ pub(crate) const FAVORITES_SECTION: &str = "Favorites";
 /// How long a deleted favorite's row stays on screen, fading, before
 /// the table closes over it.
 pub(crate) const FAVORITE_REMOVAL_FADE: Duration = Duration::from_millis(400);
+/// Cells reserved for a favorite row's selection, currency, and separator.
+pub(crate) const FAVORITE_ROW_PREFIX_WIDTH: usize = 3;
 /// Rows the favorites popup reserves along its bottom for the footer.
 pub(crate) const FOOTER_HEIGHT: u16 = 1;
 /// Widest the favorites popup grows, however wide the terminal is.

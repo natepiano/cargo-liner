@@ -128,8 +128,9 @@ mod tests {
             ModalHit::Closed
         );
 
+        let current_parameters = app.attract.current_settings().into();
         let keymap = Rc::clone(&app.keymap);
-        app.favorites_overlay.open(&keymap);
+        app.favorites_overlay.open(&keymap, current_parameters);
         assert_eq!(
             app.app_modal_overlay_hit(Position::new(0, 0)),
             ModalHit::MissedRow

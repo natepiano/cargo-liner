@@ -114,8 +114,9 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::ProcessTree => app.tree = app.tree.toggled(),
         AppGlobalAction::SaveFavorite => save_favorite(app),
         AppGlobalAction::OpenFavorites => {
+            let current_parameters = app.attract.current_settings().into();
             let keymap = Rc::clone(&app.keymap);
-            app.favorites_overlay.open(&keymap);
+            app.favorites_overlay.open(&keymap, current_parameters);
         },
         AppGlobalAction::RandomFavorite => show_random_favorite(app),
     }
@@ -171,8 +172,10 @@ fn show_random_favorite_with(
         favorites_overlay::report_closed_overlay_adjustment(app, outcome);
         return;
     }
+    let current_parameters = app.attract.current_settings().into();
     let keymap = Rc::clone(&app.keymap);
-    app.favorites_overlay.open_file_state(state, &keymap);
+    app.favorites_overlay
+        .open_file_state(state, current_parameters, &keymap);
 }
 
 fn draw_recognized_settings(

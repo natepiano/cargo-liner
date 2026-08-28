@@ -266,6 +266,7 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
                     }
                 }
                 if resized == Resized::Yes {
+                    refresh_open_favorites_after_resize(app);
                     force_repaint(terminal);
                 }
                 dirty = true;
@@ -462,6 +463,15 @@ fn apply_event(app: &mut App, event: &Event) -> Resized {
         },
         _ => Resized::No,
     }
+}
+
+fn refresh_open_favorites_after_resize(app: &mut App) {
+    if !app.favorites_overlay.is_open() {
+        return;
+    }
+    let current_parameters = app.attract.current_settings().into();
+    app.favorites_overlay
+        .refresh_current_parameters(current_parameters);
 }
 
 /// Apply one mouse event.
@@ -662,9 +672,11 @@ mod tests {
 
     use crossterm::event::KeyModifiers;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use tempfile::TempDir;
 
     use super::*;
+    use crate::attract::SettingsApplicationOutcome;
 
     const FAVORITE_ROW: &str = r#"
 [[favorite]]
@@ -679,6 +691,17 @@ fraying = "leading"
 "#;
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
+
+    fn rendered_buffer_lines(buffer: &Buffer) -> Vec<String> {
+        (buffer.area.y..buffer.area.bottom())
+            .map(|y| {
+                (buffer.area.x..buffer.area.right()).fold(String::new(), |mut line, x| {
+                    line.push_str(buffer[(x, y)].symbol());
+                    line
+                })
+            })
+            .collect()
+    }
 
     #[test]
     fn app_modal_consumes_app_and_framework_globals_until_escape() {
@@ -708,12 +731,14 @@ fraying = "leading"
         let original = fs::read(&path).expect("favorite fixture should be readable");
         let rows = favorites::parse_rows_for_overlay_test(FAVORITE_ROW)
             .expect("favorite fixture should parse");
+        let current_parameters = app.attract.current_settings().into();
         let keymap = Rc::clone(&app.keymap);
         app.favorites_overlay.open_file_state(
             favorites::FavoritesFileState::Loaded {
                 path: path.clone(),
                 rows,
             },
+            current_parameters,
             &keymap,
         );
         let mut terminal =
@@ -745,6 +770,55 @@ fraying = "leading"
             fs::read(&path).expect("favorite fixture should remain readable"),
             original
         );
+    }
+
+    #[test]
+    fn coalesced_resize_refreshes_currency_after_attract_reclamping() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let rows = favorites::parse_rows_for_overlay_test(FAVORITE_ROW)
+            .expect("favorite fixture should parse");
+        let favorite_settings = rows
+            .recognized()
+            .next()
+            .expect("favorite fixture should have a recognized row")
+            .settings;
+        app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
+        assert_eq!(
+            app.attract.apply_settings(favorite_settings),
+            SettingsApplicationOutcome::AppliedExactly
+        );
+        let current_parameters = app.attract.current_settings().into();
+        let keymap = Rc::clone(&app.keymap);
+        app.favorites_overlay.open_file_state(
+            favorites::FavoritesFileState::Loaded {
+                path: PathBuf::from("/tmp/favorites.toml"),
+                rows,
+            },
+            current_parameters,
+            &keymap,
+        );
+        let mut terminal =
+            Terminal::new(TestBackend::new(100, 30)).expect("test terminal should be created");
+        terminal
+            .draw(|frame| app.favorites_overlay.render(frame))
+            .expect("favorites overlay should render");
+        let initial_rows = rendered_buffer_lines(terminal.backend().buffer());
+        assert!(initial_rows.iter().any(|line| line.contains("▸● ")));
+
+        assert_eq!(apply_event(&mut app, &Event::Resize(5, 4)), Resized::Yes);
+        terminal
+            .draw(|frame| app.favorites_overlay.render(frame))
+            .expect("favorites overlay should render before resize refresh");
+        let before_refresh = rendered_buffer_lines(terminal.backend().buffer());
+        assert!(before_refresh.iter().any(|line| line.contains("▸● ")));
+
+        refresh_open_favorites_after_resize(&mut app);
+        assert_ne!(app.attract.current_settings(), favorite_settings);
+        terminal
+            .draw(|frame| app.favorites_overlay.render(frame))
+            .expect("favorites overlay should render after resize refresh");
+        let refreshed_rows = rendered_buffer_lines(terminal.backend().buffer());
+        assert!(refreshed_rows.iter().any(|line| line.contains("▸  ")));
     }
 
     #[test]

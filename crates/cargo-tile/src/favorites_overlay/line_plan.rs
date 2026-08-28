@@ -31,10 +31,11 @@ use super::content::FavoriteRowView;
 use super::content::FavoritesOverlayContent;
 use super::content::UnrecognizedFavoriteView;
 use crate::app::AppOverlay;
+use crate::app::OpenFavoritesCurrentParameters;
 use crate::attract;
 use crate::constants::COLUMN_GAP;
-use crate::constants::CURSOR_WIDTH;
 use crate::constants::FAVORITE_REMOVAL_FADE;
+use crate::constants::FAVORITE_ROW_PREFIX_WIDTH;
 use crate::constants::FOOTER_HEIGHT;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
@@ -43,12 +44,20 @@ use crate::constants::POPUP_SIDE_MARGIN;
 use crate::favorites::FavoriteId;
 use crate::favorites::UnrecognizedFavoriteRemovalLocator;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FavoriteRowCurrentParameters {
+    Unrecognized,
+    Different,
+    Matching,
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum CachedOverlayLine {
     NonRow(Line<'static>),
     Row {
-        identity: FavoriteRowIdentity,
-        tail:     String,
+        identity:           FavoriteRowIdentity,
+        current_parameters: FavoriteRowCurrentParameters,
+        tail:               String,
     },
 }
 
@@ -79,7 +88,7 @@ impl CachedLinePlan {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum CachedSurfaceWidth {
     #[default]
-    NeverRendered,
+    NeedsRebuild,
     Rendered(u16),
 }
 
@@ -89,10 +98,48 @@ pub(super) enum FavoriteSelection {
     Row(FavoriteRowIdentity),
 }
 
-impl FavoriteSelection {
-    fn identifies(&self, identity: &FavoriteRowIdentity) -> bool {
-        matches!(self, Self::Row(selected) if selected == identity)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FavoriteRowMarker {
+    Neither,
+    Selected,
+    Current,
+    SelectedAndCurrent,
+}
+
+impl FavoriteRowMarker {
+    fn for_row(
+        selected: &FavoriteSelection,
+        identity: &FavoriteRowIdentity,
+        current_parameters: FavoriteRowCurrentParameters,
+    ) -> Self {
+        match selected {
+            FavoriteSelection::Row(selected_identity) if selected_identity == identity => {
+                match current_parameters {
+                    FavoriteRowCurrentParameters::Matching => Self::SelectedAndCurrent,
+                    FavoriteRowCurrentParameters::Unrecognized
+                    | FavoriteRowCurrentParameters::Different => Self::Selected,
+                }
+            },
+            FavoriteSelection::NoRowSelected | FavoriteSelection::Row(_) => {
+                match current_parameters {
+                    FavoriteRowCurrentParameters::Matching => Self::Current,
+                    FavoriteRowCurrentParameters::Unrecognized
+                    | FavoriteRowCurrentParameters::Different => Self::Neither,
+                }
+            },
+        }
     }
+
+    const fn prefix(self) -> &'static str {
+        match self {
+            Self::Neither => "   ",
+            Self::Selected => "▸  ",
+            Self::Current => " ● ",
+            Self::SelectedAndCurrent => "▸● ",
+        }
+    }
+
+    const fn is_selected(self) -> bool { matches!(self, Self::Selected | Self::SelectedAndCurrent) }
 }
 
 pub(super) fn rendered_line(
@@ -103,11 +150,14 @@ pub(super) fn rendered_line(
 ) -> Line<'static> {
     match line {
         CachedOverlayLine::NonRow(line) => line.clone(),
-        CachedOverlayLine::Row { identity, tail } => {
-            let is_selected = selected.identifies(identity);
-            let marker = if is_selected { "▸ " } else { "  " };
-            let line = Line::from(vec![Span::raw(marker), Span::raw(tail.clone())]);
-            if is_selected {
+        CachedOverlayLine::Row {
+            identity,
+            current_parameters,
+            tail,
+        } => {
+            let marker = FavoriteRowMarker::for_row(selected, identity, *current_parameters);
+            let line = Line::from(vec![Span::raw(marker.prefix()), Span::raw(tail.clone())]);
+            if marker.is_selected() {
                 line.style(selection_style(PaneFocusState::Active))
             } else {
                 let color = match identity {
@@ -132,16 +182,18 @@ pub(super) fn row_lifecycle(state: &AppOverlay, line: &CachedOverlayLine) -> Fav
     let CachedOverlayLine::Row { identity, .. } = line else {
         return FavoriteRowLifecycle::Active;
     };
-    match (state, identity) {
-        (
-            AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)),
-            FavoriteRowIdentity::Recognized(favorite_id),
-        ) => match rows.row(*favorite_id) {
-            FavoriteRowLookup::Found(row) => row.lifecycle,
-            FavoriteRowLookup::Missing => FavoriteRowLifecycle::Active,
+    let AppOverlay::Favorites(open_state) = state else {
+        return FavoriteRowLifecycle::Active;
+    };
+    match (&open_state.content, identity) {
+        (FavoritesOverlayContent::Rows(rows), FavoriteRowIdentity::Recognized(favorite_id)) => {
+            match rows.row(*favorite_id) {
+                FavoriteRowLookup::Found(row) => row.lifecycle,
+                FavoriteRowLookup::Missing => FavoriteRowLifecycle::Active,
+            }
         },
         (
-            AppOverlay::Favorites(FavoritesOverlayContent::Rows(rows)),
+            FavoritesOverlayContent::Rows(rows),
             FavoriteRowIdentity::Unrecognized(removal_locator),
         ) => rows
             .unrecognized
@@ -149,7 +201,7 @@ pub(super) fn row_lifecycle(state: &AppOverlay, line: &CachedOverlayLine) -> Fav
             .find(|row| row.removal_locator == *removal_locator)
             .map_or(FavoriteRowLifecycle::Active, |row| row.lifecycle),
         (
-            AppOverlay::Favorites(FavoritesOverlayContent::OnlyUnrecognized(rows)),
+            FavoritesOverlayContent::OnlyUnrecognized(rows),
             FavoriteRowIdentity::Unrecognized(removal_locator),
         ) => rows
             .rows
@@ -157,14 +209,11 @@ pub(super) fn row_lifecycle(state: &AppOverlay, line: &CachedOverlayLine) -> Fav
             .find(|row| row.removal_locator == *removal_locator)
             .map_or(FavoriteRowLifecycle::Active, |row| row.lifecycle),
         (
-            AppOverlay::Closed
-            | AppOverlay::Favorites(
-                FavoritesOverlayContent::NoneSaved
-                | FavoritesOverlayContent::OnlyUnrecognized(_)
-                | FavoritesOverlayContent::LocationUnavailable
-                | FavoritesOverlayContent::Unparseable { .. }
-                | FavoritesOverlayContent::Unreadable { .. },
-            ),
+            FavoritesOverlayContent::NoneSaved
+            | FavoritesOverlayContent::OnlyUnrecognized(_)
+            | FavoritesOverlayContent::LocationUnavailable
+            | FavoritesOverlayContent::Unparseable { .. }
+            | FavoritesOverlayContent::Unreadable { .. },
             FavoriteRowIdentity::Recognized(_) | FavoriteRowIdentity::Unrecognized(_),
         ) => FavoriteRowLifecycle::Active,
     }
@@ -190,6 +239,7 @@ pub(super) fn removal_alpha_for_test(lifecycle: FavoriteRowLifecycle, now: Insta
 
 pub(super) fn build_line_plan(
     content: &FavoritesOverlayContent,
+    current_parameters: &OpenFavoritesCurrentParameters,
     bindings: &FavoritesSurfaceBindings,
     width: u16,
     horizontal_page: usize,
@@ -214,6 +264,7 @@ pub(super) fn build_line_plan(
                     section,
                     table_layout,
                     bindings,
+                    current_parameters,
                     width,
                     horizontal_page,
                 );
@@ -260,6 +311,7 @@ fn append_section(
     section: &FavoriteModeSection,
     table_layout: &FavoriteSectionTableLayout,
     bindings: &FavoritesSurfaceBindings,
+    current_parameters: &OpenFavoritesCurrentParameters,
     width: u16,
     horizontal_page: usize,
 ) {
@@ -309,8 +361,13 @@ fn append_section(
             plan.selectable_line_index.push(line_index);
         }
         plan.lines.push(CachedOverlayLine::Row {
-            identity: FavoriteRowIdentity::Recognized(row.id),
-            tail:     format_table_tail(
+            identity:           FavoriteRowIdentity::Recognized(row.id),
+            current_parameters: if current_parameters.matches(row.settings) {
+                FavoriteRowCurrentParameters::Matching
+            } else {
+                FavoriteRowCurrentParameters::Different
+            },
+            tail:               format_table_tail(
                 &row.saved,
                 &row.cells,
                 table_layout.saved_width,
@@ -341,8 +398,9 @@ fn append_unrecognized(plan: &mut CachedLinePlan, rows: &[UnrecognizedFavoriteVi
             plan.selectable_line_index.push(line_index);
         }
         plan.lines.push(CachedOverlayLine::Row {
-            identity: FavoriteRowIdentity::Unrecognized(row.removal_locator.clone()),
-            tail:     format!("{} = {:?} is not recognized", row.key, row.spelling),
+            identity:           FavoriteRowIdentity::Unrecognized(row.removal_locator.clone()),
+            current_parameters: FavoriteRowCurrentParameters::Unrecognized,
+            tail:               format!("{} = {:?} is not recognized", row.key, row.spelling),
         });
     }
 }
@@ -444,7 +502,7 @@ fn visible_parameter_columns(
         return 0..0;
     }
     let start = horizontal_page.min(column_count - 1);
-    let pinned = CURSOR_WIDTH.saturating_add(usize::from(saved_width));
+    let pinned = FAVORITE_ROW_PREFIX_WIDTH.saturating_add(usize::from(saved_width));
     let available = usize::from(width).saturating_sub(pinned);
     let mut used: usize = 0;
     let mut end = start;
@@ -467,7 +525,8 @@ fn format_table_line<T: AsRef<str>>(
     visible: Range<usize>,
 ) -> String {
     format!(
-        "  {}",
+        "{}{}",
+        " ".repeat(FAVORITE_ROW_PREFIX_WIDTH),
         format_table_tail(saved, cells, saved_width, parameter_widths, visible)
     )
 }
@@ -574,6 +633,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::app::AppPaneId;
+    use crate::app::OpenFavoritesCurrentParameters;
     use crate::attract::AttractMode;
     use crate::favorites;
     use crate::favorites::FavoriteRowRecognition;
@@ -596,6 +656,28 @@ fraying = "leading"
 id = "01a03f62-9c14-7b41-8a02-1de4c7c9b334"
 saved = "2026-08-26T14:31:05-07:00"
 mode = "future_mode"
+"#;
+
+    const TWO_MATCHING_ROWS: &str = r#"
+[[favorite]]
+id = "01a03f60-9c14-7b41-8a02-1de4c7c9b332"
+saved = "2026-08-26T11:02:44-07:00"
+mode = "moving_band"
+direction = "left"
+width = 10
+speed = 32
+tail_speed = 72
+fraying = "leading"
+
+[[favorite]]
+id = "01a03f64-9c14-7b41-8a02-1de4c7c9b336"
+saved = "2026-08-26T15:02:44-07:00"
+mode = "moving_band"
+direction = "left"
+width = 10
+speed = 32
+tail_speed = 72
+fraying = "leading"
 "#;
 
     fn keymap_from(toml: &str) -> Keymap<App> {
@@ -624,12 +706,22 @@ mode = "future_mode"
         FavoriteSectionTableLayout::measure(&view.sections[0], &bindings)
     }
 
+    fn current_parameters(text: &str) -> OpenFavoritesCurrentParameters {
+        favorites::parse_rows_for_overlay_test(text)
+            .expect("current-parameters fixture should parse")
+            .recognized()
+            .next()
+            .expect("current-parameters fixture should have a recognized row")
+            .settings
+            .into()
+    }
+
     #[test]
     fn exactly_fitting_parameter_column_is_visible() {
         let keymap = keymap_from("");
         let table_layout = moving_band_table_layout(&keymap);
         let width = u16::try_from(
-            CURSOR_WIDTH
+            FAVORITE_ROW_PREFIX_WIDTH
                 + usize::from(table_layout.saved_width)
                 + COLUMN_GAP
                 + usize::from(table_layout.parameter_widths.get(0)),
@@ -652,7 +744,7 @@ mode = "future_mode"
         let keymap = keymap_from("");
         let table_layout = moving_band_table_layout(&keymap);
         let exact_width = usize::from(table_layout.saved_width)
-            + CURSOR_WIDTH
+            + FAVORITE_ROW_PREFIX_WIDTH
             + COLUMN_GAP
             + usize::from(table_layout.parameter_widths.get(0));
         let width = u16::try_from(exact_width - 1).expect("narrow table width should fit u16");
@@ -708,8 +800,9 @@ mode = "future_mode"
         ))
         .expect("mixed fixture should parse");
         let content = FavoritesOverlayContent::Rows(FavoriteRowsView::from(&rows));
+        let current_parameters = current_parameters(MOVING_BAND_ROW);
         let bindings = FavoritesSurfaceBindings::resolve(&keymap);
-        let plan = build_line_plan(&content, &bindings, 100, 0);
+        let plan = build_line_plan(&content, &current_parameters, &bindings, 100, 0);
 
         assert_eq!(plan.navigation_line_index.len(), 2);
         assert_eq!(
@@ -747,8 +840,153 @@ mode = "future_mode"
             Instant::now(),
         );
 
-        assert_eq!(rendered.spans[0].content, "▸ ");
+        assert_eq!(rendered.spans[0].content, "▸  ");
+        assert!(!rendered.spans[0].content.contains('●'));
         assert_eq!(rendered.style, selection_style(PaneFocusState::Active));
+    }
+
+    #[test]
+    fn unrecognized_row_is_never_marked_current() {
+        let keymap = keymap_from("");
+        let rows = favorites::parse_rows_for_overlay_test(UNRECOGNIZED_ROW)
+            .expect("unrecognized fixture should parse");
+        let content = FavoritesOverlayContent::Rows(FavoriteRowsView::from(&rows));
+        let current_parameters = current_parameters(MOVING_BAND_ROW);
+        let bindings = FavoritesSurfaceBindings::resolve(&keymap);
+        let plan = build_line_plan(&content, &current_parameters, &bindings, 100, 0);
+        let unrecognized_line = plan
+            .lines
+            .iter()
+            .find(|line| {
+                matches!(
+                    line,
+                    CachedOverlayLine::Row {
+                        identity: FavoriteRowIdentity::Unrecognized(_),
+                        ..
+                    }
+                )
+            })
+            .expect("fixture should include an unrecognized row");
+        let CachedOverlayLine::Row { identity, .. } = unrecognized_line else {
+            panic!("unrecognized line should be a row");
+        };
+        let prefixes = [
+            FavoriteSelection::NoRowSelected,
+            FavoriteSelection::Row(identity.clone()),
+        ]
+        .map(|selection| {
+            rendered_line(
+                unrecognized_line,
+                &selection,
+                FavoriteRowLifecycle::Active,
+                Instant::now(),
+            )
+            .spans[0]
+                .content
+                .clone()
+                .into_owned()
+        });
+
+        assert_eq!(prefixes, ["   ", "▸  "]);
+        assert!(prefixes.iter().all(|prefix| !prefix.contains('●')));
+    }
+
+    #[test]
+    fn row_marker_renders_every_selected_and_current_combination() {
+        let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+            .expect("moving-band fixture should parse");
+        let favorite_id = rows
+            .recognized()
+            .next()
+            .expect("moving-band fixture should have a recognized row")
+            .id;
+        let identity = FavoriteRowIdentity::Recognized(favorite_id);
+        let cases = [
+            (
+                FavoriteSelection::NoRowSelected,
+                FavoriteRowCurrentParameters::Different,
+                "   ",
+            ),
+            (
+                FavoriteSelection::Row(identity.clone()),
+                FavoriteRowCurrentParameters::Different,
+                "▸  ",
+            ),
+            (
+                FavoriteSelection::NoRowSelected,
+                FavoriteRowCurrentParameters::Matching,
+                " ● ",
+            ),
+            (
+                FavoriteSelection::Row(identity.clone()),
+                FavoriteRowCurrentParameters::Matching,
+                "▸● ",
+            ),
+        ];
+
+        for (selection, current_parameters, expected_prefix) in cases {
+            let line = CachedOverlayLine::Row {
+                identity: identity.clone(),
+                current_parameters,
+                tail: "favorite".to_string(),
+            };
+            let rendered = rendered_line(
+                &line,
+                &selection,
+                FavoriteRowLifecycle::Active,
+                Instant::now(),
+            );
+
+            assert_eq!(rendered.spans[0].content, expected_prefix);
+        }
+    }
+
+    #[test]
+    fn every_row_with_matching_settings_is_current() {
+        let keymap = keymap_from("");
+        let rows = favorites::parse_rows_for_overlay_test(TWO_MATCHING_ROWS)
+            .expect("matching favorites fixture should parse");
+        let content = FavoritesOverlayContent::Rows(FavoriteRowsView::from(&rows));
+        let current_parameters = current_parameters(MOVING_BAND_ROW);
+        let bindings = FavoritesSurfaceBindings::resolve(&keymap);
+        let plan = build_line_plan(&content, &current_parameters, &bindings, 100, 0);
+        let now = Instant::now();
+        let matching_prefixes = plan
+            .lines
+            .iter()
+            .filter_map(|line| match line {
+                CachedOverlayLine::Row {
+                    identity: FavoriteRowIdentity::Recognized(_),
+                    current_parameters: FavoriteRowCurrentParameters::Matching,
+                    ..
+                } => Some(
+                    rendered_line(
+                        line,
+                        &FavoriteSelection::NoRowSelected,
+                        FavoriteRowLifecycle::Active,
+                        now,
+                    )
+                    .spans[0]
+                        .content
+                        .clone()
+                        .into_owned(),
+                ),
+                CachedOverlayLine::NonRow(_)
+                | CachedOverlayLine::Row {
+                    identity: FavoriteRowIdentity::Unrecognized(_),
+                    ..
+                }
+                | CachedOverlayLine::Row {
+                    identity: FavoriteRowIdentity::Recognized(_),
+                    current_parameters:
+                        FavoriteRowCurrentParameters::Different
+                        | FavoriteRowCurrentParameters::Unrecognized,
+                    ..
+                } => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(matching_prefixes, [" ● ", " ● "]);
     }
 
     #[test]
@@ -765,8 +1003,9 @@ mode = "future_mode"
             })
             .expect("fixture should include an unrecognized row");
         let line = CachedOverlayLine::Row {
-            identity: FavoriteRowIdentity::Unrecognized(removal_locator),
-            tail:     "unrecognized".to_string(),
+            identity:           FavoriteRowIdentity::Unrecognized(removal_locator),
+            current_parameters: FavoriteRowCurrentParameters::Unrecognized,
+            tail:               "unrecognized".to_string(),
         };
         let started = Instant::now();
         let active = rendered_line(
