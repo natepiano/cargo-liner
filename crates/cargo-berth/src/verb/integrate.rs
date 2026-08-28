@@ -1,9 +1,11 @@
 //! Stateful trunk integration through the same locked decision as the git hook.
 
 use std::path::Path;
+use std::path::PathBuf;
 
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
+use crate::coordination_identity::RecoveryCommandLine;
 use crate::gate;
 use crate::gate::GateDecision;
 use crate::gate::GateError;
@@ -15,7 +17,6 @@ use crate::ledger::LedgerTransactionError;
 use crate::output::CommandVerb;
 use crate::output::IntegratedGateOutcome;
 use crate::output::IntegrationPayload;
-use crate::output::IntegrationRejectionKind;
 use crate::output::OutputEnvelope;
 
 /// One reservation and its inseparable normal-or-forced integration policy.
@@ -27,18 +28,13 @@ pub(crate) struct IntegrateRequest {
 }
 
 /// Reconcile, decide, and atomically update configured trunk when policy permits it.
-pub(crate) fn execute(integrate_request: IntegrateRequest) -> OutputEnvelope {
-    let invocation_directory = match std::env::current_dir() {
-        Ok(invocation_directory) => invocation_directory,
-        Err(error) => {
-            return OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string());
-        },
-    };
-    let repository_root = match git::repository_root(&invocation_directory) {
-        Ok(repository_root) => repository_root,
-        Err(error) => {
-            return OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string());
-        },
+pub(crate) fn execute(
+    integrate_request: IntegrateRequest,
+    recovery_command_line: &RecoveryCommandLine,
+) -> OutputEnvelope {
+    let (invocation_directory, repository_root) = match integration_directories() {
+        Ok(directories) => directories,
+        Err(output_envelope) => return *output_envelope,
     };
     let configuration = match read_integration_configuration(&repository_root) {
         Ok(configuration) => configuration,
@@ -62,6 +58,7 @@ pub(crate) fn execute(integrate_request: IntegrateRequest) -> OutputEnvelope {
         integrate_request.integration,
         previous.clone(),
         proposed.clone(),
+        recovery_command_line,
     ) {
         Ok(Enrollment::Enrolled(result)) => result,
         Ok(Enrollment::Unconfigured {
@@ -130,6 +127,23 @@ pub(crate) fn execute(integrate_request: IntegrateRequest) -> OutputEnvelope {
     .with_alerts(result.alerts)
 }
 
+/// Resolve the issuing directory and its repository without losing either identity.
+fn integration_directories() -> Result<(PathBuf, PathBuf), Box<OutputEnvelope>> {
+    let invocation_directory = std::env::current_dir().map_err(|error| {
+        Box::new(OutputEnvelope::ledger_unreadable(
+            CommandVerb::Integrate,
+            &error.to_string(),
+        ))
+    })?;
+    let repository_root = git::repository_root(&invocation_directory).map_err(|error| {
+        Box::new(OutputEnvelope::ledger_unreadable(
+            CommandVerb::Integrate,
+            &error.to_string(),
+        ))
+    })?;
+    Ok((invocation_directory, repository_root))
+}
+
 /// Read enrolled integration policy or build the exact fact-free failure response.
 fn read_integration_configuration(
     repository_root: &Path,
@@ -150,7 +164,6 @@ fn read_integration_configuration(
 }
 
 fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope {
-    let diagnostic = error.to_string();
     match error {
         GateError::Transaction(LedgerTransactionError::LockContention) => {
             OutputEnvelope::contention(
@@ -163,22 +176,9 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         GateError::Transaction(LedgerTransactionError::CorrectableInput(error)) => {
             OutputEnvelope::invalid_input(CommandVerb::Integrate, &error.to_string())
         },
-        GateError::InactiveSessionMapping(coordination_run_id) => {
-            OutputEnvelope::integration_rejected(
-                reservation_id,
-                IntegrationRejectionKind::InactiveSessionMapping {
-                    coordination_run_id,
-                },
-                &diagnostic,
-            )
+        GateError::CoordinationIdentity(rejection) => {
+            OutputEnvelope::integration_rejected(reservation_id, rejection)
         },
-        GateError::InactiveMarkerRun(coordination_run_id) => OutputEnvelope::integration_rejected(
-            reservation_id,
-            IntegrationRejectionKind::InactiveMarkerRun {
-                coordination_run_id,
-            },
-            &diagnostic,
-        ),
         GateError::ReservationNotEntering(_)
         | GateError::NoHoldToForce(_)
         | GateError::MissingSkippedHold => {
@@ -194,51 +194,11 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         GateError::Reconciliation(_)
         | GateError::Planning(_)
         | GateError::MissingConstraintFact(_)
+        | GateError::LegacyReferenceTransactionHook
         | GateError::UnsupportedSymbolicTrunkUpdate
         | GateError::Git(_)
         | GateError::PermitReplay(_) => {
             OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string())
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::gate_error;
-    use crate::gate::GateError;
-    use crate::ids::CoordinationRunId;
-    use crate::ids::ReservationId;
-
-    #[test]
-    fn inactive_identity_errors_return_typed_integration_rejections() {
-        let reservation_id = ReservationId::new();
-        let coordination_run_id = CoordinationRunId::new();
-        let errors = [
-            (
-                GateError::InactiveSessionMapping(coordination_run_id),
-                "inactive_session_mapping",
-            ),
-            (
-                GateError::InactiveMarkerRun(coordination_run_id),
-                "inactive_marker_run",
-            ),
-        ];
-
-        for (error, reason_kind) in errors {
-            let diagnostic = error.to_string();
-            let output_envelope = gate_error(reservation_id, error);
-
-            assert!(serde_json::to_value(output_envelope).is_ok_and(|envelope| {
-                envelope["status"] == "invalid_input"
-                    && envelope["exit_code"] == 5
-                    && envelope["message"] == diagnostic
-                    && envelope["payload"]["kind"] == "integrate"
-                    && envelope["payload"]["data"]["status"] == "rejected"
-                    && envelope["payload"]["data"]["reason"]["kind"] == reason_kind
-                    && envelope["payload"]["data"]["reason"]["coordination_run_id"]
-                        == coordination_run_id.to_string()
-                    && envelope["reservations"] == serde_json::json!([reservation_id.to_string()])
-            }));
-        }
     }
 }

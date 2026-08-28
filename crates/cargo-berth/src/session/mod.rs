@@ -119,6 +119,17 @@ pub(crate) enum SessionIdentityMappingPublication {
     },
 }
 
+/// The result of removing only the mapping selected by this process's harness session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CurrentSessionMappingRemoval {
+    /// The current harness session's mapping was removed.
+    Removed,
+    /// The current harness session was valid but had no stored mapping.
+    AlreadyAbsent,
+    /// The process supplied no usable harness session identifier.
+    CurrentSessionUnavailable,
+}
+
 impl SessionIdentityMappingPublication {
     /// Retain an unavailable result across a transaction with several appends.
     pub(crate) fn merge(self, next: Self) -> Self {
@@ -142,6 +153,8 @@ pub(crate) enum SessionIdentityStoreError {
     Io(std::io::Error),
     /// The mapping could not be encoded as JSON.
     Encoding(serde_json::Error),
+    /// The existing mapping could not be decoded as JSON.
+    Decoding(serde_json::Error),
 }
 
 /// A harness session id was empty, too long, or contained a control character.
@@ -214,6 +227,24 @@ pub(crate) fn publish_reservation_identity(
     store.publish(ledger_directory, &mapping_path).into()
 }
 
+/// Remove only the current process's harness-session mapping.
+pub(crate) fn remove_current_mapping(
+    ledger_directory: &Path,
+) -> Result<CurrentSessionMappingRemoval, SessionIdentityStoreError> {
+    let HarnessSessionIdentity::Available(harness_session_id) =
+        HarnessSessionId::from_environment()
+    else {
+        return Ok(CurrentSessionMappingRemoval::CurrentSessionUnavailable);
+    };
+    let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
+    let mut store = SessionIdentityStore::read_for_removal(&mapping_path)?;
+    if store.identities.remove(&harness_session_id).is_none() {
+        return Ok(CurrentSessionMappingRemoval::AlreadyAbsent);
+    }
+    store.publish(ledger_directory, &mapping_path)?;
+    Ok(CurrentSessionMappingRemoval::Removed)
+}
+
 impl SessionIdentityStore {
     const FILE_NAME: &'static str = "session-identities.json";
 
@@ -222,6 +253,16 @@ impl SessionIdentityStore {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
+    }
+
+    fn read_for_removal(path: &Path) -> Result<Self, SessionIdentityStoreError> {
+        match fs::read(path) {
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(SessionIdentityStoreError::Decoding)
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(SessionIdentityStoreError::Io(error)),
+        }
     }
 
     fn publish(
@@ -269,6 +310,12 @@ impl Display for SessionIdentityStoreError {
                 write!(
                     formatter,
                     "session identity mapping encoding failed: {error}"
+                )
+            },
+            Self::Decoding(error) => {
+                write!(
+                    formatter,
+                    "session identity mapping decoding failed: {error}"
                 )
             },
         }

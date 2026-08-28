@@ -46,6 +46,8 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
+const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 
 struct PausedBerthProcess {
     child:             Child,
@@ -591,6 +593,8 @@ fn reconciliation_repairs_a_retention_ref_after_the_checkpoint_append_survives_f
             .contains("\"op\":\"checkpoint\"")
     );
     fs::remove_file(ref_namespace_blocker).expect("ref namespace blocker should delete");
+    fs::remove_file(repository.path().join(MARKER_PATH))
+        .expect("failed checkpoint marker should remove for retention repair check");
 
     let blocked = run_berth(repository.path(), &["check", "file:retained", "--json"]);
     assert_eq!(blocked.status.code(), Some(1));
@@ -692,11 +696,11 @@ fn stale_markers_cannot_authorize_checks_or_seed_new_claims() {
     .expect("stale marker should write");
 
     let blocked = run_berth(repository.path(), &["check", "file:a", "--json"]);
-    assert_eq!(
-        blocked.status.code(),
-        Some(1),
-        "unexpected check: {}",
-        String::from_utf8_lossy(&blocked.stdout)
+    assert_eq!(blocked.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&blocked),
+        "stale_marker_run",
+        &["reconcile_and_sweep_marker"],
     );
 
     fs::write(
@@ -709,6 +713,76 @@ fn stale_markers_cannot_authorize_checks_or_seed_new_claims() {
     assert_ne!(
         json_output(&second_claim)["payload"]["data"]["coordination_run_id"],
         FIRST_RUN
+    );
+}
+
+#[test]
+fn check_rejects_stale_and_foreign_session_mappings() {
+    let stale_repository = initialized_repository();
+    let stale_session = "stale-check-session";
+    let mapped_claim = run_berth_with_session(
+        stale_repository.path(),
+        &["claim", "file:stale-mapped", "--run", FIRST_RUN, "--json"],
+        stale_session,
+    );
+    assert!(mapped_claim.status.success());
+    let mapped_reservation_id = reservation_id(&mapped_claim);
+    let mapping_path = stale_repository.path().join(SESSION_MAPPING_PATH);
+    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
+    assert!(
+        run_berth(
+            stale_repository.path(),
+            &["release", &mapped_reservation_id, "--json"],
+        )
+        .status
+        .success()
+    );
+    fs::write(&mapping_path, stale_mapping).expect("stale mapping should write");
+    let stale_rejection = run_berth_with_session(
+        stale_repository.path(),
+        &["check", "file:stale-mapped", "--json"],
+        stale_session,
+    );
+    assert_eq!(stale_rejection.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&stale_rejection),
+        "stale_session_mapping",
+        &["clear_session_mapping"],
+    );
+
+    let mismatch_repository = initialized_repository();
+    let worktree_parent = tempdir().expect("worktree parent should exist");
+    let second_root = worktree_parent.path().join("check-second");
+    git(
+        mismatch_repository.path(),
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "check-second",
+            second_root
+                .to_str()
+                .expect("second worktree path should be UTF-8"),
+        ],
+    );
+    let mismatch_session = "foreign-check-session";
+    let live_claim = run_berth_with_session(
+        mismatch_repository.path(),
+        &["claim", "file:live-mapped", "--run", SECOND_RUN, "--json"],
+        mismatch_session,
+    );
+    assert!(live_claim.status.success());
+    let mismatch_rejection = run_berth_with_session(
+        &second_root,
+        &["check", "file:live-mapped", "--json"],
+        mismatch_session,
+    );
+    assert_eq!(mismatch_rejection.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&mismatch_rejection),
+        "session_worktree_mismatch",
+        &["rerun_from_holding_worktree", "claim_separately_here"],
     );
 }
 
@@ -735,11 +809,10 @@ fn marker_derived_claim_revalidates_its_run_after_reconciliation() {
     let rejected_claim = pending_claim.continue_and_wait();
 
     assert_eq!(rejected_claim.status.code(), Some(5));
-    assert_eq!(json_output(&rejected_claim)["status"], "invalid_input");
-    assert!(
-        json_output(&rejected_claim)["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("no longer has an active reservation"))
+    assert_coordination_identity_rejection(
+        &json_output(&rejected_claim),
+        "stale_marker_run",
+        &["reconcile_and_sweep_marker"],
     );
     let journal = fs::read_to_string(repository.path().join(JOURNAL_PATH))
         .expect("journal should read after rejected claim");
@@ -790,6 +863,47 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
                 message.contains("protected checkpoint") && message.contains("cargo-berth release")
             })
     );
+}
+
+#[test]
+fn identity_clear_session_reports_mutation_lock_contention() {
+    let repository = initialized_repository();
+    let session_id = "contended-clear-session";
+    let claim = run_berth_with_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:locked-session-clear",
+            "--run",
+            FIRST_RUN,
+            "--json",
+        ],
+        session_id,
+    );
+    let reservation_id = reservation_id(&claim);
+    let trunk_oid = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let mut resolution = PausedBerthProcess::spawn(
+        repository.path(),
+        &[
+            "resolve",
+            &reservation_id,
+            "--integrated-as",
+            &trunk_oid,
+            "--json",
+        ],
+        PAUSE_MODE_MERGE_BASE,
+    );
+    resolution.wait_until_paused();
+
+    let clear_session = run_berth_with_session(
+        repository.path(),
+        &["identity", "clear-session", "--json"],
+        session_id,
+    );
+
+    assert_eq!(clear_session.status.code(), Some(6));
+    assert_eq!(json_output(&clear_session)["status"], "contention");
+    drop(resolution.continue_and_wait());
 }
 
 #[test]
@@ -1333,8 +1447,51 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
         .output()
         .expect("cargo-berth should run")
+}
+
+fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(RUN_ENVIRONMENT)
+        .env(SESSION_ENVIRONMENT, session_id)
+        .output()
+        .expect("cargo-berth should run")
+}
+
+fn assert_coordination_identity_rejection(
+    envelope: &serde_json::Value,
+    expected_kind: &str,
+    expected_action_kinds: &[&str],
+) {
+    assert_eq!(envelope["payload"]["kind"], "coordination_identity");
+    assert_eq!(envelope["payload"]["data"]["kind"], expected_kind);
+    let actions = envelope["payload"]["data"]["recovery_actions"]
+        .as_array()
+        .expect("identity rejection should carry recovery actions");
+    assert!(!actions.is_empty());
+    assert_eq!(
+        actions
+            .iter()
+            .map(|action| action["kind"].as_str().expect("action kind should be text"))
+            .collect::<Vec<_>>(),
+        expected_action_kinds
+    );
+    for action in actions {
+        assert!(
+            action["argv"]
+                .as_array()
+                .is_some_and(|argv| !argv.is_empty())
+        );
+        assert!(
+            action["cwd"]
+                .as_str()
+                .is_some_and(|cwd| Path::new(cwd).is_absolute())
+        );
+    }
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) {

@@ -11,6 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 
+use super::REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT;
 use super::permit::PENDING_BYPASS_FILE_PREFIX;
 use super::permit::PENDING_BYPASS_FILE_SUFFIX;
 use crate::git;
@@ -283,6 +284,8 @@ impl ManagedHook {
 
 const REFERENCE_TRANSACTION_SCRIPT_TEMPLATE: &str = r#"#!/bin/sh
 __REFERENCE_TRANSACTION_MARKER__
+__ISSUING_DIRECTORY_ENVIRONMENT__=$PWD
+export __ISSUING_DIRECTORY_ENVIRONMENT__
 if [ -d __POLICY_WORKTREE__ ]; then
     cd __POLICY_WORKTREE__
 fi
@@ -456,6 +459,10 @@ fn reference_transaction_script(
         (
             "__REFERENCE_TRANSACTION_MARKER__",
             REFERENCE_TRANSACTION_MARKER,
+        ),
+        (
+            "__ISSUING_DIRECTORY_ENVIRONMENT__",
+            REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
         ),
         ("__POLICY_WORKTREE__", policy_worktree),
         ("__TRUNK_REFERENCE__", trunk_reference),

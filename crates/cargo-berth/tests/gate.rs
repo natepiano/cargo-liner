@@ -34,6 +34,8 @@ const MARKER_PATH: &str = ".git/cargo-berth-run-id";
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
 const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
+const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
+    "CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
@@ -123,6 +125,14 @@ fn init_manages_the_common_hook_without_overwriting_an_unmanaged_owner() {
             .windows("__reference-transaction".len())
             .any(|window| window == b"__reference-transaction")
     );
+    let installed_text = String::from_utf8_lossy(&installed);
+    let issuing_directory_assignment = installed_text
+        .find("CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY=$PWD")
+        .expect("managed hook should capture its issuing directory");
+    let policy_worktree_change = installed_text
+        .find("if [ -d ")
+        .expect("managed hook should retain its policy worktree change");
+    assert!(issuing_directory_assignment < policy_worktree_change);
     assert!(!String::from_utf8_lossy(&installed).contains("cargo berth drift"));
     assert_ne!(
         fs::metadata(&hook_path)
@@ -316,8 +326,17 @@ fn session_mapping_authorizes_only_its_live_claim_and_retires_at_checkpoint() {
         &["check", "file:tests/base.rs", "--json"],
         session_id,
     );
-    assert_eq!(stale.status.code(), Some(1));
-    assert_eq!(json_output(&stale)["status"], "blocked_by_overlap");
+    assert_eq!(stale.status.code(), Some(5));
+    let stale_json = json_output(&stale);
+    assert_eq!(stale_json["payload"]["kind"], "coordination_identity");
+    assert_eq!(
+        stale_json["payload"]["data"]["kind"],
+        "stale_session_mapping"
+    );
+    assert_eq!(
+        stale_json["payload"]["data"]["recovery_actions"][0]["kind"],
+        "clear_session_mapping"
+    );
 }
 
 #[test]
@@ -480,8 +499,351 @@ fn integrate_reports_an_inactive_session_mapping_without_a_marker_diagnostic() {
 
     assert_eq!(rejected.status.code(), Some(5));
     assert_eq!(rejected_json["status"], "invalid_input");
-    assert!(diagnostic.contains("harness session mapping"));
+    assert_integration_identity_rejection(
+        &rejected_json,
+        "stale_session_mapping",
+        &["clear_session_mapping"],
+    );
+    assert!(diagnostic.contains("Harness session mapping"));
     assert!(!diagnostic.contains("coordination-run marker"));
+}
+
+#[test]
+fn integrate_rejects_a_stale_marker_with_a_reconciliation_command() {
+    let repository = initialized_repository();
+    let marker_seed = claim(
+        repository.path(),
+        "file:marker-seed",
+        FIRST_RUN,
+        "docs/marker-seed.md",
+        "marker-seed",
+    );
+    assert!(marker_seed.status.success());
+    let marker_seed_id = reservation_id(&marker_seed);
+    assert!(
+        run_berth(repository.path(), &["release", &marker_seed_id, "--json"],)
+            .status
+            .success()
+    );
+    let integrating_claim = claim(
+        repository.path(),
+        "file:integrating-marker",
+        SECOND_RUN,
+        "docs/integrating-marker.md",
+        "integration",
+    );
+    assert!(integrating_claim.status.success());
+    let integrating_reservation_id = reservation_id(&integrating_claim);
+    commit_work(
+        repository.path(),
+        "integrating-marker",
+        "integration work\n",
+        "integration work",
+    );
+    fs::write(
+        repository.path().join(MARKER_PATH),
+        format!("{FIRST_RUN}\n"),
+    )
+    .expect("stale marker should write");
+
+    let rejected = run_berth(
+        repository.path(),
+        &["integrate", &integrating_reservation_id, "--json"],
+    );
+    let rejected_json = json_output(&rejected);
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_integration_identity_rejection(
+        &rejected_json,
+        "stale_marker_run",
+        &["reconcile_and_sweep_marker"],
+    );
+}
+
+#[test]
+fn integrate_rejects_a_session_mapping_owned_by_another_worktree() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let integration_root =
+        add_worktree(repository.path(), worktrees.path(), "mismatch-integration");
+    let session_id = "foreign-integration-session";
+    let mapped_claim = run_berth_with_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:mapped-holder",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "hold the session reservation in main",
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(mapped_claim.status.success());
+    let integrating_claim = claim(
+        &integration_root,
+        "file:integrating-mismatch",
+        SECOND_RUN,
+        "docs/integrating-mismatch.md",
+        "integration",
+    );
+    assert!(integrating_claim.status.success());
+    let integrating_reservation_id = reservation_id(&integrating_claim);
+    commit_work(
+        &integration_root,
+        "integrating-mismatch",
+        "integration work\n",
+        "integration work",
+    );
+
+    let rejected = run_berth_with_session(
+        &integration_root,
+        &["integrate", &integrating_reservation_id, "--json"],
+        session_id,
+    );
+    let rejected_json = json_output(&rejected);
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_integration_identity_rejection(
+        &rejected_json,
+        "session_worktree_mismatch",
+        &["rerun_from_holding_worktree", "claim_separately_here"],
+    );
+}
+
+#[test]
+fn reference_transaction_gate_rejects_every_invalid_coordination_identity() {
+    assert_reference_transaction_rejects_stale_marker();
+    assert_reference_transaction_rejects_stale_session_mapping();
+    assert_reference_transaction_rejects_session_worktree_mismatch();
+}
+
+#[test]
+fn managed_gate_accepts_a_linked_worktree_session_owned_by_that_worktree() {
+    let repository = initialized_repository();
+    let previous = git_stdout(repository.path(), &["rev-parse", "refs/heads/main"]);
+    let proposed = commit_work(
+        repository.path(),
+        "tests/linked-session.rs",
+        "// linked session gate\n",
+        "linked session gate",
+    );
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let linked_root = add_worktree(repository.path(), worktrees.path(), "linked-session-gate");
+    let session_id = "linked-reference-transaction-session";
+    let linked_claim = run_berth_with_session(
+        &linked_root,
+        &[
+            "claim",
+            "file:linked-session-holder",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "hold the linked checkout session",
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(linked_claim.status.success());
+    let input = format!("{previous} {proposed} refs/heads/main\n");
+
+    let permitted = run_managed_hook_with_session(
+        repository.path(),
+        &linked_root,
+        "prepared",
+        &input,
+        session_id,
+    );
+
+    assert!(
+        permitted.status.success(),
+        "linked-worktree gate rejected its owning session: {}",
+        String::from_utf8_lossy(&permitted.stderr)
+    );
+}
+
+#[test]
+fn legacy_managed_hook_without_issuing_directory_capture_requires_reinitialization() {
+    let repository = initialized_repository();
+    let previous = git_stdout(repository.path(), &["rev-parse", "refs/heads/main"]);
+    let proposed = commit_work(
+        repository.path(),
+        "tests/legacy-hook.rs",
+        "// legacy hook gate\n",
+        "legacy hook gate",
+    );
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let linked_root = add_worktree(repository.path(), worktrees.path(), "legacy-hook-gate");
+    let session_id = "legacy-reference-transaction-session";
+    let linked_claim = run_berth_with_session(
+        &linked_root,
+        &[
+            "claim",
+            "file:legacy-hook-holder",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "hold the legacy hook issuing session",
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(linked_claim.status.success());
+    let hook_path = repository.path().join(HOOK_PATH);
+    let managed_hook = fs::read_to_string(&hook_path).expect("managed hook should read");
+    let issuing_directory_capture = format!(
+        "{REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT}=$PWD\nexport {REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT}\n"
+    );
+    let legacy_hook = managed_hook.replace(&issuing_directory_capture, "");
+    assert_ne!(legacy_hook, managed_hook);
+    fs::write(&hook_path, legacy_hook).expect("legacy hook fixture should write");
+    let input = format!("{previous} {proposed} refs/heads/main\n");
+
+    let rejected = run_managed_hook_with_session(
+        repository.path(),
+        &linked_root,
+        "prepared",
+        &input,
+        session_id,
+    );
+    let diagnostic = String::from_utf8_lossy(&rejected.stderr);
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert!(diagnostic.contains("cargo-berth init"));
+    assert!(diagnostic.contains("CARGO_BERTH_BYPASS=1"));
+    assert!(!diagnostic.contains("is active in"));
+    assert!(!diagnostic.contains("but this command ran in"));
+}
+
+fn assert_reference_transaction_rejects_stale_marker() {
+    let marker_repository = initialized_repository();
+    let marker_previous = git_stdout(marker_repository.path(), &["rev-parse", "HEAD"]);
+    let marker_proposed = commit_work(
+        marker_repository.path(),
+        "tests/base.rs",
+        "// marker target\n",
+        "marker target",
+    );
+    let marker_seed = claim(
+        marker_repository.path(),
+        "file:marker-seed",
+        FIRST_RUN,
+        "docs/marker-gate.md",
+        "marker-gate",
+    );
+    let marker_seed_id = reservation_id(&marker_seed);
+    assert!(
+        run_berth(
+            marker_repository.path(),
+            &["release", &marker_seed_id, "--json"],
+        )
+        .status
+        .success()
+    );
+    fs::write(
+        marker_repository.path().join(MARKER_PATH),
+        format!("{FIRST_RUN}\n"),
+    )
+    .expect("stale marker should write");
+    let marker_input = format!("{marker_previous} {marker_proposed} refs/heads/main\n");
+    let marker_rejection = run_private_hook(marker_repository.path(), "prepared", &marker_input);
+    let marker_diagnostic = String::from_utf8_lossy(&marker_rejection.stderr);
+    assert_eq!(marker_rejection.status.code(), Some(5));
+    assert!(marker_diagnostic.contains("inactive marker"));
+    assert!(marker_diagnostic.contains("cargo-berth board --json"));
+    assert!(!marker_diagnostic.contains("__reference-transaction"));
+}
+
+fn assert_reference_transaction_rejects_stale_session_mapping() {
+    let session_repository = initialized_repository();
+    let session_previous = git_stdout(session_repository.path(), &["rev-parse", "HEAD"]);
+    let session_proposed = commit_work(
+        session_repository.path(),
+        "tests/base.rs",
+        "// session target\n",
+        "session target",
+    );
+    let session_id = "stale-reference-transaction-session";
+    let mapped_claim = run_berth_with_session(
+        session_repository.path(),
+        &["claim", "file:session-seed", "--run", SECOND_RUN, "--json"],
+        session_id,
+    );
+    let mapped_reservation_id = reservation_id(&mapped_claim);
+    let mapping_path = session_repository.path().join(SESSION_MAPPING_PATH);
+    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
+    assert!(
+        run_berth(
+            session_repository.path(),
+            &["release", &mapped_reservation_id, "--json"],
+        )
+        .status
+        .success()
+    );
+    fs::write(&mapping_path, stale_mapping).expect("stale mapping should write");
+    let session_input = format!("{session_previous} {session_proposed} refs/heads/main\n");
+    let session_rejection = run_private_hook_with_session(
+        session_repository.path(),
+        "prepared",
+        &session_input,
+        session_id,
+    );
+    let session_diagnostic = String::from_utf8_lossy(&session_rejection.stderr);
+    assert_eq!(session_rejection.status.code(), Some(5));
+    assert!(session_diagnostic.contains("inactive reservation"));
+    assert!(session_diagnostic.contains("cargo-berth identity clear-session --json"));
+    assert!(!session_diagnostic.contains("__reference-transaction"));
+}
+
+fn assert_reference_transaction_rejects_session_worktree_mismatch() {
+    let mismatch_repository = initialized_repository();
+    let mismatch_previous = git_stdout(mismatch_repository.path(), &["rev-parse", "HEAD"]);
+    let mismatch_proposed = commit_work(
+        mismatch_repository.path(),
+        "tests/base.rs",
+        "// mismatch target\n",
+        "mismatch target",
+    );
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let second_root = add_worktree(
+        mismatch_repository.path(),
+        worktrees.path(),
+        "mismatch-gate",
+    );
+    let mismatch_session = "foreign-reference-transaction-session";
+    let live_claim = run_berth_with_session(
+        mismatch_repository.path(),
+        &[
+            "claim",
+            "file:mismatch-holder",
+            "--run",
+            THIRD_RUN,
+            "--json",
+        ],
+        mismatch_session,
+    );
+    assert!(live_claim.status.success());
+    let mismatch_input = format!("{mismatch_previous} {mismatch_proposed} refs/heads/main\n");
+    let mismatch_rejection =
+        run_private_hook_with_session(&second_root, "prepared", &mismatch_input, mismatch_session);
+    let mismatch_diagnostic = String::from_utf8_lossy(&mismatch_rejection.stderr);
+    assert_eq!(mismatch_rejection.status.code(), Some(5));
+    assert!(mismatch_diagnostic.contains("active in"));
+    assert!(mismatch_diagnostic.contains("cd "));
+    assert!(mismatch_diagnostic.contains("cargo-berth identity clear-session --json"));
+    assert!(mismatch_diagnostic.contains("retry the original git command"));
+    assert!(!mismatch_diagnostic.contains("__reference-transaction"));
+    assert!(
+        mismatch_diagnostic.contains(
+            mismatch_repository
+                .path()
+                .canonicalize()
+                .expect("repository root should canonicalize")
+                .to_str()
+                .expect("repository root should be UTF-8")
+        )
+    );
 }
 
 #[test]
@@ -1573,6 +1935,10 @@ fn an_observed_violation_with_closed_stderr_still_permits_the_ref_update() {
     let mut child = Command::new("sh")
         .args(["-c", &command])
         .current_dir(repository.path())
+        .env(
+            REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
+            repository.path(),
+        )
         .env_remove(BYPASS_ENVIRONMENT)
         .env_remove(RUN_ENVIRONMENT)
         .env_remove(SESSION_ENVIRONMENT)
@@ -2883,6 +3249,10 @@ fn run_private_hook(repository_root: &Path, phase: &str, input: &str) -> Output 
     let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["__reference-transaction", phase, "refs/heads/main"])
         .current_dir(repository_root)
+        .env(
+            REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
+            repository_root,
+        )
         .env_remove(BYPASS_ENVIRONMENT)
         .env_remove(RUN_ENVIRONMENT)
         .env_remove(SESSION_ENVIRONMENT)
@@ -2900,6 +3270,67 @@ fn run_private_hook(repository_root: &Path, phase: &str, input: &str) -> Output 
     child
         .wait_with_output()
         .expect("private gate should finish")
+}
+
+fn run_private_hook_with_session(
+    repository_root: &Path,
+    phase: &str,
+    input: &str,
+    session_id: &str,
+) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["__reference-transaction", phase, "refs/heads/main"])
+        .current_dir(repository_root)
+        .env(
+            REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
+            repository_root,
+        )
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env(SESSION_ENVIRONMENT, session_id)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("private gate should start");
+    child
+        .stdin
+        .take()
+        .expect("private gate stdin should exist")
+        .write_all(input.as_bytes())
+        .expect("private gate stdin should write");
+    child
+        .wait_with_output()
+        .expect("private gate should finish")
+}
+
+fn run_managed_hook_with_session(
+    policy_repository_root: &Path,
+    issuing_root: &Path,
+    phase: &str,
+    input: &str,
+    session_id: &str,
+) -> Output {
+    let mut child = Command::new(policy_repository_root.join(HOOK_PATH))
+        .arg(phase)
+        .current_dir(issuing_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env(SESSION_ENVIRONMENT, session_id)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("managed gate should start");
+    child
+        .stdin
+        .take()
+        .expect("managed gate stdin should exist")
+        .write_all(input.as_bytes())
+        .expect("managed gate stdin should write");
+    child
+        .wait_with_output()
+        .expect("managed gate should finish")
 }
 
 fn run_hook_script(
@@ -3036,6 +3467,10 @@ fn run_private_hook_with_git_trace(
     let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["__reference-transaction", hook_phase, "refs/heads/main"])
         .current_dir(repository_root)
+        .env(
+            REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
+            repository_root,
+        )
         .env("PATH", wrapped_path)
         .env(REAL_GIT_ENVIRONMENT, git_binary())
         .env(TRACE_ENVIRONMENT, &trace_path)
@@ -4018,6 +4453,39 @@ fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id
         .env(SESSION_ENVIRONMENT, session_id)
         .output()
         .expect("cargo-berth should run")
+}
+
+fn assert_integration_identity_rejection(
+    envelope: &serde_json::Value,
+    expected_kind: &str,
+    expected_action_kinds: &[&str],
+) {
+    assert_eq!(envelope["payload"]["kind"], "integrate");
+    assert_eq!(envelope["payload"]["data"]["status"], "rejected");
+    assert_eq!(envelope["payload"]["data"]["reason"]["kind"], expected_kind);
+    let actions = envelope["payload"]["data"]["reason"]["recovery_actions"]
+        .as_array()
+        .expect("identity rejection should carry recovery actions");
+    assert!(!actions.is_empty());
+    assert_eq!(
+        actions
+            .iter()
+            .map(|action| action["kind"].as_str().expect("action kind should be text"))
+            .collect::<Vec<_>>(),
+        expected_action_kinds
+    );
+    for action in actions {
+        assert!(
+            action["argv"]
+                .as_array()
+                .is_some_and(|argv| !argv.is_empty())
+        );
+        assert!(
+            action["cwd"]
+                .as_str()
+                .is_some_and(|cwd| Path::new(cwd).is_absolute())
+        );
+    }
 }
 
 fn run_berth_with_session_and_run(

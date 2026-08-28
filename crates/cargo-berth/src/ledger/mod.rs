@@ -94,8 +94,10 @@ use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ids::WorktreeKind;
 use crate::session;
+use crate::session::CurrentSessionMappingRemoval;
 use crate::session::SessionIdentityLookup;
 use crate::session::SessionIdentityMappingPublication;
+use crate::session::SessionIdentityStoreError;
 
 /// The shared append-only ledger for one git common directory.
 pub(crate) struct Ledger {
@@ -121,16 +123,16 @@ struct WorktreeAdministrativeDirectory(PathBuf);
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SharedLedgerDirectory(PathBuf);
 
-/// The actor ids and edit authorization resolved from one process-context read.
+/// The coordination identity and authorization resolved from one process-context read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedJournalMutationActor {
+pub(crate) struct ResolvedEditAuthorization {
     pub(crate) worktree_id:         WorktreeId,
     pub(crate) coordination_run_id: CoordinationRunId,
     edit_authorization:             EditAuthorization,
 }
 
-impl ResolvedJournalMutationActor {
-    /// Build the coherent actor for one resolved edit authorization.
+impl ResolvedEditAuthorization {
+    /// Build one coherent result from an edit authorization and its issuing worktree.
     pub(crate) fn for_edit_authorization(
         worktree_id: WorktreeId,
         edit_authorization: EditAuthorization,
@@ -157,17 +159,26 @@ impl ResolvedJournalMutationActor {
         }
     }
 
-    /// Return the authorization resolved in the same read as this actor.
+    /// Return the authorization resolved in the same read as this identity.
     pub(crate) const fn edit_authorization(self) -> EditAuthorization { self.edit_authorization }
 
-    /// Deliberately replace the context-selected run for a command-owned run identity.
-    pub(crate) const fn with_coordination_run_id(
-        mut self,
+    /// Select the run recorded by a command-owned journal mutation.
+    pub(crate) const fn journal_mutation_actor_for(
+        self,
         coordination_run_id: CoordinationRunId,
-    ) -> Self {
-        self.coordination_run_id = coordination_run_id;
-        self
+    ) -> ResolvedJournalMutationActor {
+        ResolvedJournalMutationActor {
+            worktree_id: self.worktree_id,
+            coordination_run_id,
+        }
     }
+}
+
+/// The worktree and coordination run recorded by one journal mutation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedJournalMutationActor {
+    pub(crate) worktree_id:         WorktreeId,
+    pub(crate) coordination_run_id: CoordinationRunId,
 }
 
 /// The relationship between a `.git` file target and any shared git directory.
@@ -271,15 +282,6 @@ pub(crate) enum CoordinationRunMarkerRemoval {
 }
 
 impl EditAuthorization {
-    /// Resolve identity from the harness session, environment, marker, or no source.
-    pub(crate) fn resolve(worktree_context: &WorktreeContext) -> Self {
-        let Ok(worktree_id) = mint_or_read_worktree_id(worktree_context.administrative_directory())
-        else {
-            return Self::Unidentified;
-        };
-        Self::resolve_for_worktree(worktree_context, worktree_id)
-    }
-
     fn resolve_for_worktree(worktree_context: &WorktreeContext, worktree_id: WorktreeId) -> Self {
         Self::resolve_from_sources(
             session::resolve(&worktree_context.ledger_directory()),
@@ -733,6 +735,15 @@ impl Ledger {
     /// Read the clone identity that owns this ledger.
     pub(crate) fn repository_identity(&self) -> Result<RepoInstanceId, LedgerError> {
         read_repo_instance_id(&self.paths.repo_instance_id)
+    }
+
+    /// Remove only the harness-session mapping selected by this process.
+    pub(crate) fn remove_current_session_mapping(
+        &self,
+    ) -> Result<CurrentSessionMappingRemoval, LedgerError> {
+        let _lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
+        session::remove_current_mapping(&self.paths.directory)
+            .map_err(LedgerError::SessionIdentityStore)
     }
 
     /// Read validated journal truth without git, locking, repair, or publication.
@@ -1301,14 +1312,14 @@ pub(crate) fn worktree_identity(
 /// Resolve the worktree and coordination-run ids recorded by a journal mutation.
 pub(crate) fn resolve_identity(
     worktree_context: &WorktreeContext,
-) -> Result<ResolvedJournalMutationActor, LedgerError> {
+) -> Result<ResolvedEditAuthorization, LedgerError> {
     let worktree_identity = worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
     let edit_authorization =
         EditAuthorization::resolve_for_worktree(worktree_context, worktree_identity.id);
-    Ok(ResolvedJournalMutationActor::for_edit_authorization(
+    Ok(ResolvedEditAuthorization::for_edit_authorization(
         worktree_identity.id,
         edit_authorization,
     ))
@@ -1398,6 +1409,8 @@ pub(crate) enum LedgerError {
     JournalEncoding(serde_json::Error),
     /// The projection cache could not be validated or published.
     Projection(ProjectionError),
+    /// The disposable harness-session mapping could not be read or published.
+    SessionIdentityStore(SessionIdentityStoreError),
     /// The mutation lock could not be acquired.
     MutationLock(MutationLockError),
     /// The stored repository identity is not a UUID-v7 value.
@@ -1453,6 +1466,7 @@ impl Display for LedgerError {
                 write!(formatter, "journal encoding failed: {error}")
             },
             Self::Projection(error) => write!(formatter, "projection validation failed: {error}"),
+            Self::SessionIdentityStore(error) => error.fmt(formatter),
             Self::MutationLock(error) => write!(formatter, "ledger mutation lock failed: {error}"),
             Self::InvalidRepoInstanceId(error) => {
                 write!(formatter, "invalid stored repository identity: {error}")
@@ -2047,13 +2061,7 @@ mod tests {
         let repository = scratch_repository();
         let worktree_context = WorktreeContext::discover(repository.path())
             .expect("scratch worktree should be discovered");
-        assert!(matches!(
-            EditAuthorization::resolve(&worktree_context),
-            EditAuthorization::Session { .. }
-                | EditAuthorization::Environment { .. }
-                | EditAuthorization::Marker { .. }
-                | EditAuthorization::Unidentified
-        ));
+        assert!(super::resolve_identity(&worktree_context).is_ok());
     }
 
     #[test]

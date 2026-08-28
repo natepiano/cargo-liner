@@ -34,6 +34,8 @@ const MANUAL_EVENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
 const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const SHELL_BINARY: &str = "sh";
 const SHELL_COMMAND_ARG: &str = "-c";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
@@ -1107,10 +1109,10 @@ fn authorization_claim_refuses_marker_identity_that_becomes_stale() {
     let rejected_envelope = json_output(&rejected);
     assert_eq!(rejected.status.code(), Some(5));
     assert_eq!(rejected_envelope["status"], "invalid_input");
-    assert!(
-        rejected_envelope["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("no longer has an active reservation"))
+    assert_coordination_identity_rejection(
+        &rejected_envelope,
+        "stale_marker_run",
+        &["reconcile_and_sweep_marker"],
     );
     assert_eq!(
         journal_events(repository.path())
@@ -1118,6 +1120,203 @@ fn authorization_claim_refuses_marker_identity_that_becomes_stale() {
             .filter(|event| event["op"] == "claim")
             .count(),
         2
+    );
+}
+
+#[test]
+fn claim_rejects_a_stale_session_mapping_with_a_clear_command() {
+    let repository = initialized_repository();
+    let session_id = "stale-claim-session";
+    let mapped_claim = run_berth_with_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:mapped.txt",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "establish a session mapping",
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(mapped_claim.status.success());
+    let mapped_reservation_id = reservation_id(&mapped_claim);
+    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
+    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
+    assert!(
+        run_berth(
+            repository.path(),
+            ["release", &mapped_reservation_id, "--json"],
+        )
+        .status
+        .success()
+    );
+    fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
+
+    let rejected = run_berth_with_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:new.txt",
+            "--why",
+            "protect a new file",
+            "--json",
+        ],
+        session_id,
+    );
+    let rejected_envelope = json_output(&rejected);
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &rejected_envelope,
+        "stale_session_mapping",
+        &["clear_session_mapping"],
+    );
+    assert_eq!(
+        rejected_envelope["payload"]["data"]["recovery_actions"][0]["argv"],
+        serde_json::json!(["cargo-berth", "identity", "clear-session", "--json"])
+    );
+}
+
+#[test]
+fn claim_rejects_a_session_mapping_owned_by_another_worktree() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let session_id = "foreign-claim-session";
+    let mapped_claim = run_berth_with_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:mapped.txt",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "hold work in the first checkout",
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(mapped_claim.status.success());
+
+    let rejected = run_berth_with_session(
+        &second_root,
+        &[
+            "claim",
+            "file:separate.txt",
+            "--why",
+            "attempt work in the second checkout",
+            "--json",
+        ],
+        session_id,
+    );
+    let rejected_envelope = json_output(&rejected);
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &rejected_envelope,
+        "session_worktree_mismatch",
+        &["rerun_from_holding_worktree", "claim_separately_here"],
+    );
+    assert_eq!(
+        rejected_envelope["payload"]["data"]["holding_root"],
+        repository
+            .path()
+            .canonicalize()
+            .expect("repository root should canonicalize")
+            .to_str()
+            .expect("repository root should be UTF-8")
+    );
+    assert_eq!(
+        rejected_envelope["payload"]["data"]["issuing_root"],
+        second_root
+            .canonicalize()
+            .expect("second root should canonicalize")
+            .to_str()
+            .expect("second root should be UTF-8")
+    );
+    let recovery_actions = &rejected_envelope["payload"]["data"]["recovery_actions"];
+    assert_eq!(
+        recovery_actions[1]["argv"],
+        serde_json::json!(["cargo-berth", "identity", "clear-session", "--json"])
+    );
+    assert_ne!(recovery_actions[1]["argv"], recovery_actions[0]["argv"]);
+}
+
+#[test]
+fn identity_clear_session_removes_only_the_current_mapping() {
+    let repository = initialized_repository();
+    let first_session = "clear-only-first-session";
+    let second_session = "preserve-second-session";
+    assert!(
+        run_berth_with_session(
+            repository.path(),
+            &[
+                "claim",
+                "file:first-session.txt",
+                "--run",
+                FIRST_RUN,
+                "--json",
+            ],
+            first_session,
+        )
+        .status
+        .success()
+    );
+    assert!(
+        run_berth_with_session(
+            repository.path(),
+            &[
+                "claim",
+                "file:second-session.txt",
+                "--run",
+                SECOND_RUN,
+                "--json",
+            ],
+            second_session,
+        )
+        .status
+        .success()
+    );
+
+    let cleared = run_berth_with_session(
+        repository.path(),
+        &["identity", "clear-session", "--json"],
+        first_session,
+    );
+    let cleared_envelope = json_output(&cleared);
+    let mappings: serde_json::Value = serde_json::from_slice(
+        &fs::read(repository.path().join(SESSION_MAPPING_PATH))
+            .expect("session mappings should read"),
+    )
+    .expect("session mappings should decode");
+
+    assert!(cleared.status.success());
+    assert_eq!(cleared_envelope["verb"], "identity");
+    assert_eq!(cleared_envelope["status"], "session_mapping_cleared");
+    assert_eq!(
+        cleared_envelope["payload"]["data"]["status"],
+        "session_mapping_removed"
+    );
+    assert!(mappings["identities"].get(first_session).is_none());
+    assert!(mappings["identities"].get(second_session).is_some());
+
+    let unavailable = run_berth(repository.path(), ["identity", "clear-session", "--json"]);
+    let unavailable_envelope = json_output(&unavailable);
+
+    assert_eq!(unavailable.status.code(), Some(5));
+    assert_eq!(
+        unavailable_envelope["status"],
+        "session_mapping_unavailable"
+    );
+    assert_eq!(
+        unavailable_envelope["payload"]["data"]["status"],
+        "current_session_unavailable"
+    );
+    assert!(
+        unavailable_envelope["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("CARGO_BERTH_SESSION_ID"))
     );
 }
 
@@ -1549,6 +1748,48 @@ fn check(repository_root: &Path, scopes: &[&str], run: &str) -> Output {
         .env(RUN_ENVIRONMENT, run)
         .output()
         .expect("cargo-berth check should run")
+}
+
+fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(RUN_ENVIRONMENT)
+        .env(SESSION_ENVIRONMENT, session_id)
+        .output()
+        .expect("cargo-berth should run")
+}
+
+fn assert_coordination_identity_rejection(
+    envelope: &serde_json::Value,
+    expected_kind: &str,
+    expected_action_kinds: &[&str],
+) {
+    assert_eq!(envelope["payload"]["kind"], "coordination_identity");
+    assert_eq!(envelope["payload"]["data"]["kind"], expected_kind);
+    let actions = envelope["payload"]["data"]["recovery_actions"]
+        .as_array()
+        .expect("identity rejection should carry recovery actions");
+    assert!(!actions.is_empty());
+    assert_eq!(
+        actions
+            .iter()
+            .map(|action| action["kind"].as_str().expect("action kind should be text"))
+            .collect::<Vec<_>>(),
+        expected_action_kinds
+    );
+    for action in actions {
+        assert!(
+            action["argv"].as_array().is_some_and(
+                |argv| !argv.is_empty() && argv.iter().all(serde_json::Value::is_string)
+            )
+        );
+        assert!(
+            action["cwd"]
+                .as_str()
+                .is_some_and(|cwd| Path::new(cwd).is_absolute())
+        );
+    }
 }
 
 fn commit_file(repository_root: &Path, path: &str, contents: &str, message: &str) {

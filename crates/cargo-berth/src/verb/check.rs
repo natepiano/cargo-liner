@@ -9,7 +9,12 @@ use super::claim::FirstTouchClaimRequest;
 use super::claim::FirstTouchConflictHandling;
 use super::claim::FirstTouchConflictOutcome;
 use crate::config::Enrollment;
-use crate::ledger::EditAuthorization;
+use crate::coordination_identity::CoordinationIdentityRejection;
+use crate::coordination_identity::CoordinationIdentityValidationContext;
+use crate::coordination_identity::CoordinationIdentityValidationError;
+use crate::coordination_identity::RecoveryCommandLine;
+use crate::coordination_identity::validate_coordination_identity;
+use crate::ledger;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
 use crate::output::CommandVerb;
@@ -43,6 +48,8 @@ enum CheckDecisionError {
     PathCase(PathCaseError),
     /// The retained reservation set could not be replayed.
     ReservationReplay(ReservationReplayError),
+    /// The process identity is stale or belongs to another worktree.
+    CoordinationIdentity(CoordinationIdentityRejection),
 }
 
 impl CheckDecisionError {
@@ -55,20 +62,29 @@ impl CheckDecisionError {
             Self::ReservationReplay(error) => {
                 OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string())
             },
+            Self::CoordinationIdentity(rejection) => {
+                OutputEnvelope::coordination_identity_rejected(CommandVerb::Check, rejection)
+            },
         }
     }
 }
 
 /// Evaluate tier-one overlap and permit only after a locked acquisition decision.
-pub(crate) fn execute(check_request: CheckRequest) -> OutputEnvelope {
+pub(crate) fn execute(
+    check_request: CheckRequest,
+    recovery_command_line: &RecoveryCommandLine,
+) -> OutputEnvelope {
     let invocation_directory = match std::env::current_dir() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string());
         },
     };
-    let first_decision = match decide(&invocation_directory, check_request.declared_scopes.clone())
-    {
+    let first_decision = match decide(
+        &invocation_directory,
+        check_request.declared_scopes.clone(),
+        recovery_command_line,
+    ) {
         Ok(Enrollment::Enrolled(check_decision)) => check_decision,
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
@@ -78,13 +94,17 @@ pub(crate) fn execute(check_request: CheckRequest) -> OutputEnvelope {
         Err(error) => return error.into_output(),
     };
     if first_decision.conflicts.is_empty() {
-        return match acquire_first_touch(check_request.declared_scopes.clone()) {
+        return match acquire_first_touch(
+            check_request.declared_scopes.clone(),
+            recovery_command_line,
+        ) {
             Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { conflicts, .. })) => {
                 reconcile_and_retry(
                     &invocation_directory,
                     check_request.declared_scopes,
                     first_decision.scopes,
                     conflicts,
+                    recovery_command_line,
                 )
             },
             acquisition => render_acquisition(acquisition),
@@ -95,6 +115,7 @@ pub(crate) fn execute(check_request: CheckRequest) -> OutputEnvelope {
         check_request.declared_scopes,
         first_decision.scopes,
         first_decision.conflicts,
+        recovery_command_line,
     )
 }
 
@@ -103,6 +124,7 @@ fn reconcile_and_retry(
     declared_scopes: DeclaredReservationScopeSet,
     fallback_scopes: ReservationScopeSet,
     fallback_conflicts: Vec<ReservationConflict>,
+    recovery_command_line: &RecoveryCommandLine,
 ) -> OutputEnvelope {
     let reconciliation_report =
         match reconcile::reconcile(invocation_directory, RecoveredBypassReporting::Defer) {
@@ -119,7 +141,11 @@ fn reconcile_and_retry(
                 return OutputEnvelope::blocked_check(fallback_scopes, fallback_conflicts);
             },
         };
-    let retried_decision = match decide(invocation_directory, declared_scopes.clone()) {
+    let retried_decision = match decide(
+        invocation_directory,
+        declared_scopes.clone(),
+        recovery_command_line,
+    ) {
         Ok(Enrollment::Enrolled(check_decision)) => check_decision,
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
@@ -134,7 +160,7 @@ fn reconcile_and_retry(
         },
     };
     if retried_decision.conflicts.is_empty() {
-        render_acquisition(acquire_first_touch(declared_scopes))
+        render_acquisition(acquire_first_touch(declared_scopes, recovery_command_line))
             .with_alerts(reconciliation_report.alerts)
     } else {
         OutputEnvelope::blocked_check(retried_decision.scopes, retried_decision.conflicts)
@@ -144,11 +170,15 @@ fn reconcile_and_retry(
 
 fn acquire_first_touch(
     declared_scopes: DeclaredReservationScopeSet,
+    recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
-    claim::acquire_first_touch(FirstTouchClaimRequest {
-        declared_scopes,
-        conflict_handling: FirstTouchConflictHandling::RefuseRequest,
-    })
+    claim::acquire_first_touch(
+        FirstTouchClaimRequest {
+            declared_scopes,
+            conflict_handling: FirstTouchConflictHandling::RefuseRequest,
+        },
+        recovery_command_line,
+    )
 }
 
 fn render_acquisition(
@@ -184,6 +214,7 @@ fn render_acquisition(
 fn decide(
     invocation_directory: &Path,
     declared_scopes: DeclaredReservationScopeSet,
+    recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<CheckDecision>, CheckDecisionError> {
     let snapshot = match Ledger::read_for_edit_check(invocation_directory)
         .map_err(CheckDecisionError::Ledger)?
@@ -202,7 +233,27 @@ fn decide(
     let scopes = declared_scopes.into_exact_file_antichain(path_case);
     let reservations = RetainedReservationSet::replay(snapshot.events())
         .map_err(CheckDecisionError::ReservationReplay)?;
-    let edit_authorization = EditAuthorization::resolve(snapshot.worktree_context());
-    let conflicts = reservations.conflicts_for_edit(&scopes, edit_authorization, path_case);
+    let resolved_edit_authorization = ledger::resolve_identity(snapshot.worktree_context())
+        .map_err(CheckDecisionError::Ledger)?;
+    let identity_validation = CoordinationIdentityValidationContext::for_user_command(
+        resolved_edit_authorization,
+        snapshot.worktree_context(),
+        recovery_command_line,
+    );
+    validate_coordination_identity(&reservations, &identity_validation).map_err(
+        |error| match error {
+            CoordinationIdentityValidationError::Rejected(rejection) => {
+                CheckDecisionError::CoordinationIdentity(rejection)
+            },
+            CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
+                CheckDecisionError::Ledger(LedgerError::InvalidCanonicalWorktreeRoot)
+            },
+        },
+    )?;
+    let conflicts = reservations.conflicts_for_edit(
+        &scopes,
+        resolved_edit_authorization.edit_authorization(),
+        path_case,
+    );
     Ok(Enrollment::Enrolled(CheckDecision { scopes, conflicts }))
 }

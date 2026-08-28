@@ -30,6 +30,10 @@ const GIT_BINARY: &str = "git";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
+const MARKER_RELEASE_OUTPUT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_RELEASE_OUTPUT";
+const MARKER_RELEASE_RESERVATION_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_RELEASE_RESERVATION";
+const MARKER_RELEASE_ROOT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_RELEASE_ROOT";
+const MARKER_RELEASE_TRIGGER_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_RELEASE_TRIGGER";
 const POST_COMMIT_HOOK_PATH: &str = ".git/hooks/post-commit";
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
@@ -38,8 +42,10 @@ const REAL_PATH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_PATH";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
+const WORKTREE_ID_PATH: &str = ".git/cargo-berth-worktree-id";
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ]; then
     printf '%s\n' "$2" >> "$CARGO_BERTH_TEST_GIT_TRACE"
@@ -59,6 +65,33 @@ if [ "$1" = "--no-optional-locks" ] && [ "$2" = "ls-files" ]; then
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
+const MARKER_RELEASE_GIT_WRAPPER: &str = r#"#!/bin/sh
+set -eu
+if [ "$1" = "--no-optional-locks" ] && [ "$2" = "ls-files" ] \
+    && [ ! -e "$CARGO_BERTH_TEST_MARKER_RELEASE_TRIGGER" ]; then
+    : > "$CARGO_BERTH_TEST_MARKER_RELEASE_TRIGGER"
+    (
+        cd "$CARGO_BERTH_TEST_MARKER_RELEASE_ROOT"
+        PATH="$CARGO_BERTH_TEST_REAL_PATH" \
+            "$CARGO_BERTH_TEST_BINARY" release \
+            "$CARGO_BERTH_TEST_MARKER_RELEASE_RESERVATION" --json
+    ) > "$CARGO_BERTH_TEST_MARKER_RELEASE_OUTPUT"
+fi
+exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
+"#;
+
+#[test]
+fn unconfigured_drift_does_not_create_a_worktree_identity() {
+    let repository = scratch_repository();
+    let worktree_id_path = repository.path().join(WORKTREE_ID_PATH);
+    assert!(!worktree_id_path.exists());
+
+    let output = drift(repository.path(), &["--full"]);
+    let envelope = json_output(&output);
+
+    assert_eq!(envelope["status"], "unconfigured");
+    assert!(!worktree_id_path.exists());
+}
 
 #[test]
 fn full_classification_covers_silent_and_widen_rows() {
@@ -112,6 +145,138 @@ fn full_classification_covers_silent_and_widen_rows() {
 }
 
 #[test]
+fn drift_rejects_every_invalid_coordination_identity_with_executable_recovery() {
+    assert_drift_revalidates_marker_after_observation();
+
+    let session_repository = initialized_repository();
+    let stale_session = "stale-drift-session";
+    let session_reservation_id = claim_with_session(
+        session_repository.path(),
+        "file:session",
+        SECOND_RUN,
+        stale_session,
+    );
+    let mapping_path = session_repository.path().join(SESSION_MAPPING_PATH);
+    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
+    assert!(
+        run_berth(
+            session_repository.path(),
+            &["release", &session_reservation_id, "--json"],
+        )
+        .status
+        .success()
+    );
+    fs::write(&mapping_path, stale_mapping).expect("stale mapping should write");
+    let session_rejection = run_berth_with_session(
+        session_repository.path(),
+        &[
+            "drift",
+            "--full",
+            "--reservation",
+            &session_reservation_id,
+            "--json",
+        ],
+        stale_session,
+    );
+    assert_eq!(session_rejection.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&session_rejection),
+        "stale_session_mapping",
+        &["clear_session_mapping"],
+    );
+
+    let mismatch_repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&mismatch_repository, "drift-second");
+    let mismatch_session = "foreign-drift-session";
+    let live_reservation_id = claim_with_session(
+        mismatch_repository.path(),
+        "file:live-session",
+        THIRD_RUN,
+        mismatch_session,
+    );
+    let mismatch_rejection = run_berth_with_session(
+        &second_root,
+        &[
+            "drift",
+            "--full",
+            "--reservation",
+            &live_reservation_id,
+            "--json",
+        ],
+        mismatch_session,
+    );
+    assert_eq!(mismatch_rejection.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&mismatch_rejection),
+        "session_worktree_mismatch",
+        &["rerun_from_holding_worktree", "claim_separately_here"],
+    );
+}
+
+fn assert_drift_revalidates_marker_after_observation() {
+    let marker_repository = initialized_repository();
+    let marker_reservation_id = claim(marker_repository.path(), "file:marker", FIRST_RUN);
+    fs::write(
+        marker_repository.path().join("marker-change.txt"),
+        "changed\n",
+    )
+    .expect("marker observation path should write");
+    let wrapper_directory = tempdir().expect("marker wrapper directory should exist");
+    let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
+    let release_output_path = wrapper_directory.path().join("release.json");
+    let release_trigger_path = wrapper_directory.path().join("release-triggered");
+    fs::write(&wrapper_path, MARKER_RELEASE_GIT_WRAPPER).expect("marker wrapper should write");
+    let mut permissions = fs::metadata(&wrapper_path)
+        .expect("marker wrapper metadata should read")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&wrapper_path, permissions).expect("marker wrapper should be executable");
+    let real_path = std::env::var_os("PATH").expect("test PATH should exist");
+    let wrapped_path = std::env::join_paths(
+        std::iter::once(wrapper_directory.path().to_path_buf())
+            .chain(std::env::split_paths(&real_path)),
+    )
+    .expect("marker wrapper PATH should join");
+    let marker_rejection = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args([
+            "drift",
+            "--full",
+            "--reservation",
+            &marker_reservation_id,
+            "--json",
+        ])
+        .current_dir(marker_repository.path())
+        .env("PATH", wrapped_path)
+        .env(BERTH_BINARY_ENVIRONMENT, env!("CARGO_BIN_EXE_cargo-berth"))
+        .env(MARKER_RELEASE_OUTPUT_ENVIRONMENT, &release_output_path)
+        .env(
+            MARKER_RELEASE_RESERVATION_ENVIRONMENT,
+            &marker_reservation_id,
+        )
+        .env(MARKER_RELEASE_ROOT_ENVIRONMENT, marker_repository.path())
+        .env(MARKER_RELEASE_TRIGGER_ENVIRONMENT, &release_trigger_path)
+        .env(REAL_GIT_ENVIRONMENT, git_binary())
+        .env(REAL_PATH_ENVIRONMENT, real_path)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(POST_COMMIT_ENVIRONMENT)
+        .output()
+        .expect("marker revalidation drift should run");
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(
+            &fs::read(release_output_path).expect("marker release output should read")
+        )
+        .is_ok()
+    );
+    assert_eq!(marker_rejection.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&marker_rejection),
+        "stale_marker_run",
+        &["reconcile_and_sweep_marker"],
+    );
+}
+
+#[test]
 fn post_write_drift_mints_a_first_touch_reservation_when_none_exists() {
     let repository = initialized_repository();
     fs::write(repository.path().join("written-by-bash.rs"), "new\n")
@@ -161,6 +326,8 @@ fn post_write_drift_does_not_claim_a_path_the_edit_restored() {
         "abandon failed: {}",
         String::from_utf8_lossy(&abandoned.stdout)
     );
+    fs::remove_file(repository.path().join(MARKER_PATH))
+        .expect("released first-touch marker should remove");
     fs::write(repository.path().join("design.md"), "original\n")
         .expect("design path should restore");
     assert_eq!(
@@ -2959,6 +3126,50 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
         .env_remove(SESSION_ENVIRONMENT)
         .output()
         .expect("cargo-berth should run")
+}
+
+fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(POST_COMMIT_ENVIRONMENT)
+        .env(SESSION_ENVIRONMENT, session_id)
+        .output()
+        .expect("cargo-berth should run")
+}
+
+fn assert_coordination_identity_rejection(
+    envelope: &serde_json::Value,
+    expected_kind: &str,
+    expected_action_kinds: &[&str],
+) {
+    assert_eq!(envelope["payload"]["kind"], "coordination_identity");
+    assert_eq!(envelope["payload"]["data"]["kind"], expected_kind);
+    let actions = envelope["payload"]["data"]["recovery_actions"]
+        .as_array()
+        .expect("identity rejection should carry recovery actions");
+    assert!(!actions.is_empty());
+    assert_eq!(
+        actions
+            .iter()
+            .map(|action| action["kind"].as_str().expect("action kind should be text"))
+            .collect::<Vec<_>>(),
+        expected_action_kinds
+    );
+    for action in actions {
+        assert!(
+            action["argv"]
+                .as_array()
+                .is_some_and(|argv| !argv.is_empty())
+        );
+        assert!(
+            action["cwd"]
+                .as_str()
+                .is_some_and(|cwd| Path::new(cwd).is_absolute())
+        );
+    }
 }
 
 fn run_berth_with_run(repository_root: &Path, arguments: &[&str], run: &str) -> Output {

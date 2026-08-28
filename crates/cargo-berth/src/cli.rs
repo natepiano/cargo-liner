@@ -40,6 +40,7 @@ use crate::constants::OVERLAP_WHY_ARGUMENT_ID;
 use crate::constants::OVERLAP_WHY_VALUE_NAME;
 use crate::constants::PROPOSAL_ARGUMENT;
 use crate::constants::PROPOSAL_VALUE_NAME;
+use crate::coordination_identity::RecoveryCommandLine;
 use crate::drift::DriftComparisonChoice;
 use crate::drift::DriftRequest;
 use crate::drift::DriftReservationSelection;
@@ -53,6 +54,7 @@ use crate::gate::GateResult;
 use crate::gate::IntegrationRequest;
 use crate::gate::ManagedTrunkDeletion;
 use crate::gate::ReferenceTransaction;
+use crate::gate::ReferenceTransactionIssuingDirectory;
 use crate::gate::ReferenceTransactionParseError;
 use crate::gate::ReferenceTransactionPhase;
 use crate::gate::TrunkReferencePresence;
@@ -204,6 +206,8 @@ enum Command {
     /// Renew a reservation's activity record.
     #[command(about = "Renew a reservation", long_about = RENEW_LONG_ABOUT)]
     Renew(ReservationArguments),
+    /// Manage the current process's disposable coordination identity.
+    Identity(IdentityArguments),
     /// Private dispatch used only by the installed git hook.
     #[command(name = "__reference-transaction", hide = true)]
     ReferenceTransaction(ReferenceTransactionArguments),
@@ -218,6 +222,21 @@ struct JsonOutput {
     /// Emit the frozen JSON response envelope.
     #[arg(long = JSON_ARGUMENT)]
     json: bool,
+}
+
+/// Coordination identity management commands.
+#[derive(Debug, Args)]
+struct IdentityArguments {
+    /// The identity operation to run.
+    #[command(subcommand)]
+    command: IdentityCommand,
+}
+
+/// Operations over the current process's disposable identity sources.
+#[derive(Debug, Subcommand)]
+enum IdentityCommand {
+    /// Remove only the current `CARGO_BERTH_SESSION_ID` mapping.
+    ClearSession(JsonOutput),
 }
 
 /// Initialization arguments including explicit projection-only recovery.
@@ -577,7 +596,8 @@ impl Cli {
             command => command,
         };
         let output_format = command.output_format();
-        match command.execute(output_format) {
+        let recovery_command_line = RecoveryCommandLine::current_process();
+        match command.execute(output_format, &recovery_command_line) {
             CommandExecution::Response(output_envelope) => {
                 let berth_exit = output_envelope.exit_code;
                 match command_response_rendering(output_format, post_commit_hook_request()) {
@@ -613,7 +633,11 @@ impl CliInvocation {
 
 impl Command {
     /// Execute this command after its output representation is resolved.
-    fn execute(self, output_format: CliOutputFormat) -> CommandExecution {
+    fn execute(
+        self,
+        output_format: CliOutputFormat,
+        recovery_command_line: &RecoveryCommandLine,
+    ) -> CommandExecution {
         let output_envelope = match self {
             Self::Init(init_arguments) => {
                 initialize_ledger(init_arguments.initialization_request())
@@ -632,26 +656,32 @@ impl Command {
                 };
             },
             Self::Check(path_arguments) => match path_arguments.into_check_request() {
-                Ok(check_request) => check::execute(check_request),
+                Ok(check_request) => check::execute(check_request, recovery_command_line),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Check, &error),
             },
             Self::Claim(claim_arguments) => match claim_arguments.into_claim_request() {
-                Ok(claim_request) => claim::execute(claim_request),
+                Ok(claim_request) => claim::execute(claim_request, recovery_command_line),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Claim, &error),
             },
-            Self::Drift(drift_arguments) => drift::execute(drift_arguments.into_drift_request()),
+            Self::Drift(drift_arguments) => {
+                drift::execute(drift_arguments.into_drift_request(), recovery_command_line)
+            },
             Self::Release(reservation_arguments) => {
                 release::execute(reservation_arguments.into_release_request())
             },
             Self::Sequence(sequence_arguments) => {
                 match sequence_arguments.into_sequence_request() {
-                    Ok(sequence_request) => sequence::execute(&sequence_request),
+                    Ok(sequence_request) => {
+                        sequence::execute(&sequence_request, recovery_command_line)
+                    },
                     Err(error) => OutputEnvelope::invalid_input(CommandVerb::Sequence, &error),
                 }
             },
             Self::Integrate(integrate_arguments) => {
                 match integrate_arguments.into_integrate_request() {
-                    Ok(integrate_request) => integrate::execute(integrate_request),
+                    Ok(integrate_request) => {
+                        integrate::execute(integrate_request, recovery_command_line)
+                    },
                     Err(error) => OutputEnvelope::invalid_input(CommandVerb::Integrate, &error),
                 }
             },
@@ -661,6 +691,9 @@ impl Command {
             },
             Self::Renew(reservation_arguments) => {
                 recovery::renew(reservation_arguments.into_renew_request())
+            },
+            Self::Identity(identity_arguments) => {
+                execute_identity_command(&identity_arguments.command)
             },
             Self::ReferenceTransaction(_) | Self::RefreshManagedHookAfterTrunkDeletion(_) => {
                 OutputEnvelope::invalid_input(
@@ -686,6 +719,9 @@ impl Command {
             Self::Sequence(sequence_arguments) => sequence_arguments.json_output.output_format(),
             Self::Integrate(integrate_arguments) => integrate_arguments.json_output.output_format(),
             Self::Resolve(resolve_arguments) => resolve_arguments.json_output.output_format(),
+            Self::Identity(identity_arguments) => match &identity_arguments.command {
+                IdentityCommand::ClearSession(json_output) => json_output.output_format(),
+            },
             Self::ReferenceTransaction(_) | Self::RefreshManagedHookAfterTrunkDeletion(_) => {
                 CliOutputFormat::Text
             },
@@ -708,6 +744,7 @@ impl Command {
             | Self::RefreshManagedHookAfterTrunkDeletion(_) => CommandVerb::Integrate,
             Self::Resolve(_) => CommandVerb::Resolve,
             Self::Renew(_) => CommandVerb::Renew,
+            Self::Identity(_) => CommandVerb::Identity,
         }
     }
 }
@@ -989,6 +1026,50 @@ impl ResolveArguments {
     }
 }
 
+fn execute_identity_command(identity_command: &IdentityCommand) -> OutputEnvelope {
+    match identity_command {
+        IdentityCommand::ClearSession(_) => {
+            let invocation_directory = match env::current_dir() {
+                Ok(invocation_directory) => invocation_directory,
+                Err(error) => {
+                    return OutputEnvelope::ledger_unreadable(
+                        CommandVerb::Identity,
+                        &error.to_string(),
+                    );
+                },
+            };
+            let worktree_context =
+                match crate::ledger::WorktreeContext::discover(&invocation_directory) {
+                    Ok(worktree_context) => worktree_context,
+                    Err(error) => {
+                        return OutputEnvelope::ledger_error(CommandVerb::Identity, &error);
+                    },
+                };
+            let ledger = match Ledger::open_from_discovered_worktree(&worktree_context) {
+                Ok(ledger) => ledger,
+                Err(error) => {
+                    return OutputEnvelope::ledger_error(CommandVerb::Identity, &error);
+                },
+            };
+            match ledger.remove_current_session_mapping() {
+                Ok(removal) => OutputEnvelope::current_session_mapping_removed(removal),
+                Err(error) => match LedgerTransactionError::from(error) {
+                    LedgerTransactionError::LockContention => OutputEnvelope::contention(
+                        CommandVerb::Identity,
+                        &LedgerTransactionError::LockContention.to_string(),
+                    ),
+                    LedgerTransactionError::LedgerUnreadable(error) => {
+                        OutputEnvelope::ledger_error(CommandVerb::Identity, &error)
+                    },
+                    LedgerTransactionError::CorrectableInput(error) => {
+                        OutputEnvelope::invalid_input(CommandVerb::Identity, &error.to_string())
+                    },
+                },
+            }
+        },
+    }
+}
+
 fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnvelope {
     match env::current_dir() {
         Ok(invocation_directory) => match git::repository_root(&invocation_directory) {
@@ -1108,12 +1189,22 @@ fn run_reference_transaction(
             return BerthExit::LedgerUnreadable.into();
         },
     };
+    let issuing_directory = env::var_os(gate::REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT)
+        .map_or(
+            ReferenceTransactionIssuingDirectory::MissingFromLegacyHook,
+            |issuing_directory| {
+                ReferenceTransactionIssuingDirectory::CapturedByManagedHook(PathBuf::from(
+                    issuing_directory,
+                ))
+            },
+        );
     let remaining = TOTAL_GATE_DEADLINE.saturating_sub(started_at.elapsed());
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     let gate_invocation_directory = invocation_directory.clone();
     let gate_worker = std::thread::spawn(move || {
         let result = gate::evaluate_reference_transaction(
             &gate_invocation_directory,
+            &issuing_directory,
             &transaction,
             &trunk_reference,
         );
@@ -1469,8 +1560,13 @@ fn reference_transaction_error(error: &GateError) -> ExitCode {
             ));
             BerthExit::BlockedByContention.into()
         },
-        GateError::InactiveSessionMapping(_)
-        | GateError::InactiveMarkerRun(_)
+        GateError::LegacyReferenceTransactionHook => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth trunk gate refused this ref transaction because the managed reference-transaction hook did not report the issuing worktree. Run cargo-berth init to reinstall the hook, then retry the git command. To proceed immediately, rerun the git command with CARGO_BERTH_BYPASS=1."
+            ));
+            BerthExit::UsageError.into()
+        },
+        GateError::CoordinationIdentity(_)
         | GateError::ReservationNotEntering(_)
         | GateError::NoHoldToForce(_)
         | GateError::MissingSkippedHold

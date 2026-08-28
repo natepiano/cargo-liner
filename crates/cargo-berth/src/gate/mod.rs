@@ -9,6 +9,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::path::Path;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use permit::ForcedIntegrationPermitReplayError;
@@ -20,6 +21,12 @@ use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::config::Enrollment;
 use crate::config::GateMode;
+use crate::coordination_identity::CoordinationIdentityRejection;
+use crate::coordination_identity::CoordinationIdentityValidationContext;
+use crate::coordination_identity::CoordinationIdentityValidationError;
+use crate::coordination_identity::RecoveryCommandLine;
+use crate::coordination_identity::RunnableRecoveryCommandLine;
+use crate::coordination_identity::validate_coordination_identity;
 use crate::edge::IntegrationConstraintProjection;
 use crate::edge::IntegrationHold;
 use crate::edge::IntegrationReservationFacts;
@@ -32,14 +39,12 @@ use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
 use crate::ids::ProjectionGeneration;
 use crate::ids::ReservationId;
-use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::BypassCause;
 use crate::ledger::BypassOccurrenceTime;
 use crate::ledger::BypassRecording;
 use crate::ledger::BypassedAction;
 use crate::ledger::ClaimHeadSnapshot;
-use crate::ledger::EditAuthorization;
 use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::FullRefName;
 use crate::ledger::JournalEvent;
@@ -62,6 +67,8 @@ use crate::reservation::ReservationLifecycle;
 use crate::reservation::RetainedReservationSet;
 
 const LOCAL_BRANCH_REFERENCE_PREFIX: &str = "refs/heads/";
+pub(crate) const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
+    "CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY";
 const SHA1_OBJECT_ID_CHARACTERS: usize = 40;
 const SHA256_OBJECT_ID_CHARACTERS: usize = 64;
 const SYMBOLIC_REFERENCE_VALUE_PREFIX: &str = "ref:";
@@ -124,6 +131,15 @@ pub(crate) enum ManagedTrunkDeletion {
         reference:    FullRefName,
         previous_tip: GitObjectId,
     },
+}
+
+/// Whether the managed hook preserved the checkout that issued this transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReferenceTransactionIssuingDirectory {
+    /// A current managed hook exported its issuing checkout before changing directory.
+    CapturedByManagedHook(PathBuf),
+    /// A managed hook installed before issuing-directory capture exported no checkout.
+    MissingFromLegacyHook,
 }
 
 /// One parsed old-object, new-object, and full-reference update.
@@ -229,26 +245,13 @@ pub(crate) struct GateResult {
 #[derive(Clone)]
 enum GatePurpose {
     Hook {
-        phase: ReferenceTransactionPhase,
+        phase:             ReferenceTransactionPhase,
+        issuing_directory: ReferenceTransactionIssuingDirectory,
     },
     Integrate {
-        reservation_id: ReservationId,
-        request:        IntegrationRequest,
-        acting_run:     ActingRun,
-    },
-}
-
-#[derive(Clone, Copy)]
-enum ActingRun {
-    Independent(CoordinationRunId),
-    ActiveSessionReservationRequired {
-        coordination_run_id: CoordinationRunId,
         reservation_id:      ReservationId,
-        worktree_id:         WorktreeId,
-    },
-    ActiveMarkerRequired {
-        coordination_run_id: CoordinationRunId,
-        worktree_id:         WorktreeId,
+        request:             IntegrationRequest,
+        identity_validation: Box<CoordinationIdentityValidationContext>,
     },
 }
 
@@ -369,6 +372,7 @@ fn parse_reference_object(value: &str) -> Result<ReferenceObject, ()> {
 /// Evaluate prepared trunk updates and commit their approved permit audits after Git moves the ref.
 pub(crate) fn evaluate_reference_transaction(
     invocation_directory: &Path,
+    issuing_directory: &ReferenceTransactionIssuingDirectory,
     transaction: &ReferenceTransaction,
     trunk_reference: &FullRefName,
 ) -> Result<Vec<GateResult>, GateError> {
@@ -432,7 +436,8 @@ pub(crate) fn evaluate_reference_transaction(
                             invocation_directory,
                             &update,
                             &GatePurpose::Hook {
-                                phase: ReferenceTransactionPhase::Prepared,
+                                phase:             ReferenceTransactionPhase::Prepared,
+                                issuing_directory: issuing_directory.clone(),
                             },
                         )? {
                             Enrollment::Enrolled(result) => results.push(result),
@@ -444,6 +449,7 @@ pub(crate) fn evaluate_reference_transaction(
                         &worktree_context,
                         &berth_config,
                         &update,
+                        issuing_directory,
                     )?,
                     ReferenceTransactionPhase::Preparing
                     | ReferenceTransactionPhase::Aborted
@@ -520,7 +526,7 @@ fn reanchor_rewritten_phases(
 ) -> Result<(), GateError> {
     let ledger = Ledger::open(invocation_directory)?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
-        .with_coordination_run_id(CoordinationRunId::new());
+        .journal_mutation_actor_for(CoordinationRunId::new());
     let repository_root = worktree_context.repository_root();
     let outcome = ledger
         .transact_reconciliation(
@@ -608,11 +614,17 @@ fn commit_forced_permit_audits(
     worktree_context: &WorktreeContext,
     berth_config: &BerthConfig,
     update: &ProposedMainMove,
+    issuing_directory: &ReferenceTransactionIssuingDirectory,
 ) -> Result<(), GateError> {
+    let purpose = GatePurpose::Hook {
+        phase:             ReferenceTransactionPhase::Committed,
+        issuing_directory: issuing_directory.clone(),
+    };
+    purpose.identity_validation()?;
     let ledger = Ledger::open(invocation_directory)?;
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
-        .with_coordination_run_id(CoordinationRunId::new());
+        .journal_mutation_actor_for(CoordinationRunId::new());
     let outcome = ledger
         .transact_reconciliation(
             journal_mutation_actor.worktree_id,
@@ -647,9 +659,7 @@ fn commit_forced_permit_audits(
                     state.events(),
                     prepared.constraints(),
                     &entering,
-                    &GatePurpose::Hook {
-                        phase: ReferenceTransactionPhase::Committed,
-                    },
+                    &purpose,
                     berth_config.gate_mode,
                 ) {
                     Ok(decision) => decision,
@@ -681,9 +691,15 @@ pub(crate) fn evaluate_integration(
     request: IntegrationRequest,
     previous: GitObjectId,
     proposed: GitObjectId,
+    recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<GateResult>, GateError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
-    let acting_run = ActingRun::resolve(&worktree_context);
+    let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
+    let identity_validation = CoordinationIdentityValidationContext::for_user_command(
+        resolved_edit_authorization,
+        &worktree_context,
+        recovery_command_line,
+    );
     let update = ProposedMainMove {
         previous: PreviousMain::Existing(previous),
         proposed,
@@ -691,7 +707,7 @@ pub(crate) fn evaluate_integration(
     let purpose = GatePurpose::Integrate {
         reservation_id,
         request,
-        acting_run,
+        identity_validation: Box::new(identity_validation),
     };
     evaluate_locked(invocation_directory, &update, &purpose)
 }
@@ -759,10 +775,12 @@ fn evaluate_locked(
             });
         },
     };
+    let identity_validation = purpose.identity_validation()?;
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let ledger_repository = ledger.repository_identity()?;
-    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?
-        .with_coordination_run_id(purpose.coordination_run_id());
+    let resolved_edit_authorization = identity_validation.resolved_edit_authorization();
+    let journal_mutation_actor = resolved_edit_authorization
+        .journal_mutation_actor_for(purpose.coordination_run_id(&identity_validation));
     let outcome = ledger
         .transact_reconciliation(
             journal_mutation_actor.worktree_id,
@@ -783,9 +801,17 @@ fn evaluate_locked(
                         );
                     },
                 };
-                if let GatePurpose::Integrate { acting_run, .. } = purpose
-                    && let Err(rejection) = acting_run.validate(prepared.reservations())
+                if let Err(error) =
+                    validate_coordination_identity(prepared.reservations(), &identity_validation)
                 {
+                    let rejection = match error {
+                        CoordinationIdentityValidationError::Rejected(rejection) => {
+                            GateTransactionRejection::CoordinationIdentity(rejection)
+                        },
+                        CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
+                            GateTransactionRejection::InvalidCanonicalWorktreeRoot
+                        },
+                    };
                     return ReconciliationValidation::Reject(rejection);
                 }
                 let newly_reachable =
@@ -881,7 +907,7 @@ fn decide(
         });
     }
     match purpose {
-        GatePurpose::Hook { phase } => decide_hook(
+        GatePurpose::Hook { phase, .. } => decide_hook(
             events,
             constraints.generation,
             &violations,
@@ -1145,95 +1171,46 @@ fn skipped_set_covers(
 }
 
 impl GatePurpose {
-    fn coordination_run_id(&self) -> CoordinationRunId {
+    fn identity_validation(&self) -> Result<CoordinationIdentityValidationContext, GateError> {
+        match self {
+            Self::Hook {
+                issuing_directory, ..
+            } => {
+                let issuing_directory = match issuing_directory {
+                    ReferenceTransactionIssuingDirectory::CapturedByManagedHook(
+                        issuing_directory,
+                    ) => issuing_directory,
+                    ReferenceTransactionIssuingDirectory::MissingFromLegacyHook => {
+                        return Err(GateError::LegacyReferenceTransactionHook);
+                    },
+                };
+                let worktree_context = WorktreeContext::discover(issuing_directory)?;
+                let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
+                Ok(CoordinationIdentityValidationContext::for_git_gate(
+                    resolved_edit_authorization,
+                    &worktree_context,
+                    RunnableRecoveryCommandLine::clear_session_mapping(),
+                    RunnableRecoveryCommandLine::board(),
+                ))
+            },
+            Self::Integrate {
+                identity_validation,
+                ..
+            } => Ok(identity_validation.as_ref().clone()),
+        }
+    }
+
+    fn coordination_run_id(
+        &self,
+        identity_validation: &CoordinationIdentityValidationContext,
+    ) -> CoordinationRunId {
         match self {
             Self::Hook { .. } => CoordinationRunId::new(),
-            Self::Integrate { acting_run, .. } => acting_run.coordination_run_id(),
-        }
-    }
-}
-
-impl ActingRun {
-    fn resolve(worktree_context: &WorktreeContext) -> Self {
-        match EditAuthorization::resolve(worktree_context) {
-            EditAuthorization::Session {
-                coordination_run_id,
-                reservation_id,
-                worktree_id,
-            } => Self::ActiveSessionReservationRequired {
-                coordination_run_id,
-                reservation_id,
-                worktree_id,
+            Self::Integrate { .. } => {
+                identity_validation
+                    .resolved_edit_authorization()
+                    .coordination_run_id
             },
-            EditAuthorization::Environment {
-                coordination_run_id,
-                ..
-            } => Self::Independent(coordination_run_id),
-            EditAuthorization::Marker {
-                coordination_run_id,
-                worktree_id,
-            } => Self::ActiveMarkerRequired {
-                coordination_run_id,
-                worktree_id,
-            },
-            EditAuthorization::Unidentified => Self::Independent(CoordinationRunId::new()),
-        }
-    }
-
-    const fn coordination_run_id(self) -> CoordinationRunId {
-        match self {
-            Self::Independent(coordination_run_id)
-            | Self::ActiveSessionReservationRequired {
-                coordination_run_id,
-                ..
-            }
-            | Self::ActiveMarkerRequired {
-                coordination_run_id,
-                ..
-            } => coordination_run_id,
-        }
-    }
-
-    fn validate(
-        self,
-        reservations: &RetainedReservationSet,
-    ) -> Result<(), GateTransactionRejection> {
-        if let Self::ActiveSessionReservationRequired {
-            coordination_run_id,
-            reservation_id,
-            worktree_id,
-        } = self
-        {
-            return if reservations.iter().any(|reservation| {
-                reservation.id() == reservation_id
-                    && reservation.actor().run == coordination_run_id
-                    && reservation.actor().worktree == worktree_id
-                    && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-            }) {
-                Ok(())
-            } else {
-                Err(GateTransactionRejection::InactiveSessionMapping(
-                    coordination_run_id,
-                ))
-            };
-        }
-        let Self::ActiveMarkerRequired {
-            coordination_run_id,
-            worktree_id,
-        } = self
-        else {
-            return Ok(());
-        };
-        if reservations.iter().any(|reservation| {
-            reservation.actor().run == coordination_run_id
-                && reservation.actor().worktree == worktree_id
-                && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-        }) {
-            Ok(())
-        } else {
-            Err(GateTransactionRejection::InactiveMarkerRun(
-                coordination_run_id,
-            ))
         }
     }
 }
@@ -1295,8 +1272,8 @@ enum GateTransactionRejection {
     Reconciliation(GateReconciliationError),
     Git(GitError),
     PermitReplay(ForcedIntegrationPermitReplayError),
-    InactiveSessionMapping(CoordinationRunId),
-    InactiveMarkerRun(CoordinationRunId),
+    CoordinationIdentity(CoordinationIdentityRejection),
+    InvalidCanonicalWorktreeRoot,
     ReservationNotEntering(ReservationId),
     NoHoldToForce(ReservationId),
     MissingSkippedHold,
@@ -1313,12 +1290,12 @@ pub(crate) enum GateError {
     Planning(GateReconciliationError),
     Git(GitError),
     PermitReplay(ForcedIntegrationPermitReplayError),
-    InactiveSessionMapping(CoordinationRunId),
-    InactiveMarkerRun(CoordinationRunId),
+    CoordinationIdentity(CoordinationIdentityRejection),
     ReservationNotEntering(ReservationId),
     NoHoldToForce(ReservationId),
     MissingSkippedHold,
     MissingConstraintFact(MissingReadinessFact),
+    LegacyReferenceTransactionHook,
     UnsupportedSymbolicTrunkUpdate,
 }
 
@@ -1332,14 +1309,7 @@ impl Display for GateError {
             Self::Planning(error) => error.fmt(formatter),
             Self::Git(error) => error.fmt(formatter),
             Self::PermitReplay(error) => error.fmt(formatter),
-            Self::InactiveSessionMapping(run) => write!(
-                formatter,
-                "harness session mapping for coordination run {run} no longer names an active reservation in this worktree"
-            ),
-            Self::InactiveMarkerRun(run) => write!(
-                formatter,
-                "coordination-run marker {run} no longer has an active reservation in this worktree"
-            ),
+            Self::CoordinationIdentity(rejection) => rejection.fmt(formatter),
             Self::ReservationNotEntering(reservation_id) => write!(
                 formatter,
                 "reservation {reservation_id} is not newly reachable in the proposed main update"
@@ -1352,6 +1322,9 @@ impl Display for GateError {
                 formatter.write_str("a forced integration found no hold to record")
             },
             Self::MissingConstraintFact(error) => error.fmt(formatter),
+            Self::LegacyReferenceTransactionHook => formatter.write_str(
+                "the managed reference-transaction hook did not capture its issuing directory",
+            ),
             Self::UnsupportedSymbolicTrunkUpdate => formatter.write_str(
                 "the configured trunk received a symbolic-ref update instead of a commit update",
             ),
@@ -1367,10 +1340,12 @@ impl From<GateTransactionRejection> for GateError {
             GateTransactionRejection::Reconciliation(error) => Self::Planning(error),
             GateTransactionRejection::Git(error) => Self::Git(error),
             GateTransactionRejection::PermitReplay(error) => Self::PermitReplay(error),
-            GateTransactionRejection::InactiveSessionMapping(run) => {
-                Self::InactiveSessionMapping(run)
+            GateTransactionRejection::CoordinationIdentity(rejection) => {
+                Self::CoordinationIdentity(rejection)
             },
-            GateTransactionRejection::InactiveMarkerRun(run) => Self::InactiveMarkerRun(run),
+            GateTransactionRejection::InvalidCanonicalWorktreeRoot => {
+                Self::Ledger(LedgerError::InvalidCanonicalWorktreeRoot)
+            },
             GateTransactionRejection::ReservationNotEntering(reservation_id) => {
                 Self::ReservationNotEntering(reservation_id)
             },

@@ -5,9 +5,7 @@ use super::selection::DriftSelectionError;
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
-use crate::ledger::EditAuthorization;
-use crate::ledger::ResolvedJournalMutationActor;
-use crate::ledger::WorktreeContext;
+use crate::ledger::ResolvedEditAuthorization;
 use crate::reservation::AuthorizedEditingIdentity;
 use crate::reservation::RetainedReservationSet;
 
@@ -29,12 +27,12 @@ pub(super) enum DriftActingIdentity {
 
 impl DriftActingIdentity {
     pub(super) fn resolve(
-        worktree_context: &WorktreeContext,
-        journal_mutation_actor: ResolvedJournalMutationActor,
+        resolved_edit_authorization: ResolvedEditAuthorization,
         reservations: &RetainedReservationSet,
     ) -> Self {
-        let edit_authorization = EditAuthorization::resolve(worktree_context);
-        match reservations.resolve_editing_identity(edit_authorization) {
+        match reservations
+            .resolve_editing_identity(resolved_edit_authorization.edit_authorization())
+        {
             AuthorizedEditingIdentity::SessionReservation {
                 coordination_run_id: run,
                 reservation_id: reservation,
@@ -49,7 +47,7 @@ impl DriftActingIdentity {
                 worktree_id: worktree,
             } => Self::Run { run, worktree },
             AuthorizedEditingIdentity::Unidentified => Self::Unidentified {
-                worktree: journal_mutation_actor.worktree_id,
+                worktree: resolved_edit_authorization.worktree_id,
             },
         }
     }

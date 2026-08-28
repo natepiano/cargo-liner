@@ -5,6 +5,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::path::Path;
+use std::path::PathBuf;
 
 use super::classification;
 use super::classification::PriorClassification;
@@ -26,6 +27,11 @@ use super::selection::DriftReservationSelection;
 use super::selection::DriftSelectionError;
 use super::selection::PostWriteFirstTouchRequirement;
 use crate::config::Enrollment;
+use crate::coordination_identity::CoordinationIdentityRejection;
+use crate::coordination_identity::CoordinationIdentityValidationContext;
+use crate::coordination_identity::CoordinationIdentityValidationError;
+use crate::coordination_identity::RecoveryCommandLine;
+use crate::coordination_identity::validate_coordination_identity;
 use crate::git;
 use crate::git::GitError;
 use crate::ids::WorktreeId;
@@ -36,7 +42,7 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
-use crate::ledger::ResolvedJournalMutationActor;
+use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
@@ -45,6 +51,7 @@ use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
+use crate::scope::DeclaredReservationScopeSetError;
 use crate::scope::PathCase;
 use crate::scope::PathCaseError;
 use crate::scope::ReservationScopeSet;
@@ -61,22 +68,27 @@ struct PostWritePathAttribution {
 }
 
 enum DriftTransactionRejection {
+    CoordinationIdentity(CoordinationIdentityValidationError),
     Replay(ReservationReplayError),
     Selection(DriftSelectionError),
 }
 
 struct DriftMutationContext<'observation> {
-    request:                DriftRequest,
-    repository_root:        &'observation Path,
-    acting_identity:        DriftActingIdentity,
-    journal_mutation_actor: ResolvedJournalMutationActor,
-    path_case:              PathCase,
-    observation:            &'observation FingerprintObservation,
-    prior_classification:   &'observation PriorClassification,
+    request:                     DriftRequest,
+    repository_root:             &'observation Path,
+    acting_identity:             DriftActingIdentity,
+    resolved_edit_authorization: ResolvedEditAuthorization,
+    identity_validation:         CoordinationIdentityValidationContext,
+    path_case:                   PathCase,
+    observation:                 &'observation FingerprintObservation,
+    prior_classification:        &'observation PriorClassification,
 }
 
 /// Execute one cheap or full drift observation and reconcile any changed paths.
-pub(crate) fn execute(request: DriftRequest) -> OutputEnvelope {
+pub(crate) fn execute(
+    request: DriftRequest,
+    recovery_command_line: &RecoveryCommandLine,
+) -> OutputEnvelope {
     let invocation_directory = match std::env::current_dir() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
@@ -96,7 +108,8 @@ pub(crate) fn execute(request: DriftRequest) -> OutputEnvelope {
             },
             Err(error) => return error.into_output(CommandVerb::Drift),
         };
-    let output_envelope = match execute_inner(request, &invocation_directory) {
+    let output_envelope = match execute_inner(request, &invocation_directory, recovery_command_line)
+    {
         Ok(Enrollment::Enrolled(report)) => OutputEnvelope::drift(report),
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
@@ -104,8 +117,11 @@ pub(crate) fn execute(request: DriftRequest) -> OutputEnvelope {
         Err(DriftExecutionError::Selection(error)) => {
             OutputEnvelope::invalid_input(CommandVerb::Drift, &error.to_string())
         },
-        Err(DriftExecutionError::ClaimRejected(diagnostic)) => {
-            OutputEnvelope::invalid_input(CommandVerb::Drift, &diagnostic)
+        Err(DriftExecutionError::PostWriteClaimRejected(rejection)) => {
+            OutputEnvelope::invalid_input(CommandVerb::Drift, &rejection.to_string())
+        },
+        Err(DriftExecutionError::CoordinationIdentity(rejection)) => {
+            OutputEnvelope::coordination_identity_rejected(CommandVerb::Drift, rejection)
         },
         Err(DriftExecutionError::Claim(error)) => error.into_output(CommandVerb::Drift),
         Err(DriftExecutionError::Transaction(LedgerTransactionError::LockContention)) => {
@@ -129,6 +145,7 @@ pub(crate) fn execute(request: DriftRequest) -> OutputEnvelope {
 fn execute_inner(
     request: DriftRequest,
     invocation_directory: &Path,
+    recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<DriftReport>, DriftExecutionError> {
     let initial_snapshot = match Ledger::read_for_edit_check(invocation_directory)? {
         Enrollment::Enrolled(initial_snapshot) => initial_snapshot,
@@ -141,21 +158,18 @@ fn execute_inner(
         },
     };
     let worktree_context = initial_snapshot.worktree_context().clone();
+    let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
+    let identity_validation = CoordinationIdentityValidationContext::for_user_command(
+        resolved_edit_authorization,
+        &worktree_context,
+        recovery_command_line,
+    );
     let Some(worktree_id) = comparable_worktree(&worktree_context, &request)? else {
         return Ok(nothing_to_compare(request.comparison));
     };
-    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
-    if journal_mutation_actor.worktree_id != worktree_id {
-        return Err(DriftExecutionError::Ledger(
-            LedgerError::WorktreeIdentityMismatch,
-        ));
-    }
     let initial_reservations = RetainedReservationSet::replay(initial_snapshot.events())?;
-    let acting_identity = DriftActingIdentity::resolve(
-        &worktree_context,
-        journal_mutation_actor,
-        &initial_reservations,
-    );
+    let acting_identity =
+        validated_drift_identity(worktree_id, &initial_reservations, &identity_validation)?;
     let initial_subjects = request
         .reservation
         .resolve(&initial_reservations, acting_identity)?;
@@ -184,7 +198,7 @@ fn execute_inner(
             PostWriteFirstTouchRequirement::Required
         )
     {
-        let attribution = claim_post_write_paths(&observation)?;
+        let attribution = claim_post_write_paths(&observation, recovery_command_line)?;
         let report = DriftReport {
             comparison:       observation.comparison,
             path_attribution: attribution.outcome,
@@ -206,7 +220,8 @@ fn execute_inner(
         request,
         repository_root: worktree_context.repository_root(),
         acting_identity,
-        journal_mutation_actor,
+        resolved_edit_authorization,
+        identity_validation,
         path_case,
         observation: &observation,
         prior_classification: &prior_classification,
@@ -222,7 +237,7 @@ fn execute_inner(
         initial_subjects.post_write_first_touch,
         PostWriteFirstTouchRequirement::Required
     ) {
-        let attribution = claim_post_write_paths(&observation)?;
+        let attribution = claim_post_write_paths(&observation, recovery_command_line)?;
         report.path_attribution = attribution.outcome;
         report.results.extend(attribution.results);
     }
@@ -230,6 +245,33 @@ fn execute_inner(
         fingerprint::publish_fingerprint(&cache_path, &observation.cache_value);
     }
     Ok(Enrollment::Enrolled(report))
+}
+
+fn validated_drift_identity(
+    worktree_id: WorktreeId,
+    reservations: &RetainedReservationSet,
+    identity_validation: &CoordinationIdentityValidationContext,
+) -> Result<DriftActingIdentity, DriftExecutionError> {
+    let resolved_edit_authorization = identity_validation.resolved_edit_authorization();
+    if resolved_edit_authorization.worktree_id != worktree_id {
+        return Err(DriftExecutionError::Ledger(
+            LedgerError::WorktreeIdentityMismatch,
+        ));
+    }
+    validate_coordination_identity(reservations, identity_validation).map_err(
+        |error| match error {
+            CoordinationIdentityValidationError::Rejected(rejection) => {
+                DriftExecutionError::CoordinationIdentity(rejection)
+            },
+            CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
+                DriftExecutionError::Ledger(LedgerError::InvalidCanonicalWorktreeRoot)
+            },
+        },
+    )?;
+    Ok(DriftActingIdentity::resolve(
+        resolved_edit_authorization,
+        reservations,
+    ))
 }
 
 /// The worktree this run reports for, or nothing when it has no comparison to make.
@@ -271,6 +313,7 @@ fn nothing_to_compare(comparison: DriftComparisonChoice) -> Enrollment<DriftRepo
 
 fn claim_post_write_paths(
     observation: &FingerprintObservation,
+    recovery_command_line: &RecoveryCommandLine,
 ) -> Result<PostWritePathAttribution, DriftExecutionError> {
     let paths = match observation.post_write_claim_subject() {
         PostWriteClaimSubject::NoModifiedPath => {
@@ -282,11 +325,15 @@ fn claim_post_write_paths(
         PostWriteClaimSubject::ModifiedPaths(paths) => paths,
     };
     let declared_scopes = DeclaredReservationScopeSet::from_file_paths(paths)
-        .map_err(|error| DriftExecutionError::ClaimRejected(error.to_string()))?;
-    let acquisition = claim::acquire_first_touch(FirstTouchClaimRequest {
-        declared_scopes,
-        conflict_handling: FirstTouchConflictHandling::ProtectFreePaths,
-    })?;
+        .map_err(PostWriteClaimRejection::InvalidDeclaredScopes)
+        .map_err(DriftExecutionError::PostWriteClaimRejected)?;
+    let acquisition = claim::acquire_first_touch(
+        FirstTouchClaimRequest {
+            declared_scopes,
+            conflict_handling: FirstTouchConflictHandling::ProtectFreePaths,
+        },
+        recovery_command_line,
+    )?;
     match acquisition {
         Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
             acquisition,
@@ -335,16 +382,15 @@ fn claim_post_write_paths(
             })
         },
         Enrollment::Enrolled(FirstTouchClaimExecution::ReservationLimitReached(maximum)) => {
-            Err(DriftExecutionError::ClaimRejected(format!(
-                "repository policy permits at most {maximum} live reservations"
-            )))
+            Err(DriftExecutionError::PostWriteClaimRejected(
+                PostWriteClaimRejection::ReservationLimitReached(maximum),
+            ))
         },
         Enrollment::Unconfigured {
             expected_configuration_path,
-        } => Err(DriftExecutionError::ClaimRejected(format!(
-            "repository enrollment disappeared while claiming; expected {}",
-            expected_configuration_path.display()
-        ))),
+        } => Err(DriftExecutionError::PostWriteClaimRejected(
+            PostWriteClaimRejection::EnrollmentDisappeared(expected_configuration_path),
+        )),
     }
 }
 
@@ -359,7 +405,7 @@ fn paths_from_scopes(
             .collect::<Vec<_>>(),
     )
     .map_err(|_| {
-        DriftExecutionError::ClaimRejected("the post-write claim had no changed path".to_owned())
+        DriftExecutionError::PostWriteClaimRejected(PostWriteClaimRejection::MissingChangedPath)
     })
 }
 
@@ -372,8 +418,8 @@ fn transact_classification(
         .run_for_mutation(context.request.reservation)?
         .into_coordination_run_id();
     let journal_mutation_actor = context
-        .journal_mutation_actor
-        .with_coordination_run_id(actor_run);
+        .resolved_edit_authorization
+        .journal_mutation_actor_for(actor_run);
     let outcome = ledger.transact_reconciliation(
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,
@@ -386,6 +432,13 @@ fn transact_classification(
                     ));
                 },
             };
+            if let Err(error) =
+                validate_coordination_identity(&reservations, &context.identity_validation)
+            {
+                return ReconciliationValidation::Reject(
+                    DriftTransactionRejection::CoordinationIdentity(error),
+                );
+            }
             let subjects = match context
                 .request
                 .reservation
@@ -420,6 +473,16 @@ fn transact_classification(
     );
     match outcome {
         Ok(LedgerCommittedActionOutcome::Appended { output: report, .. }) => Ok(report),
+        Ok(LedgerCommittedActionOutcome::Rejected(
+            DriftTransactionRejection::CoordinationIdentity(error),
+        )) => match error {
+            CoordinationIdentityValidationError::Rejected(rejection) => {
+                Err(DriftExecutionError::CoordinationIdentity(rejection))
+            },
+            CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => Err(
+                DriftExecutionError::Ledger(LedgerError::InvalidCanonicalWorktreeRoot),
+            ),
+        },
         Ok(LedgerCommittedActionOutcome::Rejected(DriftTransactionRejection::Replay(error))) => {
             Err(DriftExecutionError::Replay(error))
         },
@@ -445,7 +508,16 @@ enum DriftExecutionError {
     PathCase(PathCaseError),
     Transaction(LedgerTransactionError),
     Claim(ClaimError),
-    ClaimRejected(String),
+    CoordinationIdentity(CoordinationIdentityRejection),
+    PostWriteClaimRejected(PostWriteClaimRejection),
+}
+
+#[derive(Debug)]
+enum PostWriteClaimRejection {
+    InvalidDeclaredScopes(DeclaredReservationScopeSetError),
+    ReservationLimitReached(u32),
+    EnrollmentDisappeared(PathBuf),
+    MissingChangedPath,
 }
 
 impl Display for DriftExecutionError {
@@ -460,7 +532,28 @@ impl Display for DriftExecutionError {
             Self::PathCase(error) => error.fmt(formatter),
             Self::Transaction(error) => error.fmt(formatter),
             Self::Claim(error) => error.fmt(formatter),
-            Self::ClaimRejected(diagnostic) => formatter.write_str(diagnostic),
+            Self::CoordinationIdentity(rejection) => rejection.fmt(formatter),
+            Self::PostWriteClaimRejected(rejection) => rejection.fmt(formatter),
+        }
+    }
+}
+
+impl Display for PostWriteClaimRejection {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidDeclaredScopes(error) => error.fmt(formatter),
+            Self::ReservationLimitReached(maximum) => write!(
+                formatter,
+                "repository policy permits at most {maximum} live reservations"
+            ),
+            Self::EnrollmentDisappeared(expected_configuration_path) => write!(
+                formatter,
+                "repository enrollment disappeared while claiming; expected {}",
+                expected_configuration_path.display()
+            ),
+            Self::MissingChangedPath => {
+                formatter.write_str("the post-write claim had no changed path")
+            },
         }
     }
 }

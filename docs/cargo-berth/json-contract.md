@@ -265,6 +265,64 @@ Journal, claim, and widen payloads use
 "existing_answers_cover_every_overlap"` for
 `RecordedAnswer::ExistingAnswersCoverEveryOverlap`.
 
+## Coordination identity rejections
+
+Claim, check, drift, and sequence return a shared identity rejection with
+`status = "invalid_input"`, `exit_code = 5`, and
+`payload.kind = "coordination_identity"`. Integration retains its verb payload:
+`payload.kind = "integrate"`, `payload.data.status = "rejected"`, and the same
+rejection object at `payload.data.reason`.
+
+The rejection object is one of these tagged alternatives:
+
+- `kind = "stale_session_mapping"` carries `coordination_run_id`,
+  `reservation_id`, and `recovery_actions`.
+- `kind = "stale_marker_run"` carries `coordination_run_id`,
+  `issuing_worktree_id`, `issuing_root`, and `recovery_actions`.
+- `kind = "session_worktree_mismatch"` carries `coordination_run_id`,
+  `reservation_id`, `holding_worktree_id`, `issuing_worktree_id`,
+  `holding_root`, `issuing_root`, and `recovery_actions`.
+
+`recovery_actions` is always a non-empty array. Every action contains a
+non-empty `argv` array holding the complete executable and arguments, plus a
+canonical absolute `cwd`. Every published `argv` is directly executable without
+argument substitution. An action whose complete command cannot be represented
+as text is omitted instead of being published in a degraded form. The action
+alternatives are:
+
+- `clear_session_mapping`, whose command is
+  `["cargo-berth", "identity", "clear-session", "--json"]`;
+- `reconcile_and_sweep_marker`, whose command is
+  `["cargo-berth", "board", "--json"]`;
+- `rerun_from_holding_worktree`, whose command is the original process argv and
+  whose `cwd` is `holding_root`;
+- `claim_separately_here`, whose command is
+  `["cargo-berth", "identity", "clear-session", "--json"]` and whose `cwd` is
+  `issuing_root`. After it succeeds, the caller starts a separate harness
+  session, claims work in that checkout, and reruns the rejected command.
+
+A stale session mapping has only `clear_session_mapping`; a stale marker has
+only `reconcile_and_sweep_marker`; and a worktree mismatch has both
+`rerun_from_holding_worktree` and `claim_separately_here`, in that order. A
+consumer executes the supplied argv in the supplied cwd without adding flags or
+paths. A managed reference-transaction hook cannot replay Git's stdin-backed
+private command. Its mismatch response therefore supplies only
+`clear_session_mapping`; after the repair succeeds, the user retries the
+original Git command. If the original process argv contains an argument that is
+not text, `rerun_from_holding_worktree` is omitted and the mismatch response
+supplies only the always-runnable `claim_separately_here` action.
+
+`cargo-berth identity clear-session --json` returns `verb = "identity"` and
+`payload.kind = "identity"`. A removed or already-absent mapping returns
+`status = "session_mapping_cleared"`, `exit_code = 0`, and
+`payload.data.status = "session_mapping_removed"` or
+`"session_mapping_already_absent"`. When no usable `CARGO_BERTH_SESSION_ID` is
+available, the repair did not run: the response has
+`status = "session_mapping_unavailable"`, `exit_code = 5`, and
+`payload.data.status = "current_session_unavailable"`. The command removes only
+the mapping selected by the current `CARGO_BERTH_SESSION_ID`; it does not remove
+other session mappings or alter reservation or journal state.
+
 ## Drift outcomes
 
 A drift response carries `payload.kind = "drift"`. Each

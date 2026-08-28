@@ -8,29 +8,29 @@ use std::fmt::Formatter;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::config::Enrollment;
+use crate::coordination_identity::CoordinationIdentityRejection;
+use crate::coordination_identity::CoordinationIdentityValidationContext;
+use crate::coordination_identity::CoordinationIdentityValidationError;
+use crate::coordination_identity::RecoveryCommandLine;
+use crate::coordination_identity::validate_coordination_identity;
 use crate::edge::EdgeDeclarationRejection;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingEdge;
 use crate::edge::OrderingGraph;
 use crate::edge::OrderingReason;
 use crate::edge::PreparedOrderingEdge;
-use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
-use crate::ids::WorktreeId;
 use crate::ledger;
-use crate::ledger::EditAuthorization;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
-use crate::ledger::ResolvedJournalMutationActor;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::SequenceRejectionKind;
 use crate::reconcile;
-use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 
@@ -45,7 +45,10 @@ pub(crate) struct SequenceRequest {
 }
 
 /// Execute one stateful deferral resolution and attach preceding reconciliation alerts.
-pub(crate) fn execute(sequence_request: &SequenceRequest) -> OutputEnvelope {
+pub(crate) fn execute(
+    sequence_request: &SequenceRequest,
+    recovery_command_line: &RecoveryCommandLine,
+) -> OutputEnvelope {
     let invocation_directory = match std::env::current_dir() {
         Ok(invocation_directory) => invocation_directory,
         Err(error) => {
@@ -68,7 +71,7 @@ pub(crate) fn execute(sequence_request: &SequenceRequest) -> OutputEnvelope {
         },
         Err(error) => return error.into_output(CommandVerb::Sequence),
     };
-    let output_envelope = match execute_sequence(sequence_request) {
+    let output_envelope = match execute_sequence(sequence_request, recovery_command_line) {
         Ok(Enrollment::Enrolled(edge)) => {
             match edge.readiness(&reconciliation_report.repository_snapshot) {
                 Ok(readiness) => OutputEnvelope::sequenced(edge, readiness),
@@ -91,22 +94,13 @@ pub(crate) fn execute(sequence_request: &SequenceRequest) -> OutputEnvelope {
                 SequenceRejectionKind::OrderingEdgeLimitReached { maximum },
             )
         },
-        Err(SequenceError::Rejected(SequenceRejection::InactiveSessionMapping(
-            coordination_run_id,
-        ))) => OutputEnvelope::sequence_rejected(
-            sequence_request.first,
-            sequence_request.then,
-            SequenceRejectionKind::InactiveSessionMapping {
-                coordination_run_id,
-            },
-        ),
-        Err(SequenceError::Rejected(SequenceRejection::InactiveMarkerRun(coordination_run_id))) => {
-            OutputEnvelope::sequence_rejected(
-                sequence_request.first,
-                sequence_request.then,
-                SequenceRejectionKind::InactiveMarkerRun {
-                    coordination_run_id,
-                },
+        Err(SequenceError::Rejected(SequenceRejection::CoordinationIdentity(rejection))) => {
+            OutputEnvelope::coordination_identity_rejected(CommandVerb::Sequence, rejection)
+        },
+        Err(SequenceError::Rejected(SequenceRejection::InvalidCanonicalWorktreeRoot)) => {
+            OutputEnvelope::ledger_unreadable(
+                CommandVerb::Sequence,
+                "the current worktree root is not canonical UTF-8",
             )
         },
         Err(SequenceError::Transaction(LedgerTransactionError::LockContention)) => {
@@ -132,13 +126,18 @@ pub(crate) fn execute(sequence_request: &SequenceRequest) -> OutputEnvelope {
 
 fn execute_sequence(
     sequence_request: &SequenceRequest,
+    recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<OrderingEdge>, SequenceError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
-    let run_validation = SequenceRunValidation::resolve(journal_mutation_actor);
-    let journal_mutation_actor =
-        journal_mutation_actor.with_coordination_run_id(run_validation.coordination_run_id());
+    let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
+    let journal_mutation_actor = resolved_edit_authorization
+        .journal_mutation_actor_for(resolved_edit_authorization.coordination_run_id);
+    let identity_validation = CoordinationIdentityValidationContext::for_user_command(
+        resolved_edit_authorization,
+        &worktree_context,
+        recovery_command_line,
+    );
     let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
@@ -163,7 +162,16 @@ fn execute_sequence(
                     ));
                 },
             };
-            if let Err(rejection) = run_validation.validate(&reservations) {
+            if let Err(error) = validate_coordination_identity(&reservations, &identity_validation)
+            {
+                let rejection = match error {
+                    CoordinationIdentityValidationError::Rejected(rejection) => {
+                        SequenceRejection::CoordinationIdentity(rejection)
+                    },
+                    CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
+                        SequenceRejection::InvalidCanonicalWorktreeRoot
+                    },
+                };
                 return TransactionValidation::Reject(rejection);
             }
             let ordering_graph = match OrderingGraph::replay(state.events()) {
@@ -211,102 +219,6 @@ enum PreparedEdgeState {
     Prepared(PreparedOrderingEdge),
 }
 
-#[derive(Clone, Copy)]
-enum SequenceRunValidation {
-    Independent(CoordinationRunId),
-    ActiveSessionReservationRequired {
-        coordination_run_id: CoordinationRunId,
-        reservation_id:      ReservationId,
-        worktree_id:         WorktreeId,
-    },
-    ActiveMarkerRequired {
-        coordination_run_id: CoordinationRunId,
-        worktree_id:         WorktreeId,
-    },
-}
-
-impl SequenceRunValidation {
-    const fn resolve(journal_mutation_actor: ResolvedJournalMutationActor) -> Self {
-        match journal_mutation_actor.edit_authorization() {
-            EditAuthorization::Session {
-                coordination_run_id,
-                reservation_id,
-                worktree_id,
-            } => Self::ActiveSessionReservationRequired {
-                coordination_run_id,
-                reservation_id,
-                worktree_id,
-            },
-            EditAuthorization::Environment {
-                coordination_run_id,
-                ..
-            } => Self::Independent(coordination_run_id),
-            EditAuthorization::Marker {
-                coordination_run_id,
-                worktree_id,
-            } => Self::ActiveMarkerRequired {
-                coordination_run_id,
-                worktree_id,
-            },
-            EditAuthorization::Unidentified => {
-                Self::Independent(journal_mutation_actor.coordination_run_id)
-            },
-        }
-    }
-
-    const fn coordination_run_id(self) -> CoordinationRunId {
-        match self {
-            Self::Independent(coordination_run_id)
-            | Self::ActiveSessionReservationRequired {
-                coordination_run_id,
-                ..
-            }
-            | Self::ActiveMarkerRequired {
-                coordination_run_id,
-                ..
-            } => coordination_run_id,
-        }
-    }
-
-    fn validate(self, reservations: &RetainedReservationSet) -> Result<(), SequenceRejection> {
-        if let Self::ActiveSessionReservationRequired {
-            coordination_run_id,
-            reservation_id,
-            worktree_id,
-        } = self
-        {
-            return if reservations.iter().any(|reservation| {
-                reservation.id() == reservation_id
-                    && reservation.actor().run == coordination_run_id
-                    && reservation.actor().worktree == worktree_id
-                    && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-            }) {
-                Ok(())
-            } else {
-                Err(SequenceRejection::InactiveSessionMapping(
-                    coordination_run_id,
-                ))
-            };
-        }
-        let Self::ActiveMarkerRequired {
-            coordination_run_id,
-            worktree_id,
-        } = self
-        else {
-            return Ok(());
-        };
-        if reservations.iter().any(|reservation| {
-            reservation.actor().run == coordination_run_id
-                && reservation.actor().worktree == worktree_id
-                && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-        }) {
-            Ok(())
-        } else {
-            Err(SequenceRejection::InactiveMarkerRun(coordination_run_id))
-        }
-    }
-}
-
 fn count_reaches_limit(count: usize, maximum: u32) -> bool {
     u64::try_from(count).map_or(true, |count| count >= u64::from(maximum))
 }
@@ -317,8 +229,8 @@ enum SequenceRejection {
     EdgeReplay(EdgeReplayError),
     Declaration(EdgeDeclarationRejection),
     EdgeLimitReached(u32),
-    InactiveSessionMapping(CoordinationRunId),
-    InactiveMarkerRun(CoordinationRunId),
+    CoordinationIdentity(CoordinationIdentityRejection),
+    InvalidCanonicalWorktreeRoot,
 }
 
 #[derive(Debug)]
@@ -356,14 +268,10 @@ impl Display for SequenceRejection {
                 formatter,
                 "the configured maximum of {maximum} ordering edges has been reached"
             ),
-            Self::InactiveSessionMapping(coordination_run_id) => write!(
-                formatter,
-                "harness session mapping for coordination run {coordination_run_id} no longer names an active reservation"
-            ),
-            Self::InactiveMarkerRun(coordination_run_id) => write!(
-                formatter,
-                "coordination-run marker {coordination_run_id} no longer has an active reservation"
-            ),
+            Self::CoordinationIdentity(rejection) => rejection.fmt(formatter),
+            Self::InvalidCanonicalWorktreeRoot => {
+                formatter.write_str("the current worktree root is not canonical UTF-8")
+            },
         }
     }
 }
@@ -384,42 +292,4 @@ impl From<LedgerError> for SequenceError {
 
 impl From<LedgerTransactionError> for SequenceError {
     fn from(error: LedgerTransactionError) -> Self { Self::Transaction(error) }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::SequenceRunValidation;
-    use crate::ids::CoordinationRunId;
-    use crate::ids::ReservationId;
-    use crate::ids::WorktreeId;
-    use crate::ledger::EditAuthorization;
-    use crate::ledger::ResolvedJournalMutationActor;
-
-    #[test]
-    fn sequence_uses_the_session_authorization_resolved_with_the_actor() {
-        let coordination_run_id = CoordinationRunId::new();
-        let reservation_id = ReservationId::new();
-        let worktree_id = WorktreeId::new();
-        let journal_mutation_actor = ResolvedJournalMutationActor::for_edit_authorization(
-            worktree_id,
-            EditAuthorization::Session {
-                coordination_run_id,
-                reservation_id,
-                worktree_id,
-            },
-        );
-
-        let run_validation = SequenceRunValidation::resolve(journal_mutation_actor);
-
-        assert!(matches!(
-            run_validation,
-            SequenceRunValidation::ActiveSessionReservationRequired {
-                coordination_run_id: actual_run_id,
-                reservation_id: actual_reservation_id,
-                worktree_id: actual_worktree_id,
-            } if actual_run_id == coordination_run_id
-                && actual_reservation_id == reservation_id
-                && actual_worktree_id == worktree_id
-        ));
-    }
 }

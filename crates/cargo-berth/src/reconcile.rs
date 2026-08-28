@@ -521,7 +521,7 @@ fn reconcile_enrolled(
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
-        .with_coordination_run_id(CoordinationRunId::new());
+        .journal_mutation_actor_for(CoordinationRunId::new());
     let outcome = ledger
         .transact_reconciliation(
             journal_mutation_actor.worktree_id,

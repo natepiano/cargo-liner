@@ -204,12 +204,13 @@ fn sequence_rejects_a_stale_post_reconciliation_marker_and_carries_alerts() {
     assert_eq!(rejected.status.code(), Some(5));
     assert_eq!(rejected_json["exit_code"], 5);
     assert_eq!(rejected_json["status"], "invalid_input");
-    assert_eq!(
-        rejected_json["payload"]["data"]["reason"]["kind"],
-        "inactive_marker_run"
+    assert_coordination_identity_rejection(
+        &rejected_json,
+        "stale_marker_run",
+        &["reconcile_and_sweep_marker"],
     );
     assert_eq!(
-        rejected_json["payload"]["data"]["reason"]["coordination_run_id"],
+        rejected_json["payload"]["data"]["coordination_run_id"],
         FOURTH_RUN
     );
     assert_eq!(rejected_json["blocked_by"], serde_json::json!([]));
@@ -273,12 +274,58 @@ fn sequence_reports_an_inactive_session_mapping_without_a_marker_diagnostic() {
         .expect("sequence rejection should have a message");
 
     assert_eq!(rejected.status.code(), Some(5));
-    assert_eq!(
-        rejected_json["payload"]["data"]["reason"]["kind"],
-        "inactive_session_mapping"
+    assert_coordination_identity_rejection(
+        &rejected_json,
+        "stale_session_mapping",
+        &["clear_session_mapping"],
     );
     assert!(diagnostic.contains("Harness session mapping"));
     assert!(!diagnostic.contains("coordination-run marker"));
+    assert_eq!(resolve_defer_count(repository.path()), 0);
+}
+
+#[test]
+fn sequence_rejects_a_session_mapping_owned_by_another_worktree() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
+    let session_id = "foreign-sequence-session";
+    let mapped_claim = run_berth_with_session(
+        &third_root,
+        &[
+            "claim",
+            "file:session-sequence",
+            "--run",
+            THIRD_RUN,
+            "--why",
+            "hold the mapped reservation in the third checkout",
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(mapped_claim.status.success());
+
+    let rejected = run_berth_with_session(
+        repository.path(),
+        &[
+            "sequence",
+            &holder_id,
+            &requester_id,
+            "--why",
+            "the holder must land first",
+            "--json",
+        ],
+        session_id,
+    );
+    let rejected_json = json_output(&rejected);
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &rejected_json,
+        "session_worktree_mismatch",
+        &["rerun_from_holding_worktree", "claim_separately_here"],
+    );
     assert_eq!(resolve_defer_count(repository.path()), 0);
 }
 
@@ -1963,6 +2010,38 @@ fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id
         .env(SESSION_ENVIRONMENT, session_id)
         .output()
         .expect("cargo-berth should run")
+}
+
+fn assert_coordination_identity_rejection(
+    envelope: &serde_json::Value,
+    expected_kind: &str,
+    expected_action_kinds: &[&str],
+) {
+    assert_eq!(envelope["payload"]["kind"], "coordination_identity");
+    assert_eq!(envelope["payload"]["data"]["kind"], expected_kind);
+    let actions = envelope["payload"]["data"]["recovery_actions"]
+        .as_array()
+        .expect("identity rejection should carry recovery actions");
+    assert!(!actions.is_empty());
+    assert_eq!(
+        actions
+            .iter()
+            .map(|action| action["kind"].as_str().expect("action kind should be text"))
+            .collect::<Vec<_>>(),
+        expected_action_kinds
+    );
+    for action in actions {
+        assert!(
+            action["argv"]
+                .as_array()
+                .is_some_and(|argv| !argv.is_empty())
+        );
+        assert!(
+            action["cwd"]
+                .as_str()
+                .is_some_and(|cwd| Path::new(cwd).is_absolute())
+        );
+    }
 }
 
 fn run_berth_with_stale_marker(

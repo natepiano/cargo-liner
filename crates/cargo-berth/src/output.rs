@@ -15,6 +15,7 @@ use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::board::BoardModel;
 use crate::config::InitializationState;
+use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::drift::DriftEffect;
 use crate::drift::DriftPathAttributionOutcome;
 use crate::drift::DriftReport;
@@ -54,6 +55,7 @@ use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationConflict;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
+use crate::session::CurrentSessionMappingRemoval;
 use crate::session::SessionIdentityMappingPublication;
 use crate::verb::claim::FirstTouchReservationAcquisition;
 use crate::verb::claim::FirstTouchReservationAcquisitionKind;
@@ -109,6 +111,8 @@ pub(crate) enum CommandVerb {
     Resolve,
     /// Renew a reservation's explicit activity record.
     Renew,
+    /// Manage the current process's disposable coordination identity.
+    Identity,
 }
 
 /// Whether the post-commit hook should stay silent or print a warning.
@@ -187,6 +191,10 @@ enum OutputStatus {
     Recovered,
     /// A still-live reservation recorded recent activity.
     Renewed,
+    /// The current harness-session mapping was removed or was already absent.
+    SessionMappingCleared,
+    /// No harness-session identifier selected a mapping to remove.
+    SessionMappingUnavailable,
     /// A user disposition answered one outstanding incursion incident.
     IncursionResolved,
 }
@@ -232,6 +240,10 @@ enum OutputFacts {
     Resolve(ResolvePayload),
     /// Facts returned by a renewal.
     Renew(RenewPayload),
+    /// Facts returned by coordination identity management.
+    Identity(IdentityPayload),
+    /// A shared coordination identity rejection returned by any validating command.
+    CoordinationIdentity(CoordinationIdentityRejection),
 }
 
 /// The resources an `init` call created or left intact.
@@ -368,23 +380,7 @@ pub(crate) enum IntegrationPayload {
     /// Caller identity named a coordination run that no longer owns active work.
     Rejected {
         /// The semantic reason integration could not select active work.
-        reason: IntegrationRejectionKind,
-    },
-}
-
-/// A stable inactive-identity rejection returned by `integrate`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum IntegrationRejectionKind {
-    /// A harness session mapping no longer identifies its exact active reservation.
-    InactiveSessionMapping {
-        /// The stale coordination run named by that mapping.
-        coordination_run_id: CoordinationRunId,
-    },
-    /// A marker no longer identifies active work in the invoking worktree.
-    InactiveMarkerRun {
-        /// The stale coordination run named by that marker.
-        coordination_run_id: CoordinationRunId,
+        reason: CoordinationIdentityRejection,
     },
 }
 
@@ -482,6 +478,30 @@ struct RenewPayload {
     reservation_id: ReservationId,
 }
 
+/// Typed outcomes returned by `identity`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum IdentityPayload {
+    /// The current harness session's mapping was removed.
+    SessionMappingRemoved,
+    /// The current harness session had no stored mapping.
+    SessionMappingAlreadyAbsent,
+    /// The process supplied no usable harness session identifier.
+    CurrentSessionUnavailable,
+}
+
+impl From<CurrentSessionMappingRemoval> for IdentityPayload {
+    fn from(removal: CurrentSessionMappingRemoval) -> Self {
+        match removal {
+            CurrentSessionMappingRemoval::Removed => Self::SessionMappingRemoved,
+            CurrentSessionMappingRemoval::AlreadyAbsent => Self::SessionMappingAlreadyAbsent,
+            CurrentSessionMappingRemoval::CurrentSessionUnavailable => {
+                Self::CurrentSessionUnavailable
+            },
+        }
+    }
+}
+
 /// Typed outcomes returned by `claim`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -568,16 +588,6 @@ pub(crate) enum SequenceRejectionKind {
         /// The configured durable edge maximum.
         maximum: u32,
     },
-    /// A harness session mapping no longer identifies its exact active reservation.
-    InactiveSessionMapping {
-        /// The stale coordination run named by that mapping.
-        coordination_run_id: CoordinationRunId,
-    },
-    /// A marker no longer identifies active work in the invoking worktree.
-    InactiveMarkerRun {
-        /// The stale coordination run named by that marker.
-        coordination_run_id: CoordinationRunId,
-    },
 }
 
 impl From<EdgeDeclarationRejection> for SequenceRejectionKind {
@@ -604,9 +614,7 @@ impl SequenceRejectionKind {
             | Self::SameEndpoint
             | Self::MissingDeferral
             | Self::AmbiguousDeferral
-            | Self::OrderingEdgeLimitReached { .. }
-            | Self::InactiveSessionMapping { .. }
-            | Self::InactiveMarkerRun { .. } => Vec::new(),
+            | Self::OrderingEdgeLimitReached { .. } => Vec::new(),
         }
     }
 
@@ -652,24 +660,6 @@ impl SequenceRejectionKind {
                 OutputStatus::InvalidInput,
                 BerthExit::UsageError,
                 format!("Reservations {first} and {then} recorded deferrals in both directions."),
-            ),
-            Self::InactiveSessionMapping {
-                coordination_run_id,
-            } => (
-                OutputStatus::InvalidInput,
-                BerthExit::UsageError,
-                format!(
-                    "Harness session mapping for coordination run {coordination_run_id} no longer names an active reservation."
-                ),
-            ),
-            Self::InactiveMarkerRun {
-                coordination_run_id,
-            } => (
-                OutputStatus::InvalidInput,
-                BerthExit::UsageError,
-                format!(
-                    "Coordination-run marker {coordination_run_id} no longer has an active reservation."
-                ),
             ),
         }
     }
@@ -1253,19 +1243,67 @@ impl OutputEnvelope {
     /// Build an integration rejection that retains the inactive identity source.
     pub(crate) fn integration_rejected(
         reservation_id: ReservationId,
-        reason: IntegrationRejectionKind,
-        diagnostic: &str,
+        reason: CoordinationIdentityRejection,
     ) -> Self {
+        let message = reason.to_string();
         Self {
-            verb:         CommandVerb::Integrate,
-            status:       OutputStatus::InvalidInput,
-            exit_code:    BerthExit::UsageError,
+            verb: CommandVerb::Integrate,
+            status: OutputStatus::InvalidInput,
+            exit_code: BerthExit::UsageError,
             reservations: vec![reservation_id],
-            blocked_by:   Vec::new(),
-            message:      diagnostic.to_owned(),
-            payload:      OutputPayload::from_facts(OutputFacts::Integrate(
+            blocked_by: Vec::new(),
+            message,
+            payload: OutputPayload::from_facts(OutputFacts::Integrate(
                 IntegrationPayload::Rejected { reason },
             )),
+        }
+    }
+
+    /// Build a shared coordination-identity rejection for a validating command.
+    pub(crate) fn coordination_identity_rejected(
+        command_verb: CommandVerb,
+        reason: CoordinationIdentityRejection,
+    ) -> Self {
+        let reservations = reason.reservation_ids();
+        let message = reason.to_string();
+        Self {
+            verb: command_verb,
+            status: OutputStatus::InvalidInput,
+            exit_code: BerthExit::UsageError,
+            reservations,
+            blocked_by: Vec::new(),
+            message,
+            payload: OutputPayload::from_facts(OutputFacts::CoordinationIdentity(reason)),
+        }
+    }
+
+    /// Build the result of removing only the current harness-session mapping.
+    pub(crate) fn current_session_mapping_removed(removal: CurrentSessionMappingRemoval) -> Self {
+        let (status, exit_code, message) = match removal {
+            CurrentSessionMappingRemoval::Removed => (
+                OutputStatus::SessionMappingCleared,
+                BerthExit::Clear,
+                "Removed the current harness-session mapping. No reservation or edit decision changed.",
+            ),
+            CurrentSessionMappingRemoval::AlreadyAbsent => (
+                OutputStatus::SessionMappingCleared,
+                BerthExit::Clear,
+                "The current harness session had no stored mapping. No reservation or edit decision changed.",
+            ),
+            CurrentSessionMappingRemoval::CurrentSessionUnavailable => (
+                OutputStatus::SessionMappingUnavailable,
+                BerthExit::UsageError,
+                "No usable CARGO_BERTH_SESSION_ID selected a session mapping. Run this recovery command from the harness session that supplied the rejected command; no session mapping changed.",
+            ),
+        };
+        Self {
+            verb: CommandVerb::Identity,
+            status,
+            exit_code,
+            reservations: Vec::new(),
+            blocked_by: Vec::new(),
+            message: message.to_owned(),
+            payload: OutputPayload::from_facts(OutputFacts::Identity(removal.into())),
         }
     }
 
@@ -1692,6 +1730,7 @@ impl OutputPayload {
             | CommandVerb::Sequence
             | CommandVerb::Resolve
             | CommandVerb::Renew
+            | CommandVerb::Identity
             | CommandVerb::Integrate => OutputFacts::NoFacts,
         };
         Self::from_facts(facts)

@@ -6,6 +6,7 @@ mod board;
 mod cli;
 mod config;
 mod constants;
+mod coordination_identity;
 mod drift;
 mod edge;
 mod exit;
