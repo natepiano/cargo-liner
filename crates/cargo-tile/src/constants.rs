@@ -740,6 +740,13 @@ pub(crate) const PHASE_TESTING: &str = "testing";
 /// concurrent command touches it. That wait is over before there is
 /// anything to draw, and is not what the state column is for.
 pub(crate) const LOCK_WAIT_MARKER: &str = "waiting for file lock on build directory";
+/// What cargo closes a build with, whether or not it goes on to run
+/// anything: `Finished `dev` profile [unoptimized + debuginfo]
+/// target(s) in 1.49s`. Matched on the tail of the line rather than on
+/// the status word, which arrives wrapped in colour codes with the
+/// profile beside it in a hyperlink escape -- and which profile it
+/// names varies with the command.
+pub(crate) const BUILD_FINISHED_MARKER: &str = "target(s) in ";
 
 // sccache
 /// The sccache executable: what the stats read runs, and the process

@@ -54,6 +54,7 @@ use std::path::PathBuf;
 
 use crate::constants::BAR_GLYPH_FIRST;
 use crate::constants::BAR_GLYPH_LAST;
+use crate::constants::BUILD_FINISHED_MARKER;
 use crate::constants::CAPTURE_LIVE_RUNS_DIR;
 use crate::constants::CAPTURE_ROOT;
 use crate::constants::CAPTURE_ROOT_ENV;
@@ -304,18 +305,30 @@ fn tail(path: &Path) -> Option<String> {
 
 /// What the end of a log says the run is doing now.
 ///
-/// The wait is one line printed once, and it stays in the log for as
-/// long as the run does -- so finding it says only that the run waited,
-/// never that it still is. What settles it is whether anything came
-/// after: a bar, a `Finished`, or the output of the binary a `cargo
-/// run` went on to start are each proof the lock came free. A run that
-/// is still waiting has written the line and then nothing, which is
-/// exactly what being blocked looks like from outside.
+/// Neither marker means anything by itself: both are printed once and
+/// then stay in the log for as long as the run does. What settles each
+/// is what came after it.
+///
+/// The wait is proof the run waited, never that it still is -- a bar, a
+/// `Finished`, or the output of the binary a `cargo run` went on to
+/// start each say the lock came free. A run that is still waiting has
+/// written the line and then nothing, which is exactly what being
+/// blocked looks like from outside.
+///
+/// A counter is proof the run was building, never that it still is: the
+/// bar is left on screen where it stopped, so a build that finished at
+/// `1/2` goes on reading 50% for as long as the process lives -- which
+/// for a `cargo run` is the whole life of the app it started. Cargo's
+/// own `Finished` past the counter is what retires it, and a counter
+/// past *that* is a test runner's, which has every right to the column.
 fn parse_state(tail: &str) -> Option<RunState> {
     if still_waiting(tail) {
         return Some(RunState::Blocked);
     }
-    last_counter(tail)
+    let (at, state) = last_counter(tail)?;
+    tail.rfind(BUILD_FINISHED_MARKER)
+        .is_none_or(|over| at > over)
+        .then_some(state)
 }
 
 /// Whether the log ends on the wait line.
@@ -330,23 +343,30 @@ fn still_waiting(tail: &str) -> bool {
         .is_some_and(|after| after.trim_end().lines().count() == 1)
 }
 
-/// What the last counter in `tail` reads, which is the most recent
-/// redraw of the bar.
+/// The last counter in `tail` and where it sits, which is the most
+/// recent redraw of the bar.
 ///
 /// Last rather than first because a run draws more than one bar: cargo
 /// counts downloads before it counts compilations, each nested cargo a
 /// command drives counts its own, and a test runner counts the tests
 /// once the compiling is over. The one at the end is the one happening
 /// now.
-fn last_counter(tail: &str) -> Option<RunState> {
+///
+/// Where it sits is what says whether it still stands: a bar is left
+/// on screen where it stopped, so the last redraw of a finished build
+/// reads no differently from the last redraw of a running one.
+fn last_counter(tail: &str) -> Option<(usize, RunState)> {
     tail.rmatch_indices(UNIT_COUNTER_LEAD)
         .find_map(|(index, lead)| {
             let after = index.saturating_add(lead.len());
             let (counter, progress) = counter_at(tail.get(after..)?)?;
-            Some(RunState::Working {
-                phase: counter.phase(tail, index),
-                progress,
-            })
+            Some((
+                index,
+                RunState::Working {
+                    phase: counter.phase(tail, index),
+                    progress,
+                },
+            ))
         })
 }
 
@@ -731,6 +751,32 @@ mod tests {
         let tail = "    Blocking waiting for file lock on package cache\n";
 
         assert_eq!(parse_state(tail), None);
+    }
+
+    /// Cargo's closing line as the shim captures it, the profile in the
+    /// hyperlink escape cargo wraps it in.
+    const CAPTURED_FINISHED: &str = "\u{1b}[1m\u{1b}[92m    Finished\u{1b}[0m \
+         \u{1b}]8;;https://doc.rust-lang.org/cargo/reference/profiles.html\u{1b}\\`dev` profile \
+         [unoptimized + debuginfo]\u{1b}]8;;\u{1b}\\ target(s) in 1.49s\n";
+
+    /// The bar is left on screen where it stopped, so the last redraw of
+    /// a build that finished at `1/2` reads no differently from one still
+    /// working through its second unit. A `cargo run` then lives on as
+    /// the app it started, reporting 50% for hours.
+    #[test]
+    fn a_counter_a_finished_build_left_behind_is_not_a_reading() {
+        let tail = format!("{CAPTURED_REDRAW}\n{CAPTURED_FINISHED}");
+
+        assert_eq!(parse_state(&tail), None);
+    }
+
+    /// A test runner counts its own tests once the compiling is over, so
+    /// a counter past cargo's `Finished` is the run's own and stands.
+    #[test]
+    fn a_counter_after_a_finished_build_is_the_test_runners() {
+        let tail = format!("{CAPTURED_FINISHED}{CAPTURED_TEST_REDRAW}");
+
+        assert_eq!(parse_state(&tail), Some(testing(12, 24)));
     }
 
     #[test]
