@@ -10,6 +10,11 @@ use crate::constants::TOAST_ELAPSED_MINUTE_MILLIS;
 use crate::constants::TOAST_ELAPSED_SECONDS_MILLIS;
 
 pub(super) fn fade_to_style(progress: f64) -> Style {
+    let value = fade_level(progress);
+    Style::default().fg(Color::Rgb(value, value, value))
+}
+
+pub(in crate::toasts) fn fade_level(progress: f64) -> u8 {
     let p = progress.clamp(0.0, 1.0);
     let curve = p * p * p;
     #[allow(
@@ -18,7 +23,7 @@ pub(super) fn fade_to_style(progress: f64) -> Style {
         reason = "value is mathematically clamped to [128, 255] before the cast"
     )]
     let value = 127.0f64.mul_add(-curve, 255.0) as u8;
-    Style::default().fg(Color::Rgb(value, value, value))
+    value
 }
 
 pub(super) fn fade_to_color(text: &str, progress: f64) -> Line<'static> {

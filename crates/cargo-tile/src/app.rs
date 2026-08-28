@@ -3,7 +3,6 @@
 
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
 use std::time::Instant;
 
 use tui_pane::AppContext;
@@ -14,7 +13,6 @@ use tui_pane::KeymapEditContext;
 use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
-use tui_pane::ToastId;
 
 use crate::attract::Attract;
 use crate::attract::AttractMode;
@@ -27,9 +25,6 @@ use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::roster::Roster;
 use crate::sccache::SccacheStats;
-use crate::terminal::ToastVisualSchedule;
-use crate::terminal::VisualDeadline;
-use crate::terminal::VisualFrameRequest;
 use crate::tiles::TileGrid;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
@@ -129,8 +124,6 @@ impl ProcessTree {
 pub(crate) struct App {
     /// Framework state — overlays, panes, toasts, settings pane.
     pub(crate) framework:         Framework<Self>,
-    /// Timed-toast transitions that still require event-loop wakes.
-    toast_visual_schedule:        ToastVisualSchedule,
     /// Resolved bindings.
     ///
     /// Behind an [`Rc`] because dispatch needs `&Keymap<App>` and
@@ -185,7 +178,6 @@ impl App {
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
             framework,
-            toast_visual_schedule: ToastVisualSchedule::default(),
             keymap: Rc::new(keymap),
             loaded_config,
             startup_note,
@@ -211,39 +203,6 @@ impl App {
             None,
             None,
         )
-    }
-
-    /// Record the rendered lifecycle of a newly-pushed timed toast.
-    pub(crate) fn schedule_timed_toast(
-        &mut self,
-        toast_id: ToastId,
-        pushed_at: Instant,
-        visible_duration: Duration,
-        body_text: &str,
-        min_interior_lines: usize,
-    ) {
-        self.toast_visual_schedule.record_timed_toast(
-            toast_id,
-            pushed_at,
-            visible_duration,
-            body_text,
-            min_interior_lines,
-            self.framework.toasts.settings(),
-        );
-    }
-
-    /// Earliest timed-toast transition that can require a frame.
-    pub(crate) fn toast_visual_deadline(
-        &self,
-        now: Instant,
-        frame_period: Duration,
-    ) -> VisualDeadline {
-        self.toast_visual_schedule.next_deadline(now, frame_period)
-    }
-
-    /// Advance timed-toast transitions and report whether to draw.
-    pub(crate) fn toast_visual_frame_request(&mut self, now: Instant) -> VisualFrameRequest {
-        self.toast_visual_schedule.request_frame(now)
     }
 }
 

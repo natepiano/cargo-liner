@@ -120,6 +120,7 @@ use tui_pane::ToastId;
 use tui_pane::ToastStyle::Success;
 use tui_pane::ToastStyle::Warning;
 use tui_pane::ToastTaskId;
+use tui_pane::ToastVisualDeadline;
 use tui_pane::TrackedItem;
 
 use self::constants::ANIMATION_TICK;
@@ -446,28 +447,35 @@ impl App {
     /// (PD1) and no filesystem watcher covers those files.
     ///
     /// [`is_animating`](Self::is_animating) must mirror the render-time
-    /// spinner/shimmer/toast checks; a new animated element added at
-    /// render time without a matching predicate here will not advance
-    /// while the screen is otherwise idle.
+    /// spinner and shimmer checks; toast timing comes from
+    /// [`tui_pane::Toasts::next_visual_change_deadline`]. A new animated
+    /// element added at render time without a matching deadline or predicate
+    /// here will not advance while the screen is otherwise idle.
     pub(super) fn animation_timeout(&self) -> Duration {
         const IDLE_HEARTBEAT: Duration = Duration::from_secs(1);
-        if self.is_animating() {
+        let now = Instant::now();
+        let animation_timeout = if self.is_animating() {
             ANIMATION_TICK
         } else {
             IDLE_HEARTBEAT
+        };
+        match self.framework.toasts.next_visual_change_deadline(now) {
+            ToastVisualDeadline::NoVisualChangeScheduled => animation_timeout,
+            ToastVisualDeadline::At(deadline) => {
+                animation_timeout.min(deadline.saturating_duration_since(now))
+            },
         }
     }
 
     /// Whether any on-screen animation is currently live: scan discovery
-    /// shimmers, the in-flight lint / clean / example-run spinners, or an
-    /// active toast. Composed from per-subsystem predicates so each owns
-    /// the definition of "animating" for its own state.
+    /// shimmers or the in-flight lint / clean / example-run spinners. Composed
+    /// from per-subsystem predicates so each owns the definition of
+    /// "animating" for its own state.
     fn is_animating(&self) -> bool {
         self.scan.needs_animation()
             || self.project_list.has_running_lints()
             || self.inflight.needs_animation()
             || self.net.github.has_pr_check_polls()
-            || !self.framework.toasts.active_now().is_empty()
     }
 
     pub(super) fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
@@ -10404,6 +10412,19 @@ mod tests {
                 .insert_pr_check_poll(crate::ci::OwnerRepo::new("natepiano", "cargo-port"), 7);
 
             assert_eq!(app.animation_timeout(), Duration::from_millis(80));
+        }
+
+        #[test]
+        fn static_single_line_toast_uses_countdown_deadline() {
+            let project = make_project(Some("cargo-port"), "~/cargo-port");
+            let mut app = make_app(&[project]);
+            app.scan.state.phase = ScanPhase::Complete;
+
+            app.show_timed_toast("Settings", "Updated");
+
+            let timeout = app.animation_timeout();
+            assert!(timeout > Duration::ZERO);
+            assert!(timeout < Duration::from_secs(1));
         }
 
         #[test]

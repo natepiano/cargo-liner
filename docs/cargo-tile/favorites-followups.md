@@ -164,42 +164,32 @@ cargo-tile's `Attract` holds `window_identification: WindowIdentification` (`att
 
 **Ruled out:** Aliasing `BAND_BEHIND_FADE` to `TEXT_BEHIND_FADE` — the text field restores desktop colour through per-cell ink and the band has none outside its strip, so the halfway blend washed out the variation the background exists to show. An abrupt ink loss for cells straddling the ring wrap — an exhaustive sweep of the falloff arithmetic shows no mostly-covered cell receives zero ink and no step between neighbouring covered cells exceeds the designed 85/255 three-cell ramp.
 
-### Phase 5 — The toast owns its next visual-change deadline  · status: todo
+### Phase 5 — The toast owns its next visual-change deadline  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** A toast that cannot change what is on screen stops asking the event loop for frames, and the arithmetic that decides this lives in one place.
-
-**Spec:**
-
-`ToastVisualTimeline` (`terminal.rs:105`, impl `:120`) asks for 8ms frames from `pushed_at` through the entrance, and for an ordinary single-line toast none of them can change anything. `current_visible_lines` computes `floor(elapsed / line_ms) + 1` and clamps upward to `min_height` (`toast.rs:223`–238). With `min_height == 3` the rendered height is 3 at steps 0, 1 and 2 and first becomes 4 at step 3, so the earliest possible change is `pushed_at + min_height * entrance_line_ms` — one interval later than a naive reading. At 150ms per line that is 450ms, up to 57 redraws that cannot alter the toast. When `target_height == min_height`, the common case, there is no entrance change at all.
-
-Model whether an entrance interval exists rather than computing a start that may not be one: an entrance is either absent — begin in the static phase and schedule only expiry — or scheduled with a start and an end. Exit boundaries are unchanged.
-
-Put the deadline in `tui_pane::toasts::manager`, which owns `created_at`, the phase, the wrapping and the minimum height: one query returning `ToastVisualDeadline::{NoVisualChangeScheduled, At(Instant)}` — the next line-height boundary, the exit boundary, or expiry. Name the absent-or-scheduled entrance `ToastEntranceSchedule`. Neither may be a bare `Option<Instant>`: "no deadline" and "a deadline" are the two answers the caller acts on differently, and the caller must not have to recover that from an option. `Toasts` already tracks active toasts, so this is a scan over them, constant work per toast, no allocation.
-
-Then delete the duplicates. `cargo-tile` reconstructs target height and durations at `terminal.rs:120` and `:277` and pairs every push with `schedule_timed_toast` by hand (`globals.rs:155`, `:230`, `favorites_overlay.rs:1180`, `app.rs:217`); `ToastVisualSchedule` (`terminal.rs:204`) and `ToastVisualTimeline` both go, and `App::toast_visual_schedule` (`app.rs:133`, `:188`) with them. `cargo-port` has the mirror-image workaround: `is_animating` (`app/mod.rs:465`) returns true whenever any toast is active (`:470`), keeping the 80ms `ANIMATION_TICK` heartbeat alive for the toast's whole lifetime including its static interval — replace that clause with the framework deadline in `animation_timeout` (`:452`).
-
-Both callers must keep working: this is one atomic change across three crates, which is why it is one phase.
+`Toasts::next_visual_change_deadline(now) -> ToastVisualDeadline` answers, over all active toasts, the earliest instant any of them can next look different: entrance and exit line-height boundaries, lifetime expiry, the per-second countdown, spinner frames, the elapsed readout, the per-item and whole-card linger fades, and tracked-item removal. `ToastVisualDeadline::{NoVisualChangeScheduled, At(Instant)}` is public and exported at the crate root; a reported deadline is always strictly in the future, and the aggregate is floored at `constants::FRAME_POLL_MILLIS` (8ms). A toast's entrance is `ToastEntranceSchedule::{Absent, Scheduled { starts_at, ends_at }}` and its phase is `ToastPhase::{Entering { starts_at, ends_at }, Static, Exiting { started_at }}` — both crate-internal, and neither is a bare `Option<Instant>`, so "no entrance" and "an entrance" cannot collapse into one answer. The first entrance change lands at `created_at + min_height * entrance_line_ms`, one interval later than a naive reading. `cargo-tile` consumes the framework deadline and holds no scheduling arithmetic of its own; `cargo-port`'s `animation_timeout` takes the deadline as a minimum against its 80ms tick, and `is_animating` no longer reports true merely because a toast exists.
 
 **Files:**
-- `crates/tui_pane/src/toasts/manager.rs` — the next-visual-change deadline over active toasts
-- `crates/tui_pane/src/toasts/toast.rs` — entrance modelled as absent or scheduled; the corrected first-change boundary
-- `crates/tui_pane/src/toasts/mod.rs` — export the deadline API
-- `crates/cargo-tile/src/terminal.rs` — delete `ToastVisualTimeline` (`:105`) and `ToastVisualSchedule` (`:204`); consume the framework deadline; the schedule tests at `:971`, `:1066`, `:1114` move to the new surface
-- `crates/cargo-tile/src/app.rs` — drop `toast_visual_schedule` (`:133`, `:188`, `:217`) and its import (`:30`)
-- `crates/cargo-tile/src/globals.rs` — `schedule_timed_toast` pairings at `:155`, `:230`
-- `crates/cargo-tile/src/favorites_overlay.rs` — the pairing at `:1180`
-- `crates/cargo-port/src/tui/app/mod.rs` — `animation_timeout` (`:452`) uses the deadline; drop the always-animating toast clause (`:470`)
+- `crates/tui_pane/src/toasts/manager.rs` — `ToastVisualDeadline`, the aggregation and its 8ms floor, `set_settings` refreshing both entrance schedules and `item_linger`
+- `crates/tui_pane/src/toasts/toast.rs` — the phase model and every per-toast deadline helper
+- `crates/tui_pane/src/toasts/lifecycle.rs` — mutation entry points refresh the entrance schedule; `prune` handles all three phases
+- `crates/tui_pane/src/activity.rs` — `FrameCycle::next_frame_boundary`, the spinner's exact next-frame instant
+- `crates/tui_pane/src/toasts/render/format.rs` — `fade_level`, shared between rendering and deadline scheduling
+- `crates/cargo-tile/src/terminal.rs`, `app.rs`, `globals.rs`, `favorites_overlay.rs` — the local scheduling duplicates removed
+- `crates/cargo-port/src/tui/app/mod.rs` — `animation_timeout` consumes the deadline
 
-**Constraints from prior phases:** none — the toast path is independent of Phases 1–4. This phase touches `favorites_overlay.rs` only to remove a `schedule_timed_toast` call site; it must not restructure that file, which Phase 8 splits.
+**Binds later work:** `globals.rs` now pushes with `app.framework.toasts.push_timed(...)` and no paired scheduling call, so the save-confirmation toast is a push and nothing more.
 
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` — toasts are default-feature code, so this gate really runs them
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-port`
-- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane`, `lint cargo-tile`, `lint cargo-port`
-- Tests proving a single-line toast requests no entrance frame before expiry, a multi-line toast's first repaint lands on `pushed_at + min_height * entrance_line_ms`, and exit boundaries are unchanged.
+**Gotchas:**
+- Anything a toast renders from `now` must have a deadline, or it silently degrades to the consumer's idle heartbeat instead of failing.
+- Exactness is bounded below by the render cadence: `format_elapsed` shows whole milliseconds under ten seconds, so an exact elapsed deadline asks for ~1000 repaints a second. The floor belongs on the aggregate, not on individual boundaries.
+- `prune_tracked_items` reads live settings while the scheduler reads the toast's stored `item_linger`; `set_settings` must keep the two equal.
+- The linger-fade boundary search depends on `fade_level` being monotonic in its argument.
+
+**Ruled out:**
+- `const` on `Framework::set_toast_settings` and `Toasts::set_settings` — both now do per-toast instant arithmetic and text wrapping, and no caller needs a const context.
+- Coarsening `format_elapsed`'s rendered precision, or flooring the repaint rate in the consumer, to fix the millisecond wake — the framework advertised a cadence no display can use, so the framework bounds it.
 
 ### Phase 6 — Split `favorites.rs` by ownership  · status: todo
 
@@ -389,7 +379,7 @@ Return `FavoriteSaveOutcome::{Added, Refreshed}` from the save entry point, and 
 - `crates/cargo-tile/src/favorites/mod.rs` — export
 - `crates/cargo-tile/src/globals.rs` — the `ctrl-s` handler selects the confirmation text
 
-**Constraints from prior phases:** Phase 6 put `push` in `favorites/rows.rs` and the save entry point in `favorites/file.rs`. Phase 5 removed `schedule_timed_toast` from `globals.rs` in favor of the framework-owned toast deadline — push the confirmation through whatever that phase left in place. Phase 10 uses the same `AttractSettings` equality to decide the currency mark; the two must agree, so do not introduce a second comparison.
+**Constraints from prior phases:** Phase 6 put `push` in `favorites/rows.rs` and the save entry point in `favorites/file.rs`. Phase 5 removed `schedule_timed_toast` from `globals.rs` in favor of the framework-owned toast deadline: `globals.rs` now calls `app.framework.toasts.push_timed(...)` (`:147`, `:214`) with no paired scheduling call, and `Toasts::next_visual_change_deadline(now)` supplies the repaint cadence, so the confirmation is a `push_timed` and nothing else. Phase 10 uses the same `AttractSettings` equality to decide the currency mark; the two must agree, so do not introduce a second comparison.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with tests proving a first save reports added, an identical second save reports refreshed and leaves one row, and the refreshed row's timestamp moved

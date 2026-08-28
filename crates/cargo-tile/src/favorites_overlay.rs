@@ -1169,20 +1169,12 @@ pub(crate) fn report_closed_overlay_adjustment(app: &mut App, outcome: SettingsA
 }
 
 fn push_scheduled_toast(app: &mut App, title: &str, body: &str, style: ToastStyle) {
-    let pushed_at = Instant::now();
-    let toast_id = app.framework.toasts.push_timed_styled(
+    app.framework.toasts.push_timed_styled(
         title,
         body,
         NOTICE_TOAST_VISIBLE,
         NOTICE_TOAST_MIN_INTERIOR_LINES,
         style,
-    );
-    app.schedule_timed_toast(
-        toast_id,
-        pushed_at,
-        NOTICE_TOAST_VISIBLE,
-        body,
-        NOTICE_TOAST_MIN_INTERIOR_LINES,
     );
 }
 
@@ -1827,6 +1819,7 @@ mod tests {
     use tui_pane::KeySequence;
     use tui_pane::PixelFill;
     use tui_pane::PixelResolve;
+    use tui_pane::ToastVisualDeadline;
 
     use super::*;
     use crate::app::Updates;
@@ -2834,8 +2827,8 @@ travel_left = "界"
         assert!(toasts[0].body().contains("press x to retry the deletion"));
         assert_eq!(toasts[0].style(), ToastStyle::Error);
         assert!(matches!(
-            app.toast_visual_deadline(now, Duration::from_millis(8)),
-            VisualDeadline::At(_)
+            app.framework.toasts.next_visual_change_deadline(now),
+            ToastVisualDeadline::At(_)
         ));
     }
 
@@ -2876,8 +2869,8 @@ travel_left = "界"
         assert!(toasts[0].body().contains("10000"));
         assert_eq!(toasts[0].style(), ToastStyle::Warning);
         assert!(matches!(
-            app.toast_visual_deadline(now, Duration::from_millis(8)),
-            VisualDeadline::At(_)
+            app.framework.toasts.next_visual_change_deadline(now),
+            ToastVisualDeadline::At(_)
         ));
         assert_eq!(
             fs::read(&adjusted_path).expect("favorites fixture should remain readable"),
@@ -2917,8 +2910,11 @@ travel_left = "界"
         dispatch(FavoritesOverlayAction::Load, &mut exact_app);
         assert!(exact_app.framework.toasts.active_now().is_empty());
         assert_eq!(
-            exact_app.toast_visual_deadline(Instant::now(), Duration::from_millis(8)),
-            VisualDeadline::NoVisualChangeScheduled
+            exact_app
+                .framework
+                .toasts
+                .next_visual_change_deadline(Instant::now()),
+            ToastVisualDeadline::NoVisualChangeScheduled
         );
         assert_eq!(
             fs::read(&exact_path).expect("favorites fixture should remain readable"),

@@ -158,7 +158,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
 
     /// Replace framework-owned toast settings. Delegates to
     /// [`Toasts::set_settings`], which owns the canonical copy.
-    pub const fn set_toast_settings(&mut self, settings: ToastSettings) {
+    pub fn set_toast_settings(&mut self, settings: ToastSettings) {
         self.toasts.set_settings(settings);
     }
 

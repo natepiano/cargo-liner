@@ -1,6 +1,6 @@
 mod card;
 mod drawing;
-mod format;
+pub(super) mod format;
 mod layout;
 
 pub use drawing::ToastsRenderCtx;

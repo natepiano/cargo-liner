@@ -23,7 +23,6 @@
 //! [`Globals::defaults`], and handle it in [`dispatch`].
 
 use std::rc::Rc;
-use std::time::Instant;
 
 use crossterm::event::KeyCode;
 use tui_pane::Bindings;
@@ -145,18 +144,10 @@ fn undo_attract_replacement(app: &mut App) {
             ),
         ),
     };
-    let pushed_at = Instant::now();
-    let toast_id = app.framework.toasts.push_timed(
+    app.framework.toasts.push_timed(
         title,
         &body,
         NOTICE_TOAST_VISIBLE,
-        NOTICE_TOAST_MIN_INTERIOR_LINES,
-    );
-    app.schedule_timed_toast(
-        toast_id,
-        pushed_at,
-        NOTICE_TOAST_VISIBLE,
-        &body,
         NOTICE_TOAST_MIN_INTERIOR_LINES,
     );
 }
@@ -220,18 +211,10 @@ fn save_favorite(app: &mut App) {
             )
         },
     };
-    let pushed_at = Instant::now();
-    let toast_id = app.framework.toasts.push_timed(
+    app.framework.toasts.push_timed(
         title,
         body.as_str(),
         NOTICE_TOAST_VISIBLE,
-        NOTICE_TOAST_MIN_INTERIOR_LINES,
-    );
-    app.schedule_timed_toast(
-        toast_id,
-        pushed_at,
-        NOTICE_TOAST_VISIBLE,
-        &body,
         NOTICE_TOAST_MIN_INTERIOR_LINES,
     );
 }
@@ -256,6 +239,7 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::time::Duration;
+    use std::time::Instant;
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -263,6 +247,7 @@ mod tests {
     use tempfile::TempDir;
     use tui_pane::KeyBind;
     use tui_pane::KeySequence;
+    use tui_pane::ToastVisualDeadline;
 
     use super::*;
     use crate::app::ProcessTree;
@@ -271,8 +256,6 @@ mod tests {
     use crate::attract::AttractVisibilityInstruction;
     use crate::favorites;
     use crate::favorites::FavoritesMutationError;
-    use crate::terminal::VisualDeadline;
-    use crate::terminal::VisualFrameRequest;
 
     const MOVING_BAND_ROW: &str = r#"
 [[favorite]]
@@ -347,21 +330,21 @@ mode = "future_mode"
         assert_eq!(toasts.len(), 1);
         assert_eq!(toasts[0].title(), expected_title);
         assert!(matches!(
-            app.toast_visual_deadline(now, Duration::from_millis(8)),
-            VisualDeadline::At(_)
+            app.framework.toasts.next_visual_change_deadline(now),
+            ToastVisualDeadline::At(_)
         ));
 
         let at_expiry = now + Duration::from_secs(30);
         app.framework.toasts.prune(at_expiry);
-        assert_eq!(
-            app.toast_visual_frame_request(at_expiry),
-            VisualFrameRequest::Needed
-        );
+        assert!(matches!(
+            app.framework.toasts.next_visual_change_deadline(at_expiry),
+            ToastVisualDeadline::At(_)
+        ));
         let after_exit = at_expiry + Duration::from_secs(30);
         app.framework.toasts.prune(after_exit);
         assert_eq!(
-            app.toast_visual_frame_request(after_exit),
-            VisualFrameRequest::Needed
+            app.framework.toasts.next_visual_change_deadline(after_exit),
+            ToastVisualDeadline::NoVisualChangeScheduled
         );
         assert!(app.framework.toasts.active_views(after_exit).is_empty());
     }
@@ -626,8 +609,10 @@ mode = "future_mode"
 
         assert!(app.framework.toasts.active_now().is_empty());
         assert_eq!(
-            app.toast_visual_deadline(Instant::now(), Duration::from_millis(8)),
-            VisualDeadline::NoVisualChangeScheduled
+            app.framework
+                .toasts
+                .next_visual_change_deadline(Instant::now()),
+            ToastVisualDeadline::NoVisualChangeScheduled
         );
         assert_eq!(
             fs::read(&path).expect("favorites fixture should remain readable"),
@@ -659,21 +644,21 @@ mode = "future_mode"
         assert!(toasts[0].body().contains("width 10000 ->"));
         assert!(!toasts[0].body().contains("MovingBand"));
         assert!(matches!(
-            app.toast_visual_deadline(now, Duration::from_millis(8)),
-            VisualDeadline::At(_)
+            app.framework.toasts.next_visual_change_deadline(now),
+            ToastVisualDeadline::At(_)
         ));
 
         let at_expiry = now + Duration::from_secs(30);
         app.framework.toasts.prune(at_expiry);
-        assert_eq!(
-            app.toast_visual_frame_request(at_expiry),
-            VisualFrameRequest::Needed
-        );
+        assert!(matches!(
+            app.framework.toasts.next_visual_change_deadline(at_expiry),
+            ToastVisualDeadline::At(_)
+        ));
         let after_exit = at_expiry + Duration::from_secs(30);
         app.framework.toasts.prune(after_exit);
         assert_eq!(
-            app.toast_visual_frame_request(after_exit),
-            VisualFrameRequest::Needed
+            app.framework.toasts.next_visual_change_deadline(after_exit),
+            ToastVisualDeadline::NoVisualChangeScheduled
         );
         assert!(app.framework.toasts.active_views(after_exit).is_empty());
         assert_eq!(

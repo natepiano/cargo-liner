@@ -310,6 +310,7 @@ pub(crate) use toasts::ToastPlacement;
 pub use toasts::ToastSettings;
 pub use toasts::ToastStyle;
 pub use toasts::ToastTaskId;
+pub use toasts::ToastVisualDeadline;
 pub use toasts::Toasts;
 pub use toasts::ToastsRenderCtx;
 pub use toasts::TrackedItem;

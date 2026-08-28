@@ -7,10 +7,14 @@ use super::ToastTaskId;
 use super::ToastView;
 use super::TrackedItem;
 use super::TrackedItemView;
+use super::manager::ToastVisualDeadline;
+use super::render::format::fade_level;
 use super::toast_body_width;
 use super::view::ToastActionState;
+use crate::ACTIVITY_SPINNER;
 use crate::AppContext;
 use crate::ToastSettings;
+use crate::constants::TOAST_ELAPSED_SECONDS_MILLIS;
 
 /// Visual style applied to a toast card.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,16 +62,48 @@ pub enum ToastTaskStatus {
     },
 }
 
+/// Whether a toast has line-height changes during its entrance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ToastEntranceSchedule {
+    /// The toast starts at its target height and has no entrance changes.
+    Absent,
+    /// The toast grows at line-height boundaries in this inclusive interval.
+    Scheduled {
+        /// First line-height boundary that changes the rendered toast.
+        starts_at: Instant,
+        /// Last line-height boundary that changes the rendered toast.
+        ends_at:   Instant,
+    },
+}
+
 /// Render phase for a toast entry.
 #[derive(Clone, Copy, Debug)]
-pub enum ToastPhase {
-    /// Toast is fully visible.
-    Visible,
+pub(super) enum ToastPhase {
+    /// Toast is growing at line-height boundaries in this interval.
+    Entering {
+        /// First line-height boundary that changes the rendered toast.
+        starts_at: Instant,
+        /// Last line-height boundary that changes the rendered toast.
+        ends_at:   Instant,
+    },
+    /// Toast has reached its target height.
+    Static,
     /// Toast is in its exit animation.
     Exiting {
         /// Instant when the exit animation started.
         started_at: Instant,
     },
+}
+
+impl From<ToastEntranceSchedule> for ToastPhase {
+    fn from(toast_entrance_schedule: ToastEntranceSchedule) -> Self {
+        match toast_entrance_schedule {
+            ToastEntranceSchedule::Absent => Self::Static,
+            ToastEntranceSchedule::Scheduled { starts_at, ends_at } => {
+                Self::Entering { starts_at, ends_at }
+            },
+        }
+    }
 }
 
 /// Records whether the user has clicked the close affordance on a
@@ -136,12 +172,13 @@ impl<Ctx: AppContext> Toast<Ctx> {
     }
 
     pub(super) fn is_live(&self, now: Instant) -> bool {
-        matches!(self.phase, ToastPhase::Visible) && !self.should_exit(now)
+        matches!(self.phase, ToastPhase::Entering { .. } | ToastPhase::Static)
+            && !self.should_exit(now)
     }
 
     pub(super) fn is_renderable(&self, now: Instant, settings: &ToastSettings) -> bool {
         match self.phase {
-            ToastPhase::Visible => !self.should_exit(now),
+            ToastPhase::Entering { .. } | ToastPhase::Static => !self.should_exit(now),
             // Task toasts skip the post-countdown exit animation:
             // the "Closing in N" countdown is itself the visual
             // closure signal, and the last tracked item's
@@ -179,6 +216,31 @@ impl<Ctx: AppContext> Toast<Ctx> {
         }
     }
 
+    pub(super) fn next_visual_change_deadline(
+        &self,
+        now: Instant,
+        settings: &ToastSettings,
+    ) -> ToastVisualDeadline {
+        let rendered_content = self.next_rendered_content_deadline(now);
+        match self.phase {
+            ToastPhase::Entering { starts_at, ends_at } => next_line_height_boundary(
+                now,
+                starts_at,
+                ends_at,
+                animation_line_duration(settings.animation.entrance_duration.get()),
+            )
+            .earlier(self.expiry_deadline(now))
+            .earlier(rendered_content),
+            ToastPhase::Static => self.expiry_deadline(now).earlier(rendered_content),
+            ToastPhase::Exiting { .. } if matches!(self.lifetime, ToastLifetime::Task { .. }) => {
+                ToastVisualDeadline::NoVisualChangeScheduled
+            },
+            ToastPhase::Exiting { started_at } => {
+                self.next_exit_visual_change_deadline(now, settings, started_at)
+            },
+        }
+    }
+
     pub(super) fn view(&self, now: Instant, settings: &ToastSettings) -> ToastView {
         let min_height = self.min_height();
         let desired_height = self.current_visible_lines(now, settings).max(min_height);
@@ -201,8 +263,10 @@ impl<Ctx: AppContext> Toast<Ctx> {
                     });
                     let linger_progress = item.completed_at.and_then(|completed_at| {
                         (!self.item_linger.is_zero()).then(|| {
-                            now.saturating_duration_since(completed_at).as_secs_f64()
-                                / self.item_linger.as_secs_f64()
+                            linger_fade_progress(
+                                now.saturating_duration_since(completed_at),
+                                self.item_linger,
+                            )
                         })
                     });
                     TrackedItemView {
@@ -220,23 +284,43 @@ impl<Ctx: AppContext> Toast<Ctx> {
 
     fn min_height(&self) -> u16 { (self.min_interior_lines + 2).try_into().unwrap_or(u16::MAX) }
 
+    /// Refresh a non-exiting toast's entrance phase from its wrapped target
+    /// height.
+    pub(super) fn refresh_entrance_phase(&mut self, settings: &ToastSettings) {
+        if matches!(self.phase, ToastPhase::Exiting { .. }) {
+            return;
+        }
+        self.phase = ToastPhase::from(self.entrance_schedule(settings));
+    }
+
+    fn entrance_schedule(&self, settings: &ToastSettings) -> ToastEntranceSchedule {
+        let min_height = self.min_height();
+        let target_height = self.target_height(settings);
+        if target_height <= min_height {
+            return ToastEntranceSchedule::Absent;
+        }
+        let line_duration = animation_line_duration(settings.animation.entrance_duration.get());
+        ToastEntranceSchedule::Scheduled {
+            starts_at: self.created_at + line_duration.saturating_mul(u32::from(min_height)),
+            ends_at:   self.created_at
+                + line_duration.saturating_mul(u32::from(target_height.saturating_sub(1))),
+        }
+    }
+
     fn current_visible_lines(&self, now: Instant, settings: &ToastSettings) -> u16 {
         let target = self.target_height(settings);
         match self.phase {
-            ToastPhase::Visible => {
+            ToastPhase::Entering { .. } => {
                 let elapsed = now.saturating_duration_since(self.created_at);
-                let line_ms = settings
-                    .animation
-                    .entrance_duration
-                    .get()
-                    .as_millis()
-                    .max(1);
+                let line_ms =
+                    animation_line_duration(settings.animation.entrance_duration.get()).as_millis();
                 let lines = (elapsed.as_millis() / line_ms) + 1;
                 u16::try_from(lines)
                     .unwrap_or(u16::MAX)
                     .min(target)
                     .max(self.min_height())
             },
+            ToastPhase::Static => target,
             ToastPhase::Exiting { started_at } => self.exit_lines(now, settings, started_at),
         }
     }
@@ -244,9 +328,142 @@ impl<Ctx: AppContext> Toast<Ctx> {
     fn exit_lines(&self, now: Instant, settings: &ToastSettings, started_at: Instant) -> u16 {
         let target = self.target_height(settings);
         let elapsed = now.saturating_duration_since(started_at);
-        let line_ms = settings.animation.exit_duration.get().as_millis().max(1);
+        let line_ms = animation_line_duration(settings.animation.exit_duration.get()).as_millis();
         let hidden = u16::try_from(elapsed.as_millis() / line_ms).unwrap_or(u16::MAX);
         target.saturating_sub(hidden)
+    }
+
+    fn next_exit_visual_change_deadline(
+        &self,
+        now: Instant,
+        settings: &ToastSettings,
+        started_at: Instant,
+    ) -> ToastVisualDeadline {
+        let line_duration = animation_line_duration(settings.animation.exit_duration.get());
+        let target_height = self.target_height(settings);
+        next_line_height_boundary(
+            now,
+            started_at + line_duration,
+            started_at + line_duration.saturating_mul(u32::from(target_height)),
+            line_duration,
+        )
+    }
+
+    fn expiry_deadline(&self, now: Instant) -> ToastVisualDeadline {
+        match self.lifetime {
+            ToastLifetime::Timed { timeout_at } => future_deadline(now, timeout_at),
+            ToastLifetime::Task {
+                status:
+                    ToastTaskStatus::Finished {
+                        finished_at,
+                        linger,
+                    },
+                ..
+            } => checked_future_deadline(now, finished_at, linger),
+            ToastLifetime::Task {
+                status: ToastTaskStatus::Running,
+                ..
+            }
+            | ToastLifetime::Persistent => ToastVisualDeadline::NoVisualChangeScheduled,
+        }
+    }
+
+    fn next_rendered_content_deadline(&self, now: Instant) -> ToastVisualDeadline {
+        self.next_countdown_deadline(now)
+            .earlier(self.next_whole_toast_linger_fade_deadline(now))
+            .earlier(self.next_tracked_item_deadline(now))
+    }
+
+    fn next_whole_toast_linger_fade_deadline(&self, now: Instant) -> ToastVisualDeadline {
+        match self.lifetime {
+            ToastLifetime::Task {
+                status:
+                    ToastTaskStatus::Finished {
+                        finished_at,
+                        linger,
+                    },
+                ..
+            } => next_linger_fade_deadline(now, finished_at, linger),
+            ToastLifetime::Timed { .. }
+            | ToastLifetime::Task {
+                status: ToastTaskStatus::Running,
+                ..
+            }
+            | ToastLifetime::Persistent => ToastVisualDeadline::NoVisualChangeScheduled,
+        }
+    }
+
+    fn next_countdown_deadline(&self, now: Instant) -> ToastVisualDeadline {
+        let expires_at = match self.lifetime {
+            ToastLifetime::Timed { timeout_at } => timeout_at,
+            ToastLifetime::Task {
+                status:
+                    ToastTaskStatus::Finished {
+                        finished_at,
+                        linger,
+                    },
+                ..
+            } => {
+                let Some(expires_at) = finished_at.checked_add(linger) else {
+                    return ToastVisualDeadline::NoVisualChangeScheduled;
+                };
+                expires_at
+            },
+            ToastLifetime::Task {
+                status: ToastTaskStatus::Running,
+                ..
+            }
+            | ToastLifetime::Persistent => {
+                return ToastVisualDeadline::NoVisualChangeScheduled;
+            },
+        };
+        let Some(remaining) = expires_at.checked_duration_since(now) else {
+            return ToastVisualDeadline::NoVisualChangeScheduled;
+        };
+        if remaining.is_zero() {
+            return ToastVisualDeadline::NoVisualChangeScheduled;
+        }
+        let until_boundary = if remaining.subsec_nanos() == 0 {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_nanos(u64::from(remaining.subsec_nanos()))
+        };
+        checked_future_deadline(now, now, until_boundary)
+    }
+
+    fn next_tracked_item_deadline(&self, now: Instant) -> ToastVisualDeadline {
+        self.tracked_items.iter().fold(
+            ToastVisualDeadline::NoVisualChangeScheduled,
+            |deadline, item| {
+                let item_deadline = item.completed_at.map_or_else(
+                    || {
+                        item.started_at.map_or(
+                            ToastVisualDeadline::NoVisualChangeScheduled,
+                            |started_at| {
+                                let elapsed = now.saturating_duration_since(started_at);
+                                let spinner = checked_future_deadline(
+                                    now,
+                                    started_at,
+                                    ACTIVITY_SPINNER.next_frame_boundary(elapsed),
+                                );
+                                let elapsed_readout = checked_future_deadline(
+                                    now,
+                                    started_at,
+                                    next_elapsed_readout_boundary(elapsed),
+                                );
+                                spinner.earlier(elapsed_readout)
+                            },
+                        )
+                    },
+                    |completed_at| {
+                        checked_future_deadline(now, completed_at, self.item_linger).earlier(
+                            next_linger_fade_deadline(now, completed_at, self.item_linger),
+                        )
+                    },
+                );
+                deadline.earlier(item_deadline)
+            },
+        )
     }
 
     fn target_height(&self, settings: &ToastSettings) -> u16 {
@@ -284,7 +501,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
         match self.lifetime {
             ToastLifetime::Timed { timeout_at } => timeout_at
                 .checked_duration_since(now)
-                .map(|duration| duration.as_secs().saturating_add(1)),
+                .map(whole_seconds_rounded_up),
             ToastLifetime::Task {
                 status:
                     ToastTaskStatus::Finished {
@@ -294,7 +511,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
                 ..
             } => (finished_at + linger)
                 .checked_duration_since(now)
-                .map(|duration| duration.as_secs().saturating_add(1)),
+                .map(whole_seconds_rounded_up),
             ToastLifetime::Task {
                 status: ToastTaskStatus::Running,
                 ..
@@ -302,4 +519,117 @@ impl<Ctx: AppContext> Toast<Ctx> {
             | ToastLifetime::Persistent => None,
         }
     }
+}
+
+fn animation_line_duration(configured_duration: Duration) -> Duration {
+    Duration::from_millis(u64::try_from(configured_duration.as_millis().max(1)).unwrap_or(u64::MAX))
+}
+
+fn next_linger_fade_deadline(
+    now: Instant,
+    linger_started_at: Instant,
+    linger: Duration,
+) -> ToastVisualDeadline {
+    if linger.is_zero() {
+        return ToastVisualDeadline::NoVisualChangeScheduled;
+    }
+    let elapsed = now.saturating_duration_since(linger_started_at);
+    if elapsed >= linger {
+        return ToastVisualDeadline::NoVisualChangeScheduled;
+    }
+    let current_level = fade_level(linger_fade_progress(elapsed, linger));
+    let mut earliest_nanos = elapsed.as_nanos().saturating_add(1);
+    let mut latest_nanos = linger.as_nanos();
+    if fade_level(linger_fade_progress(
+        duration_from_nanos(latest_nanos),
+        linger,
+    )) == current_level
+    {
+        return ToastVisualDeadline::NoVisualChangeScheduled;
+    }
+    while earliest_nanos < latest_nanos {
+        let midpoint_nanos = earliest_nanos + (latest_nanos - earliest_nanos) / 2;
+        let midpoint_level = fade_level(linger_fade_progress(
+            duration_from_nanos(midpoint_nanos),
+            linger,
+        ));
+        if midpoint_level == current_level {
+            earliest_nanos = midpoint_nanos.saturating_add(1);
+        } else {
+            latest_nanos = midpoint_nanos;
+        }
+    }
+    checked_future_deadline(now, linger_started_at, duration_from_nanos(earliest_nanos))
+}
+
+fn linger_fade_progress(elapsed: Duration, linger: Duration) -> f64 {
+    elapsed.as_secs_f64() / linger.as_secs_f64()
+}
+
+fn duration_from_nanos(nanos: u128) -> Duration {
+    let nanos_per_second = Duration::from_secs(1).as_nanos();
+    let seconds = nanos / nanos_per_second;
+    let subsecond_nanos = nanos % nanos_per_second;
+    let Ok(seconds) = u64::try_from(seconds) else {
+        return Duration::MAX;
+    };
+    Duration::new(seconds, u32::try_from(subsecond_nanos).unwrap_or(u32::MAX))
+}
+
+fn next_elapsed_readout_boundary(elapsed: Duration) -> Duration {
+    if elapsed.as_millis() == 0 {
+        return Duration::from_micros(
+            u64::try_from(elapsed.as_micros().saturating_add(1)).unwrap_or(u64::MAX),
+        );
+    }
+    if elapsed.as_millis() < TOAST_ELAPSED_SECONDS_MILLIS {
+        return Duration::from_millis(
+            u64::try_from(elapsed.as_millis().saturating_add(1)).unwrap_or(u64::MAX),
+        );
+    }
+    Duration::from_secs(elapsed.as_secs().saturating_add(1))
+}
+
+fn whole_seconds_rounded_up(duration: Duration) -> u64 {
+    duration
+        .as_secs()
+        .saturating_add(u64::from(duration.subsec_nanos() > 0))
+}
+
+fn future_deadline(now: Instant, deadline: Instant) -> ToastVisualDeadline {
+    if deadline > now {
+        ToastVisualDeadline::At(deadline)
+    } else {
+        ToastVisualDeadline::NoVisualChangeScheduled
+    }
+}
+
+fn checked_future_deadline(
+    now: Instant,
+    starts_at: Instant,
+    elapsed: Duration,
+) -> ToastVisualDeadline {
+    starts_at
+        .checked_add(elapsed)
+        .map_or(ToastVisualDeadline::NoVisualChangeScheduled, |deadline| {
+            future_deadline(now, deadline)
+        })
+}
+
+fn next_line_height_boundary(
+    now: Instant,
+    starts_at: Instant,
+    ends_at: Instant,
+    line_duration: Duration,
+) -> ToastVisualDeadline {
+    if now < starts_at {
+        return ToastVisualDeadline::At(starts_at);
+    }
+    if now >= ends_at {
+        return ToastVisualDeadline::NoVisualChangeScheduled;
+    }
+    let completed_intervals =
+        now.saturating_duration_since(starts_at).as_millis() / line_duration.as_millis();
+    let next_interval = u32::try_from(completed_intervals.saturating_add(1)).unwrap_or(u32::MAX);
+    ToastVisualDeadline::At((starts_at + line_duration.saturating_mul(next_interval)).min(ends_at))
 }
