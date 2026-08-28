@@ -43,6 +43,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::Entry;
 use std::env;
 use std::fs;
 use std::fs::File;
@@ -230,7 +231,18 @@ impl Capture {
                 let pid = log_pid(&path)?;
                 live.contains(&pid).then_some((pid, path))
             })
-            .collect();
+            .fold(HashMap::new(), |mut logs, (pid, path)| {
+                match logs.entry(pid) {
+                    Entry::Vacant(slot) => {
+                        slot.insert(path);
+                    },
+                    Entry::Occupied(mut held) if newer(&path, held.get()) => {
+                        held.insert(path);
+                    },
+                    Entry::Occupied(_) => {},
+                }
+                logs
+            });
         Self { logs }
     }
 
@@ -274,6 +286,20 @@ fn live_runs(root: &Path, liveness: impl Fn(u32) -> RunLiveness) -> HashSet<u32>
         })
         .collect()
 }
+
+/// Whether `candidate` was captured later than `held`, which their
+/// names settle: a log is named for the instant it opened, in a
+/// zero-padded stamp ahead of the pid, so between two names ending in
+/// the same pid the later one sorts higher.
+///
+/// Which is the whole of what separates them. Logs are never deleted,
+/// so the capture directory holds every run since the machine was set
+/// up, and pids come round again -- a live pid can have days of old
+/// logs filed under it, and reading one of those reports whatever that
+/// run was doing when it ended. The one that belongs to the process
+/// running now is the newest, because it is the newest run to have
+/// started under that pid.
+fn newer(candidate: &Path, held: &Path) -> bool { candidate.file_name() > held.file_name() }
 
 /// The shim pid a log file is named for: `run-<timestamp>-<pid>.log`.
 fn log_pid(path: &Path) -> Option<u32> {
@@ -544,6 +570,30 @@ mod tests {
         assert_eq!(
             Capture::take_from(root.path(), |_| RunLiveness::Running).read(33395),
             None
+        );
+    }
+
+    /// Logs are never deleted and pids come round again, so a pid live
+    /// now can have days of finished runs filed under it. Reading one of
+    /// those reports what that run was doing when it ended -- a test run
+    /// standing at 100% over a `cargo run` that has only just started.
+    #[test]
+    fn a_pid_with_several_logs_reads_the_newest() {
+        let root = tempdir().unwrap();
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        fs::create_dir_all(&markers).unwrap();
+        fs::write(markers.join("94218"), "").unwrap();
+        for (stamp, output) in [
+            ("20260823-154410", CAPTURED_TALLY),
+            ("20260827-155740", CAPTURED_REDRAW),
+        ] {
+            let name = format!("{RUN_LOG_PREFIX}{stamp}{PID_SEPARATOR}94218{RUN_LOG_SUFFIX}");
+            fs::write(root.path().join(name), output).unwrap();
+        }
+
+        assert_eq!(
+            Capture::take_from(root.path(), |_| RunLiveness::Running).read(94218),
+            Some(compiling(149, 403))
         );
     }
 
