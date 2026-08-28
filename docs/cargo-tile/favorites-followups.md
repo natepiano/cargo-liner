@@ -11,38 +11,38 @@
   - `crates/tui_pane/src/backdrop/` — `mod`, `desktop`, `monitor`, `band`, `text`, `pixels`, `query`, `constants`, `random`, entirely behind `#[cfg(feature = "backdrop")]` (`lib.rs:9`).
   - `crates/tui_pane/src/toasts/` — 16 top-level files plus `render/{mod,card,drawing,format,layout}.rs`.
   - `crates/tui_pane/src/theme/` — machinery only, plus `theme/testdata/`.
-  - `crates/cargo-tile/src/` — flat modules (`favorites.rs`, `favorites_overlay.rs`, `globals.rs`, `constants.rs`, `terminal.rs`, `render.rs`, `app.rs`, `keymap.rs`, `config.rs`) plus `attract/{mod,moving_band,moving_text,pixelate,held_key}.rs` and `theme/{mod,builtins}.rs`; `crates/cargo-tile/themes/` holds shipped theme `.toml`s.
+  - `crates/cargo-tile/src/` — `favorites/{mod,rows,file}.rs` plus flat modules (`favorites_overlay.rs`, `globals.rs`, `constants.rs`, `terminal.rs`, `render.rs`, `app.rs`, `keymap.rs`, `config.rs`) plus `attract/{mod,moving_band,moving_text,pixelate,held_key}.rs` and `theme/{mod,builtins}.rs`; `crates/cargo-tile/themes/` holds shipped theme `.toml`s.
   - `crates/cargo-port/src/tui/app/{mod,constants}.rs` — the only cargo-port files this plan touches.
   - Neither `tui_pane` nor `cargo-tile` has an `examples/` directory; no `required-features` anywhere.
 - **Key files:**
   - `crates/tui_pane/src/backdrop/mod.rs` — `Backdrop` (per-cell desktop color), public re-export surface for every backdrop type including `CaptureFailure` and `BackdropStatus`; 209 lines, tests at 145.
   - `crates/tui_pane/src/backdrop/desktop.rs` — `Desktop` capture. `CaptureFailure` names the stage that failed (`:90`) and carries the two classification helpers every former swallow site now uses; `capture` returns `Result<Desktop, CaptureFailure>` (`:468`). `SCShareableContent::get()` runs first and `shareable_content_failure` (`:447`, called `:473`) classifies a failed query from `screen_capture_access_is_granted` (`:443`). Pinned-id resolution falls back to frontmost, then size (`:491`–494); the id it settles on stays local to that function (`:496`). Exclusion list deduplicated by window id through `deduplicate_windows_by_id` (`:456`, called `:534`). `reduce_capture` (`:890`, called `:567`). 1632 lines, tests at 1370 (inside `mod platform`) and 1519.
   - `crates/tui_pane/src/backdrop/monitor.rs` — `BackdropMonitor` (`:90`–145): per-instance channels and workers, `pinned: Option<u32>` (`:118`), last successful desktop (`:101`) and latest attempt status (`:103`) held separately, `status()` accessor (`:414`). `Request::window: Option<u32>` (`:154`) carries the window to capture behind. `identify() -> bool` (`:250`) returns `false` alike for exhausted attempts (`:254`), a merely-paced retry (`:261`–265), and a failed marker-title write (`:299`); the exhaustion branch (`:313`–322) restores the title and leaves `pinned` unset. The worker forwards both capture outcomes. 459 lines, no test module.
-  - `crates/tui_pane/src/backdrop/band.rs` — `TravelingBand`; cells outside the strip untouched (`:603`); one-cell `coverage` edge fade (`:615`); `backdrop.color_at` per covered cell (`:622`); background blend via `BAND_BEHIND_FADE` (`:643`). 1901 lines, tests at 656.
+  - `crates/tui_pane/src/backdrop/band.rs` — `TravelingBand`; paints the desktop across the whole pane with both ends fading, blending through the theme like the text and pixel renderers.
   - `crates/tui_pane/src/backdrop/text.rs` — `DriftingText`; paints every cell from the backdrop (`:552`, blend `:572`) — the reference composition for the band change. 1939 lines, tests at 1036.
   - `crates/tui_pane/src/backdrop/pixels.rs` — `ResolvingPixels`; also paints every cell, `PIXEL_BEHIND_FADE`. 1474 lines, tests at 909.
   - `crates/tui_pane/src/backdrop/query.rs` — xterm position query pinning which emulator window this process draws in. 309 lines, tests at 230.
   - `crates/tui_pane/src/backdrop/constants.rs` — `TEXT_BEHIND_FADE: u8 = 128` (`:269`), `BAND_BEHIND_FADE = TEXT_BEHIND_FADE` (`:23`), `PIXEL_BEHIND_FADE` (`:194`), `CHURN_CELLS_PER_FRAME` (`:27`), `DEFAULT_BAND_SPEED` (`:30`). 532 lines.
   - `crates/tui_pane/src/toasts/toast.rs` — `Toast`, `ToastPhase`, `created_at` (`:107`), `min_height()` (`:221`), `current_visible_lines` = `floor(elapsed/line_ms)+1` clamped up to `min_height` (`:223`–238), `target_height` (`:252`), exit arithmetic (`:245`). 305 lines.
-  - `crates/tui_pane/src/toasts/manager.rs` — `Toasts`, `ToastSpec`, `ToastCommand`, `active_now()`; owns push and wrapping. 584 lines, tests at 107.
+  - `crates/tui_pane/src/toasts/manager.rs` — `Toasts`, `ToastSpec`, `ToastCommand`, `active_now()`; owns push and wrapping, and `next_visual_change_deadline(now) -> ToastVisualDeadline::{NoVisualChangeScheduled, At(Instant)}` — the earliest instant any active toast can next look different, floored at `constants::FRAME_POLL_MILLIS` (8ms). Exported at the `tui_pane` crate root.
   - `crates/tui_pane/src/toasts/settings.rs` — `ToastSettings`, `animation.entrance_duration`/`exit_duration`, `ToastDuration`, `ToastPlacement`. 376 lines.
   - `crates/tui_pane/src/toasts/mod.rs` — 44 lines, the module's export list.
   - `crates/tui_pane/src/toasts/{lifecycle,body,view,slots}.rs`, `toasts/render/*` — phase transitions and expiry, wrapping width, hitboxes, slot layout, card drawing.
   - `crates/tui_pane/src/keymap/global_action.rs` — `GlobalAction::Dismiss` default bound to `'x'` (`:70`, `:241`), help text (`:122`).
   - `crates/tui_pane/src/lib.rs` — `mod backdrop` and every backdrop re-export gated `#[cfg(feature = "backdrop")]` (`:9`–62).
-  - `crates/cargo-tile/src/favorites.rs` — model, parser, lock, writer. `UnrecognizedFavoriteValue` (`:160`), recognitions sorted independently of raw `tables` (`:244`), duplicate-id row demoted carrying its id (`:250`), `push` settings-match dedup (`:264`), `remove(FavoriteId)` (`:296`, `:510`) re-reading under lock (`:596`), `#[cfg(test)] parse_rows_for_overlay_test` (`:516`), exhaustive `AttractSettings` constructors (`:762`). **1039 non-test lines**; `#[cfg(test)]` at 1040.
+  - `crates/cargo-tile/src/favorites/` — the model, parser, lock and writer, split by ownership with the crate-facing exports unchanged in `mod.rs`. `rows.rs` (724 lines) holds `AttractSettings` and its exhaustive constructors, `Favorite`, `FavoriteId` (`:45`, private field, cross-module construction only through `#[cfg(test)] pub(super) const fn from_uuid_for_test` at `:49`), `UnrecognizedFavoriteValue` (`:103`), the recognition refresh that sorts independently of the raw `tables` and demotes a duplicate-id row carrying its id (`:185`–203), `push` settings-match dedup, serialization, and `#[cfg(test)] parse_rows_for_overlay_test`. `file.rs` (929 lines) holds `FavoritesLocation`, the file states, `load`, `read_rows`, `remove(FavoriteId)` (`:272`), the lock, the locked read-modify-write (`:330`–360) and atomic replacement.
   - `crates/cargo-tile/src/favorites_overlay.rs` — `column_descriptors` (`:348`), `FavoritesSurfaceBindings::footer` unconditional move/load/delete (`:526`), `finish_navigation` indexing blanks and headings (`:616`), `FavoritesOverlay` state (`:683`), `open` calling `favorites::load` (`:713`), `schedule_timed_toast` call (`:1180`), `FavoriteSelection` (`:1314`), two-cell marker prefix in `rendered_line` (`:1323`), `build_line_plan` (`:1375`), `Attract:` section heading (`:1455`), `append_unrecognized` emitting `CachedOverlayLine::Static` (`:1508`), `favorite_cells` (`:1728`), private `mode_label` (`:1755`). **1809 non-test lines**; `#[cfg(test)]` at 1810.
-  - `crates/cargo-tile/src/globals.rs` — app-globals scope; `schedule_timed_toast` pairings (`:155`, `:230`); private `mode_label` (`:239`). 746 lines, tests at 247.
+  - `crates/cargo-tile/src/globals.rs` — app-globals scope; toasts pushed with `app.framework.toasts.push_timed(...)` (`:147`, `:214`) and no paired scheduling call; the overlay-open handler (`:117`); private `mode_label`.
   - `crates/cargo-tile/src/constants.rs` — `ATTRACT_NO_BACKDROP_NOTICE` (`:39`), `ATTRACT_FRAME_INTERVAL` (`:346`), `PROBE_THRESHOLD` (`:354`). 810 lines, no test module.
-  - `crates/cargo-tile/src/terminal.rs` — input dispatch ladder; `ToastVisualTimeline` (`:105`, impl `:120`), `ToastVisualSchedule` (`:204`, `record` `:234`), overlay consumes every key (`:720`), `keyed_mode` caller (`:744`), `Dismiss` dispatch (`:801`, `:821`). 1146 lines, tests at 859 (schedule tests `:971`, `:1066`, `:1114`).
-  - `crates/cargo-tile/src/app.rs` — `App` holds `toast_visual_schedule` (`:133`, init `:188`), `schedule_timed_toast` (`:217`), imports (`:30`).
+  - `crates/cargo-tile/src/terminal.rs` — input dispatch ladder. The local toast-scheduling types are gone; the framework deadline supplies the repaint cadence. The overlay consumes every key in the modal branch of `handle_key` (`:511`–517); `Event::Resize` records a pending area only (`:458`) and the post-drain `Resized::Yes` block acts on it (`:268`); `keyed_mode` caller and `Dismiss` dispatch follow.
+  - `crates/cargo-tile/src/app.rs` — `App` state. The `toast_visual_schedule` field and `schedule_timed_toast` are deleted; toast repaint timing comes from `tui_pane`.
   - `crates/cargo-tile/src/attract/mod.rs` — `AttractSettings`, `current_settings()` (`:697`), `AttractMode::draw` index-then-match (`:427`), `noted_backdrop: BackdropDiagnostic` written on transition in `identify` (`:964`), `keyed_mode` (`:680`), `backdrop_notice(now) -> BackdropNotice` (`:1227`), `render` passing one `Backdrop` to all three renderers (`:1251`), automatic-attract steering regression test in the test module. 2120 lines, tests at 1280.
   - `crates/cargo-tile/src/attract/{moving_band,moving_text,pixelate,held_key}.rs` — key bindings only; none of them render.
   - `crates/cargo-tile/src/render.rs` — the pane background the band currently falls back to; `draw_backdrop_notice` (`:216`) writes the attract notice on the body's last row, called from the attract branch (`:184`). 3178 lines.
   - `crates/cargo-tile/src/keymap.rs` — keymap assembly; `x` dismiss arrives from `GlobalAction` defaults.
   - `crates/cargo-tile/src/config.rs` — `<os config dir>/cargo-tile/` paths.
   - `crates/cargo-tile/README.md` — 475 lines; `AppGlobalAction` "starts with no variants" (`:70`–73), `## configuration` "Three files" (`:75`–78), `### keys` (`:430`), attract-keys claim (`:465`–469).
-  - `crates/cargo-port/src/tui/app/mod.rs` — `animation_timeout` (`:452`), `is_animating` (`:465`) whose last clause `!self.framework.toasts.active_now().is_empty()` (`:470`) keeps the 80ms heartbeat alive for a toast's whole lifetime; `ANIMATION_TICK` import (`:125`).
+  - `crates/cargo-port/src/tui/app/mod.rs` — `animation_timeout` takes the framework toast deadline as a minimum against its 80ms `ANIMATION_TICK`; `is_animating` no longer reports true merely because a toast exists.
   - `crates/cargo-port/src/tui/app/constants.rs` — `ANIMATION_TICK: Duration = Duration::from_millis(80)` (`:3`).
 - **Build:** `bash ~/.claude/scripts/delegate/verify.sh check <pkg>`
 - **Test:** `bash ~/.claude/scripts/delegate/verify.sh test <pkg>`
@@ -191,38 +191,23 @@ cargo-tile's `Attract` holds `window_identification: WindowIdentification` (`att
 - `const` on `Framework::set_toast_settings` and `Toasts::set_settings` — both now do per-toast instant arithmetic and text wrapping, and no caller needs a const context.
 - Coarsening `format_elapsed`'s rendered precision, or flooring the repaint rate in the consumer, to fix the millisecond wake — the framework advertised a cadence no display can use, so the framework bounds it.
 
-### Phase 6 — Split `favorites.rs` by ownership  · status: todo
+### Phase 6 — Split `favorites.rs` by ownership  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `favorites.rs` becomes a module whose parts are named for what they own, with no behavior change.
-
-**Spec:**
-
-1,039 non-test lines (`#[cfg(test)]` at 1040) carry the settings and row model, recognition and sorting, file-state and mutation entry points, retry and error reporting, locking, reading, serialization and atomic replacement. That is more top-level clusters than the overlay has, and Phase 7 adds the delicate locator work to it.
-
-Move only. No signature changes, no behavior changes, no renames beyond what the move requires:
-
-- `crates/cargo-tile/src/favorites/rows.rs` — `AttractSettings`, `Favorite`, `FavoriteId`, raw tables, `recognize_favorite`, `FavoriteRowRecognition`, `UnrecognizedFavoriteValue`, `refresh_recognitions`, `compare_recognitions`, serialization, `FavoriteRows` and its mutations including `push` (`:264`)
-- `crates/cargo-tile/src/favorites/file.rs` — `FavoritesLocation`, file states, `load`, `read_rows`, `push`/`remove` entry points (`:296`, `:510`), the lock, read-modify-write, atomic replacement (`:596`)
-- `crates/cargo-tile/src/favorites/mod.rs` — module declarations and the existing crate-facing exports, unchanged so no caller edits
-
-`self_named_module_files` is denied, so this must be `favorites/mod.rs` and the old `favorites.rs` is deleted — not `favorites.rs` sitting beside a `favorites/` directory (Invariant 4).
-
-Tests travel with the types they cover; the `#[expect(clippy::expect_used, clippy::panic, reason = "…")]` block at `:1041` is reproduced in each destination test module. `parse_rows_for_overlay_test` (`:516`) stays `#[cfg(test)]` and keeps its name — it is test-only and the name is accurate (Invariant 8); move it beside the parse code its callers reach.
+`favorites` is a directory module of three files with an unchanged crate-facing surface: `mod.rs` declares the submodules and re-exports the same sixteen `pub(crate)` names the flat file exported, so no caller outside the module names a new path. `rows.rs` owns the model and its in-memory transformations — `AttractSettings` and its exhaustive constructors, `Favorite`, `FavoriteId`, `FavoriteRows`, `FavoriteRowRecognition`, `UnrecognizedFavoriteValue`, `recognize_favorite`, `compare_recognitions`, `table_from_favorite`, the recognition refresh that sorts independently of the raw `tables` and demotes a duplicate-id row carrying its id, and the row-level mutations. `file.rs` owns everything that touches the file — `ResolvedBinding`, `FavoritesFileState`, `FavoritesMutation`, `FavoritesMutationError`, `FavoritesRetryInstruction`, `favorite_refusal_message`, `load`, `push`, `remove`, `read_rows`, `acquire_lock`, `edit_at_location`, and `atomic_replace`. `FavoriteId`'s inner `Uuid` is private; `#[cfg(test)] pub(super) const fn from_uuid_for_test(uuid: Uuid) -> Self` on `FavoriteId` is the only cross-module construction path, consumed solely by `file.rs`'s test module. Tests live beside the code they cover, each test module carrying its own `#[expect(clippy::expect_used, clippy::panic, …)]` block; `parse_rows_for_overlay_test` keeps its name and stays `#[cfg(test)]` beside the parse code.
 
 **Files:**
-- `crates/cargo-tile/src/favorites.rs` — deleted
-- `crates/cargo-tile/src/favorites/mod.rs` — declarations and crate-facing exports
+- `crates/cargo-tile/src/favorites/mod.rs` — submodule declarations and the crate-facing re-exports
 - `crates/cargo-tile/src/favorites/rows.rs` — model, recognition, sorting, serialization, row mutations
-- `crates/cargo-tile/src/favorites/file.rs` — file states, entry points, lock, read-modify-write, atomic replacement
+- `crates/cargo-tile/src/favorites/file.rs` — file states, `push`/`remove` entry points, lock, read-modify-write, atomic replacement
+- `crates/cargo-tile/src/favorites.rs` — deleted; `self_named_module_files` is denied, so the module is `favorites/mod.rs` and the flat file cannot survive beside the directory
 
-**Constraints from prior phases:** Phase 5 removed a `schedule_timed_toast` call site from `favorites_overlay.rs` but changed nothing in `favorites.rs`.
+**Binds later work:** `FavoriteId` is opaque outside `favorites` — anything locating a row by id goes through `rows.rs`, not around the newtype. The row model and the file's read-modify-write path are now in separate files, so work naming either reaches it by item name; line numbers quoted from the pre-split `favorites.rs` no longer resolve.
 
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` — every existing favorites test passes unchanged; a moved test that needed editing means the move was not a move
-- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
-- The only paths that change are `crates/cargo-tile/src/favorites/` and the deletion of `crates/cargo-tile/src/favorites.rs`, which the move requires. No other path changes, since `mod.rs` re-exports the same names.
+**Gotchas:** Splitting a file turns same-file access into cross-module access, and the reflex fix — widening a field or item — is permanent, production-visible cost paid for a compile error that only test code raised. Any widening a split forces gets checked; if only tests need it, the accessor is `#[cfg(test)]`-gated instead.
+
+**Ruled out:** Deduplicating the test fixture constants `FIRST_ID`, `FIRST_SAVED`, `SECOND_SAVED`, defined in both test modules — each copy is used only inside its own module's fixtures, so divergence cannot change a result, and merging them buys a shared test module for three string literals.
 
 ### Phase 7 — An unrecognized row gets a locator that survives a concurrent edit  · status: todo
 
@@ -234,28 +219,36 @@ Tests travel with the types they cover; the `#[expect(clippy::expect_used, clipp
 
 Deleting a broken favorite from the overlay is the decided behavior, and none of the obvious ways to name the row are safe:
 
-- `UnrecognizedFavoriteValue` carries only the first failing key and its spelling (`:160` pre-split), so two malformed rows can produce byte-identical diagnostics.
-- Recognitions are sorted independently of the raw `tables` vector (`:244`), so a displayed index is not a storage index.
-- `remove` accepts a `FavoriteId` and re-reads the file under the lock before mutating (`:296`, `:596`), so an index captured at display time can point at a different table by the time the write happens.
-- A **duplicate-id row is demoted into the unrecognized set carrying that id** (`:250`). Deleting "by its id" would delete the first *recognized* row instead. This is the failure that makes the naive implementation destructive.
+- `UnrecognizedFavoriteValue` (`rows.rs:103`) carries only the first failing key and its spelling, so two malformed rows can produce byte-identical diagnostics.
+- Recognitions are sorted independently of the raw `tables` vector (the refresh at `rows.rs:185`–203), so a displayed index is not a storage index.
+- `remove` accepts a `FavoriteId` (`file.rs:272`) and re-reads the file under the lock before mutating (the locked edit at `file.rs:330`–360), so an index captured at display time can point at a different table by the time the write happens.
+- A **duplicate-id row is demoted into the unrecognized set carrying that id** (in the same recognition refresh). Deleting "by its id" would delete the first *recognized* row instead. This is the failure that makes the naive implementation destructive.
 
 Deleting an unrecognized row means removing its whole raw `[[favorite]]` table, not the one field that failed to parse.
 
-Add `UnrecognizedFavoriteRemovalLocator`, an opaque locator minted while loading, before the display sort, carrying the raw table index plus enough of the table's own content to re-verify it identifies the same table after the locked re-read. Give removal `FavoriteRemovalTarget`, distinguishing a recognized `FavoriteId` from an unrecognized locator rather than overloading `FavoriteId`. Both names are contract surface for Phase 9; do not rename them there. When the locator no longer identifies exactly one table, refuse the removal and report it — a concurrent edit fails loudly rather than deleting the wrong row.
+Add `UnrecognizedFavoriteRemovalLocator`, an opaque locator minted while loading, before the display sort, carrying the raw table index plus enough of the table's own content to re-verify it identifies the same table after the locked re-read. Give removal `FavoriteRemovalTarget`, distinguishing a recognized `FavoriteId` from an unrecognized locator rather than overloading `FavoriteId`. Both names are contract surface for Phase 9; do not rename them there.
+
+When the locator no longer identifies exactly one table, refuse the removal and report it — a concurrent edit fails loudly rather than deleting the wrong row. **The refusal is a named variant on the existing removal error type, not a string-only message**: the overlay has to tell a stale locator apart from an I/O failure in Phase 9, and it must not do that by matching on prose.
+
+`favorites::remove` cannot change signature inside the three favorites files alone. Two callers already exist: the commit path in `crates/cargo-tile/src/terminal.rs`, and `crates/cargo-tile/src/favorites_overlay.rs`, which passes `remove` as a function pointer on the close path. **This phase updates both of them** to pass `FavoriteRemovalTarget::…` wrapping the recognized `FavoriteId` they already hold, so the crate compiles on one API. Do not add a second entry point, a temporary shim, or a deprecated alias — a shim would have to be removed by a later phase, and that is a workaround, not a design.
+
+`FavoriteId` stays opaque: it is a newtype whose field is private, and its only cross-module constructor is `#[cfg(test)]`. Mint and inspect locators inside `rows.rs`; do not widen `FavoriteId`'s field or add a production accessor to make the locator work.
 
 The locator is minted on load and checked only during deletion, so it costs nothing per frame (Invariant 3).
 
-This phase adds the persistence surface only. The overlay does not use it until Phase 9.
+This phase adds the persistence surface only. The overlay does not use it for unrecognized rows until Phase 9.
 
 **Files:**
 - `crates/cargo-tile/src/favorites/rows.rs` — the locator type, minted before `refresh_recognitions` sorts, carried on the unrecognized recognition
 - `crates/cargo-tile/src/favorites/file.rs` — the removal target enum, the unrecognized removal path, re-verification under the existing lock, the refusal outcome
 - `crates/cargo-tile/src/favorites/mod.rs` — export the new types
+- `crates/cargo-tile/src/terminal.rs` — the removal commit path, updated to the new target type
+- `crates/cargo-tile/src/favorites_overlay.rs` — the close path that passes `remove` as a function pointer, updated to the new target type
 
-**Constraints from prior phases:** Phase 6 split `favorites.rs` into `favorites/{mod,rows,file}.rs` with the crate-facing exports unchanged in `mod.rs`. The model, recognition, sorting and `push` live in `rows.rs`; the lock, read-modify-write and atomic replacement live in `file.rs`. Line references above are to the pre-split file — locate by item name.
+**Constraints from prior phases:** Phase 6 split `favorites.rs` into `favorites/{mod,rows,file}.rs` with the crate-facing exports unchanged in `mod.rs`. The model, recognition, sorting and `push` live in `rows.rs`; the lock, read-modify-write and atomic replacement live in `file.rs`. Phase 6 also proved that splitting a file turns same-file access into cross-module access: `FavoriteId`'s inner value was briefly widened to `pub(super)` and had to be closed back up behind a `#[cfg(test)]` constructor. Keep it closed.
 
 **Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with tests covering: deletion succeeding after another process inserts a row *ahead* of the target; deletion of a duplicate-id row leaving its recognized twin intact; two rows with identical diagnostics deleted one at a time; and a refusal when the file changed such that the locator no longer matches exactly one table
+- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with tests covering: deletion succeeding after another process inserts a row *ahead* of the target; deletion of a duplicate-id row leaving its recognized twin intact; two rows with identical diagnostics deleted one at a time; a refusal when the file changed such that the locator no longer matches exactly one table, asserted on the named error variant rather than its message text; and the existing recognized-removal tests still passing through the new target type
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
 
 ### Phase 8 — Split `favorites_overlay.rs` with its dependency direction stated  · status: todo
@@ -266,16 +259,20 @@ This phase adds the persistence surface only. The overlay does not use it until 
 
 **Spec:**
 
-1,809 non-test lines followed by a single 34-test module (`#[cfg(test)]` at 1810). The clusters are real but **not peers** — splitting them as equals produces circular imports or a wave of `pub(super)`. `FavoritesOverlay` directly owns the bindings, the line plan, the width cache, the notice and the removal state (`:683`), and `build_line_plan` consumes both content and bindings (`:1375`). Split with the direction stated:
+1,801 non-test lines followed by a single 34-test module (`#[cfg(test)]` at 1802). The clusters are real but **not peers** — splitting them as equals produces circular imports or a wave of `pub(super)`. `FavoritesOverlay` directly owns the bindings, the line plan, the width cache, the notice and the removal state (`:683`), and `build_line_plan` consumes both content and bindings (`:1367`). Split with the direction stated:
 
 - `crates/cargo-tile/src/favorites_overlay/mod.rs` — `FavoritesOverlay`, its state and outcome types, `FavoriteRemovalCommitState`, `FavoritesOverlayNotice`, action dispatch, rendering coordination, and the re-exports. The module-anchor exception applies to the type sharing the module's name.
-- `content.rs` — `FavoritesOverlayContent`, `FavoriteRowsView`, `FavoriteRowView`, `UnrecognizedFavoritesView`, row lifecycle, and the conversion-time formatting the row constructor calls (`:309`)
-- `bindings.rs` — `FavoritesSurfaceBindings`, `ModeColumnBindings`, `ParameterColumnDescriptor`, `column_descriptors` (`:348`), `footer` (`:526`), the private `mode_label` (`:1755`) which keeps its name
-- `line_plan.rs` — `CachedOverlayLine`, `CachedLinePlan`, `CachedSurfaceWidth`, `FavoriteSectionTableLayout`, `finish_navigation` (`:616`), `build_line_plan` (`:1375`), `rendered_line` (`:1323`), `append_unrecognized` (`:1508`), `favorite_cells` (`:1728`)
+- `content.rs` — `FavoritesOverlayContent`, `FavoriteRowsView`, `FavoriteRowView`, `UnrecognizedFavoritesView`, row lifecycle, the conversion-time formatting the row constructor calls (`:309`), and **`favorite_cells` (`:1720`)**
+- `bindings.rs` — `FavoritesSurfaceBindings`, `ModeColumnBindings`, `ParameterColumnDescriptor`, `column_descriptors` (`:444`), `footer` (`:526`), the private `mode_label` (`:1747`) which keeps its name
+- `line_plan.rs` — `CachedOverlayLine`, `CachedLinePlan`, `CachedSurfaceWidth`, `FavoriteSectionTableLayout`, `finish_navigation` (`:616`), `build_line_plan` (`:1367`), `rendered_line` (`:1315`), `append_unrecognized` (`:1500`)
+
+**`favorite_cells` belongs with `content`, not with `line_plan`.** `FavoriteRowView::from` calls it, so putting the view in `content.rs` and `favorite_cells` in `line_plan.rs` would make `content` depend on `line_plan` while `line_plan` already depends on `content` — the exact cycle this phase exists to avoid.
 
 `line_plan` may depend on `content` and `bindings`; `FavoritesOverlay` may depend on all three. Nothing depends on `mod.rs`.
 
-Move only — no signature changes, no behavior changes. `self_named_module_files` is denied, so the old `favorites_overlay.rs` is deleted (Invariant 4). Tests move down with the types they cover; cross-cutting tests stay in `mod.rs`; no `tests.rs`. Each destination test module reproduces the `#[expect(clippy::expect_used, clippy::panic, reason = "…")]` block from `:1811`. Prefer private, then `pub(super)`, only where an actual caller requires it.
+Move only — no signature changes, no behavior changes. `self_named_module_files` is denied, so the old `favorites_overlay.rs` is deleted (Invariant 4). Tests move down with the types they cover; cross-cutting tests stay in `mod.rs`; no `tests.rs`. Each destination test module reproduces the `#[expect(clippy::expect_used, clippy::panic, reason = "…")]` block from `:1803`. Prefer private, then `pub(super)`, only where an actual caller requires it.
+
+**A widening that only test code needs is gated `#[cfg(test)]`.** Splitting a file turns same-file access into cross-module access, and the reflex fix — opening up a field or item — is a permanent production cost paid for a temporary compile error. Phase 6 hit this exactly once: `FavoriteId`'s inner value was widened to `pub(super)` for a test helper and had to be closed back up behind a `#[cfg(test)] pub(super)` constructor. For every widening this split forces, check who actually requires it; if the answer is only test code, add a `#[cfg(test)]` accessor instead.
 
 **Files:**
 - `crates/cargo-tile/src/favorites_overlay.rs` — deleted
@@ -284,7 +281,7 @@ Move only — no signature changes, no behavior changes. `self_named_module_file
 - `crates/cargo-tile/src/favorites_overlay/bindings.rs` — binding resolution and footer construction
 - `crates/cargo-tile/src/favorites_overlay/line_plan.rs` — cached lines, navigation, layout, rendering
 
-**Constraints from prior phases:** Phase 5 removed the `schedule_timed_toast` call at `:1180`; it will not be present to move. Phase 6 moved the favorites model behind `crates/cargo-tile/src/favorites/` with unchanged crate-facing exports, so overlay imports of `favorites::…` still resolve. Phase 7 added a locator type and a removal target enum exported from `favorites/mod.rs`; this phase does not consume them.
+**Constraints from prior phases:** Phase 5 removed the `schedule_timed_toast` call at `:1180`; it is genuinely gone and will not be present to move. Phase 6 moved the favorites model behind `crates/cargo-tile/src/favorites/` with unchanged crate-facing exports, so overlay imports of `favorites::…` still resolve. Phase 7 added a locator type and a removal target enum exported from `favorites/mod.rs`, and changed this file's close path to pass `FavoriteRemovalTarget` where it previously passed `favorites::remove` directly — move that call as it stands; this phase does not otherwise consume the new types. Line numbers in this Work Order are current as of the end of Phase 7's edits to this file; if one does not land, locate by item name.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` — all 34 existing overlay tests pass unchanged
@@ -312,7 +309,9 @@ Build them together:
 - Make the selection carry a `FavoriteRowIdentity` or nothing, replacing today's recognized-or-nothing `FavoriteSelection`.
 - Render selection styling on unrecognized rows exactly as on recognized ones. They are selectable.
 - Delete reaches both kinds, routing an unrecognized row through the Phase 7 `FavoriteRemovalTarget`. Load stays recognized-only and refuses on an unrecognized row.
-- Deletion already confirms, and this phase re-keys that rather than inventing a second interaction. `FavoriteRemovalCommitState` arms on the first delete press and commits only on a second press of the same key (`favorites_overlay.rs:653`, `:829`, `:872` pre-split), and opening, reloading or moving the cursor clears it (`:732`, `:802`). Re-key it on `FavoriteRowIdentity` so it covers both kinds and so arming on one row can never commit a delete on another. While it is armed the overlay says a second press confirms; any other key cancels, writing nothing. An unrecognized row confirms for the same reason a recognized one does — it may be valid data written by a newer cargo-tile rather than a broken row.
+- **Deletion does not currently confirm, and this phase adds the confirmation.** Read the existing code before writing any of it: a first delete press already starts the removal fade, and `advance` later emits `CommitRemoval` on its own with no second press. `FavoriteRemovalCommitState` is not a two-press confirmation — it guards the *in-flight* commit so a fade that is already running cannot be committed twice or committed against a row that has moved. That guard is doing real work; keep it, and re-key it on `FavoriteRowIdentity` so arming on one row can never commit a delete on another.
+
+  On top of it, add a **separate, named confirmation state** — the semantic question "has the user asked twice?", distinct from the mechanical question "is a commit already in flight?". Do not collapse the two into one field: they answer different questions, they clear on different events, and merging them is how the current code came to look like a confirmation without being one. The first delete press arms confirmation and starts nothing; the second press of the same key on the same row proceeds to the removal. While confirmation is armed the overlay says a second press confirms. Moving the cursor, reloading, reopening the overlay, or pressing **any** other key cancels it, writing nothing. An unrecognized row confirms for the same reason a recognized one does — it may be valid data written by a newer cargo-tile rather than a broken row.
 - A refusal from the Phase 7 locator re-verification reaches the user as an overlay notice naming that the file changed and nothing was deleted. Swallowing it would leave the row on screen with no explanation.
 - Derive the footer from the selection — load and delete on a recognized row, delete only on an unrecognized row, neither on nothing — and drop the movement hint when there is only one navigation position. Cache the footer and rebuild it when bindings, page, content state or selection kind change, rather than reconstructing the `String` every render (Invariant 3).
 
@@ -322,10 +321,10 @@ Build them together:
 - `crates/cargo-tile/src/favorites_overlay/mod.rs` — the selection type, delete routing by identity, load refusal, `FavoriteRemovalCommitState` re-keyed on `FavoriteRowIdentity`, the refusal notice
 - `crates/cargo-tile/src/favorites_overlay/content.rs` — carry the locator onto the unrecognized row view
 
-**Constraints from prior phases:** Phase 7 added `UnrecognizedFavoriteRemovalLocator`, minted before the display sort, and `FavoriteRemovalTarget` distinguishing a recognized `FavoriteId` from that locator, both exported from `favorites/mod.rs`; the unrecognized removal path re-verifies under the lock and refuses when the locator no longer identifies exactly one table — surface that refusal to the user rather than swallowing it. Phase 8 split the overlay into `favorites_overlay/{mod,content,bindings,line_plan}.rs` with `line_plan` depending on `content` and `bindings`; the line refs in this Spec are to the pre-split file, so locate by item name.
+**Constraints from prior phases:** Phase 7 added `UnrecognizedFavoriteRemovalLocator`, minted before the display sort, and `FavoriteRemovalTarget` distinguishing a recognized `FavoriteId` from that locator, both exported from `favorites/mod.rs`; the refusal when the locator no longer identifies exactly one table is a **named error variant**, so match on it rather than on message text, and surface it to the user rather than swallowing it. Phase 7 also updated `terminal.rs` and the overlay's close path to pass `FavoriteRemovalTarget`, so recognized removal already goes through that type. Phase 8 split the overlay into `favorites_overlay/{mod,content,bindings,line_plan}.rs` with `line_plan` depending on `content` and `bindings`, and kept `favorite_cells` in `content.rs`; the line refs in this Spec are to the pre-split file, so locate by item name.
 
 **Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with tests covering: an unrecognized row rendering with the selection marker and style; the navigation index skipping blanks and headings; delete on an unrecognized row reaching the locator path; load on an unrecognized row refusing; the footer omitting load on an unrecognized row and both actions on nothing; a single delete press writing nothing and a second press deleting; a delete armed on one row not committing when the cursor has moved to another; and a locator that no longer matches leaving the file intact while the refusal reaches the overlay notice
+- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with tests covering: an unrecognized row rendering with the selection marker and style; the navigation index skipping blanks and headings; delete on an unrecognized row reaching the locator path; load on an unrecognized row refusing; the footer omitting load on an unrecognized row and both actions on nothing; a single delete press writing nothing and starting no fade, and a second press deleting; a delete armed on one row not committing when the cursor has moved to another; confirmation cancelled by cursor movement, by a reload, by reopening the overlay, and by an ordinary non-delete key, each leaving the file untouched; and a locator that no longer matches leaving the file intact while the refusal reaches the overlay notice
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
 - Hands-on: with a malformed entry in `favorites.toml`, open `ctrl-o`, arrow into the unrecognized block, watch the row highlight, and delete it with two presses.
 
@@ -341,7 +340,11 @@ Opening the favorites table while the attract screen runs a set of parameters th
 
 `rendered_line` writes a two-cell prefix — `"▸ "` when selected, `"  "` otherwise — which is one glyph plus a separator. Selection and currency are independent: the running row may or may not be under the cursor and both must be visible at once. Widen the prefix to three cells: selection, currency, separator. The four combinations are one value, not two booleans, so the two columns cannot disagree. The three cells are selection, currency, separator, and the four strings are fixed: `"   "` for neither, `"▸  "` for selected, `" ● "` for current, `"▸● "` for both. `▸` is the marker already in use; `●` is the currency mark, single-width, so the budget grows by exactly one cell. Update the width budget accordingly.
 
-`Attract::current_settings()` (`attract/mod.rs:614`) supplies the comparison. Snapshot it when the overlay opens, compare it against each recognized row once while building the line plan, and cache the result on the view. The overlay consumes every key while open (`terminal.rs:720`), so steering cannot stale the snapshot; a resize that reclamps settings recomputes it. This is one comparison per recognized row on open and on resize, none per frame, no allocation.
+`Attract::current_settings()` (`attract/mod.rs:697`) supplies the comparison. Snapshot it when the overlay opens, compare it against each recognized row once while building the line plan, and cache the result on the view. The overlay consumes every key while open (`terminal.rs`, the modal branch of `handle_key` at `:511`–517), so steering cannot stale the snapshot; a resize that reclamps settings recomputes it. This is one comparison per recognized row on open and on resize, none per frame, no allocation.
+
+**Take the resize snapshot after the burst drains, not in the resize event.** `Event::Resize` (`terminal.rs:458`) only records a pending area — it deliberately does not act, because a drag emits a burst of resize events and the loop coalesces them. `Attract::current_settings()` is what actually reclamps. Re-snapshot exactly once, in the post-drain `Resized::Yes` block (`terminal.rs:268`), after the reclamp has happened. Snapshotting inside the event handler would recompute on every event of the burst and read settings that have not been reclamped yet.
+
+**Name the marker state and give it an owner.** The four selected/current combinations are one named four-state value, not two booleans and not a tuple. Store the open overlay's settings snapshot **inside the open-overlay state**, or in another named state that says what it is; do not hang an `Option<AttractSettings>` on the outer controller, where "no overlay is open" and "the overlay is open and has no snapshot" would collapse into the same value.
 
 **What the mark claims.** `Attract` keeps settings, not the `FavoriteId` they came from — loading returns `AttractSettings` alone — and a hand-edited file can hold several rows with equal settings and different ids, which `push` does not normalize. So the honest claim is "this row matches the current parameters", and **every** matching row is marked. Say so where the user can see it: a legend reading `● matches the current parameters`, in the overlay heading. That exact glyph and wording are what Phase 13 documents, so a test asserts them. A single authoritative "the favorite that is running" would mean carrying `FavoriteId` provenance through load, steer, randomize, undo and save and clearing it on every edit; that is a different, larger feature and is not this phase.
 
@@ -352,7 +355,7 @@ The comparison is derived `PartialEq` on `AttractSettings`, the same equality `F
 - `crates/cargo-tile/src/favorites_overlay/mod.rs` — hold the snapshot, compare it while building the plan, render the legend
 - `crates/cargo-tile/src/favorites_overlay/content.rs` — the match flag on the recognized row view
 - `crates/cargo-tile/src/globals.rs` — the overlay-open handler (`:117`) is the only place that holds both `App::attract` and the overlay, so the snapshot is taken there and passed into `open`
-- `crates/cargo-tile/src/terminal.rs` — the resize branch (`:664`) already reclamps attract settings; it re-snapshots into the open overlay from the same place
+- `crates/cargo-tile/src/terminal.rs` — the post-drain `Resized::Yes` block (`:268`) re-snapshots into the open overlay after the reclamp; the `Event::Resize` arm (`:458`) keeps only recording the pending area
 
 **Constraints from prior phases:** Phase 9 gave the cached line a `FavoriteRowIdentity::{Recognized(FavoriteId), Unrecognized(UnrecognizedFavoriteRemovalLocator)}` with non-row lines carrying none, put only real rows in the navigation index, made the selection carry that identity or nothing, and kept selection out of the identity as render-time state — currency joins it there. The prefix Phase 9 renders is still two cells; this phase widens it. Unrecognized rows never carry a currency mark: they have no settings to compare. `Attract::current_settings()` takes `&mut self` (`attract/mod.rs:697`), so the caller must hold the attract state mutably — which is why the snapshot is taken in `globals.rs` and `terminal.rs` rather than inside the overlay.
 
@@ -399,10 +402,11 @@ Return `FavoriteSaveOutcome::{Added, Refreshed}` from the save entry point, and 
 
 **Files:**
 - `crates/cargo-tile/src/favorites_overlay/bindings.rs` — `ParameterColumnDescriptor` carries its value renderer; `column_descriptors` updated
-- `crates/cargo-tile/src/favorites_overlay/line_plan.rs` — `favorite_cells` deleted; rows render through the descriptors
+- `crates/cargo-tile/src/favorites_overlay/content.rs` — `favorite_cells` deleted and the cached cells removed from the row view
+- `crates/cargo-tile/src/favorites_overlay/line_plan.rs` — rows render through the descriptors instead of the deleted cells
 - `crates/cargo-tile/src/attract/mod.rs` — `AttractMode::draw` indexes `ALL`
 
-**Constraints from prior phases:** Phase 8 put `column_descriptors` in `bindings.rs` and `favorite_cells` in `line_plan.rs`. Phases 9 and 10 changed the row prefix and the width budget in `line_plan.rs`; the column values themselves are untouched by both, so this phase is additive to them.
+**Constraints from prior phases:** Phase 8 put `column_descriptors` in `bindings.rs` and kept **`favorite_cells` in `content.rs`**, beside `FavoriteRowView::from`, which calls it — placing it in `line_plan.rs` would have made `content` depend on `line_plan` while `line_plan` already depends on `content`. So the deletion here spans both files: the renderer and its cached cells leave `content.rs`, and `line_plan.rs` switches to rendering through the descriptors. Phases 9 and 10 changed the row prefix and the width budget in `line_plan.rs`; the column values themselves are untouched by both, so this phase is additive to them.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with a test proving heading and value stay paired when the descriptor order changes, and one proving a mode added to `AttractMode::ALL` is reachable from `draw`
@@ -424,17 +428,23 @@ Return `FavoriteSaveOutcome::{Added, Refreshed}` from the save entry point, and 
 
 Add a favorites section beside the existing attract one, in the same voice: what a favorite stores (the attract mode and its steerable parameters, not the animation's instantaneous position); where the file lives (`<os config dir>/cargo-tile/favorites.toml`); `ctrl-s` to save and `ctrl-o` to open the table; `m` for a random favorite, `r` to randomize the current parameters, `u` to undo the last replacement; in the overlay, arrows to move, enter to load, `x` to delete, left/right to page the parameter columns, esc to close; what the three-cell row prefix means, quoting the legend `● matches the current parameters` exactly as Phase 10 renders it and saying that every matching row is marked rather than one running favorite; that rows this version cannot read are kept, shown in their own block, selectable, and deletable with two presses of the delete key; and that saving the same parameters twice refreshes the existing row rather than adding one. State that the listed keys are defaults and can be rebound.
 
-Also filter the `x` Dismiss row out of cargo-tile's rendered keymap. `GlobalAction::Dismiss` is bound to `'x'` as a shared framework default (`global_action.rs:70`, `:241`) that `cargo-port` relies on, while cargo-tile's tests require `x` not to close framework overlays — so the fix is in cargo-tile's keymap assembly, not in the shared default (Invariant 2 reasoning applies: do not change what the other consumer depends on).
+Also filter the `x` Dismiss row out of cargo-tile's rendered keymap. `GlobalAction::Dismiss` is bound to `'x'` as a shared framework default (`global_action.rs:70`, `:241`) that `cargo-port` relies on, while cargo-tile's tests require `x` not to close framework overlays. So the shared default must not change — but the filter cannot live in cargo-tile alone either: `Keymap::keymap_help_rows` and `global_shortcut_rows` enumerate `GlobalAction::ALL` unconditionally, and `tui_pane` offers a client no way to hide a framework-global row from its own rendered help.
+
+**Add that hook to the framework.** The cause is a missing framework affordance, so the change goes where the cause is: a client-supplied *presentation* filter in `tui_pane`, consulted only where shortcut rows are rendered. It must not touch dispatch or rebinding — a hidden action still fires when its key is pressed and still appears to the rebinding surface; only the rendered help omits it. Then apply it from cargo-tile's keymap assembly to that crate's rendered shortcut surfaces. Default to filtering nothing, so a client that supplies no filter sees exactly what it sees today.
 
 **Files:**
 - `crates/cargo-tile/README.md` — favorites section; configuration table; attract-steering paragraph; the `AppGlobalAction` claim
-- `crates/cargo-tile/src/keymap.rs` — filter the inactive `x` Dismiss row from the rendered keymap
+- `crates/tui_pane/src/keymap/mod.rs` and `crates/tui_pane/src/keymap/global_action.rs` — the client-supplied presentation filter, consulted by `keymap_help_rows` and `global_shortcut_rows`, defaulting to filtering nothing
+- `crates/cargo-tile/src/keymap.rs` — supply the filter that hides the inactive `x` Dismiss row from cargo-tile's rendered keymap
 
 **Constraints from prior phases:** Phase 9 made unrecognized rows selectable and deletable behind the existing two-press confirmation and gave the footer capability-derived hints; do not call them diagnostics in the README, since a row this version cannot read may have been written by a newer cargo-tile. Phase 10 widened the row prefix to three cells — `"   "`, `"▸  "`, `" ● "`, `"▸● "` — and renders the legend `● matches the current parameters`, marking every matching row rather than one authoritative running favorite; Phase 11 named the save outcome `FavoriteSaveOutcome::{Added, Refreshed}`. Document what those phases actually shipped — read them before writing the section rather than describing the plan.
 
 **Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` — the keymap filter has a test; the README has no test, so verify it by reading each corrected claim against the code it describes and saying so in the report
+- `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` — the default filter hides nothing, a supplied filter removes only the named row from the rendered help, and dispatch and rebinding still reach a hidden action
+- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane`
+- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` — cargo-tile's rendered keymap omits the `x` Dismiss row; the README has no test, so verify it by reading each corrected claim against the code it describes and saying so in the report
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
+- `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-port` — cargo-port supplies no filter, so it still shows and dispatches Dismiss (Invariant 2: do not change what the other consumer depends on)
 
 ### Phase 14 — The second window's capture failure gets its actual cause  · status: todo
 
@@ -462,9 +472,17 @@ Phase 1 already deduplicated the exclusion list, which was the standing suspect 
 
 Otherwise fix what the recorded stage names, in `tui_pane` where it lives.
 
+**The diagnostic this phase needs does not exist yet, so build it first.** `Desktop::capture` keeps the window id it settles on local to that function and returns only `Desktop` or `CaptureFailure`, and several failure stages happen *before* any window has been selected. So "which window did the second instance try to capture behind, and did it get that far?" is unanswerable from the current data path — and that question is this phase's whole subject.
+
+Add a named attempt state, `CaptureAttemptWindowSelection::{SelectionNotReached, Selected { window_id, method }}`, where `method` names how the id was reached (pinned, frontmost, or size). Not an `Option<u32>`: "failed before choosing a window" and "chose this window and then failed" are the two answers the reproduction turns on, and an option collapses them. Carry it out of `capture` on both the success and the failure path, hold it on `BackdropMonitor` beside the latest attempt status, export it through `backdrop/mod.rs` and `lib.rs`, and add it to the `backdrop: …` transition line `Attract::identify` already emits so the reproduction records it.
+
+This is distinct from Phase 15's `CaptureWindowTarget`, which says what the capture was *asked* to do. This says what it actually did.
+
 **Files:**
-- `crates/tui_pane/src/backdrop/desktop.rs` — window resolution, filter construction, or capture, as the evidence directs
-- `crates/tui_pane/src/backdrop/monitor.rs` — window pinning and identification, if the evidence points there
+- `crates/tui_pane/src/backdrop/desktop.rs` — `CaptureAttemptWindowSelection`, carried out of `capture` on both paths; then window resolution, filter construction, or capture, as the evidence directs
+- `crates/tui_pane/src/backdrop/monitor.rs` — hold the attempt selection beside the latest attempt status and expose it; window pinning and identification, if the evidence points there
+- `crates/tui_pane/src/backdrop/mod.rs` and `crates/tui_pane/src/lib.rs` — export the new type behind the existing `#[cfg(feature = "backdrop")]` gate
+- `crates/cargo-tile/src/attract/mod.rs` — add the attempt selection to the transition log line and to that module's test module
 
 **Constraints from prior phases:** Phase 1 typed the capture failure per stage and made `Desktop::capture` return `Result<Desktop, CaptureFailure>` (`desktop.rs:201`, platform implementation at `:470`). It shipped **no preflight**: `SCShareableContent::get()` runs first, because that call is the one that raises the macOS permission prompt, and `CGPreflightScreenCaptureAccess` classifies only a query that already failed (`desktop.rs:446`–453, called at `:475`). That call answers `false` for a process never asked exactly as for one that refused, so the access variant means "not granted", not "the user said no"; in `objc2-core-graphics` 0.3.2 it is declared safe and carries no unsafe annotation. Phase 1 also deduplicated the exclusion window ids (`desktop.rs:458`, called at `:536`) and split the last successful desktop from the latest attempt status on `BackdropMonitor` (`monitor.rs:129`–184). Phase 2 renamed the access variant to `ScreenRecordingAccessNotGranted` (`desktop.rs:40`) and made a successful capture report the window id it used: `BackdropMonitor::captured_window_id()` (`monitor.rs:460`) returns `LastSuccessfulCaptureWindowId`, either `WaitingForFirstSuccess` or `Available { window_id: u32 }`. This phase's Spec asks for that id by name, and Phase 3 puts it in the log; a second window that never captures reports the waiting state, which is itself evidence. Phase 2 added `WindowIdentification`, whose `Fallback` means window selection gave up on pinning and fell back to frontmost or size matching — a strong candidate for what the second window hits. Phase 3 routes the failing stage and the identification outcome into cargo-tile's attract diagnostics, logging on transition only, which is where the reproduction reads them: `probe::note` emits one `backdrop: report=… capture_status=… captured_window_id=…` line from `Attract::identify` (`attract/mod.rs:964`) whenever any of the three changes. That call is gated on `CARGO_TILE_FRAME_LOG`, and the attract screen's own neutral notice now names that variable rather than promising a recording an ordinary run never makes.
 
@@ -485,7 +503,10 @@ Three owned values spell window selection as `Option<u32>`, and in each the `Non
 
 The three sites look alike and are not one domain, so one type threaded through all of them would hand the capture path a state it cannot act on. `BackdropMonitor::pinned` is about **identification progress**: its `None` means the search is still running or has been exhausted, and only `attempts` on the monitor tells those apart. `Request::window` and `Desktop::capture`'s parameter are about the **capture target**: each means an exact id or "use the heuristic now", and neither can behave differently for a search still in flight.
 
-So introduce one private `CaptureWindowTarget::{Identified(u32), FrontmostOrSizeHeuristic}` in `backdrop/` for the worker request and the capture parameter, and leave identification progress where it belongs — in `WindowIdentification` or an equivalent monitor-owned state that names pending and exhausted separately, rather than encoding them in an option the capture path then has to interpret. The monitor derives the target at the boundary where it builds the request; `Desktop::capture` matches it once at the top and its body stops re-deriving what `None` meant.
+So this phase replaces **all three** options, with two types rather than one:
+
+1. Introduce one private `CaptureWindowTarget::{Identified(u32), FrontmostOrSizeHeuristic}` in `backdrop/` for the worker request (`Request::window`) and the capture parameter (`Desktop::capture`). The monitor derives it at the boundary where it builds the request; `Desktop::capture` matches it once at the top and its body stops re-deriving what `None` meant.
+2. **Replace the field `BackdropMonitor::pinned: Option<u32>` itself** with `WindowIdentification`, or an equivalent monitor-owned state that names identified, still-pending and exhausted as separate variants. Today those three are `Some(id)`, `None`, and `None` again, told apart only by consulting `attempts` — the field is the third option, and leaving it typed as one would mean the phase's goal is unmet. Do not merely derive the target from `pinned` and leave the field as it is.
 
 Keep `CaptureWindowTarget` private to the crate: `WindowIdentification` is already the public report on the same subject, and nothing outside `tui_pane` reads the capture parameter.
 
@@ -493,7 +514,7 @@ Do not change what any of the three currently do. This phase is a type change wi
 
 **Files:**
 - `crates/tui_pane/src/backdrop/desktop.rs` — `CaptureWindowTarget`, `capture`'s parameter, and the resolution at `:494`–495
-- `crates/tui_pane/src/backdrop/monitor.rs` — `Request::window` holds the target; `pinned` keeps identification progress and derives the target where the request is built
+- `crates/tui_pane/src/backdrop/monitor.rs` — `Request::window` holds the target; the `pinned: Option<u32>` field is replaced by `WindowIdentification` (or an equivalent named monitor state distinguishing identified, pending and exhausted), and the target is derived from it where the request is built
 
 **Constraints from prior phases:** Phase 2 made `WindowIdentification::Identified` carry the settled window id and added `LastSuccessfulCaptureWindowId` for the id a capture used, deliberately leaving these three options alone so this phase could be designed after the second-window cause was known. Both are public reports on window selection and capture; the enum this phase introduces is the private third one that the capture path itself threads. Phase 14 either found that cause and fixed it in `desktop.rs`/`monitor.rs`, or closed on evidence that Phase 1's exclusion-id deduplication already fixed it; read its as-built record before touching the capture path, because a fix landing there changes what the three states mean.
 
