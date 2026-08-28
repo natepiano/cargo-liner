@@ -991,31 +991,23 @@ fn a_committed_incursion_names_the_commits_that_introduced_its_paths() {
     let envelope = json_output(&reported);
 
     assert_eq!(envelope["status"], "incursion");
-    let effect = envelope["payload"]["data"]["results"]
-        .as_array()
-        .expect("drift should report results")
-        .iter()
-        .find_map(|result| {
-            result["effects"]
-                .as_array()?
-                .iter()
-                .find(|effect| effect["kind"] == "incursion")
-        })
-        .expect("drift should report an incursion")
-        .clone();
-    assert!(
-        effect["paths"]
-            .as_array()
-            .is_some_and(|paths| paths.len() == 2),
-        "both held paths were entered: {effect}"
+    // Each held path has its own holder, so each is reported against that holder alone.
+    let effects = incursion_effects(&envelope);
+    assert_eq!(
+        effects.len(),
+        2,
+        "each held path has its own holder: {envelope}"
     );
-    let commits = effect["commits"]
+    let committed = incursion_for(&effects, "held.txt");
+    let uncommitted = incursion_for(&effects, "also-held.txt");
+
+    let commits = committed["commits"]
         .as_array()
         .expect("an incursion should carry a commit list");
     assert_eq!(
         commits.len(),
         1,
-        "only the committed path came from a commit: {effect}"
+        "only the committed path came from a commit: {committed}"
     );
     assert_eq!(commits[0]["commit"], entering_commit);
     assert_eq!(commits[0]["subject"], "enter the holder scope");
@@ -1028,6 +1020,11 @@ fn a_committed_incursion_names_the_commits_that_introduced_its_paths() {
         commits[0]["paths"].as_array().map(Vec::len),
         Some(1),
         "the uncommitted path has no commit behind it"
+    );
+    assert_eq!(
+        uncommitted["commits"].as_array().map(Vec::len),
+        Some(0),
+        "the uncommitted path has no commit behind it: {uncommitted}"
     );
     let message = envelope["payload"]["message"]
         .as_str()
@@ -1065,18 +1062,20 @@ fn incursion_attribution_treats_pathspec_magic_as_literal_path_text() {
         SECOND_RUN,
     );
     let envelope = json_output(&reported);
-    let commit_paths = envelope["payload"]["data"]["results"]
-        .as_array()
-        .and_then(|results| {
-            results.iter().find_map(|result| {
-                result["effects"].as_array()?.iter().find_map(|effect| {
-                    (effect["kind"] == "incursion")
-                        .then(|| effect["commits"][0]["paths"].as_array())
-                        .flatten()
-                })
-            })
-        })
-        .expect("the incursion commit should list its literal paths");
+    // Each literal path has its own holder, so gather the commit paths across both.
+    let effects = incursion_effects(&envelope);
+    assert!(
+        !effects.is_empty(),
+        "drift should report an incursion: {envelope}"
+    );
+    let commit_paths: Vec<String> = effects
+        .iter()
+        .filter_map(|effect| effect["commits"].as_array())
+        .flatten()
+        .filter_map(|commit| commit["paths"].as_array())
+        .flatten()
+        .filter_map(|path| path.as_str().map(ToOwned::to_owned))
+        .collect();
 
     assert!(commit_paths.iter().any(|path| path == colon_path));
     assert!(commit_paths.iter().any(|path| path == glob_path));
@@ -3114,6 +3113,35 @@ fn journal_events(repository_root: &Path) -> Vec<serde_json::Value> {
 
 fn json_output(output: &Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("command should render JSON")
+}
+
+/// Collect every incursion effect the drift report carries, across all results.
+///
+/// Entered paths are reported against the holders that actually block them, so one
+/// drift run reports one incursion per distinct set of holders.
+fn incursion_effects(envelope: &serde_json::Value) -> Vec<serde_json::Value> {
+    envelope["payload"]["data"]["results"]
+        .as_array()
+        .expect("drift should report results")
+        .iter()
+        .filter_map(|result| result["effects"].as_array())
+        .flatten()
+        .filter(|effect| effect["kind"] == "incursion")
+        .cloned()
+        .collect()
+}
+
+/// Select the one incursion reporting the named path.
+fn incursion_for(effects: &[serde_json::Value], path: &str) -> serde_json::Value {
+    effects
+        .iter()
+        .find(|effect| {
+            effect["paths"]
+                .as_array()
+                .is_some_and(|paths| paths.iter().any(|entered| entered == path))
+        })
+        .expect("every entered path should be reported by some incursion")
+        .clone()
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {

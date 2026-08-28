@@ -82,3 +82,41 @@ Acceptance renames `main` to `renamed` and proves both `berth.toml` and the mana
 
 Surfaced by the Phase 8 state-and-consequence audit and confirmed independently
 by the Phase 8 architect review; reproduced during phase 8 smoke.
+
+## Pair entered paths with their holders in the incursion observation signature
+
+`RetainedReservationSet::observe_incursion` takes `foreign_reservation_ids:
+&ForeignReservationIdSet` and `paths: &IncursionPathSet` as two independent
+parameters, and `IncursionIncident` stores them the same way. The true relation is
+per path: each entered path is blocked by the holders that actually claim it. Two
+independent sets cannot express that, so a caller passing the union of several
+paths' holders type-checks while recording a combination no single path exhibits.
+
+That defect shipped. `drift/classification.rs` accumulated every entered path's
+blockers into one list and reported them under one holder set. Because
+`incursion_path_coverage` decides coverage one path at a time and requires each
+observed holder to appear in the retained incident, an already-answered path
+stopped matching its own incident as soon as an unrelated path contributed a new
+holder — and was raised again. Journal evidence: `crates/cargo-berth/tests/board.rs`
+was answered twice against one holder, then raised a third time under incident
+`01a0492e-84a1-7ae1-a0c8-d4c01db1c36c` once `Cargo.lock` added a second holder to
+the same drift run.
+
+The repair grouped entered paths by their own holder set before observing, so the
+flat pair is accurate by construction. The signature still permits the invalid
+combination; only the caller's discipline prevents it, and
+`observe_incursion`'s own contract — an answered path stays answered — silently
+fails for any future caller that passes a union.
+
+Replace the parameter pair and the retained incident's two fields with one type
+carrying each path alongside its blocking holders, so a union is unrepresentable
+rather than merely unwritten. This is a journal record-shape change: the existing
+answered incidents store paths and holders as independent arrays and must remain
+replayable, so the change carries a migration or a versioned reader.
+
+Acceptance replays a journal containing pre-change incidents alongside
+post-change ones, confirms coverage decisions are unchanged for both, and shows
+the union combination no longer compiles.
+
+Surfaced while investigating why an answered incursion kept reappearing, after
+the Phase 14 checkpoint.
