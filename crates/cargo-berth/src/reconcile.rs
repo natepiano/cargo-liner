@@ -1798,9 +1798,7 @@ impl ReconcileError {
             | Self::Transaction(LedgerTransactionError::LedgerUnreadable(error)) => {
                 OutputEnvelope::ledger_error(command_verb, &error)
             },
-            Self::Replay(error) => {
-                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
-            },
+            Self::Replay(error) => OutputEnvelope::replay_failure(command_verb, &error),
             Self::EdgeReplay(error) => {
                 OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
             },

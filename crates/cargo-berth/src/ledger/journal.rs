@@ -12,6 +12,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
@@ -311,6 +312,38 @@ impl<'de> Deserialize<'de> for IncursionIncidentId {
     }
 }
 
+macro_rules! declare_journal_operations {
+    (
+        $(#[$enum_metadata:meta])*
+        $visibility:vis enum $name:ident { $($variants:tt)* }
+        wire_names {
+            $($variant:ident => $wire_name:literal;)+
+        }
+    ) => {
+        $(#[$enum_metadata])*
+        $visibility enum $name { $($variants)* }
+
+        #[cfg(test)]
+        impl $name {
+            pub(crate) const WIRE_VARIANTS: &'static [&'static str] = &[
+                $($wire_name,)+
+            ];
+
+            /// Return the operation's stable journal tag.
+            #[expect(
+                dead_code,
+                reason = "the generated-contract inventory keeps this exhaustive match as its drift gate"
+            )]
+            pub(crate) const fn wire_name(&self) -> &'static str {
+                match self {
+                    $(Self::$variant { .. } => $wire_name,)+
+                }
+            }
+        }
+    };
+}
+
+declare_journal_operations! {
 /// Every v1 operation a journal can contain.
 ///
 /// New behavior must use one of these variants. Older binaries reject an
@@ -525,6 +558,29 @@ pub(crate) enum JournalOperation {
         current_root:   CanonicalWorktreeRoot,
     },
 }
+wire_names {
+    Claim => "claim";
+    Widen => "widen";
+    Checkpoint => "checkpoint";
+    Resnapshot => "resnapshot";
+    Renew => "renew";
+    Release => "release";
+    ReplaceReleaseDisposition => "replace_release_disposition";
+    EvidenceRevalidated => "evidence_revalidated";
+    ScopedPatchEquivalenceChecked => "scoped_patch_equivalence_checked";
+    ScopedPatchComparisonAttempted => "scoped_patch_comparison_attempted";
+    SuccessorScopedPatchEquivalenceChecked => "successor_scoped_patch_equivalence_checked";
+    SuccessorScopedPatchComparisonAttempted => "successor_scoped_patch_comparison_attempted";
+    ResolveDefer => "resolve_defer";
+    Incursion => "incursion";
+    ResolveIncursion => "resolve_incursion";
+    ForcedIntegrationPermit => "forced_integration_permit";
+    ConsumeForcedIntegrationPermit => "consume_forced_integration_permit";
+    Bypass => "bypass";
+    RebindWorktree => "rebind_worktree";
+    RelocateWorktree => "relocate_worktree";
+}
+}
 
 /// How a claim named the work it reserves.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -577,17 +633,49 @@ git_commit_role!(
     "The phase-start commit retained for active-work drift comparison."
 );
 
-/// What could be observed about the configured trunk when a reservation was acquired.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(untagged)]
-pub(crate) enum TrunkObservationAtClaim {
-    /// The configured trunk resolved to this commit.
-    Resolved(GitObjectId),
-    /// The configured trunk reference did not resolve to a commit.
-    UnresolvedReference {
-        /// The full reference that could not be resolved.
-        reference: FullRefName,
-    },
+macro_rules! declare_trunk_observation_at_claim {
+    (
+        $(#[$enum_metadata:meta])*
+        $visibility:vis enum $name:ident { $($variants:tt)* }
+        wire_names {
+            $($pattern:pat => $wire_name:literal;)+
+        }
+    ) => {
+        $(#[$enum_metadata])*
+        $visibility enum $name { $($variants)* }
+
+        #[cfg(test)]
+        impl $name {
+            pub(crate) const WIRE_ALTERNATIVES: &'static [&'static str] = &[
+                $($wire_name,)+
+            ];
+
+            pub(crate) const fn wire_name(&self) -> &'static str {
+                match self {
+                    $($pattern => $wire_name,)+
+                }
+            }
+        }
+    };
+}
+
+declare_trunk_observation_at_claim! {
+    /// What could be observed about the configured trunk when a reservation was acquired.
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(untagged)]
+    pub(crate) enum TrunkObservationAtClaim {
+        /// The configured trunk resolved to this commit.
+        Resolved(GitObjectId),
+        /// The configured trunk reference did not resolve to a commit.
+        UnresolvedReference {
+            /// The full reference that could not be resolved.
+            reference: FullRefName,
+        },
+    }
+    wire_names {
+        Self::Resolved(_) => "resolved_object_id";
+        Self::UnresolvedReference { .. } => "unresolved_reference";
+    }
 }
 
 impl From<GitObjectId> for TrunkObservationAtClaim {
@@ -1009,8 +1097,10 @@ nonempty_journal_set!(
 );
 
 /// A canonical, absolute, UTF-8 worktree root stored for identity validation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CanonicalWorktreeRoot(String);
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq)]
+#[schemars(rename = "canonical_worktree_root")]
+#[schemars(transparent)]
+pub(crate) struct CanonicalWorktreeRoot(#[schemars(with = "String")] String);
 
 impl Display for CanonicalWorktreeRoot {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
@@ -1774,6 +1864,24 @@ mod tests {
     use crate::ids::WorktreeId;
 
     const HOLDER_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
+
+    #[test]
+    fn trunk_observation_inventory_uses_the_exhaustive_wire_match() {
+        let resolved = "1111111111111111111111111111111111111111"
+            .parse::<TrunkCommitAtClaim>()
+            .expect("fixture object id should parse");
+        let unresolved = TrunkCommitAtClaim::from(
+            "refs/heads/main"
+                .parse::<FullRefName>()
+                .expect("fixture reference should parse"),
+        );
+        assert_eq!(resolved.wire_name(), "resolved_object_id");
+        assert_eq!(unresolved.wire_name(), "unresolved_reference");
+        assert_eq!(
+            TrunkCommitAtClaim::WIRE_ALTERNATIVES,
+            ["resolved_object_id", "unresolved_reference"]
+        );
+    }
 
     #[test]
     fn tree_scope_covers_its_path_and_component_descendants() {

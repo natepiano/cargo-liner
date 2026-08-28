@@ -6,6 +6,7 @@ use std::fmt::Formatter;
 use std::path::Path;
 use std::str::FromStr;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -22,9 +23,11 @@ use crate::ledger::ProtectedPhaseStartHead;
 use crate::scope::ReservationScopeSet;
 
 /// The fixed checkpoint commit used for ordinary integration evidence.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "protected_reservation_tip")]
+#[schemars(transparent)]
 #[serde(transparent)]
-pub(crate) struct ProtectedReservationTip(GitObjectId);
+pub(crate) struct ProtectedReservationTip(#[schemars(with = "String")] GitObjectId);
 
 impl Display for ProtectedReservationTip {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }

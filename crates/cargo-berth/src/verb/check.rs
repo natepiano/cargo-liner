@@ -60,7 +60,7 @@ impl CheckDecisionError {
                 OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string())
             },
             Self::ReservationReplay(error) => {
-                OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string())
+                OutputEnvelope::replay_failure(CommandVerb::Check, &error)
             },
             Self::CoordinationIdentity(rejection) => {
                 OutputEnvelope::coordination_identity_rejected(CommandVerb::Check, rejection)

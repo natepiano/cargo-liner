@@ -32,6 +32,7 @@ pub(crate) use lifecycle::ReleaseDisposition;
 pub(crate) use lifecycle::ReleaseRevalidationSubject;
 pub(crate) use lifecycle::ReservationLifecycle;
 pub(crate) use lifecycle::RewrittenIntegrationTrunkCommit;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -79,16 +80,18 @@ impl IntegrationProofSubjectRevision {
     const INITIAL: Self = Self(1);
 }
 
-/// A definitive content verdict produced by scoped patch equivalence.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ScopedPatchEquivalenceVerdict {
-    /// The target contains the protected scoped change.
-    Integrated,
-    /// The target does not contain an outstanding protected scoped change.
-    NotIntegrated,
-    /// The target no longer contains a previously integrated scoped change.
-    TrunkRewritten,
+declare_wire_enum! {
+    /// A definitive content verdict produced by scoped patch equivalence.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub(crate) enum ScopedPatchEquivalenceVerdict {
+        /// The target contains the protected scoped change.
+        Integrated => "integrated";
+        /// The target does not contain an outstanding protected scoped change.
+        NotIntegrated => "not_integrated";
+        /// The target no longer contains a previously integrated scoped change.
+        TrunkRewritten => "trunk_rewritten";
+    }
 }
 
 /// An immutable scoped patch result that can be reused under a later integration context.
@@ -133,14 +136,16 @@ pub(crate) enum ScopedPatchEquivalenceCacheLookup {
     Miss,
 }
 
-/// A definitive successor-incorporation verdict produced by scoped patch equivalence.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SuccessorScopedPatchEquivalenceVerdict {
-    /// The successor head contains the predecessor's protected scoped change.
-    Equivalent,
-    /// The successor head does not contain the predecessor's protected scoped change.
-    Different,
+declare_wire_enum! {
+    /// A definitive successor-incorporation verdict produced by scoped patch equivalence.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub(crate) enum SuccessorScopedPatchEquivalenceVerdict {
+        /// The successor head contains the predecessor's protected scoped change.
+        Equivalent => "equivalent";
+        /// The successor head does not contain the predecessor's protected scoped change.
+        Different => "different";
+    }
 }
 
 /// One definitive successor-incorporation verdict retained for an immutable head.
@@ -524,7 +529,8 @@ pub(crate) enum ReservationEvidenceState {
 }
 
 /// A point-in-time reading of one reservation's lifecycle.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "reservation_lifecycle")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ReservationLifecycleSnapshot {
     /// Work remains active without a protected checkpoint.
@@ -1345,7 +1351,12 @@ impl RetainedReservationSet {
         recorded_at: &RecordedAt,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
-        reservation.lifecycle.checkpoint(protected_tip.clone())?;
+        reservation
+            .lifecycle
+            .checkpoint(protected_tip.clone())
+            .map_err(|error| {
+                ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
+            })?;
         reservation.retained_protected_tip = RetainedProtectedTip::Retained(protected_tip.clone());
         reservation.integration_trunk_snapshot =
             IntegrationTrunkSnapshot::AtCheckpoint(trunk_snapshot.clone());
@@ -1378,7 +1389,12 @@ impl RetainedReservationSet {
                     reservation.advance_integration_proof_subject_revision()?;
                     return reservation.advance_revision();
                 }
-                reservation.lifecycle.resnapshot(protected_tip.clone())?;
+                reservation
+                    .lifecycle
+                    .resnapshot(protected_tip.clone())
+                    .map_err(|error| {
+                        ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
+                    })?;
                 reservation.retained_protected_tip =
                     RetainedProtectedTip::Retained(protected_tip.clone());
                 reservation.integration_trunk_snapshot =
@@ -1416,9 +1432,17 @@ impl RetainedReservationSet {
         match disposition {
             ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => reservation
                 .lifecycle
-                .release_after_user_confirmation(disposition.clone())?,
+                .release_after_user_confirmation(disposition.clone())
+                .map_err(|error| {
+                    ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
+                })?,
             ReleaseDisposition::Integrated | ReleaseDisposition::RewrittenIntegration(_) => {
-                reservation.lifecycle.release(disposition.clone())?;
+                reservation
+                    .lifecycle
+                    .release(disposition.clone())
+                    .map_err(|error| {
+                        ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
+                    })?;
             },
         }
         reservation.advance_revision()
@@ -1564,7 +1588,10 @@ impl RetainedReservationSet {
         }
         reservation
             .lifecycle
-            .replace_release_disposition(superseded, replacement.clone())?;
+            .replace_release_disposition(superseded, replacement.clone())
+            .map_err(|error| {
+                ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
+            })?;
         if let ReleaseDisposition::RewrittenIntegration(trunk_commit) = replacement {
             reservation.integration_status = IntegrationEvidenceStatus::Integrated {
                 trunk_oid: trunk_commit.as_ref().clone(),
@@ -1977,7 +2004,7 @@ pub(crate) enum ReservationReplayError {
     /// An integration-proof subject revision counter can no longer advance.
     IntegrationProofSubjectRevisionExhausted(ReservationId),
     /// A lifecycle transition appeared in an invalid order.
-    InvalidLifecycleTransition(LifecycleTransitionError),
+    InvalidLifecycleTransition(ReservationId, LifecycleTransitionError),
     /// A snapshot variant disagreed with the reservation lifecycle.
     SnapshotStateMismatch(ReservationId),
     /// An ordinary integrated disposition lacked a preceding verified status.
@@ -2003,6 +2030,10 @@ pub(crate) enum ReservationReplayError {
 }
 
 impl Display for ReservationReplayError {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive display match keeps every hard-stop replay diagnostic visible"
+    )]
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateClaim(reservation_id) => {
@@ -2052,7 +2083,12 @@ impl Display for ReservationReplayError {
                 formatter,
                 "reservation {reservation_id} integration-proof subject revision is exhausted"
             ),
-            Self::InvalidLifecycleTransition(error) => error.fmt(formatter),
+            Self::InvalidLifecycleTransition(reservation_id, error) => {
+                write!(
+                    formatter,
+                    "reservation {reservation_id} lifecycle transition failed: {error}"
+                )
+            },
             Self::SnapshotStateMismatch(reservation_id) => {
                 write!(
                     formatter,
@@ -2104,10 +2140,6 @@ impl Display for ReservationReplayError {
 }
 
 impl std::error::Error for ReservationReplayError {}
-
-impl From<LifecycleTransitionError> for ReservationReplayError {
-    fn from(error: LifecycleTransitionError) -> Self { Self::InvalidLifecycleTransition(error) }
-}
 
 #[cfg(test)]
 mod tests {

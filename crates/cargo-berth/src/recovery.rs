@@ -800,7 +800,7 @@ impl RecoveryError {
                 OutputEnvelope::invalid_input(command_verb, &error.to_string())
             },
             Self::Rejected(RecoveryRejection::Replay(error)) => {
-                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+                OutputEnvelope::replay_failure(command_verb, &error)
             },
             Self::Rejected(RecoveryRejection::EdgeReplay(error)) => {
                 OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
@@ -909,4 +909,37 @@ impl From<LedgerError> for RecoveryError {
 
 impl From<LedgerTransactionError> for RecoveryError {
     fn from(error: LedgerTransactionError) -> Self { Self::Transaction(error) }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::CommandVerb;
+    use super::RecoveryError;
+    use super::RecoveryRejection;
+    use super::ReservationId;
+    use super::ReservationReplayError;
+
+    #[test]
+    fn recovery_replay_rejection_preserves_reason_and_subject() {
+        let reservation_id = ReservationId::new();
+        let output_envelope = RecoveryError::Rejected(RecoveryRejection::Replay(
+            ReservationReplayError::UnknownReservation(reservation_id),
+        ))
+        .into_output(CommandVerb::Resolve);
+        let value =
+            serde_json::to_value(output_envelope).expect("recovery response should serialize");
+        assert_eq!(value["payload"]["kind"], "replay_failure");
+        assert_eq!(value["payload"]["data"]["reason"], "unknown_reservation");
+        assert_eq!(
+            value["payload"]["data"]["subject"],
+            serde_json::json!({
+                "kind": "reservation",
+                "id": reservation_id.to_string(),
+            })
+        );
+    }
 }

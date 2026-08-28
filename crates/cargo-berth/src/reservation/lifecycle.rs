@@ -6,6 +6,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::str::FromStr;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -13,15 +14,18 @@ use super::evidence::ProtectedReservationTip;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 
-/// The git fact supporting an integrated evidence status.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum IntegrationProof {
-    /// Current trunk contains the protected commit itself.
-    #[default]
-    ProtectedTipAncestor,
-    /// Current trunk contains every protected scoped patch under an equivalent commit identity.
-    ScopedPatchEquivalent,
+declare_wire_enum! {
+    /// The git fact supporting an integrated evidence status.
+    #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[schemars(rename = "integration_proof")]
+    #[serde(rename_all = "snake_case")]
+    pub(crate) enum IntegrationProof {
+        /// Current trunk contains the protected commit itself.
+        #[default]
+        ProtectedTipAncestor => "protected_tip_ancestor";
+        /// Current trunk contains every protected scoped patch under an equivalent commit identity.
+        ScopedPatchEquivalent => "scoped_patch_equivalent";
+    }
 }
 
 /// How far a reservation has progressed through the coordination protocol.
@@ -132,7 +136,8 @@ impl ReservationLifecycle {
 }
 
 /// What the current trunk proves about retained reservation evidence.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "integration_evidence_status")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum IntegrationEvidenceStatus {
     /// The protected commit is not reachable from current trunk.
@@ -140,6 +145,7 @@ pub(crate) enum IntegrationEvidenceStatus {
     /// Current trunk contains the protected integration evidence.
     Integrated {
         /// The current trunk commit that was checked.
+        #[schemars(with = "String")]
         trunk_oid: GitObjectId,
         /// The git fact that established integration.
         #[serde(default)]
@@ -163,28 +169,31 @@ impl IntegrationEvidenceStatus {
     }
 }
 
-/// The effective edit decision derived from reservation lifecycle and integration evidence.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum EditBlockingStatus {
-    /// The reservation still blocks foreign edits.
-    Blocking,
-    /// The reservation is released or its outstanding evidence permits foreign edits.
-    Clear,
+declare_wire_enum! {
+    /// The effective edit decision derived from reservation lifecycle and integration evidence.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub(crate) enum EditBlockingStatus {
+        /// The reservation still blocks foreign edits.
+        Blocking => "blocking";
+        /// The reservation is released or its outstanding evidence permits foreign edits.
+        Clear => "clear";
+    }
 }
 
 /// A user-confirmed terminal reservation outcome.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "release_disposition")]
 #[serde(tag = "kind", content = "evidence", rename_all = "snake_case")]
 pub(crate) enum ReleaseDisposition {
     /// Git proved the protected work reached trunk.
     Integrated,
     /// The user supplied a verified alternate trunk commit.
-    RewrittenIntegration(RewrittenIntegrationTrunkCommit),
+    RewrittenIntegration(#[schemars(with = "String")] RewrittenIntegrationTrunkCommit),
     /// The user deliberately discarded the reservation's work.
-    Abandoned(AbandonmentReason),
+    Abandoned(#[schemars(with = "String")] AbandonmentReason),
     /// The user confirmed an orphaned reservation can retire.
-    RetiredOrphan(OrphanRetirementReason),
+    RetiredOrphan(#[schemars(with = "String")] OrphanRetirementReason),
 }
 
 impl ReleaseDisposition {

@@ -5,6 +5,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -92,14 +93,16 @@ impl Display for Alert {
 }
 
 /// Lost affirmative Git evidence for a terminal reservation.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "lost_integration_evidence_alert")]
 pub(crate) struct LostIntegrationEvidenceAlert {
     /// The released reservation whose evidence no longer proves integration.
+    #[schemars(with = "String")]
     reservation_id:  ReservationId,
     /// The fixed checkpoint commit whose released work needs confirmation.
     protected_tip:   ProtectedReservationTip,
     /// What the current repository observation proves about the released evidence.
-    evidence_status: IntegrationEvidenceStatus,
+    evidence_status: LostIntegrationEvidenceStatus,
     /// The recovery path selected by whether trunk resolved.
     recovery:        LostEvidenceRecovery,
 }
@@ -112,7 +115,7 @@ impl LostIntegrationEvidenceAlert {
     pub(crate) const fn protected_tip(&self) -> &ProtectedReservationTip { &self.protected_tip }
 
     /// Borrow the current non-affirmative evidence status.
-    pub(crate) const fn evidence_status(&self) -> &IntegrationEvidenceStatus {
+    pub(crate) const fn evidence_status(&self) -> &LostIntegrationEvidenceStatus {
         &self.evidence_status
     }
 
@@ -120,13 +123,30 @@ impl LostIntegrationEvidenceAlert {
     pub(crate) const fn recovery(&self) -> &LostEvidenceRecovery { &self.recovery }
 }
 
+declare_wire_enum! {
+    /// A non-affirmative integration status eligible for a lost-evidence alert.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[schemars(rename = "lost_integration_evidence_status")]
+    #[serde(tag = "status", rename_all = "snake_case")]
+    pub(crate) enum LostIntegrationEvidenceStatus {
+        /// The protected work is not reachable from the configured trunk.
+        NotIntegrated => "not_integrated";
+        /// Trunk no longer contains evidence that was verified earlier.
+        TrunkRewritten => "trunk_rewritten";
+        /// Git could not resolve an object required by the evidence query.
+        ObjectUnknown => "object_unknown";
+    }
+}
+
 /// Recovery instructions distinguished by whether the configured trunk resolved.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "lost_evidence_recovery")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum LostEvidenceRecovery {
     /// Trunk resolved; the operator can confirm it carries the released work.
     VerifyResolvedTrunk {
         /// The current configured trunk commit.
+        #[schemars(with = "String")]
         trunk_oid: GitObjectId,
         /// The typed resolution available after the operator verifies the work.
         action:    RecoveryAction,
@@ -139,11 +159,15 @@ pub(crate) enum LostEvidenceRecovery {
 }
 
 /// The reservation recovery command represented without a stringly typed flag.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "lost_evidence_recovery_action")]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub(crate) enum RecoveryAction {
     /// Replace lost Git-backed evidence with an operator-verified trunk commit.
-    ResolveIntegratedAs { reservation_id: ReservationId },
+    ResolveIntegratedAs {
+        #[schemars(with = "String")]
+        reservation_id: ReservationId,
+    },
 }
 
 /// Recovery evidence for an outstanding reservation whose worktree was pruned.
@@ -297,12 +321,15 @@ pub(crate) fn for_lost_integration_evidence(
     if matches!(
         disposition.revalidation_subject(),
         ReleaseRevalidationSubject::None
-    ) || matches!(
-        integration_status,
-        IntegrationEvidenceStatus::Integrated { .. }
     ) {
         return Ok(Vec::new());
     }
+    let evidence_status = match integration_status {
+        IntegrationEvidenceStatus::NotIntegrated => LostIntegrationEvidenceStatus::NotIntegrated,
+        IntegrationEvidenceStatus::TrunkRewritten => LostIntegrationEvidenceStatus::TrunkRewritten,
+        IntegrationEvidenceStatus::ObjectUnknown => LostIntegrationEvidenceStatus::ObjectUnknown,
+        IntegrationEvidenceStatus::Integrated { .. } => return Ok(Vec::new()),
+    };
 
     let action = RecoveryAction::ResolveIntegratedAs {
         reservation_id: reservation.id(),
@@ -318,7 +345,7 @@ pub(crate) fn for_lost_integration_evidence(
         LostIntegrationEvidenceAlert {
             reservation_id: reservation.id(),
             protected_tip,
-            evidence_status: integration_status,
+            evidence_status,
             recovery,
         },
     )])

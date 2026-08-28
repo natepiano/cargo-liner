@@ -97,6 +97,9 @@ pub(crate) fn execute(
         Err(SequenceError::Rejected(SequenceRejection::CoordinationIdentity(rejection))) => {
             OutputEnvelope::coordination_identity_rejected(CommandVerb::Sequence, rejection)
         },
+        Err(SequenceError::Rejected(SequenceRejection::ReservationReplay(error))) => {
+            OutputEnvelope::replay_failure(CommandVerb::Sequence, &error)
+        },
         Err(SequenceError::Rejected(SequenceRejection::InvalidCanonicalWorktreeRoot)) => {
             OutputEnvelope::ledger_unreadable(
                 CommandVerb::Sequence,

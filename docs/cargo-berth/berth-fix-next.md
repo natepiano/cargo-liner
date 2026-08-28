@@ -52,8 +52,9 @@ retrospective and Phase 6 identity instrumentation.
 `ParsedConfigValues::finish` applies it with no upper bound. A predecessor's
 successor-equivalence cache and comparison-attempt history each retain at most
 `SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT = 512` entries
-(`reservation/constants.rs:8`), evicting oldest-first at `reservation/mod.rs:257`
-and `:325`. Nothing ties the two numbers together.
+(`reservation/constants.rs:9`), evicting oldest-first at
+`reservation/mod.rs:262-264` and `:330-332`. Nothing ties the two numbers
+together.
 
 Configure `maximum_reservations` above roughly 513 and a single predecessor can
 carry more live successor heads than its cache can retain. Verdicts for stable

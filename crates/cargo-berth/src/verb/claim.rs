@@ -1538,6 +1538,7 @@ impl ClaimError {
                 OutputEnvelope::ledger_error(command_verb, &LedgerError::Config(error))
             },
             Self::Ledger(error) => OutputEnvelope::ledger_error(command_verb, &error),
+            Self::ReservationReplay(error) => OutputEnvelope::replay_failure(command_verb, &error),
             error => OutputEnvelope::ledger_unreadable(command_verb, &error.to_string()),
         }
     }

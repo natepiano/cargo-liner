@@ -410,9 +410,9 @@ pub(crate) fn available_forced_integration_permits(
                     ));
                 };
                 if permit.reservation_id != *reservation_id {
-                    return Err(ForcedIntegrationPermitReplayError::ReservationMismatch {
-                        permit_id: *permit_id,
-                    });
+                    return Err(ForcedIntegrationPermitReplayError::ReservationMismatch(
+                        *permit_id,
+                    ));
                 }
                 if !consumed.insert(*permit_id) {
                     return Err(ForcedIntegrationPermitReplayError::AlreadyConsumed(
@@ -437,9 +437,7 @@ pub(crate) enum ForcedIntegrationPermitReplayError {
     /// A consumption names no earlier permit.
     UnknownPermit(ForcedIntegrationPermitId),
     /// A permit was consumed for a reservation other than the one it authorized.
-    ReservationMismatch {
-        permit_id: ForcedIntegrationPermitId,
-    },
+    ReservationMismatch(ForcedIntegrationPermitId),
     /// A permit was consumed more than once.
     AlreadyConsumed(ForcedIntegrationPermitId),
 }
@@ -457,7 +455,7 @@ impl Display for ForcedIntegrationPermitReplayError {
                 formatter,
                 "forced-integration permit {permit_id} was consumed before it was issued"
             ),
-            Self::ReservationMismatch { permit_id } => write!(
+            Self::ReservationMismatch(permit_id) => write!(
                 formatter,
                 "forced-integration permit {permit_id} was consumed by the wrong reservation"
             ),

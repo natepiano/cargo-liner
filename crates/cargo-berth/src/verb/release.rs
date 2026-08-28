@@ -140,6 +140,9 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
         Err(ReleaseError::Ledger(error)) => {
             OutputEnvelope::ledger_error(CommandVerb::Release, &error)
         },
+        Err(ReleaseError::ReservationReplay(error)) => {
+            OutputEnvelope::replay_failure(CommandVerb::Release, &error)
+        },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string()),
     };
     output_envelope.with_alerts(reconciliation_report.alerts)

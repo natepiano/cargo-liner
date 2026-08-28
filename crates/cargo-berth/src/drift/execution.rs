@@ -137,6 +137,9 @@ pub(crate) fn execute(
             DriftExecutionError::Ledger(error)
             | DriftExecutionError::Transaction(LedgerTransactionError::LedgerUnreadable(error)),
         ) => OutputEnvelope::ledger_error(CommandVerb::Drift, &error),
+        Err(DriftExecutionError::Replay(error)) => {
+            OutputEnvelope::replay_failure(CommandVerb::Drift, &error)
+        },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Drift, &error.to_string()),
     };
     output_envelope.with_alerts(reconciliation_report.alerts)

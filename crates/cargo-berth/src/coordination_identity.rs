@@ -5,6 +5,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -60,8 +61,10 @@ impl TryFrom<Vec<OsString>> for RecoveryCommandLine {
 }
 
 /// A complete recovery argv whose arguments are executable from the JSON contract.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RunnableRecoveryCommandLine(Vec<String>);
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq)]
+#[schemars(rename = "runnable_recovery_argv")]
+#[schemars(transparent)]
+pub(crate) struct RunnableRecoveryCommandLine(#[schemars(length(min = 1))] Vec<String>);
 
 impl RunnableRecoveryCommandLine {
     const BOARD_ARGUMENTS: [&str; 3] = ["cargo-berth", "board", "--json"];
@@ -200,7 +203,8 @@ impl CoordinationIdentityValidationContext {
 }
 
 /// One executable response to a rejected coordination identity.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "coordination_identity_recovery_action")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum CoordinationIdentityRecoveryAction {
     /// Remove only the harness-session mapping supplied to this process.
@@ -251,8 +255,12 @@ impl Display for CoordinationIdentityRecoveryAction {
 }
 
 /// The non-empty executable recovery choices for one identity rejection.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CoordinationIdentityRecoveryActions(Vec<CoordinationIdentityRecoveryAction>);
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq)]
+#[schemars(rename = "coordination_identity_recovery_actions")]
+#[schemars(transparent)]
+pub(crate) struct CoordinationIdentityRecoveryActions(
+    #[schemars(length(min = 1))] Vec<CoordinationIdentityRecoveryAction>,
+);
 
 impl CoordinationIdentityRecoveryActions {
     fn one(action: CoordinationIdentityRecoveryAction) -> Self { Self(vec![action]) }
@@ -345,7 +353,8 @@ impl Display for EmptyCoordinationIdentityRecoveryActions {
 impl std::error::Error for EmptyCoordinationIdentityRecoveryActions {}
 
 /// Why a process-resolved coordination identity cannot authorize this command.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "coordination_identity_rejection")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum CoordinationIdentityRejection {
     /// A session mapping names a missing, inactive, or differently-owned reservation.
@@ -373,7 +382,8 @@ pub(crate) enum CoordinationIdentityRejection {
 }
 
 /// The complete holder and issuer facts for a session-to-worktree mismatch.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "session_worktree_mismatch_rejection")]
 pub(crate) struct SessionWorktreeMismatchRejection {
     /// The run recorded by the session mapping and reservation.
     coordination_run_id: CoordinationRunId,

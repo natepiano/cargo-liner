@@ -12,6 +12,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -21,8 +22,10 @@ use uuid::Uuid;
 macro_rules! uuid_identifier {
     ($name:ident) => {
         #[doc = concat!("An opaque UUID-v7 ", stringify!($name), ".")]
-        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-        pub(crate) struct $name(Uuid);
+        #[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, PartialEq)]
+        #[schemars(rename = "uuid_v7_identifier")]
+        #[schemars(transparent)]
+        pub(crate) struct $name(#[schemars(with = "String")] Uuid);
 
         impl fmt::Display for $name {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -75,8 +78,20 @@ macro_rules! numeric_identifier {
     ($name:ident, $primitive:ty, $documentation:literal) => {
         #[doc = $documentation]
         #[derive(
-            Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+            Clone,
+            Copy,
+            Debug,
+            Deserialize,
+            Eq,
+            Hash,
+            JsonSchema,
+            Ord,
+            PartialEq,
+            PartialOrd,
+            Serialize,
         )]
+        #[schemars(rename = "numeric_identifier")]
+        #[schemars(transparent)]
         #[serde(transparent)]
         pub(crate) struct $name($primitive);
 

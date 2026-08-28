@@ -7,6 +7,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -34,6 +35,7 @@ use crate::gate::IntegrationViolation;
 use crate::gate::install::ActiveManagedHookInstallation;
 use crate::gate::install::ManagedHookActivationOutcome;
 use crate::gate::install::ManagedHookInstallation;
+use crate::gate::permit::ForcedIntegrationPermitReplayError;
 use crate::ids::CoordinationRunId;
 use crate::ids::EventId;
 use crate::ids::ForcedIntegrationPermitId;
@@ -50,10 +52,12 @@ use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::LifecycleTransitionError;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationLifecycleSnapshot;
+use crate::reservation::ReservationReplayError;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::session::CurrentSessionMappingRemoval;
@@ -70,17 +74,21 @@ const BOARD_READY_MESSAGE: &str =
 const UNIMPLEMENTED_MESSAGE: &str = "The reservation engine is not implemented.";
 
 /// One response from a `cargo-berth` verb.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "output_envelope")]
 pub(crate) struct OutputEnvelope {
     /// The verb that produced this response.
     verb:                 CommandVerb,
     /// The response's lifecycle status.
     status:               OutputStatus,
     /// The process exit status for this response.
+    #[schemars(with = "u8")]
     pub(crate) exit_code: BerthExit,
     /// Reservations relevant to this response.
+    #[schemars(with = "Vec<String>")]
     reservations:         Vec<ReservationId>,
     /// Reservations that block this response.
+    #[schemars(with = "Vec<String>")]
     blocked_by:           Vec<ReservationId>,
     /// A human-readable explanation of this response.
     message:              String,
@@ -89,7 +97,8 @@ pub(crate) struct OutputEnvelope {
 }
 
 /// A verb named in a JSON response.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "command_verb")]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CommandVerb {
     /// Initialize the shared ledger.
@@ -116,6 +125,39 @@ pub(crate) enum CommandVerb {
     Identity,
 }
 
+#[cfg(test)]
+impl CommandVerb {
+    pub(crate) const ALL: [Self; 11] = [
+        Self::Init,
+        Self::Board,
+        Self::Check,
+        Self::Claim,
+        Self::Drift,
+        Self::Release,
+        Self::Sequence,
+        Self::Integrate,
+        Self::Resolve,
+        Self::Renew,
+        Self::Identity,
+    ];
+
+    pub(crate) const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Init => "init",
+            Self::Board => "board",
+            Self::Check => "check",
+            Self::Claim => "claim",
+            Self::Drift => "drift",
+            Self::Release => "release",
+            Self::Sequence => "sequence",
+            Self::Integrate => "integrate",
+            Self::Resolve => "resolve",
+            Self::Renew => "renew",
+            Self::Identity => "identity",
+        }
+    }
+}
+
 /// Whether the post-commit hook should stay silent or print a warning.
 pub(crate) enum PostCommitRendering {
     /// The full comparison found nothing the hook needs to report.
@@ -124,99 +166,334 @@ pub(crate) enum PostCommitRendering {
     Warning(String),
 }
 
-/// The status named in a JSON response.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// The subject whose journal replay failed.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "replay_failure_subject")]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub(crate) enum ReplayFailureSubject {
+    /// A retained reservation or reservation mutation was invalid.
+    Reservation(#[schemars(with = "String")] ReservationId),
+    /// A retained incursion-incident record was invalid.
+    IncursionIncident(#[schemars(with = "String")] IncursionIncidentId),
+    /// A retained forced-integration permit record was invalid.
+    ForcedIntegrationPermit(#[schemars(with = "String")] ForcedIntegrationPermitId),
+}
+
+/// The command-level effect of a replay failure.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "replay_failure_effect")]
 #[serde(rename_all = "snake_case")]
-enum OutputStatus {
-    /// The verb parsed, but no engine stands behind it yet.
-    Unimplemented,
-    /// The headless board was projected from reconciled journal and repository facts.
-    BoardReady,
-    /// Initialization created or verified the durable coordination resources.
-    Initialized,
-    /// Explicit repair rebuilt only the disposable journal projection.
-    ProjectionRepaired,
-    /// Confirmed reinitialization discarded the reviewed journal state.
-    Reinitialized,
-    /// The journal or its projection could not be safely read or published.
-    LedgerUnreadable,
-    /// This repository has no berth configuration, so it is not participating in coordination.
-    Unconfigured,
-    /// The board was handed a terminal and the terminal failed.
-    TerminalViewFailed,
-    /// An overlap-free edit check may proceed.
-    Clear,
-    /// A new reservation was appended and published.
-    Claimed,
-    /// Unreserved changed paths were added to a reservation.
-    Widened,
-    /// A write entered a foreign edit-blocking reservation.
-    Incursion,
-    /// A widening gained a foreign blocker before its lock was acquired.
-    DriftCollision,
-    /// Unclaimed paths require an explicit reservation attribution.
-    DriftAttributionRequired,
-    /// Repository policy permits no additional live reservations.
-    ReservationLimitReached,
-    /// Repository policy permits no additional ordering edges.
-    OrderingEdgeLimitReached,
-    /// One or more foreign reservations overlap the requested paths.
-    BlockedByOverlap,
-    /// One or more ordering or deferral holds reject integration.
-    BlockedByOrdering,
-    /// A permissive overlap answer needs a matching reviewed proposal.
-    NeedsUserAuthorization,
-    /// The caller can correct the request and retry without repairing the ledger.
-    InvalidInput,
-    /// Another mutation retained the ledger lock through the retry window.
-    Contention,
-    /// A deferral was converted into one durable ordering edge.
-    Sequenced,
-    /// The requested directed edge already exists.
-    DuplicateOrderingEdge,
-    /// The requested directed edge would make the graph cyclic.
-    OrderingCycle,
-    /// The named reservations have no unresolved deferral to order.
-    MissingDeferral,
-    /// The reservation now has a protected checkpoint awaiting integration.
-    Outstanding,
-    /// Current trunk contains the reservation's integration evidence.
-    Integrated,
-    /// Current trunk no longer contains previously verified evidence.
-    TrunkRewritten,
-    /// Git could not resolve an object needed to verify integration.
-    ObjectUnknown,
-    /// A user-confirmed non-integration disposition ended the reservation.
-    Released,
-    /// A replacement worktree now owns surviving reservation work.
-    Recovered,
-    /// A still-live reservation recorded recent activity.
-    Renewed,
-    /// The current harness-session mapping was removed or was already absent.
-    SessionMappingCleared,
-    /// No harness-session identifier selected a mapping to remove.
-    SessionMappingUnavailable,
-    /// A user disposition answered one outstanding incursion incident.
-    IncursionResolved,
+enum ReplayFailureEffect {
+    /// No command can safely continue from the rejected journal sequence.
+    HardStop,
+}
+
+/// A typed ledger replay failure that does not require parsing `message`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "replay_failure")]
+pub(crate) struct ReplayFailurePayload {
+    /// The exact replay invariant that rejected the journal.
+    reason:  ReplayFailureReason,
+    /// The reservation or incursion incident identified by that invariant.
+    subject: ReplayFailureSubject,
+    /// The command-level consequence shared by every replay failure.
+    effect:  ReplayFailureEffect,
+}
+
+/// Fixed wire metadata for one `OutputStatus` variant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
+pub(crate) struct OutputStatusMetadata {
+    pub(crate) wire_name: &'static str,
+    pub(crate) exit_code: BerthExit,
+}
+
+macro_rules! declare_output_contract_metadata {
+    (
+        statuses {
+            $(
+                $(#[$status_meta:meta])*
+                $status_variant:ident => ($status_wire:literal, $status_exit:ident);
+            )+
+        }
+        reservation_replay_failures {
+            $(
+                $reservation_failure:ident => $reservation_failure_wire:literal;
+            )+
+        }
+        incident_replay_failures {
+            $(
+                $incident_failure:ident => $incident_failure_wire:literal;
+            )+
+        }
+        lifecycle_transition_replay_failures {
+            $(
+                $lifecycle_transition_failure:ident => $lifecycle_transition_failure_wire:literal;
+            )+
+        }
+        permit_replay_failures {
+            $(
+                $permit_failure:ident => $permit_failure_wire:literal;
+            )+
+        }
+    ) => {
+        /// The status named in a JSON response.
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+        #[schemars(rename = "output_status")]
+        #[serde(rename_all = "snake_case")]
+        pub(crate) enum OutputStatus {
+            $($(#[$status_meta])* $status_variant,)+
+        }
+
+        #[cfg(test)]
+        impl OutputStatus {
+            pub(crate) const ALL: &'static [OutputStatusMetadata] = &[
+                $(OutputStatusMetadata {
+                    wire_name: $status_wire,
+                    exit_code: BerthExit::$status_exit,
+                },)+
+            ];
+
+            pub(crate) const fn wire_name(self) -> &'static str {
+                match self {
+                    $(Self::$status_variant => $status_wire,)+
+                }
+            }
+
+            pub(crate) const fn exit_code(self) -> BerthExit {
+                match self {
+                    $(Self::$status_variant => BerthExit::$status_exit,)+
+                }
+            }
+        }
+
+        /// The exact invariant that stopped reservation replay.
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+        #[schemars(rename = "replay_failure_reason")]
+        #[serde(rename_all = "snake_case")]
+        pub(crate) enum ReplayFailureReason {
+            $($reservation_failure,)+
+            $($incident_failure,)+
+            $($lifecycle_transition_failure,)+
+            $($permit_failure,)+
+        }
+
+        #[cfg(test)]
+        impl ReplayFailureReason {
+            pub(crate) const ALL: &'static [(&'static str, ReplayFailureSubjectKind)] = &[
+                $(($reservation_failure_wire, ReplayFailureSubjectKind::Reservation),)+
+                $(($incident_failure_wire, ReplayFailureSubjectKind::IncursionIncident),)+
+                $(($lifecycle_transition_failure_wire, ReplayFailureSubjectKind::Reservation),)+
+                $(($permit_failure_wire, ReplayFailureSubjectKind::ForcedIntegrationPermit),)+
+            ];
+        }
+
+        impl From<&ReservationReplayError> for ReplayFailurePayload {
+            fn from(error: &ReservationReplayError) -> Self {
+                let (reason, subject) = match error {
+                    $(
+                        ReservationReplayError::$reservation_failure(reservation_id) => (
+                            ReplayFailureReason::$reservation_failure,
+                            ReplayFailureSubject::Reservation(*reservation_id),
+                        ),
+                    )+
+                    $(
+                        ReservationReplayError::$incident_failure(incident_id) => (
+                            ReplayFailureReason::$incident_failure,
+                            ReplayFailureSubject::IncursionIncident(*incident_id),
+                        ),
+                    )+
+                    ReservationReplayError::InvalidLifecycleTransition(
+                        reservation_id,
+                        transition_failure,
+                    ) => {
+                        let reason = match transition_failure {
+                            $(
+                                LifecycleTransitionError::$lifecycle_transition_failure => {
+                                    ReplayFailureReason::$lifecycle_transition_failure
+                                },
+                            )+
+                        };
+                        (reason, ReplayFailureSubject::Reservation(*reservation_id))
+                    },
+                };
+                Self {
+                    reason,
+                    subject,
+                    effect: ReplayFailureEffect::HardStop,
+                }
+            }
+        }
+
+        impl From<&ForcedIntegrationPermitReplayError> for ReplayFailurePayload {
+            fn from(error: &ForcedIntegrationPermitReplayError) -> Self {
+                let (reason, permit_id) = match error {
+                    $(
+                        ForcedIntegrationPermitReplayError::$permit_failure(permit_id) => (
+                            ReplayFailureReason::$permit_failure,
+                            *permit_id,
+                        ),
+                    )+
+                };
+                Self {
+                    reason,
+                    subject: ReplayFailureSubject::ForcedIntegrationPermit(permit_id),
+                    effect: ReplayFailureEffect::HardStop,
+                }
+            }
+        }
+    };
+}
+
+/// The semantic category carried by one replay-failure subject.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
+pub(crate) enum ReplayFailureSubjectKind {
+    /// The failure identifies a reservation.
+    Reservation,
+    /// The failure identifies an incursion incident.
+    IncursionIncident,
+    /// The failure identifies a forced-integration permit.
+    ForcedIntegrationPermit,
+}
+
+declare_output_contract_metadata! {
+    statuses {
+        /// The verb parsed, but no engine stands behind it yet.
+        Unimplemented => ("unimplemented", Clear);
+        /// The headless board was projected from reconciled journal and repository facts.
+        BoardReady => ("board_ready", Clear);
+        /// Initialization created or verified the durable coordination resources.
+        Initialized => ("initialized", Clear);
+        /// Explicit repair rebuilt only the disposable journal projection.
+        ProjectionRepaired => ("projection_repaired", Clear);
+        /// Confirmed reinitialization discarded the reviewed journal state.
+        Reinitialized => ("reinitialized", Clear);
+        /// The journal or its projection could not be safely read or published.
+        LedgerUnreadable => ("ledger_unreadable", LedgerUnreadable);
+        /// The installed reference-transaction hook predates issuing-checkout capture.
+        LegacyHookOutdated => ("legacy_hook_outdated", LedgerUnreadable);
+        /// This repository has no berth configuration, so it is not participating in coordination.
+        Unconfigured => ("unconfigured", LedgerUnreadable);
+        /// The board was handed a terminal and the terminal failed.
+        TerminalViewFailed => ("terminal_view_failed", TerminalViewFailed);
+        /// An overlap-free edit check may proceed.
+        Clear => ("clear", Clear);
+        /// A new reservation was appended and published.
+        Claimed => ("claimed", Clear);
+        /// Unreserved changed paths were added to a reservation.
+        Widened => ("widened", Clear);
+        /// A write entered a foreign edit-blocking reservation.
+        Incursion => ("incursion", BlockedByOverlap);
+        /// A widening gained a foreign blocker before its lock was acquired.
+        DriftCollision => ("drift_collision", BlockedByOverlap);
+        /// Unclaimed paths require an explicit reservation attribution.
+        DriftAttributionRequired => ("drift_attribution_required", BlockedByOverlap);
+        /// Repository policy permits no additional live reservations.
+        ReservationLimitReached => ("reservation_limit_reached", BlockedByOverlap);
+        /// Repository policy permits no additional ordering edges.
+        OrderingEdgeLimitReached => ("ordering_edge_limit_reached", BlockedByOrdering);
+        /// One or more foreign reservations overlap the requested paths.
+        BlockedByOverlap => ("blocked_by_overlap", BlockedByOverlap);
+        /// One or more ordering or deferral holds reject integration.
+        BlockedByOrdering => ("blocked_by_ordering", BlockedByOrdering);
+        /// A permissive overlap answer needs a matching reviewed proposal.
+        NeedsUserAuthorization => ("needs_user_authorization", NeedsUserAuthorization);
+        /// The caller can correct the request and retry without repairing the ledger.
+        InvalidInput => ("invalid_input", UsageError);
+        /// Another mutation retained the ledger lock through the retry window.
+        Contention => ("contention", BlockedByContention);
+        /// A deferral was converted into one durable ordering edge.
+        Sequenced => ("sequenced", Clear);
+        /// The requested directed edge already exists.
+        DuplicateOrderingEdge => ("duplicate_ordering_edge", BlockedByOrdering);
+        /// The requested directed edge would make the graph cyclic.
+        OrderingCycle => ("ordering_cycle", BlockedByOrdering);
+        /// The named reservations have no unresolved deferral to order.
+        MissingDeferral => ("missing_deferral", BlockedByOrdering);
+        /// The reservation now has a protected checkpoint awaiting integration.
+        Outstanding => ("outstanding", Clear);
+        /// Current trunk contains the reservation's integration evidence.
+        Integrated => ("integrated", Clear);
+        /// Current trunk no longer contains previously verified evidence.
+        TrunkRewritten => ("trunk_rewritten", Clear);
+        /// Git could not resolve an object needed to verify integration.
+        ObjectUnknown => ("object_unknown", Clear);
+        /// A user-confirmed non-integration disposition ended the reservation.
+        Released => ("released", Clear);
+        /// A replacement worktree now owns surviving reservation work.
+        Recovered => ("recovered", Clear);
+        /// A still-live reservation recorded recent activity.
+        Renewed => ("renewed", Clear);
+        /// The current harness-session mapping was removed or was already absent.
+        SessionMappingCleared => ("session_mapping_cleared", Clear);
+        /// No harness-session identifier selected a mapping to remove.
+        SessionMappingUnavailable => ("session_mapping_unavailable", UsageError);
+        /// A user disposition answered one outstanding incursion incident.
+        IncursionResolved => ("incursion_resolved", Clear);
+    }
+    reservation_replay_failures {
+        DuplicateClaim => "duplicate_claim";
+        UnknownReservation => "unknown_reservation";
+        EmptyScopeSet => "empty_scope_set";
+        WidenRequiresUnreleased => "widen_requires_unreleased";
+        RevisionExhausted => "revision_exhausted";
+        IntegrationProofSubjectRevisionExhausted => "integration_proof_subject_revision_exhausted";
+        SnapshotStateMismatch => "snapshot_state_mismatch";
+        IntegratedReleaseWithoutEvidence => "integrated_release_without_evidence";
+        ActiveEvidenceRevalidation => "active_evidence_revalidation";
+        ActiveScopedPatchComparison => "active_scoped_patch_comparison";
+        IntegrationProofSubjectMismatch => "integration_proof_subject_mismatch";
+        DecisionHasNoGitEvidence => "decision_has_no_git_evidence";
+        MissingProtectedTip => "missing_protected_tip";
+        MissingTrunkSnapshot => "missing_trunk_snapshot";
+        WorktreeRelocationMismatch => "worktree_relocation_mismatch";
+        WorktreeRebindingMismatch => "worktree_rebinding_mismatch";
+        InvalidReplacementDisposition => "invalid_replacement_disposition";
+    }
+    incident_replay_failures {
+        DuplicateIncursionIncident => "duplicate_incursion_incident";
+        UnknownIncursionIncident => "unknown_incursion_incident";
+        IncursionIncidentAlreadyResolved => "incursion_incident_already_resolved";
+    }
+    lifecycle_transition_replay_failures {
+        CheckpointRequiresActive => "checkpoint_requires_active";
+        ResnapshotRequiresOutstanding => "resnapshot_requires_outstanding";
+        ReleaseRequiresCheckpoint => "release_requires_checkpoint";
+        AlreadyReleased => "already_released";
+        SupersededDispositionMismatch => "superseded_disposition_mismatch";
+        ReplacementRequiresRelease => "replacement_requires_release";
+    }
+    permit_replay_failures {
+        DuplicatePermit => "duplicate_permit";
+        UnknownPermit => "unknown_permit";
+        AlreadyConsumed => "already_consumed";
+        ReservationMismatch => "reservation_mismatch";
+    }
 }
 
 /// Structured facts and additive alerts returned inside the typed payload field.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "output_payload")]
 struct OutputPayload {
     /// The verb-keyed result whose serialized `kind` and `data` layout is stable.
     #[serde(flatten)]
     facts:  OutputFacts,
     /// Durable coordination alerts relevant to this response.
     #[serde(default)]
+    #[schemars(with = "Vec<serde_json::Value>")]
     alerts: Vec<Alert>,
 }
 
 /// Structured facts that correspond to the response's verb.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "output_facts")]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 enum OutputFacts {
     /// The operation failed before it could establish any durable facts.
     NoFacts,
+    /// A typed invariant violation stopped append-only journal replay.
+    ReplayFailure(ReplayFailurePayload),
     /// Facts returned by `init`.
     Init(InitializationPayload),
     /// Facts returned by `init --repair-projection`.
@@ -224,7 +501,7 @@ enum OutputFacts {
     /// Facts returned by confirmed journal reinitialization.
     Reinitialize(ReinitializationPayload),
     /// Facts returned by the headless reservation board.
-    Board(Box<BoardModel>),
+    Board(#[schemars(with = "serde_json::Value")] Box<BoardModel>),
     /// One reservation's lifecycle or a typed unknown-id rejection.
     Reservation(ReservationLifecycleQueryPayload),
     /// Facts returned by `check`.
@@ -232,7 +509,7 @@ enum OutputFacts {
     /// Facts returned by `claim`.
     Claim(ClaimPayload),
     /// Facts returned by `drift`.
-    Drift(DriftReport),
+    Drift(#[schemars(with = "serde_json::Value")] DriftReport),
     /// Facts returned by `release`.
     Release(ReleasePayload),
     /// Facts returned by `sequence`.
@@ -249,8 +526,12 @@ enum OutputFacts {
     CoordinationIdentity(CoordinationIdentityRejection),
 }
 
+#[cfg(test)]
+pub(crate) fn output_facts_schema() -> schemars::Schema { schemars::schema_for!(OutputFacts) }
+
 /// The resources an `init` call created or left intact.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "initialization_payload")]
 struct InitializationPayload {
     /// Whether initialization created the journal or found an existing one.
     ledger:        InitializationResource,
@@ -261,7 +542,8 @@ struct InitializationPayload {
 }
 
 /// The activation result for one hook in the managed-hook registry.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "initialized_managed_hook")]
 struct InitializedManagedHook {
     /// The git hook name from the managed-hook registry.
     name:       String,
@@ -270,7 +552,8 @@ struct InitializedManagedHook {
 }
 
 /// Whether one managed hook will run after initialization.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "managed_hook_activation")]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum ManagedHookActivation {
     /// The managed hook is installed and executable.
@@ -286,7 +569,8 @@ enum ManagedHookActivation {
 }
 
 /// How an active managed hook reached its current state.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "active_hook_installation")]
 #[serde(rename_all = "snake_case")]
 enum ActiveHookInstallation {
     /// This initialization call created the hook.
@@ -296,7 +580,8 @@ enum ActiveHookInstallation {
 }
 
 /// Why a managed hook is not in force after initialization.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "managed_hook_inactivity")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ManagedHookInactivity {
     /// An unrelated hook still owns the hook name.
@@ -309,7 +594,8 @@ enum ManagedHookInactivity {
 }
 
 /// The explicit guarantee reported after rebuilding the disposable projection.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "projection_repair_payload")]
 struct ProjectionRepairPayload {
     /// The only file this operation rebuilt.
     projection: RepairedProjection,
@@ -318,7 +604,8 @@ struct ProjectionRepairPayload {
 }
 
 /// The exact destructive effect of confirmed ledger reinitialization.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "reinitialization_payload")]
 struct ReinitializationPayload {
     /// The journal bytes discarded after confirmation.
     discarded_bytes:              u64,
@@ -329,7 +616,8 @@ struct ReinitializationPayload {
 }
 
 /// The disposable projection rebuilt by explicit repair.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "repaired_projection")]
 #[serde(rename_all = "snake_case")]
 enum RepairedProjection {
     /// `reservations.json` was derived again from complete journal facts.
@@ -337,7 +625,8 @@ enum RepairedProjection {
 }
 
 /// Whether explicit projection repair changed journal truth.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "projection_repair_journal_effect")]
 #[serde(rename_all = "snake_case")]
 enum ProjectionRepairJournalEffect {
     /// `journal.ndjson` remained byte-identical.
@@ -345,9 +634,10 @@ enum ProjectionRepairJournalEffect {
 }
 
 /// The result of selecting one reservation independently of board placement.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "reservation_lifecycle_query")]
 #[serde(untagged)]
-enum ReservationLifecycleQueryPayload {
+pub(crate) enum ReservationLifecycleQueryPayload {
     /// The selected reservation and its current lifecycle.
     Snapshot {
         /// The reservation selected by the caller.
@@ -360,7 +650,8 @@ enum ReservationLifecycleQueryPayload {
 }
 
 /// Why a named reservation lifecycle query was rejected.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "reservation_lifecycle_query_rejection")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ReservationLifecycleQueryRejection {
     /// No retained reservation has this non-recyclable identity.
@@ -379,7 +670,8 @@ impl ReservationLifecycleQueryRejection {
 }
 
 /// The initialization outcome for one durable resource.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "initialization_resource")]
 #[serde(rename_all = "snake_case")]
 enum InitializationResource {
     /// This initialization call created the resource.
@@ -389,7 +681,8 @@ enum InitializationResource {
 }
 
 /// Typed outcomes returned by the trunk integration gate.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "integration_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum IntegrationPayload {
     /// The selected reservation entered trunk after a clear decision.
@@ -397,8 +690,10 @@ pub(crate) enum IntegrationPayload {
         /// The reservation whose protected work entered trunk.
         reservation_id: ReservationId,
         /// The main object against which the update was validated.
+        #[schemars(with = "String")]
         previous:       GitObjectId,
         /// The new main object installed by the update.
+        #[schemars(with = "String")]
         proposed:       GitObjectId,
         /// The journal generation validated under the decision lock.
         generation:     ProjectionGeneration,
@@ -412,6 +707,7 @@ pub(crate) enum IntegrationPayload {
         /// The journal generation validated under the decision lock.
         generation:     ProjectionGeneration,
         /// Every exact hold that prevented integration.
+        #[schemars(with = "Vec<serde_json::Value>")]
         violations:     Vec<IntegrationViolation>,
     },
     /// Caller identity named a coordination run that no longer owns active work.
@@ -422,7 +718,8 @@ pub(crate) enum IntegrationPayload {
 }
 
 /// How a successful integration related to current gate policy.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "integrated_gate_outcome")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum IntegratedGateOutcome {
     /// No integration constraint held the reservation.
@@ -430,6 +727,7 @@ pub(crate) enum IntegratedGateOutcome {
     /// Observe-only policy logged holds that enforcing mode would reject.
     Observed {
         /// The holds reported without rejecting the update.
+        #[schemars(with = "Vec<serde_json::Value>")]
         violations: Vec<IntegrationViolation>,
     },
     /// A one-use permit was minted and consumed by the update.
@@ -437,14 +735,17 @@ pub(crate) enum IntegratedGateOutcome {
         /// The durable permit identity.
         permit_id:           ForcedIntegrationPermitId,
         /// The exact holds the user chose to skip.
+        #[schemars(with = "serde_json::Value")]
         skipped_holds:       SkippedIntegrationHoldSet,
         /// Holds on other entering reservations reported by observe-only policy.
+        #[schemars(with = "Vec<serde_json::Value>")]
         observed_violations: Vec<IntegrationViolation>,
     },
 }
 
 /// Typed outcomes returned by `resolve`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "resolve_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ResolvePayload {
     /// A user disposition answered an outstanding incursion incident.
@@ -452,6 +753,7 @@ pub(crate) enum ResolvePayload {
         /// The reservation whose drift produced the incident.
         reservation_id: ReservationId,
         /// The incident answered by the appended disposition.
+        #[schemars(with = "String")]
         incident_id:    IncursionIncidentId,
     },
     /// This invocation appended the requested incursion disposition.
@@ -459,6 +761,7 @@ pub(crate) enum ResolvePayload {
         /// The reservation whose drift produced the incident.
         reservation_id: ReservationId,
         /// The incident answered by this invocation.
+        #[schemars(with = "String")]
         incident_id:    IncursionIncidentId,
     },
     /// This worktree coordination run had already appended the disposition.
@@ -466,6 +769,7 @@ pub(crate) enum ResolvePayload {
         /// The reservation whose drift produced the incident.
         reservation_id: ReservationId,
         /// The incident already answered by this coordination actor.
+        #[schemars(with = "String")]
         incident_id:    IncursionIncidentId,
     },
     /// Another worktree coordination run had already appended the disposition.
@@ -473,6 +777,7 @@ pub(crate) enum ResolvePayload {
         /// The reservation whose drift produced the incident.
         reservation_id:                ReservationId,
         /// The incident already answered by another coordination actor.
+        #[schemars(with = "String")]
         incident_id:                   IncursionIncidentId,
         /// The worktree identity recorded on the resolution event.
         resolving_worktree_id:         WorktreeId,
@@ -481,6 +786,7 @@ pub(crate) enum ResolvePayload {
         /// The journal append that answered the incident.
         resolution_event_id:           EventId,
         /// When the disposition was recorded.
+        #[schemars(with = "String")]
         resolved_at:                   RecordedAt,
     },
     /// A user disposition answered every incident outstanding for one reservation.
@@ -488,6 +794,7 @@ pub(crate) enum ResolvePayload {
         /// The reservation whose drift produced the incidents.
         reservation_id: ReservationId,
         /// Every incident answered by the appended dispositions.
+        #[schemars(with = "Vec<String>")]
         incident_ids:   Vec<IncursionIncidentId>,
     },
     /// Surviving work moved to a replacement worktree identity.
@@ -504,21 +811,24 @@ pub(crate) enum ResolvePayload {
         /// The recorded disposition or replacement disposition.
         disposition:                 ReleaseDisposition,
         /// Whether the harness session mapping retired this reservation.
+        #[schemars(with = "serde_json::Value")]
         session_mapping_publication: SessionIdentityMappingPublication,
     },
 }
 
 /// Typed facts returned by `renew`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "renew_payload")]
 struct RenewPayload {
     /// The reservation whose activity timestamp advanced.
     reservation_id: ReservationId,
 }
 
 /// Typed outcomes returned by `identity`.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "identity_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
-enum IdentityPayload {
+pub(crate) enum IdentityPayload {
     /// The current harness session's mapping was removed.
     SessionMappingRemoved,
     /// The current harness session had no stored mapping.
@@ -540,7 +850,8 @@ impl From<CurrentSessionMappingRemoval> for IdentityPayload {
 }
 
 /// Typed outcomes returned by `claim`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "claim_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum ClaimPayload {
     /// A reservation was appended with this minimal antichain.
@@ -550,21 +861,25 @@ enum ClaimPayload {
         /// The coordination run that owns the appended reservation.
         coordination_run_id:         CoordinationRunId,
         /// The exact durable footprint.
+        #[schemars(with = "serde_json::Value")]
         scopes:                      ReservationScopeSet,
         /// Whether the worktree marker records `coordination_run_id`.
         marker_publication:          CoordinationRunMarkerPublication,
         /// Whether the harness session mapping reflects this claim.
+        #[schemars(with = "serde_json::Value")]
         session_mapping_publication: SessionIdentityMappingPublication,
     },
     /// Foreign holders prevented the append.
     Blocked {
         /// Every holder whose live scopes intersected the request.
+        #[schemars(with = "Vec<serde_json::Value>")]
         conflicts: Vec<ReservationConflict>,
     },
     /// A permissive answer was proposed but has not supplied the current exact token.
     NeedsUserAuthorization {
         /// The conflicts, proposed answer, reason, consequence, and proposal token.
         #[serde(flatten)]
+        #[schemars(with = "serde_json::Value")]
         escalation: Box<OverlapEscalationPayload>,
     },
     /// Repository policy rejected another live reservation.
@@ -580,14 +895,17 @@ enum ClaimPayload {
 }
 
 /// Typed outcomes returned by `sequence`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "sequence_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum SequencePayload {
     /// One durable edge was appended by resolving a prior deferral.
     Sequenced {
         /// The complete replayable edge record.
+        #[schemars(with = "serde_json::Value")]
         edge:      OrderingEdge,
         /// The edge state derived from the preceding repository snapshot.
+        #[schemars(with = "serde_json::Value")]
         readiness: EdgeReadiness,
     },
     /// The locked graph rejected the requested relationship.
@@ -602,7 +920,8 @@ enum SequencePayload {
 }
 
 /// A stable semantic rejection returned by `sequence`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "sequence_rejection_kind")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum SequenceRejectionKind {
     /// At least one endpoint does not name a retained reservation.
@@ -703,7 +1022,8 @@ impl SequenceRejectionKind {
 }
 
 /// Whether the successful claim also published its worktree run marker.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "coordination_run_marker_publication")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum CoordinationRunMarkerPublication {
     /// The marker now identifies the run that owns the appended claim.
@@ -716,27 +1036,33 @@ pub(crate) enum CoordinationRunMarkerPublication {
 }
 
 /// Typed outcomes returned by `check`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "check_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum CheckPayload {
     /// No foreign live reservation overlaps the requested paths.
     Clear {
         /// The minimal exact-file antichain evaluated by the hook.
+        #[schemars(with = "serde_json::Value")]
         scopes:      ReservationScopeSet,
         /// The complete first-touch result that permits the edit.
+        #[schemars(with = "serde_json::Value")]
         acquisition: FirstTouchReservationAcquisition,
     },
     /// Foreign holders block one or more requested paths.
     Blocked {
         /// The minimal exact-file antichain evaluated by the hook.
+        #[schemars(with = "serde_json::Value")]
         scopes:    ReservationScopeSet,
         /// Every holder whose live scopes intersected the request.
+        #[schemars(with = "Vec<serde_json::Value>")]
         conflicts: Vec<ReservationConflict>,
     },
 }
 
 /// Typed state transitions and evidence results returned by `release`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "release_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ReleasePayload {
     /// An active reservation recorded its first protected checkpoint.
@@ -746,10 +1072,12 @@ pub(crate) enum ReleasePayload {
         /// The fixed commit retained for integration checks.
         protected_tip:               ProtectedReservationTip,
         /// The trunk commit observed at checkpoint.
+        #[schemars(with = "String")]
         trunk_oid:                   GitObjectId,
         /// What happened to the worktree coordination-run marker.
         marker:                      CoordinationRunMarkerRetirement,
         /// Whether the harness session mapping retired this reservation.
+        #[schemars(with = "serde_json::Value")]
         session_mapping_publication: SessionIdentityMappingPublication,
     },
     /// A rebased outstanding reservation replaced its protected checkpoint.
@@ -759,6 +1087,7 @@ pub(crate) enum ReleasePayload {
         /// The replacement fixed commit.
         protected_tip:  ProtectedReservationTip,
         /// The trunk commit observed with the replacement.
+        #[schemars(with = "String")]
         trunk_oid:      GitObjectId,
         /// What happened to the worktree coordination-run marker.
         marker:         CoordinationRunMarkerRetirement,
@@ -781,6 +1110,7 @@ pub(crate) enum ReleasePayload {
         /// What happened to the worktree coordination-run marker.
         marker:                      CoordinationRunMarkerRetirement,
         /// Whether the harness session mapping retired this reservation.
+        #[schemars(with = "serde_json::Value")]
         session_mapping_publication: SessionIdentityMappingPublication,
     },
 }
@@ -817,7 +1147,8 @@ impl ReleasePayload {
 }
 
 /// The ordinary-release decision for the worktree coordination-run marker.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "coordination_run_marker_retirement")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum CoordinationRunMarkerRetirement {
     /// The marker still named this run and was removed.
@@ -1085,6 +1416,56 @@ impl OutputEnvelope {
             reservations: Vec::new(),
             blocked_by:   Vec::new(),
             message:      format!("The reservation ledger could not be read: {diagnostic}"),
+            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
+        }
+    }
+
+    /// Build a typed hard-stop response for a rejected reservation replay.
+    pub(crate) fn replay_failure(
+        command_verb: CommandVerb,
+        error: &ReservationReplayError,
+    ) -> Self {
+        Self {
+            verb:         command_verb,
+            status:       OutputStatus::LedgerUnreadable,
+            exit_code:    BerthExit::LedgerUnreadable,
+            reservations: Vec::new(),
+            blocked_by:   Vec::new(),
+            message:      format!("The reservation ledger could not be replayed: {error}"),
+            payload:      OutputPayload::from_facts(OutputFacts::ReplayFailure(
+                ReplayFailurePayload::from(error),
+            )),
+        }
+    }
+
+    /// Build a typed hard-stop response for invalid forced-integration permit history.
+    pub(crate) fn forced_integration_permit_replay_failure(
+        error: &ForcedIntegrationPermitReplayError,
+    ) -> Self {
+        Self {
+            verb:         CommandVerb::Integrate,
+            status:       OutputStatus::LedgerUnreadable,
+            exit_code:    BerthExit::LedgerUnreadable,
+            reservations: Vec::new(),
+            blocked_by:   Vec::new(),
+            message:      format!(
+                "The forced-integration permit journal could not be replayed: {error}"
+            ),
+            payload:      OutputPayload::from_facts(OutputFacts::ReplayFailure(
+                ReplayFailurePayload::from(error),
+            )),
+        }
+    }
+
+    /// Build the recovery response for a reference-transaction hook installed before v1.
+    pub(crate) fn legacy_hook_outdated() -> Self {
+        Self {
+            verb:         CommandVerb::Integrate,
+            status:       OutputStatus::LegacyHookOutdated,
+            exit_code:    BerthExit::LedgerUnreadable,
+            reservations: Vec::new(),
+            blocked_by:   Vec::new(),
+            message:      "The installed reference-transaction hook is out of date; run `cargo-berth init` to replace it, then retry integration.".to_owned(),
             payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
@@ -1544,7 +1925,35 @@ impl OutputEnvelope {
                 "cargo-berth could not check this commit's drift because the ledger lock deadline was exhausted. {} Run `cargo-berth drift --full` by hand; this commit remains in place.",
                 self.message
             )),
-            _ => PostCommitRendering::Warning(format!(
+            OutputStatus::Unimplemented
+            | OutputStatus::BoardReady
+            | OutputStatus::Initialized
+            | OutputStatus::ProjectionRepaired
+            | OutputStatus::Reinitialized
+            | OutputStatus::LegacyHookOutdated
+            | OutputStatus::TerminalViewFailed
+            | OutputStatus::Claimed
+            | OutputStatus::DriftAttributionRequired
+            | OutputStatus::ReservationLimitReached
+            | OutputStatus::OrderingEdgeLimitReached
+            | OutputStatus::BlockedByOverlap
+            | OutputStatus::BlockedByOrdering
+            | OutputStatus::NeedsUserAuthorization
+            | OutputStatus::InvalidInput
+            | OutputStatus::Sequenced
+            | OutputStatus::DuplicateOrderingEdge
+            | OutputStatus::OrderingCycle
+            | OutputStatus::MissingDeferral
+            | OutputStatus::Outstanding
+            | OutputStatus::Integrated
+            | OutputStatus::TrunkRewritten
+            | OutputStatus::ObjectUnknown
+            | OutputStatus::Released
+            | OutputStatus::Recovered
+            | OutputStatus::Renewed
+            | OutputStatus::SessionMappingCleared
+            | OutputStatus::SessionMappingUnavailable
+            | OutputStatus::IncursionResolved => PostCommitRendering::Warning(format!(
                 "cargo-berth could not complete the post-commit drift check. {} Run `cargo-berth drift --full` by hand; this commit remains in place.",
                 self.message
             )),
@@ -2378,6 +2787,8 @@ fn initialization_message(hooks: &[InitializedManagedHook]) -> String {
 mod tests {
     use std::path::PathBuf;
 
+    use serde_json::json;
+
     use super::CommandVerb;
     use super::OutputEnvelope;
     use super::OutputStatus;
@@ -2386,6 +2797,10 @@ mod tests {
     use crate::config::InitializationState;
     use crate::ledger::LedgerError;
     use crate::ledger::LedgerInitialization;
+    use crate::reservation::LifecycleTransitionError;
+    use crate::reservation::ReservationReplayError;
+
+    const REPLAY_RESERVATION_ID: &str = "01991f4d-77d8-7f5f-9a1f-000000000001";
 
     #[test]
     fn envelope_round_trips_with_its_additive_payload_field() {
@@ -2406,6 +2821,51 @@ mod tests {
                 )
                 .is_ok_and(|round_tripped| round_tripped == output_envelope)
         );
+    }
+
+    #[test]
+    fn named_replay_failures_carry_exact_reasons_subjects_and_hard_stops()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = REPLAY_RESERVATION_ID.parse()?;
+        for (error, reason) in [
+            (
+                ReservationReplayError::WidenRequiresUnreleased(reservation_id),
+                "widen_requires_unreleased",
+            ),
+            (
+                ReservationReplayError::InvalidLifecycleTransition(
+                    reservation_id,
+                    LifecycleTransitionError::ResnapshotRequiresOutstanding,
+                ),
+                "resnapshot_requires_outstanding",
+            ),
+            (
+                ReservationReplayError::IntegrationProofSubjectRevisionExhausted(reservation_id),
+                "integration_proof_subject_revision_exhausted",
+            ),
+            (
+                ReservationReplayError::ActiveScopedPatchComparison(reservation_id),
+                "active_scoped_patch_comparison",
+            ),
+            (
+                ReservationReplayError::IntegrationProofSubjectMismatch(reservation_id),
+                "integration_proof_subject_mismatch",
+            ),
+        ] {
+            let envelope = OutputEnvelope::replay_failure(CommandVerb::Release, &error);
+            let serialized = serde_json::to_value(envelope)?;
+            assert_eq!(
+                serialized["payload"]["data"],
+                json!({
+                    "reason": reason,
+                    "subject": {"kind": "reservation", "id": REPLAY_RESERVATION_ID},
+                    "effect": "hard_stop",
+                })
+            );
+            assert_eq!(serialized["status"], "ledger_unreadable");
+            assert_eq!(serialized["exit_code"], 4);
+        }
+        Ok(())
     }
 
     #[test]

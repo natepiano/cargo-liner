@@ -18,6 +18,7 @@ use crate::output::CommandVerb;
 use crate::output::IntegratedGateOutcome;
 use crate::output::IntegrationPayload;
 use crate::output::OutputEnvelope;
+use crate::reconcile::ReconcileError;
 
 /// One reservation and its inseparable normal-or-forced integration policy.
 pub(crate) struct IntegrateRequest {
@@ -191,14 +192,76 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         | GateError::Transaction(LedgerTransactionError::LedgerUnreadable(error)) => {
             OutputEnvelope::ledger_error(CommandVerb::Integrate, &error)
         },
+        GateError::LegacyReferenceTransactionHook => OutputEnvelope::legacy_hook_outdated(),
+        GateError::Reconciliation(ReconcileError::Replay(error)) => {
+            OutputEnvelope::replay_failure(CommandVerb::Integrate, &error)
+        },
+        GateError::PermitReplay(error) => {
+            OutputEnvelope::forced_integration_permit_replay_failure(&error)
+        },
         GateError::Reconciliation(_)
         | GateError::Planning(_)
         | GateError::MissingConstraintFact(_)
-        | GateError::LegacyReferenceTransactionHook
         | GateError::UnsupportedSymbolicTrunkUpdate
-        | GateError::Git(_)
-        | GateError::PermitReplay(_) => {
+        | GateError::Git(_) => {
             OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string())
         },
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::GateError;
+    use super::ReconcileError;
+    use super::ReservationId;
+    use super::gate_error;
+    use crate::gate::permit::ForcedIntegrationPermitReplayError;
+    use crate::ids::ForcedIntegrationPermitId;
+    use crate::reservation::ReservationReplayError;
+
+    #[test]
+    fn reconciliation_replay_error_preserves_reason_and_subject() {
+        let reservation_id = ReservationId::new();
+        let output_envelope = gate_error(
+            reservation_id,
+            GateError::Reconciliation(ReconcileError::Replay(
+                ReservationReplayError::UnknownReservation(reservation_id),
+            )),
+        );
+        let value =
+            serde_json::to_value(output_envelope).expect("integration response should serialize");
+        assert_eq!(value["payload"]["kind"], "replay_failure");
+        assert_eq!(value["payload"]["data"]["reason"], "unknown_reservation");
+        assert_eq!(value["payload"]["data"]["subject"]["kind"], "reservation");
+        assert_eq!(
+            value["payload"]["data"]["subject"]["id"],
+            reservation_id.to_string()
+        );
+    }
+
+    #[test]
+    fn permit_replay_error_preserves_reason_and_subject() {
+        let reservation_id = ReservationId::new();
+        let permit_id = ForcedIntegrationPermitId::new();
+        let output_envelope = gate_error(
+            reservation_id,
+            GateError::PermitReplay(ForcedIntegrationPermitReplayError::UnknownPermit(permit_id)),
+        );
+        let value =
+            serde_json::to_value(output_envelope).expect("integration response should serialize");
+        assert_eq!(value["payload"]["kind"], "replay_failure");
+        assert_eq!(value["payload"]["data"]["reason"], "unknown_permit");
+        assert_eq!(
+            value["payload"]["data"]["subject"]["kind"],
+            "forced_integration_permit"
+        );
+        assert_eq!(
+            value["payload"]["data"]["subject"]["id"],
+            permit_id.to_string()
+        );
     }
 }
