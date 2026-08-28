@@ -7,20 +7,23 @@ use std::time::Duration;
 /// the ground it is drawn on, against the character itself standing at
 /// the desktop's own colour.
 ///
-/// The same correction [`TEXT_BEHIND_FADE`] makes for the drifting
-/// field, and it is wanted here for a reason the field does not have.
-/// A glyph's ink sits wherever that glyph puts it -- `_` along the
-/// bottom of the cell, `^` along the top, `.` in neither -- so a strip
-/// that painted the character alone dealt every cell's colour to a
-/// different corner of it, and the picture would not line up with
-/// itself however still the desktop underneath was held.
+/// The band paints this background across the whole area, so it keeps
+/// three quarters of the sampled desktop colour. [`TEXT_BEHIND_FADE`]
+/// carries its background halfway toward the ground because every text
+/// cell also has ink to restore the desktop colour. Outside the band's
+/// strip there is no ink, and that halfway blend washed out the desktop
+/// variation the background is there to preserve.
+pub(super) const BAND_BEHIND_FADE: u8 = 64;
+/// How many cells each end of the strip uses to bring glyph ink from
+/// its sampled desktop background up to full strength.
 ///
-/// Matched to the field's own setting rather than drawn separately:
-/// the two animations are read one after the other on the same
-/// desktop, and a strip that showed it at a different strength would
-/// read as a different capture rather than as the same one drawn
-/// another way.
-pub(super) const BAND_BEHIND_FADE: u8 = TEXT_BEHIND_FADE;
+/// Three cells leave two visibly intermediate steps between the
+/// background and full ink, so neither boundary cuts off on one cell.
+pub(super) const BAND_EDGE_FALLOFF_CELLS: u32 = 3;
+const _: () = assert!(
+    BAND_EDGE_FALLOFF_CELLS > 0,
+    "the band edge falloff divides by its cell count"
+);
 /// How many cells are re-rolled to a new character each frame, on top
 /// of the whole line the leading edge re-rolls as it arrives. Enough
 /// to read as a shimmer without the strip looking like static.

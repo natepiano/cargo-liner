@@ -2,11 +2,12 @@
 //! bars, drifting line by line in the colours of the desktop behind
 //! it.
 //!
-//! Where a [`TravelingBand`](super::TravelingBand) is one strip with
-//! two edges and empty grid either side of it, this leaves no cell
-//! undrawn. Every cell takes the colour the [`Backdrop`] has for it, so
-//! the desktop reads through a window that is entirely filled rather
-//! than through a strip crossing it.
+//! Both this and a [`TravelingBand`](super::TravelingBand) paint every
+//! cell from the [`Backdrop`], so the desktop reads across the whole
+//! window either way. What separates them is where the pattern goes:
+//! the band gathers its glyphs into one strip with two edges and leaves
+//! the rest of the grid to the desktop alone, and this deals them over
+//! every line at once.
 //!
 //! Every cell keeps the colour of whatever it is over, always. What
 //! travels is only the pattern drawn on top of it: each line is dealt a
@@ -529,10 +530,9 @@ impl DriftingText {
 
     /// Draw the field where it currently stands, moving nothing.
     ///
-    /// Every cell is drawn, which is the whole of what separates this
-    /// from the band: what the reader is looking at is the colours, and
-    /// a cell left out is a piece of the desktop missing rather than an
-    /// edge to read.
+    /// Every cell carries a character, which is what separates this
+    /// from the band: the band's glyphs stop at its strip, and here
+    /// there is no edge for them to stop at.
     ///
     /// The colour is the one the backdrop has for the cell on the
     /// screen, not for the character standing on it -- the characters

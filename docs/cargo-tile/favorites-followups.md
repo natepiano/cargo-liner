@@ -149,38 +149,20 @@ cargo-tile's `Attract` holds `window_identification: WindowIdentification` (`att
 - A second transition-check site for capture status — extending the existing identification probe keeps the evidence on one line instead of two.
 - Promising a recording in the neutral notice's text — the frame log is off by default, so the line names the environment variable that enables it instead.
 
-### Phase 4 — The moving band paints the desktop across the pane  · status: todo
+### Phase 4 — The moving band paints the desktop across the pane  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** The field the band has crossed shows the desktop rather than flat theme color, and the band's leading and trailing edges fade into it instead of cutting off.
-
-**Spec:**
-
-The capture is already routed: `Attract::render` passes one `Backdrop` to all three renderers (`attract/mod.rs:1157`) and `TravelingBand::render` samples `backdrop.color_at` for every covered cell (`band.rs:622`). `attract/moving_band.rs` holds key bindings and draws nothing — do not edit it for this. Three things in the renderer produce the reported appearance:
-
-1. Cells outside the strip are deliberately left untouched (`band.rs:603`), so everything the band has passed over falls back to the pane background from `render.rs`. That is the flat field.
-2. Inside the strip the background is blended halfway toward the existing background through `BAND_BEHIND_FADE`, inherited from `TEXT_BEHIND_FADE = 128` (`band.rs:643`, `backdrop/constants.rs:23`, `:269`). Desktop variation survives at half strength.
-3. The edge treatment is one cell wide — `coverage` fades only the partially entered boundary cell (`band.rs:615`).
-
-Change the composition in `TravelingBand::render`: paint the sampled desktop across the full area first, then draw the glyph strip over it. `DriftingText` at `text.rs:552` is the reference — it already paints every cell from the backdrop and its blend at `:572` is the pattern to follow. Then fade glyph ink toward the sampled background across a designed multi-cell leading and trailing falloff rather than the single fractional cell, so the strip reads as passing over the desktop.
-
-Tune the background blend so desktop variation is visible rather than washed halfway out. `BAND_BEHIND_FADE` currently aliases `TEXT_BEHIND_FADE`; give the band its own value if the two want different strengths, and say in the constant's doc comment why they differ.
-
-Colors go through `theme::blend_color` and the theme accessors — no new hardcoded color in `tui_pane` (Invariant 5). The band already scans width × height per frame with a cached lookup and two integer blends per covered cell; painting the full area matches what text and pixelate already do. No second capture, no reduction, no per-frame allocation (Invariant 3).
+`TravelingBand::render` paints a desktop-derived background into every cell the backdrop has a sample for, then draws the strip's glyphs over that field — no cell is left at the flat pane background. Glyph ink is derived separately from geometric coverage by the private `TravelingBand::glyph_strength`, which ramps both strip boundaries across several cells and caps the result by the cell's own sub-cell coverage, so travel stays smooth while the edges fade into the desktop. `BAND_BEHIND_FADE` is a standalone `64` rather than an alias of `TEXT_BEHIND_FADE`, keeping three quarters of the sampled desktop colour so neighbouring cells stay visibly distinct across the painted field. `BAND_EDGE_FALLOFF_CELLS` is `3`, guarded by a compile-time assertion because the falloff divides by it. Colours still go through `theme::blend_color` and the theme accessors; the renderer takes no second capture and allocates nothing per frame. Three tests over a multicolour synthetic backdrop hold the contract: `adjacent_covered_cells_keep_their_own_desktop_backgrounds`, `cells_outside_the_strip_are_painted_from_the_desktop`, and `both_strip_edges_fade_glyph_ink_across_multiple_cells`.
 
 **Files:**
-- `crates/tui_pane/src/backdrop/band.rs` — full-area composition, multi-cell edge falloff, glyph-versus-background derivation
-- `crates/tui_pane/src/backdrop/constants.rs` — band fade strength and any new falloff width constant, each documented
+- `crates/tui_pane/src/backdrop/band.rs` — the strip renderer, its coverage and ink-strength geometry, and the band tests.
+- `crates/tui_pane/src/backdrop/constants.rs` — the band's own background fade and edge falloff, each documenting why it differs from the text field's.
+- `crates/tui_pane/src/backdrop/text.rs` — module and render docs, which no longer distinguish the two animations by whether cells are painted; the distinction is now where the glyphs go.
 
-**Constraints from prior phases:** Phase 1's `Result` return on `Desktop::capture` does not reach `TravelingBand::render`, which receives an already-built `Backdrop`. Phase 3 added `draw_backdrop_notice` to `cargo-tile/src/render.rs` (`:216`, called `:184`), which writes one line on the body's last row *after* the attract animation has drawn — so a full-area band paints under it and must not assume the last row is its own. Nothing in `tui_pane`'s renderers changed.
+**Gotchas:** `coverage` and `glyph_strength` answer different questions and must stay separate — coverage is the cell's geometric share of the strip and carries sub-cell travel, ink strength is the boundary ramp; collapsing them back into one value reintroduces whole-cell stepping. The ramp is continuous only because `glyph_strength` takes the minimum of the two boundary distances, and its `else { depth }` fallback is reached only where the leading-edge distance already governs that minimum. `backdrop/**` sits behind the opt-in `backdrop` feature, so `verify.sh test tui_pane` compiles none of it — every change here also needs `cargo test -p tui_pane --features backdrop`.
 
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`
-- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
-- `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`
-- Buffer tests in `band.rs` over a synthetic multicolor backdrop proving that adjacent cell backgrounds under the band stay visibly different from each other, that cells outside the strip carry desktop color rather than the pane background, and that edge cells approach their own underlying color across more than one cell. Per Invariant 1 these compile but run at the final workspace gate — name them.
-- Hands-on: run `cargo tile`, press `a`, and look at the band.
+**Ruled out:** Aliasing `BAND_BEHIND_FADE` to `TEXT_BEHIND_FADE` — the text field restores desktop colour through per-cell ink and the band has none outside its strip, so the halfway blend washed out the variation the background exists to show. An abrupt ink loss for cells straddling the ring wrap — an exhaustive sweep of the falloff arithmetic shows no mostly-covered cell receives zero ink and no step between neighbouring covered cells exceeds the designed 85/255 three-cell ramp.
 
 ### Phase 5 — The toast owns its next visual-change deadline  · status: todo
 
