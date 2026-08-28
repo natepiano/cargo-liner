@@ -25,6 +25,18 @@ pub(crate) const ATTRACT_FADE_STEP: u8 = 3;
 /// grid rather than trading it back and forth with the animation. The
 /// screen the reader asks for outright waits out none of it.
 pub(crate) const ATTRACT_RETURN_QUIET: Duration = Duration::from_secs(3);
+/// How long the attract screen may want a desktop capture and have none
+/// before it says so. A capture takes a few frames to arrive and is
+/// retaken on [`CAPTURE_REFRESH`]'s cadence, so a gap shorter than this
+/// is the ordinary working of the thing; a gap longer than it is an
+/// animation drawing nothing, which looks from outside exactly like one
+/// that never came on.
+pub(crate) const ATTRACT_BACKDROP_GRACE: Duration = Duration::from_secs(2);
+/// What the screen says while it has no desktop to draw in the colours
+/// of. Names the cause it almost always is: the capture is a macOS
+/// screen recording, and the permission belongs to the terminal the app
+/// is drawn in rather than to the app itself.
+pub(crate) const ATTRACT_NO_BACKDROP_NOTICE: &str = "attract: no desktop capture -- allow Screen Recording for this terminal in System Settings \u{203a} Privacy & Security";
 /// TOML table the moving band's keys are read from and written back to.
 /// Stable -- `keymap.toml` is hand-edited.
 pub(crate) const ATTRACT_MOVING_BAND_SCOPE: &str = "attract_moving_band";

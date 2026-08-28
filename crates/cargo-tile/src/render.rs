@@ -69,6 +69,7 @@ use crate::constants::ANCESTRY_LEVEL_INDENT;
 use crate::constants::ANCESTRY_MIN_ELIDED_ROWS;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
+use crate::constants::ATTRACT_NO_BACKDROP_NOTICE;
 use crate::constants::ATTRACT_NOTE_LABEL;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::COMPILER_COLUMN;
@@ -179,6 +180,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     probe::timed(probe::Phase::Band, || {
         app.attract.render(frame.buffer_mut(), area);
     });
+    draw_backdrop_notice(frame, app, body);
     draw_status_line(frame, app, keymap, status);
     app.framework.toasts.render(
         frame,
@@ -196,6 +198,35 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         Some(FrameworkOverlayId::GlobalShortcuts) => draw_global_shortcuts(frame, app, keymap),
         None => (),
     }
+}
+
+/// Say so where the attract screen is running with no desktop to draw.
+///
+/// Every animation draws in the colours of what is behind the terminal,
+/// so with no capture there is nothing to put on the screen and the
+/// screen puts nothing there -- which reads as an attract screen that
+/// never came on, over a grid that is still sitting where it was. One
+/// line is what separates the two, and it names the cause the wait
+/// almost always has.
+///
+/// On the last row of the body, which is the row furthest from anything
+/// an idle grid has to say.
+fn draw_backdrop_notice(frame: &mut Frame, app: &App, body: Rect) {
+    if !app.attract.backdrop_overdue(Instant::now()) {
+        return;
+    }
+    let Some(row) = body.bottom().checked_sub(1) else {
+        return;
+    };
+    // `set_string` stops at the edge of the buffer, so a terminal too
+    // narrow for the whole notice gets as much of it as it can hold
+    // rather than a panic or a wrapped second line over the grid.
+    frame.buffer_mut().set_string(
+        body.left(),
+        row,
+        ATTRACT_NO_BACKDROP_NOTICE,
+        Style::default().fg(label_color()),
+    );
 }
 
 /// Whether the panes are drawn with what is in them.

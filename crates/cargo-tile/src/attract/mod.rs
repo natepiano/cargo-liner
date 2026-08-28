@@ -70,6 +70,7 @@ pub(crate) use self::moving_text::MovingTextPane;
 use self::pixelate::PixelateAction;
 pub(crate) use self::pixelate::PixelatePane;
 use crate::app::Updates;
+use crate::constants::ATTRACT_BACKDROP_GRACE;
 use crate::constants::ATTRACT_FADE_STEP;
 use crate::constants::ATTRACT_RETURN_QUIET;
 use crate::constants::BAND_SPEED_STEP;
@@ -455,6 +456,10 @@ pub(crate) struct Attract {
     /// What the last pass at settling on a window answered, so the
     /// probe notes the answer changing rather than every frame's
     /// repeat of it. [`None`] until the first pass.
+    /// When the screen last wanted a backdrop and had none, so a wait
+    /// that has gone on too long can be said out loud rather than drawn
+    /// as nothing. Cleared the moment a capture arrives.
+    backdrop_missing_since: Option<Instant>,
     identified:             Option<bool>,
 }
 
@@ -480,6 +485,7 @@ impl Attract {
             grid_presentation:      AttractGridPresentation::OverGrid,
             held:                   false,
             standing:               Standing::Showing,
+            backdrop_missing_since: None,
             identified:             None,
         }
     }
@@ -1032,6 +1038,16 @@ impl Attract {
         }
 
         probe::timed(Phase::Refresh, || self.monitor.refresh(area));
+        // A capture takes a few frames to arrive and is re-taken on a
+        // timer, so having none for a moment is ordinary. Having none
+        // for longer than that is the animation drawing nothing at all,
+        // which from outside is indistinguishable from an attract
+        // screen that never came on -- see [`Self::backdrop_overdue`].
+        self.backdrop_missing_since = match (self.monitor.current(), self.backdrop_missing_since) {
+            (Some(_), _) => None,
+            (None, Some(since)) => Some(since),
+            (None, None) => Some(now),
+        };
         // Only the animation on screen is carried forward. The other
         // holds wherever it was left, which is what makes turning
         // between them a turn rather than a restart.
@@ -1052,6 +1068,24 @@ impl Attract {
         }
         self.animation_sizing.record(attract_mode, area);
         self.grid()
+    }
+
+    /// Whether the screen has wanted a backdrop for longer than one is
+    /// ever reasonably slow in coming.
+    ///
+    /// Every animation here draws in the colours of the desktop behind
+    /// the terminal, so with no capture there is nothing to draw and
+    /// [`Self::render`] returns having drawn none of it. Left at that,
+    /// an attract screen that is running perfectly well and simply has
+    /// no picture looks exactly like one that never started -- and the
+    /// usual cause, Screen Recording not being allowed for the terminal,
+    /// is nowhere on the screen. So the wait is reported once it is long
+    /// enough to mean something.
+    pub(crate) fn backdrop_overdue(&self, now: Instant) -> bool {
+        self.showing()
+            && self
+                .backdrop_missing_since
+                .is_some_and(|since| now.duration_since(since) >= ATTRACT_BACKDROP_GRACE)
     }
 
     /// Draw the strip where it currently stands, moving nothing.
@@ -1648,6 +1682,34 @@ mod tests {
 
     /// A screen that came on by itself takes the reader's keys once it
     /// has arrived. The animations fill the window, so an arrow reaching
+    /// An attract screen with no desktop capture draws none of itself,
+    /// which from outside is an attract screen that never came on. The
+    /// two are fixed in different places, so the wait is reported once
+    /// it has stood long enough to mean something.
+    #[test]
+    fn a_screen_with_no_backdrop_to_draw_says_so_rather_than_drawing_nothing() {
+        let mut attract = Attract::new();
+        let started = Instant::now();
+
+        // No capture ever arrives here: the monitor has no window
+        // server to ask, which is the same position a terminal without
+        // Screen Recording permission is in.
+        attract.advance(AREA, Work::Idle, Updates::Live, started);
+        assert!(attract.showing(), "the screen is on");
+        assert!(
+            !attract.backdrop_overdue(started),
+            "and a capture is not late the instant it is wanted"
+        );
+
+        let overdue = started + ATTRACT_BACKDROP_GRACE;
+        attract.advance(AREA, Work::Idle, Updates::Live, overdue);
+
+        assert!(
+            attract.backdrop_overdue(overdue),
+            "but a capture still missing once the grace is out is reported"
+        );
+    }
+
     /// the grid instead would move a focus ring nobody can see around
     /// cells with nothing in them -- an idle grid is what brought the
     /// screen on in the first place.
