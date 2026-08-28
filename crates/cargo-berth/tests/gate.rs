@@ -32,6 +32,7 @@ const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
+const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
@@ -45,6 +46,35 @@ for argument in "$@"; do
     printf '\037%s' "$argument" >> "$CARGO_BERTH_TEST_GIT_TRACE"
 done
 printf '\036' >> "$CARGO_BERTH_TEST_GIT_TRACE"
+if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "fail_phase_diff" ] \
+    && [ "$1" = "--no-optional-locks" ] \
+    && [ "$2" = "diff-tree" ] \
+    && [ "$3" = "--stdin" ]; then
+    printf '%s\n' 'injected completed git failure' >&2
+    exit 23
+fi
+if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "fail_origin_classification" ] \
+    && [ "$1" = "--no-optional-locks" ] \
+    && [ "$2" = "rev-list" ] \
+    && [ -n "${3:-}" ] \
+    && [ -z "${4:-}" ]; then
+    case "$3" in
+        *..*)
+            printf '%s\n' 'injected origin classification failure' >&2
+            exit 23
+            ;;
+    esac
+fi
+if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "remove_after_simple_rev_list" ] \
+    && [ "$1" = "--no-optional-locks" ] \
+    && [ "$2" = "rev-list" ] \
+    && [ -n "${3:-}" ] \
+    && [ -z "${4:-}" ]; then
+    "$CARGO_BERTH_TEST_REAL_GIT" "$@"
+    status=$?
+    /bin/rm -f "$0"
+    exit "$status"
+fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
@@ -1811,7 +1841,7 @@ fn committed_hook_persists_one_scoped_patch_evaluation() {
 
     let traced = run_private_hook_with_git_trace(
         repository.path(),
-        HookPhase::Committed,
+        "committed",
         &format!("{protected_tip} {target} refs/heads/main\n"),
     );
     assert!(
@@ -2022,110 +2052,224 @@ fn hook_lock_contention_uses_one_ten_second_deadline() {
 }
 
 #[test]
-fn hook_git_cost_scales_with_protected_graph_predecessors() {
-    let repository = initialized_repository();
-    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
-    let unrelated_root = add_worktree(repository.path(), worktrees.path(), "unrelated");
+fn post_tool_use_git_subprocess_count_is_cardinality_invariant() {
+    // This invokes berth's installed git post-commit hook. The external Claude
+    // PostToolUse shim is outside this repository and is not exercised here.
+    let one_reservation = post_commit_reservation_cardinality_trace(1);
+    let twenty_reservations = post_commit_reservation_cardinality_trace(20);
 
-    fs::write(
-        predecessor_root.join("src/lib.rs"),
-        "pub fn predecessor_work() {}\n",
-    )
-    .expect("predecessor source should write");
-    git(&predecessor_root, &["add", "src/lib.rs"]);
-    git(
-        &predecessor_root,
-        &["commit", "--quiet", "-m", "predecessor work"],
+    assert_same_git_process_sequence(&one_reservation, &twenty_reservations);
+    assert_eq!(
+        one_reservation
+            .iter()
+            .filter(|invocation| raw_git_command(invocation) == Some("log"))
+            .count(),
+        1
     );
-    let predecessor = claim(
-        &predecessor_root,
-        "tree:src",
+    assert_eq!(
+        twenty_reservations
+            .iter()
+            .filter(|invocation| raw_git_command(invocation) == Some("log"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
+    let attributed_baseline = post_commit_path_commit_cardinality_trace(1, 1);
+    assert_eq!(git_command_count(&attributed_baseline, "log"), 1);
+    for path_count in [1, 4, 33] {
+        for commit_count in [1, 14, 100] {
+            let observed = post_commit_path_commit_cardinality_trace(path_count, commit_count);
+            assert_same_git_process_sequence(&attributed_baseline, &observed);
+            assert_eq!(git_command_count(&observed, "log"), 1);
+        }
+    }
+
+    for (path_count, commit_count) in [(0, 0), (0, 1), (0, 14), (0, 100), (1, 0), (4, 0), (33, 0)] {
+        let observed = post_commit_path_commit_cardinality_trace(path_count, commit_count);
+        assert_eq!(git_command_count(&observed, "log"), 0);
+    }
+}
+
+#[test]
+fn batched_attribution_benchmark_covers_short_and_long_ranges() {
+    let matrix = [
+        attribution_benchmark_row(25),
+        attribution_benchmark_row(500),
+    ];
+    for row in matrix {
+        eprintln!(
+            "range={} one-path reference={:?} batched={:?}; 33-path reference={:?} batched={:?}",
+            row.range_commits,
+            row.one_path.reference,
+            row.one_path.batched,
+            row.thirty_three_paths.reference,
+            row.thirty_three_paths.batched,
+        );
+        assert!(
+            row.one_path.batched <= row.one_path.reference + Duration::from_millis(25),
+            "one-path batching regressed at {} commits: {row:?}",
+            row.range_commits
+        );
+        assert!(
+            row.thirty_three_paths.batched < row.thirty_three_paths.reference,
+            "33-path batching did not improve at {} commits: {row:?}",
+            row.range_commits
+        );
+    }
+}
+
+#[test]
+fn batched_git_path_distinguishes_spawn_failure_from_completed_failure() {
+    let unavailable_repository = initialized_repository();
+    let unavailable_reservation = reservation_id(&claim(
+        unavailable_repository.path(),
+        "file:owned.txt",
         FIRST_RUN,
-        "docs/predecessor.md",
-        "predecessor",
+        "docs/unavailable.md",
+        "unavailable git boundary",
+    ));
+    let (unavailable, unavailable_trace) = run_berth_with_raw_git_behavior(
+        unavailable_repository.path(),
+        &[
+            "drift",
+            "--full",
+            "--reservation",
+            &unavailable_reservation,
+            "--json",
+        ],
+        RawGitBehavior::RemoveAfterSimpleRevList,
     );
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = defer_claim(
-        &successor_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "docs/successor.md",
-        "successor",
-        &predecessor_id,
-    );
-    let successor_id = reservation_id(&successor);
+    let unavailable_envelope = json_output(&unavailable);
+    assert_eq!(unavailable_envelope["status"], "ledger_unreadable");
     assert!(
-        run_berth(&predecessor_root, &["release", &predecessor_id, "--json"])
-            .status
-            .success()
+        unavailable_envelope["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("could not run drift fingerprint")),
+        "spawn failure did not retain its typed diagnostic: {unavailable_envelope}"
     );
+    assert_eq!(
+        unavailable_trace.last().and_then(raw_git_command),
+        Some("rev-list")
+    );
+    assert_eq!(git_command_count(&unavailable_trace, "diff-tree"), 0);
+
+    let failed_repository = initialized_repository();
+    let failed_reservation = reservation_id(&claim(
+        failed_repository.path(),
+        "file:owned.txt",
+        FIRST_RUN,
+        "docs/failed.md",
+        "failed git boundary",
+    ));
+    let (failed, failed_trace) = run_berth_with_raw_git_behavior(
+        failed_repository.path(),
+        &[
+            "drift",
+            "--full",
+            "--reservation",
+            &failed_reservation,
+            "--json",
+        ],
+        RawGitBehavior::FailPhaseDiff,
+    );
+    let failed_envelope = json_output(&failed);
+    assert_eq!(failed_envelope["status"], "ledger_unreadable");
     assert!(
-        run_berth(
-            repository.path(),
-            &[
-                "sequence",
-                &predecessor_id,
-                &successor_id,
-                "--why",
-                "predecessor first",
-                "--json",
-            ],
-        )
-        .status
-        .success()
+        failed_envelope["message"].as_str().is_some_and(|message| {
+            message.contains("failed while computing drift")
+                && message.contains("injected completed git failure")
+        }),
+        "completed failure did not retain its typed diagnostic: {failed_envelope}"
+    );
+    assert_eq!(git_command_count(&failed_trace, "diff-tree"), 1);
+    assert_ne!(unavailable_envelope["message"], failed_envelope["message"]);
+}
+
+#[test]
+fn incursion_report_survives_origin_classification_failure() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let subject_root = add_worktree(
+        repository.path(),
+        worktrees.path(),
+        "origin-classification-failure",
     );
     assert!(
         claim(
-            &unrelated_root,
-            "tree:tests",
-            THIRD_RUN,
-            "docs/unrelated.md",
-            "unrelated",
+            repository.path(),
+            "file:held.txt",
+            FIRST_RUN,
+            "docs/origin-holder.md",
+            "origin holder",
         )
         .status
         .success()
     );
-
-    fs::write(
-        successor_root.join("src/lib.rs"),
-        "pub fn successor_work() {}\n",
-    )
-    .expect("successor source should write");
-    git(&successor_root, &["add", "src/lib.rs"]);
+    let subject_id = reservation_id(&claim(
+        &subject_root,
+        "file:own.txt",
+        SECOND_RUN,
+        "docs/origin-subject.md",
+        "origin subject",
+    ));
+    fs::write(subject_root.join("held.txt"), "entered holder scope\n")
+        .expect("held path should write");
+    git(&subject_root, &["add", "held.txt"]);
     git(
-        &successor_root,
-        &["commit", "--quiet", "-m", "successor work"],
+        &subject_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "enter holder scope",
+        ],
     );
-    let successor_head = git_stdout(&successor_root, &["rev-parse", "HEAD"]);
+    let entering_commit = git_stdout(&subject_root, &["rev-parse", "HEAD"]);
+    let trunk_commit = git_stdout(repository.path(), &["rev-parse", "main"]);
 
-    let traced = run_private_hook_with_git_trace(
-        repository.path(),
-        HookPhase::Prepared,
-        &format!("{base} {successor_head} refs/heads/main\n"),
+    let (reported, trace) = run_berth_with_raw_git_behavior(
+        &subject_root,
+        &["drift", "--full", "--reservation", &subject_id, "--json"],
+        RawGitBehavior::FailOriginClassification,
     );
-    assert!(
-        traced.output.status.success(),
-        "observe-only hook failed: {}",
-        String::from_utf8_lossy(&traced.output.stderr)
-    );
-    let trace = fs::read_to_string(&traced.trace_path).expect("git trace should read");
-    assert_eq!(
-        trace
-            .lines()
-            .filter(|command| *command == "cat-file --batch-check")
-            .count(),
-        3
-    );
-    assert_eq!(
-        trace
-            .lines()
-            .filter(|command| *command == "rev-list")
-            .count(),
-        5
-    );
+    let envelope = json_output(&reported);
+
+    assert_eq!(reported.status.code(), Some(1));
+    assert_eq!(envelope["status"], "incursion");
+    let commit = envelope["payload"]["data"]["results"]
+        .as_array()
+        .and_then(|results| {
+            results.iter().find_map(|result| {
+                result["effects"]
+                    .as_array()?
+                    .iter()
+                    .find(|effect| effect["kind"] == "incursion")
+                    .map(|effect| &effect["commits"][0])
+            })
+        })
+        .expect("the incursion should retain commit attribution");
+    assert_eq!(commit["commit"], entering_commit);
+    assert_eq!(commit["origin"], "unknown");
+
+    let origin_range = format!("{trunk_commit}..{entering_commit}");
+    let origin_invocation_count = trace
+        .iter()
+        .filter(|invocation| {
+            invocation.arguments
+                == [
+                    "git",
+                    "--no-optional-locks",
+                    "rev-list",
+                    origin_range.as_str(),
+                ]
+        })
+        .count();
+    assert_eq!(origin_invocation_count, 1, "raw git trace: {trace:#?}");
 }
 
 #[test]
@@ -2195,6 +2339,44 @@ struct TracedHook {
 #[derive(Debug, Eq, PartialEq)]
 struct RawGitInvocation {
     arguments: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+enum RawGitBehavior {
+    PassThrough,
+    RemoveAfterSimpleRevList,
+    FailPhaseDiff,
+    FailOriginClassification,
+}
+
+impl RawGitBehavior {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::PassThrough => "pass_through",
+            Self::RemoveAfterSimpleRevList => "remove_after_simple_rev_list",
+            Self::FailPhaseDiff => "fail_phase_diff",
+            Self::FailOriginClassification => "fail_origin_classification",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AttributionBenchmarkCell {
+    reference: Duration,
+    batched:   Duration,
+}
+
+#[derive(Debug)]
+struct AttributionBenchmarkRow {
+    range_commits:      usize,
+    one_path:           AttributionBenchmarkCell,
+    thirty_three_paths: AttributionBenchmarkCell,
+}
+
+#[derive(Clone, Copy)]
+enum AttributionImplementation {
+    PerPathReference,
+    Batched,
 }
 
 #[derive(Clone, Copy)]
@@ -2610,21 +2792,6 @@ enum HookCommandSearchPath<'environment> {
     Explicit(&'environment OsStr),
 }
 
-#[derive(Clone, Copy)]
-enum HookPhase {
-    Prepared,
-    Committed,
-}
-
-impl HookPhase {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Prepared => "prepared",
-            Self::Committed => "committed",
-        }
-    }
-}
-
 fn update_main(
     repository_root: &Path,
     previous: &str,
@@ -2848,7 +3015,7 @@ fn run_hook_at_path(
 
 fn run_private_hook_with_git_trace(
     repository_root: &Path,
-    hook_phase: HookPhase,
+    hook_phase: &str,
     input: &str,
 ) -> TracedHook {
     let directory = tempdir().expect("wrapper directory should exist");
@@ -2867,11 +3034,7 @@ fn run_private_hook_with_git_trace(
     )
     .expect("wrapped PATH should join");
     let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args([
-            "__reference-transaction",
-            hook_phase.as_str(),
-            "refs/heads/main",
-        ])
+        .args(["__reference-transaction", hook_phase, "refs/heads/main"])
         .current_dir(repository_root)
         .env("PATH", wrapped_path)
         .env(REAL_GIT_ENVIRONMENT, git_binary())
@@ -2900,9 +3063,349 @@ fn run_private_hook_with_git_trace(
     }
 }
 
+fn post_commit_reservation_cardinality_trace(reservation_count: usize) -> Vec<RawGitInvocation> {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let subject_root = add_worktree(
+        repository.path(),
+        worktrees.path(),
+        "hook-incursion-subject",
+    );
+    assert!(
+        claim(
+            repository.path(),
+            "tree:hook-incursion",
+            FIRST_RUN,
+            "docs/hook-incursion-holder.md",
+            "hook incursion holder",
+        )
+        .status
+        .success()
+    );
+    for index in 0..reservation_count {
+        let subject_path = format!("subject-{index}.txt");
+        assert!(
+            claim(
+                &subject_root,
+                &format!("file:{subject_path}"),
+                SECOND_RUN,
+                "docs/hook-incursion-subject.md",
+                &format!("hook incursion subject {index}"),
+            )
+            .status
+            .success()
+        );
+        fs::write(
+            subject_root.join(&subject_path),
+            format!("subject {index}\n"),
+        )
+        .expect("hook subject path should write");
+        git(&subject_root, &["add", &subject_path]);
+        git(
+            &subject_root,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                &format!("hook subject {index}"),
+            ],
+        );
+    }
+    fs::create_dir_all(subject_root.join("hook-incursion"))
+        .expect("hook incursion directory should exist");
+    fs::write(subject_root.join("hook-incursion/entered.txt"), "entered\n")
+        .expect("hook incursion path should write");
+    git(&subject_root, &["add", "hook-incursion/entered.txt"]);
+    git(
+        &subject_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "hook incursion work",
+        ],
+    );
+    let post_commit_hook = repository.path().join(".git/hooks/post-commit");
+    let (output, invocations) =
+        run_command_with_raw_git_trace(&subject_root, post_commit_hook.as_os_str(), &[]);
+    assert!(
+        output.status.success(),
+        "traced post-commit hook failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    invocations
+}
+
+fn post_commit_path_commit_cardinality_trace(
+    path_count: usize,
+    commit_count: usize,
+) -> Vec<RawGitInvocation> {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let subject_root = add_worktree(
+        repository.path(),
+        worktrees.path(),
+        "hook-cardinality-subject",
+    );
+    assert!(
+        claim(
+            repository.path(),
+            "tree:hook-cardinality",
+            FIRST_RUN,
+            "docs/hook-cardinality-holder.md",
+            "hook cardinality holder",
+        )
+        .status
+        .success()
+    );
+    assert!(
+        claim(
+            &subject_root,
+            "file:subject.txt",
+            SECOND_RUN,
+            "docs/hook-cardinality-subject.md",
+            "hook cardinality subject",
+        )
+        .status
+        .success()
+    );
+    fs::create_dir_all(subject_root.join("hook-cardinality"))
+        .expect("hook cardinality directory should exist");
+    for commit_index in 0..commit_count {
+        if path_count == 0 {
+            fs::write(
+                subject_root.join("subject.txt"),
+                format!("subject version {commit_index}\n"),
+            )
+            .expect("covered subject path should write");
+        } else if commit_index == 0 {
+            for path_index in 0..path_count {
+                fs::write(
+                    subject_root.join(format!("hook-cardinality/path-{path_index}.txt")),
+                    format!("path {path_index}, version {commit_index}\n"),
+                )
+                .expect("entered cardinality path should write");
+            }
+        } else {
+            let path_index = commit_index % path_count;
+            fs::write(
+                subject_root.join(format!("hook-cardinality/path-{path_index}.txt")),
+                format!("path {path_index}, version {commit_index}\n"),
+            )
+            .expect("entered cardinality path should update");
+        }
+        git(&subject_root, &["add", "-A"]);
+        git(
+            &subject_root,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                &format!("hook cardinality commit {commit_index}"),
+            ],
+        );
+    }
+    if commit_count == 0 {
+        for path_index in 0..path_count {
+            fs::write(
+                subject_root.join(format!("hook-cardinality/path-{path_index}.txt")),
+                format!("uncommitted path {path_index}\n"),
+            )
+            .expect("uncommitted cardinality path should write");
+        }
+    }
+    let post_commit_hook = repository.path().join(".git/hooks/post-commit");
+    let (output, invocations) =
+        run_command_with_raw_git_trace(&subject_root, post_commit_hook.as_os_str(), &[]);
+    assert!(
+        output.status.success(),
+        "traced post-commit hook failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    invocations
+}
+
+fn attribution_benchmark_row(range_commits: usize) -> AttributionBenchmarkRow {
+    const PATH_COUNT: usize = 33;
+
+    let repository = initialized_repository();
+    fs::create_dir_all(repository.path().join("benchmark"))
+        .expect("benchmark directory should exist");
+    let phase_start = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let paths = (0..PATH_COUNT)
+        .map(|index| format!("benchmark/path-{index}.txt"))
+        .collect::<Vec<_>>();
+    for commit_index in 0..range_commits {
+        let path = &paths[commit_index % paths.len()];
+        fs::write(
+            repository.path().join(path),
+            format!("benchmark version {commit_index}\n"),
+        )
+        .expect("benchmark path should write");
+        git(repository.path(), &["add", path]);
+        git(
+            repository.path(),
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                &format!("benchmark commit {commit_index}"),
+            ],
+        );
+    }
+    AttributionBenchmarkRow {
+        range_commits,
+        one_path: benchmark_attribution_cell(repository.path(), &phase_start, &paths[..1]),
+        thirty_three_paths: benchmark_attribution_cell(repository.path(), &phase_start, &paths),
+    }
+}
+
+fn benchmark_attribution_cell(
+    repository_root: &Path,
+    phase_start: &str,
+    paths: &[String],
+) -> AttributionBenchmarkCell {
+    const SAMPLE_COUNT: usize = 3;
+
+    run_attribution_implementation(
+        repository_root,
+        phase_start,
+        paths,
+        AttributionImplementation::PerPathReference,
+    );
+    run_attribution_implementation(
+        repository_root,
+        phase_start,
+        paths,
+        AttributionImplementation::Batched,
+    );
+    let reference = (0..SAMPLE_COUNT)
+        .map(|_| {
+            timed_attribution_implementation(
+                repository_root,
+                phase_start,
+                paths,
+                AttributionImplementation::PerPathReference,
+            )
+        })
+        .min()
+        .expect("benchmark should have a reference sample");
+    let batched = (0..SAMPLE_COUNT)
+        .map(|_| {
+            timed_attribution_implementation(
+                repository_root,
+                phase_start,
+                paths,
+                AttributionImplementation::Batched,
+            )
+        })
+        .min()
+        .expect("benchmark should have a batched sample");
+    AttributionBenchmarkCell { reference, batched }
+}
+
+fn timed_attribution_implementation(
+    repository_root: &Path,
+    phase_start: &str,
+    paths: &[String],
+    attribution_implementation: AttributionImplementation,
+) -> Duration {
+    let started_at = Instant::now();
+    run_attribution_implementation(
+        repository_root,
+        phase_start,
+        paths,
+        attribution_implementation,
+    );
+    started_at.elapsed()
+}
+
+fn run_attribution_implementation(
+    repository_root: &Path,
+    phase_start: &str,
+    paths: &[String],
+    attribution_implementation: AttributionImplementation,
+) {
+    let range = format!("{phase_start}..HEAD");
+    match attribution_implementation {
+        AttributionImplementation::PerPathReference => {
+            for path in paths {
+                let literal_path = format!(":(top,literal){path}");
+                git(
+                    repository_root,
+                    &["log", "--format=%H%x1f%s", &range, "--", &literal_path],
+                );
+            }
+        },
+        AttributionImplementation::Batched => {
+            let mut arguments = vec![
+                "log".to_owned(),
+                "-z".to_owned(),
+                "--name-only".to_owned(),
+                "--no-renames".to_owned(),
+                "--diff-merges=dense-combined".to_owned(),
+                "--format=%x00cargo-berth-incursion-commit%x00%H%x00%s".to_owned(),
+                range,
+                "--".to_owned(),
+            ];
+            arguments.extend(paths.iter().map(|path| format!(":(top,literal){path}")));
+            let argument_refs = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+            git(repository_root, &argument_refs);
+        },
+    }
+}
+
 fn run_berth_with_raw_git_trace(
     repository_root: &Path,
     arguments: &[&str],
+) -> (Output, Vec<RawGitInvocation>) {
+    run_command_with_raw_git_behavior(
+        repository_root,
+        OsStr::new(env!("CARGO_BIN_EXE_cargo-berth")),
+        arguments,
+        RawGitBehavior::PassThrough,
+    )
+}
+
+fn run_berth_with_raw_git_behavior(
+    repository_root: &Path,
+    arguments: &[&str],
+    raw_git_behavior: RawGitBehavior,
+) -> (Output, Vec<RawGitInvocation>) {
+    run_command_with_raw_git_behavior(
+        repository_root,
+        OsStr::new(env!("CARGO_BIN_EXE_cargo-berth")),
+        arguments,
+        raw_git_behavior,
+    )
+}
+
+fn run_command_with_raw_git_trace(
+    repository_root: &Path,
+    executable: &OsStr,
+    arguments: &[&str],
+) -> (Output, Vec<RawGitInvocation>) {
+    run_command_with_raw_git_behavior(
+        repository_root,
+        executable,
+        arguments,
+        RawGitBehavior::PassThrough,
+    )
+}
+
+fn run_command_with_raw_git_behavior(
+    repository_root: &Path,
+    executable: &OsStr,
+    arguments: &[&str],
+    raw_git_behavior: RawGitBehavior,
 ) -> (Output, Vec<RawGitInvocation>) {
     let directory = tempdir().expect("wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
@@ -2914,15 +3417,21 @@ fn run_berth_with_raw_git_trace(
     permissions.set_mode(0o755);
     fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
     let original_path = std::env::var_os("PATH").expect("test PATH should exist");
-    let wrapped_path = std::env::join_paths(
-        std::iter::once(directory.path().to_path_buf())
-            .chain(std::env::split_paths(&original_path)),
-    )
-    .expect("wrapped PATH should join");
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let wrapped_path = match raw_git_behavior {
+        RawGitBehavior::RemoveAfterSimpleRevList => directory.path().as_os_str().to_owned(),
+        RawGitBehavior::PassThrough
+        | RawGitBehavior::FailPhaseDiff
+        | RawGitBehavior::FailOriginClassification => std::env::join_paths(
+            std::iter::once(directory.path().to_path_buf())
+                .chain(std::env::split_paths(&original_path)),
+        )
+        .expect("wrapped PATH should join"),
+    };
+    let output = Command::new(executable)
         .args(arguments)
         .current_dir(repository_root)
         .env("PATH", wrapped_path)
+        .env(RAW_GIT_BEHAVIOR_ENVIRONMENT, raw_git_behavior.as_str())
         .env(REAL_GIT_ENVIRONMENT, git_binary())
         .env(TRACE_ENVIRONMENT, &trace_path)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -3374,6 +3883,43 @@ fn assert_same_git_invocation_sequence(left: &[RawGitInvocation], right: &[RawGi
                         && is_full_git_object_id(right_argument)),
                 "left={left:#?}\nright={right:#?}"
             );
+        }
+    }
+}
+
+fn assert_same_git_process_sequence(left: &[RawGitInvocation], right: &[RawGitInvocation]) {
+    assert_eq!(left.len(), right.len(), "left={left:#?}\nright={right:#?}");
+    assert_eq!(
+        raw_git_command_sequence(left),
+        raw_git_command_sequence(right),
+        "left={left:#?}\nright={right:#?}"
+    );
+}
+
+fn git_command_count(invocations: &[RawGitInvocation], command: &str) -> usize {
+    invocations
+        .iter()
+        .filter(|invocation| raw_git_command(invocation) == Some(command))
+        .count()
+}
+
+fn raw_git_command_sequence(invocations: &[RawGitInvocation]) -> Vec<String> {
+    invocations
+        .iter()
+        .filter_map(raw_git_command)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn raw_git_command(invocation: &RawGitInvocation) -> Option<&str> {
+    let mut arguments = invocation.arguments.iter().skip(1);
+    loop {
+        match arguments.next().map(String::as_str) {
+            Some("--no-optional-locks") => {},
+            Some("-c") => {
+                let _ = arguments.next();
+            },
+            command => return command,
         }
     }
 }

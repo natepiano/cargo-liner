@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use super::observation::ObservedDriftChanges;
+use super::observation::ReservationPhaseHistory;
 use super::ordering;
 use super::report::DriftComparisonMode;
 use super::report::DriftEffect;
@@ -212,6 +213,15 @@ pub(super) fn classify_locked(
     let mut unattributed_paths = Vec::new();
     let mut widening_attempt = WideningAttempt::NotNeeded;
     for reservation_id in &subjects.reporting {
+        if let ReservationPhaseHistory::PhaseStartObjectUnknown(phase_start) =
+            changes.reservation_phase_history(*reservation_id)
+        {
+            results.push(ReservationDriftResult::PhaseStartObjectUnknown {
+                reservation_id: *reservation_id,
+                phase_start:    phase_start.clone(),
+            });
+            continue;
+        }
         let reservation = reservations.reservation(*reservation_id)?;
         let mut builder = DriftEffectBuilder::default();
         changes.visit_paths(*reservation_id, |path| {

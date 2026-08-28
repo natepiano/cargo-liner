@@ -29,9 +29,11 @@ worktree-attribution incident. They remain in the append-only journal for its
 lifetime, but they are not replay state and must not be copied into a bounded
 projection.
 
-No phase owns this. The plan-wide invariant (`berth-fix.md:90`) constrains Git
-subprocess counts, not ledger size, and bounded per-reservation replay state
-cannot bound a projection that stores every `JournalEvent`. Replace
+No phase owns this. The plan-wide invariant in Delegation Context — Git subprocess
+counts on the `PostToolUse` path must not scale with the number of paths, commits,
+or reservations involved — constrains subprocess counts, not ledger size, and
+bounded per-reservation replay state cannot bound a projection that stores every
+`JournalEvent`. Replace
 `Projection.events` with bounded replay state while retaining the journal offset,
 fingerprint, generation, and enough materialized facts to preserve replay
 behavior. Do not rewrite or compact the append-only journal.

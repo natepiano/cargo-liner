@@ -17,7 +17,8 @@ use std::process::Output;
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 
-use command::GitCommandExecution;
+pub(crate) use command::GitCommandExecution;
+pub(crate) use command::git_execution as execute_read_only_git;
 use command::git_output;
 use command::git_output_dynamic;
 use command::git_output_dynamic_with_environment;
@@ -32,7 +33,9 @@ use constants::GIT_COMMIT_PEEL_SUFFIX;
 use constants::GIT_COMMON_DIRECTORY_ARG;
 use constants::GIT_COUNT_ARG;
 use constants::GIT_DELETED_STATUS;
+use constants::GIT_DENSE_COMBINED_ARG;
 use constants::GIT_DIFF_COMMAND;
+use constants::GIT_DIFF_TREE_COMMAND;
 use constants::GIT_EQUIVALENT_COMMIT_MARK;
 use constants::GIT_EXCLUDE_REVISION_PREFIX;
 use constants::GIT_EXISTS_ARG;
@@ -50,6 +53,7 @@ use constants::GIT_IS_ANCESTOR_ARG;
 use constants::GIT_LEFT_RIGHT_ARG;
 use constants::GIT_LITERAL_TOP_PATHSPEC_PREFIX;
 use constants::GIT_LOCAL_BRANCH_REF_PREFIX;
+use constants::GIT_LOG_COMMAND;
 use constants::GIT_MAX_COUNT_ARG_PREFIX;
 use constants::GIT_MAX_COUNT_ONE_ARG;
 use constants::GIT_MERGE_BASE_ARG_PREFIX;
@@ -60,12 +64,14 @@ use constants::GIT_MERGE_TREE_CONFLICT_EXIT_CODE;
 use constants::GIT_MISSING_OBJECT_SUFFIX;
 use constants::GIT_MODIFIED_STATUS;
 use constants::GIT_NAME_ONLY_ARG;
+use constants::GIT_NAME_STATUS_ARG;
 use constants::GIT_NO_ABBREV_ARG;
 use constants::GIT_NO_MERGE_BASE_EXIT_CODE;
 use constants::GIT_NO_MERGES_ARG;
 use constants::GIT_NO_RENAMES_ARG;
 use constants::GIT_NOT_ANCESTOR_EXIT_CODE;
 use constants::GIT_NUL_TERMINATED_ARG;
+use constants::GIT_OCTOPUS_ARG;
 use constants::GIT_PARENTS_ARG;
 use constants::GIT_PATH_ARG;
 use constants::GIT_PATH_FORMAT_ABSOLUTE_ARG;
@@ -76,6 +82,7 @@ use constants::GIT_RAW_ARG;
 use constants::GIT_READ_TREE_COMMAND;
 use constants::GIT_REBASE_APPLY_STATE_PATH;
 use constants::GIT_REBASE_MERGE_STATE_PATH;
+use constants::GIT_RECURSIVE_ARG;
 use constants::GIT_REFLOG_COMMAND;
 use constants::GIT_REFLOG_SHOW_ARG;
 use constants::GIT_REFLOG_SUBJECT_FORMAT_ARG;
@@ -98,6 +105,7 @@ use uuid::Uuid;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::ReservationId;
+use crate::ids::ReservationScopePath;
 use crate::ledger::FullRefName;
 use crate::scope::ReservationScopeSet;
 
@@ -171,7 +179,6 @@ pub(crate) enum ScopedPatchComparison {
 }
 
 enum ScopedPatchComparisonError {
-    CommandUnavailable,
     Git(GitError),
 }
 
@@ -539,7 +546,7 @@ fn scoped_patch_command_output(
 ) -> Result<Output, ScopedPatchComparisonError> {
     match command_execution {
         GitCommandExecution::Completed(output) => Ok(output),
-        GitCommandExecution::CouldNotRun => Err(ScopedPatchComparisonError::CommandUnavailable),
+        GitCommandExecution::CouldNotRun(error) => Err(GitError::Io(error).into()),
     }
 }
 
@@ -566,7 +573,7 @@ pub(crate) fn scoped_patch_equivalence(
         target,
     ) {
         Ok(scoped_patch_comparison) => Ok(scoped_patch_comparison),
-        Err(ScopedPatchComparisonError::CommandUnavailable) => {
+        Err(ScopedPatchComparisonError::Git(GitError::Io(_))) => {
             Ok(ScopedPatchComparison::Unavailable)
         },
         Err(ScopedPatchComparisonError::Git(error)) => Err(error),
@@ -1378,7 +1385,7 @@ pub(crate) fn reachability_to_target(
     }
     let target_text = target.to_string();
     let arguments = [GIT_REV_LIST_COMMAND.to_owned(), target_text];
-    let output = git_output_dynamic(repository_root, &arguments)?;
+    let output = completed_git_command(git_output_dynamic(repository_root, &arguments).into())?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_LIST_COMMAND,
@@ -1404,6 +1411,181 @@ pub(crate) fn reachability_to_target(
         .collect())
 }
 
+/// Compare every readable phase start with one target in a single git invocation.
+///
+/// `diff-tree --stdin` prefixes every non-empty result with the first supplied
+/// object, so each input line starts with its distinct phase-start anchor. Empty
+/// comparisons emit no record and remain distinguishable because callers
+/// initialize every requested anchor before parsing the output.
+pub(crate) fn phase_committed_path_diffs(
+    repository_root: &Path,
+    anchors: &[GitObjectId],
+    target: &GitObjectId,
+) -> GitCommandExecution {
+    let input = anchors.iter().fold(String::new(), |mut input, anchor| {
+        let _ = writeln!(input, "{anchor} {target}");
+        input
+    });
+    let arguments = [
+        GIT_DIFF_TREE_COMMAND.to_owned(),
+        GIT_STDIN_ARG.to_owned(),
+        GIT_RECURSIVE_ARG.to_owned(),
+        GIT_NAME_STATUS_ARG.to_owned(),
+        GIT_NUL_TERMINATED_ARG.to_owned(),
+        GIT_NO_RENAMES_ARG.to_owned(),
+    ];
+    git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into()
+}
+
+/// Find the shared base whose range covers every usable incursion-attribution anchor.
+pub(crate) fn incursion_attribution_union_base(
+    repository_root: &Path,
+    anchors: &[GitObjectId],
+) -> Result<IncursionAttributionUnionBase, GitError> {
+    let mut arguments = Vec::with_capacity(anchors.len() + 2);
+    arguments.push(GIT_MERGE_BASE_COMMAND.to_owned());
+    arguments.push(GIT_OCTOPUS_ARG.to_owned());
+    arguments.extend(anchors.iter().map(ToString::to_string));
+    let output = completed_git_command(git_output_dynamic(repository_root, &arguments).into())?;
+    if output.status.code() == Some(GIT_NO_MERGE_BASE_EXIT_CODE) {
+        return Ok(IncursionAttributionUnionBase::UnrelatedHistories);
+    }
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_MERGE_BASE_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let common_ancestor = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    let common_ancestor = common_ancestor
+        .trim()
+        .parse()
+        .map_err(GitError::InvalidObjectId)?;
+    Ok(IncursionAttributionUnionBase::CommonAncestor(
+        common_ancestor,
+    ))
+}
+
+/// Read every selected path's commits from one union range.
+pub(crate) fn incursion_path_log(
+    repository_root: &Path,
+    union_base: &IncursionAttributionUnionBase,
+    target: &GitObjectId,
+    paths: &[ReservationScopePath],
+) -> IncursionPathLogInvocation {
+    let range = match union_base {
+        IncursionAttributionUnionBase::CommonAncestor(common_ancestor) => {
+            format!("{common_ancestor}{GIT_ANCESTOR_RANGE_INFIX}{target}")
+        },
+        IncursionAttributionUnionBase::UnrelatedHistories => target.to_string(),
+    };
+    let record_format = format!("--format=%x00{INCURSION_ATTRIBUTION_RECORD_MARKER}%x00%H%x00%s");
+    let mut arguments = Vec::with_capacity(paths.len() + 8);
+    arguments.extend([
+        GIT_LOG_COMMAND.to_owned(),
+        GIT_NUL_TERMINATED_ARG.to_owned(),
+        GIT_NAME_ONLY_ARG.to_owned(),
+        GIT_NO_RENAMES_ARG.to_owned(),
+        GIT_DENSE_COMBINED_ARG.to_owned(),
+        record_format,
+        range,
+        GIT_PATHSPEC_SEPARATOR.to_owned(),
+    ]);
+    arguments.extend(
+        paths
+            .iter()
+            .map(|path| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{path}")),
+    );
+    let execution = git_output_dynamic(repository_root, &arguments).into();
+    IncursionPathLogInvocation {
+        arguments,
+        execution,
+    }
+}
+
+/// The record boundary emitted by the batched incursion-attribution log.
+pub(crate) const INCURSION_ATTRIBUTION_RECORD_MARKER: &str = "cargo-berth-incursion-commit";
+
+/// Select each phase start's exact `anchor..target` members from one ancestry graph.
+pub(crate) fn incursion_range_commits(
+    repository_root: &Path,
+    anchors: &[GitObjectId],
+    target: &GitObjectId,
+    candidates: &[GitObjectId],
+) -> Result<Vec<HashSet<GitObjectId>>, GitError> {
+    let input =
+        std::iter::once(target)
+            .chain(anchors)
+            .fold(String::new(), |mut input, object_id| {
+                let _ = writeln!(input, "{object_id}");
+                input
+            });
+    let arguments = [
+        GIT_REV_LIST_COMMAND.to_owned(),
+        GIT_IGNORE_MISSING_ARG.to_owned(),
+        GIT_PARENTS_ARG.to_owned(),
+        GIT_STDIN_ARG.to_owned(),
+    ];
+    let output = completed_git_command(
+        git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into(),
+    )?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_LIST_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    let commit_ancestry_graph = CommitAncestryGraph::try_from(output_text.as_str())?;
+    let target_history = commit_ancestry_graph.ancestors_including(target);
+    Ok(anchors
+        .iter()
+        .map(|anchor| {
+            if !commit_ancestry_graph.contains(anchor) {
+                return HashSet::new();
+            }
+            let anchor_history = commit_ancestry_graph.ancestors_including(anchor);
+            candidates
+                .iter()
+                .filter(|candidate| {
+                    target_history.contains(candidate) && !anchor_history.contains(candidate)
+                })
+                .cloned()
+                .collect()
+        })
+        .collect())
+}
+
+/// List target commits that are not reachable from the origin-classification basis.
+pub(crate) fn commits_outside_origin_basis(
+    repository_root: &Path,
+    origin_basis: &GitObjectId,
+    target: &GitObjectId,
+) -> Result<HashSet<GitObjectId>, GitError> {
+    let range = format!("{origin_basis}{GIT_ANCESTOR_RANGE_INFIX}{target}");
+    let arguments = [GIT_REV_LIST_COMMAND.to_owned(), range];
+    let output = completed_git_command(git_output_dynamic(repository_root, &arguments).into())?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_LIST_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    output_text
+        .lines()
+        .map(str::parse)
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(GitError::InvalidObjectId)
+}
+
+fn completed_git_command(command_execution: GitCommandExecution) -> Result<Output, GitError> {
+    match command_execution {
+        GitCommandExecution::Completed(output) => Ok(output),
+        GitCommandExecution::CouldNotRun(error) => Err(GitError::Io(error)),
+    }
+}
+
 /// Classify successor heads against every protected predecessor tip in one revision walk.
 pub(crate) fn descendant_commits(
     repository_root: &Path,
@@ -1427,7 +1609,9 @@ pub(crate) fn descendant_commits(
         GIT_PARENTS_ARG.to_owned(),
         GIT_STDIN_ARG.to_owned(),
     ];
-    let output = git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())?;
+    let output = completed_git_command(
+        git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into(),
+    )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_LIST_COMMAND,
@@ -1481,7 +1665,9 @@ fn commit_availability(
         GIT_CAT_FILE_COMMAND.to_owned(),
         GIT_BATCH_CHECK_ARG.to_owned(),
     ];
-    let output = git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())?;
+    let output = completed_git_command(
+        git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into(),
+    )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_CAT_FILE_COMMAND,
@@ -1565,7 +1751,9 @@ pub(crate) fn reservation_retention_ref_name(reservation_id: ReservationId) -> S
 }
 
 fn object_id(repository_root: &Path, revision: &str) -> Result<GitObjectId, GitError> {
-    let output = git_output(repository_root, [GIT_REV_PARSE_COMMAND, revision])?;
+    let output = completed_git_command(
+        git_output(repository_root, [GIT_REV_PARSE_COMMAND, revision]).into(),
+    )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_PARSE_COMMAND,
@@ -1585,6 +1773,22 @@ pub(crate) enum Reachability {
     NotAncestor,
     /// Git could not read one or both objects.
     ObjectUnknown,
+}
+
+/// The common base used to walk all usable incursion-attribution ranges together.
+pub(crate) enum IncursionAttributionUnionBase {
+    /// Every usable phase start shares this ancestor.
+    CommonAncestor(GitObjectId),
+    /// Git found no common history across the supplied phase starts.
+    UnrelatedHistories,
+}
+
+/// One incursion path-log invocation and the exact arguments supplied to git.
+pub(crate) struct IncursionPathLogInvocation {
+    /// The arguments supplied after the git binary.
+    pub(crate) arguments: Vec<String>,
+    /// Whether the git process completed or could not run.
+    pub(crate) execution: GitCommandExecution,
 }
 
 /// One candidate head's relation to a protected predecessor tip.
@@ -1752,6 +1956,7 @@ mod tests {
     use super::AheadBehind;
     use super::CandidateHeadReachability;
     use super::DescendantCommitQuery;
+    use super::GitError;
     use super::ProtectedTipSuccessorHeads;
     use super::ScopedPatchComparison;
     use super::ScopedPatchComparisonError;
@@ -1867,7 +2072,7 @@ mod tests {
 
         assert!(matches!(
             scoped_patch_command_output(command_execution),
-            Err(ScopedPatchComparisonError::CommandUnavailable)
+            Err(ScopedPatchComparisonError::Git(GitError::Io(_)))
         ));
     }
 

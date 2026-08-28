@@ -20,9 +20,12 @@ use super::fingerprint::StoredWorkingTreeFingerprint;
 use super::fingerprint::WorkingTreeFingerprint;
 use super::git_output;
 use super::git_output::DriftFingerprintError;
+use super::git_output::IncursionAttributionAnchorState;
 use super::ordering;
 use super::report::DriftComparisonMode;
 use super::selection::DriftComparisonChoice;
+use crate::git;
+use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::reservation::RetainedReservationSet;
@@ -39,10 +42,30 @@ macro_rules! changed_path_set {
 
 changed_path_set!(CheapTrackedChanges);
 changed_path_set!(CheapUntrackedChanges);
-changed_path_set!(CommittedPhaseChanges);
 changed_path_set!(StagedWorkingTreeChanges);
 changed_path_set!(UnstagedWorkingTreeChanges);
 changed_path_set!(UntrackedWorkingTreeChanges);
+
+struct CommittedPhaseChanges(Vec<ReservationScopePath>);
+
+impl CommittedPhaseChanges {
+    fn as_slice(&self) -> &[ReservationScopePath] { &self.0 }
+}
+
+enum FullReservationPhaseHistory {
+    Compared(CommittedPhaseChanges),
+    PhaseStartObjectUnknown(GitObjectId),
+}
+
+/// The phase-history state available while classifying one reservation.
+pub(super) enum ReservationPhaseHistory<'history> {
+    /// Cheap comparison did not inspect committed phase history.
+    NotObserved,
+    /// Git compared the phase start with the observation target.
+    Compared(&'history [ReservationScopePath]),
+    /// Git could not read the reservation's phase-start object.
+    PhaseStartObjectUnknown(&'history GitObjectId),
+}
 
 pub(super) struct CheapDeltaChanges {
     tracked:   CheapTrackedChanges,
@@ -56,10 +79,26 @@ pub(super) struct CheapDeltaChanges {
 }
 
 pub(super) struct FullPhaseStartChanges {
-    committed: HashMap<ReservationId, CommittedPhaseChanges>,
+    committed: HashMap<ReservationId, FullReservationPhaseHistory>,
+    history:   FullPhaseHistoryObservation,
     staged:    StagedWorkingTreeChanges,
     unstaged:  UnstagedWorkingTreeChanges,
     untracked: UntrackedWorkingTreeChanges,
+}
+
+/// The shared target and phase-start states established by one full comparison.
+pub(super) enum FullPhaseHistoryObservation {
+    /// No reservation supplied a phase start, so no phase history was queried.
+    NoReservationAnchor,
+    /// Every requested phase start was classified against this target.
+    Anchored {
+        target:        GitObjectId,
+        anchor_states: HashMap<GitObjectId, IncursionAttributionAnchorState>,
+    },
+}
+
+impl FullPhaseStartChanges {
+    pub(super) const fn phase_history(&self) -> &FullPhaseHistoryObservation { &self.history }
 }
 
 pub(super) enum ObservedDriftChanges {
@@ -78,7 +117,12 @@ impl ObservedDriftChanges {
                     changes
                         .committed
                         .get(reservation_id)
-                        .is_some_and(|paths| !paths.as_slice().is_empty())
+                        .is_some_and(|history| match history {
+                            FullReservationPhaseHistory::Compared(paths) => {
+                                !paths.as_slice().is_empty()
+                            },
+                            FullReservationPhaseHistory::PhaseStartObjectUnknown(_) => true,
+                        })
                 }) || !changes.staged.as_slice().is_empty()
                     || !changes.unstaged.as_slice().is_empty()
                     || !changes.untracked.as_slice().is_empty()
@@ -125,14 +169,22 @@ impl ObservedDriftChanges {
         }
     }
 
-    /// The paths a reservation's phase committed, which a working-tree path never is.
-    pub(super) fn committed_paths(&self, reservation_id: ReservationId) -> &[ReservationScopePath] {
+    /// Return the committed-history state observed for one reservation.
+    pub(super) fn reservation_phase_history(
+        &self,
+        reservation_id: ReservationId,
+    ) -> ReservationPhaseHistory<'_> {
         match self {
-            Self::Cheap(_) => &[],
-            Self::Full(changes) => changes
-                .committed
-                .get(&reservation_id)
-                .map_or(&[], CommittedPhaseChanges::as_slice),
+            Self::Cheap(_) => ReservationPhaseHistory::NotObserved,
+            Self::Full(changes) => match changes.committed.get(&reservation_id) {
+                Some(FullReservationPhaseHistory::Compared(paths)) => {
+                    ReservationPhaseHistory::Compared(paths.as_slice())
+                },
+                Some(FullReservationPhaseHistory::PhaseStartObjectUnknown(phase_start)) => {
+                    ReservationPhaseHistory::PhaseStartObjectUnknown(phase_start)
+                },
+                None => ReservationPhaseHistory::NotObserved,
+            },
         }
     }
 
@@ -151,7 +203,9 @@ impl ObservedDriftChanges {
                 }
             },
             Self::Full(changes) => {
-                if let Some(committed) = changes.committed.get(&reservation_id) {
+                if let Some(FullReservationPhaseHistory::Compared(committed)) =
+                    changes.committed.get(&reservation_id)
+                {
                     for path in committed.as_slice() {
                         visit(path);
                     }
@@ -292,30 +346,51 @@ fn observe_full(
     reservation_ids: &[ReservationId],
     comparison: DriftComparisonMode,
 ) -> Result<FingerprintObservation, DriftFingerprintError> {
-    let mut committed = HashMap::new();
+    let mut reservation_anchors = HashMap::new();
+    let mut anchors = Vec::new();
     for reservation_id in reservation_ids {
         let reservation = reservations
             .reservation(*reservation_id)
             .map_err(|error| DriftFingerprintError::Reservation(error.to_string()))?;
-        let phase_range = format!(
-            "{}..{GIT_HEAD_REVISION}",
-            reservation.phase_start_head().as_ref()
-        );
-        let output = git_output::run_git(
-            repository_root,
-            &[
-                GIT_DIFF_COMMAND,
-                GIT_NAME_STATUS_ARGUMENT,
-                GIT_NUL_TERMINATED_ARGUMENT,
-                GIT_NO_RENAMES_ARGUMENT,
-                &phase_range,
-            ],
-        )?;
-        committed.insert(
-            *reservation_id,
-            CommittedPhaseChanges(git_output::parse_name_status_paths(&output.stdout)?),
-        );
+        let phase_start = reservation.phase_start_head().as_ref().clone();
+        if !anchors.contains(&phase_start) {
+            anchors.push(phase_start.clone());
+        }
+        reservation_anchors.insert(*reservation_id, phase_start);
     }
+    let (history, committed_by_anchor) = observe_phase_history(repository_root, &anchors)?;
+    let anchor_states = match &history {
+        FullPhaseHistoryObservation::NoReservationAnchor => HashMap::new(),
+        FullPhaseHistoryObservation::Anchored { anchor_states, .. } => anchor_states.clone(),
+    };
+    let committed = reservation_anchors
+        .into_iter()
+        .map(
+            |(reservation_id, anchor)| -> Result<_, DriftFingerprintError> {
+                let phase_history = match anchor_states.get(&anchor) {
+                    Some(IncursionAttributionAnchorState::ObjectUnknown) => {
+                        FullReservationPhaseHistory::PhaseStartObjectUnknown(anchor)
+                    },
+                    Some(
+                        IncursionAttributionAnchorState::UsableAncestor
+                        | IncursionAttributionAnchorState::NotAncestorOfHead,
+                    ) => FullReservationPhaseHistory::Compared(CommittedPhaseChanges(
+                        committed_by_anchor.get(&anchor).cloned().ok_or_else(|| {
+                            DriftFingerprintError::MalformedGitOutput(format!(
+                                "phase comparison omitted requested anchor {anchor}"
+                            ))
+                        })?,
+                    )),
+                    None => {
+                        return Err(DriftFingerprintError::MalformedGitOutput(format!(
+                            "phase reachability omitted requested anchor {anchor}"
+                        )));
+                    },
+                };
+                Ok((reservation_id, phase_history))
+            },
+        )
+        .collect::<Result<HashMap<_, _>, _>>()?;
     let staged = git_output::run_git(
         repository_root,
         &[
@@ -360,12 +435,63 @@ fn observe_full(
         comparison,
         changes: ObservedDriftChanges::Full(FullPhaseStartChanges {
             committed,
+            history,
             staged: StagedWorkingTreeChanges(staged_paths),
             unstaged: UnstagedWorkingTreeChanges(unstaged_paths),
             untracked: UntrackedWorkingTreeChanges(untracked_paths),
         }),
         cache_value,
     })
+}
+
+fn observe_phase_history(
+    repository_root: &Path,
+    anchors: &[GitObjectId],
+) -> Result<
+    (
+        FullPhaseHistoryObservation,
+        HashMap<GitObjectId, Vec<ReservationScopePath>>,
+    ),
+    DriftFingerprintError,
+> {
+    if anchors.is_empty() {
+        return Ok((
+            FullPhaseHistoryObservation::NoReservationAnchor,
+            HashMap::new(),
+        ));
+    }
+    let target = git::head_object_id(repository_root).map_err(DriftFingerprintError::from)?;
+    let reachability = git::reachability_to_target(repository_root, anchors, &target)
+        .map_err(DriftFingerprintError::from)?;
+    let anchor_states = anchors
+        .iter()
+        .cloned()
+        .zip(reachability)
+        .map(|(anchor, reachability)| (anchor, reachability.into()))
+        .collect::<HashMap<_, _>>();
+    let comparable_anchors = anchors
+        .iter()
+        .filter(|anchor| {
+            anchor_states.get(*anchor) != Some(&IncursionAttributionAnchorState::ObjectUnknown)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let committed_by_anchor = if comparable_anchors.is_empty() {
+        HashMap::new()
+    } else {
+        let execution =
+            git::phase_committed_path_diffs(repository_root, &comparable_anchors, &target);
+        let output =
+            git_output::completed_git_output(execution, &["diff-tree", "batched phase starts"])?;
+        git_output::parse_phase_committed_paths(&output.stdout, &comparable_anchors)?
+    };
+    Ok((
+        FullPhaseHistoryObservation::Anchored {
+            target,
+            anchor_states,
+        },
+        committed_by_anchor,
+    ))
 }
 
 fn symmetric_difference(

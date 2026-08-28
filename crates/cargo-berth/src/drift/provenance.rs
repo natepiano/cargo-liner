@@ -1,15 +1,17 @@
 //! The commits behind an incursion's entered paths.
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 
-use super::constants::GIT_FIELD_SEPARATOR;
-use super::constants::GIT_HEAD_REVISION;
-use super::constants::GIT_LOG_COMMAND;
-use super::constants::GIT_LOG_FORMAT_ARGUMENT;
-use super::constants::GIT_PATHSPEC_SEPARATOR;
 use super::git_output;
 use super::git_output::DriftFingerprintError;
+use super::git_output::IncursionAttributionAnchorState;
+use super::git_output::IncursionPathCommit;
+use super::observation::FullPhaseHistoryObservation;
 use super::observation::ObservedDriftChanges;
+use super::observation::ReservationPhaseHistory;
+use super::ordering;
 use super::report::DriftEffect;
 use super::report::DriftReport;
 use super::report::IncursionCommit;
@@ -18,11 +20,48 @@ use super::report::ReservationDriftResult;
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
 use crate::git;
-use crate::git::Reachability;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::IncursionPathSet;
 use crate::reservation::RetainedReservationSet;
+
+/// The trunk basis used to classify where an incursion commit originated.
+enum IncursionCommitOriginBasis {
+    ResolvedTrunk(GitObjectId),
+    CannotClassifyOrigin,
+}
+
+enum IncursionAttributionSubjectState {
+    NoCommittedIncursion,
+    Ready(IncursionAttributionSubjects),
+}
+
+struct IncursionAttributionSubjectAnchor {
+    object_id: GitObjectId,
+    state:     IncursionAttributionAnchorState,
+}
+
+struct IncursionAttributionSubjects {
+    target:  GitObjectId,
+    anchors: Vec<IncursionAttributionSubjectAnchor>,
+    paths:   Vec<ReservationScopePath>,
+}
+
+struct IncursionAnchorAttribution {
+    state:         IncursionAttributionAnchorState,
+    range_commits: HashSet<GitObjectId>,
+}
+
+struct IncursionAttributionBatch {
+    anchors:           HashMap<GitObjectId, IncursionAnchorAttribution>,
+    commits:           Vec<IncursionPathCommit>,
+    origin_membership: IncursionCommitOriginMembership,
+}
+
+enum IncursionCommitOriginMembership {
+    Classified(HashSet<GitObjectId>),
+    CannotClassifyOrigin,
+}
 
 /// Name the commits behind every entered path an incursion took from the phase range.
 ///
@@ -36,7 +75,13 @@ pub(super) fn name_incursion_commits(
     changes: &ObservedDriftChanges,
     report: &mut DriftReport,
 ) -> Result<(), DriftFingerprintError> {
-    let trunk = trunk_object_id(repository_root);
+    let IncursionAttributionSubjectState::Ready(subjects) =
+        attribution_subjects(reservations, changes, report)
+    else {
+        return Ok(());
+    };
+    let origin_basis = trunk_object_id(repository_root);
+    let batch = attribution_batch(repository_root, &origin_basis, &subjects)?;
     for result in &mut report.results {
         let ReservationDriftResult::Changed {
             reservation_id,
@@ -48,111 +93,253 @@ pub(super) fn name_incursion_commits(
         let Ok(reservation) = reservations.reservation(*reservation_id) else {
             continue;
         };
-        let phase_start = reservation.phase_start_head().as_ref().to_string();
-        let committed = changes.committed_paths(*reservation_id);
+        let phase_start = reservation.phase_start_head().as_ref();
+        let ReservationPhaseHistory::Compared(committed) =
+            changes.reservation_phase_history(*reservation_id)
+        else {
+            continue;
+        };
         for effect in effects.as_mut_slice() {
             let DriftEffect::Incursion { paths, commits, .. } = effect else {
                 continue;
             };
-            *commits = commits_for_paths(
-                repository_root,
-                trunk.as_ref(),
-                &phase_start,
-                committed,
-                paths,
-            )?;
+            let selected_paths = committed_incursion_paths(committed, paths);
+            *commits = commits_for_paths(&batch, phase_start, &selected_paths);
         }
     }
     Ok(())
 }
 
-/// The trunk tip, when the repository is configured and git can resolve it.
-///
-/// A missing trunk costs the origin of each commit, not the commits themselves, so
-/// the lookup reports nothing rather than failing the run that found the incursion.
-fn trunk_object_id(repository_root: &Path) -> Option<GitObjectId> {
-    let Ok(Enrollment::Enrolled(configuration)) = BerthConfig::read(repository_root) else {
-        return None;
+fn attribution_subjects(
+    reservations: &RetainedReservationSet,
+    changes: &ObservedDriftChanges,
+    report: &DriftReport,
+) -> IncursionAttributionSubjectState {
+    let mut anchors = Vec::new();
+    let mut paths = Vec::new();
+    for result in &report.results {
+        let ReservationDriftResult::Changed {
+            reservation_id,
+            effects,
+        } = result
+        else {
+            continue;
+        };
+        let Ok(reservation) = reservations.reservation(*reservation_id) else {
+            continue;
+        };
+        let ReservationPhaseHistory::Compared(committed) =
+            changes.reservation_phase_history(*reservation_id)
+        else {
+            continue;
+        };
+        for effect in effects.as_slice() {
+            let DriftEffect::Incursion {
+                paths: entered_paths,
+                ..
+            } = effect
+            else {
+                continue;
+            };
+            let selected_paths = committed_incursion_paths(committed, entered_paths);
+            if selected_paths.is_empty() {
+                continue;
+            }
+            let phase_start = reservation.phase_start_head().as_ref();
+            if !anchors.contains(phase_start) {
+                anchors.push(phase_start.clone());
+            }
+            paths.extend(selected_paths);
+        }
+    }
+    ordering::normalize_paths(&mut paths);
+    if paths.is_empty() {
+        return IncursionAttributionSubjectState::NoCommittedIncursion;
+    }
+    let ObservedDriftChanges::Full(full_changes) = changes else {
+        return IncursionAttributionSubjectState::NoCommittedIncursion;
     };
-    git::branch_object_id(repository_root, &configuration.trunk).ok()
+    let FullPhaseHistoryObservation::Anchored {
+        target,
+        anchor_states,
+    } = full_changes.phase_history()
+    else {
+        return IncursionAttributionSubjectState::NoCommittedIncursion;
+    };
+    let anchors = anchors
+        .into_iter()
+        .map(|object_id| IncursionAttributionSubjectAnchor {
+            state: anchor_states
+                .get(&object_id)
+                .copied()
+                .unwrap_or(IncursionAttributionAnchorState::ObjectUnknown),
+            object_id,
+        })
+        .collect();
+    IncursionAttributionSubjectState::Ready(IncursionAttributionSubjects {
+        target: target.clone(),
+        anchors,
+        paths,
+    })
+}
+
+fn committed_incursion_paths(
+    committed: &[ReservationScopePath],
+    entered: &IncursionPathSet,
+) -> Vec<ReservationScopePath> {
+    entered
+        .as_slice()
+        .iter()
+        .filter(|path| committed.contains(path))
+        .cloned()
+        .collect()
+}
+
+fn attribution_batch(
+    repository_root: &Path,
+    origin_basis: &IncursionCommitOriginBasis,
+    subjects: &IncursionAttributionSubjects,
+) -> Result<IncursionAttributionBatch, DriftFingerprintError> {
+    let mut anchors = subjects
+        .anchors
+        .iter()
+        .map(|anchor| {
+            (
+                anchor.object_id.clone(),
+                IncursionAnchorAttribution {
+                    state:         anchor.state,
+                    range_commits: HashSet::new(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let usable_anchors = subjects
+        .anchors
+        .iter()
+        .filter(|anchor| anchor.state == IncursionAttributionAnchorState::UsableAncestor)
+        .map(|anchor| anchor.object_id.clone())
+        .collect::<Vec<_>>();
+    if usable_anchors.is_empty() {
+        return Ok(IncursionAttributionBatch {
+            anchors,
+            commits: Vec::new(),
+            origin_membership: IncursionCommitOriginMembership::CannotClassifyOrigin,
+        });
+    }
+    let union_base = git::incursion_attribution_union_base(repository_root, &usable_anchors)
+        .map_err(DriftFingerprintError::from)?;
+    let path_log_invocation = git::incursion_path_log(
+        repository_root,
+        &union_base,
+        &subjects.target,
+        &subjects.paths,
+    );
+    let path_log = git_output::completed_git_output(
+        path_log_invocation.execution,
+        &path_log_invocation.arguments,
+    )?;
+    let commits = git_output::parse_incursion_path_log(&path_log.stdout)?;
+    let candidate_commits = commits
+        .iter()
+        .map(|commit| commit.commit.clone())
+        .collect::<Vec<_>>();
+    let subject_anchor_ids = subjects
+        .anchors
+        .iter()
+        .map(|anchor| anchor.object_id.clone())
+        .collect::<Vec<_>>();
+    let range_commits = git::incursion_range_commits(
+        repository_root,
+        &subject_anchor_ids,
+        &subjects.target,
+        &candidate_commits,
+    )
+    .map_err(DriftFingerprintError::from)?;
+    for (anchor, range_commits) in subject_anchor_ids.iter().zip(range_commits) {
+        if let Some(attribution) = anchors.get_mut(anchor) {
+            attribution.range_commits = range_commits;
+        }
+    }
+    // A `commits_outside_origin_basis` failure may only remove origin
+    // classification; it must not discard commits established by the path log
+    // and range-membership query.
+    let origin_membership = match origin_basis {
+        IncursionCommitOriginBasis::ResolvedTrunk(trunk) => {
+            git::commits_outside_origin_basis(repository_root, trunk, &subjects.target).map_or(
+                IncursionCommitOriginMembership::CannotClassifyOrigin,
+                IncursionCommitOriginMembership::Classified,
+            )
+        },
+        IncursionCommitOriginBasis::CannotClassifyOrigin => {
+            IncursionCommitOriginMembership::CannotClassifyOrigin
+        },
+    };
+    Ok(IncursionAttributionBatch {
+        anchors,
+        commits,
+        origin_membership,
+    })
+}
+
+/// The trunk tip used to classify commit origin, or the semantic reason classification cannot run.
+fn trunk_object_id(repository_root: &Path) -> IncursionCommitOriginBasis {
+    let Ok(Enrollment::Enrolled(configuration)) = BerthConfig::read(repository_root) else {
+        return IncursionCommitOriginBasis::CannotClassifyOrigin;
+    };
+    git::branch_object_id(repository_root, &configuration.trunk).map_or(
+        IncursionCommitOriginBasis::CannotClassifyOrigin,
+        IncursionCommitOriginBasis::ResolvedTrunk,
+    )
 }
 
 fn commits_for_paths(
-    repository_root: &Path,
-    trunk: Option<&GitObjectId>,
-    phase_start: &str,
-    committed: &[ReservationScopePath],
-    entered: &IncursionPathSet,
-) -> Result<Vec<IncursionCommit>, DriftFingerprintError> {
-    let mut commits: Vec<IncursionCommit> = Vec::new();
-    for path in entered.as_slice() {
-        if !committed.contains(path) {
-            continue;
-        }
-        for (commit, subject) in path_commits(repository_root, phase_start, path)? {
-            if let Some(existing) = commits.iter_mut().find(|entry| entry.commit == commit) {
-                existing.paths.push(path.clone());
-                continue;
-            }
-            commits.push(IncursionCommit {
-                origin: commit_origin(repository_root, trunk, &commit),
-                commit,
-                subject,
-                paths: vec![path.clone()],
-            });
-        }
+    batch: &IncursionAttributionBatch,
+    phase_start: &GitObjectId,
+    selected_paths: &[ReservationScopePath],
+) -> Vec<IncursionCommit> {
+    let Some(anchor) = batch.anchors.get(phase_start) else {
+        return Vec::new();
+    };
+    if anchor.state != IncursionAttributionAnchorState::UsableAncestor {
+        return Vec::new();
     }
-    Ok(commits)
+    batch
+        .commits
+        .iter()
+        .filter(|commit| anchor.range_commits.contains(&commit.commit))
+        .filter_map(|commit| {
+            let mut paths = commit
+                .paths
+                .iter()
+                .filter(|path| selected_paths.contains(path))
+                .cloned()
+                .collect::<Vec<_>>();
+            if paths.is_empty() {
+                return None;
+            }
+            ordering::normalize_paths(&mut paths);
+            Some(IncursionCommit {
+                origin: commit_origin(&batch.origin_membership, &commit.commit),
+                commit: commit.commit.clone(),
+                subject: commit.subject.clone(),
+                paths,
+            })
+        })
+        .collect()
 }
 
 /// Whether trunk already carried a commit, so this phase received it rather than wrote it.
 fn commit_origin(
-    repository_root: &Path,
-    trunk: Option<&GitObjectId>,
+    origin_membership: &IncursionCommitOriginMembership,
     commit: &GitObjectId,
 ) -> IncursionCommitOrigin {
-    let Some(trunk) = trunk else {
-        return IncursionCommitOrigin::Unknown;
-    };
-    match git::reachability(repository_root, commit, trunk) {
-        Ok(Reachability::Ancestor) => IncursionCommitOrigin::AlreadyOnTrunk,
-        Ok(Reachability::NotAncestor) => IncursionCommitOrigin::PhaseAuthored,
-        Ok(Reachability::ObjectUnknown) | Err(_) => IncursionCommitOrigin::Unknown,
+    match origin_membership {
+        IncursionCommitOriginMembership::Classified(commits_outside_origin_basis)
+            if commits_outside_origin_basis.contains(commit) =>
+        {
+            IncursionCommitOrigin::PhaseAuthored
+        },
+        IncursionCommitOriginMembership::Classified(_) => IncursionCommitOrigin::AlreadyOnTrunk,
+        IncursionCommitOriginMembership::CannotClassifyOrigin => IncursionCommitOrigin::Unknown,
     }
-}
-
-/// Ask git which commits in the phase range touched one path.
-///
-/// One call per entered path rather than a single `--name-status` walk: an incursion
-/// names a handful of paths, and `git log`'s interleaving of a format line with
-/// NUL-terminated names has no parse that is obviously right at a glance.
-fn path_commits(
-    repository_root: &Path,
-    phase_start: &str,
-    path: &ReservationScopePath,
-) -> Result<Vec<(GitObjectId, String)>, DriftFingerprintError> {
-    let range = format!("{phase_start}..{GIT_HEAD_REVISION}");
-    let path = path.to_string();
-    let output = git_output::run_git(
-        repository_root,
-        &[
-            GIT_LOG_COMMAND,
-            GIT_LOG_FORMAT_ARGUMENT,
-            &range,
-            GIT_PATHSPEC_SEPARATOR,
-            &path,
-        ],
-    )?;
-    let text = String::from_utf8(output.stdout)
-        .map_err(|error| DriftFingerprintError::MalformedGitOutput(error.to_string()))?;
-    Ok(text
-        .lines()
-        .filter_map(|line| line.split_once(GIT_FIELD_SEPARATOR))
-        .filter_map(|(commit, subject)| {
-            commit
-                .parse::<GitObjectId>()
-                .ok()
-                .map(|commit| (commit, subject.to_owned()))
-        })
-        .collect())
 }

@@ -7,8 +7,12 @@ pub(super) const GIT_BINARY: &str = "git";
 pub(super) const GIT_CAT_FILE_COMMAND: &str = "cat-file";
 /// The `diff` subcommand.
 pub(super) const GIT_DIFF_COMMAND: &str = "diff";
+/// The `diff-tree` subcommand.
+pub(super) const GIT_DIFF_TREE_COMMAND: &str = "diff-tree";
 /// The `for-each-ref` subcommand.
 pub(super) const GIT_FOR_EACH_REF_COMMAND: &str = "for-each-ref";
+/// The `log` subcommand.
+pub(super) const GIT_LOG_COMMAND: &str = "log";
 /// The `merge-base` subcommand.
 pub(super) const GIT_MERGE_BASE_COMMAND: &str = "merge-base";
 /// The `merge-tree` subcommand.
@@ -43,12 +47,15 @@ pub(super) const GIT_CHERRY_MARK_ARG: &str = "--cherry-mark";
 pub(super) const GIT_COMMON_DIRECTORY_ARG: &str = "--git-common-dir";
 /// Report only the number of selected commits.
 pub(super) const GIT_COUNT_ARG: &str = "--count";
+/// Show a merge path only when its result differs from every parent.
+pub(super) const GIT_DENSE_COMBINED_ARG: &str = "--diff-merges=dense-combined";
 /// Test whether an object can be read without printing it.
 pub(super) const GIT_EXISTS_ARG: &str = "-e";
 /// Follow only the first parent, so a walk stays on one branch's own line.
 pub(super) const GIT_FIRST_PARENT_ARG: &str = "--first-parent";
 /// Continue a revision walk when one supplied object cannot be resolved.
 pub(super) const GIT_IGNORE_MISSING_ARG: &str = "--ignore-missing";
+/// Delimit incursion-log commit fields with NUL and start each record with NUL.
 /// Read NUL-delimited cache entries from standard input.
 pub(super) const GIT_INDEX_INFO_ARG: &str = "--index-info";
 /// Ask `merge-base` to test commit ancestry.
@@ -63,6 +70,8 @@ pub(super) const GIT_MAX_COUNT_ONE_ARG: &str = "--max-count=1";
 pub(super) const GIT_MERGE_BASE_ARG_PREFIX: &str = "--merge-base=";
 /// Print only affected repository paths.
 pub(super) const GIT_NAME_ONLY_ARG: &str = "--name-only";
+/// Print each affected repository path with its change status.
+pub(super) const GIT_NAME_STATUS_ARG: &str = "--name-status";
 /// Print full object ids in raw diff records.
 pub(super) const GIT_NO_ABBREV_ARG: &str = "--no-abbrev";
 /// Print the complete reference name from `for-each-ref`.
@@ -75,6 +84,8 @@ pub(super) const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
 pub(super) const GIT_NO_RENAMES_ARG: &str = "--no-renames";
 /// Terminate each porcelain field with NUL so worktree paths remain verbatim.
 pub(super) const GIT_NUL_TERMINATED_ARG: &str = "-z";
+/// Find one common ancestor across every supplied commit.
+pub(super) const GIT_OCTOPUS_ARG: &str = "--octopus";
 /// Print each selected commit with its direct parents.
 pub(super) const GIT_PARENTS_ARG: &str = "--parents";
 /// Ask `rev-parse` to resolve its path result to an absolute path.
@@ -89,6 +100,8 @@ pub(super) const GIT_POINTS_AT_ARG_PREFIX: &str = "--points-at=";
 pub(super) const GIT_PORCELAIN_ARG: &str = "--porcelain";
 /// Print raw diff records with object modes and ids.
 pub(super) const GIT_RAW_ARG: &str = "--raw";
+/// Recurse into subtrees while comparing tree objects.
+pub(super) const GIT_RECURSIVE_ARG: &str = "-r";
 /// Show entries from the named reflog.
 pub(super) const GIT_REFLOG_SHOW_ARG: &str = "show";
 /// Print only each reflog entry's subject.

@@ -5,6 +5,8 @@
 
 //! End-to-end drift fingerprint, selection, classification, replay, and hook tests.
 
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::fs::File;
 use std::os::unix::fs::PermissionsExt;
@@ -874,6 +876,331 @@ fn a_committed_incursion_names_the_commits_that_introduced_its_paths() {
 }
 
 #[test]
+fn incursion_attribution_treats_pathspec_magic_as_literal_path_text() {
+    let repository = initialized_repository();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "literal-pathspecs");
+    let colon_path = ":held.txt";
+    let glob_path = "held*[name].txt";
+    claim(repository.path(), &format!("file:{colon_path}"), FIRST_RUN);
+    claim(repository.path(), &format!("file:{glob_path}"), FIRST_RUN);
+    let subject_id = claim(&foreign_root, "file:own.txt", SECOND_RUN);
+    fs::write(foreign_root.join(colon_path), "colon path\n").expect("colon path should write");
+    fs::write(foreign_root.join(glob_path), "glob path\n").expect("glob path should write");
+    git(&foreign_root, &["add", "-A"]);
+    git(
+        &foreign_root,
+        &["commit", "--quiet", "-m", "enter literal holder paths"],
+    );
+
+    let reported = run_berth_with_run(
+        &foreign_root,
+        &["drift", "--full", "--reservation", &subject_id, "--json"],
+        SECOND_RUN,
+    );
+    let envelope = json_output(&reported);
+    let commit_paths = envelope["payload"]["data"]["results"]
+        .as_array()
+        .and_then(|results| {
+            results.iter().find_map(|result| {
+                result["effects"].as_array()?.iter().find_map(|effect| {
+                    (effect["kind"] == "incursion")
+                        .then(|| effect["commits"][0]["paths"].as_array())
+                        .flatten()
+                })
+            })
+        })
+        .expect("the incursion commit should list its literal paths");
+
+    assert!(commit_paths.iter().any(|path| path == colon_path));
+    assert!(commit_paths.iter().any(|path| path == glob_path));
+}
+
+#[test]
+fn conflict_resolution_only_path_is_attributed_to_the_merge_commit() {
+    let repository = initialized_repository();
+    fs::write(repository.path().join("conflict.txt"), "base\n")
+        .expect("conflict base should write");
+    git(repository.path(), &["add", "conflict.txt"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "conflict base",
+        ],
+    );
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "dense-merge");
+    claim(repository.path(), "file:held.txt", FIRST_RUN);
+    let subject_id = claim(&foreign_root, "file:own.txt", SECOND_RUN);
+
+    fs::write(repository.path().join("conflict.txt"), "main\n")
+        .expect("main conflict side should write");
+    git(repository.path(), &["add", "conflict.txt"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "main conflict side",
+        ],
+    );
+    fs::write(foreign_root.join("conflict.txt"), "feature\n")
+        .expect("feature conflict side should write");
+    git(&foreign_root, &["add", "conflict.txt"]);
+    git(
+        &foreign_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "feature conflict side",
+        ],
+    );
+    let conflicted = git_output(
+        &foreign_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--no-edit",
+            "main",
+        ],
+    );
+    assert!(!conflicted.status.success());
+    fs::write(foreign_root.join("conflict.txt"), "resolved\n")
+        .expect("conflict resolution should write");
+    fs::write(foreign_root.join("held.txt"), "merge-only path\n")
+        .expect("merge-only held path should write");
+    git(&foreign_root, &["add", "-A"]);
+    git(
+        &foreign_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "resolve conflict with held path",
+        ],
+    );
+    let merge_commit = git_stdout(&foreign_root, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+
+    let reported = run_berth_with_run(
+        &foreign_root,
+        &["drift", "--full", "--reservation", &subject_id, "--json"],
+        SECOND_RUN,
+    );
+    let envelope = json_output(&reported);
+    let commits = envelope["payload"]["data"]["results"]
+        .as_array()
+        .and_then(|results| {
+            results.iter().find_map(|result| {
+                result["effects"]
+                    .as_array()?
+                    .iter()
+                    .find(|effect| effect["kind"] == "incursion")
+                    .and_then(|effect| effect["commits"].as_array())
+            })
+        })
+        .expect("the incursion should carry merge attribution");
+
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0]["commit"], merge_commit);
+    assert_eq!(commits[0]["paths"], serde_json::json!(["held.txt"]));
+}
+
+#[test]
+fn batched_attribution_matches_per_path_history_across_git_path_cases() {
+    let fixture = prepare_differential_attribution_repository();
+    commit_path_encoding_history(&fixture.subject_root);
+    commit_conflict_resolution_only_history(&fixture.trunk_root, &fixture.subject_root);
+    let selected_paths = differential_attribution_paths();
+    let reference = per_path_incursion_attribution(
+        &fixture.subject_root,
+        &fixture.phase_start,
+        &selected_paths,
+    );
+    let reported = run_berth_with_run(
+        &fixture.subject_root,
+        &[
+            "drift",
+            "--full",
+            "--reservation",
+            &fixture.subject_reservation_id,
+            "--json",
+        ],
+        SECOND_RUN,
+    );
+    let envelope = json_output(&reported);
+    assert_eq!(
+        envelope["payload"]["kind"], "drift",
+        "differential drift failed before reporting: {envelope:#}"
+    );
+    let batched = reported_incursion_attribution(&envelope, &fixture.subject_reservation_id);
+
+    assert_eq!(batched, reference);
+    assert!(batched.values().any(|commit| {
+        commit.paths.contains("held/merged.txt") && commit.subject == "side branch held path"
+    }));
+    assert!(batched.values().any(|commit| {
+        commit.paths.contains("held/conflict-only.txt")
+            && commit.subject == "resolve with held path"
+    }));
+}
+
+#[test]
+fn stale_phase_anchor_does_not_suppress_valid_reservation_attribution() {
+    let repository = initialized_repository();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "mixed-anchors");
+    fs::write(foreign_root.join("stale-anchor.txt"), "stale anchor\n")
+        .expect("stale anchor path should write");
+    git(&foreign_root, &["add", "stale-anchor.txt"]);
+    git(
+        &foreign_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "stale phase anchor",
+        ],
+    );
+    let stale_id = claim(&foreign_root, "file:stale-owned.txt", SECOND_RUN);
+    git(
+        &foreign_root,
+        &["-c", "core.hooksPath=/dev/null", "reset", "--hard", "main"],
+    );
+    let valid_id = claim(&foreign_root, "file:valid-owned.txt", SECOND_RUN);
+    claim(repository.path(), "file:held.txt", FIRST_RUN);
+    fs::write(foreign_root.join("held.txt"), "entered holder scope\n")
+        .expect("held path should write");
+    git(&foreign_root, &["add", "held.txt"]);
+    git(
+        &foreign_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "valid anchored incursion",
+        ],
+    );
+    let entering_commit = git_stdout(&foreign_root, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+
+    let reported = post_commit_drift(&foreign_root, &[]);
+    let envelope = json_output(&reported);
+    let results = envelope["payload"]["data"]["results"]
+        .as_array()
+        .expect("mixed-anchor drift should report both reservations");
+    let commits_for = |reservation_id: &str| {
+        results
+            .iter()
+            .find(|result| result["reservation_id"] == reservation_id)
+            .and_then(|result| result["effects"].as_array())
+            .and_then(|effects| effects.iter().find(|effect| effect["kind"] == "incursion"))
+            .and_then(|effect| effect["commits"].as_array())
+            .expect("each mixed-anchor reservation should report its incursion")
+    };
+
+    assert!(commits_for(&stale_id).is_empty());
+    assert_eq!(commits_for(&valid_id)[0]["commit"], entering_commit);
+}
+
+#[test]
+fn mixed_anchor_batch_preserves_nineteen_valid_and_one_independent_history() {
+    const VALID_ANCHOR_COUNT: usize = 19;
+
+    let repository = initialized_repository();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "anchor-matrix");
+    claim(repository.path(), "tree:held", FIRST_RUN);
+    let valid_ids = create_valid_anchor_reservations(&foreign_root, VALID_ANCHOR_COUNT);
+    let independent_id =
+        claim_independent_history_reservation(&foreign_root, repository.path(), "anchor-matrix");
+    let stale_id = claim_stale_anchor_reservation(&foreign_root);
+    let unreadable = claim_unreadable_phase_start_reservation(&foreign_root);
+
+    fs::create_dir_all(foreign_root.join("held")).expect("held directory should exist");
+    fs::write(
+        foreign_root.join("held/entered.txt"),
+        "entered holder scope\n",
+    )
+    .expect("held path should write");
+    git(&foreign_root, &["add", "held/entered.txt"]);
+    git(
+        &foreign_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "anchor matrix incursion",
+        ],
+    );
+    let entering_commit = git_stdout(&foreign_root, &["rev-parse", "HEAD"]);
+
+    let reported = post_commit_drift(&foreign_root, &[]);
+    let envelope = json_output(&reported);
+    let results = envelope["payload"]["data"]["results"]
+        .as_array()
+        .expect("anchor matrix should report every reservation");
+    for reservation_id in valid_ids.iter().chain(std::iter::once(&independent_id)) {
+        let result = results
+            .iter()
+            .find(|result| result["reservation_id"] == reservation_id.as_str())
+            .expect("valid reservation should remain in the report");
+        assert_eq!(
+            result["status"], "changed",
+            "reservation {reservation_id} did not report a changed result: {result:#}"
+        );
+        assert!(
+            result["effects"]
+                .as_array()
+                .is_some_and(|effects| effects.iter().any(|effect| effect["kind"] == "incursion")),
+            "reservation {reservation_id} did not report an incursion: {result:#}"
+        );
+        let commits = result_incursion_commits(results, reservation_id);
+        assert!(
+            commits
+                .iter()
+                .any(|commit| commit["commit"] == entering_commit),
+            "reservation {reservation_id} lost valid attribution: {commits:?}"
+        );
+    }
+    let stale_result = results
+        .iter()
+        .find(|result| result["reservation_id"] == stale_id)
+        .expect("stale reservation should remain in the report");
+    assert!(
+        stale_result["effects"]
+            .as_array()
+            .is_some_and(|effects| effects.iter().any(|effect| effect["kind"] == "incursion")),
+        "stale reservation did not report an incursion: {stale_result:#}"
+    );
+    assert!(result_incursion_commits(results, &stale_id).is_empty());
+    let missing_result = results
+        .iter()
+        .find(|result| result["reservation_id"] == unreadable.reservation_id)
+        .expect("missing-anchor reservation should remain in the report");
+    assert_eq!(missing_result["status"], "phase_start_object_unknown");
+    assert_eq!(missing_result["phase_start"], unreadable.phase_start);
+}
+
+#[test]
 fn an_incursion_from_merged_trunk_work_says_the_phase_did_not_author_it() {
     let repository = initialized_repository();
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "receives-trunk");
@@ -920,6 +1247,61 @@ fn an_incursion_from_merged_trunk_work_says_the_phase_did_not_author_it() {
     );
     assert_eq!(effect["commits"][0]["paths"][0], "held.txt");
     assert_eq!(effect["foreign_reservation_ids"][0], holder_id);
+}
+
+#[test]
+fn unresolved_trunk_keeps_commit_attribution_and_marks_its_origin_unknown() {
+    let repository = initialized_repository();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "missing-trunk");
+    claim(repository.path(), "file:held.txt", FIRST_RUN);
+    let subject_id = claim(&foreign_root, "file:own.txt", SECOND_RUN);
+    fs::write(foreign_root.join("held.txt"), "entered holder scope\n")
+        .expect("held path should write");
+    git(&foreign_root, &["add", "held.txt"]);
+    git(
+        &foreign_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "enter with unresolved trunk",
+        ],
+    );
+    let entering_commit = git_stdout(&foreign_root, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    let configuration_path = foreign_root.join(CONFIGURATION_PATH);
+    let configuration = fs::read_to_string(&configuration_path)
+        .expect("foreign worktree configuration should read");
+    fs::write(
+        configuration_path,
+        configuration.replace("\"main\"", "\"does-not-exist\""),
+    )
+    .expect("foreign worktree configuration should select a missing trunk");
+
+    let reported = run_berth_with_run(
+        &foreign_root,
+        &["drift", "--full", "--reservation", &subject_id, "--json"],
+        SECOND_RUN,
+    );
+    let envelope = json_output(&reported);
+    let commit = envelope["payload"]["data"]["results"]
+        .as_array()
+        .and_then(|results| {
+            results.iter().find_map(|result| {
+                result["effects"]
+                    .as_array()?
+                    .iter()
+                    .find(|effect| effect["kind"] == "incursion")
+                    .map(|effect| &effect["commits"][0])
+            })
+        })
+        .expect("the incursion should retain commit attribution");
+
+    assert_eq!(commit["commit"], entering_commit);
+    assert_eq!(commit["origin"], "unknown");
 }
 
 #[test]
@@ -1367,26 +1749,27 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(full.output.status.success());
     assert_eq!(
         full.fingerprint_commands(),
-        vec!["diff", "diff", "diff", "ls-files"]
+        vec!["diff-tree", "diff", "diff", "ls-files"]
     );
-    assert_no_expensive_or_metadata_command(&full.commands());
+    assert_one_batched_phase_ancestry_command(&full.commands());
 
     let cheap = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(cheap.output.status.success());
     assert_eq!(cheap.fingerprint_commands(), vec!["status", "ls-files"]);
-    assert_no_expensive_or_metadata_command(&cheap.commands());
+    assert_no_phase_ancestry_or_metadata_command(&cheap.commands());
 
     fs::remove_file(fingerprint_cache(repository.path())).expect("fingerprint cache should delete");
     let missing_cache = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(missing_cache.output.status.success());
     assert_eq!(
         missing_cache.fingerprint_commands(),
-        vec!["diff", "diff", "diff", "ls-files"]
+        vec!["diff-tree", "diff", "diff", "ls-files"]
     );
     assert_eq!(
         json_output(&missing_cache.output)["payload"]["data"]["comparison"],
         "full_phase_start_fallback"
     );
+    assert_one_batched_phase_ancestry_command(&missing_cache.commands());
 
     fs::write(fingerprint_cache(repository.path()), "not json")
         .expect("corrupt fingerprint should write");
@@ -1394,8 +1777,9 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(corrupt_cache.output.status.success());
     assert_eq!(
         corrupt_cache.fingerprint_commands(),
-        vec!["diff", "diff", "diff", "ls-files"]
+        vec!["diff-tree", "diff", "diff", "ls-files"]
     );
+    assert_one_batched_phase_ancestry_command(&corrupt_cache.commands());
 }
 
 #[test]
@@ -1637,6 +2021,502 @@ struct TracedDrift {
     _directory: TempDir,
 }
 
+struct DifferentialAttributionRepository {
+    _repository_lifetime:       TempDir,
+    _side_worktree_lifetime:    TempDir,
+    _subject_worktree_lifetime: TempDir,
+    trunk_root:                 PathBuf,
+    subject_root:               PathBuf,
+    phase_start:                String,
+    subject_reservation_id:     String,
+}
+
+fn prepare_differential_attribution_repository() -> DifferentialAttributionRepository {
+    let repository = initialized_repository();
+    let trunk_root = repository.path().to_path_buf();
+    fs::create_dir_all(trunk_root.join("held")).expect("held directory should exist");
+    for (path, contents) in [
+        ("conflict-driver.txt", "base\n"),
+        ("held/deleted.txt", "delete me\n"),
+        ("held/rename-old.txt", "rename me\n"),
+    ] {
+        fs::write(trunk_root.join(path), contents).expect("differential base path should write");
+    }
+    git(&trunk_root, &["add", "-A"]);
+    git(
+        &trunk_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "differential base",
+        ],
+    );
+    let side_worktree_lifetime = tempdir().expect("side worktree parent should exist");
+    let side_root = add_worktree(
+        &trunk_root,
+        side_worktree_lifetime.path(),
+        "differential-side",
+    );
+    let (subject_worktree_lifetime, subject_root) =
+        foreign_worktree(&repository, "differential-subject");
+    claim(&trunk_root, "tree:held", FIRST_RUN);
+    fs::write(subject_root.join("anchor-advance.txt"), "anchor advance\n")
+        .expect("anchor advance should write");
+    git(&subject_root, &["add", "anchor-advance.txt"]);
+    git(
+        &subject_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "advance past side branch point",
+        ],
+    );
+    let phase_start = git_stdout(&subject_root, &["rev-parse", "HEAD"]);
+    let subject_reservation_id = claim(&subject_root, "file:own.txt", SECOND_RUN);
+    fs::write(side_root.join("held/merged.txt"), "merged side work\n")
+        .expect("merged path should write");
+    git(&side_root, &["add", "held/merged.txt"]);
+    git(
+        &side_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "side branch held path",
+        ],
+    );
+    git(
+        &subject_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--quiet",
+            "--no-ff",
+            "--no-edit",
+            "differential-side",
+        ],
+    );
+    DifferentialAttributionRepository {
+        _repository_lifetime: repository,
+        _side_worktree_lifetime: side_worktree_lifetime,
+        _subject_worktree_lifetime: subject_worktree_lifetime,
+        trunk_root,
+        subject_root,
+        phase_start,
+        subject_reservation_id,
+    }
+}
+
+fn commit_path_encoding_history(subject_root: &Path) {
+    for (path, contents) in [
+        ("held/tab\tname.txt", "tab path\n"),
+        ("held/line\nname.txt", "newline path\n"),
+        ("held/café.txt", "non-ASCII path\n"),
+    ] {
+        fs::write(subject_root.join(path), contents).expect("encoded path should write");
+    }
+    git(
+        subject_root,
+        &["mv", "held/rename-old.txt", "held/rename-new.txt"],
+    );
+    fs::remove_file(subject_root.join("held/deleted.txt")).expect("deleted path should remove");
+    git(subject_root, &["add", "-A"]);
+    git(
+        subject_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "path encoding rename and deletion",
+        ],
+    );
+}
+
+fn commit_conflict_resolution_only_history(trunk_root: &Path, subject_root: &Path) {
+    fs::write(trunk_root.join("conflict-driver.txt"), "main side\n")
+        .expect("main conflict side should write");
+    git(trunk_root, &["add", "conflict-driver.txt"]);
+    git(
+        trunk_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "main conflict side",
+        ],
+    );
+    fs::write(subject_root.join("conflict-driver.txt"), "subject side\n")
+        .expect("subject conflict side should write");
+    git(subject_root, &["add", "conflict-driver.txt"]);
+    git(
+        subject_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "subject conflict side",
+        ],
+    );
+    let conflicted = git_output(
+        subject_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "main",
+        ],
+    );
+    assert!(!conflicted.status.success());
+    fs::write(subject_root.join("conflict-driver.txt"), "resolved\n")
+        .expect("conflict resolution should write");
+    fs::write(
+        subject_root.join("held/conflict-only.txt"),
+        "merge result\n",
+    )
+    .expect("merge-only held path should write");
+    git(subject_root, &["add", "-A"]);
+    git(
+        subject_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "resolve with held path",
+        ],
+    );
+}
+
+fn differential_attribution_paths() -> Vec<String> {
+    [
+        "held/café.txt",
+        "held/conflict-only.txt",
+        "held/deleted.txt",
+        "held/line\nname.txt",
+        "held/merged.txt",
+        "held/rename-new.txt",
+        "held/rename-old.txt",
+        "held/tab\tname.txt",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+struct UnreadablePhaseStartReservation {
+    reservation_id: String,
+    phase_start:    String,
+}
+
+fn create_valid_anchor_reservations(
+    repository_root: &Path,
+    reservation_count: usize,
+) -> Vec<String> {
+    (0..reservation_count)
+        .map(|index| {
+            let path = format!("valid-{index}.txt");
+            let reservation_id = claim(repository_root, &format!("file:{path}"), SECOND_RUN);
+            fs::write(repository_root.join(&path), format!("valid {index}\n"))
+                .expect("valid phase path should write");
+            git(repository_root, &["add", &path]);
+            git(
+                repository_root,
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    &format!("valid phase {index}"),
+                ],
+            );
+            reservation_id
+        })
+        .collect()
+}
+
+fn claim_independent_history_reservation(
+    repository_root: &Path,
+    configuration_source_root: &Path,
+    return_branch: &str,
+) -> String {
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "switch",
+            "--quiet",
+            "--orphan",
+            "independent-history",
+        ],
+    );
+    git(
+        repository_root,
+        &["-c", "core.hooksPath=/dev/null", "clean", "-d", "-f", "-x"],
+    );
+    fs::create_dir_all(repository_root.join(".claude/config"))
+        .expect("independent configuration directory should exist");
+    fs::copy(
+        configuration_source_root.join(CONFIGURATION_PATH),
+        repository_root.join(CONFIGURATION_PATH),
+    )
+    .expect("independent history should copy berth configuration");
+    fs::write(
+        repository_root.join("independent.txt"),
+        "independent root\n",
+    )
+    .expect("independent root should write");
+    git(repository_root, &["add", "-A"]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "independent root",
+        ],
+    );
+    let reservation_id = claim(repository_root, "file:independent-owned.txt", SECOND_RUN);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "switch",
+            "--quiet",
+            return_branch,
+        ],
+    );
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--quiet",
+            "--no-ff",
+            "--no-edit",
+            "--allow-unrelated-histories",
+            "independent-history",
+        ],
+    );
+    reservation_id
+}
+
+fn claim_stale_anchor_reservation(repository_root: &Path) -> String {
+    let stale_parent = git_stdout(repository_root, &["rev-parse", "HEAD"]);
+    fs::write(repository_root.join("stale-anchor.txt"), "stale\n")
+        .expect("stale anchor path should write");
+    git(repository_root, &["add", "stale-anchor.txt"]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "stale anchor",
+        ],
+    );
+    let stale_phase_start = git_stdout(repository_root, &["rev-parse", "HEAD"]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "update-ref",
+            "refs/test/cargo-berth-stale-anchor",
+            &stale_phase_start,
+        ],
+    );
+    let reservation_id = claim(repository_root, "file:stale-owned.txt", SECOND_RUN);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            "--quiet",
+            &stale_parent,
+        ],
+    );
+    reservation_id
+}
+
+fn claim_unreadable_phase_start_reservation(
+    repository_root: &Path,
+) -> UnreadablePhaseStartReservation {
+    let phase_start_parent = git_stdout(repository_root, &["rev-parse", "HEAD"]);
+    fs::write(repository_root.join("missing-anchor.txt"), "missing\n")
+        .expect("missing anchor path should write");
+    git(repository_root, &["add", "missing-anchor.txt"]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "missing anchor",
+        ],
+    );
+    let phase_start = git_stdout(repository_root, &["rev-parse", "HEAD"]);
+    let reservation_id = claim(repository_root, "file:missing-owned.txt", SECOND_RUN);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            "--quiet",
+            &phase_start_parent,
+        ],
+    );
+    delete_reservation_retention_and_prune(repository_root, &reservation_id);
+    let object_status = git_output(
+        repository_root,
+        &["cat-file", "-e", &format!("{phase_start}^{{commit}}")],
+    );
+    assert!(!object_status.status.success());
+    UnreadablePhaseStartReservation {
+        reservation_id,
+        phase_start,
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ReferenceIncursionCommit {
+    subject: String,
+    paths:   BTreeSet<String>,
+}
+
+fn per_path_incursion_attribution(
+    repository_root: &Path,
+    phase_start: &str,
+    paths: &[String],
+) -> BTreeMap<String, ReferenceIncursionCommit> {
+    let range = format!("{phase_start}..HEAD");
+    let mut commits = BTreeMap::new();
+    for path in paths {
+        let literal_path = format!(":(top,literal){path}");
+        let output = git_output(
+            repository_root,
+            &["log", "--format=%H%x1f%s", &range, "--", &literal_path],
+        );
+        assert!(
+            output.status.success(),
+            "per-path reference failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).expect("per-path log should be UTF-8");
+        for line in text.lines() {
+            let (commit, subject) = line
+                .split_once('\u{1f}')
+                .expect("per-path log should delimit commit and subject");
+            let entry =
+                commits
+                    .entry(commit.to_owned())
+                    .or_insert_with(|| ReferenceIncursionCommit {
+                        subject: subject.to_owned(),
+                        paths:   BTreeSet::new(),
+                    });
+            assert_eq!(entry.subject, subject);
+            entry.paths.insert(path.clone());
+        }
+    }
+    commits
+}
+
+fn reported_incursion_attribution(
+    envelope: &serde_json::Value,
+    reservation_id: &str,
+) -> BTreeMap<String, ReferenceIncursionCommit> {
+    let results = envelope["payload"]["data"]["results"]
+        .as_array()
+        .expect("drift should report reservation results");
+    result_incursion_commits(results, reservation_id)
+        .iter()
+        .map(|commit| {
+            let object_id = commit["commit"]
+                .as_str()
+                .expect("reported commit should name an object")
+                .to_owned();
+            let subject = commit["subject"]
+                .as_str()
+                .expect("reported commit should name a subject")
+                .to_owned();
+            let paths = commit["paths"]
+                .as_array()
+                .expect("reported commit should name paths")
+                .iter()
+                .map(|path| {
+                    path.as_str()
+                        .expect("reported commit path should be text")
+                        .to_owned()
+                })
+                .collect();
+            (object_id, ReferenceIncursionCommit { subject, paths })
+        })
+        .collect()
+}
+
+fn result_incursion_commits<'results>(
+    results: &'results [serde_json::Value],
+    reservation_id: &str,
+) -> &'results [serde_json::Value] {
+    results
+        .iter()
+        .find(|result| result["reservation_id"] == reservation_id)
+        .and_then(|result| result["effects"].as_array())
+        .and_then(|effects| effects.iter().find(|effect| effect["kind"] == "incursion"))
+        .and_then(|effect| effect["commits"].as_array())
+        .map(Vec::as_slice)
+        .expect("reservation should report incursion commits")
+}
+
+fn delete_reservation_retention_and_prune(repository_root: &Path, reservation_id: &str) {
+    let retention_ref = format!("refs/cargo-berth/reservations/{reservation_id}");
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "update-ref",
+            "-d",
+            &retention_ref,
+        ],
+    );
+    git(
+        repository_root,
+        &["reflog", "expire", "--expire=now", "--all"],
+    );
+    git(repository_root, &["gc", "--prune=now"]);
+}
+
 impl TracedDrift {
     fn commands(&self) -> Vec<String> {
         fs::read_to_string(&self.trace_path)
@@ -1649,7 +2529,12 @@ impl TracedDrift {
     fn fingerprint_commands(&self) -> Vec<String> {
         self.commands()
             .into_iter()
-            .filter(|command| matches!(command.as_str(), "diff" | "status" | "ls-files"))
+            .filter(|command| {
+                matches!(
+                    command.as_str(),
+                    "diff" | "diff-tree" | "status" | "ls-files"
+                )
+            })
             .collect()
     }
 }
@@ -1804,7 +2689,18 @@ fn traced_drift(repository_root: &Path, arguments: &[&str]) -> TracedDrift {
     }
 }
 
-fn assert_no_expensive_or_metadata_command(commands: &[String]) {
+fn assert_one_batched_phase_ancestry_command(commands: &[String]) {
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.as_str() == "rev-list")
+            .count(),
+        1
+    );
+    assert!(!commands.iter().any(|command| command == "metadata"));
+}
+
+fn assert_no_phase_ancestry_or_metadata_command(commands: &[String]) {
     assert!(!commands.iter().any(|command| command == "rev-list"));
     assert!(!commands.iter().any(|command| command == "metadata"));
 }

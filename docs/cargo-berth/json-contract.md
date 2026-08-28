@@ -265,6 +265,18 @@ Journal, claim, and widen payloads use
 "existing_answers_cover_every_overlap"` for
 `RecordedAnswer::ExistingAnswersCoverEveryOverlap`.
 
+## Drift outcomes
+
+A drift response carries `payload.kind = "drift"`. Each
+`payload.data.results[]` entry uses `status = "unchanged"`, `changed`, or
+`phase_start_object_unknown`. The unreadable-phase-start form carries
+`reservation_id` and `phase_start`, and means Git could not read the baseline
+required for that reservation's full comparison. It is a blocking result: when
+no higher-priority drift status is present, the envelope has
+`status = "object_unknown"` and `exit_code = 1`. It is never represented as an
+empty committed-path set, does not append a drift consequence to the journal,
+and does not publish a fingerprint cache entry.
+
 ## Resolve incursion outcomes
 
 A one-incident `resolve` response carries `payload.kind = "resolve"`. Its

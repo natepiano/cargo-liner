@@ -83,7 +83,7 @@ impl DriftReport {
         ) || self
             .results
             .iter()
-            .any(|result| matches!(result, ReservationDriftResult::Changed { .. }))
+            .any(|result| !matches!(result, ReservationDriftResult::Unchanged { .. }))
     }
 
     /// Return every reservation selected by this comparison.
@@ -179,6 +179,13 @@ pub(crate) enum ReservationDriftResult {
         /// The reservation compared with the observed paths.
         reservation_id: ReservationId,
     },
+    /// Git could not read the phase-start object required for a safe comparison.
+    PhaseStartObjectUnknown {
+        /// The reservation whose baseline could not be read.
+        reservation_id: ReservationId,
+        /// The unreadable phase-start object.
+        phase_start:    GitObjectId,
+    },
     /// At least one durable or blocking consequence was found.
     Changed {
         /// The reservation receiving these consequences.
@@ -191,15 +198,16 @@ pub(crate) enum ReservationDriftResult {
 impl ReservationDriftResult {
     const fn reservation_id(&self) -> ReservationId {
         match self {
-            Self::Unchanged { reservation_id } | Self::Changed { reservation_id, .. } => {
-                *reservation_id
-            },
+            Self::Unchanged { reservation_id }
+            | Self::PhaseStartObjectUnknown { reservation_id, .. }
+            | Self::Changed { reservation_id, .. } => *reservation_id,
         }
     }
 
     fn blocks(&self) -> bool {
         match self {
             Self::Unchanged { .. } => false,
+            Self::PhaseStartObjectUnknown { .. } => true,
             Self::Changed { effects, .. } => effects.as_slice().iter().any(|effect| {
                 matches!(
                     effect,
@@ -211,7 +219,7 @@ impl ReservationDriftResult {
 
     fn blocking_reservation_ids(&self) -> Vec<ReservationId> {
         match self {
-            Self::Unchanged { .. } => Vec::new(),
+            Self::Unchanged { .. } | Self::PhaseStartObjectUnknown { .. } => Vec::new(),
             Self::Changed { effects, .. } => effects
                 .as_slice()
                 .iter()

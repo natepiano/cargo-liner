@@ -1120,6 +1120,12 @@ impl OutputEnvelope {
                 matches!(effect, DriftEffect::Widened { .. })
             })
         });
+        let has_unknown_phase_start = report.results.iter().any(|result| {
+            matches!(
+                result,
+                ReservationDriftResult::PhaseStartObjectUnknown { .. }
+            )
+        });
         let status = if has_incursion
             || matches!(
                 &report.path_attribution,
@@ -1141,6 +1147,8 @@ impl OutputEnvelope {
                 | DriftPathAttributionOutcome::CoordinationRunRequired { .. }
         ) {
             OutputStatus::DriftAttributionRequired
+        } else if has_unknown_phase_start {
+            OutputStatus::ObjectUnknown
         } else {
             OutputStatus::Clear
         };
@@ -1774,7 +1782,8 @@ fn result_has_effect(
     matches_effect: impl Fn(&DriftEffect) -> bool,
 ) -> bool {
     match result {
-        ReservationDriftResult::Unchanged { .. } => false,
+        ReservationDriftResult::Unchanged { .. }
+        | ReservationDriftResult::PhaseStartObjectUnknown { .. } => false,
         ReservationDriftResult::Changed { effects, .. } => {
             effects.as_slice().iter().any(matches_effect)
         },
@@ -1834,12 +1843,25 @@ fn drift_message(report: &DriftReport) -> String {
     }
     let mut message = drift_path_attribution_message(&report.path_attribution);
     for result in &report.results {
-        let ReservationDriftResult::Changed {
-            reservation_id,
-            effects,
-        } = result
-        else {
-            continue;
+        let (reservation_id, effects) = match result {
+            ReservationDriftResult::Unchanged { .. } => continue,
+            ReservationDriftResult::PhaseStartObjectUnknown {
+                reservation_id,
+                phase_start,
+            } => {
+                if !message.is_empty() {
+                    message.push(' ');
+                }
+                let _ = write!(
+                    message,
+                    "Reservation {reservation_id} could not be compared because git could not read phase-start object {phase_start}. Restore that object before using this drift result."
+                );
+                continue;
+            },
+            ReservationDriftResult::Changed {
+                reservation_id,
+                effects,
+            } => (reservation_id, effects),
         };
         for effect in effects.as_slice() {
             if !message.is_empty() {
