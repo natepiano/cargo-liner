@@ -192,3 +192,25 @@ what a favorite is, where the file lives
 what happens to entries a newer version wrote that this one cannot read, and the
 fact that saving the same parameters twice updates the existing row rather than
 adding a second.
+
+## The overlay does not show which favorite is the one running
+
+Opening the favorites table while the attract screen is running a set of
+parameters that exactly matches a saved favorite gives no sign of it. The table
+shows four rows and the cursor sits wherever it was left, so the one favorite
+that describes what is on screen right now looks like any other.
+
+Mark it with a `*` at the left of its row.
+
+The row already opens with a two-column marker: `rendered_line` writes `"▸ "`
+for the selected row and `"  "` for every other one. Currency is independent of
+selection — the running favorite may or may not be the one under the cursor, and
+both need to be visible at once — so the two states want their own columns rather
+than a combined glyph. Widen the marker to hold selection in the first column and
+currency in the second, and compare each row's `settings` against the attract
+screen's current settings to decide it, the same equality `FavoriteRows::push`
+already uses to recognize a repeat save.
+
+Worth deciding at the same time whether the mark survives an edit: once the user
+steers away with an arrow key the settings no longer match, and the mark should
+clear rather than going stale.
