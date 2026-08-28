@@ -23,10 +23,10 @@
 //! draws the desktop itself with a band of coarseness sweeping across
 //! it.
 //!
-//! Every entry point answers [`None`] or draws nothing where the
-//! platform has no capture backend or the Screen Recording permission
-//! was refused. This is decoration, and a refusal is a case for
-//! drawing nothing rather than for an error.
+//! A monitor keeps its last successful drawing after a capture failure
+//! and reports the latest attempt through [`BackdropStatus`]. This is
+//! decoration, so a failure still leaves renderers free to draw nothing
+//! or reuse the last good backdrop.
 
 mod band;
 mod constants;
@@ -42,9 +42,11 @@ pub use band::BandFraying;
 pub use band::BandSettings;
 pub use band::TravelingBand;
 use crossterm::terminal;
+pub use desktop::CaptureFailure;
 use desktop::Desktop;
 use desktop::Placement;
 pub use monitor::BackdropMonitor;
+pub use monitor::BackdropStatus;
 pub use pixels::PixelFill;
 pub use pixels::PixelResolve;
 pub use pixels::PixelSettings;

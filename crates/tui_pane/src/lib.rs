@@ -37,11 +37,15 @@ pub use backdrop::Backdrop;
 #[cfg(feature = "backdrop")]
 pub use backdrop::BackdropMonitor;
 #[cfg(feature = "backdrop")]
+pub use backdrop::BackdropStatus;
+#[cfg(feature = "backdrop")]
 pub use backdrop::BandDirection;
 #[cfg(feature = "backdrop")]
 pub use backdrop::BandFraying;
 #[cfg(feature = "backdrop")]
 pub use backdrop::BandSettings;
+#[cfg(feature = "backdrop")]
+pub use backdrop::CaptureFailure;
 #[cfg(feature = "backdrop")]
 pub use backdrop::DriftingText;
 #[cfg(feature = "backdrop")]

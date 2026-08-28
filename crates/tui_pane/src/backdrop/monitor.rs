@@ -40,11 +40,43 @@ use super::constants::IDENTIFY_MARKER;
 use super::constants::IDENTIFY_PASSES;
 use super::constants::IDENTIFY_RETRY;
 use super::desktop;
+use super::desktop::CaptureFailure;
 use super::desktop::Desktop;
 use super::desktop::Frame;
 use super::desktop::Metrics;
 use super::desktop::Placement;
 use super::query;
+
+/// The result of the capture worker's latest completed attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackdropStatus {
+    /// No capture attempt has returned yet.
+    WaitingForFirstResult,
+    /// The latest capture attempt produced a usable desktop.
+    Ready,
+    /// The latest capture attempt failed at the reported stage.
+    Failed(CaptureFailure),
+}
+
+/// The most recent desktop known to have captured successfully.
+#[derive(Debug, Default)]
+enum LastSuccessfulDesktop {
+    /// No capture has succeeded yet.
+    #[default]
+    WaitingForFirstSuccess,
+    /// The desktop produced by the most recent successful attempt.
+    Available(Desktop),
+}
+
+impl LastSuccessfulDesktop {
+    /// The successful desktop, where one has arrived.
+    const fn available(&self) -> Option<&Desktop> {
+        match self {
+            Self::WaitingForFirstSuccess => None,
+            Self::Available(desktop) => Some(desktop),
+        }
+    }
+}
 
 /// A backdrop kept up to date on two worker threads.
 ///
@@ -57,39 +89,41 @@ use super::query;
 #[derive(Debug)]
 pub struct BackdropMonitor {
     /// What the capture worker should capture for next.
-    requests:     Sender<Request>,
-    /// Displays the capture worker has finished capturing and reducing.
-    captures:     Receiver<Desktop>,
+    requests:                Sender<Request>,
+    /// Outcomes the capture worker has finished producing.
+    captures:                Receiver<Result<Desktop, CaptureFailure>>,
     /// Windows the position worker should look up next.
-    watches:      Sender<u32>,
+    watches:                 Sender<u32>,
     /// Where the position worker last found the window it was given, or
     /// [`None`] where the window server would not describe it.
-    frames:       Receiver<Option<Frame>>,
-    /// The newest capture that has arrived.
-    desktop:      Option<Desktop>,
+    frames:                  Receiver<Option<Frame>>,
+    /// The newest desktop that captured successfully, retained across failures.
+    last_successful_desktop: LastSuccessfulDesktop,
+    /// The outcome of the newest completed capture attempt.
+    status:                  BackdropStatus,
     /// The newest window frame that has arrived, a frame or two behind
     /// where the window is now.
-    frame:        Option<Frame>,
+    frame:                   Option<Frame>,
     /// The area of the newest capture the caller is drawing over, read
     /// afresh every frame.
-    current:      Option<Backdrop>,
+    current:                 Option<Backdrop>,
     /// When the last capture request went out, whether or not it was
     /// answered.
-    requested_at: Option<Instant>,
+    requested_at:            Option<Instant>,
     /// Where the window stood on the previous frame, which is how a
     /// window being dragged is told from one standing still.
-    placement:    Option<Placement>,
+    placement:               Option<Placement>,
     /// The window this app was found to be drawn in, once
     /// [`identify`](Self::identify) has settled it.
-    pinned:       Option<u32>,
+    pinned:                  Option<u32>,
     /// How many passes at settling on a window have been made, so that
     /// a terminal which will not wear a title is given up on rather
     /// than asked once a frame for the length of the run.
-    attempts:     u32,
+    attempts:                u32,
     /// When the last pass was made, which is what paces them: a title
     /// needs time to reach the emulator and the window server, and
     /// asking again inside that time only loses the same race twice.
-    attempted_at: Option<Instant>,
+    attempted_at:            Option<Instant>,
     /// Whether the emulator has been asked outright where its window
     /// stands.
     ///
@@ -99,7 +133,7 @@ pub struct BackdropMonitor {
     /// nothing: it is flushed, so the emulator has it in hand before
     /// the wait starts, and a terminal that did not answer it then
     /// does not know it.
-    asked:        bool,
+    asked:                   bool,
     /// What every window was titled before this app's own put the
     /// marker on, so that the window found wearing it can be given its
     /// title back.
@@ -107,7 +141,7 @@ pub struct BackdropMonitor {
     /// Read once, on the pass that sets the marker, and kept because
     /// the marker outlives that pass -- see
     /// [`identify`](Self::identify).
-    titles:       Option<Vec<(u32, Option<String>)>>,
+    titles:                  Option<Vec<(u32, Option<String>)>>,
 }
 
 /// One capture, as the worker is asked for it.
@@ -132,8 +166,8 @@ impl BackdropMonitor {
         let (requests, incoming) = crossbeam_channel::bounded(1);
         let (outgoing, captures) = crossbeam_channel::bounded(1);
         // A failed spawn drops `outgoing` with the unrun closure, which
-        // leaves `captures` disconnected and every `current` answering
-        // `None` -- the same as a platform with no capture backend.
+        // leaves `captures` disconnected and the status waiting for its
+        // first result, while every `current` answers `None`.
         drop(
             thread::Builder::new()
                 .name("backdrop-capture".to_string())
@@ -154,7 +188,8 @@ impl BackdropMonitor {
             captures,
             watches,
             frames,
-            desktop: None,
+            last_successful_desktop: LastSuccessfulDesktop::default(),
+            status: BackdropStatus::WaitingForFirstResult,
             frame: None,
             current: None,
             requested_at: None,
@@ -294,8 +329,14 @@ impl BackdropMonitor {
     /// whatever is due next. Never blocks, and never calls the window
     /// server itself.
     pub fn refresh(&mut self, area: Rect) {
-        while let Ok(desktop) = self.captures.try_recv() {
-            self.desktop = Some(desktop);
+        while let Ok(outcome) = self.captures.try_recv() {
+            match outcome {
+                Ok(desktop) => {
+                    self.last_successful_desktop = LastSuccessfulDesktop::Available(desktop);
+                    self.status = BackdropStatus::Ready;
+                },
+                Err(failure) => self.status = BackdropStatus::Failed(failure),
+            }
         }
         while let Ok(frame) = self.frames.try_recv() {
             self.frame = frame;
@@ -304,18 +345,24 @@ impl BackdropMonitor {
         // means the position worker is still on the last ask -- which
         // is what a capture in flight ahead of it leaves -- and the
         // frame already in hand carries this frame instead.
-        if let Some(window) = self.desktop.as_ref().map(Desktop::window) {
+        if let Some(window) = self
+            .last_successful_desktop
+            .available()
+            .map(Desktop::window)
+        {
             let _ = self.watches.try_send(window);
         }
         let metrics = Metrics::read();
         // A capture whose placement cannot be read is one whose window
         // has closed or moved to another display, and either way a
         // fresh one is what answers.
-        let placement = match (self.desktop.as_ref(), self.frame) {
+        let placement = match (self.last_successful_desktop.available(), self.frame) {
             (Some(desktop), Some(frame)) => desktop.placement(frame),
             _ => None,
         };
-        if let (Some(desktop), Some(placement)) = (self.desktop.as_ref(), placement) {
+        if let (Some(desktop), Some(placement)) =
+            (self.last_successful_desktop.available(), placement)
+        {
             self.current = Some(Backdrop::read(desktop, placement, area));
         }
         // A window that has moved since the last frame is one being
@@ -331,8 +378,8 @@ impl BackdropMonitor {
         self.placement = placement;
         let usable = placement.is_some()
             && self
-                .desktop
-                .as_ref()
+                .last_successful_desktop
+                .available()
                 .is_some_and(|desktop| Some(desktop.metrics()) == metrics);
         let waited = self.requested_at.map_or(CAPTURE_REFRESH, |at| at.elapsed());
         // A capture that cannot be used is worth asking to replace
@@ -361,17 +408,21 @@ impl BackdropMonitor {
     /// on its way.
     #[must_use]
     pub const fn current(&self) -> Option<&Backdrop> { self.current.as_ref() }
+
+    /// The result of the latest capture attempt completed by the worker.
+    #[must_use]
+    pub const fn status(&self) -> BackdropStatus { self.status }
 }
 
 /// Worker loop: capture the display for each cell size asked for and
 /// send the result back. Exits when the monitor drops and the request
 /// channel disconnects.
-fn capture_loop(requests: &Receiver<Request>, captures: &Sender<Desktop>) {
+fn capture_loop(requests: &Receiver<Request>, captures: &Sender<Result<Desktop, CaptureFailure>>) {
     while let Ok(request) = requests.recv() {
-        let Some(desktop) = Desktop::capture(request.metrics, request.window) else {
-            continue;
-        };
-        if captures.send(desktop).is_err() {
+        if captures
+            .send(Desktop::capture(request.metrics, request.window))
+            .is_err()
+        {
             break;
         }
     }

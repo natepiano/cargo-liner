@@ -25,6 +25,41 @@ use std::fmt::Formatter;
 use crossterm::terminal;
 use ratatui::style::Color;
 
+/// Why an attempt to capture the desktop did not produce a new image.
+///
+/// The failure records only the stage that stopped the attempt so it
+/// remains cheap to send from the capture worker and retain as monitor
+/// state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureFailure {
+    /// This platform has no desktop-capture backend.
+    UnsupportedPlatform,
+    /// The shareable-content query failed and this process lacks Screen Recording access.
+    PermissionDenied,
+    /// `ScreenCaptureKit` could not list the shareable displays and windows.
+    ShareableContentQueryFailed,
+    /// No window could be matched to the terminal running the app.
+    TerminalWindowNotFound,
+    /// No display could be matched to the selected terminal window.
+    DisplayNotFound,
+    /// `ScreenCaptureKit` could not capture the selected display.
+    ScreenshotCaptureFailed,
+    /// The captured image could not expose its RGBA pixel bytes.
+    PixelExtractionFailed,
+    /// The captured pixels could not be reduced to terminal-cell colors.
+    ImageReductionFailed,
+}
+
+impl CaptureFailure {
+    /// Replace an underlying stage error with this compact classification.
+    fn classify_result<T, E>(self, result: Result<T, E>) -> Result<T, Self> {
+        result.map_err(|_| self)
+    }
+
+    /// Require a stage to have produced its value, classifying absence as this failure.
+    fn classify_option<T>(self, value: Option<T>) -> Result<T, Self> { value.ok_or(self) }
+}
+
 /// What the terminal reports about its own grid.
 ///
 /// A capture is reduced at the cell size this gives, so a change to any
@@ -146,11 +181,9 @@ impl Desktop {
     /// Capture the display this terminal is on and reduce it to cells
     /// of the size `metrics` describes.
     ///
-    /// [`None`] where the platform has no capture backend, where the
-    /// Screen Recording permission was refused, or where this terminal
-    /// has no window the window server will describe. Every one of
-    /// those is a case for drawing nothing rather than for an error:
-    /// the animation this feeds is decoration.
+    /// The failure identifies the capture stage that could not produce
+    /// a desktop. The animation remains decoration, so callers may keep
+    /// drawing the last successful capture while exposing that status.
     /// `pinned` is the window this app has been found to be drawn in,
     /// where [`window_titled`] settled it. Without one the window is
     /// picked by size alone, which cannot tell two windows of the same
@@ -163,7 +196,7 @@ impl Desktop {
                   macOS module this delegates to calls the window server"
         )
     )]
-    pub(super) fn capture(metrics: Metrics, pinned: Option<u32>) -> Option<Self> {
+    pub(super) fn capture(metrics: Metrics, pinned: Option<u32>) -> Result<Self, CaptureFailure> {
         platform::capture(metrics, pinned)
     }
 
@@ -360,6 +393,7 @@ mod platform {
     use objc2_core_graphics::CGDisplayBounds;
     use objc2_core_graphics::CGDisplayCopyDisplayMode;
     use objc2_core_graphics::CGDisplayMode;
+    use objc2_core_graphics::CGPreflightScreenCaptureAccess;
     use objc2_core_graphics::CGRectMakeWithDictionaryRepresentation;
     use objc2_core_graphics::CGWindowListCopyWindowInfo;
     use objc2_core_graphics::CGWindowListOption;
@@ -386,6 +420,7 @@ mod platform {
     use sysinfo::ProcessesToUpdate;
     use sysinfo::System;
 
+    use super::CaptureFailure;
     use super::Desktop;
     use super::Frame;
     use super::Metrics;
@@ -405,9 +440,37 @@ mod platform {
     /// Where the blue channel sits in the captured RGBA pixel.
     const BLUE: usize = 2;
 
+    /// Whether macOS has granted this process Screen Recording access.
+    fn screen_capture_access_is_granted() -> bool { CGPreflightScreenCaptureAccess() }
+
+    /// Classify a failed shareable-content query from the process's access state.
+    const fn shareable_content_failure(access_granted: bool) -> CaptureFailure {
+        if access_granted {
+            CaptureFailure::ShareableContentQueryFailed
+        } else {
+            CaptureFailure::PermissionDenied
+        }
+    }
+
+    /// Keep the first window for each id while preserving window-server order.
+    fn deduplicate_windows_by_id<T>(
+        windows: impl IntoIterator<Item = T>,
+        mut window_id: impl FnMut(&T) -> u32,
+    ) -> Vec<T> {
+        let mut seen = HashSet::new();
+        windows
+            .into_iter()
+            .filter(|window| seen.insert(window_id(window)))
+            .collect()
+    }
+
     /// See [`Desktop::capture`].
-    pub(super) fn capture(metrics: Metrics, pinned: Option<u32>) -> Option<Desktop> {
-        let content = SCShareableContent::get().ok()?;
+    pub(super) fn capture(
+        metrics: Metrics,
+        pinned: Option<u32>,
+    ) -> Result<Desktop, CaptureFailure> {
+        let content = SCShareableContent::get()
+            .map_err(|_| shareable_content_failure(screen_capture_access_is_granted()))?;
         let windows = content.windows();
         let displays = content.displays();
         let terminal_windows = terminal_windows(&windows);
@@ -425,12 +488,15 @@ mod platform {
         //
         // Falling back to size is for the run where the marker title
         // never took, and for the window closed since it did.
-        let chosen = pinned
-            .and_then(|pinned| windows.iter().find(|window| window.window_id() == pinned))
-            .or_else(|| frontmost_window(&terminal_windows, &displays, metrics.text_area))?;
+        let chosen = CaptureFailure::TerminalWindowNotFound.classify_option(
+            pinned
+                .and_then(|pinned| windows.iter().find(|window| window.window_id() == pinned))
+                .or_else(|| frontmost_window(&terminal_windows, &displays, metrics.text_area)),
+        )?;
         let window = chosen.window_id();
 
-        let display = display_under(&displays, chosen.frame())?;
+        let display = CaptureFailure::DisplayNotFound
+            .classify_option(display_under(&displays, chosen.frame()))?;
         let display_frame = display_bounds(display);
         // The capture is asked for at the display's own point size and
         // comes back at it, so one cell in points serves both the grid
@@ -465,14 +531,14 @@ mod platform {
             .owning_application()
             .map(|application| application.process_id())
             .map_or_else(Vec::new, |owner| owned_by(&windows, |pid| pid == owner));
-        let excluded: Vec<&SCWindow> = owned
-            .into_iter()
-            .chain(
+        let excluded = deduplicate_windows_by_id(
+            owned.into_iter().chain(
                 windows
                     .iter()
                     .filter(|window| above.contains(&window.window_id())),
-            )
-            .collect();
+            ),
+            |window| window.window_id(),
+        );
         let filter = SCContentFilter::create()
             .with_display(display)
             .with_excluding_windows(&excluded)
@@ -495,12 +561,11 @@ mod platform {
             .with_width(image.0)
             .with_height(image.1);
 
-        let captured = SCScreenshotManager::capture_image(&filter, &configuration).ok()?;
-        let pixels = captured.rgba_data().ok()?;
-        let columns = whole_cells(f64::from(image.0) / cell.0)?;
-        let rows = whole_cells(f64::from(image.1) / cell.1)?;
-        let colors = reduce(&pixels, image, (columns, rows))?;
-        Some(Desktop {
+        let captured = CaptureFailure::ScreenshotCaptureFailed
+            .classify_result(SCScreenshotManager::capture_image(&filter, &configuration))?;
+        let pixels = CaptureFailure::PixelExtractionFailed.classify_result(captured.rgba_data())?;
+        let (columns, rows, colors) = reduce_capture(&pixels, image, cell)?;
+        Ok(Desktop {
             window,
             metrics,
             origin: (display_frame.origin.x, display_frame.origin.y),
@@ -819,6 +884,24 @@ mod platform {
         u16::try_from(cell_index(cells.ceil())?)
             .ok()
             .filter(|count| *count > 0)
+    }
+
+    /// Reduce captured RGBA pixels to the terminal-cell grid implied by `image` and `cell`.
+    fn reduce_capture(
+        pixels: &[u8],
+        image: (u32, u32),
+        cell: (f64, f64),
+    ) -> Result<(u16, u16, Vec<Color>), CaptureFailure> {
+        let columns = CaptureFailure::ImageReductionFailed
+            .classify_option(whole_cells(f64::from(image.0) / cell.0))?;
+        let rows = CaptureFailure::ImageReductionFailed
+            .classify_option(whole_cells(f64::from(image.1) / cell.1))?;
+        let colors = CaptureFailure::ImageReductionFailed.classify_option(reduce(
+            pixels,
+            image,
+            (columns, rows),
+        ))?;
+        Ok((columns, rows, colors))
     }
 
     /// Average each cell's share of the captured display down to the one
@@ -1290,8 +1373,14 @@ mod platform {
         reason = "tests should panic on unexpected values"
     )]
     mod tests {
+        use ratatui::style::Color;
+
+        use super::CaptureFailure;
+        use super::deduplicate_windows_by_id;
         use super::folded;
         use super::names_agree;
+        use super::reduce_capture;
+        use super::shareable_content_failure;
 
         /// The three names iTerm2 answers to, as
         /// [`named_emulator_windows`](super::named_emulator_windows)
@@ -1302,6 +1391,62 @@ mod platform {
         const APPLICATION: &str = "iTerm2";
         /// iTerm2's bundle identifier.
         const BUNDLE: &str = "com.googlecode.iterm2";
+
+        #[test]
+        fn failed_shareable_content_query_with_access_reports_query_failure() {
+            assert_eq!(
+                shareable_content_failure(true),
+                CaptureFailure::ShareableContentQueryFailed
+            );
+        }
+
+        #[test]
+        fn failed_shareable_content_query_without_access_reports_permission_denial() {
+            assert_eq!(
+                shareable_content_failure(false),
+                CaptureFailure::PermissionDenied
+            );
+        }
+
+        #[test]
+        fn image_reduction_rejects_a_cell_too_large_for_the_image() {
+            assert_eq!(
+                reduce_capture(&[], (1, 1), (f64::INFINITY, 1.0)),
+                Err(CaptureFailure::ImageReductionFailed)
+            );
+        }
+
+        #[test]
+        fn image_reduction_returns_the_implied_grid_and_colors() {
+            let pixels = [1, 2, 3, 255, 4, 5, 6, 255];
+
+            assert_eq!(
+                reduce_capture(&pixels, (2, 1), (1.0, 1.0)),
+                Ok((2, 1, vec![Color::Rgb(1, 2, 3), Color::Rgb(4, 5, 6)]))
+            );
+        }
+
+        #[test]
+        fn exclusion_windows_are_deduplicated_by_id_in_original_order() {
+            let windows = [
+                (17, "terminal-owned"),
+                (23, "terminal-owned"),
+                (17, "above-selected"),
+                (41, "above-selected"),
+                (23, "above-selected"),
+            ];
+
+            let deduplicated = deduplicate_windows_by_id(windows, |window| window.0);
+
+            assert_eq!(
+                deduplicated,
+                vec![
+                    (17, "terminal-owned"),
+                    (23, "terminal-owned"),
+                    (41, "above-selected"),
+                ]
+            );
+        }
 
         #[test]
         fn folding_keeps_an_extension_that_is_left_on() {
@@ -1348,12 +1493,15 @@ mod platform {
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
+    use super::CaptureFailure;
     use super::Desktop;
     use super::Frame;
     use super::Metrics;
 
     /// No capture backend outside macOS, so nothing is drawn.
-    pub(super) const fn capture(_: Metrics, _: Option<u32>) -> Option<Desktop> { None }
+    pub(super) const fn capture(_: Metrics, _: Option<u32>) -> Result<Desktop, CaptureFailure> {
+        Err(CaptureFailure::UnsupportedPlatform)
+    }
 
     /// Nothing to ask, where there is no capture to ask about.
     pub(super) const fn window_frame(_: u32) -> Option<Frame> { None }
