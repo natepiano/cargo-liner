@@ -139,6 +139,7 @@ pub(crate) fn run() -> ExitCode {
         },
     };
     let loop_result = event_loop(&mut terminal, &mut app);
+    app.attract.record_completed_backdrop_attempts_before_exit();
     let restart_requested = app.framework.restart_requested();
     let restore_result = restore_terminal(&mut terminal, profile_switch.as_ref());
 

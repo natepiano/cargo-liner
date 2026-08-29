@@ -20,10 +20,92 @@
 //!   and runs every frame, so dragging the window slides the colours with it and nothing waits on a
 //!   capture.
 
+use std::fmt;
 use std::fmt::Formatter;
+use std::sync::Arc;
 
 use crossterm::terminal;
 use ratatui::style::Color;
+
+use super::constants::CAPTURE_TEST_FRONTMOST_OWNER_PID;
+use super::constants::CAPTURE_TEST_PROCESS_ANCESTOR_PID;
+use super::constants::CAPTURE_TEST_TERMINAL_PROGRAM_OWNER_PID;
+
+/// Where the candidate terminal-window set came from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalWindowCandidateSource {
+    /// Windows owned by this process or one of its ancestors.
+    ProcessAncestry,
+    /// Windows owned by the terminal application named by `TERM_PROGRAM`.
+    TerminalProgramName,
+    /// Windows owned by the application with the frontmost window.
+    FrontmostApplication,
+}
+
+/// A synthetic capture situation used to exercise the production selection path.
+///
+/// This support type exists for a client crate's acceptance tests, which cannot use the private
+/// window-server types that the macOS capture backend receives.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureAttemptTestCase {
+    /// The shareable-content query fails before any window can be selected.
+    ShareableContentQueryFails,
+    /// The monitor supplies an id that exists in the full window list.
+    PinnedWindow { window_id: u32 },
+    /// The closest-size candidate is owned by a process ancestor.
+    WindowOwnedByProcessAncestor { window_id: u32 },
+    /// The closest-size candidate is owned by the terminal program.
+    WindowOwnedByTerminalProgram { window_id: u32 },
+    /// The closest-size candidate is owned by the frontmost application.
+    WindowOwnedByFrontmostApplication { window_id: u32 },
+}
+
+/// How a completed capture attempt selected its terminal window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureWindowSelectionMethod {
+    /// The monitor supplied a pinned window id and that window still existed.
+    PinnedWindow,
+    /// The closest-size window was chosen from the reported candidate set.
+    ClosestSizeMatch {
+        /// Where the terminal-window candidates came from.
+        candidates: TerminalWindowCandidateSource,
+    },
+}
+
+/// What terminal window a completed capture attempt selected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureAttemptWindowSelection {
+    /// The attempt failed before a terminal window could be selected.
+    SelectionNotReached,
+    /// The attempt selected this terminal window.
+    Selected {
+        /// The selected window-server id.
+        window_id: u32,
+        /// How the window id was selected.
+        method:    CaptureWindowSelectionMethod,
+    },
+}
+
+/// The monitor-local sequence number assigned to one capture attempt.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CaptureAttemptSequence(u64);
+
+impl CaptureAttemptSequence {
+    /// The first attempt sequence assigned by a monitor.
+    pub(super) const FIRST: Self = Self(1);
+
+    /// The numeric sequence value.
+    #[must_use]
+    pub const fn number(self) -> u64 { self.0 }
+
+    /// The sequence assigned after this one.
+    pub(super) const fn following(self) -> Self { Self(self.0.wrapping_add(1)) }
+}
+
+impl From<u64> for CaptureAttemptSequence {
+    fn from(number: u64) -> Self { Self(number) }
+}
 
 /// Why an attempt to capture the desktop did not produce a new image.
 ///
@@ -52,6 +134,385 @@ pub enum CaptureFailure {
     ImageReductionFailed,
 }
 
+/// The capture worker's result for one completed attempt.
+///
+/// A successful result owns the captured desktop until the backdrop monitor retains it and
+/// converts the result into a [`CompletedCaptureAttemptDiagnostic`].
+#[derive(Clone)]
+pub struct CaptureAttemptResult {
+    /// The monitor-local sequence assigned when the attempt was requested.
+    sequence:         CaptureAttemptSequence,
+    /// What terminal window the completed attempt selected.
+    window_selection: CaptureAttemptWindowSelection,
+    /// The desktop produced on success or the stage that failed.
+    outcome:          CaptureAttemptOutcome,
+}
+
+impl CaptureAttemptResult {
+    /// Build a completed attempt from the platform capture result.
+    #[cfg(target_os = "macos")]
+    pub(super) fn from_desktop_result(
+        sequence: CaptureAttemptSequence,
+        window_selection: CaptureAttemptWindowSelection,
+        desktop_result: Result<Desktop, CaptureFailure>,
+    ) -> Self {
+        match desktop_result {
+            Ok(desktop) => Self {
+                sequence,
+                window_selection,
+                outcome: CaptureAttemptOutcome::Succeeded(Arc::new(desktop)),
+            },
+            Err(failure) => Self::failed(sequence, window_selection, failure),
+        }
+    }
+
+    /// Build a completed failed attempt.
+    pub(super) const fn failed(
+        sequence: CaptureAttemptSequence,
+        window_selection: CaptureAttemptWindowSelection,
+        failure: CaptureFailure,
+    ) -> Self {
+        Self {
+            sequence,
+            window_selection,
+            outcome: CaptureAttemptOutcome::Failed(failure),
+        }
+    }
+
+    /// The monitor-local sequence assigned to this attempt.
+    #[must_use]
+    pub const fn sequence(&self) -> CaptureAttemptSequence { self.sequence }
+
+    /// What terminal window this completed attempt selected.
+    #[must_use]
+    pub const fn window_selection(&self) -> CaptureAttemptWindowSelection { self.window_selection }
+
+    /// Whether the attempt succeeded or which capture stage failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the classified [`CaptureFailure`] when the attempt did not produce a desktop.
+    pub const fn outcome(&self) -> Result<(), CaptureFailure> {
+        match &self.outcome {
+            #[cfg(target_os = "macos")]
+            CaptureAttemptOutcome::Succeeded(_) => Ok(()),
+            CaptureAttemptOutcome::Failed(failure) => Err(*failure),
+        }
+    }
+
+    /// Separate the lightweight diagnostic from the desktop retained by a successful attempt.
+    #[cfg(target_os = "macos")]
+    pub(super) fn into_diagnostic_and_desktop_result(
+        self,
+    ) -> (
+        CompletedCaptureAttemptDiagnostic,
+        Result<Arc<Desktop>, CaptureFailure>,
+    ) {
+        let completed_capture_attempt_diagnostic = CompletedCaptureAttemptDiagnostic {
+            sequence:         self.sequence,
+            window_selection: self.window_selection,
+            outcome:          self.outcome(),
+        };
+        let desktop_result = match self.outcome {
+            #[cfg(target_os = "macos")]
+            CaptureAttemptOutcome::Succeeded(desktop) => Ok(desktop),
+            CaptureAttemptOutcome::Failed(failure) => Err(failure),
+        };
+        (completed_capture_attempt_diagnostic, desktop_result)
+    }
+
+    /// Separate the lightweight diagnostic from the failed attempt result.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) const fn into_diagnostic_and_desktop_result(
+        self,
+    ) -> (
+        CompletedCaptureAttemptDiagnostic,
+        Result<Arc<Desktop>, CaptureFailure>,
+    ) {
+        let completed_capture_attempt_diagnostic = CompletedCaptureAttemptDiagnostic {
+            sequence:         self.sequence,
+            window_selection: self.window_selection,
+            outcome:          self.outcome(),
+        };
+        let desktop_result = match self.outcome {
+            CaptureAttemptOutcome::Failed(failure) => Err(failure),
+        };
+        (completed_capture_attempt_diagnostic, desktop_result)
+    }
+}
+
+impl fmt::Debug for CaptureAttemptResult {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CaptureAttemptResult")
+            .field("sequence", &self.sequence)
+            .field("window_selection", &self.window_selection)
+            .field("outcome", &self.outcome())
+            .finish()
+    }
+}
+
+/// The internal capture payload retained behind a public attempt result.
+#[derive(Clone)]
+enum CaptureAttemptOutcome {
+    /// The attempt produced this desktop.
+    #[cfg(target_os = "macos")]
+    Succeeded(Arc<Desktop>),
+    /// The attempt failed at this capture stage.
+    Failed(CaptureFailure),
+}
+
+/// A completed capture attempt's diagnostic values without its captured desktop.
+///
+/// The backdrop monitor can retain these records for a diagnostic consumer without extending the
+/// lifetime of any historical desktop image.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompletedCaptureAttemptDiagnostic {
+    /// The monitor-local sequence assigned when the attempt was requested.
+    sequence:         CaptureAttemptSequence,
+    /// What terminal window the completed attempt selected.
+    window_selection: CaptureAttemptWindowSelection,
+    /// Whether the attempt succeeded or which capture stage failed.
+    outcome:          Result<(), CaptureFailure>,
+}
+
+impl CompletedCaptureAttemptDiagnostic {
+    /// The monitor-local sequence assigned to this attempt.
+    #[must_use]
+    pub const fn sequence(self) -> CaptureAttemptSequence { self.sequence }
+
+    /// What terminal window this completed attempt selected.
+    #[must_use]
+    pub const fn window_selection(self) -> CaptureAttemptWindowSelection { self.window_selection }
+
+    /// Whether the attempt succeeded or which capture stage failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the classified [`CaptureFailure`] when the attempt did not produce a desktop.
+    pub const fn outcome(self) -> Result<(), CaptureFailure> { self.outcome }
+}
+
+/// Window-server facts used to classify terminal-window candidates.
+trait TerminalWindowCandidate {
+    /// The pid of the application that owns the window, when available.
+    fn owner(&self) -> Option<i32>;
+
+    /// Whether this window can identify the frontmost application.
+    fn frontmost(&self) -> bool;
+}
+
+/// Candidate terminal windows and the source that produced them.
+struct TerminalWindowCandidates<'a, W> {
+    /// Where this candidate set came from.
+    source:  TerminalWindowCandidateSource,
+    /// The windows available to closest-size matching.
+    windows: Vec<&'a W>,
+}
+
+/// Classify terminal-window candidates by process ancestry, terminal name, then frontmost owner.
+fn terminal_window_candidates<W: TerminalWindowCandidate>(
+    windows: &[W],
+    process_is_ancestor: impl Fn(i32) -> bool,
+    window_is_owned_by_terminal_program: impl Fn(&W) -> bool,
+) -> TerminalWindowCandidates<'_, W> {
+    let process_ancestry_windows = windows_owned_by(windows, process_is_ancestor);
+    if !process_ancestry_windows.is_empty() {
+        return TerminalWindowCandidates {
+            source:  TerminalWindowCandidateSource::ProcessAncestry,
+            windows: process_ancestry_windows,
+        };
+    }
+    let terminal_program_windows = windows
+        .iter()
+        .filter(|window| window_is_owned_by_terminal_program(window))
+        .collect::<Vec<_>>();
+    if !terminal_program_windows.is_empty() {
+        return TerminalWindowCandidates {
+            source:  TerminalWindowCandidateSource::TerminalProgramName,
+            windows: terminal_program_windows,
+        };
+    }
+    let frontmost_application_windows = frontmost_owner(windows).map_or_else(Vec::new, |owner| {
+        windows_owned_by(windows, |candidate_owner| candidate_owner == owner)
+    });
+    TerminalWindowCandidates {
+        source:  TerminalWindowCandidateSource::FrontmostApplication,
+        windows: frontmost_application_windows,
+    }
+}
+
+/// Every window whose owning application's pid `wanted` accepts.
+fn windows_owned_by<W: TerminalWindowCandidate>(
+    windows: &[W],
+    wanted: impl Fn(i32) -> bool,
+) -> Vec<&W> {
+    windows
+        .iter()
+        .filter(|window| window.owner().is_some_and(&wanted))
+        .collect()
+}
+
+/// The pid of the application owning the frontmost candidate window.
+fn frontmost_owner<W: TerminalWindowCandidate>(windows: &[W]) -> Option<i32> {
+    windows
+        .iter()
+        .find(|window| window.frontmost())
+        .and_then(TerminalWindowCandidate::owner)
+}
+
+/// Select a pinned window or the closest candidate and report how it was selected.
+fn select_capture_window<'a, W>(
+    windows: &'a [W],
+    pinned: Option<u32>,
+    terminal_window_candidates: &TerminalWindowCandidates<'a, W>,
+    window_id: impl Fn(&W) -> u32,
+    closest_size_match: impl FnOnce() -> Result<&'a W, CaptureFailure>,
+) -> Result<(&'a W, CaptureWindowSelectionMethod), CaptureFailure> {
+    let pinned_window = pinned
+        .and_then(|pinned| windows.iter().find(|window| window_id(window) == pinned))
+        .map(|window| (window, CaptureWindowSelectionMethod::PinnedWindow));
+    pinned_window.map_or_else(
+        || {
+            closest_size_match().map(|window| {
+                (
+                    window,
+                    CaptureWindowSelectionMethod::ClosestSizeMatch {
+                        candidates: terminal_window_candidates.source,
+                    },
+                )
+            })
+        },
+        Ok,
+    )
+}
+
+/// Build the failure produced before the capture path selects a terminal window.
+const fn capture_failure_before_window_selection(
+    sequence: CaptureAttemptSequence,
+    failure: CaptureFailure,
+) -> CaptureAttemptResult {
+    CaptureAttemptResult::failed(
+        sequence,
+        CaptureAttemptWindowSelection::SelectionNotReached,
+        failure,
+    )
+}
+
+/// The ownership fact that selects one terminal-window candidate source.
+#[derive(Clone, Copy)]
+enum CaptureAttemptTestWindowOwnership {
+    /// The window is owned by a process ancestor.
+    ProcessAncestor,
+    /// The window is owned by the named terminal program.
+    TerminalProgram,
+    /// The window is owned by the frontmost application.
+    FrontmostApplication,
+}
+
+/// A synthetic window supplied to the shared candidate classifier.
+struct CaptureAttemptTestWindow {
+    /// The window-server id used by the selection result.
+    window_id: u32,
+    /// How the synthetic window relates to the terminal process and active application.
+    ownership: CaptureAttemptTestWindowOwnership,
+}
+
+impl TerminalWindowCandidate for CaptureAttemptTestWindow {
+    fn owner(&self) -> Option<i32> {
+        Some(match self.ownership {
+            CaptureAttemptTestWindowOwnership::ProcessAncestor => CAPTURE_TEST_PROCESS_ANCESTOR_PID,
+            CaptureAttemptTestWindowOwnership::TerminalProgram => {
+                CAPTURE_TEST_TERMINAL_PROGRAM_OWNER_PID
+            },
+            CaptureAttemptTestWindowOwnership::FrontmostApplication => {
+                CAPTURE_TEST_FRONTMOST_OWNER_PID
+            },
+        })
+    }
+
+    fn frontmost(&self) -> bool {
+        matches!(
+            self.ownership,
+            CaptureAttemptTestWindowOwnership::FrontmostApplication
+        )
+    }
+}
+
+/// Run a client acceptance test through the same selection helper as the macOS capture backend.
+pub(super) fn capture_attempt_for_test(
+    sequence: CaptureAttemptSequence,
+    pinned: Option<u32>,
+    capture_attempt_test_case: CaptureAttemptTestCase,
+) -> CaptureAttemptResult {
+    let capture_attempt_test_window = match capture_attempt_test_case {
+        CaptureAttemptTestCase::ShareableContentQueryFails => {
+            return capture_failure_before_window_selection(
+                sequence,
+                CaptureFailure::ShareableContentQueryFailed,
+            );
+        },
+        CaptureAttemptTestCase::PinnedWindow { window_id }
+        | CaptureAttemptTestCase::WindowOwnedByProcessAncestor { window_id } => {
+            CaptureAttemptTestWindow {
+                window_id,
+                ownership: CaptureAttemptTestWindowOwnership::ProcessAncestor,
+            }
+        },
+        CaptureAttemptTestCase::WindowOwnedByTerminalProgram { window_id } => {
+            CaptureAttemptTestWindow {
+                window_id,
+                ownership: CaptureAttemptTestWindowOwnership::TerminalProgram,
+            }
+        },
+        CaptureAttemptTestCase::WindowOwnedByFrontmostApplication { window_id } => {
+            CaptureAttemptTestWindow {
+                window_id,
+                ownership: CaptureAttemptTestWindowOwnership::FrontmostApplication,
+            }
+        },
+    };
+    let windows = [capture_attempt_test_window];
+    let terminal_window_candidates = terminal_window_candidates(
+        &windows,
+        |owner| owner == CAPTURE_TEST_PROCESS_ANCESTOR_PID,
+        |window| {
+            matches!(
+                window.ownership,
+                CaptureAttemptTestWindowOwnership::TerminalProgram
+            )
+        },
+    );
+    let selected = select_capture_window(
+        &windows,
+        pinned,
+        &terminal_window_candidates,
+        |window| window.window_id,
+        || {
+            terminal_window_candidates
+                .windows
+                .first()
+                .copied()
+                .ok_or(CaptureFailure::TerminalWindowNotFound)
+        },
+    );
+    let Ok((selected_window, method)) = selected else {
+        return capture_failure_before_window_selection(
+            sequence,
+            CaptureFailure::TerminalWindowNotFound,
+        );
+    };
+    CaptureAttemptResult::failed(
+        sequence,
+        CaptureAttemptWindowSelection::Selected {
+            window_id: selected_window.window_id,
+            method,
+        },
+        CaptureFailure::DisplayNotFound,
+    )
+}
+
+#[cfg(target_os = "macos")]
 impl CaptureFailure {
     /// Replace an underlying stage error with this compact classification.
     fn classify_result<T, E>(self, result: Result<T, E>) -> Result<T, Self> {
@@ -88,6 +549,14 @@ pub(super) struct Metrics {
 }
 
 impl Metrics {
+    /// Stable terminal metrics for a client crate's synchronous capture test driver.
+    pub(super) const fn for_capture_test() -> Self {
+        Self {
+            text_area: (1, 1),
+            cells:     (1, 1),
+        }
+    }
+
     /// What the terminal reports about itself right now, or [`None`]
     /// where it will not say.
     ///
@@ -198,8 +667,12 @@ impl Desktop {
                   macOS module this delegates to calls the window server"
         )
     )]
-    pub(super) fn capture(metrics: Metrics, pinned: Option<u32>) -> Result<Self, CaptureFailure> {
-        platform::capture(metrics, pinned)
+    pub(super) fn capture(
+        metrics: Metrics,
+        pinned: Option<u32>,
+        sequence: CaptureAttemptSequence,
+    ) -> CaptureAttemptResult {
+        platform::capture(metrics, pinned, sequence)
     }
 
     /// The window this capture was taken for, as the window server
@@ -422,11 +895,20 @@ mod platform {
     use sysinfo::ProcessesToUpdate;
     use sysinfo::System;
 
+    use super::CaptureAttemptResult;
+    use super::CaptureAttemptSequence;
+    use super::CaptureAttemptWindowSelection;
     use super::CaptureFailure;
     use super::Desktop;
     use super::Frame;
     use super::Metrics;
+    use super::TerminalWindowCandidate;
+    use super::TerminalWindowCandidates;
+    use super::capture_failure_before_window_selection;
     use super::cell_index;
+    use super::select_capture_window;
+    use super::terminal_window_candidates;
+    use super::windows_owned_by;
     use crate::backdrop::constants::EMULATOR_NAME_FLOOR;
     use crate::backdrop::constants::POSITION_TOLERANCE;
     use crate::backdrop::constants::SAMPLES_PER_CELL;
@@ -470,12 +952,17 @@ mod platform {
     pub(super) fn capture(
         metrics: Metrics,
         pinned: Option<u32>,
-    ) -> Result<Desktop, CaptureFailure> {
-        let content = SCShareableContent::get()
-            .map_err(|_| shareable_content_failure(screen_capture_access_is_granted()))?;
+        sequence: CaptureAttemptSequence,
+    ) -> CaptureAttemptResult {
+        let Ok(content) = SCShareableContent::get() else {
+            return capture_failure_before_window_selection(
+                sequence,
+                shareable_content_failure(screen_capture_access_is_granted()),
+            );
+        };
         let windows = content.windows();
         let displays = content.displays();
-        let terminal_windows = terminal_windows(&windows);
+        let terminal_window_candidates = terminal_windows(&windows);
         // The number `identify` pinned to this app's own window is
         // looked for across every window on the machine, not inside the
         // set the terminal is thought to own. Which windows those are
@@ -490,15 +977,43 @@ mod platform {
         //
         // Falling back to size is for the run where the marker title
         // never took, and for the window closed since it did.
-        let chosen = CaptureFailure::TerminalWindowNotFound.classify_option(
-            pinned
-                .and_then(|pinned| windows.iter().find(|window| window.window_id() == pinned))
-                .or_else(|| frontmost_window(&terminal_windows, &displays, metrics.text_area)),
-        )?;
+        let selected = select_capture_window(
+            &windows,
+            pinned,
+            &terminal_window_candidates,
+            SCWindow::window_id,
+            || {
+                frontmost_window(
+                    &terminal_window_candidates.windows,
+                    &displays,
+                    metrics.text_area,
+                )
+                .ok_or(CaptureFailure::TerminalWindowNotFound)
+            },
+        );
+        let Ok((chosen, method)) = selected else {
+            return capture_failure_before_window_selection(
+                sequence,
+                CaptureFailure::TerminalWindowNotFound,
+            );
+        };
         let window_id = chosen.window_id();
+        let window_selection = CaptureAttemptWindowSelection::Selected { window_id, method };
 
+        let desktop_result = capture_selected_window(metrics, chosen, &windows, &displays);
+        CaptureAttemptResult::from_desktop_result(sequence, window_selection, desktop_result)
+    }
+
+    /// Capture the display behind the terminal window selected for this attempt.
+    fn capture_selected_window(
+        metrics: Metrics,
+        chosen: &SCWindow,
+        windows: &[SCWindow],
+        displays: &[SCDisplay],
+    ) -> Result<Desktop, CaptureFailure> {
+        let window_id = chosen.window_id();
         let display = CaptureFailure::DisplayNotFound
-            .classify_option(display_under(&displays, chosen.frame()))?;
+            .classify_option(display_under(displays, chosen.frame()))?;
         let display_frame = display_bounds(display);
         // The capture is asked for at the display's own point size and
         // comes back at it, so one cell in points serves both the grid
@@ -532,7 +1047,9 @@ mod platform {
         let owned = chosen
             .owning_application()
             .map(|application| application.process_id())
-            .map_or_else(Vec::new, |owner| owned_by(&windows, |pid| pid == owner));
+            .map_or_else(Vec::new, |owner| {
+                windows_owned_by(windows, |pid| pid == owner)
+            });
         let excluded = deduplicate_windows_by_id(
             owned.into_iter().chain(
                 windows
@@ -585,6 +1102,7 @@ mod platform {
     /// draws.
     pub(super) fn window_titles() -> Vec<(u32, Option<String>)> {
         terminal_windows(&Listed::on_screen())
+            .windows
             .into_iter()
             .map(|window| (window.number, window.title.clone()))
             .collect()
@@ -596,6 +1114,7 @@ mod platform {
     /// [`Listed::on_screen`] gives.
     pub(super) fn window_titled(marker: &str) -> Option<u32> {
         terminal_windows(&Listed::on_screen())
+            .windows
             .into_iter()
             .find(|window| {
                 window
@@ -613,6 +1132,7 @@ mod platform {
     /// that are on screen because the list asked for holds no others.
     pub(super) fn window_at(origin: (f64, f64)) -> Option<u32> {
         terminal_windows(&Listed::on_screen())
+            .windows
             .into_iter()
             .map(|window| (window.number, away(window.bounds, origin)))
             .filter(|(_, away)| *away <= POSITION_TOLERANCE)
@@ -959,46 +1479,24 @@ mod platform {
         Some(colors)
     }
 
-    /// What the two window-server APIs agree on, so that the search
-    /// for the emulator's windows is written once and runs over
-    /// either.
-    ///
-    /// They are asked for in different places because of what they
-    /// cost. `SCShareableContent` describes every window on the machine
-    /// and takes tens of milliseconds, which the capture is already
-    /// paying on a worker thread; a `CGWindowList` answer is some five
-    /// hundred times cheaper and is what the drawing thread can afford.
-    /// The search itself is a heuristic that has been wrong before and
-    /// was expensive to get right, so it exists once and the two
-    /// implementations below are all that differs.
-    trait Window {
-        /// The pid of the application that owns it, where the window
-        /// server will say.
-        fn owner(&self) -> Option<i32>;
-
-        /// Every name that application answers to, folded ready to
-        /// compare. `SCShareableContent` knows its bundle identifier as
-        /// well as its name; a `CGWindowList` answer carries the name
-        /// alone.
+    /// Application-name facts used to match a window to `TERM_PROGRAM`.
+    trait TerminalProgramWindowCandidate {
+        /// Every folded name the owning application answers to.
         fn names(&self) -> Vec<String>;
-
-        /// Whether this window could be the one in front.
-        ///
-        /// Answered differently by the two, because they are told
-        /// different things: `SCShareableContent` marks the windows of
-        /// the active application, where a `CGWindowList` answer
-        /// carries no such mark but arrives ordered front to back.
-        /// Either way the caller takes the first window accepted, which
-        /// is what the ordering makes true of the second.
-        fn frontmost(&self) -> bool;
     }
 
-    impl Window for SCWindow {
+    impl TerminalWindowCandidate for SCWindow {
         fn owner(&self) -> Option<i32> {
             self.owning_application()
                 .map(|application| application.process_id())
         }
 
+        fn frontmost(&self) -> bool {
+            self.is_active() && self.is_on_screen() && self.window_layer() == 0
+        }
+    }
+
+    impl TerminalProgramWindowCandidate for SCWindow {
         fn names(&self) -> Vec<String> {
             self.owning_application()
                 .map(|application| {
@@ -1008,10 +1506,6 @@ mod platform {
                     ]
                 })
                 .unwrap_or_default()
-        }
-
-        fn frontmost(&self) -> bool {
-            self.is_active() && self.is_on_screen() && self.window_layer() == 0
         }
     }
 
@@ -1076,42 +1570,39 @@ mod platform {
         }
     }
 
-    impl Window for Listed {
+    impl TerminalWindowCandidate for Listed {
         fn owner(&self) -> Option<i32> { self.owner }
 
-        fn names(&self) -> Vec<String> { self.name.clone().into_iter().collect() }
-
         fn frontmost(&self) -> bool { self.layer == 0 }
+    }
+
+    impl TerminalProgramWindowCandidate for Listed {
+        fn names(&self) -> Vec<String> { self.name.clone().into_iter().collect() }
     }
 
     /// Every on-screen window belonging to this process or one of its
     /// ancestors -- which is how the terminal emulator hosting this app
     /// is found, since the window is the emulator's and not this
     /// process's.
-    fn terminal_windows<W: Window>(windows: &[W]) -> Vec<&W> {
+    fn terminal_windows<W: TerminalWindowCandidate + TerminalProgramWindowCandidate>(
+        windows: &[W],
+    ) -> TerminalWindowCandidates<'_, W> {
         let ancestors = ancestor_pids();
-        let owned = owned_by(windows, |pid| ancestors.contains(&pid));
-        if !owned.is_empty() {
-            return owned;
-        }
         // An emulator that hosts its sessions in a server process of its
         // own is nowhere in this app's parent chain: iTerm2's shell hangs
         // off `iTermServer`, and the process drawing the window is not an
         // ancestor of anything running in it. Ask the emulator who it is
         // instead -- it says so in the environment it handed down.
         let named = named_emulator_windows(windows);
-        if !named.is_empty() {
-            return named;
-        }
-        // Nothing named the emulator, so the last resort is the window
-        // in front, on the reasoning that a screen nobody is looking at
-        // is not one this animation runs for. It is a poor answer and
-        // the reason this is the last of three: the application in
-        // front is very often not the terminal at all.
-        let Some(front) = frontmost_owner(windows) else {
-            return Vec::new();
-        };
-        owned_by(windows, |pid| pid == front)
+        terminal_window_candidates(
+            windows,
+            |pid| ancestors.contains(&pid),
+            |window| {
+                named
+                    .iter()
+                    .any(|named_window| std::ptr::eq(*named_window, window))
+            },
+        )
     }
 
     /// Every on-screen window of the terminal emulator named by
@@ -1128,7 +1619,7 @@ mod platform {
     ///
     /// Empty where the variable is unset, where it names nothing on
     /// screen, or where this is not a terminal at all.
-    fn named_emulator_windows<W: Window>(windows: &[W]) -> Vec<&W> {
+    fn named_emulator_windows<W: TerminalProgramWindowCandidate>(windows: &[W]) -> Vec<&W> {
         let Ok(program) = env::var(TERM_PROGRAM_ENV) else {
             return Vec::new();
         };
@@ -1180,14 +1671,6 @@ mod platform {
     /// letters is inside half the bundle identifiers on the machine.
     fn names_agree(wanted: &str, found: &str) -> bool {
         found.len() >= EMULATOR_NAME_FLOOR && (found.contains(wanted) || wanted.contains(found))
-    }
-
-    /// Every window whose owning application's pid `wanted` accepts.
-    fn owned_by<W: Window>(windows: &[W], wanted: impl Fn(i32) -> bool) -> Vec<&W> {
-        windows
-            .iter()
-            .filter(|window| window.owner().is_some_and(&wanted))
-            .collect()
     }
 
     /// The one of the emulator's windows this app is drawn in.
@@ -1250,15 +1733,6 @@ mod platform {
             }
         };
         axis(frame.size.width, width) + axis(frame.size.height, height)
-    }
-
-    /// The pid of the application owning the active window, which is the
-    /// one the reader is looking at.
-    fn frontmost_owner<W: Window>(windows: &[W]) -> Option<i32> {
-        windows
-            .iter()
-            .find(|window| window.frontmost())
-            .and_then(Window::owner)
     }
 
     /// This process's pid and every pid above it, as the window server
@@ -1495,14 +1969,20 @@ mod platform {
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
+    use super::CaptureAttemptResult;
+    use super::CaptureAttemptSequence;
     use super::CaptureFailure;
-    use super::Desktop;
     use super::Frame;
     use super::Metrics;
+    use super::capture_failure_before_window_selection;
 
     /// No capture backend outside macOS, so nothing is drawn.
-    pub(super) const fn capture(_: Metrics, _: Option<u32>) -> Result<Desktop, CaptureFailure> {
-        Err(CaptureFailure::UnsupportedPlatform)
+    pub(super) const fn capture(
+        _: Metrics,
+        _: Option<u32>,
+        sequence: CaptureAttemptSequence,
+    ) -> CaptureAttemptResult {
+        capture_failure_before_window_selection(sequence, CaptureFailure::UnsupportedPlatform)
     }
 
     /// Nothing to ask, where there is no capture to ask about.

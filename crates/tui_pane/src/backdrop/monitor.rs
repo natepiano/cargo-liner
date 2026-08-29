@@ -24,8 +24,10 @@
 //! puts that wait on a thread with nothing to draw, and the render loop
 //! reuses the last answer for the frame or two it takes to arrive.
 
+use std::collections::VecDeque;
 use std::io;
 use std::io::Write;
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
@@ -39,8 +41,14 @@ use super::constants::CAPTURE_RETRY;
 use super::constants::IDENTIFY_MARKER;
 use super::constants::IDENTIFY_PASSES;
 use super::constants::IDENTIFY_RETRY;
+use super::constants::MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
 use super::desktop;
+use super::desktop::CaptureAttemptResult;
+use super::desktop::CaptureAttemptSequence;
+use super::desktop::CaptureAttemptTestCase;
+use super::desktop::CaptureAttemptWindowSelection;
 use super::desktop::CaptureFailure;
+use super::desktop::CompletedCaptureAttemptDiagnostic;
 use super::desktop::Desktop;
 use super::desktop::Frame;
 use super::desktop::Metrics;
@@ -97,6 +105,15 @@ pub enum BackdropStatus {
     Failed(CaptureFailure),
 }
 
+/// What the monitor knows about the latest completed attempt's window selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LatestCaptureAttemptWindowSelection {
+    /// No capture attempt has completed yet.
+    WaitingForFirstResult,
+    /// The newest completed attempt reached this window-selection state.
+    Completed(CaptureAttemptWindowSelection),
+}
+
 /// The most recent desktop known to have captured successfully.
 #[derive(Debug, Default)]
 enum LastSuccessfulDesktop {
@@ -104,15 +121,43 @@ enum LastSuccessfulDesktop {
     #[default]
     WaitingForFirstSuccess,
     /// The desktop produced by the most recent successful attempt.
-    Available(Desktop),
+    Available {
+        /// The successful desktop.
+        desktop:   Arc<Desktop>,
+        /// The window-server id the desktop was captured for.
+        window_id: u32,
+    },
+}
+
+/// Why a synchronous capture-driver operation could not reach the monitor.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureTestDriverError {
+    /// The monitor did not make a capture request available to the driver.
+    CaptureRequestUnavailable,
+    /// The driver could not return the completed capture attempt to the monitor.
+    CaptureResultUnavailable,
+}
+
+/// A synchronous capture worker used by client-crate acceptance tests.
+///
+/// The driver receives requests created by [`BackdropMonitor`], preserving the monitor's normal
+/// sequence assignment, then runs the production window-selection helper with synthetic windows.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct BackdropMonitorCaptureTestDriver {
+    /// Requests sent by the monitor under test.
+    requests: Receiver<Request>,
+    /// Completed attempts returned to the monitor under test.
+    captures: Sender<CaptureAttemptResult>,
 }
 
 impl LastSuccessfulDesktop {
     /// The successful desktop, where one has arrived.
-    const fn available(&self) -> Option<&Desktop> {
+    fn available(&self) -> Option<&Desktop> {
         match self {
             Self::WaitingForFirstSuccess => None,
-            Self::Available(desktop) => Some(desktop),
+            Self::Available { desktop, .. } => Some(desktop.as_ref()),
         }
     }
 }
@@ -130,7 +175,7 @@ pub struct BackdropMonitor {
     /// What the capture worker should capture for next.
     requests:                Sender<Request>,
     /// Outcomes the capture worker has finished producing.
-    captures:                Receiver<Result<Desktop, CaptureFailure>>,
+    captures:                Receiver<CaptureAttemptResult>,
     /// Windows the position worker should look up next.
     watches:                 Sender<u32>,
     /// Where the position worker last found the window it was given, or
@@ -140,6 +185,12 @@ pub struct BackdropMonitor {
     last_successful_desktop: LastSuccessfulDesktop,
     /// The outcome of the newest completed capture attempt.
     status:                  BackdropStatus,
+    /// What terminal window the newest completed capture attempt selected.
+    latest_window_selection: LatestCaptureAttemptWindowSelection,
+    /// Completed attempt diagnostics not yet taken by the caller.
+    completed_attempts:      VecDeque<CompletedCaptureAttemptDiagnostic>,
+    /// The sequence to assign to the next accepted capture request.
+    next_sequence:           CaptureAttemptSequence,
     /// The newest window frame that has arrived, a frame or two behind
     /// where the window is now.
     frame:                   Option<Frame>,
@@ -186,11 +237,13 @@ pub struct BackdropMonitor {
 /// One capture, as the worker is asked for it.
 #[derive(Clone, Copy, Debug)]
 struct Request {
+    /// The monitor-local sequence assigned to this attempt.
+    sequence: CaptureAttemptSequence,
     /// The cell sizes to reduce the capture to.
-    metrics: Metrics,
+    metrics:  Metrics,
     /// The window to capture the display behind, where one has been
     /// settled on.
-    window:  Option<u32>,
+    window:   Option<u32>,
 }
 
 impl Default for BackdropMonitor {
@@ -212,6 +265,28 @@ impl BackdropMonitor {
                 .name("backdrop-capture".to_string())
                 .spawn(move || capture_loop(&incoming, &outgoing)),
         );
+        Self::with_capture_channels(requests, captures)
+    }
+
+    /// Build a monitor with a synchronous capture driver for a client crate's acceptance tests.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_capture_test_driver() -> (Self, BackdropMonitorCaptureTestDriver) {
+        let (requests, incoming) = crossbeam_channel::bounded(1);
+        let (outgoing, captures) = crossbeam_channel::bounded(1);
+        let monitor = Self::with_capture_channels(requests, captures);
+        let capture_test_driver = BackdropMonitorCaptureTestDriver {
+            requests: incoming,
+            captures: outgoing,
+        };
+        (monitor, capture_test_driver)
+    }
+
+    /// Build the monitor around a capture worker's two channel endpoints.
+    fn with_capture_channels(
+        requests: Sender<Request>,
+        captures: Receiver<CaptureAttemptResult>,
+    ) -> Self {
         let (watches, asked) = crossbeam_channel::bounded(1);
         let (located, frames) = crossbeam_channel::bounded(1);
         // A failed spawn leaves `frames` disconnected, no frame ever
@@ -229,6 +304,9 @@ impl BackdropMonitor {
             frames,
             last_successful_desktop: LastSuccessfulDesktop::default(),
             status: BackdropStatus::WaitingForFirstResult,
+            latest_window_selection: LatestCaptureAttemptWindowSelection::WaitingForFirstResult,
+            completed_attempts: VecDeque::new(),
+            next_sequence: CaptureAttemptSequence::FIRST,
             frame: None,
             current: None,
             requested_at: None,
@@ -373,15 +451,7 @@ impl BackdropMonitor {
     /// whatever is due next. Never blocks, and never calls the window
     /// server itself.
     pub fn refresh(&mut self, area: Rect) {
-        while let Ok(outcome) = self.captures.try_recv() {
-            match outcome {
-                Ok(desktop) => {
-                    self.last_successful_desktop = LastSuccessfulDesktop::Available(desktop);
-                    self.status = BackdropStatus::Ready;
-                },
-                Err(failure) => self.status = BackdropStatus::Failed(failure),
-            }
-        }
+        self.receive_capture_attempt_results();
         while let Ok(frame) = self.frames.try_recv() {
             self.frame = frame;
         }
@@ -428,16 +498,53 @@ impl BackdropMonitor {
         // not it succeeds.
         let due = !moving && (waited >= CAPTURE_REFRESH || (!usable && waited >= CAPTURE_RETRY));
         if let (true, Some(metrics)) = (due, metrics) {
-            let request = Request {
-                metrics,
-                window: self.pinned,
-            };
-            // A full channel means the worker is still on the last
-            // request; dropping this one is the point of the bound.
-            if self.requests.try_send(request).is_ok() {
-                self.requested_at = Some(Instant::now());
-            }
+            self.request_capture_if_worker_available(metrics);
         }
+    }
+
+    /// Send a sequenced capture request unless the worker is still busy with the previous one.
+    fn request_capture_if_worker_available(&mut self, metrics: Metrics) {
+        let request = Request {
+            sequence: self.next_sequence,
+            metrics,
+            window: self.pinned,
+        };
+        // A full channel means the worker is still on the last
+        // request; dropping this one is the point of the bound.
+        if self.requests.try_send(request).is_ok() {
+            self.requested_at = Some(Instant::now());
+            self.next_sequence = self.next_sequence.following();
+        }
+    }
+
+    /// Move every capture worker result currently available into retained monitor state.
+    fn receive_capture_attempt_results(&mut self) {
+        while let Ok(capture_attempt_result) = self.captures.try_recv() {
+            self.record_capture_attempt_result(capture_attempt_result);
+        }
+    }
+
+    /// Retain the outcome and diagnostic values from one completed attempt.
+    fn record_capture_attempt_result(&mut self, capture_attempt_result: CaptureAttemptResult) {
+        let (completed_capture_attempt_diagnostic, desktop_result) =
+            capture_attempt_result.into_diagnostic_and_desktop_result();
+        self.latest_window_selection = LatestCaptureAttemptWindowSelection::Completed(
+            completed_capture_attempt_diagnostic.window_selection(),
+        );
+        match desktop_result {
+            Ok(desktop) => {
+                let window_id = desktop.window_id();
+                self.last_successful_desktop =
+                    LastSuccessfulDesktop::Available { desktop, window_id };
+                self.status = BackdropStatus::Ready;
+            },
+            Err(failure) => self.status = BackdropStatus::Failed(failure),
+        }
+        if self.completed_attempts.len() == MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS {
+            let _ = self.completed_attempts.pop_front();
+        }
+        self.completed_attempts
+            .push_back(completed_capture_attempt_diagnostic);
     }
 
     /// The newest backdrop, or [`None`] until one arrives.
@@ -455,17 +562,96 @@ impl BackdropMonitor {
     /// successful desktop separately from the latest attempt status.
     #[must_use]
     pub const fn captured_window_id(&self) -> LastSuccessfulCaptureWindowId {
-        match self.last_successful_desktop.available() {
-            Some(desktop) => LastSuccessfulCaptureWindowId::Available {
-                window_id: desktop.window_id(),
+        match &self.last_successful_desktop {
+            LastSuccessfulDesktop::WaitingForFirstSuccess => {
+                LastSuccessfulCaptureWindowId::WaitingForFirstSuccess
             },
-            None => LastSuccessfulCaptureWindowId::WaitingForFirstSuccess,
+            LastSuccessfulDesktop::Available { window_id, .. } => {
+                LastSuccessfulCaptureWindowId::Available {
+                    window_id: *window_id,
+                }
+            },
         }
     }
 
     /// The result of the latest capture attempt completed by the worker.
     #[must_use]
     pub const fn status(&self) -> BackdropStatus { self.status }
+
+    /// What the latest completed capture attempt selected, or that none has completed yet.
+    #[must_use]
+    pub const fn latest_capture_attempt_window_selection(
+        &self,
+    ) -> LatestCaptureAttemptWindowSelection {
+        self.latest_window_selection
+    }
+
+    /// Take every retained completed-attempt diagnostic not returned by an earlier call.
+    ///
+    /// Diagnostics are returned in capture order, including consecutive attempts with identical
+    /// selections and outcomes. A caller that drains them before the retention bound is reached
+    /// loses none. If more diagnostics accumulate, the monitor discards the oldest first instead
+    /// of retaining a queue without limit. Each diagnostic is lightweight and does not retain a
+    /// captured desktop.
+    pub fn take_completed_capture_attempt_diagnostics(
+        &mut self,
+    ) -> impl Iterator<Item = CompletedCaptureAttemptDiagnostic> + '_ {
+        self.receive_capture_attempt_results();
+        self.completed_attempts.drain(..)
+    }
+}
+
+impl BackdropMonitorCaptureTestDriver {
+    /// Maximum completed-attempt diagnostics retained by a monitor between drains.
+    pub const MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS: usize =
+        MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
+
+    /// Complete one synthetic attempt and leave it waiting on the monitor's capture channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureTestDriverError`] when the monitor cannot exchange the request or result.
+    pub fn send_capture_attempt(
+        &self,
+        monitor: &mut BackdropMonitor,
+        capture_attempt_test_case: CaptureAttemptTestCase,
+    ) -> Result<(), CaptureTestDriverError> {
+        monitor.pinned = match capture_attempt_test_case {
+            CaptureAttemptTestCase::PinnedWindow { window_id } => Some(window_id),
+            CaptureAttemptTestCase::ShareableContentQueryFails
+            | CaptureAttemptTestCase::WindowOwnedByProcessAncestor { .. }
+            | CaptureAttemptTestCase::WindowOwnedByTerminalProgram { .. }
+            | CaptureAttemptTestCase::WindowOwnedByFrontmostApplication { .. } => None,
+        };
+        monitor.request_capture_if_worker_available(Metrics::for_capture_test());
+        let request = self
+            .requests
+            .try_recv()
+            .map_err(|_| CaptureTestDriverError::CaptureRequestUnavailable)?;
+        let capture_attempt_result = desktop::capture_attempt_for_test(
+            request.sequence,
+            request.window,
+            capture_attempt_test_case,
+        );
+        self.captures
+            .try_send(capture_attempt_result)
+            .map_err(|_| CaptureTestDriverError::CaptureResultUnavailable)
+    }
+
+    /// Complete one synthetic attempt and make its diagnostic available to monitor consumers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureTestDriverError`] when the monitor cannot exchange the request or result.
+    pub fn complete_capture_attempt(
+        &self,
+        monitor: &mut BackdropMonitor,
+        capture_attempt_test_case: CaptureAttemptTestCase,
+    ) -> Result<(), CaptureTestDriverError> {
+        self.send_capture_attempt(monitor, capture_attempt_test_case)?;
+        monitor.receive_capture_attempt_results();
+        Ok(())
+    }
 }
 
 /// Map consumed identification attempts to the progress reported to callers.
@@ -486,10 +672,14 @@ const fn window_identification(
 /// Worker loop: capture the display for each cell size asked for and
 /// send the result back. Exits when the monitor drops and the request
 /// channel disconnects.
-fn capture_loop(requests: &Receiver<Request>, captures: &Sender<Result<Desktop, CaptureFailure>>) {
+fn capture_loop(requests: &Receiver<Request>, captures: &Sender<CaptureAttemptResult>) {
     while let Ok(request) = requests.recv() {
         if captures
-            .send(Desktop::capture(request.metrics, request.window))
+            .send(Desktop::capture(
+                request.metrics,
+                request.window,
+                request.sequence,
+            ))
             .is_err()
         {
             break;

@@ -56,9 +56,13 @@ use tui_pane::BackdropMonitor;
 use tui_pane::BackdropStatus;
 use tui_pane::BandDirection;
 use tui_pane::BandSettings;
+use tui_pane::CaptureAttemptSequence;
+use tui_pane::CaptureAttemptWindowSelection;
 use tui_pane::CaptureFailure;
+use tui_pane::CompletedCaptureAttemptDiagnostic;
 use tui_pane::DriftingText;
 use tui_pane::LastSuccessfulCaptureWindowId;
+use tui_pane::LatestCaptureAttemptWindowSelection;
 use tui_pane::PixelSettings;
 use tui_pane::ResolvingPixels;
 use tui_pane::TextSettings;
@@ -159,11 +163,68 @@ enum CurrentBackdrop {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BackdropDiagnostic {
     /// The most recent window-selection report.
-    window_identification: WindowIdentification,
+    window_identification:   WindowIdentification,
     /// The capture worker's latest completed result.
-    backdrop_status:       BackdropStatus,
+    backdrop_status:         BackdropStatus,
     /// The window id used by the last successful capture, if one has succeeded.
-    captured_window_id:    LastSuccessfulCaptureWindowId,
+    captured_window_id:      LastSuccessfulCaptureWindowId,
+    /// What terminal window the latest completed capture attempt selected.
+    latest_window_selection: LatestCaptureAttemptWindowSelection,
+}
+
+/// Values written for each completed backdrop capture attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BackdropAttemptDiagnostic {
+    /// The monitor-local sequence assigned to the attempt.
+    sequence:         CaptureAttemptSequence,
+    /// What terminal window the completed attempt selected.
+    window_selection: CaptureAttemptWindowSelection,
+    /// Whether the capture succeeded or which stage failed.
+    backdrop_status:  BackdropStatus,
+}
+
+impl From<CompletedCaptureAttemptDiagnostic> for BackdropAttemptDiagnostic {
+    fn from(completed_capture_attempt_diagnostic: CompletedCaptureAttemptDiagnostic) -> Self {
+        let backdrop_status = match completed_capture_attempt_diagnostic.outcome() {
+            Ok(()) => BackdropStatus::Ready,
+            Err(failure) => BackdropStatus::Failed(failure),
+        };
+        Self {
+            sequence: completed_capture_attempt_diagnostic.sequence(),
+            window_selection: completed_capture_attempt_diagnostic.window_selection(),
+            backdrop_status,
+        }
+    }
+}
+
+/// Format the transition-only backdrop summary record.
+fn backdrop_diagnostic_record(backdrop_diagnostic: BackdropDiagnostic) -> String {
+    format!(
+        "backdrop: report={:?} capture_status={:?} captured_window_id={:?} \
+         latest_attempt_window_selection={:?}",
+        backdrop_diagnostic.window_identification,
+        backdrop_diagnostic.backdrop_status,
+        backdrop_diagnostic.captured_window_id,
+        backdrop_diagnostic.latest_window_selection,
+    )
+}
+
+/// Write one record for every completed capture attempt in order.
+fn note_backdrop_attempts<T>(
+    capture_attempts: impl IntoIterator<Item = T>,
+    mut note: impl FnMut(&str),
+) where
+    T: Into<BackdropAttemptDiagnostic>,
+{
+    for capture_attempt in capture_attempts {
+        let backdrop_attempt_diagnostic = capture_attempt.into();
+        note(&format!(
+            "backdrop_attempt: sequence={:?} window_selection={:?} capture_status={:?}",
+            backdrop_attempt_diagnostic.sequence,
+            backdrop_attempt_diagnostic.window_selection,
+            backdrop_attempt_diagnostic.backdrop_status,
+        ));
+    }
 }
 
 /// Select the status-line outcome from capture timing, availability, and status.
@@ -580,9 +641,10 @@ impl Attract {
             standing:               Standing::Showing,
             backdrop_wait:          BackdropWait::NotWaiting,
             noted_backdrop:         BackdropDiagnostic {
-                window_identification: WindowIdentification::NotAttempted,
-                backdrop_status:       BackdropStatus::WaitingForFirstResult,
-                captured_window_id:    LastSuccessfulCaptureWindowId::WaitingForFirstSuccess,
+                window_identification:   WindowIdentification::NotAttempted,
+                backdrop_status:         BackdropStatus::WaitingForFirstResult,
+                captured_window_id:      LastSuccessfulCaptureWindowId::WaitingForFirstSuccess,
+                latest_window_selection: LatestCaptureAttemptWindowSelection::WaitingForFirstResult,
             },
             noted:                  None,
         }
@@ -961,24 +1023,40 @@ impl Attract {
         if !self.showing() {
             return;
         }
+        self.note_completed_backdrop_attempts(probe::note);
         // Cheap once it has settled: the monitor answers from what it
         // found and asks the window server nothing more.
         let backdrop_diagnostic = BackdropDiagnostic {
-            window_identification: self.monitor.identify(&mut io::stdout()),
-            backdrop_status:       self.monitor.status(),
-            captured_window_id:    self.monitor.captured_window_id(),
+            window_identification:   self.monitor.identify(&mut io::stdout()),
+            backdrop_status:         self.monitor.status(),
+            captured_window_id:      self.monitor.captured_window_id(),
+            latest_window_selection: self.monitor.latest_capture_attempt_window_selection(),
         };
         // Noted when any reported value changes, so paced identification
         // retries and an unchanged capture failure do not write one line per frame.
         if self.noted_backdrop != backdrop_diagnostic {
             self.noted_backdrop = backdrop_diagnostic;
-            probe::note(&format!(
-                "backdrop: report={:?} capture_status={:?} captured_window_id={:?}",
-                backdrop_diagnostic.window_identification,
-                backdrop_diagnostic.backdrop_status,
-                backdrop_diagnostic.captured_window_id,
-            ));
+            probe::note(&backdrop_diagnostic_record(backdrop_diagnostic));
         }
+    }
+
+    /// Record every capture attempt currently completed by the monitor.
+    fn note_completed_backdrop_attempts(&mut self, note: impl FnMut(&str)) {
+        note_backdrop_attempts(
+            self.monitor.take_completed_capture_attempt_diagnostics(),
+            note,
+        );
+    }
+
+    /// Record completions received after the frame's identification pass.
+    fn refresh_backdrop(&mut self, area: Rect, note: impl FnMut(&str)) {
+        self.monitor.refresh(area);
+        self.note_completed_backdrop_attempts(note);
+    }
+
+    /// Record capture completions still waiting when the event loop exits.
+    pub(crate) fn record_completed_backdrop_attempts_before_exit(&mut self) {
+        self.note_completed_backdrop_attempts(probe::note);
     }
 
     /// Move the screen's standing with the roster on one frame, and
@@ -1143,7 +1221,7 @@ impl Attract {
             return self.grid();
         }
 
-        probe::timed(Phase::Refresh, || self.monitor.refresh(area));
+        probe::timed(Phase::Refresh, || self.refresh_backdrop(area, probe::note));
         // A capture takes a few frames to arrive and is re-taken on a
         // timer, so having none for a moment is ordinary. Having none
         // for longer than that is the animation drawing nothing at all,
@@ -1279,11 +1357,15 @@ mod tests {
     use std::collections::HashSet;
 
     use ratatui::layout::Rect;
+    use tui_pane::BackdropMonitorCaptureTestDriver;
     use tui_pane::BandDirection;
     use tui_pane::BandFraying;
+    use tui_pane::CaptureAttemptTestCase;
+    use tui_pane::CaptureWindowSelectionMethod;
     use tui_pane::FRAME_POLL_MILLIS;
     use tui_pane::PixelFill;
     use tui_pane::PixelResolve;
+    use tui_pane::TerminalWindowCandidateSource;
     use tui_pane::TextDrift;
     use tui_pane::TextFill;
 
@@ -1312,6 +1394,236 @@ mod tests {
         CaptureFailure::PixelExtractionFailed,
         CaptureFailure::ImageReductionFailed,
     ];
+
+    /// Collect records from the production per-attempt writer.
+    fn capture_attempt_records<T>(capture_attempts: impl IntoIterator<Item = T>) -> Vec<String>
+    where
+        T: Into<BackdropAttemptDiagnostic>,
+    {
+        let mut records = Vec::new();
+        note_backdrop_attempts(capture_attempts, |record| records.push(record.to_owned()));
+        records
+    }
+
+    #[test]
+    fn backdrop_summary_reports_the_latest_attempt_window_selection() {
+        let latest_window_selection = LatestCaptureAttemptWindowSelection::Completed(
+            CaptureAttemptWindowSelection::Selected {
+                window_id: 42,
+                method:    CaptureWindowSelectionMethod::PinnedWindow,
+            },
+        );
+        let backdrop_diagnostic = BackdropDiagnostic {
+            window_identification: WindowIdentification::Identified { window_id: 42 },
+            backdrop_status: BackdropStatus::Ready,
+            captured_window_id: LastSuccessfulCaptureWindowId::Available { window_id: 42 },
+            latest_window_selection,
+        };
+
+        let record = backdrop_diagnostic_record(backdrop_diagnostic);
+
+        assert!(record.contains(&format!(
+            "latest_attempt_window_selection={latest_window_selection:?}"
+        )));
+    }
+
+    #[test]
+    fn failed_attempt_before_window_selection_reports_selection_not_reached() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        assert_eq!(
+            capture_test_driver.complete_capture_attempt(
+                &mut monitor,
+                CaptureAttemptTestCase::ShareableContentQueryFails,
+            ),
+            Ok(()),
+        );
+
+        let records = capture_attempt_records(monitor.take_completed_capture_attempt_diagnostics());
+
+        assert_eq!(
+            records,
+            ["backdrop_attempt: sequence=CaptureAttemptSequence(1) \
+              window_selection=SelectionNotReached \
+              capture_status=Failed(ShareableContentQueryFailed)"],
+        );
+    }
+
+    #[test]
+    fn every_capture_window_selection_method_is_reported() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let cases = [
+            (
+                CaptureAttemptTestCase::PinnedWindow { window_id: 41 },
+                CaptureAttemptWindowSelection::Selected {
+                    window_id: 41,
+                    method:    CaptureWindowSelectionMethod::PinnedWindow,
+                },
+            ),
+            (
+                CaptureAttemptTestCase::WindowOwnedByProcessAncestor { window_id: 42 },
+                CaptureAttemptWindowSelection::Selected {
+                    window_id: 42,
+                    method:    CaptureWindowSelectionMethod::ClosestSizeMatch {
+                        candidates: TerminalWindowCandidateSource::ProcessAncestry,
+                    },
+                },
+            ),
+            (
+                CaptureAttemptTestCase::WindowOwnedByTerminalProgram { window_id: 43 },
+                CaptureAttemptWindowSelection::Selected {
+                    window_id: 43,
+                    method:    CaptureWindowSelectionMethod::ClosestSizeMatch {
+                        candidates: TerminalWindowCandidateSource::TerminalProgramName,
+                    },
+                },
+            ),
+            (
+                CaptureAttemptTestCase::WindowOwnedByFrontmostApplication { window_id: 44 },
+                CaptureAttemptWindowSelection::Selected {
+                    window_id: 44,
+                    method:    CaptureWindowSelectionMethod::ClosestSizeMatch {
+                        candidates: TerminalWindowCandidateSource::FrontmostApplication,
+                    },
+                },
+            ),
+        ];
+        for (capture_attempt_test_case, _) in cases {
+            assert_eq!(
+                capture_test_driver
+                    .complete_capture_attempt(&mut monitor, capture_attempt_test_case),
+                Ok(()),
+            );
+        }
+        let completed_capture_attempt_diagnostics: Vec<_> = monitor
+            .take_completed_capture_attempt_diagnostics()
+            .collect();
+
+        let records =
+            capture_attempt_records(completed_capture_attempt_diagnostics.iter().copied());
+
+        assert_eq!(records.len(), cases.len());
+        for ((record, completed_capture_attempt_diagnostic), (_, window_selection)) in records
+            .iter()
+            .zip(&completed_capture_attempt_diagnostics)
+            .zip(cases)
+        {
+            assert_eq!(
+                completed_capture_attempt_diagnostic.window_selection(),
+                window_selection,
+            );
+            assert!(record.contains(&format!("window_selection={window_selection:?}")));
+        }
+    }
+
+    #[test]
+    fn identical_attempt_outcomes_write_distinct_sequence_records() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        for _ in 0..2 {
+            assert_eq!(
+                capture_test_driver.complete_capture_attempt(
+                    &mut monitor,
+                    CaptureAttemptTestCase::ShareableContentQueryFails,
+                ),
+                Ok(()),
+            );
+        }
+        let completed_capture_attempt_diagnostics: Vec<_> = monitor
+            .take_completed_capture_attempt_diagnostics()
+            .collect();
+
+        let records =
+            capture_attempt_records(completed_capture_attempt_diagnostics.iter().copied());
+
+        assert_eq!(
+            records,
+            [
+                "backdrop_attempt: sequence=CaptureAttemptSequence(1) \
+                 window_selection=SelectionNotReached \
+                 capture_status=Failed(ShareableContentQueryFailed)",
+                "backdrop_attempt: sequence=CaptureAttemptSequence(2) \
+                 window_selection=SelectionNotReached \
+                 capture_status=Failed(ShareableContentQueryFailed)",
+            ],
+        );
+        assert_ne!(
+            completed_capture_attempt_diagnostics[0].sequence(),
+            completed_capture_attempt_diagnostics[1].sequence(),
+        );
+    }
+
+    #[test]
+    fn completed_attempt_diagnostics_retain_newest_attempts_within_bound() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let retention = BackdropMonitorCaptureTestDriver::MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
+        let completed_attempts = retention + 1;
+        for _ in 0..completed_attempts {
+            assert_eq!(
+                capture_test_driver.complete_capture_attempt(
+                    &mut monitor,
+                    CaptureAttemptTestCase::ShareableContentQueryFails,
+                ),
+                Ok(()),
+            );
+        }
+
+        let retained_sequences: Vec<_> = monitor
+            .take_completed_capture_attempt_diagnostics()
+            .map(CompletedCaptureAttemptDiagnostic::sequence)
+            .collect();
+
+        assert_eq!(retained_sequences.len(), retention);
+        assert_eq!(
+            usize::try_from(retained_sequences[0].number()),
+            Ok(completed_attempts - retention + 1),
+        );
+        assert_eq!(
+            usize::try_from(retained_sequences[retention - 1].number()),
+            Ok(completed_attempts),
+        );
+        for sequence_pair in retained_sequences.windows(2) {
+            assert_eq!(
+                sequence_pair[1],
+                CaptureAttemptSequence::from(sequence_pair[0].number().wrapping_add(1)),
+            );
+        }
+    }
+
+    #[test]
+    fn monitor_without_a_completed_attempt_waits_for_its_first_selection_result() {
+        let monitor = BackdropMonitor::new();
+
+        assert_eq!(
+            monitor.latest_capture_attempt_window_selection(),
+            LatestCaptureAttemptWindowSelection::WaitingForFirstResult,
+        );
+    }
+
+    #[test]
+    fn completed_attempt_arriving_after_identify_is_recorded_during_refresh() {
+        let (monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let mut attract = Attract::new();
+        attract.monitor = monitor;
+        let mut records = Vec::new();
+
+        attract.note_completed_backdrop_attempts(|record| records.push(record.to_owned()));
+        assert!(records.is_empty());
+        assert_eq!(
+            capture_test_driver.send_capture_attempt(
+                &mut attract.monitor,
+                CaptureAttemptTestCase::ShareableContentQueryFails,
+            ),
+            Ok(()),
+        );
+
+        attract.refresh_backdrop(AREA, |record| records.push(record.to_owned()));
+
+        assert_eq!(
+            records,
+            ["backdrop_attempt: sequence=CaptureAttemptSequence(1) \
+              window_selection=SelectionNotReached \
+              capture_status=Failed(ShareableContentQueryFailed)"],
+        );
+    }
 
     /// Carry `attract` forward until the strip is the whole of what is
     /// on the screen, and answer how it went.

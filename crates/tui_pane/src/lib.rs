@@ -37,6 +37,9 @@ pub use backdrop::Backdrop;
 #[cfg(feature = "backdrop")]
 pub use backdrop::BackdropMonitor;
 #[cfg(feature = "backdrop")]
+#[doc(hidden)]
+pub use backdrop::BackdropMonitorCaptureTestDriver;
+#[cfg(feature = "backdrop")]
 pub use backdrop::BackdropStatus;
 #[cfg(feature = "backdrop")]
 pub use backdrop::BandDirection;
@@ -45,11 +48,29 @@ pub use backdrop::BandFraying;
 #[cfg(feature = "backdrop")]
 pub use backdrop::BandSettings;
 #[cfg(feature = "backdrop")]
+pub use backdrop::CaptureAttemptResult;
+#[cfg(feature = "backdrop")]
+pub use backdrop::CaptureAttemptSequence;
+#[cfg(feature = "backdrop")]
+#[doc(hidden)]
+pub use backdrop::CaptureAttemptTestCase;
+#[cfg(feature = "backdrop")]
+pub use backdrop::CaptureAttemptWindowSelection;
+#[cfg(feature = "backdrop")]
 pub use backdrop::CaptureFailure;
+#[cfg(feature = "backdrop")]
+#[doc(hidden)]
+pub use backdrop::CaptureTestDriverError;
+#[cfg(feature = "backdrop")]
+pub use backdrop::CaptureWindowSelectionMethod;
+#[cfg(feature = "backdrop")]
+pub use backdrop::CompletedCaptureAttemptDiagnostic;
 #[cfg(feature = "backdrop")]
 pub use backdrop::DriftingText;
 #[cfg(feature = "backdrop")]
 pub use backdrop::LastSuccessfulCaptureWindowId;
+#[cfg(feature = "backdrop")]
+pub use backdrop::LatestCaptureAttemptWindowSelection;
 #[cfg(feature = "backdrop")]
 pub use backdrop::PixelFill;
 #[cfg(feature = "backdrop")]
@@ -58,6 +79,8 @@ pub use backdrop::PixelResolve;
 pub use backdrop::PixelSettings;
 #[cfg(feature = "backdrop")]
 pub use backdrop::ResolvingPixels;
+#[cfg(feature = "backdrop")]
+pub use backdrop::TerminalWindowCandidateSource;
 #[cfg(feature = "backdrop")]
 pub use backdrop::TextDrift;
 #[cfg(feature = "backdrop")]
