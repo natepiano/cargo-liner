@@ -42,6 +42,24 @@ pub enum TerminalWindowCandidateSource {
     FrontmostApplication,
 }
 
+/// Which terminal window a capture should prefer before using the candidate-set heuristic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CaptureWindowTarget {
+    /// Prefer this exact window-server id while it remains available.
+    PreferWindow { window_id: u32 },
+    /// Select a window from the classified terminal-window candidates.
+    TerminalWindowHeuristic,
+}
+
+/// Whether a completed terminal-window lookup found a window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TerminalWindowSearchOutcome {
+    /// No terminal window satisfied the lookup.
+    NotFound,
+    /// The lookup found this window-server id.
+    Found { window_id: u32 },
+}
+
 /// A synthetic capture situation used to exercise the production selection path.
 ///
 /// This support type exists for a client crate's acceptance tests, which cannot use the private
@@ -371,15 +389,21 @@ fn frontmost_owner<W: TerminalWindowCandidate>(windows: &[W]) -> Option<i32> {
 /// Select a pinned window or the closest candidate and report how it was selected.
 fn select_capture_window<'a, W>(
     windows: &'a [W],
-    pinned: Option<u32>,
+    capture_window_target: CaptureWindowTarget,
     terminal_window_candidates: &TerminalWindowCandidates<'a, W>,
     window_id: impl Fn(&W) -> u32,
     closest_size_match: impl FnOnce() -> Result<&'a W, CaptureFailure>,
 ) -> Result<(&'a W, CaptureWindowSelectionMethod), CaptureFailure> {
-    let pinned_window = pinned
-        .and_then(|pinned| windows.iter().find(|window| window_id(window) == pinned))
-        .map(|window| (window, CaptureWindowSelectionMethod::PinnedWindow));
-    pinned_window.map_or_else(
+    let preferred_window = match capture_window_target {
+        CaptureWindowTarget::PreferWindow {
+            window_id: preferred_id,
+        } => windows
+            .iter()
+            .find(|window| window_id(window) == preferred_id)
+            .map(|window| (window, CaptureWindowSelectionMethod::PinnedWindow)),
+        CaptureWindowTarget::TerminalWindowHeuristic => None,
+    };
+    preferred_window.map_or_else(
         || {
             closest_size_match().map(|window| {
                 (
@@ -449,7 +473,7 @@ impl TerminalWindowCandidate for CaptureAttemptTestWindow {
 /// Run a client acceptance test through the same selection helper as the macOS capture backend.
 pub(super) fn capture_attempt_for_test(
     sequence: CaptureAttemptSequence,
-    pinned: Option<u32>,
+    capture_window_target: CaptureWindowTarget,
     capture_attempt_test_case: CaptureAttemptTestCase,
 ) -> CaptureAttemptResult {
     let capture_attempt_test_window = match capture_attempt_test_case {
@@ -492,7 +516,7 @@ pub(super) fn capture_attempt_for_test(
     );
     let selected = select_capture_window(
         &windows,
-        pinned,
+        capture_window_target,
         &terminal_window_candidates,
         |window| window.window_id,
         || {
@@ -662,10 +686,9 @@ impl Desktop {
     /// The failure identifies the capture stage that could not produce
     /// a desktop. The animation remains decoration, so callers may keep
     /// drawing the last successful capture while exposing that status.
-    /// `pinned` is the window this app has been found to be drawn in,
-    /// where [`window_titled`] settled it. Without one the window is
-    /// picked by size alone, which cannot tell two windows of the same
-    /// size apart.
+    /// `capture_window_target` carries the exact window this app was found to be drawn in, or
+    /// requests the terminal-window candidate heuristic. The heuristic cannot tell two windows of
+    /// the same size apart.
     #[cfg_attr(
         not(target_os = "macos"),
         allow(
@@ -676,10 +699,10 @@ impl Desktop {
     )]
     pub(super) fn capture(
         metrics: Metrics,
-        pinned: Option<u32>,
+        capture_window_target: CaptureWindowTarget,
         sequence: CaptureAttemptSequence,
     ) -> CaptureAttemptResult {
-        platform::capture(metrics, pinned, sequence)
+        platform::capture(metrics, capture_window_target, sequence)
     }
 
     /// The window this capture was taken for, as the window server
@@ -784,8 +807,7 @@ pub(super) fn window_frame(window: u32) -> Option<Frame> { platform::window_fram
 )]
 pub(super) fn window_titles() -> Vec<(u32, Option<String>)> { platform::window_titles() }
 
-/// The emulator's window whose title holds `marker`, or [`None`] while
-/// the window server has yet to see the title change.
+/// Whether the emulator has a window whose title holds `marker`.
 ///
 /// This is how one of an emulator's windows is told from another. Size
 /// cannot do it -- two windows opened side by side are commonly the
@@ -801,10 +823,13 @@ pub(super) fn window_titles() -> Vec<(u32, Option<String>)> { platform::window_t
                   macOS module this delegates to calls the window server"
     )
 )]
-pub(super) fn window_titled(marker: &str) -> Option<u32> { platform::window_titled(marker) }
+pub(super) fn window_titled(marker: &str) -> TerminalWindowSearchOutcome {
+    platform::window_titled(marker).map_or(TerminalWindowSearchOutcome::NotFound, |window_id| {
+        TerminalWindowSearchOutcome::Found { window_id }
+    })
+}
 
-/// The emulator's window standing at `origin`, as the window server
-/// numbers it, or [`None`] where none of them stands near enough to it.
+/// Whether an emulator window stands at `origin`.
 ///
 /// This is the other way of telling one of an emulator's windows from
 /// another, and the better one: rather than making the terminal wear a
@@ -826,7 +851,11 @@ pub(super) fn window_titled(marker: &str) -> Option<u32> { platform::window_titl
                   macOS module this delegates to calls the window server"
     )
 )]
-pub(super) fn window_at(origin: (f64, f64)) -> Option<u32> { platform::window_at(origin) }
+pub(super) fn window_at(origin: (f64, f64)) -> TerminalWindowSearchOutcome {
+    platform::window_at(origin).map_or(TerminalWindowSearchOutcome::NotFound, |window_id| {
+        TerminalWindowSearchOutcome::Found { window_id }
+    })
+}
 
 /// A distance measured in cells, as a whole number of them.
 ///
@@ -906,6 +935,7 @@ mod platform {
     use super::CaptureAttemptSequence;
     use super::CaptureAttemptWindowSelection;
     use super::CaptureFailure;
+    use super::CaptureWindowTarget;
     use super::Desktop;
     use super::Frame;
     use super::Metrics;
@@ -958,7 +988,7 @@ mod platform {
     /// See [`Desktop::capture`].
     pub(super) fn capture(
         metrics: Metrics,
-        pinned: Option<u32>,
+        capture_window_target: CaptureWindowTarget,
         sequence: CaptureAttemptSequence,
     ) -> CaptureAttemptResult {
         let Ok(content) = SCShareableContent::get() else {
@@ -986,7 +1016,7 @@ mod platform {
         // never took, and for the window closed since it did.
         let selected = select_capture_window(
             &windows,
-            pinned,
+            capture_window_target,
             &terminal_window_candidates,
             SCWindow::window_id,
             || {
@@ -1144,7 +1174,7 @@ mod platform {
             .map(|window| (window.number, away(window.bounds, origin)))
             .filter(|(_, away)| *away <= POSITION_TOLERANCE)
             .min_by(|(_, left), (_, right)| left.total_cmp(right))
-            .map(|(window, _)| window)
+            .map(|(window_id, _)| window_id)
     }
 
     /// How far a window's corner stands from `origin`, for
@@ -1979,6 +2009,7 @@ mod platform {
     use super::CaptureAttemptResult;
     use super::CaptureAttemptSequence;
     use super::CaptureFailure;
+    use super::CaptureWindowTarget;
     use super::Frame;
     use super::Metrics;
     use super::capture_failure_before_window_selection;
@@ -1986,7 +2017,7 @@ mod platform {
     /// No capture backend outside macOS, so nothing is drawn.
     pub(super) const fn capture(
         _: Metrics,
-        _: Option<u32>,
+        _: CaptureWindowTarget,
         sequence: CaptureAttemptSequence,
     ) -> CaptureAttemptResult {
         capture_failure_before_window_selection(sequence, CaptureFailure::UnsupportedPlatform)

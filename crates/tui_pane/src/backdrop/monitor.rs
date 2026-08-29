@@ -40,6 +40,8 @@ use crossbeam_channel::TrySendError;
 use ratatui::layout::Rect;
 
 use super::Backdrop;
+use super::CaptureWindowTarget;
+use super::TerminalWindowSearchOutcome;
 use super::constants::CAPTURE_ATTEMPT_DEADLINE;
 use super::constants::CAPTURE_REFRESH;
 use super::constants::CAPTURE_RETRY;
@@ -79,6 +81,173 @@ pub enum WindowIdentification {
     Fallback,
 }
 
+/// Identification progress and the data retained only while a terminal-window search is active.
+#[derive(Debug, Default)]
+enum WindowIdentificationState {
+    /// No identification pass has been attempted.
+    #[default]
+    NotAttempted,
+    /// The terminal position query has failed and no marker title has been installed.
+    PendingBeforeMarker {
+        /// How many identification passes have run.
+        attempts_consumed: u32,
+        /// When the most recent pass ran.
+        attempted_at:      Instant,
+    },
+    /// A marker title is installed while later passes look for the window wearing it.
+    PendingWithMarker {
+        /// How many identification passes have run.
+        attempts_consumed: u32,
+        /// When the most recent pass ran.
+        attempted_at:      Instant,
+        /// The titles to restore after the marker identifies a window or the search ends.
+        previous_titles:   Vec<(u32, Option<String>)>,
+    },
+    /// Identification settled on this exact window.
+    Identified { window_id: u32 },
+    /// Identification attempts are exhausted and capture should use the candidate-set heuristic.
+    Fallback,
+}
+
+impl WindowIdentificationState {
+    /// Project the private search state into the public identification report.
+    const fn report(&self) -> WindowIdentification {
+        match self {
+            Self::NotAttempted => window_identification(0, TerminalWindowSearchOutcome::NotFound),
+            Self::PendingBeforeMarker {
+                attempts_consumed, ..
+            }
+            | Self::PendingWithMarker {
+                attempts_consumed, ..
+            } => window_identification(*attempts_consumed, TerminalWindowSearchOutcome::NotFound),
+            Self::Identified { window_id } => WindowIdentification::Identified {
+                window_id: *window_id,
+            },
+            Self::Fallback => WindowIdentification::Fallback,
+        }
+    }
+
+    /// Project the search state into the target passed through the capture worker.
+    const fn capture_window_target(&self) -> CaptureWindowTarget {
+        match self {
+            Self::Identified { window_id } => CaptureWindowTarget::PreferWindow {
+                window_id: *window_id,
+            },
+            Self::NotAttempted
+            | Self::PendingBeforeMarker { .. }
+            | Self::PendingWithMarker { .. }
+            | Self::Fallback => CaptureWindowTarget::TerminalWindowHeuristic,
+        }
+    }
+
+    /// Run the next due identification pass and retain any data required by a later pass.
+    fn identify(&mut self, out: &mut impl Write) -> WindowIdentification {
+        match self {
+            Self::Identified { .. } | Self::Fallback => return self.report(),
+            Self::PendingBeforeMarker { attempted_at, .. }
+            | Self::PendingWithMarker { attempted_at, .. }
+                if attempted_at.elapsed() < IDENTIFY_RETRY =>
+            {
+                return self.report();
+            },
+            Self::NotAttempted
+            | Self::PendingBeforeMarker { .. }
+            | Self::PendingWithMarker { .. } => {},
+        }
+
+        match std::mem::take(self) {
+            Self::NotAttempted => self.run_first_attempt(out),
+            Self::PendingBeforeMarker {
+                attempts_consumed, ..
+            } => self.run_marker_setup_attempt(out, attempts_consumed + 1, Instant::now()),
+            Self::PendingWithMarker {
+                attempts_consumed,
+                previous_titles,
+                ..
+            } => self.run_marker_lookup_attempt(
+                out,
+                attempts_consumed + 1,
+                Instant::now(),
+                previous_titles,
+            ),
+            terminal_state @ (Self::Identified { .. } | Self::Fallback) => {
+                *self = terminal_state;
+            },
+        }
+        self.report()
+    }
+
+    /// Ask the terminal for its window position before installing a marker title.
+    fn run_first_attempt(&mut self, out: &mut impl Write) {
+        let attempted_at = Instant::now();
+        let terminal_window_search_outcome = query::window_origin(out)
+            .map_or(TerminalWindowSearchOutcome::NotFound, desktop::window_at);
+        match terminal_window_search_outcome {
+            TerminalWindowSearchOutcome::Found { window_id } => {
+                *self = Self::Identified { window_id };
+            },
+            TerminalWindowSearchOutcome::NotFound => {
+                self.run_marker_setup_attempt(out, 1, attempted_at);
+            },
+        }
+    }
+
+    /// Install the marker after retaining the titles that may need restoration.
+    fn run_marker_setup_attempt(
+        &mut self,
+        out: &mut impl Write,
+        attempts_consumed: u32,
+        attempted_at: Instant,
+    ) {
+        let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
+        let previous_titles = desktop::window_titles();
+        if set_title(out, &marker).is_err() {
+            *self = if attempts_consumed >= IDENTIFY_PASSES {
+                Self::Fallback
+            } else {
+                Self::PendingBeforeMarker {
+                    attempts_consumed,
+                    attempted_at,
+                }
+            };
+            return;
+        }
+        self.run_marker_lookup_attempt(out, attempts_consumed, attempted_at, previous_titles);
+    }
+
+    /// Look for the window wearing the installed marker and retain its original titles if needed.
+    fn run_marker_lookup_attempt(
+        &mut self,
+        out: &mut impl Write,
+        attempts_consumed: u32,
+        attempted_at: Instant,
+        previous_titles: Vec<(u32, Option<String>)>,
+    ) {
+        let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
+        match desktop::window_titled(&marker) {
+            TerminalWindowSearchOutcome::Found { window_id } => {
+                let restored = previous_titles
+                    .iter()
+                    .find(|(id, _)| *id == window_id)
+                    .and_then(|(_, title)| title.as_deref());
+                let _ = set_title(out, restored.unwrap_or(""));
+                *self = Self::Identified { window_id };
+            },
+            TerminalWindowSearchOutcome::NotFound if attempts_consumed >= IDENTIFY_PASSES => {
+                let _ = set_title(out, "");
+                *self = Self::Fallback;
+            },
+            TerminalWindowSearchOutcome::NotFound => {
+                *self = Self::PendingWithMarker {
+                    attempts_consumed,
+                    attempted_at,
+                    previous_titles,
+                };
+            },
+        }
+    }
+}
+
 /// The window id used by the most recent successful capture.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LastSuccessfulCaptureWindowId {
@@ -89,15 +258,6 @@ pub enum LastSuccessfulCaptureWindowId {
         /// The window-server id used by the capture.
         window_id: u32,
     },
-}
-
-/// Whether an identification pass settled on a window.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WindowSearchOutcome {
-    /// No window was found.
-    NotFound,
-    /// A window was found with this window-server id.
-    Found { window_id: u32 },
 }
 
 /// The result of the capture worker's latest completed attempt.
@@ -139,7 +299,7 @@ enum LastSuccessfulDesktop {
 #[derive(Debug)]
 struct ActiveCaptureWorker {
     /// Requests sent to this worker.
-    requests: Sender<Request>,
+    requests: Sender<CaptureRequest>,
     /// Completed attempts returned by this worker.
     captures: Receiver<CaptureAttemptResult>,
 }
@@ -173,7 +333,7 @@ enum CaptureTestWorkerEndpoints {
     /// Endpoints corresponding to the monitor's active synthetic worker.
     Active {
         /// Requests taken from the monitor.
-        requests: Receiver<Request>,
+        requests: Receiver<CaptureRequest>,
         /// Results returned to the monitor.
         captures: Sender<CaptureAttemptResult>,
     },
@@ -285,80 +445,52 @@ impl CaptureWorkerLauncher {
 #[derive(Debug)]
 pub struct BackdropMonitor {
     /// The current worker endpoints, or that capture can no longer continue.
-    capture_worker:           CaptureWorkerAvailability,
+    capture_worker:              CaptureWorkerAvailability,
     /// How initial and replacement capture workers are launched.
-    capture_worker_launcher:  CaptureWorkerLauncher,
+    capture_worker_launcher:     CaptureWorkerLauncher,
     /// Successful replacement launches after the initial worker.
-    worker_replacements:      usize,
+    worker_replacements:         usize,
     /// Windows the position worker should look up next.
-    watches:                  Sender<u32>,
+    watches:                     Sender<u32>,
     /// Where the position worker last found the window it was given, or
     /// [`None`] where the window server would not describe it.
-    frames:                   Receiver<Option<Frame>>,
+    frames:                      Receiver<Option<Frame>>,
     /// The newest desktop that captured successfully, retained across failures.
-    last_successful_desktop:  LastSuccessfulDesktop,
+    last_successful_desktop:     LastSuccessfulDesktop,
     /// The outcome of the newest completed capture attempt.
-    status:                   BackdropStatus,
+    status:                      BackdropStatus,
     /// What terminal window the newest completed capture attempt selected.
-    latest_window_selection:  LatestCaptureAttemptWindowSelection,
+    latest_window_selection:     LatestCaptureAttemptWindowSelection,
     /// Completed attempt diagnostics not yet taken by the caller.
-    completed_attempts:       VecDeque<CompletedCaptureAttemptDiagnostic>,
+    completed_attempts:          VecDeque<CompletedCaptureAttemptDiagnostic>,
     /// The sequence to assign to the next accepted capture request.
-    next_sequence:            CaptureAttemptSequence,
+    next_sequence:               CaptureAttemptSequence,
     /// The newest window frame that has arrived, a frame or two behind
     /// where the window is now.
-    frame:                    Option<Frame>,
+    frame:                       Option<Frame>,
     /// The area of the newest capture the caller is drawing over, read
     /// afresh every frame.
-    current:                  Option<Backdrop>,
+    current:                     Option<Backdrop>,
     /// Request timing used to pace routine and retry captures.
-    capture_request_cadence:  CaptureRequestCadence,
+    capture_request_cadence:     CaptureRequestCadence,
     /// The attempt the active worker has not returned yet.
-    capture_attempt_progress: CaptureAttemptProgress,
+    capture_attempt_progress:    CaptureAttemptProgress,
     /// Where the window stood on the previous frame, which is how a
     /// window being dragged is told from one standing still.
-    placement:                Option<Placement>,
-    /// The window this app was found to be drawn in, once
-    /// [`identify`](Self::identify) has settled it.
-    pinned:                   Option<u32>,
-    /// How many passes at settling on a window have been made, so that
-    /// a terminal which will not wear a title is given up on rather
-    /// than asked once a frame for the length of the run.
-    attempts:                 u32,
-    /// When the last pass was made, which is what paces them: a title
-    /// needs time to reach the emulator and the window server, and
-    /// asking again inside that time only loses the same race twice.
-    attempted_at:             Option<Instant>,
-    /// Whether the emulator has been asked outright where its window
-    /// stands.
-    ///
-    /// Asked once and no more, unlike the marker title. A title loses
-    /// races -- to a busy emulator, to a title the reader pinned --
-    /// and losing one says nothing about the next. The query races
-    /// nothing: it is flushed, so the emulator has it in hand before
-    /// the wait starts, and a terminal that did not answer it then
-    /// does not know it.
-    asked:                    bool,
-    /// What every window was titled before this app's own put the
-    /// marker on, so that the window found wearing it can be given its
-    /// title back.
-    ///
-    /// Read once, on the pass that sets the marker, and kept because
-    /// the marker outlives that pass -- see
-    /// [`identify`](Self::identify).
-    titles:                   Option<Vec<(u32, Option<String>)>>,
+    placement:                   Option<Placement>,
+    /// Progress and phase-dependent data for terminal-window identification.
+    window_identification_state: WindowIdentificationState,
 }
 
 /// One capture, as the worker is asked for it.
 #[derive(Clone, Copy, Debug)]
-struct Request {
+struct CaptureRequest {
     /// The monitor-local sequence assigned to this attempt.
-    sequence: CaptureAttemptSequence,
+    sequence:      CaptureAttemptSequence,
     /// The cell sizes to reduce the capture to.
-    metrics:  Metrics,
-    /// The window to capture the display behind, where one has been
-    /// settled on.
-    window:   Option<u32>,
+    metrics:       Metrics,
+    /// Which terminal window the capture should prefer or find through the candidate heuristic.
+    window_target: CaptureWindowTarget,
 }
 
 impl Default for BackdropMonitor {
@@ -421,11 +553,7 @@ impl BackdropMonitor {
             capture_request_cadence: CaptureRequestCadence::DueImmediately,
             capture_attempt_progress: CaptureAttemptProgress::Idle,
             placement: None,
-            pinned: None,
-            attempts: 0,
-            attempted_at: None,
-            asked: false,
-            titles: None,
+            window_identification_state: WindowIdentificationState::default(),
         }
     }
 
@@ -474,86 +602,7 @@ impl BackdropMonitor {
     /// answered on this app's own input, and a second reader takes the
     /// bytes this one is waiting for.
     pub fn identify(&mut self, out: &mut impl Write) -> WindowIdentification {
-        if let Some(window_id) = self.pinned {
-            return window_identification(self.attempts, WindowSearchOutcome::Found { window_id });
-        }
-        if self.attempts >= IDENTIFY_PASSES {
-            return window_identification(self.attempts, WindowSearchOutcome::NotFound);
-        }
-        // Paced rather than run back to back: what a pass is waiting on
-        // is the emulator draining whatever stands between it and the
-        // marker, and nothing about that is faster for being asked
-        // again immediately.
-        if self
-            .attempted_at
-            .is_some_and(|at| at.elapsed() < IDENTIFY_RETRY)
-        {
-            return window_identification(self.attempts, WindowSearchOutcome::NotFound);
-        }
-        self.attempts += 1;
-        self.attempted_at = Some(Instant::now());
-        // Asking the emulator where it is comes first, and settles it
-        // outright where the emulator answers. Nothing below runs then
-        // -- no title is set, and no window wears a marker that has to
-        // be taken off again.
-        if !self.asked {
-            self.asked = true;
-            self.pinned = query::window_origin(out).and_then(desktop::window_at);
-            if let Some(window_id) = self.pinned {
-                return window_identification(
-                    self.attempts,
-                    WindowSearchOutcome::Found { window_id },
-                );
-            }
-        }
-        let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
-        // The marker goes on once and is left on until something
-        // answers it.
-        //
-        // What a pass is waiting for is the emulator drawing the title
-        // and the window server coming to see it, and the pause between
-        // passes is the only part of this long enough for that to
-        // happen. A marker put on and taken off inside one pass is worn
-        // for as long as the asking takes -- a fraction of a
-        // millisecond, now that the window server is asked the cheap
-        // way -- and no emulator is quick enough to be caught wearing
-        // it.
-        if self.titles.is_none() {
-            // What every window is titled now, so that the one found to
-            // be wearing the marker can be given its own title back.
-            // Read before the marker goes on, and kept only once it
-            // has: a marker that could not be set is not worn, and a
-            // pass that took this for worn would look for a title
-            // nothing ever wore.
-            let titles = desktop::window_titles();
-            if set_title(out, &marker).is_err() {
-                return window_identification(self.attempts, WindowSearchOutcome::NotFound);
-            }
-            self.titles = Some(titles);
-        }
-        let found = desktop::window_titled(&marker);
-        // The marker comes off once it has been answered, and once
-        // there is no pass left to answer it. Nothing else takes it
-        // off, so a run ending between those two leaves the emulator
-        // wearing the marker until whatever usually writes the title --
-        // a shell prompt, in every ordinary setup -- writes it again.
-        // That is the price of the marker being worn long enough to be
-        // seen at all.
-        if found.is_some() || self.attempts >= IDENTIFY_PASSES {
-            let restored = found
-                .and_then(|window| self.titles.as_ref()?.iter().find(|(id, _)| *id == window))
-                .and_then(|(_, title)| title.as_deref());
-            // An empty title is what a window that had none goes back
-            // to, and it is also all there is to offer for a window the
-            // window server would not describe -- the emulator settles
-            // what to show in its place.
-            let _ = set_title(out, restored.unwrap_or(""));
-        }
-        self.pinned = found;
-        let window_search_outcome = found.map_or(WindowSearchOutcome::NotFound, |window_id| {
-            WindowSearchOutcome::Found { window_id }
-        });
-        window_identification(self.attempts, window_search_outcome)
+        self.window_identification_state.identify(out)
     }
 
     /// Take delivery of anything either worker has finished, read `area`
@@ -621,10 +670,10 @@ impl BackdropMonitor {
         ) {
             return;
         }
-        let request = Request {
+        let request = CaptureRequest {
             sequence: self.next_sequence,
             metrics,
-            window: self.pinned,
+            window_target: self.window_identification_state.capture_window_target(),
         };
         let send_result = match &self.capture_worker {
             CaptureWorkerAvailability::Active(active_capture_worker) => {
@@ -817,7 +866,7 @@ impl BackdropMonitorCaptureTestDriver {
         MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
 
     /// Take the request currently waiting on the active synthetic worker.
-    fn take_capture_request(&self) -> Result<Request, CaptureTestDriverError> {
+    fn take_capture_request(&self) -> Result<CaptureRequest, CaptureTestDriverError> {
         let endpoints = self
             .endpoints
             .lock()
@@ -856,7 +905,7 @@ impl BackdropMonitorCaptureTestDriver {
         &self,
         monitor: &mut BackdropMonitor,
     ) -> Result<OutstandingCaptureAttempt, CaptureTestDriverError> {
-        monitor.pinned = None;
+        monitor.window_identification_state = WindowIdentificationState::NotAttempted;
         monitor.request_capture_if_worker_available(Metrics::for_capture_test());
         let request = self.take_capture_request()?;
         let CaptureAttemptProgress::Outstanding(outstanding_capture_attempt) =
@@ -880,18 +929,22 @@ impl BackdropMonitorCaptureTestDriver {
         monitor: &mut BackdropMonitor,
         capture_attempt_test_case: CaptureAttemptTestCase,
     ) -> Result<(), CaptureTestDriverError> {
-        monitor.pinned = match capture_attempt_test_case {
-            CaptureAttemptTestCase::PinnedWindow { window_id } => Some(window_id),
+        monitor.window_identification_state = match capture_attempt_test_case {
+            CaptureAttemptTestCase::PinnedWindow { window_id } => {
+                WindowIdentificationState::Identified { window_id }
+            },
             CaptureAttemptTestCase::ShareableContentQueryFails
             | CaptureAttemptTestCase::WindowOwnedByProcessAncestor { .. }
             | CaptureAttemptTestCase::WindowOwnedByTerminalProgram { .. }
-            | CaptureAttemptTestCase::WindowOwnedByFrontmostApplication { .. } => None,
+            | CaptureAttemptTestCase::WindowOwnedByFrontmostApplication { .. } => {
+                WindowIdentificationState::NotAttempted
+            },
         };
         monitor.request_capture_if_worker_available(Metrics::for_capture_test());
         let request = self.take_capture_request()?;
         let capture_attempt_result = desktop::capture_attempt_for_test(
             request.sequence,
-            request.window,
+            request.window_target,
             capture_attempt_test_case,
         );
         self.send_capture_result(capture_attempt_result)
@@ -963,11 +1016,13 @@ impl BackdropMonitorCaptureTestDriver {
 /// Map consumed identification attempts to the progress reported to callers.
 const fn window_identification(
     attempts_consumed: u32,
-    window_search_outcome: WindowSearchOutcome,
+    terminal_window_search_outcome: TerminalWindowSearchOutcome,
 ) -> WindowIdentification {
-    match window_search_outcome {
-        WindowSearchOutcome::Found { window_id } => WindowIdentification::Identified { window_id },
-        WindowSearchOutcome::NotFound => match attempts_consumed {
+    match terminal_window_search_outcome {
+        TerminalWindowSearchOutcome::Found { window_id } => {
+            WindowIdentification::Identified { window_id }
+        },
+        TerminalWindowSearchOutcome::NotFound => match attempts_consumed {
             0 => WindowIdentification::NotAttempted,
             IDENTIFY_PASSES.. => WindowIdentification::Fallback,
             _ => WindowIdentification::Pending,
@@ -978,12 +1033,12 @@ const fn window_identification(
 /// Worker loop: capture the display for each cell size asked for and
 /// send the result back. Exits when the monitor drops and the request
 /// channel disconnects.
-fn capture_loop(requests: &Receiver<Request>, captures: &Sender<CaptureAttemptResult>) {
+fn capture_loop(requests: &Receiver<CaptureRequest>, captures: &Sender<CaptureAttemptResult>) {
     while let Ok(request) = requests.recv() {
         if captures
             .send(Desktop::capture(
                 request.metrics,
-                request.window,
+                request.window_target,
                 request.sequence,
             ))
             .is_err()
@@ -1025,9 +1080,13 @@ fn position_loop(watches: &Receiver<u32>, frames: &Sender<Option<Frame>>) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use super::CaptureWindowTarget;
     use super::IDENTIFY_PASSES;
+    use super::TerminalWindowSearchOutcome;
     use super::WindowIdentification;
-    use super::WindowSearchOutcome;
+    use super::WindowIdentificationState;
     use super::window_identification;
 
     const WINDOW_ID: u32 = 42;
@@ -1035,7 +1094,7 @@ mod tests {
     #[test]
     fn identification_is_not_attempted_before_a_pass_runs() {
         assert_eq!(
-            window_identification(0, WindowSearchOutcome::NotFound),
+            window_identification(0, TerminalWindowSearchOutcome::NotFound),
             WindowIdentification::NotAttempted,
         );
     }
@@ -1045,7 +1104,7 @@ mod tests {
         assert_eq!(
             window_identification(
                 1,
-                WindowSearchOutcome::Found {
+                TerminalWindowSearchOutcome::Found {
                     window_id: WINDOW_ID,
                 },
             ),
@@ -1058,7 +1117,7 @@ mod tests {
     #[test]
     fn the_first_spent_allowance_stays_pending() {
         assert_eq!(
-            window_identification(1, WindowSearchOutcome::NotFound),
+            window_identification(1, TerminalWindowSearchOutcome::NotFound),
             WindowIdentification::Pending,
         );
     }
@@ -1066,7 +1125,7 @@ mod tests {
     #[test]
     fn the_last_remaining_allowance_stays_pending() {
         assert_eq!(
-            window_identification(IDENTIFY_PASSES - 1, WindowSearchOutcome::NotFound),
+            window_identification(IDENTIFY_PASSES - 1, TerminalWindowSearchOutcome::NotFound,),
             WindowIdentification::Pending,
         );
     }
@@ -1074,8 +1133,79 @@ mod tests {
     #[test]
     fn exhausting_every_allowance_uses_fallback() {
         assert_eq!(
-            window_identification(IDENTIFY_PASSES, WindowSearchOutcome::NotFound),
+            window_identification(IDENTIFY_PASSES, TerminalWindowSearchOutcome::NotFound,),
             WindowIdentification::Fallback,
+        );
+    }
+
+    #[test]
+    fn not_attempted_state_projects_report_and_capture_target() {
+        let state = WindowIdentificationState::NotAttempted;
+
+        assert_eq!(state.report(), WindowIdentification::NotAttempted);
+        assert_eq!(
+            state.capture_window_target(),
+            CaptureWindowTarget::TerminalWindowHeuristic,
+        );
+    }
+
+    #[test]
+    fn pending_before_marker_state_projects_report_and_capture_target() {
+        let state = WindowIdentificationState::PendingBeforeMarker {
+            attempts_consumed: 1,
+            attempted_at:      Instant::now(),
+        };
+
+        assert_eq!(state.report(), WindowIdentification::Pending);
+        assert_eq!(
+            state.capture_window_target(),
+            CaptureWindowTarget::TerminalWindowHeuristic,
+        );
+    }
+
+    #[test]
+    fn pending_with_marker_state_projects_report_and_capture_target() {
+        let state = WindowIdentificationState::PendingWithMarker {
+            attempts_consumed: 1,
+            attempted_at:      Instant::now(),
+            previous_titles:   Vec::new(),
+        };
+
+        assert_eq!(state.report(), WindowIdentification::Pending);
+        assert_eq!(
+            state.capture_window_target(),
+            CaptureWindowTarget::TerminalWindowHeuristic,
+        );
+    }
+
+    #[test]
+    fn identified_state_projects_report_and_capture_target() {
+        let state = WindowIdentificationState::Identified {
+            window_id: WINDOW_ID,
+        };
+
+        assert_eq!(
+            state.report(),
+            WindowIdentification::Identified {
+                window_id: WINDOW_ID,
+            },
+        );
+        assert_eq!(
+            state.capture_window_target(),
+            CaptureWindowTarget::PreferWindow {
+                window_id: WINDOW_ID,
+            },
+        );
+    }
+
+    #[test]
+    fn fallback_state_projects_report_and_capture_target() {
+        let state = WindowIdentificationState::Fallback;
+
+        assert_eq!(state.report(), WindowIdentification::Fallback);
+        assert_eq!(
+            state.capture_window_target(),
+            CaptureWindowTarget::TerminalWindowHeuristic,
         );
     }
 }
