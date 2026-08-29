@@ -368,6 +368,12 @@ pub(super) const TEXT_WAVE_SUBLINES_PER_SECOND: u32 = LANE_FRACTION_UNIT / 2;
 pub(super) const LANE_FRACTION_UNIT: u32 = 4096;
 
 // capture
+/// How long a capture worker may hold one attempt without returning a result.
+///
+/// Healthy attempts complete well under a second. Five seconds leaves substantial room for a
+/// temporarily busy window server while still recovering before one stalled completion handler
+/// disables capture for the rest of the process.
+pub(super) const CAPTURE_ATTEMPT_DEADLINE: Duration = Duration::from_secs(5);
 /// How often the worker takes a fresh capture.
 ///
 /// What a capture goes stale for is the desktop behind the window
@@ -384,6 +390,11 @@ pub(super) const CAPTURE_REFRESH: Duration = Duration::from_millis(1000);
 /// a window parked off every display is not asking the window server
 /// for a full capture every frame.
 pub(super) const CAPTURE_RETRY: Duration = Duration::from_millis(150);
+/// Maximum number of replacement capture workers a monitor may launch.
+///
+/// A worker abandoned after [`CAPTURE_ATTEMPT_DEADLINE`] can remain blocked in
+/// `ScreenCaptureKit` for the life of the process. This bound limits those retained threads.
+pub(super) const MAX_CAPTURE_WORKER_REPLACEMENTS: usize = 3;
 /// Maximum number of completed capture attempt diagnostics retained between drains.
 ///
 /// At the [`CAPTURE_RETRY`] cadence, 64 diagnostics span about ten seconds, far longer than a

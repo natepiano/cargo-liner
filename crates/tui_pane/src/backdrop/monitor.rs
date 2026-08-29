@@ -28,19 +28,25 @@ use std::collections::VecDeque;
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
+use crossbeam_channel::TryRecvError;
+use crossbeam_channel::TrySendError;
 use ratatui::layout::Rect;
 
 use super::Backdrop;
+use super::constants::CAPTURE_ATTEMPT_DEADLINE;
 use super::constants::CAPTURE_REFRESH;
 use super::constants::CAPTURE_RETRY;
 use super::constants::IDENTIFY_MARKER;
 use super::constants::IDENTIFY_PASSES;
 use super::constants::IDENTIFY_RETRY;
+use super::constants::MAX_CAPTURE_WORKER_REPLACEMENTS;
 use super::constants::MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
 use super::desktop;
 use super::desktop::CaptureAttemptResult;
@@ -129,6 +135,87 @@ enum LastSuccessfulDesktop {
     },
 }
 
+/// The request and result endpoints owned by one live capture worker.
+#[derive(Debug)]
+struct ActiveCaptureWorker {
+    /// Requests sent to this worker.
+    requests: Sender<Request>,
+    /// Completed attempts returned by this worker.
+    captures: Receiver<CaptureAttemptResult>,
+}
+
+/// Whether the monitor still has a capture worker it can request from.
+#[derive(Debug)]
+enum CaptureWorkerAvailability {
+    /// Requests and results are connected to this worker.
+    Active(ActiveCaptureWorker),
+    /// No more capture requests can be made.
+    PermanentlyUnavailable,
+}
+
+/// How a monitor creates its initial and replacement capture workers.
+#[derive(Debug)]
+enum CaptureWorkerLauncher {
+    /// Spawn an operating-system thread running [`capture_loop`].
+    Threaded,
+    /// Install fresh synchronous endpoints for [`BackdropMonitorCaptureTestDriver`].
+    TestDriver {
+        /// The endpoint slot shared with the test driver.
+        endpoints: Arc<Mutex<CaptureTestWorkerEndpoints>>,
+    },
+}
+
+/// The capture endpoints currently available to a synchronous test driver.
+#[derive(Debug)]
+enum CaptureTestWorkerEndpoints {
+    /// The monitor has not installed a worker yet, or no worker remains available.
+    NoActiveWorker,
+    /// Endpoints corresponding to the monitor's active synthetic worker.
+    Active {
+        /// Requests taken from the monitor.
+        requests: Receiver<Request>,
+        /// Results returned to the monitor.
+        captures: Sender<CaptureAttemptResult>,
+    },
+}
+
+/// The most recent accepted capture request time used to pace later requests.
+#[derive(Clone, Copy, Debug)]
+enum CaptureRequestCadence {
+    /// No request has been accepted, or a replacement worker should run immediately.
+    DueImmediately,
+    /// The most recent request was accepted at this instant.
+    RequestedAt(Instant),
+}
+
+impl CaptureRequestCadence {
+    /// Time elapsed since the latest request, or the ordinary refresh interval before the first.
+    fn elapsed(self) -> Duration {
+        match self {
+            Self::DueImmediately => CAPTURE_REFRESH,
+            Self::RequestedAt(requested_at) => requested_at.elapsed(),
+        }
+    }
+}
+
+/// A capture request accepted by the active worker and still awaiting its result.
+#[derive(Clone, Copy, Debug)]
+struct OutstandingCaptureAttempt {
+    /// The monitor-local sequence assigned to this attempt.
+    sequence:     CaptureAttemptSequence,
+    /// When the worker accepted this attempt.
+    requested_at: Instant,
+}
+
+/// Whether the active capture worker owes the monitor an attempt result.
+#[derive(Clone, Copy, Debug)]
+enum CaptureAttemptProgress {
+    /// No capture result is outstanding.
+    Idle,
+    /// This attempt has not returned a result yet.
+    Outstanding(OutstandingCaptureAttempt),
+}
+
 /// Why a synchronous capture-driver operation could not reach the monitor.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -137,6 +224,8 @@ pub enum CaptureTestDriverError {
     CaptureRequestUnavailable,
     /// The driver could not return the completed capture attempt to the monitor.
     CaptureResultUnavailable,
+    /// The driver could not access the active synthetic worker endpoints.
+    CaptureWorkerEndpointsUnavailable,
 }
 
 /// A synchronous capture worker used by client-crate acceptance tests.
@@ -146,10 +235,8 @@ pub enum CaptureTestDriverError {
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct BackdropMonitorCaptureTestDriver {
-    /// Requests sent by the monitor under test.
-    requests: Receiver<Request>,
-    /// Completed attempts returned to the monitor under test.
-    captures: Sender<CaptureAttemptResult>,
+    /// The current synthetic worker's endpoints, replaced whenever the monitor abandons a worker.
+    endpoints: Arc<Mutex<CaptureTestWorkerEndpoints>>,
 }
 
 impl LastSuccessfulDesktop {
@@ -162,58 +249,86 @@ impl LastSuccessfulDesktop {
     }
 }
 
+impl CaptureWorkerLauncher {
+    /// Create connected channels and start or install their worker-side endpoints.
+    fn launch(&self) -> Result<ActiveCaptureWorker, CaptureFailure> {
+        let (requests, incoming) = crossbeam_channel::bounded(1);
+        let (outgoing, captures) = crossbeam_channel::bounded(1);
+        match self {
+            Self::Threaded => {
+                thread::Builder::new()
+                    .name("backdrop-capture".to_string())
+                    .spawn(move || capture_loop(&incoming, &outgoing))
+                    .map_err(|_| CaptureFailure::CaptureWorkerLaunchFailed)?;
+            },
+            Self::TestDriver { endpoints } => {
+                let Ok(mut endpoints) = endpoints.lock() else {
+                    return Err(CaptureFailure::CaptureWorkerLaunchFailed);
+                };
+                *endpoints = CaptureTestWorkerEndpoints::Active {
+                    requests: incoming,
+                    captures: outgoing,
+                };
+            },
+        }
+        Ok(ActiveCaptureWorker { requests, captures })
+    }
+}
+
 /// A backdrop kept up to date on two worker threads.
 ///
-/// Every channel holds a single message: a request that arrives while
-/// its worker is busy is dropped rather than queued, because an answer
-/// nobody is waiting for any more is worth nothing. Neither worker is
-/// ever joined -- each exits when the monitor drops and its request
-/// channel disconnects, and a window server that never answers must
-/// not be able to hold up the app's exit.
+/// Every channel holds a single message. The monitor sends no second capture request while one is
+/// outstanding, while a position request that arrives during the previous lookup is dropped. No
+/// worker is joined, so a window server that never answers cannot hold up app exit. A capture
+/// worker abandoned after [`CAPTURE_ATTEMPT_DEADLINE`] may remain blocked for the life of the
+/// process; [`MAX_CAPTURE_WORKER_REPLACEMENTS`] bounds how many such threads the monitor creates.
 #[derive(Debug)]
 pub struct BackdropMonitor {
-    /// What the capture worker should capture for next.
-    requests:                Sender<Request>,
-    /// Outcomes the capture worker has finished producing.
-    captures:                Receiver<CaptureAttemptResult>,
+    /// The current worker endpoints, or that capture can no longer continue.
+    capture_worker:           CaptureWorkerAvailability,
+    /// How initial and replacement capture workers are launched.
+    capture_worker_launcher:  CaptureWorkerLauncher,
+    /// Successful replacement launches after the initial worker.
+    worker_replacements:      usize,
     /// Windows the position worker should look up next.
-    watches:                 Sender<u32>,
+    watches:                  Sender<u32>,
     /// Where the position worker last found the window it was given, or
     /// [`None`] where the window server would not describe it.
-    frames:                  Receiver<Option<Frame>>,
+    frames:                   Receiver<Option<Frame>>,
     /// The newest desktop that captured successfully, retained across failures.
-    last_successful_desktop: LastSuccessfulDesktop,
+    last_successful_desktop:  LastSuccessfulDesktop,
     /// The outcome of the newest completed capture attempt.
-    status:                  BackdropStatus,
+    status:                   BackdropStatus,
     /// What terminal window the newest completed capture attempt selected.
-    latest_window_selection: LatestCaptureAttemptWindowSelection,
+    latest_window_selection:  LatestCaptureAttemptWindowSelection,
     /// Completed attempt diagnostics not yet taken by the caller.
-    completed_attempts:      VecDeque<CompletedCaptureAttemptDiagnostic>,
+    completed_attempts:       VecDeque<CompletedCaptureAttemptDiagnostic>,
     /// The sequence to assign to the next accepted capture request.
-    next_sequence:           CaptureAttemptSequence,
+    next_sequence:            CaptureAttemptSequence,
     /// The newest window frame that has arrived, a frame or two behind
     /// where the window is now.
-    frame:                   Option<Frame>,
+    frame:                    Option<Frame>,
     /// The area of the newest capture the caller is drawing over, read
     /// afresh every frame.
-    current:                 Option<Backdrop>,
-    /// When the last capture request went out, whether or not it was
-    /// answered.
-    requested_at:            Option<Instant>,
+    current:                  Option<Backdrop>,
+    /// Request timing used to pace routine and retry captures.
+    capture_request_cadence:  CaptureRequestCadence,
+    /// The attempt the active worker has not returned yet.
+    capture_attempt_progress: CaptureAttemptProgress,
     /// Where the window stood on the previous frame, which is how a
     /// window being dragged is told from one standing still.
-    placement:               Option<Placement>,
+    placement:                Option<Placement>,
     /// The window this app was found to be drawn in, once
     /// [`identify`](Self::identify) has settled it.
-    pinned:                  Option<u32>,
+    pinned:                   Option<u32>,
     /// How many passes at settling on a window have been made, so that
     /// a terminal which will not wear a title is given up on rather
     /// than asked once a frame for the length of the run.
-    attempts:                u32,
+    attempts:                 u32,
     /// When the last pass was made, which is what paces them: a title
     /// needs time to reach the emulator and the window server, and
     /// asking again inside that time only loses the same race twice.
-    attempted_at:            Option<Instant>,
+    attempted_at:             Option<Instant>,
     /// Whether the emulator has been asked outright where its window
     /// stands.
     ///
@@ -223,7 +338,7 @@ pub struct BackdropMonitor {
     /// nothing: it is flushed, so the emulator has it in hand before
     /// the wait starts, and a terminal that did not answer it then
     /// does not know it.
-    asked:                   bool,
+    asked:                    bool,
     /// What every window was titled before this app's own put the
     /// marker on, so that the window found wearing it can be given its
     /// title back.
@@ -231,7 +346,7 @@ pub struct BackdropMonitor {
     /// Read once, on the pass that sets the marker, and kept because
     /// the marker outlives that pass -- see
     /// [`identify`](Self::identify).
-    titles:                  Option<Vec<(u32, Option<String>)>>,
+    titles:                   Option<Vec<(u32, Option<String>)>>,
 }
 
 /// One capture, as the worker is asked for it.
@@ -254,39 +369,32 @@ impl BackdropMonitor {
     /// Spawn the worker thread. No capture is taken until the first
     /// [`refresh`](Self::refresh).
     #[must_use]
-    pub fn new() -> Self {
-        let (requests, incoming) = crossbeam_channel::bounded(1);
-        let (outgoing, captures) = crossbeam_channel::bounded(1);
-        // A failed spawn drops `outgoing` with the unrun closure, which
-        // leaves `captures` disconnected and the status waiting for its
-        // first result, while every `current` answers `None`.
-        drop(
-            thread::Builder::new()
-                .name("backdrop-capture".to_string())
-                .spawn(move || capture_loop(&incoming, &outgoing)),
-        );
-        Self::with_capture_channels(requests, captures)
-    }
+    pub fn new() -> Self { Self::with_capture_worker_launcher(CaptureWorkerLauncher::Threaded) }
 
     /// Build a monitor with a synchronous capture driver for a client crate's acceptance tests.
     #[doc(hidden)]
     #[must_use]
     pub fn with_capture_test_driver() -> (Self, BackdropMonitorCaptureTestDriver) {
-        let (requests, incoming) = crossbeam_channel::bounded(1);
-        let (outgoing, captures) = crossbeam_channel::bounded(1);
-        let monitor = Self::with_capture_channels(requests, captures);
-        let capture_test_driver = BackdropMonitorCaptureTestDriver {
-            requests: incoming,
-            captures: outgoing,
-        };
+        let endpoints = Arc::new(Mutex::new(CaptureTestWorkerEndpoints::NoActiveWorker));
+        let monitor = Self::with_capture_worker_launcher(CaptureWorkerLauncher::TestDriver {
+            endpoints: Arc::clone(&endpoints),
+        });
+        let capture_test_driver = BackdropMonitorCaptureTestDriver { endpoints };
         (monitor, capture_test_driver)
     }
 
-    /// Build the monitor around a capture worker's two channel endpoints.
-    fn with_capture_channels(
-        requests: Sender<Request>,
-        captures: Receiver<CaptureAttemptResult>,
-    ) -> Self {
+    /// Build the monitor and launch its initial capture worker.
+    fn with_capture_worker_launcher(capture_worker_launcher: CaptureWorkerLauncher) -> Self {
+        let (capture_worker, status) = match capture_worker_launcher.launch() {
+            Ok(active_capture_worker) => (
+                CaptureWorkerAvailability::Active(active_capture_worker),
+                BackdropStatus::WaitingForFirstResult,
+            ),
+            Err(failure) => (
+                CaptureWorkerAvailability::PermanentlyUnavailable,
+                BackdropStatus::Failed(failure),
+            ),
+        };
         let (watches, asked) = crossbeam_channel::bounded(1);
         let (located, frames) = crossbeam_channel::bounded(1);
         // A failed spawn leaves `frames` disconnected, no frame ever
@@ -298,18 +406,20 @@ impl BackdropMonitor {
                 .spawn(move || position_loop(&asked, &located)),
         );
         Self {
-            requests,
-            captures,
+            capture_worker,
+            capture_worker_launcher,
+            worker_replacements: 0,
             watches,
             frames,
             last_successful_desktop: LastSuccessfulDesktop::default(),
-            status: BackdropStatus::WaitingForFirstResult,
+            status,
             latest_window_selection: LatestCaptureAttemptWindowSelection::WaitingForFirstResult,
             completed_attempts: VecDeque::new(),
             next_sequence: CaptureAttemptSequence::FIRST,
             frame: None,
             current: None,
-            requested_at: None,
+            capture_request_cadence: CaptureRequestCadence::DueImmediately,
+            capture_attempt_progress: CaptureAttemptProgress::Idle,
             placement: None,
             pinned: None,
             attempts: 0,
@@ -452,6 +562,7 @@ impl BackdropMonitor {
     /// server itself.
     pub fn refresh(&mut self, area: Rect) {
         self.receive_capture_attempt_results();
+        self.recover_stalled_capture_attempt(Instant::now());
         while let Ok(frame) = self.frames.try_recv() {
             self.frame = frame;
         }
@@ -491,7 +602,7 @@ impl BackdropMonitor {
                 .last_successful_desktop
                 .available()
                 .is_some_and(|desktop| Some(desktop.metrics()) == metrics);
-        let waited = self.requested_at.map_or(CAPTURE_REFRESH, |at| at.elapsed());
+        let waited = self.capture_request_cadence.elapsed();
         // A capture that cannot be used is worth asking to replace
         // sooner than the routine cycle, but not every frame: each
         // attempt costs the worker the same long round trip whether or
@@ -504,28 +615,125 @@ impl BackdropMonitor {
 
     /// Send a sequenced capture request unless the worker is still busy with the previous one.
     fn request_capture_if_worker_available(&mut self, metrics: Metrics) {
+        if matches!(
+            self.capture_attempt_progress,
+            CaptureAttemptProgress::Outstanding(_)
+        ) {
+            return;
+        }
         let request = Request {
             sequence: self.next_sequence,
             metrics,
             window: self.pinned,
         };
-        // A full channel means the worker is still on the last
-        // request; dropping this one is the point of the bound.
-        if self.requests.try_send(request).is_ok() {
-            self.requested_at = Some(Instant::now());
-            self.next_sequence = self.next_sequence.following();
+        let send_result = match &self.capture_worker {
+            CaptureWorkerAvailability::Active(active_capture_worker) => {
+                active_capture_worker.requests.try_send(request)
+            },
+            CaptureWorkerAvailability::PermanentlyUnavailable => return,
+        };
+        match send_result {
+            Ok(()) => {
+                let requested_at = Instant::now();
+                self.capture_request_cadence = CaptureRequestCadence::RequestedAt(requested_at);
+                self.capture_attempt_progress =
+                    CaptureAttemptProgress::Outstanding(OutstandingCaptureAttempt {
+                        sequence: request.sequence,
+                        requested_at,
+                    });
+                self.next_sequence = self.next_sequence.following();
+            },
+            Err(TrySendError::Full(_)) => {},
+            Err(TrySendError::Disconnected(_)) => self.handle_disconnected_capture_worker(),
         }
     }
 
     /// Move every capture worker result currently available into retained monitor state.
     fn receive_capture_attempt_results(&mut self) {
-        while let Ok(capture_attempt_result) = self.captures.try_recv() {
-            self.record_capture_attempt_result(capture_attempt_result);
+        loop {
+            let receive_result = match &self.capture_worker {
+                CaptureWorkerAvailability::Active(active_capture_worker) => {
+                    active_capture_worker.captures.try_recv()
+                },
+                CaptureWorkerAvailability::PermanentlyUnavailable => return,
+            };
+            match receive_result {
+                Ok(capture_attempt_result) => {
+                    self.record_capture_attempt_result(capture_attempt_result);
+                },
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.handle_disconnected_capture_worker();
+                    return;
+                },
+            }
+        }
+    }
+
+    /// Record and abandon the outstanding attempt once its deadline has elapsed.
+    fn recover_stalled_capture_attempt(&mut self, now: Instant) {
+        let CaptureAttemptProgress::Outstanding(outstanding_capture_attempt) =
+            self.capture_attempt_progress
+        else {
+            return;
+        };
+        if now.saturating_duration_since(outstanding_capture_attempt.requested_at)
+            < CAPTURE_ATTEMPT_DEADLINE
+        {
+            return;
+        }
+        self.record_capture_attempt_result(CaptureAttemptResult::failed(
+            outstanding_capture_attempt.sequence,
+            CaptureAttemptWindowSelection::SelectionNotReached,
+            CaptureFailure::CaptureAttemptStalled,
+        ));
+        self.replace_capture_worker();
+    }
+
+    /// Record a disconnected worker and replace it when the replacement allowance remains.
+    fn handle_disconnected_capture_worker(&mut self) {
+        match self.capture_attempt_progress {
+            CaptureAttemptProgress::Idle => {
+                self.status = BackdropStatus::Failed(CaptureFailure::CaptureWorkerDisconnected);
+            },
+            CaptureAttemptProgress::Outstanding(outstanding_capture_attempt) => {
+                self.record_capture_attempt_result(CaptureAttemptResult::failed(
+                    outstanding_capture_attempt.sequence,
+                    CaptureAttemptWindowSelection::SelectionNotReached,
+                    CaptureFailure::CaptureWorkerDisconnected,
+                ));
+            },
+        }
+        self.replace_capture_worker();
+    }
+
+    /// Drop the abandoned worker endpoints and launch a fresh worker within the process bound.
+    fn replace_capture_worker(&mut self) {
+        self.capture_worker = CaptureWorkerAvailability::PermanentlyUnavailable;
+        if self.worker_replacements == MAX_CAPTURE_WORKER_REPLACEMENTS {
+            self.status =
+                BackdropStatus::Failed(CaptureFailure::CaptureWorkerReplacementLimitReached);
+            return;
+        }
+        match self.capture_worker_launcher.launch() {
+            Ok(active_capture_worker) => {
+                self.capture_worker = CaptureWorkerAvailability::Active(active_capture_worker);
+                self.worker_replacements += 1;
+                self.capture_request_cadence = CaptureRequestCadence::DueImmediately;
+            },
+            Err(failure) => self.status = BackdropStatus::Failed(failure),
         }
     }
 
     /// Retain the outcome and diagnostic values from one completed attempt.
     fn record_capture_attempt_result(&mut self, capture_attempt_result: CaptureAttemptResult) {
+        if matches!(
+            self.capture_attempt_progress,
+            CaptureAttemptProgress::Outstanding(outstanding_capture_attempt)
+                if outstanding_capture_attempt.sequence == capture_attempt_result.sequence()
+        ) {
+            self.capture_attempt_progress = CaptureAttemptProgress::Idle;
+        }
         let (completed_capture_attempt_diagnostic, desktop_result) =
             capture_attempt_result.into_diagnostic_and_desktop_result();
         self.latest_window_selection = LatestCaptureAttemptWindowSelection::Completed(
@@ -602,9 +810,65 @@ impl BackdropMonitor {
 }
 
 impl BackdropMonitorCaptureTestDriver {
+    /// Maximum replacement workers launched after the initial capture worker.
+    pub const MAX_CAPTURE_WORKER_REPLACEMENTS: usize = MAX_CAPTURE_WORKER_REPLACEMENTS;
     /// Maximum completed-attempt diagnostics retained by a monitor between drains.
     pub const MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS: usize =
         MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
+
+    /// Take the request currently waiting on the active synthetic worker.
+    fn take_capture_request(&self) -> Result<Request, CaptureTestDriverError> {
+        let endpoints = self
+            .endpoints
+            .lock()
+            .map_err(|_| CaptureTestDriverError::CaptureRequestUnavailable)?;
+        match &*endpoints {
+            CaptureTestWorkerEndpoints::NoActiveWorker => {
+                Err(CaptureTestDriverError::CaptureRequestUnavailable)
+            },
+            CaptureTestWorkerEndpoints::Active { requests, .. } => requests
+                .try_recv()
+                .map_err(|_| CaptureTestDriverError::CaptureRequestUnavailable),
+        }
+    }
+
+    /// Return a completed attempt through the active synthetic worker.
+    fn send_capture_result(
+        &self,
+        capture_attempt_result: CaptureAttemptResult,
+    ) -> Result<(), CaptureTestDriverError> {
+        let endpoints = self
+            .endpoints
+            .lock()
+            .map_err(|_| CaptureTestDriverError::CaptureResultUnavailable)?;
+        match &*endpoints {
+            CaptureTestWorkerEndpoints::NoActiveWorker => {
+                Err(CaptureTestDriverError::CaptureResultUnavailable)
+            },
+            CaptureTestWorkerEndpoints::Active { captures, .. } => captures
+                .try_send(capture_attempt_result)
+                .map_err(|_| CaptureTestDriverError::CaptureResultUnavailable),
+        }
+    }
+
+    /// Start one synthetic capture attempt without returning a result.
+    fn start_capture_attempt(
+        &self,
+        monitor: &mut BackdropMonitor,
+    ) -> Result<OutstandingCaptureAttempt, CaptureTestDriverError> {
+        monitor.pinned = None;
+        monitor.request_capture_if_worker_available(Metrics::for_capture_test());
+        let request = self.take_capture_request()?;
+        let CaptureAttemptProgress::Outstanding(outstanding_capture_attempt) =
+            monitor.capture_attempt_progress
+        else {
+            return Err(CaptureTestDriverError::CaptureRequestUnavailable);
+        };
+        if request.sequence != outstanding_capture_attempt.sequence {
+            return Err(CaptureTestDriverError::CaptureRequestUnavailable);
+        }
+        Ok(outstanding_capture_attempt)
+    }
 
     /// Complete one synthetic attempt and leave it waiting on the monitor's capture channel.
     ///
@@ -624,18 +888,13 @@ impl BackdropMonitorCaptureTestDriver {
             | CaptureAttemptTestCase::WindowOwnedByFrontmostApplication { .. } => None,
         };
         monitor.request_capture_if_worker_available(Metrics::for_capture_test());
-        let request = self
-            .requests
-            .try_recv()
-            .map_err(|_| CaptureTestDriverError::CaptureRequestUnavailable)?;
+        let request = self.take_capture_request()?;
         let capture_attempt_result = desktop::capture_attempt_for_test(
             request.sequence,
             request.window,
             capture_attempt_test_case,
         );
-        self.captures
-            .try_send(capture_attempt_result)
-            .map_err(|_| CaptureTestDriverError::CaptureResultUnavailable)
+        self.send_capture_result(capture_attempt_result)
     }
 
     /// Complete one synthetic attempt and make its diagnostic available to monitor consumers.
@@ -650,6 +909,53 @@ impl BackdropMonitorCaptureTestDriver {
     ) -> Result<(), CaptureTestDriverError> {
         self.send_capture_attempt(monitor, capture_attempt_test_case)?;
         monitor.receive_capture_attempt_results();
+        Ok(())
+    }
+
+    /// Disconnect the active synthetic worker while one capture attempt is outstanding.
+    ///
+    /// The monitor observes the disconnected result channel and records the outstanding attempt as
+    /// [`CaptureFailure::CaptureWorkerDisconnected`] before installing replacement endpoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureTestDriverError`] when the monitor cannot start an attempt or the driver
+    /// cannot access the active worker endpoints.
+    pub fn disconnect_capture_worker_during_attempt(
+        &self,
+        monitor: &mut BackdropMonitor,
+    ) -> Result<(), CaptureTestDriverError> {
+        self.start_capture_attempt(monitor)?;
+        {
+            let mut endpoints = self
+                .endpoints
+                .lock()
+                .map_err(|_| CaptureTestDriverError::CaptureWorkerEndpointsUnavailable)?;
+            if !matches!(&*endpoints, CaptureTestWorkerEndpoints::Active { .. }) {
+                return Err(CaptureTestDriverError::CaptureWorkerEndpointsUnavailable);
+            }
+            *endpoints = CaptureTestWorkerEndpoints::NoActiveWorker;
+        }
+        monitor.receive_capture_attempt_results();
+        Ok(())
+    }
+
+    /// Start one synthetic attempt, return no result, and advance the monitor to its deadline.
+    ///
+    /// The monitor abandons the synthetic worker and installs fresh driver endpoints exactly as it
+    /// abandons and replaces a production worker blocked in `ScreenCaptureKit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureTestDriverError`] when the monitor does not make the request available.
+    pub fn abandon_capture_attempt_after_deadline(
+        &self,
+        monitor: &mut BackdropMonitor,
+    ) -> Result<(), CaptureTestDriverError> {
+        let outstanding_capture_attempt = self.start_capture_attempt(monitor)?;
+        monitor.recover_stalled_capture_attempt(
+            outstanding_capture_attempt.requested_at + CAPTURE_ATTEMPT_DEADLINE,
+        );
         Ok(())
     }
 }

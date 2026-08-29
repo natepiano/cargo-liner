@@ -107,15 +107,22 @@ impl From<u64> for CaptureAttemptSequence {
     fn from(number: u64) -> Self { Self(number) }
 }
 
-/// Why an attempt to capture the desktop did not produce a new image.
+/// Why desktop capture did not produce a new image or cannot continue.
 ///
-/// The failure records only the stage that stopped the attempt so it
-/// remains cheap to send from the capture worker and retain as monitor
-/// state.
+/// The failure records only the stage or worker-lifecycle event that stopped capture, so it remains
+/// cheap to send from the capture worker and retain as monitor state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureFailure {
     /// This platform has no desktop-capture backend.
     UnsupportedPlatform,
+    /// The capture worker did not return the attempt before its monitor deadline.
+    CaptureAttemptStalled,
+    /// A capture worker could not be launched.
+    CaptureWorkerLaunchFailed,
+    /// The capture worker's result channel disconnected.
+    CaptureWorkerDisconnected,
+    /// The monitor abandoned its maximum number of stalled or disconnected capture workers.
+    CaptureWorkerReplacementLimitReached,
     /// The shareable-content query failed while the Screen Recording access check reported that
     /// access was not granted. The check gives the same answer when the process has never prompted
     /// for access and when the user has refused it.

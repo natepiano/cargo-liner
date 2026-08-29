@@ -17,7 +17,7 @@
 - **Key files:**
   - `crates/tui_pane/src/backdrop/mod.rs` — `Backdrop` (per-cell desktop color), public re-export surface for every backdrop type including `CaptureFailure` and `BackdropStatus`; 209 lines, tests at 145.
   - `crates/tui_pane/src/backdrop/desktop.rs` — `Desktop` capture. `CaptureFailure` names the stage that failed (`:90`) and carries the two classification helpers every former swallow site now uses; `capture` returns `Result<Desktop, CaptureFailure>` (`:468`). `SCShareableContent::get()` runs first and `shareable_content_failure` (`:447`, called `:473`) classifies a failed query from `screen_capture_access_is_granted` (`:443`). Pinned-id resolution falls back to frontmost, then size (`:491`–494); the id it settles on stays local to that function (`:496`). Exclusion list deduplicated by window id through `deduplicate_windows_by_id` (`:456`, called `:534`). `reduce_capture` (`:890`, called `:567`). 1632 lines, tests at 1370 (inside `mod platform`) and 1519.
-  - `crates/tui_pane/src/backdrop/monitor.rs` — `BackdropMonitor` (`:90`–145): per-instance channels and workers, `pinned: Option<u32>` (`:118`), last successful desktop (`:101`) and latest attempt status (`:103`) held separately, `status()` accessor (`:414`). `Request::window: Option<u32>` (`:154`) carries the window to capture behind. `identify() -> bool` (`:250`) returns `false` alike for exhausted attempts (`:254`), a merely-paced retry (`:261`–265), and a failed marker-title write (`:299`); the exhaustion branch (`:313`–322) restores the title and leaves `pinned` unset. The worker forwards both capture outcomes. 459 lines, no test module.
+  - `crates/tui_pane/src/backdrop/monitor.rs` — 1,081 lines with its own test module. `BackdropMonitor` (`:286`) holds the capture worker's channels behind `CaptureWorkerAvailability`, and spreads the window search across five fields: `pinned: Option<u32>` (`:323`), `attempts` (`:327`), `attempted_at` (`:331`), `asked` (`:341`) and `titles` (`:349`). `Request::window: Option<u32>` (`:354`, built once at `:624`) carries the window to capture behind. `identify()` (`:476`) returns `WindowIdentification`; `refresh()` (`:563`) drives one frame. The private `WindowSearchOutcome` (`:96`) already names the answer both window lookups decline to give.
   - `crates/tui_pane/src/backdrop/band.rs` — `TravelingBand`; paints the desktop across the whole pane with both ends fading, blending through the theme like the text and pixel renderers.
   - `crates/tui_pane/src/backdrop/text.rs` — `DriftingText`; paints every cell from the backdrop (`:552`, blend `:572`) — the reference composition for the band change. 1939 lines, tests at 1036.
   - `crates/tui_pane/src/backdrop/pixels.rs` — `ResolvingPixels`; also paints every cell, `PIXEL_BEHIND_FADE`. 1474 lines, tests at 909.
@@ -470,53 +470,70 @@ The selection machinery was hoisted out of the macOS-only module so tests drive 
 - An opt-in diagnostic retention or subscription API — no consumer exists, and the bound closes the resource hole on its own.
 - Renaming the drain back for source compatibility — the crate is a workspace path dependency with two in-tree consumers, both compiling, and removing the old method was the point.
 
-### Phase 16 — The second window's capture failure gets its actual cause  · status: todo
+### Phase 16 — A wedged capture never strands the backdrop  · status: done
 
-**Blocked by:** a live two-window reproduction. This phase cannot start until `cargo tile` runs in two windows of one terminal app with the Phase 1 status, the Phase 3 logging and the Phase 15 attempt records in place, and the failing stage has been recorded. No delegate can stage that reproduction.
+#### As-built
 
-**Two stages, and only the first is authorized at dispatch.** Stage one is evidence: a person stages the reproduction and the recordings below are collected. If that evidence shows both instances already capture, the phase closes there on evidence and no code changes. If it names a code cause, stage two is the repair — and the Spec, Files and regression test for it are written from the recorded evidence, replacing the contingent text below, before any delegate is dispatched. Do not dispatch a delegate against the repair half while the cause is still unknown; "fix whichever of window resolution, filter construction or capture the evidence names" is not a specification.
+The monitor bounds every capture attempt. `CAPTURE_ATTEMPT_DEADLINE` (5s) and
+`MAX_CAPTURE_WORKER_REPLACEMENTS` (3) live in `backdrop/constants.rs`. `refresh` calls
+`recover_stalled_capture_attempt(Instant::now())` right after draining results: an outstanding
+attempt older than the deadline is completed by a synthesized `CaptureAttemptResult` carrying its
+own `CaptureAttemptSequence`, `CaptureAttemptWindowSelection::SelectionNotReached` and
+`CaptureFailure::CaptureAttemptStalled`, and its worker is replaced. Replacement marks the old
+worker `PermanentlyUnavailable`, relaunches through `CaptureWorkerLauncher`, and resets the
+cadence to `DueImmediately`; at the bound the monitor stops replacing and reports
+`BackdropStatus::Failed(CaptureFailure::CaptureWorkerReplacementLimitReached)`. The wedged thread
+is never joined — it leaks, deliberately.
 
-#### Work Order
+`monitor.rs` carries the domain types this introduced: `ActiveCaptureWorker` and
+`CaptureWorkerAvailability::{Active, PermanentlyUnavailable}` for the channels,
+`CaptureWorkerLauncher::{Threaded, TestDriver}` and
+`CaptureTestWorkerEndpoints::{NoActiveWorker, Active}` for creating them,
+`CaptureRequestCadence::{DueImmediately, RequestedAt}` for pacing, and
+`CaptureAttemptProgress::{Idle, Outstanding(OutstandingCaptureAttempt)}` for the attempt in
+flight. `BackdropMonitor::new` no longer discards the spawn result, and
+`receive_capture_attempt_results` tells `TryRecvError::Empty` from `Disconnected`, completing the
+outstanding attempt as failed on the latter.
 
-**Goal:** The second `cargo tile` in one terminal app has its capture failure explained by recorded evidence, and — when that evidence names a code cause — fixed where the cause lives.
-
-**Spec:**
-
-Running `cargo tile` in two windows of the same iTerm2 — an app that already has Screen Recording permission — leaves the second one with no desktop capture while the first keeps its own.
-
-**There is no first-caller-wins path to find.** Every `BackdropMonitor::new` builds its own channels, workers, pinned window and cached desktop, and capture resolves the pinned id across all visible windows. Nothing is shared or app-keyed. What produced the *appearance* of ownership was diagnosis, not exclusivity: a monitor holding an earlier successful capture kept showing it while a newly started monitor that never got a first capture showed nothing, and both looked identical from outside.
-
-Phase 15 made the missing half observable. **Enumerate, then reason.** Reasoning from branches is what the last two backdrop defects both defeated; list the real candidates first, from outside the program, before opening the capture path.
-
-**What the external window inventory must contain.** The program's own record names the id it chose and which candidate source produced the set, not the members of that set, so the inventory has to come from outside. Enumerate the window server front-to-back — the CoreGraphics window list is the cheap source and agrees with ScreenCaptureKit's — and record, per window: its window id; its owning process id, application name and bundle identifier; whether it carries a title and what that title is; its frame origin and size and which display holds it; its window layer; whether it is on screen and whether its application is frontmost. Record alongside the inventory, per instance: the `TERM_PROGRAM` value that instance saw, its process-ancestry chain up to the terminal application, and — for each line — whether it came from ScreenCaptureKit's shareable content or was reconciled from the CoreGraphics list. An inventory missing any of these cannot distinguish the candidate-set hypotheses from each other.
-
-Set that inventory beside each instance's per-attempt `CaptureAttemptWindowSelection` — the id it targeted, and whether that id came from pinning or from a closest-size match over a candidate set, naming which source produced that set — and the `CaptureFailure` stage the second instance logs.
-
-**Running the reproduction.** The frame log is off unless `CARGO_TILE_FRAME_LOG` names a path (`cargo-tile/src/probe.rs:76`), so neither instance records anything by default. Each process truncates the file on its own first write (`probe.rs:181`–191), so the two instances **must** be given different paths or they will erase each other's evidence. Give each instance its own path, keep both logs, and preserve every `backdrop:` line and every attempt record from both — those are the phase's evidence.
-
-**The shutdown drain is best-effort, and the reproduction has to allow for it.** `cargo-tile` drains the completed attempts once after its event loop ends, and that drain uses a non-blocking receive: an attempt still in flight when the app quits completes afterwards and is never written. Let each instance sit until its newest attempt record has appeared in its log before quitting it. The gate below asks for the records the run actually produced; neither it nor this phase may promise that the last requested attempt is among them.
-
-Phase 1 already deduplicated the exclusion list, which was the standing suspect — a sibling terminal window above the selected one appeared both in the owned-windows set and the windows-above set. If the reproduction now succeeds, this phase is closed by evidence rather than by code, and that is a legitimate outcome to report.
-
-Otherwise fix what the recorded stage names, in `tui_pane` where it lives: window resolution, filter construction, or capture, as the evidence directs.
+`CaptureFailure` gained four variants: `CaptureAttemptStalled`, `CaptureWorkerLaunchFailed`,
+`CaptureWorkerDisconnected`, `CaptureWorkerReplacementLimitReached`. In `cargo-tile`,
+`classify_backdrop_notice` takes `AttractScreenVisibility::{Hidden, Showing}` as an explicit
+input so a stall is reported ahead of the cached-backdrop suppression while still never painting
+over the working grid; the attract screen says `attract: desktop capture stalled -- retrying with
+a replacement capture worker` and, at the bound, `attract: desktop capture recovery stopped --
+worker replacement limit reached`.
 
 **Files:**
-- `crates/tui_pane/src/backdrop/desktop.rs` — window resolution, filter construction, or capture, as the evidence directs
-- `crates/tui_pane/src/backdrop/monitor.rs` — window pinning and identification, if the evidence points there
-- `crates/cargo-tile/src/attract/mod.rs` — the regression test, when the cause is one that executes per frame rather than one a `tui_pane` unit test can reach
+- `crates/tui_pane/src/backdrop/constants.rs` — the attempt deadline and the replacement bound
+- `crates/tui_pane/src/backdrop/desktop.rs` — the four `CaptureFailure` variants
+- `crates/tui_pane/src/backdrop/monitor.rs` — the deadline check, the synthesized wedged-attempt
+  record, worker replacement, launch-failure and disconnect handling, the test-driver entry points
+  `abandon_capture_attempt_after_deadline` and `disconnect_capture_worker_during_attempt`, and
+  three tests covering stall-and-replace, the replacement bound, and a disconnected worker
+- `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/render.rs`,
+  `crates/cargo-tile/src/attract/mod.rs` — the two notice strings and the classifier that
+  selects them
 
-**Constraints from prior phases:** Phase 15 shipped the attempt-level diagnostic this phase reads. `BackdropMonitor::take_completed_capture_attempt_diagnostics` is the drain, and it yields `CompletedCaptureAttemptDiagnostic` — not `CaptureAttemptResult`, which is now the worker-side value the monitor splits on receipt into that diagnostic and the desktop result. Each diagnostic carries a `CaptureAttemptSequence`, a `CaptureAttemptWindowSelection::{SelectionNotReached, Selected { window_id, method }}`, and the attempt's `Result<(), CaptureFailure>` outcome; `CaptureWindowSelectionMethod` is `{PinnedWindow, ClosestSizeMatch { candidates: TerminalWindowCandidateSource }}`. The drain pulls from the worker channel itself, so a caller need not refresh first, and the monitor retains at most `MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS` (64) diagnostics between drains, discarding the oldest first — an evidence run that lets a log go unread for more than about ten seconds of retries loses the earliest attempts, not the newest. `BackdropMonitor` also holds `LatestCaptureAttemptWindowSelection::{WaitingForFirstResult, Completed(..)}` for the newest attempt alone. `Attract::identify`'s transition-only `backdrop:` line carries that latest selection, and its separate `backdrop_attempt:` line carries one record per completed attempt with its sequence. The per-attempt line is the one this phase counts repeated identical attempts from; the summary line will not show them. Read those records before touching the capture path — the whole point of the previous phase is that this one starts from evidence rather than from branch reading. Phase 1's per-stage `CaptureFailure`, its exclusion-id deduplication and its split of the last successful desktop from the latest attempt status all still hold; Phase 2's `WindowIdentification` and `LastSuccessfulCaptureWindowId` are the public reports, and a second window that never captures reports `WaitingForFirstSuccess`, which is itself evidence. `crates/tui_pane/src/backdrop/**` compiles only under the `backdrop` feature, and anything reachable solely from its `#[cfg(target_os = "macos")]` module is dead code on Linux, where CI denies it — see the acceptance gate.
+**Binds later work:** the worker message still has exactly one construction site, in
+`request_capture_if_worker_available`; replacement installs channels and resets cadence without
+building a request. Work threading a new capture-target type through the capture path must reach
+`ActiveCaptureWorker`, `CaptureTestWorkerEndpoints`, `take_capture_request`, `capture_loop`, and
+the identification-state setup in `start_capture_attempt` and `send_capture_attempt`. The
+synthesized wedged-attempt record reaches no selector.
 
-**Acceptance gate:**
-- Both instances draw their own desktop capture, confirmed by eye in two simultaneous windows
-- Both frame logs are kept and between them show, for each instance: which window that instance selected and by which method, distinct sequence numbers across repeated attempts, the failure stage of any attempt that did not succeed, and where each log stops relative to the instance's last requested attempt
-- `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile` — the only listed line that compiles `backdrop/**` (Invariant 1)
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`
-- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
-- `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`
-- `bash ~/.claude/scripts/delegate/verify.sh check cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` — `cargo-port` does not enable `backdrop` (Invariant 2), so these prove the crate's non-backdrop callers still build and pass
-- Run out of band by the main agent before the phase closes, because no `verify.sh` line covers either: the feature-enabled backdrop suite, and `cargo clippy --target x86_64-unknown-linux-gnu -p tui_pane --all-features -- -D warnings`. The Linux run is not optional — CI lints on Ubuntu with `-D warnings`, and macOS-only code leaves dead items that only that target reports
-- A regression test at whatever level the cause allows, or an explicit statement that the cause is a window-server interaction no unit test can reach. Behavior that must actually execute per frame needs a `cargo-tile`-side test, since `test tui_pane` compiles none of `backdrop/**`
+**Gotchas:** `doom-fish-utils`' `SyncCompletion` exposes only `wait(self) -> Result<T, String>`
+with no timeout variant, so a ScreenCaptureKit call that never completes cannot be bounded at the
+call site — the bound has to live in the monitor around the worker, and the wedged thread is
+unrecoverable. `draw_backdrop_notice` runs on every frame from `render.rs` regardless of whether
+the attract screen is up, and `BackdropGracePeriod::Elapsed` is reachable only while it is, so any
+notice arm placed ahead of the grace-period arms must test attract-screen visibility itself or it
+paints across the user's panes.
+
+**Ruled out:** naming the launch failure after thread spawning — the test-driver arm installs
+endpoints and spawns nothing, so `CaptureWorkerLaunchFailed` covers both. Converting the
+CoreGraphics-boundary options (`platform::number`, `query::window_origin`,
+`TerminalWindowCandidate::owner`, `window_titles`) as part of the window-selection type work: they
+are a foreign-API read path, not the selection domain.
 
 ### Phase 17 — Window selection stops being a bare optional number  · status: todo
 
@@ -526,7 +543,7 @@ Otherwise fix what the recorded stage names, in `tui_pane` where it lives: windo
 
 **Spec:**
 
-Owned values spell window selection as `Option<u32>`, and in each the `None` means "no window has been settled on, so fall back to the candidate-set heuristic" — a rule the type does not state and every reader has to recover from `Desktop::capture`'s body: `BackdropMonitor::pinned`, `Request::window` (built in `request_capture_if_worker_available`), the `pinned` parameter of `Desktop::capture` and of the platform implementation it threads to, and — added by Phase 15 when it hoisted the selection machinery out of the macOS-only module — the `pinned` parameter of the shared selector `select_capture_window` (`desktop.rs:365`) and of the `#[doc(hidden)]` test entry point `capture_attempt_for_test` (`desktop.rs:443`).
+Owned values spell window selection as `Option<u32>`, and in each the `None` means "no window has been settled on, so fall back to the candidate-set heuristic" — a rule the type does not state and every reader has to recover from `Desktop::capture`'s body: `BackdropMonitor::pinned`, `Request::window` (built in `request_capture_if_worker_available`), the `pinned` parameter of `Desktop::capture` and of the platform implementation it threads to, and — added by Phase 15 when it hoisted the selection machinery out of the macOS-only module — the `pinned` parameter of the shared selector `select_capture_window` (`desktop.rs:372`) and of the `#[doc(hidden)]` test entry point `capture_attempt_for_test` (`desktop.rs:450`).
 
 These sites look alike and are not one domain, so one type threaded through all of them would hand the capture path a state it cannot act on. `BackdropMonitor::pinned` is about **identification progress**: its `None` means the search is still running or has been exhausted, and only `attempts` on the monitor tells those apart. The request field, the capture parameter, the shared selector and the test entry point are about the **capture target**: each means an exact id or "use the heuristic now", and none can behave differently for a search still in flight.
 
@@ -537,22 +554,26 @@ So this phase replaces every one of them, with two types rather than one, plus a
    Rename the worker message `Request` to `CaptureRequest` in the same pass. This phase is the one that edits its `window` field, and `Request` alone says nothing about what it requests.
 2. **Replace `BackdropMonitor::pinned: Option<u32>` with a private identification state that owns the whole search, not with the public report.** Making the public `WindowIdentification` the field would leave `attempts`, `attempted_at`, `asked` and `titles` beside it as loose fields that can contradict it — an identified window with attempts still climbing, a `titles` snapshot retained after the search ended. Introduce a private `WindowIdentificationState` that owns the phase-dependent data those five fields hold today and admits only the states the search can actually be in, and have it project both the public `WindowIdentification` report and the `CaptureWindowTarget` the request is built from. Today identified, still-pending and exhausted are `Some(id)`, `None` and `None` again, told apart only by consulting `attempts`; leaving that spread across five fields would mean the phase's goal is unmet. Do not merely derive the target from `pinned` and leave the fields as they are.
 
+   `WindowIdentificationState` must not reintroduce inside itself the absence it exists to remove. `titles` is `Option<Vec<(u32, Option<String>)>>` today, and its outer `None` means "no snapshot has been taken yet" — a state, not a missing value. Carry that in the variant that owns it, so no bare `Option` remains in the new type's own fields. The inner `Option<String>` per listed window stays: a window really can have no title.
+
 Keep `CaptureWindowTarget` and `WindowIdentificationState` private to the crate: `WindowIdentification` is already the public report on the same subject, and nothing outside `tui_pane` reads the capture parameter or the search's internals.
 
 **Preserve Phase 15's distinction.** `CaptureWindowTarget` says what the capture was *asked* to do; `CaptureAttemptWindowSelection` says what it actually did. They are not the same value and must not be merged: an attempt can be asked for `TerminalWindowHeuristic` and report `Selected { method: ClosestSizeMatch { .. } }`, or be asked for `PreferWindow { window_id }` and report `SelectionNotReached`. Keep the per-attempt record, its `CaptureAttemptSequence`, the `backdrop_attempt:` line and the transition line's `LatestCaptureAttemptWindowSelection` working exactly as Phase 15 shipped them.
 
-3. **The two window lookups are the last options, and this phase converts them by reusing the enum that already exists.** `desktop::window_titled` (`desktop.rs:797`, macOS implementation `:1115`, non-macOS stub `:1995`) and `desktop::window_at` (`:822`, `:1133`, stub `:1998`) each return `Option<u32>`, and each `None` means the search ran and found nothing — a domain answer the type declines to give. `monitor.rs` already carries a private `WindowSearchOutcome::{NotFound, Found { window_id: u32 }}` (`monitor.rs:89`) that is exactly that answer for the identification pass. **Move and rename that one to `TerminalWindowSearchOutcome` in `backdrop/`, and return it from both lookups** — do not introduce a second enum of the same shape beside it. Keep it private to the crate for the same reason `CaptureWindowTarget` is private. Without this the phase's own claim below is false.
+3. **The two window lookups are the last selection options in play, and this phase converts them by reusing the enum that already exists.** `desktop::window_titled` (`desktop.rs:804`, macOS implementation `:1122`, non-macOS stub `:2002`) and `desktop::window_at` (`:829`, `:1140`, stub `:2005`) each return `Option<u32>`, and each `None` means the search ran and found nothing — a domain answer the type declines to give. `monitor.rs` already carries a private `WindowSearchOutcome::{NotFound, Found { window_id: u32 }}` (`monitor.rs:96`) that is exactly that answer for the identification pass. **Move and rename that one to `TerminalWindowSearchOutcome` in `backdrop/`, and return it from both lookups** — do not introduce a second enum of the same shape beside it. Keep it private to the crate for the same reason `CaptureWindowTarget` is private. Without this the phase's own claim below is false.
 
-When this phase lands, no domain-owned window-selection `Option<u32>` remains anywhere in `backdrop/`.
+When this phase lands, no domain-owned window-selection `Option<u32>` remains on the monitor, on the capture path, or on the two window lookups. Two bare options survive on purpose and are out of scope: `platform::number` (`desktop.rs:1350`) reads a window id out of a CoreGraphics dictionary, where the absent case is a foreign-boundary read failure rather than a domain state, and `window_titles` (`desktop.rs:785`) returns `Vec<(u32, Option<String>)>` because a listed window genuinely may carry no title. Do not convert either; say so in the report rather than leaving the claim looking unmet.
 
-Do not change what any of these currently do. This phase is a type change with no behavior change, and its gate is that every existing test still passes unmodified.
+Do not change what any of these currently do. This phase is a type change with no behavior change: test bodies take the mechanical substitutions the renames force, and every assertion and expected value stays exactly as it is.
 
 **Files:**
-- `crates/tui_pane/src/backdrop/desktop.rs` — `CaptureWindowTarget`; the `pinned` parameters of `capture` (`:670`, macOS `:952`, stub `:1980`), of the shared selector `select_capture_window` (`:365`) and of `capture_attempt_for_test` (`:443`); and `TerminalWindowSearchOutcome` replacing the `Option<u32>` returns of `window_titled` (`:797`, `:1115`, `:1995`) and `window_at` (`:822`, `:1133`, `:1998`)
+- `crates/tui_pane/src/backdrop/desktop.rs` — `CaptureWindowTarget`; the `pinned` parameters of `capture` (`:677`, macOS `:959`, stub `:1987`), of the shared selector `select_capture_window` (`:372`) and of `capture_attempt_for_test` (`:450`); and `TerminalWindowSearchOutcome` replacing the `Option<u32>` returns of `window_titled` (`:804`, `:1122`, `:2002`) and `window_at` (`:829`, `:1140`, `:2005`)
 - `crates/tui_pane/src/backdrop/monitor.rs` — `Request` is renamed `CaptureRequest` and its `window` field holds the target; `pinned`, `attempts`, `attempted_at`, `asked` and `titles` are replaced by the private `WindowIdentificationState` that projects both `WindowIdentification` and the target the request is built from; `WindowSearchOutcome` moves out as `TerminalWindowSearchOutcome`
 - `crates/tui_pane/src/backdrop/mod.rs`, `crates/tui_pane/src/lib.rs` — module wiring and exports, only as the moves above require
 
-**Constraints from prior phases:** Phase 2 made `WindowIdentification::Identified` carry the settled window id and added `LastSuccessfulCaptureWindowId` for the id a capture used, deliberately leaving these options alone so this phase could be designed after the second-window cause was known. Both are public reports on window selection and capture; the types this phase introduces are the private ones the capture path and the search itself thread.
+**Constraints from prior phases:** Phase 2 made `WindowIdentification::Identified` carry the settled window id and added `LastSuccessfulCaptureWindowId` for the id a capture used, deliberately leaving these options alone so this phase could be designed after the second-window cause was known. Both are public reports on window selection and capture; the types this phase introduces are the private ones the capture path and the search itself thread. Phase 16 established that cause: a `ScreenCaptureKit` call that never returns, wedging the capture worker. Nothing about it is a window-selection defect, so this phase's conversion stands as designed. Phase 16 does change the ground it edits, though: the monitor now bounds an outstanding request against `CAPTURE_ATTEMPT_DEADLINE`, rebuilds the request and capture channels when it replaces a wedged worker, and synthesizes a completed-attempt record for a wedged attempt carrying `CaptureAttemptWindowSelection::SelectionNotReached`. The worker message still has exactly one construction site, in `request_capture_if_worker_available` (`monitor.rs:624`): replacing a wedged worker installs fresh channels and resets the request cadence, it does not build a request. What Phase 16 did change under this phase's feet is the surrounding plumbing — `ActiveCaptureWorker` and `CaptureWorkerAvailability` now hold the channels the request travels on, `CaptureWorkerLauncher` and `CaptureTestWorkerEndpoints` create them, `take_capture_request` and `capture_loop` receive them, and `start_capture_attempt` and `send_capture_attempt` set up identification state directly. Convert the one construction site and thread the new target through those. The wedged-attempt record reaches no selector, so it needs no `CaptureWindowTarget`.
+
+Phase 16 also named two states that this phase will read: `CaptureFailure::CaptureWorkerLaunchFailed` covers both a refused thread and a failed test-endpoint install, and `CaptureTestWorkerEndpoints::NoActiveWorker` is the terminal "no worker will arrive" state rather than a pending one. `monitor.rs` is now 1,081 lines and carries its own test module, with `BackdropMonitor` at `:286`, `pinned` at `:323`, `Request` at `:354` and `WindowSearchOutcome` at `:96`.
 
 Phase 15 hoisted the selection machinery out of the macOS-only module so tests could drive it: `TerminalWindowCandidate`, `terminal_window_candidates`, `select_capture_window`, `windows_owned_by` and `frontmost_owner` are now target-independent, while `names()` lives on a separate macOS-only `TerminalProgramWindowCandidate` trait. Phase 15 also added the per-attempt selection record described above, retained behind a bound of `MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS` (`constants.rs`) that evicts the oldest diagnostic when it is reached; it is a separate subject and this phase must leave both the record and its bound intact. Its `BackdropMonitorCaptureTestDriver` and `capture_attempt_for_test` are `#[doc(hidden)]` public surface that ships in production builds on purpose: a dev-only cargo feature does not work here, because `tui_pane` is a normal dependency of `cargo-tile` and a feature enabled through dev-dependencies unifies into the normal build. This phase must migrate that hidden surface onto the new target type and prove it through `cargo-tile`'s tests, which are the only tests that compile `backdrop/**`.
 
@@ -567,4 +588,5 @@ Phase 16 either found the second-window cause and fixed it in `desktop.rs`/`moni
 - `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`
 - `bash ~/.claude/scripts/delegate/verify.sh check cargo-port` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` — `cargo-port` does not enable `backdrop` (Invariant 2), so these prove the crate's non-backdrop callers still build and pass
 - Run out of band by the main agent before the phase closes, because no `verify.sh` line covers either: the feature-enabled backdrop suite, and `cargo clippy --target x86_64-unknown-linux-gnu -p tui_pane --all-features -- -D warnings`
-- Every existing backdrop test keeps its behavioral assertions and expected values unchanged, Phase 15's attempt-record tests included. Mechanical construction and call-site edits that replace `Some(id)`/`None` with the named variants are expected and allowed; enumerate them in the report. An assertion or an expected value that had to change means behavior changed, which this phase forbids. Name in the report how many backdrop tests ran and that none were edited
+- Every existing backdrop test keeps its behavioral assertions and expected values unchanged, Phase 15's attempt-record tests included. Mechanical construction and call-site edits that replace `Some(id)`/`None` with the named variants are expected and allowed; enumerate them in the report. An assertion or an expected value that had to change means behavior changed, which this phase forbids. Test bodies do change here — the `WindowSearchOutcome` rename and the `Some(id)`/`None` substitutions reach them — so report how many backdrop tests ran, enumerate every mechanical edit made to a test, and state that no assertion or expected value moved. Phase 16's three recovery tests must still pass untouched in substance: `stalled_capture_is_recorded_and_its_replacement_accepts_the_next_attempt`, `disconnected_capture_worker_completes_the_outstanding_attempt_as_failed`, and `capture_worker_replacements_stop_at_the_process_bound`
+- Every projection `WindowIdentificationState` offers — the public `WindowIdentification` report and the `CaptureWindowTarget` the request is built from — is covered by a direct test, for each state the search can be in

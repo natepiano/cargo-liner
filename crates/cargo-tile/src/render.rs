@@ -69,6 +69,8 @@ use crate::constants::ANCESTRY_LEVEL_INDENT;
 use crate::constants::ANCESTRY_MIN_ELIDED_ROWS;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
+use crate::constants::ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE;
+use crate::constants::ATTRACT_BACKDROP_STALLED_NOTICE;
 use crate::constants::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 use crate::constants::ATTRACT_NO_BACKDROP_NOTICE;
 use crate::constants::ATTRACT_NOTE_LABEL;
@@ -207,9 +209,9 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// so with no capture there is nothing to put on the screen and the
 /// screen puts nothing there -- which reads as an attract screen that
 /// never came on, over a grid that is still sitting where it was. One
-/// line is what separates the two. It gives the Screen Recording
-/// instruction only when the capture status reports that access was not
-/// granted; every other failure points to the recorded diagnostics.
+/// line is what separates the two. It gives the Screen Recording instruction only when the
+/// capture status reports that access was not granted, names stalled-worker recovery directly,
+/// and points every other failure to the recorded diagnostics.
 ///
 /// On the last row of the body, which is the row furthest from anything
 /// an idle grid has to say.
@@ -217,6 +219,8 @@ fn draw_backdrop_notice(frame: &mut Frame, app: &App, body: Rect) {
     let notice = match app.attract.backdrop_notice(Instant::now()) {
         attract::BackdropNotice::None => return,
         attract::BackdropNotice::ScreenRecordingAccessInstruction => ATTRACT_NO_BACKDROP_NOTICE,
+        attract::BackdropNotice::CaptureStalled => ATTRACT_BACKDROP_STALLED_NOTICE,
+        attract::BackdropNotice::CaptureRecoveryStopped => ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE,
         attract::BackdropNotice::CaptureUnavailable => ATTRACT_BACKDROP_UNAVAILABLE_NOTICE,
     };
     let Some(row) = body.bottom().checked_sub(1) else {

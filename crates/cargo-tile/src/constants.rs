@@ -32,6 +32,12 @@ pub(crate) const ATTRACT_RETURN_QUIET: Duration = Duration::from_secs(3);
 /// animation drawing nothing, which looks from outside exactly like one
 /// that never came on.
 pub(crate) const ATTRACT_BACKDROP_GRACE: Duration = Duration::from_secs(2);
+/// What the screen says once unusable workers consume every automatic replacement.
+pub(crate) const ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE: &str =
+    "attract: desktop capture recovery stopped -- worker replacement limit reached";
+/// What the screen says after a desktop capture exceeds the monitor deadline.
+pub(crate) const ATTRACT_BACKDROP_STALLED_NOTICE: &str =
+    "attract: desktop capture stalled -- retrying with a replacement capture worker";
 /// What the screen says when desktop capture is unavailable for a reason
 /// the user cannot grant their way out of. The frame log is off unless
 /// its variable is set, so the line names the variable rather than
