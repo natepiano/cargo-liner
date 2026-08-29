@@ -25,7 +25,8 @@ pub(crate) enum BackdropNotice {
     None,
     /// Tell the reader how to grant Screen Recording access.
     ScreenRecordingAccessInstruction,
-    /// Report that a capture attempt exceeded its deadline and was given up on.
+    /// Report that the capture worker was abandoned and replaced after a second consecutive
+    /// missed deadline.
     CaptureStalled,
     /// Report that repeated worker abandonment exhausted the replacement bound.
     CaptureRecoveryStopped,
@@ -138,8 +139,8 @@ pub(super) fn note_backdrop_attempts<T>(
 
 /// Select the status-line outcome from attract visibility and capture state.
 ///
-/// A hidden attract screen suppresses every notice. While the screen is showing, stalled recovery
-/// failures take priority over a retained current backdrop; other statuses remain subject to the
+/// A hidden attract screen suppresses every notice. While the screen is showing, a replaced worker
+/// takes priority over a retained current backdrop; other statuses remain subject to the
 /// current-backdrop and grace-period suppression.
 pub(super) const fn classify_backdrop_notice(
     attract_screen_visibility: AttractScreenVisibility,
@@ -157,7 +158,7 @@ pub(super) const fn classify_backdrop_notice(
             AttractScreenVisibility::Showing,
             _,
             _,
-            BackdropStatus::Failed(CaptureFailure::AttemptStalled),
+            BackdropStatus::Failed(CaptureFailure::CaptureWorkerReplaced),
         ) => BackdropNotice::CaptureStalled,
         (
             AttractScreenVisibility::Showing,
@@ -200,9 +201,10 @@ mod tests {
     use super::*;
 
     /// Capture failure stages exercised by the notice classifier.
-    const CAPTURE_FAILURES: [CaptureFailure; 12] = [
+    const CAPTURE_FAILURES: [CaptureFailure; 13] = [
         CaptureFailure::UnsupportedPlatform,
         CaptureFailure::AttemptStalled,
+        CaptureFailure::CaptureWorkerReplaced,
         CaptureFailure::WorkerLaunchFailed,
         CaptureFailure::WorkerDisconnected,
         CaptureFailure::WorkerReplacementLimitReached,
@@ -411,7 +413,20 @@ mod tests {
     }
 
     #[test]
-    fn backdrop_notice_waits_for_the_grace_period_except_after_a_worker_stalls() {
+    fn a_single_stalled_attempt_is_silent_while_the_backdrop_is_still_coming() {
+        assert_eq!(
+            classify_backdrop_notice(
+                AttractScreenVisibility::Showing,
+                BackdropGracePeriod::Remaining,
+                CurrentBackdrop::Missing,
+                BackdropStatus::Failed(CaptureFailure::AttemptStalled),
+            ),
+            BackdropNotice::None,
+        );
+    }
+
+    #[test]
+    fn backdrop_notice_waits_for_the_grace_period_except_after_a_worker_is_replaced() {
         for backdrop_status in [BackdropStatus::WaitingForFirstResult, BackdropStatus::Ready] {
             assert_eq!(
                 classify_backdrop_notice(
@@ -426,11 +441,12 @@ mod tests {
         }
         for failure in CAPTURE_FAILURES {
             let expected = match failure {
-                CaptureFailure::AttemptStalled => BackdropNotice::CaptureStalled,
+                CaptureFailure::CaptureWorkerReplaced => BackdropNotice::CaptureStalled,
                 CaptureFailure::WorkerReplacementLimitReached => {
                     BackdropNotice::CaptureRecoveryStopped
                 },
                 CaptureFailure::UnsupportedPlatform
+                | CaptureFailure::AttemptStalled
                 | CaptureFailure::WorkerLaunchFailed
                 | CaptureFailure::WorkerDisconnected
                 | CaptureFailure::ScreenRecordingAccessNotGranted
@@ -477,11 +493,12 @@ mod tests {
                 CaptureFailure::ScreenRecordingAccessNotGranted => {
                     BackdropNotice::ScreenRecordingAccessInstruction
                 },
-                CaptureFailure::AttemptStalled => BackdropNotice::CaptureStalled,
+                CaptureFailure::CaptureWorkerReplaced => BackdropNotice::CaptureStalled,
                 CaptureFailure::WorkerReplacementLimitReached => {
                     BackdropNotice::CaptureRecoveryStopped
                 },
                 CaptureFailure::UnsupportedPlatform
+                | CaptureFailure::AttemptStalled
                 | CaptureFailure::WorkerLaunchFailed
                 | CaptureFailure::WorkerDisconnected
                 | CaptureFailure::ShareableContentQueryFailed
@@ -505,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn current_backdrop_suppresses_every_failure_notice_except_a_stalled_worker() {
+    fn current_backdrop_suppresses_every_failure_notice_except_a_replaced_worker() {
         for grace_period in [BackdropGracePeriod::Remaining, BackdropGracePeriod::Elapsed] {
             for backdrop_status in [BackdropStatus::WaitingForFirstResult, BackdropStatus::Ready] {
                 assert_eq!(
@@ -521,11 +538,12 @@ mod tests {
             }
             for failure in CAPTURE_FAILURES {
                 let expected = match failure {
-                    CaptureFailure::AttemptStalled => BackdropNotice::CaptureStalled,
+                    CaptureFailure::CaptureWorkerReplaced => BackdropNotice::CaptureStalled,
                     CaptureFailure::WorkerReplacementLimitReached => {
                         BackdropNotice::CaptureRecoveryStopped
                     },
                     CaptureFailure::UnsupportedPlatform
+                    | CaptureFailure::AttemptStalled
                     | CaptureFailure::WorkerLaunchFailed
                     | CaptureFailure::WorkerDisconnected
                     | CaptureFailure::ScreenRecordingAccessNotGranted

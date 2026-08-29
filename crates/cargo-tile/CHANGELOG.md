@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report test progress, not just build progress. `cargo nextest run` counts its tests the way cargo counts units, and the working-directory heading names which count is on screen: `building`, then `testing`. Runs with no terminal report too -- nextest draws no bar there, so the count is read from its per-test lines instead.
 
 ### Fixed
+- An ordinary start no longer reports a stalled desktop capture: a display captured for the first time in a while can take seconds, so the screen waits for it. The stalled notice remains for a capture worker actually abandoned and replaced.
 - The attract screen's notice names the real cause. The Settings instruction now appears only when Screen Recording access is denied; every other capture failure gets a neutral line.
 - A favorites row the parser cannot read can now be deleted, and one that moved underneath you is refused with a message rather than deleted wrongly.
 - A wedged desktop capture no longer strands the backdrop: an attempt is given up on after five seconds, and a worker that misses a second deadline without answering in between is replaced, up to three times since its last result. Moving the terminal to another monitor makes one capture legitimately slow, and that alone no longer disables the backdrop for the rest of the run.

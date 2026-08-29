@@ -1248,6 +1248,7 @@ mod tests {
     use tui_pane::BandDirection;
     use tui_pane::BandFraying;
     use tui_pane::CaptureAttemptTestCase;
+    use tui_pane::CaptureFailure;
     use tui_pane::FRAME_POLL_MILLIS;
     use tui_pane::PixelFill;
     use tui_pane::PixelResolve;
@@ -1857,6 +1858,62 @@ mod tests {
             attract.backdrop_notice(grace_elapsed),
             BackdropNotice::CaptureUnavailable,
             "a capture missing at the grace boundary is reported",
+        );
+    }
+
+    /// The cold start the reader keeps meeting. A display nobody has
+    /// captured recently answers its first capture in seconds rather
+    /// than tenths, so that attempt is still inside the window server
+    /// when the monitor's deadline passes. One missed deadline is a
+    /// slow capture, not a wedged worker, and a screen six seconds old
+    /// has nothing to say about it. Only a second missed deadline with
+    /// nothing returned in between is a worker abandoned, and that is
+    /// what the notice reports.
+    #[test]
+    fn a_cold_first_capture_is_silent_until_its_worker_is_replaced() {
+        /// How long the screen had been up when a cold first capture
+        /// was reported as stalled. Inside [`ATTRACT_BACKDROP_GRACE`],
+        /// so a notice here is one the grace period should hold back.
+        const UPTIME_UNDER_REPORT: Duration = Duration::from_secs(6);
+
+        let (monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let mut attract = Attract::new();
+        attract.monitor = monitor;
+
+        let started = Instant::now();
+        attract.advance(AREA, Work::Idle, Updates::Live, started);
+        assert!(attract.showing(), "the screen is on and wants a desktop");
+
+        assert_eq!(
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut attract.monitor),
+            Ok(()),
+            "the first capture of a cold display is still running at its deadline",
+        );
+        assert_eq!(
+            attract.monitor.status(),
+            BackdropStatus::Failed(CaptureFailure::AttemptStalled),
+            "which is one slow attempt, and the worker is kept",
+        );
+        assert_eq!(
+            attract.backdrop_notice(started + UPTIME_UNDER_REPORT),
+            BackdropNotice::None,
+            "so six seconds in there is nothing on the status line",
+        );
+
+        assert_eq!(
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut attract.monitor),
+            Ok(()),
+            "the same worker misses a second deadline, having returned nothing",
+        );
+        assert_eq!(
+            attract.monitor.status(),
+            BackdropStatus::Failed(CaptureFailure::CaptureWorkerReplaced),
+            "which is a worker abandoned and replaced",
+        );
+        assert_eq!(
+            attract.backdrop_notice(started + UPTIME_UNDER_REPORT),
+            BackdropNotice::CaptureStalled,
+            "and that is reported without waiting out the grace period",
         );
     }
 

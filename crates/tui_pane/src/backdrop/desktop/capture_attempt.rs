@@ -96,8 +96,12 @@ impl From<u64> for CaptureAttemptSequence {
 pub enum CaptureFailure {
     /// This platform has no desktop-capture backend.
     UnsupportedPlatform,
-    /// The capture worker did not return the attempt before its monitor deadline.
+    /// The capture worker missed this attempt's deadline and was kept because a first capture of
+    /// a display can legitimately take seconds.
     AttemptStalled,
+    /// The capture worker missed a second consecutive deadline without returning anything in
+    /// between, so it was abandoned and replaced.
+    CaptureWorkerReplaced,
     /// A capture worker could not be launched.
     WorkerLaunchFailed,
     /// The capture worker's result channel disconnected.

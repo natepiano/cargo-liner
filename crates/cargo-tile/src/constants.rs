@@ -26,18 +26,21 @@ pub(crate) const ATTRACT_FADE_STEP: u8 = 3;
 /// screen the reader asks for outright waits out none of it.
 pub(crate) const ATTRACT_RETURN_QUIET: Duration = Duration::from_secs(3);
 /// How long the attract screen may want a desktop capture and have none
-/// before it says so. A capture takes a few frames to arrive and is
-/// retaken on the backdrop's capture-refresh interval's cadence, so a gap shorter than this
-/// is the ordinary working of the thing; a gap longer than it is an
-/// animation drawing nothing, which looks from outside exactly like one
-/// that never came on.
-pub(crate) const ATTRACT_BACKDROP_GRACE: Duration = Duration::from_secs(2);
+/// before it says so.
+///
+/// A display not captured recently answers in about three seconds, against roughly two tenths
+/// when warm, and the first `SCShareableContent` call in a process costs seconds of its own. A cold
+/// start can spend the monitor's whole five-second attempt deadline before its retry succeeds. Ten
+/// seconds covers one stalled first attempt and the retry that follows it, so a gap shorter than
+/// this is the ordinary working of desktop capture and says nothing. A backdrop that never arrives
+/// is still reported promptly enough for an ambient screen.
+pub(crate) const ATTRACT_BACKDROP_GRACE: Duration = Duration::from_secs(10);
 /// What the screen says once unusable workers consume every automatic replacement.
 pub(crate) const ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE: &str =
     "attract: desktop capture recovery stopped -- worker replacement limit reached";
-/// What the screen says after a desktop capture exceeds the monitor deadline.
+/// What the screen says after a stalled capture worker is abandoned and replaced.
 pub(crate) const ATTRACT_BACKDROP_STALLED_NOTICE: &str =
-    "attract: desktop capture is taking longer than usual -- still retrying";
+    "attract: desktop capture stalled -- retrying with a replacement capture worker";
 /// What the screen says when desktop capture is unavailable for a reason
 /// the user cannot grant their way out of. The frame log is off unless
 /// its variable is set, so the line names the variable rather than

@@ -501,12 +501,19 @@ impl BackdropMonitor {
         {
             return;
         }
+        let capture_worker_responsiveness = self.capture_worker_responsiveness;
+        let capture_failure = match capture_worker_responsiveness {
+            CaptureWorkerResponsiveness::Answering => CaptureFailure::AttemptStalled,
+            CaptureWorkerResponsiveness::SilentSinceDeadline => {
+                CaptureFailure::CaptureWorkerReplaced
+            },
+        };
         self.record_capture_attempt_result(CaptureAttemptResult::failed(
             outstanding_capture_attempt.sequence,
             CaptureAttemptWindowSelection::SelectionNotReached,
-            CaptureFailure::AttemptStalled,
+            capture_failure,
         ));
-        match self.capture_worker_responsiveness {
+        match capture_worker_responsiveness {
             CaptureWorkerResponsiveness::Answering => {
                 self.capture_worker_responsiveness =
                     CaptureWorkerResponsiveness::SilentSinceDeadline;
@@ -807,8 +814,16 @@ mod tests {
             Ok(()),
         );
         assert_eq!(
+            monitor.status(),
+            BackdropStatus::Failed(CaptureFailure::AttemptStalled),
+        );
+        assert_eq!(
             capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
             Ok(()),
+        );
+        assert_eq!(
+            monitor.status(),
+            BackdropStatus::Failed(CaptureFailure::CaptureWorkerReplaced),
         );
         assert_eq!(
             capture_test_driver.complete_capture_attempt(
