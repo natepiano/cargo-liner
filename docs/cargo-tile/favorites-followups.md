@@ -418,30 +418,25 @@ cargo-tile installs a policy hiding `GlobalAction::Dismiss` from its compact sho
 - Filtering `keymap_help_rows` as well — hiding a row from the quick reference must never make it unrebindable.
 - Changing the shared `'x'` → `GlobalAction::Dismiss` framework default, which `cargo-port` relies on.
 
-### Phase 14 — The README documents favorites and stops contradicting the code  · status: todo
+### Phase 14 — The README documents favorites and stops contradicting the code  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** A user who reads the README can find the favorites feature, and the statements beside it are true.
+`crates/cargo-tile/README.md` carries a `#### favorites` subsection beside the attract documentation: what a favorite stores (the attract mode and its steerable parameters, not the animation's instantaneous position), where the file lives, the keys that save, open, load, randomize, undo and delete one, what the three-cell row prefix and the `● matches the current parameters` legend mean, how unreadable rows are kept and deleted, that saving identical parameters refreshes the existing row, and that every listed key is a rebindable default.
 
-**Spec:**
-
-`crates/cargo-tile/README.md` documents the attract steering keys in detail and never uses the word "favorite"; `ctrl-s`, `ctrl-o`, `m`, `r` and `u` do not appear. Three statements already in the file are false and sit next to where the new section goes, so they are fixed in the same pass:
-
-- `## configuration` says there are three files and omits `favorites.toml` (`:75`–78).
-- The attract section says steering keys do not work when the screen appears on its own (`:465`–469). `keyed_mode` returns a mode when the screen was requested **or** has fully arrived at `faded == 0` (`attract/mod.rs:680`), and a regression test in that file's test module covers it.
-- The template section says `AppGlobalAction` starts with no variants (`:70`–73); it now has many.
-
-Add a favorites section beside the existing attract one, in the same voice: what a favorite stores (the attract mode and its steerable parameters, not the animation's instantaneous position); where the file lives (`<os config dir>/cargo-tile/favorites.toml`); `ctrl-s` to save and `ctrl-o` to open the table; `m` for a random favorite, `r` to randomize the current parameters, `u` to undo the last replacement; in the overlay, arrows to move, enter to load, `x` to delete, left/right to page the parameter columns, esc to close; what the three-cell row prefix means, quoting the legend `● matches the current parameters` exactly as Phase 10 renders it and saying that every matching row is marked rather than one running favorite; that rows this version cannot read are kept, shown in their own block, selectable, and deletable by pressing the delete key twice on the same row — and that any key pressed in between, cursor movement included, cancels the confirmation and writes nothing; and that saving the same parameters twice refreshes the existing row rather than adding one. State that the listed keys are defaults and can be rebound.
+Four statements beside it are corrected. `## configuration` reads "Four optional configuration entries" and lists `favorites.toml`. The `AppGlobalAction` paragraph describes it as cargo-tile's populated global-shortcut enum rather than an empty one. The attract steering paragraph states `keyed_mode`'s real rule — immediate when the screen was requested, on full arrival when it came on by itself, with the grid keeping the keyboard during an automatic fade. The globals table's `` `x` / Esc `` dismiss row is gone. The band-fraying paragraph names all four `BandFraying` modes and states the two real depth bounds instead of the trailing-edge-only range it inherited.
 
 **Files:**
-- `crates/cargo-tile/README.md` — favorites section; configuration table; attract-steering paragraph; the `AppGlobalAction` claim
+- `crates/cargo-tile/README.md` — the durable explanation of favorites, and the corrected source for the configuration file set, the `AppGlobalAction` role, the attract steering rule, and the global shortcut table
 
-**Constraints from prior phases:** Phase 9 made unrecognized rows selectable and deletable behind a two-press confirmation that any intervening key cancels; do not call those rows diagnostics in the README, since a row this version cannot read may simply have been written by a newer cargo-tile. Phase 10 widened the row prefix to three cells — `"   "`, `"▸  "`, `" ● "`, `"▸● "` — and renders the legend `● matches the current parameters` — in the popup's border title, beside the saved count, as ` Favorites -- N saved -- ● matches the current parameters ` — marking every matching row rather than one authoritative running favorite. Say in the README what the dot means and that every matching row carries it: the popup's width comes from the terminal, so on a terminal narrower than roughly 61 columns that title is truncated and the legend is the first thing to go. The README is the durable explanation; the title is only the reminder. Phase 11 named the save outcome `FavoriteSaveOutcome::{Added, Refreshed}`. Phase 13 hid the `x` Dismiss row from cargo-tile's compact shortcut overlay while leaving it rebindable in the full keymap editor, so the README must not list `x` as a cargo-tile global. Document what those phases actually shipped — read the code before writing the section rather than describing the plan.
+**Gotchas:**
+- The globals table's header promises every row comes from `tui_pane::GlobalAction`'s defaults, so any row added there must be checked against `keymap/global_action.rs`. Esc is not among those defaults (`:122`, `:293`); only `'x' => Self::Dismiss` is, and cargo-tile hides even that from its compact popup.
+- Band fraying depth is bounded by `VARIABLE_TAIL_FLOOR_PERCENT = 30` and `VARIABLE_HEAD_CEILING_PERCENT = 20` (`tui_pane/src/backdrop/constants.rs`), enforced by a `const _: () = assert!(HEAD < TAIL)`. A trailing edge never eats into the last third; a leading edge stands back at most a fifth. Prose stating one range for all four modes is false for three of them.
+- A section heading inserted here rescopes the paragraph below it without changing a word of that paragraph. The `keymap.toml` hand-editing paragraph must stay above the favorites heading, or it reads as a statement about `favorites.toml`.
+- Unreadable favorites rows are not diagnostics: such a row may simply have been written by a newer cargo-tile, and the README says so.
 
-**Acceptance gate:**
-- The README has no test, so verify it by reading each corrected claim against the code it describes and saying so in the report
-- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
+**Ruled out:**
+- Documenting the favorites overlay's vim aliases `k`/`j`/`h`/`l` — bound in `favorites_overlay/mod.rs`, but only the arrows were specified, and widening the documented key set was not this phase's call.
 
 ### Phase 15 — Every capture attempt records the window it aimed at  · status: todo
 
