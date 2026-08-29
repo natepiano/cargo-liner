@@ -962,7 +962,8 @@ fn deletion_refusal_message(
     error: &FavoritesMutationError,
 ) -> String {
     if matches!(error, FavoritesMutationError::UnrecognizedFavoriteChanged) {
-        return "The favorites file changed after this row was loaded; nothing was deleted"
+        return "The favorites file changed after this row was loaded; nothing was deleted. Close \
+                and reopen favorites, then try again."
             .to_string();
     }
     favorites::favorite_refusal_message(FavoritesMutation::Delete, retry, error)
@@ -2067,8 +2068,11 @@ travel_left = "界"
         let FavoritesOverlayNotice::DeletionRefused { message } = &overlay.notice else {
             panic!("stale locator should produce an overlay refusal");
         };
-        assert!(message.contains("file changed"));
-        assert!(message.contains("nothing was deleted"));
+        assert_eq!(
+            message,
+            "The favorites file changed after this row was loaded; nothing was deleted. Close and \
+             reopen favorites, then try again."
+        );
     }
 
     #[test]

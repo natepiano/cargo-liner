@@ -145,6 +145,8 @@ pub use keymap::Action;
 pub use keymap::AltModifierLabel;
 pub use keymap::Bindings;
 pub use keymap::Configuring;
+pub use keymap::FrameworkGlobalShortcutPresentation;
+pub use keymap::FrameworkGlobalShortcutVisibility;
 pub use keymap::GlobalAction;
 pub use keymap::GlobalShortcutRow;
 pub use keymap::Globals;

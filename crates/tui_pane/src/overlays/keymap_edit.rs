@@ -433,3 +433,133 @@ fn toml_value(binds: &[KeySequence]) -> String {
         },
     }
 }
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::KeymapEditContext;
+    use super::edit_selected_global_shortcut;
+    use super::selectable_rows;
+    use crate::AppContext;
+    use crate::Bindings;
+    use crate::FocusedPane;
+    use crate::Framework;
+    use crate::FrameworkGlobalShortcutPresentation;
+    use crate::FrameworkGlobalShortcutVisibility;
+    use crate::FrameworkOverlayId;
+    use crate::GlobalAction;
+    use crate::Globals;
+    use crate::KeyBind;
+    use crate::Keymap;
+    use crate::KeymapUiContext;
+    use crate::NoToastAction;
+
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    enum TestPaneId {
+        Main,
+    }
+
+    crate::action_enum! {
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        pub enum TestAppGlobalAction {
+            Inspect => ("inspect", "inspect", "Inspect item");
+        }
+    }
+
+    struct TestApp {
+        framework:    Framework<Self>,
+        inline_error: Option<String>,
+    }
+
+    impl AppContext for TestApp {
+        type AppPaneId = TestPaneId;
+        type ToastAction = NoToastAction;
+
+        fn framework(&self) -> &Framework<Self> { &self.framework }
+        fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+    }
+
+    impl KeymapUiContext for TestApp {
+        fn keymap_inline_error(&self) -> Option<&str> { self.inline_error.as_deref() }
+
+        fn keymap_pane_display_order(&self) -> &[TestPaneId] { &[] }
+    }
+
+    struct TestAppGlobals;
+
+    impl Globals<TestApp> for TestAppGlobals {
+        type Actions = TestAppGlobalAction;
+
+        fn render_order() -> &'static [Self::Actions] { &[TestAppGlobalAction::Inspect] }
+
+        fn defaults() -> Bindings<Self::Actions> {
+            crate::bindings! { 'i' => TestAppGlobalAction::Inspect }
+        }
+
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) {
+            |_action, _ctx| { /* no-op */ }
+        }
+    }
+
+    impl KeymapEditContext for TestApp {
+        type AppGlobals = TestAppGlobals;
+
+        const KEYMAP_TOML_HEADER: &'static str = "";
+
+        fn keymap_file_path(&self) -> Option<PathBuf> { None }
+
+        fn set_keymap_inline_error(&mut self, message: String) {
+            self.inline_error = Some(message);
+        }
+
+        fn clear_keymap_inline_error(&mut self) { self.inline_error = None; }
+
+        fn reload_keymap(&mut self, _content: &str) {}
+
+        fn keymap_reserved_bind(&self, _bind: KeyBind) -> Option<String> { None }
+    }
+
+    #[test]
+    fn compact_selection_opens_the_row_shown_after_a_prior_row_is_hidden() {
+        const fn hide_next_pane(action: GlobalAction) -> FrameworkGlobalShortcutVisibility {
+            match action {
+                GlobalAction::NextPane => FrameworkGlobalShortcutVisibility::Hidden,
+                _ => FrameworkGlobalShortcutVisibility::Shown,
+            }
+        }
+
+        let keymap = Keymap::<TestApp>::builder()
+            .framework_global_shortcut_presentation(FrameworkGlobalShortcutPresentation::new(
+                hide_next_pane,
+            ))
+            .build()
+            .expect("keymap with presentation policy must build");
+        let compact_rows = keymap.global_shortcut_rows();
+        let expected = compact_rows
+            .first()
+            .expect("the compact overlay must retain a first row");
+        assert_eq!(expected.action, "prev_pane");
+
+        let mut app = TestApp {
+            framework:    Framework::new(FocusedPane::App(TestPaneId::Main)),
+            inline_error: None,
+        };
+        edit_selected_global_shortcut(&mut app, &keymap);
+
+        let editor_rows = selectable_rows(&app, &keymap);
+        let selected = editor_rows
+            .get(app.framework().keymap_pane.viewport().pos())
+            .expect("the full editor must select the compact row");
+        assert_eq!(
+            (selected.scope, selected.action),
+            (expected.scope, expected.action)
+        );
+        assert_eq!(app.framework().overlay(), Some(FrameworkOverlayId::Keymap));
+        assert!(app.framework().keymap_pane.is_awaiting());
+    }
+}

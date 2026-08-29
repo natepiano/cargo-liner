@@ -33,6 +33,8 @@ pub use builder::KeymapBuilder;
     reason = "re-exported at crate root for callers naming the typestate"
 )]
 pub use builder::Registering;
+pub use global_action::FrameworkGlobalShortcutPresentation;
+pub use global_action::FrameworkGlobalShortcutVisibility;
 pub use global_action::GlobalAction;
 pub use globals::Globals;
 pub use key_bind::AltModifierLabel;
@@ -100,41 +102,42 @@ type ScopeTomlActionKeysFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<&'static str>;
 /// by [`FocusedPane::Framework`](crate::FocusedPane::Framework) arms in
 /// callers.
 pub struct Keymap<Ctx: AppContext + 'static> {
-    scopes:                       HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
-    navigation:                   Option<ScopeMap<NavAction>>,
+    scopes:                                 HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
+    navigation:                             Option<ScopeMap<NavAction>>,
     /// Monomorphized renderer for the navigation scope. Each
     /// [`KeymapBuilder::register_navigation::<N>`](crate::KeymapBuilder::register_navigation)
     /// call sets this to the `N`-specialized free fn in
     /// [`runtime_scope::render_navigation_slots`]. The bar renderer
     /// reads it via [`Self::render_navigation_slots`] without naming
     /// `N`.
-    navigation_render_fn:         Option<ScopeRenderFn<Ctx>>,
-    globals:                      Option<Box<dyn Any>>,
+    navigation_render_fn:                   Option<ScopeRenderFn<Ctx>>,
+    globals:                                Option<Box<dyn Any>>,
     /// Monomorphized renderer for the app-globals scope. See
     /// [`Self::navigation_render_fn`].
-    app_globals_render_fn:        Option<ScopeRenderFn<Ctx>>,
+    app_globals_render_fn:                  Option<ScopeRenderFn<Ctx>>,
     /// Monomorphized help-row renderer for the app-globals scope.
-    app_globals_shortcut_rows_fn: Option<ScopeShortcutRowsFn<Ctx>>,
+    app_globals_shortcut_rows_fn:           Option<ScopeShortcutRowsFn<Ctx>>,
     /// Monomorphized keymap-help row renderer for navigation.
-    navigation_help_rows_fn:      Option<ScopeHelpRowsFn<Ctx>>,
+    navigation_help_rows_fn:                Option<ScopeHelpRowsFn<Ctx>>,
     /// Monomorphized keymap-help row renderer for app-globals.
-    app_globals_help_rows_fn:     Option<ScopeHelpRowsFn<Ctx>>,
+    app_globals_help_rows_fn:               Option<ScopeHelpRowsFn<Ctx>>,
     /// Monomorphized TOML-action-key collector for navigation.
-    navigation_toml_keys_fn:      Option<ScopeTomlActionKeysFn<Ctx>>,
+    navigation_toml_keys_fn:                Option<ScopeTomlActionKeysFn<Ctx>>,
     /// Monomorphized TOML-action-key collector for app-globals.
-    app_globals_toml_keys_fn:     Option<ScopeTomlActionKeysFn<Ctx>>,
-    framework_globals:            ScopeMap<GlobalAction>,
-    overlay_scope:                ScopeMap<OverlayAction>,
-    on_quit:                      Option<fn(&mut Ctx)>,
-    on_restart:                   Option<fn(&mut Ctx)>,
-    dismiss_fallback:             Option<fn(&mut Ctx) -> bool>,
-    config_path:                  Option<PathBuf>,
+    app_globals_toml_keys_fn:               Option<ScopeTomlActionKeysFn<Ctx>>,
+    framework_globals:                      ScopeMap<GlobalAction>,
+    overlay_scope:                          ScopeMap<OverlayAction>,
+    on_quit:                                Option<fn(&mut Ctx)>,
+    on_restart:                             Option<fn(&mut Ctx)>,
+    dismiss_fallback:                       Option<fn(&mut Ctx) -> bool>,
+    framework_global_shortcut_presentation: FrameworkGlobalShortcutPresentation,
+    config_path:                            Option<PathBuf>,
     /// Warnings for TOML entries skipped during the build because the
     /// builder ran in
     /// [`ignore_unknown_entries`](KeymapBuilder::ignore_unknown_entries)
     /// mode. Empty in the default (strict) build, where such entries
     /// fail the build instead.
-    unknown_warnings:             Vec<String>,
+    unknown_warnings:                       Vec<String>,
 }
 
 impl<Ctx: AppContext + 'static> Keymap<Ctx> {
@@ -163,6 +166,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             on_quit: None,
             on_restart: None,
             dismiss_fallback: None,
+            framework_global_shortcut_presentation: FrameworkGlobalShortcutPresentation::default(),
             config_path,
             unknown_warnings: Vec::new(),
         }
@@ -258,6 +262,15 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// constructs one.
     pub(super) const fn set_dismiss_fallback(&mut self, hook: fn(&mut Ctx) -> bool) {
         self.dismiss_fallback = Some(hook);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// installs the client presentation policy.
+    pub(super) const fn set_framework_global_shortcut_presentation(
+        &mut self,
+        presentation: FrameworkGlobalShortcutPresentation,
+    ) {
+        self.framework_global_shortcut_presentation = presentation;
     }
 
     /// Insert one scope under its `AppPaneId`. `pub(super)` so only
@@ -438,13 +451,27 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     #[must_use]
     pub fn global_shortcut_rows(&self) -> Vec<GlobalShortcutRow> {
         let mut rows = Vec::new();
-        rows.push(self.framework_global_shortcut_row("Global Navigation", GlobalAction::NextPane));
-        rows.push(self.framework_global_shortcut_row("Global Navigation", GlobalAction::PrevPane));
+        for action in [GlobalAction::NextPane, GlobalAction::PrevPane] {
+            if matches!(
+                self.framework_global_shortcut_presentation
+                    .visibility(action),
+                FrameworkGlobalShortcutVisibility::Shown
+            ) {
+                rows.push(self.framework_global_shortcut_row("Global Navigation", action));
+            }
+        }
 
         let mut shortcuts = GlobalAction::ALL
             .iter()
             .copied()
             .filter(|action| !matches!(action, GlobalAction::NextPane | GlobalAction::PrevPane))
+            .filter(|action| {
+                matches!(
+                    self.framework_global_shortcut_presentation
+                        .visibility(*action),
+                    FrameworkGlobalShortcutVisibility::Shown
+                )
+            })
             .map(|action| self.framework_global_shortcut_row("Global Shortcuts", action))
             .collect::<Vec<_>>();
         if let Some(render) = self.app_globals_shortcut_rows_fn {
@@ -642,7 +669,11 @@ mod tests {
 
     use crossterm::event::KeyCode;
 
+    use super::Action;
     use super::Bindings;
+    use super::FrameworkGlobalShortcutPresentation;
+    use super::FrameworkGlobalShortcutVisibility;
+    use super::GlobalAction;
     use super::Globals;
     use super::KeyBind;
     use super::KeyOutcome;
@@ -844,6 +875,49 @@ mod tests {
                 .key_for_toml_key(TestPaneId::Bar, "activate")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn compact_shortcut_policy_does_not_change_help_or_dispatch() {
+        const fn hide_dismiss(action: GlobalAction) -> FrameworkGlobalShortcutVisibility {
+            match action {
+                GlobalAction::Dismiss => FrameworkGlobalShortcutVisibility::Hidden,
+                _ => FrameworkGlobalShortcutVisibility::Shown,
+            }
+        }
+
+        let default_keymap = Keymap::<TestApp>::builder()
+            .build()
+            .expect("default keymap must build");
+        let default_rows = default_keymap.global_shortcut_rows();
+        assert_eq!(default_rows.len(), GlobalAction::ALL.len());
+        assert!(default_rows.iter().any(|row| row.action == "dismiss"));
+
+        let keymap = Keymap::<TestApp>::builder()
+            .framework_global_shortcut_presentation(FrameworkGlobalShortcutPresentation::new(
+                hide_dismiss,
+            ))
+            .build()
+            .expect("keymap with presentation policy must build");
+        let compact_rows = keymap.global_shortcut_rows();
+        let expected_rows = default_rows
+            .into_iter()
+            .filter(|row| row.action != "dismiss")
+            .collect::<Vec<_>>();
+        assert_eq!(compact_rows, expected_rows);
+        assert!(
+            keymap
+                .keymap_help_rows(&[])
+                .iter()
+                .any(|row| row.action == "dismiss"),
+            "the full keymap editor must keep hidden compact actions"
+        );
+
+        let mut app = fresh_app();
+        keymap.dispatch_framework_global(GlobalAction::OpenKeymap, &mut app);
+        assert!(app.framework().overlay().is_some());
+        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut app);
+        assert!(app.framework().overlay().is_none());
     }
 
     #[test]

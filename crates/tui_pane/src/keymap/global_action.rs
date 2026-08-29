@@ -51,6 +51,58 @@ pub enum GlobalAction {
     Dismiss,
 }
 
+/// Whether one framework-global action appears in the compact
+/// shortcut overlay.
+///
+/// This is presentation state only. Hidden actions keep their key
+/// bindings, remain dispatchable, and stay visible in the full
+/// keymap editor.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FrameworkGlobalShortcutVisibility {
+    /// Show the action in the compact shortcut overlay.
+    #[default]
+    Shown,
+    /// Omit the action from the compact shortcut overlay.
+    Hidden,
+}
+
+/// Client-owned presentation policy for framework-global shortcut
+/// rows.
+///
+/// The default policy shows every framework action. A client can
+/// replace it while building a [`Keymap`](crate::Keymap) without
+/// changing action dispatch or keymap persistence.
+#[derive(Clone, Copy)]
+pub struct FrameworkGlobalShortcutPresentation {
+    visibility: fn(GlobalAction) -> FrameworkGlobalShortcutVisibility,
+}
+
+impl FrameworkGlobalShortcutPresentation {
+    /// Create a compact-shortcut presentation policy from the
+    /// function that classifies each framework action.
+    #[must_use]
+    pub const fn new(visibility: fn(GlobalAction) -> FrameworkGlobalShortcutVisibility) -> Self {
+        Self { visibility }
+    }
+
+    /// Classify one framework action for the compact shortcut
+    /// overlay.
+    #[must_use]
+    pub(super) fn visibility(self, action: GlobalAction) -> FrameworkGlobalShortcutVisibility {
+        (self.visibility)(action)
+    }
+}
+
+impl Default for FrameworkGlobalShortcutPresentation {
+    fn default() -> Self { Self::new(show_framework_global_shortcut) }
+}
+
+const fn show_framework_global_shortcut(
+    _action: GlobalAction,
+) -> FrameworkGlobalShortcutVisibility {
+    FrameworkGlobalShortcutVisibility::Shown
+}
+
 impl GlobalAction {
     /// Canonical default key bindings for the framework's globals.
     ///
