@@ -75,7 +75,7 @@ enum DriftTransactionRejection {
 
 struct DriftMutationContext<'observation> {
     request:                     DriftRequest,
-    repository_root:             &'observation Path,
+    ledger:                      &'observation Ledger,
     acting_identity:             DriftActingIdentity,
     resolved_edit_authorization: ResolvedEditAuthorization,
     identity_validation:         CoordinationIdentityValidationContext,
@@ -161,6 +161,7 @@ fn execute_inner(
         },
     };
     let worktree_context = initial_snapshot.worktree_context().clone();
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
     let identity_validation = CoordinationIdentityValidationContext::for_user_command(
         resolved_edit_authorization,
@@ -221,7 +222,7 @@ fn execute_inner(
     )?;
     let mutation_context = DriftMutationContext {
         request,
-        repository_root: worktree_context.repository_root(),
+        ledger: &ledger,
         acting_identity,
         resolved_edit_authorization,
         identity_validation,
@@ -415,7 +416,6 @@ fn paths_from_scopes(
 fn transact_classification(
     context: &DriftMutationContext<'_>,
 ) -> Result<DriftReport, DriftExecutionError> {
-    let ledger = Ledger::open(context.repository_root)?;
     let actor_run = context
         .acting_identity
         .run_for_mutation(context.request.reservation)?
@@ -423,7 +423,7 @@ fn transact_classification(
     let journal_mutation_actor = context
         .resolved_edit_authorization
         .journal_mutation_actor_for(actor_run);
-    let outcome = ledger.transact_reconciliation(
+    let outcome = context.ledger.transact_reconciliation(
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,
         |state| {

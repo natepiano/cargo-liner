@@ -43,11 +43,12 @@ const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 const RAW_TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
-printf 'git' >> "$CARGO_BERTH_TEST_GIT_TRACE"
+separator=$(printf '\037')
+record=git
 for argument in "$@"; do
-    printf '\037%s' "$argument" >> "$CARGO_BERTH_TEST_GIT_TRACE"
+    record="${record}${separator}${argument}"
 done
-printf '\036' >> "$CARGO_BERTH_TEST_GIT_TRACE"
+printf '%s\036' "$record" >> "$CARGO_BERTH_TEST_GIT_TRACE"
 if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "fail_phase_diff" ] \
     && [ "$1" = "--no-optional-locks" ] \
     && [ "$2" = "diff-tree" ] \
@@ -4325,10 +4326,30 @@ fn assert_same_git_invocation_sequence(left: &[RawGitInvocation], right: &[RawGi
 fn assert_same_git_process_sequence(left: &[RawGitInvocation], right: &[RawGitInvocation]) {
     assert_eq!(left.len(), right.len(), "left={left:#?}\nright={right:#?}");
     assert_eq!(
-        raw_git_command_sequence(left),
-        raw_git_command_sequence(right),
+        normalized_git_process_sequence(left),
+        normalized_git_process_sequence(right),
         "left={left:#?}\nright={right:#?}"
     );
+}
+
+fn normalized_git_process_sequence(invocations: &[RawGitInvocation]) -> Vec<String> {
+    let mut sequence = raw_git_command_sequence(invocations);
+    let phase_head_index = invocations.iter().position(|invocation| {
+        invocation.arguments.windows(2).any(|arguments| {
+            matches!(arguments, [command, revision] if command == "rev-parse" && revision == "HEAD")
+        })
+    });
+    let working_tree_index = invocations
+        .iter()
+        .position(|invocation| raw_git_command(invocation) == Some("status"));
+    if let (Some(phase_head_index), Some(working_tree_index)) =
+        (phase_head_index, working_tree_index)
+    {
+        let concurrent_reads =
+            phase_head_index.min(working_tree_index)..=phase_head_index.max(working_tree_index);
+        sequence[concurrent_reads].sort();
+    }
+    sequence
 }
 
 fn git_command_count(invocations: &[RawGitInvocation], command: &str) -> usize {

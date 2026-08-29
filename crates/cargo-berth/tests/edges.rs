@@ -45,9 +45,9 @@ if [ "$1" = "--no-optional-locks" ]; then
     command_name="$2"
     (
         shift 2
-        printf '%s' "$command_name" >> "$CARGO_BERTH_TEST_GIT_TRACE"
-        for argument in "$@"; do printf ' %s' "$argument" >> "$CARGO_BERTH_TEST_GIT_TRACE"; done
-        printf '\n' >> "$CARGO_BERTH_TEST_GIT_TRACE"
+        command_line="$command_name"
+        for argument in "$@"; do command_line="$command_line $argument"; done
+        printf '%s\n' "$command_line" >> "$CARGO_BERTH_TEST_GIT_TRACE"
     )
 fi
 if [ "$2" = "merge-base" ] && { [ "$CARGO_BERTH_TEST_UNAVAILABLE_TARGET" = "*" ] || { [ -n "$CARGO_BERTH_TEST_UNAVAILABLE_TARGET" ] && [ "$4" = "$CARGO_BERTH_TEST_UNAVAILABLE_TARGET" ]; }; }; then
@@ -735,14 +735,8 @@ fn successor_round_robin_has_fixed_cold_cost_and_covers_every_head() {
         "one successor argv: {one_argv:?}; twenty successor argv: {twenty_argv:?}"
     );
     assert_eq!(
-        twenty_argv
-            .iter()
-            .filter_map(|line| line.split_whitespace().next())
-            .collect::<Vec<_>>(),
-        one_argv
-            .iter()
-            .filter_map(|line| line.split_whitespace().next())
-            .collect::<Vec<_>>()
+        canonical_git_command_sequence(&twenty_argv),
+        canonical_git_command_sequence(&one_argv)
     );
 
     let mut latest_unavailable = twenty_cold;
@@ -828,15 +822,18 @@ fn predecessor_graph_has_fixed_cold_cost() {
         "one predecessor argv: {one_argv:?}; twenty predecessor argv: {twenty_argv:?}"
     );
     assert_eq!(
-        twenty_argv
-            .iter()
-            .filter_map(|line| line.split_whitespace().next())
-            .collect::<Vec<_>>(),
-        one_argv
-            .iter()
-            .filter_map(|line| line.split_whitespace().next())
-            .collect::<Vec<_>>()
+        canonical_git_command_sequence(&twenty_argv),
+        canonical_git_command_sequence(&one_argv)
     );
+}
+
+fn canonical_git_command_sequence(invocations: &[String]) -> Vec<&str> {
+    let mut commands = invocations
+        .iter()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect::<Vec<_>>();
+    commands.sort_unstable();
+    commands
 }
 
 fn assert_successor_round_robin_progress(

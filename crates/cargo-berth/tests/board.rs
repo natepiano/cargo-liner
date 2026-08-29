@@ -41,9 +41,9 @@ if [ "$1" = "--no-optional-locks" ]; then
     command_name="$2"
     (
         shift 2
-        printf '%s' "$command_name" >> "$CARGO_BERTH_TEST_GIT_TRACE"
-        for argument in "$@"; do printf ' %s' "$argument" >> "$CARGO_BERTH_TEST_GIT_TRACE"; done
-        printf '\n' >> "$CARGO_BERTH_TEST_GIT_TRACE"
+        command_line="$command_name"
+        for argument in "$@"; do command_line="$command_line $argument"; done
+        printf '%s\n' "$command_line" >> "$CARGO_BERTH_TEST_GIT_TRACE"
     )
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
@@ -2761,8 +2761,8 @@ fn distinct_cold_proof_subjects_are_bounded_to_one_git_evaluation_per_target() {
         );
 
         let expected_argv_total = match target_rewrite {
-            TargetRewrite::Equivalent => 14,
-            TargetRewrite::Different => 13,
+            TargetRewrite::Equivalent => 10,
+            TargetRewrite::Different => 9,
         };
         assert!(!one_argv.is_empty());
         assert_eq!(one_argv.len(), expected_argv_total);
@@ -2774,14 +2774,8 @@ fn distinct_cold_proof_subjects_are_bounded_to_one_git_evaluation_per_target() {
             merge_base_ancestor_invocations(&one_trace)
         );
         assert_eq!(
-            twenty_argv
-                .iter()
-                .filter_map(|line| line.split_whitespace().next())
-                .collect::<Vec<_>>(),
-            one_argv
-                .iter()
-                .filter_map(|line| line.split_whitespace().next())
-                .collect::<Vec<_>>()
+            canonical_git_command_sequence(&twenty_argv),
+            canonical_git_command_sequence(&one_argv)
         );
         let twenty_data = &json_output(&twenty_trace.output)["payload"]["data"];
         let expected_first_status = match target_rewrite {
@@ -2825,14 +2819,8 @@ fn duplicate_cold_proof_subjects_share_one_git_evaluation() {
         assert!(!one_argv.is_empty());
         assert_eq!(twenty_argv.len(), one_argv.len());
         assert_eq!(
-            twenty_argv
-                .iter()
-                .filter_map(|line| line.split_whitespace().next())
-                .collect::<Vec<_>>(),
-            one_argv
-                .iter()
-                .filter_map(|line| line.split_whitespace().next())
-                .collect::<Vec<_>>()
+            canonical_git_command_sequence(&twenty_argv),
+            canonical_git_command_sequence(&one_argv)
         );
         let expected_status = match target_rewrite {
             TargetRewrite::Equivalent => "integrated",
@@ -3877,6 +3865,15 @@ fn scoped_patch_git_argv(
         })
         .map(str::to_owned)
         .collect()
+}
+
+fn canonical_git_command_sequence(invocations: &[String]) -> Vec<&str> {
+    let mut commands = invocations
+        .iter()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect::<Vec<_>>();
+    commands.sort_unstable();
+    commands
 }
 
 fn ordered_fixture() -> OrderedFixture {

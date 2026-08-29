@@ -1,6 +1,5 @@
 //! Git command construction.
 
-use std::ffi::OsStr;
 use std::io;
 use std::io::Write;
 use std::path::Path;
@@ -90,18 +89,6 @@ pub(super) fn git_output_dynamic(
     git_command(repository_root).args(arguments).output()
 }
 
-/// Run one dynamically assembled git operation with explicit environment values.
-pub(super) fn git_output_dynamic_with_environment(
-    repository_root: &Path,
-    arguments: &[String],
-    environment: &[(&str, &OsStr)],
-) -> io::Result<Output> {
-    git_command(repository_root)
-        .args(arguments)
-        .envs(environment.iter().copied())
-        .output()
-}
-
 /// Run one dynamically assembled git operation with complete standard input.
 pub(super) fn git_output_dynamic_with_input(
     repository_root: &Path,
@@ -134,18 +121,6 @@ pub(super) fn git_output_dynamic_with_hook_execution_policy_and_input(
     let mut command =
         git_command_with_hook_execution_policy(repository_root, hook_execution_policy);
     command.args(arguments);
-    command_output_with_input(command, input)
-}
-
-/// Run one dynamically assembled git operation with environment values and standard input.
-pub(super) fn git_output_dynamic_with_environment_and_input(
-    repository_root: &Path,
-    arguments: &[String],
-    environment: &[(&str, &OsStr)],
-    input: &[u8],
-) -> io::Result<Output> {
-    let mut command = git_command(repository_root);
-    command.args(arguments).envs(environment.iter().copied());
     command_output_with_input(command, input)
 }
 

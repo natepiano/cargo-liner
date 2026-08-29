@@ -27,6 +27,44 @@ pub(super) enum IncursionAttributionAnchorState {
     NotAncestorOfHead,
 }
 
+/// The independent repository read performed by one full drift observation worker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FullDriftObservationActivity {
+    /// Compare every reservation phase start with the current worktree head.
+    PhaseHistory,
+    /// Read staged, unstaged, and untracked paths from one coherent Git status.
+    WorkingTreeStatus,
+}
+
+impl Display for FullDriftObservationActivity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PhaseHistory => "compare phase history",
+            Self::WorkingTreeStatus => "read working-tree status",
+        })
+    }
+}
+
+/// The path sets represented by one porcelain working-tree status response.
+pub(super) struct WorkingTreeStatusPaths {
+    pub(super) staged:    Vec<ReservationScopePath>,
+    pub(super) unstaged:  Vec<ReservationScopePath>,
+    pub(super) untracked: Vec<ReservationScopePath>,
+}
+
+impl WorkingTreeStatusPaths {
+    pub(super) fn tracked(&self) -> Vec<ReservationScopePath> {
+        let mut tracked = self
+            .staged
+            .iter()
+            .chain(&self.unstaged)
+            .cloned()
+            .collect::<Vec<_>>();
+        ordering::normalize_paths(&mut tracked);
+        tracked
+    }
+}
+
 impl From<Reachability> for IncursionAttributionAnchorState {
     fn from(reachability: Reachability) -> Self {
         match reachability {
@@ -48,12 +86,18 @@ pub(super) struct IncursionPathCommit {
 #[derive(Debug)]
 pub(super) enum DriftFingerprintError {
     Io(std::io::Error),
-    CommandFailed { command: String, stderr: String },
+    CommandFailed {
+        command: String,
+        stderr:  String,
+    },
     GitOperation(git::GitError),
     MalformedGitOutput(String),
     NonUtf8Path(String),
     InvalidPath(String),
     Reservation(String),
+    WorkerPanicked {
+        activity: FullDriftObservationActivity,
+    },
 }
 
 impl Display for DriftFingerprintError {
@@ -86,6 +130,12 @@ impl Display for DriftFingerprintError {
                 )
             },
             Self::Reservation(diagnostic) => formatter.write_str(diagnostic),
+            Self::WorkerPanicked { activity } => {
+                write!(
+                    formatter,
+                    "drift observation worker panicked while attempting to {activity}"
+                )
+            },
         }
     }
 }
@@ -271,53 +321,13 @@ pub(super) fn parse_phase_committed_paths(
     Ok(paths_by_anchor)
 }
 
-pub(super) fn parse_name_status_paths(
+pub(super) fn parse_working_tree_status(
     bytes: &[u8],
-) -> Result<Vec<ReservationScopePath>, DriftFingerprintError> {
+) -> Result<WorkingTreeStatusPaths, DriftFingerprintError> {
     let fields = nul_fields(bytes);
-    let mut paths = Vec::new();
-    let mut index = 0;
-    while index < fields.len() {
-        let status_field = fields[index];
-        index += 1;
-        let tab_position = status_field.iter().position(|byte| *byte == b'\t');
-        let (status, first_path) = tab_position.map_or((status_field, None), |position| {
-            (
-                &status_field[..position],
-                Some(&status_field[position + 1..]),
-            )
-        });
-        let path = if let Some(path) = first_path {
-            path
-        } else {
-            let Some(path) = fields.get(index) else {
-                return Err(DriftFingerprintError::MalformedGitOutput(
-                    "name-status output ended before its path".to_owned(),
-                ));
-            };
-            index += 1;
-            path
-        };
-        paths.push(parse_path(path)?);
-        if matches!(status.first(), Some(b'R' | b'C')) {
-            let Some(second_path) = fields.get(index) else {
-                return Err(DriftFingerprintError::MalformedGitOutput(
-                    "rename or copy status ended before its second path".to_owned(),
-                ));
-            };
-            index += 1;
-            paths.push(parse_path(second_path)?);
-        }
-    }
-    ordering::normalize_paths(&mut paths);
-    Ok(paths)
-}
-
-pub(super) fn parse_status_paths(
-    bytes: &[u8],
-) -> Result<Vec<ReservationScopePath>, DriftFingerprintError> {
-    let fields = nul_fields(bytes);
-    let mut paths = Vec::new();
+    let mut staged = Vec::new();
+    let mut unstaged = Vec::new();
+    let mut untracked = Vec::new();
     let mut index = 0;
     while index < fields.len() {
         let record = fields[index];
@@ -328,9 +338,7 @@ pub(super) fn parse_status_paths(
             ));
         }
         let status = &record[..2];
-        if status != b"??" && status != b"!!" {
-            paths.push(parse_path(&record[3..])?);
-        }
+        let mut record_paths = vec![parse_path(&record[3..])?];
         if status.iter().any(|column| matches!(column, b'R' | b'C')) {
             let Some(second_path) = fields.get(index) else {
                 return Err(DriftFingerprintError::MalformedGitOutput(
@@ -338,22 +346,34 @@ pub(super) fn parse_status_paths(
                 ));
             };
             index += 1;
-            paths.push(parse_path(second_path)?);
+            record_paths.push(parse_path(second_path)?);
+        }
+        match status {
+            b"??" => untracked.extend(record_paths),
+            b"!!" => {},
+            [index_status, worktree_status] => {
+                if *index_status != b' ' {
+                    staged.extend(record_paths.iter().cloned());
+                }
+                if *worktree_status != b' ' {
+                    unstaged.extend(record_paths);
+                }
+            },
+            _ => {
+                return Err(DriftFingerprintError::MalformedGitOutput(
+                    "porcelain status record did not contain two status columns".to_owned(),
+                ));
+            },
         }
     }
-    ordering::normalize_paths(&mut paths);
-    Ok(paths)
-}
-
-pub(super) fn parse_path_list(
-    bytes: &[u8],
-) -> Result<Vec<ReservationScopePath>, DriftFingerprintError> {
-    let mut paths = nul_fields(bytes)
-        .into_iter()
-        .map(parse_path)
-        .collect::<Result<Vec<_>, _>>()?;
-    ordering::normalize_paths(&mut paths);
-    Ok(paths)
+    ordering::normalize_paths(&mut staged);
+    ordering::normalize_paths(&mut unstaged);
+    ordering::normalize_paths(&mut untracked);
+    Ok(WorkingTreeStatusPaths {
+        staged,
+        unstaged,
+        untracked,
+    })
 }
 
 fn nul_fields(bytes: &[u8]) -> Vec<&[u8]> {
@@ -382,7 +402,7 @@ mod tests {
     use super::completed_git_output;
     use super::parse_incursion_path_log;
     use super::parse_phase_committed_paths;
-    use super::parse_status_paths;
+    use super::parse_working_tree_status;
     use crate::git;
     use crate::git::GitCommandExecution;
     use crate::git::Reachability;
@@ -425,13 +445,26 @@ mod tests {
     #[test]
     fn porcelain_parser_consumes_second_path_for_combined_rename_and_copy_statuses()
     -> Result<(), Box<dyn std::error::Error>> {
-        let paths =
-            parse_status_paths(b"RM renamed.txt\0original.txt\0CM copied.txt\0source.txt\0")?;
-        let path_names = paths.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let paths = parse_working_tree_status(
+            b"RM renamed.txt\0original.txt\0CM copied.txt\0source.txt\0?? untracked.txt\0",
+        )?;
+        let tracked_path_names = paths
+            .tracked()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
 
         assert_eq!(
-            path_names,
+            tracked_path_names,
             vec!["copied.txt", "original.txt", "renamed.txt", "source.txt"]
+        );
+        assert_eq!(
+            paths
+                .untracked
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["untracked.txt"]
         );
         Ok(())
     }

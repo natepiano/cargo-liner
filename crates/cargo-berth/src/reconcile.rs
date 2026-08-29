@@ -518,7 +518,7 @@ fn reconcile_enrolled(
     repository_observation_scope: RepositoryObservationScope,
     recovered_bypass_reporting: RecoveredBypassReporting,
 ) -> Result<ReconciliationReport, ReconcileError> {
-    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());

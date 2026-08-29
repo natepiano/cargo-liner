@@ -54,7 +54,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 const COLLISION_GIT_WRAPPER: &str = r#"#!/bin/sh
 set -eu
-if [ "$1" = "--no-optional-locks" ] && [ "$2" = "ls-files" ]; then
+if [ "$1" = "--no-optional-locks" ] && [ "$2" = "status" ]; then
     (
         cd "$CARGO_BERTH_TEST_FOREIGN_ROOT"
         PATH="$CARGO_BERTH_TEST_REAL_PATH" \
@@ -67,7 +67,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 const MARKER_RELEASE_GIT_WRAPPER: &str = r#"#!/bin/sh
 set -eu
-if [ "$1" = "--no-optional-locks" ] && [ "$2" = "ls-files" ] \
+if [ "$1" = "--no-optional-locks" ] && [ "$2" = "status" ] \
     && [ ! -e "$CARGO_BERTH_TEST_MARKER_RELEASE_TRIGGER" ]; then
     : > "$CARGO_BERTH_TEST_MARKER_RELEASE_TRIGGER"
     (
@@ -1913,23 +1913,25 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
         &["--full", "--reservation", &reservation_id],
     );
     assert!(full.output.status.success());
-    assert_eq!(
-        full.fingerprint_commands(),
-        vec!["diff-tree", "diff", "diff", "ls-files"]
-    );
+    assert_eq!(full.fingerprint_commands(), vec!["diff-tree", "status"]);
     assert_one_batched_phase_ancestry_command(&full.commands());
 
     let cheap = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(cheap.output.status.success());
-    assert_eq!(cheap.fingerprint_commands(), vec!["status", "ls-files"]);
+    assert_eq!(cheap.fingerprint_commands(), vec!["status"]);
     assert_no_phase_ancestry_or_metadata_command(&cheap.commands());
+    assert_eq!(
+        cheap.commands(),
+        vec!["worktree", "rev-parse", "rev-parse", "rev-parse", "status",],
+        "the cheap PostToolUse engine path must reuse its discovered ledger",
+    );
 
     fs::remove_file(fingerprint_cache(repository.path())).expect("fingerprint cache should delete");
     let missing_cache = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(missing_cache.output.status.success());
     assert_eq!(
         missing_cache.fingerprint_commands(),
-        vec!["diff-tree", "diff", "diff", "ls-files"]
+        vec!["diff-tree", "status"]
     );
     assert_eq!(
         json_output(&missing_cache.output)["payload"]["data"]["comparison"],
@@ -1943,7 +1945,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(corrupt_cache.output.status.success());
     assert_eq!(
         corrupt_cache.fingerprint_commands(),
-        vec!["diff-tree", "diff", "diff", "ls-files"]
+        vec!["diff-tree", "status"]
     );
     assert_one_batched_phase_ancestry_command(&corrupt_cache.commands());
 }
@@ -2693,7 +2695,8 @@ impl TracedDrift {
     }
 
     fn fingerprint_commands(&self) -> Vec<String> {
-        self.commands()
+        let mut commands = self
+            .commands()
             .into_iter()
             .filter(|command| {
                 matches!(
@@ -2701,7 +2704,9 @@ impl TracedDrift {
                     "diff" | "diff-tree" | "status" | "ls-files"
                 )
             })
-            .collect()
+            .collect::<Vec<_>>();
+        commands.sort();
+        commands
     }
 }
 

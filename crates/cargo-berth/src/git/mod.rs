@@ -10,21 +10,18 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fmt::Write;
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
 use std::str::FromStr;
 use std::string::FromUtf8Error;
+use std::thread;
 
 pub(crate) use command::GitCommandExecution;
 pub(crate) use command::git_execution as execute_read_only_git;
 use command::git_output;
 use command::git_output_dynamic;
-use command::git_output_dynamic_with_environment;
-use command::git_output_dynamic_with_environment_and_input;
 use command::git_output_dynamic_with_input;
-use constants::GIT_ADDED_STATUS;
 use constants::GIT_ANCESTOR_RANGE_INFIX;
 use constants::GIT_BATCH_CHECK_ARG;
 use constants::GIT_CAT_FILE_COMMAND;
@@ -32,7 +29,6 @@ use constants::GIT_CHERRY_MARK_ARG;
 use constants::GIT_COMMIT_PEEL_SUFFIX;
 use constants::GIT_COMMON_DIRECTORY_ARG;
 use constants::GIT_COUNT_ARG;
-use constants::GIT_DELETED_STATUS;
 use constants::GIT_DENSE_COMBINED_ARG;
 use constants::GIT_DIFF_COMMAND;
 use constants::GIT_DIFF_TREE_COMMAND;
@@ -46,9 +42,6 @@ use constants::GIT_FULL_REF_FORMAT_ARG;
 use constants::GIT_HEAD_REVISION;
 use constants::GIT_HOOKS_PATH;
 use constants::GIT_IGNORE_MISSING_ARG;
-use constants::GIT_INDEX_FILE_ENV;
-use constants::GIT_INDEX_INFO_ARG;
-use constants::GIT_INDEX_REMOVAL_RECORD_PREFIX;
 use constants::GIT_IS_ANCESTOR_ARG;
 use constants::GIT_LEFT_RIGHT_ARG;
 use constants::GIT_LITERAL_TOP_PATHSPEC_PREFIX;
@@ -62,10 +55,8 @@ use constants::GIT_MERGE_TREE_CLEAN_EXIT_CODE;
 use constants::GIT_MERGE_TREE_COMMAND;
 use constants::GIT_MERGE_TREE_CONFLICT_EXIT_CODE;
 use constants::GIT_MISSING_OBJECT_SUFFIX;
-use constants::GIT_MODIFIED_STATUS;
 use constants::GIT_NAME_ONLY_ARG;
 use constants::GIT_NAME_STATUS_ARG;
-use constants::GIT_NO_ABBREV_ARG;
 use constants::GIT_NO_MERGE_BASE_EXIT_CODE;
 use constants::GIT_NO_MERGES_ARG;
 use constants::GIT_NO_RENAMES_ARG;
@@ -78,8 +69,6 @@ use constants::GIT_PATH_FORMAT_ABSOLUTE_ARG;
 use constants::GIT_PATHSPEC_SEPARATOR;
 use constants::GIT_POINTS_AT_ARG_PREFIX;
 use constants::GIT_PORCELAIN_ARG;
-use constants::GIT_RAW_ARG;
-use constants::GIT_READ_TREE_COMMAND;
 use constants::GIT_REBASE_APPLY_STATE_PATH;
 use constants::GIT_REBASE_MERGE_STATE_PATH;
 use constants::GIT_RECURSIVE_ARG;
@@ -90,17 +79,14 @@ use constants::GIT_REV_LIST_COMMAND;
 use constants::GIT_REV_PARSE_COMMAND;
 use constants::GIT_SHOW_TOPLEVEL_ARG;
 use constants::GIT_STDIN_ARG;
+use constants::GIT_STRATEGY_OPTION_NO_RENAMES_ARG;
 use constants::GIT_SYMMETRIC_RANGE_INFIX;
-use constants::GIT_TYPE_CHANGED_STATUS;
-use constants::GIT_UPDATE_INDEX_COMMAND;
 use constants::GIT_UPDATE_REF_COMMAND;
 use constants::GIT_WORKTREE_COMMAND;
 use constants::GIT_WORKTREE_LIST_ARG;
 use constants::GIT_WRITE_TREE_ARG;
-use constants::GIT_WRITE_TREE_COMMAND;
 use serde::Deserialize;
 use serde::Serialize;
-use uuid::Uuid;
 
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
@@ -108,6 +94,7 @@ use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::FullRefName;
 use crate::scope::ReservationScopeSet;
+use crate::scope::ScopeKind;
 
 /// A worktree's live relationship to the configured trunk.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -186,15 +173,59 @@ impl From<GitError> for ScopedPatchComparisonError {
     fn from(error: GitError) -> Self { Self::Git(error) }
 }
 
+fn join_scoped_patch_worker<T>(
+    worker: thread::ScopedJoinHandle<'_, Result<T, ScopedPatchComparisonError>>,
+    activity: &'static str,
+) -> Result<T, ScopedPatchComparisonError> {
+    worker
+        .join()
+        .unwrap_or_else(|_| Err(GitError::ScopedPatchWorkerPanicked { activity }.into()))
+}
+
+fn concurrent_scoped_patch_reads<T, U, F, G>(
+    first_read: F,
+    first_activity: &'static str,
+    second_read: G,
+    second_activity: &'static str,
+) -> (
+    Result<T, ScopedPatchComparisonError>,
+    Result<U, ScopedPatchComparisonError>,
+)
+where
+    T: Send,
+    U: Send,
+    F: FnOnce() -> Result<T, ScopedPatchComparisonError> + Send,
+    G: FnOnce() -> Result<U, ScopedPatchComparisonError> + Send,
+{
+    thread::scope(|scope| {
+        let first_worker = scope.spawn(first_read);
+        let second_worker = scope.spawn(second_read);
+        (
+            join_scoped_patch_worker(first_worker, first_activity),
+            join_scoped_patch_worker(second_worker, second_activity),
+        )
+    })
+}
+
 enum HistoryRelationship {
     Shared,
     Unrelated,
     Unavailable,
 }
 
-enum ProtectedScopedChangePaths {
+enum ProtectedScopedChanges {
     NoChanges,
-    Affected(Vec<String>),
+    Affected {
+        paths:                   Vec<String>,
+        protected_scoped_rename: ProtectedScopedRename,
+    },
+    Unreadable,
+}
+
+#[derive(Clone, Copy)]
+enum ProtectedScopedRename {
+    Absent,
+    Present,
 }
 
 enum TargetScopedChangePosition {
@@ -209,49 +240,16 @@ enum TargetPhaseIntegrationCommits {
     Unresolved,
 }
 
-/// The tree built from the protected baseline and only reservation-scoped changes.
-enum ScopedProtectedTree {
-    /// Git wrote the scoped protected tree with this object id.
-    Available(GitObjectId),
-    /// Git could not produce a complete scoped protected tree.
-    Unavailable,
-}
-
-/// Parsed index updates for constructing the scoped protected tree.
-enum ScopedProtectedTreeUpdates {
-    /// At least one validated in-scope update is ready for `update-index`.
-    Available(Vec<u8>),
-    /// The scoped raw diff contained no in-scope records.
-    Empty,
-    /// Git's raw diff did not satisfy the required record format.
-    Unavailable,
-}
-
-/// Owns the dedicated index path used to construct one scoped protected tree.
-struct ScopedProtectedTreeIndex {
-    /// The path supplied through `GIT_INDEX_FILE` for every construction command.
-    path: PathBuf,
-}
-
-impl ScopedProtectedTreeIndex {
-    /// Allocate a unique index path and begin owning its cleanup.
-    fn new() -> Self {
-        Self {
-            path: std::env::temp_dir().join(format!(
-                "cargo-berth-scoped-protected-tree-{}.index",
-                Uuid::now_v7()
-            )),
-        }
-    }
-
-    /// Return the environment entry that directs git to the dedicated index.
-    fn environment(&self) -> [(&'static str, &std::ffi::OsStr); 1] {
-        [(GIT_INDEX_FILE_ENV, self.path.as_os_str())]
-    }
-}
-
-impl Drop for ScopedProtectedTreeIndex {
-    fn drop(&mut self) { std::mem::drop(fs::remove_file(&self.path)); }
+/// Whether a conflicted replay is still usable for one reservation's proof.
+enum ScopedMergeConflictCoverage {
+    /// Every reported conflict path lies outside the reservation scopes.
+    OutsideReservationScopes,
+    /// At least one reported conflict path is covered by the reservation.
+    CoveredByReservation,
+    /// Git moved a reserved file aside because the target replaced it with a directory.
+    DisplacedReservedFile,
+    /// Git's conflict records did not satisfy the documented `-z` shape.
+    Unreadable,
 }
 
 /// Resolve the shared administrative directory for a repository worktree.
@@ -555,9 +553,10 @@ fn scoped_patch_command_output(
 /// `phase_start_head` excludes earlier branch work from the protected side. The first query
 /// submits every scope together and expands tree scopes only to paths changed by the protected
 /// phase. The target commits carrying those changes must occupy one contiguous first-parent
-/// interval. A three-way replay uses `phase_start_head` as its explicit merge base after removing
-/// every protected change outside the reservation scopes. The replay is equivalent only when its
-/// complete tree matches the target.
+/// interval. A three-way replay merges the complete `protected_tip` into `target` with
+/// `phase_start_head` as the explicit merge base. Conflicts outside the reservation scopes are
+/// permitted; a conflict covered by a scope rejects equivalence. The final diff is limited to the
+/// reservation scopes, and the replay is equivalent when no covered path differs from `target`.
 pub(crate) fn scoped_patch_equivalence(
     repository_root: &Path,
     phase_start_head: &GitObjectId,
@@ -587,25 +586,53 @@ fn compare_scoped_patch(
     protected_tip: &GitObjectId,
     target: &GitObjectId,
 ) -> Result<ScopedPatchComparison, ScopedPatchComparisonError> {
-    match history_relationship(repository_root, phase_start_head, target)? {
+    let (history_relationship, protected_scoped_changes) = concurrent_scoped_patch_reads(
+        || history_relationship(repository_root, phase_start_head, target),
+        "compare scoped history",
+        || protected_scoped_changes(repository_root, phase_start_head, scopes, protected_tip),
+        "identify protected scoped paths",
+    );
+    match history_relationship? {
         HistoryRelationship::Shared => {},
         HistoryRelationship::Unrelated => return Ok(ScopedPatchComparison::Different),
         HistoryRelationship::Unavailable => return Ok(ScopedPatchComparison::Unavailable),
     }
 
-    let protected_scoped_change_paths =
-        protected_scoped_change_paths(repository_root, phase_start_head, scopes, protected_tip)?;
-    let ProtectedScopedChangePaths::Affected(affected_paths) = protected_scoped_change_paths else {
-        return Ok(ScopedPatchComparison::Different);
+    let (affected_paths, protected_scoped_rename) = match protected_scoped_changes? {
+        ProtectedScopedChanges::NoChanges => return Ok(ScopedPatchComparison::Different),
+        ProtectedScopedChanges::Affected {
+            paths,
+            protected_scoped_rename,
+        } => (paths, protected_scoped_rename),
+        ProtectedScopedChanges::Unreadable => {
+            return Ok(ScopedPatchComparison::Unavailable);
+        },
     };
 
-    match target_scoped_change_position(
-        repository_root,
-        phase_start_head,
-        protected_tip,
-        target,
-        &affected_paths,
-    )? {
+    let (target_scoped_change_position, protected_scoped_change) = concurrent_scoped_patch_reads(
+        || {
+            target_scoped_change_position(
+                repository_root,
+                phase_start_head,
+                protected_tip,
+                target,
+                &affected_paths,
+            )
+        },
+        "locate target scoped commits",
+        || {
+            target_contains_protected_scoped_change(
+                repository_root,
+                phase_start_head,
+                protected_tip,
+                target,
+                scopes,
+                protected_scoped_rename,
+            )
+        },
+        "replay the protected scoped change",
+    );
+    match target_scoped_change_position? {
         TargetScopedChangePosition::Contiguous => {},
         TargetScopedChangePosition::Absent
         | TargetScopedChangePosition::Separated
@@ -614,13 +641,7 @@ fn compare_scoped_patch(
         },
     }
 
-    target_contains_protected_scoped_change(
-        repository_root,
-        phase_start_head,
-        protected_tip,
-        target,
-        scopes,
-    )
+    protected_scoped_change
 }
 
 fn history_relationship(
@@ -648,26 +669,39 @@ fn target_contains_protected_scoped_change(
     protected_tip: &GitObjectId,
     target: &GitObjectId,
     scopes: &ReservationScopeSet,
+    protected_scoped_rename: ProtectedScopedRename,
 ) -> Result<ScopedPatchComparison, ScopedPatchComparisonError> {
-    let ScopedProtectedTree::Available(scoped_protected_tree) =
-        scoped_protected_tree(repository_root, phase_start_head, protected_tip, scopes)?
-    else {
-        return Ok(ScopedPatchComparison::Unavailable);
-    };
-    let replay_arguments = [
+    let mut replay_arguments = vec![
         GIT_MERGE_TREE_COMMAND.to_owned(),
         GIT_WRITE_TREE_ARG.to_owned(),
         GIT_NUL_TERMINATED_ARG.to_owned(),
+    ];
+    match protected_scoped_rename {
+        ProtectedScopedRename::Absent => {
+            replay_arguments.push(GIT_STRATEGY_OPTION_NO_RENAMES_ARG.to_owned());
+        },
+        ProtectedScopedRename::Present => {},
+    }
+    replay_arguments.extend([
         format!("{GIT_MERGE_BASE_ARG_PREFIX}{phase_start_head}"),
         target.to_string(),
-        scoped_protected_tree.to_string(),
-    ];
+        protected_tip.to_string(),
+    ]);
     let replay_output =
         scoped_patch_command_output(git_output_dynamic(repository_root, &replay_arguments).into())?;
     match replay_output.status.code() {
         Some(GIT_MERGE_TREE_CLEAN_EXIT_CODE) => {},
         Some(GIT_MERGE_TREE_CONFLICT_EXIT_CODE) => {
-            return Ok(ScopedPatchComparison::Different);
+            match scoped_merge_conflict_coverage(&replay_output.stdout, scopes, protected_tip) {
+                ScopedMergeConflictCoverage::OutsideReservationScopes => {},
+                ScopedMergeConflictCoverage::CoveredByReservation
+                | ScopedMergeConflictCoverage::DisplacedReservedFile => {
+                    return Ok(ScopedPatchComparison::Different);
+                },
+                ScopedMergeConflictCoverage::Unreadable => {
+                    return Ok(ScopedPatchComparison::Unavailable);
+                },
+            }
         },
         _ => return Ok(ScopedPatchComparison::Unavailable),
     }
@@ -681,60 +715,12 @@ fn target_contains_protected_scoped_change(
         return Ok(ScopedPatchComparison::Unavailable);
     };
 
-    let diff_arguments = [
-        GIT_DIFF_COMMAND.to_owned(),
-        GIT_NAME_ONLY_ARG.to_owned(),
-        replayed_tree.to_string(),
-        target.to_string(),
-    ];
-    let diff_output =
-        scoped_patch_command_output(git_output_dynamic(repository_root, &diff_arguments).into())?;
-    if !diff_output.status.success() {
-        return Err(GitError::CommandFailed {
-            command: GIT_DIFF_COMMAND,
-            stderr:  String::from_utf8_lossy(&diff_output.stderr)
-                .trim()
-                .to_owned(),
-        }
-        .into());
-    }
-    Ok(if diff_output.stdout.is_empty() {
-        ScopedPatchComparison::Equivalent
-    } else {
-        ScopedPatchComparison::Different
-    })
-}
-
-/// Build the protected baseline tree with only changes covered by `scopes` applied.
-fn scoped_protected_tree(
-    repository_root: &Path,
-    phase_start_head: &GitObjectId,
-    protected_tip: &GitObjectId,
-    scopes: &ReservationScopeSet,
-) -> Result<ScopedProtectedTree, ScopedPatchComparisonError> {
-    let scoped_protected_tree_index = ScopedProtectedTreeIndex::new();
-    let environment = scoped_protected_tree_index.environment();
-
-    let read_tree_arguments = [
-        GIT_READ_TREE_COMMAND.to_owned(),
-        phase_start_head.to_string(),
-    ];
-    let read_tree_output = scoped_patch_command_output(
-        git_output_dynamic_with_environment(repository_root, &read_tree_arguments, &environment)
-            .into(),
-    )?;
-    if !read_tree_output.status.success() {
-        return Ok(ScopedProtectedTree::Unavailable);
-    }
-
     let mut diff_arguments = vec![
         GIT_DIFF_COMMAND.to_owned(),
-        GIT_RAW_ARG.to_owned(),
-        GIT_NUL_TERMINATED_ARG.to_owned(),
-        GIT_NO_ABBREV_ARG.to_owned(),
+        GIT_NAME_ONLY_ARG.to_owned(),
         GIT_NO_RENAMES_ARG.to_owned(),
-        phase_start_head.to_string(),
-        protected_tip.to_string(),
+        replayed_tree.to_string(),
+        target.to_string(),
         GIT_PATHSPEC_SEPARATOR.to_owned(),
     ];
     diff_arguments.extend(
@@ -743,105 +729,126 @@ fn scoped_protected_tree(
             .iter()
             .map(|scope| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{}", scope.path)),
     );
-    let diff_output = scoped_patch_command_output(
-        git_output_dynamic_with_environment(repository_root, &diff_arguments, &environment).into(),
-    )?;
+    let diff_output =
+        scoped_patch_command_output(git_output_dynamic(repository_root, &diff_arguments).into())?;
     if !diff_output.status.success() {
-        return Ok(ScopedProtectedTree::Unavailable);
+        return Ok(ScopedPatchComparison::Unavailable);
     }
-    let ScopedProtectedTreeUpdates::Available(index_updates) =
-        scoped_protected_tree_updates(&diff_output.stdout, scopes)
-    else {
-        return Ok(ScopedProtectedTree::Unavailable);
-    };
-
-    let update_index_arguments = [
-        GIT_UPDATE_INDEX_COMMAND.to_owned(),
-        GIT_NUL_TERMINATED_ARG.to_owned(),
-        GIT_INDEX_INFO_ARG.to_owned(),
-    ];
-    let update_index_output = scoped_patch_command_output(
-        git_output_dynamic_with_environment_and_input(
-            repository_root,
-            &update_index_arguments,
-            &environment,
-            &index_updates,
-        )
-        .into(),
-    )?;
-    if !update_index_output.status.success() {
-        return Ok(ScopedProtectedTree::Unavailable);
-    }
-
-    let write_tree_arguments = [GIT_WRITE_TREE_COMMAND.to_owned()];
-    let write_tree_output = scoped_patch_command_output(
-        git_output_dynamic_with_environment(repository_root, &write_tree_arguments, &environment)
-            .into(),
-    )?;
-    if !write_tree_output.status.success() {
-        return Ok(ScopedProtectedTree::Unavailable);
-    }
-    let Ok(scoped_protected_tree) = str::from_utf8(&write_tree_output.stdout) else {
-        return Ok(ScopedProtectedTree::Unavailable);
-    };
-    let Ok(scoped_protected_tree) = scoped_protected_tree.trim().parse::<GitObjectId>() else {
-        return Ok(ScopedProtectedTree::Unavailable);
-    };
-    Ok(ScopedProtectedTree::Available(scoped_protected_tree))
+    Ok(if diff_output.stdout.is_empty() {
+        ScopedPatchComparison::Equivalent
+    } else {
+        ScopedPatchComparison::Different
+    })
 }
 
-/// Convert validated in-scope raw diff records into NUL-delimited index updates.
-fn scoped_protected_tree_updates(
-    raw_diff: &[u8],
+fn scoped_merge_conflict_coverage(
+    merge_tree_output: &[u8],
     scopes: &ReservationScopeSet,
-) -> ScopedProtectedTreeUpdates {
-    let mut raw_fields = raw_diff.split(|byte| *byte == b'\0');
-    let mut index_updates = Vec::new();
-    loop {
-        let Some(metadata) = raw_fields.next() else {
-            return ScopedProtectedTreeUpdates::Unavailable;
-        };
-        if metadata.is_empty() {
-            if raw_fields.next().is_some() {
-                return ScopedProtectedTreeUpdates::Unavailable;
-            }
-            return if index_updates.is_empty() {
-                ScopedProtectedTreeUpdates::Empty
-            } else {
-                ScopedProtectedTreeUpdates::Available(index_updates)
-            };
-        }
-        let Some(repository_path) = raw_fields.next() else {
-            return ScopedProtectedTreeUpdates::Unavailable;
-        };
-        if repository_path.is_empty() {
-            return ScopedProtectedTreeUpdates::Unavailable;
-        }
-        let Some(metadata) = metadata.strip_prefix(b":") else {
-            return ScopedProtectedTreeUpdates::Unavailable;
-        };
-        let components = metadata.split(|byte| *byte == b' ').collect::<Vec<_>>();
-        let [_, destination_mode, _, destination_object_id, status] = components.as_slice() else {
-            return ScopedProtectedTreeUpdates::Unavailable;
-        };
-        if !scopes.covers_path(repository_path) {
-            continue;
-        }
-        match *status {
-            GIT_ADDED_STATUS | GIT_MODIFIED_STATUS | GIT_TYPE_CHANGED_STATUS => {
-                index_updates.extend_from_slice(destination_mode);
-                index_updates.push(b' ');
-                index_updates.extend_from_slice(destination_object_id);
-                index_updates.push(b'\t');
-            },
-            GIT_DELETED_STATUS => {
-                index_updates.extend_from_slice(GIT_INDEX_REMOVAL_RECORD_PREFIX);
-            },
-            _ => return ScopedProtectedTreeUpdates::Unavailable,
-        }
-        index_updates.extend_from_slice(repository_path);
-        index_updates.push(b'\0');
+    protected_tip: &GitObjectId,
+) -> ScopedMergeConflictCoverage {
+    let mut records = merge_tree_output.split(|byte| *byte == b'\0');
+    let Some(tree_object_id) = records.next() else {
+        return ScopedMergeConflictCoverage::Unreadable;
+    };
+    if tree_object_id.is_empty() {
+        return ScopedMergeConflictCoverage::Unreadable;
     }
+
+    let mut conflict_paths = Vec::new();
+    let mut conflict_record_count = 0;
+    loop {
+        let Some(record) = records.next() else {
+            return ScopedMergeConflictCoverage::Unreadable;
+        };
+        if record.is_empty() {
+            if conflict_record_count == 0 {
+                return ScopedMergeConflictCoverage::Unreadable;
+            }
+            break;
+        }
+        conflict_record_count += 1;
+        let Some(path_separator) = record.iter().position(|byte| *byte == b'\t') else {
+            return ScopedMergeConflictCoverage::Unreadable;
+        };
+        let metadata = &record[..path_separator];
+        let path = &record[path_separator + 1..];
+        if metadata.split(|byte| *byte == b' ').count() != 3 || path.is_empty() {
+            return ScopedMergeConflictCoverage::Unreadable;
+        }
+        if scoped_merge_conflict_path_is_covered(path, scopes) {
+            return ScopedMergeConflictCoverage::CoveredByReservation;
+        }
+        conflict_paths.push(path);
+    }
+
+    loop {
+        let Some(path_count) = records.next() else {
+            return ScopedMergeConflictCoverage::Unreadable;
+        };
+        if path_count.is_empty() {
+            return ScopedMergeConflictCoverage::OutsideReservationScopes;
+        }
+        let Ok(path_count) = str::from_utf8(path_count) else {
+            return ScopedMergeConflictCoverage::Unreadable;
+        };
+        let Ok(path_count) = path_count.parse::<usize>() else {
+            return ScopedMergeConflictCoverage::Unreadable;
+        };
+        let mut message_paths = Vec::with_capacity(path_count);
+        for _ in 0..path_count {
+            let Some(path) = records.next() else {
+                return ScopedMergeConflictCoverage::Unreadable;
+            };
+            if path.is_empty() {
+                return ScopedMergeConflictCoverage::Unreadable;
+            }
+            message_paths.push(path);
+        }
+        let Some(conflict_type) = records.next() else {
+            return ScopedMergeConflictCoverage::Unreadable;
+        };
+        let Some(message) = records.next() else {
+            return ScopedMergeConflictCoverage::Unreadable;
+        };
+        if conflict_type.is_empty() || message.is_empty() {
+            return ScopedMergeConflictCoverage::Unreadable;
+        }
+        if conflict_type == b"CONFLICT (file/directory)"
+            && scoped_merge_displaced_reserved_file(
+                &conflict_paths,
+                &message_paths,
+                scopes,
+                protected_tip,
+            )
+        {
+            return ScopedMergeConflictCoverage::DisplacedReservedFile;
+        }
+    }
+}
+
+fn scoped_merge_conflict_path_is_covered(
+    conflict_path: &[u8],
+    scopes: &ReservationScopeSet,
+) -> bool {
+    scopes.covers_path(conflict_path)
+}
+
+fn scoped_merge_displaced_reserved_file(
+    conflict_paths: &[&[u8]],
+    message_paths: &[&[u8]],
+    scopes: &ReservationScopeSet,
+    protected_tip: &GitObjectId,
+) -> bool {
+    scopes.as_slice().iter().any(|scope| {
+        if scope.kind != ScopeKind::File {
+            return false;
+        }
+        let reserved_path = scope.path.to_string();
+        let displaced_path = format!("{reserved_path}~{protected_tip}");
+        conflict_paths.contains(&displaced_path.as_bytes())
+            && message_paths.contains(&reserved_path.as_bytes())
+            && message_paths.contains(&displaced_path.as_bytes())
+    })
 }
 
 fn target_scoped_change_position(
@@ -851,15 +858,52 @@ fn target_scoped_change_position(
     target: &GitObjectId,
     affected_paths: &[String],
 ) -> Result<TargetScopedChangePosition, ScopedPatchComparisonError> {
-    let target_commits = first_parent_commits_after(repository_root, phase_start_head, target)?;
-    let target_phase_integration_commits = target_phase_integration_commits(
-        repository_root,
-        phase_start_head,
-        protected_tip,
-        target,
+    let (target_commits, protected_scoped_commits, target_scoped_commits, equivalent_commits) =
+        thread::scope(|scope| {
+            let target_commits = scope
+                .spawn(|| first_parent_commits_after(repository_root, phase_start_head, target));
+            let protected_scoped_commits = scope.spawn(|| {
+                first_parent_commits_after_in_paths(
+                    repository_root,
+                    phase_start_head,
+                    protected_tip,
+                    affected_paths,
+                )
+            });
+            let target_scoped_commits = scope.spawn(|| {
+                first_parent_commits_after_in_paths(
+                    repository_root,
+                    phase_start_head,
+                    target,
+                    affected_paths,
+                )
+            });
+            let equivalent_commits = scope.spawn(|| {
+                scoped_patch_equivalent_commits(
+                    repository_root,
+                    phase_start_head,
+                    protected_tip,
+                    target,
+                    affected_paths,
+                )
+            });
+            (
+                join_scoped_patch_worker(target_commits, "walk target first-parent commits"),
+                join_scoped_patch_worker(protected_scoped_commits, "walk protected scoped commits"),
+                join_scoped_patch_worker(target_scoped_commits, "walk target scoped commits"),
+                join_scoped_patch_worker(equivalent_commits, "match scoped patch commits"),
+            )
+        });
+    let target_commits = target_commits?;
+    let protected_scoped_commits = protected_scoped_commits?;
+    let target_scoped_commits = target_scoped_commits?;
+    let equivalent_commits = equivalent_commits?;
+    let target_phase_integration_commits = classify_target_phase_integration_commits(
         &target_commits,
-        affected_paths,
-    )?;
+        &protected_scoped_commits,
+        &target_scoped_commits,
+        &equivalent_commits,
+    );
     let TargetPhaseIntegrationCommits::Identified(scoped_commits) =
         target_phase_integration_commits
     else {
@@ -886,37 +930,16 @@ fn target_scoped_change_position(
     }
 }
 
-fn target_phase_integration_commits(
-    repository_root: &Path,
-    phase_start_head: &GitObjectId,
-    protected_tip: &GitObjectId,
-    target: &GitObjectId,
+fn classify_target_phase_integration_commits(
     target_commits: &[GitObjectId],
-    affected_paths: &[String],
-) -> Result<TargetPhaseIntegrationCommits, ScopedPatchComparisonError> {
-    let protected_scoped_commits = first_parent_commits_after_in_paths(
-        repository_root,
-        phase_start_head,
-        protected_tip,
-        affected_paths,
-    )?;
-    let target_scoped_commits = first_parent_commits_after_in_paths(
-        repository_root,
-        phase_start_head,
-        target,
-        affected_paths,
-    )?;
+    protected_scoped_commits: &[GitObjectId],
+    target_scoped_commits: &[GitObjectId],
+    scoped_patch_equivalent_commits: &[GitObjectId],
+) -> TargetPhaseIntegrationCommits {
     if protected_scoped_commits.is_empty() || target_scoped_commits.is_empty() {
-        return Ok(TargetPhaseIntegrationCommits::Identified(Vec::new()));
+        return TargetPhaseIntegrationCommits::Identified(Vec::new());
     }
 
-    let scoped_patch_equivalent_commits = scoped_patch_equivalent_commits(
-        repository_root,
-        phase_start_head,
-        protected_tip,
-        target,
-        affected_paths,
-    )?;
     let mut identified_target_commits = target_commits
         .iter()
         .filter(|target_commit| {
@@ -931,9 +954,7 @@ fn target_phase_integration_commits(
             || scoped_patch_equivalent_commits.contains(protected_commit)
     }) && !identified_target_commits.is_empty()
     {
-        return Ok(TargetPhaseIntegrationCommits::Identified(
-            identified_target_commits,
-        ));
+        return TargetPhaseIntegrationCommits::Identified(identified_target_commits);
     }
 
     let unmatched_target_commits = target_scoped_commits
@@ -942,7 +963,7 @@ fn target_phase_integration_commits(
         .cloned()
         .collect::<Vec<_>>();
     let [unmatched_target_commit] = unmatched_target_commits.as_slice() else {
-        return Ok(TargetPhaseIntegrationCommits::Unresolved);
+        return TargetPhaseIntegrationCommits::Unresolved;
     };
     identified_target_commits.push(unmatched_target_commit.clone());
     let identified_target_commits = target_commits
@@ -950,9 +971,7 @@ fn target_phase_integration_commits(
         .filter(|target_commit| identified_target_commits.contains(target_commit))
         .cloned()
         .collect();
-    Ok(TargetPhaseIntegrationCommits::Identified(
-        identified_target_commits,
-    ))
+    TargetPhaseIntegrationCommits::Identified(identified_target_commits)
 }
 
 fn scoped_patch_equivalent_commits(
@@ -1026,17 +1045,16 @@ fn first_parent_commits_after_in_paths(
         .collect::<Result<Vec<_>, _>>()?)
 }
 
-fn protected_scoped_change_paths(
+fn protected_scoped_changes(
     repository_root: &Path,
     phase_start_head: &GitObjectId,
     scopes: &ReservationScopeSet,
     protected_tip: &GitObjectId,
-) -> Result<ProtectedScopedChangePaths, ScopedPatchComparisonError> {
+) -> Result<ProtectedScopedChanges, ScopedPatchComparisonError> {
     let mut arguments = vec![
         GIT_DIFF_COMMAND.to_owned(),
-        GIT_NAME_ONLY_ARG.to_owned(),
+        GIT_NAME_STATUS_ARG.to_owned(),
         GIT_NUL_TERMINATED_ARG.to_owned(),
-        GIT_NO_RENAMES_ARG.to_owned(),
         phase_start_head.to_string(),
         protected_tip.to_string(),
         GIT_PATHSPEC_SEPARATOR.to_owned(),
@@ -1057,16 +1075,64 @@ fn protected_scoped_change_paths(
         .into());
     }
     let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
-    let affected_paths = output_text
-        .split('\0')
-        .filter(|path| !path.is_empty())
-        .filter(|path| scopes.covers_path(path.as_bytes()))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let mut fields = output_text.split('\0');
+    let mut affected_paths = Vec::new();
+    let mut protected_scoped_rename = ProtectedScopedRename::Absent;
+    loop {
+        let Some(status) = fields.next() else {
+            return Ok(ProtectedScopedChanges::Unreadable);
+        };
+        if status.is_empty() {
+            if fields.next().is_some() {
+                return Ok(ProtectedScopedChanges::Unreadable);
+            }
+            break;
+        }
+        let Some(first_path) = fields.next() else {
+            return Ok(ProtectedScopedChanges::Unreadable);
+        };
+        if first_path.is_empty() {
+            return Ok(ProtectedScopedChanges::Unreadable);
+        }
+        if status.starts_with('R') {
+            let Some(second_path) = fields.next() else {
+                return Ok(ProtectedScopedChanges::Unreadable);
+            };
+            if second_path.is_empty() {
+                return Ok(ProtectedScopedChanges::Unreadable);
+            }
+            let source_is_covered = scopes.covers_path(first_path.as_bytes());
+            let destination_is_covered = scopes.covers_path(second_path.as_bytes());
+            if source_is_covered && destination_is_covered {
+                protected_scoped_rename = ProtectedScopedRename::Present;
+            }
+            if source_is_covered {
+                affected_paths.push(first_path.to_owned());
+            }
+            if destination_is_covered {
+                affected_paths.push(second_path.to_owned());
+            }
+        } else if status.starts_with('C') {
+            let Some(copied_path) = fields.next() else {
+                return Ok(ProtectedScopedChanges::Unreadable);
+            };
+            if copied_path.is_empty() {
+                return Ok(ProtectedScopedChanges::Unreadable);
+            }
+            if scopes.covers_path(copied_path.as_bytes()) {
+                affected_paths.push(copied_path.to_owned());
+            }
+        } else if scopes.covers_path(first_path.as_bytes()) {
+            affected_paths.push(first_path.to_owned());
+        }
+    }
     if affected_paths.is_empty() {
-        Ok(ProtectedScopedChangePaths::NoChanges)
+        Ok(ProtectedScopedChanges::NoChanges)
     } else {
-        Ok(ProtectedScopedChangePaths::Affected(affected_paths))
+        Ok(ProtectedScopedChanges::Affected {
+            paths: affected_paths,
+            protected_scoped_rename,
+        })
     }
 }
 
@@ -1894,6 +1960,8 @@ pub(crate) enum GitError {
     },
     /// A path-limited first-parent walk returned a commit absent from the full walk.
     ScopedCommitMissingFromTargetWalk { commit: GitObjectId },
+    /// One parallel scoped-proof worker ended before returning its typed observation.
+    ScopedPatchWorkerPanicked { activity: &'static str },
 }
 
 impl Display for GitError {
@@ -1931,6 +1999,12 @@ impl Display for GitError {
                 formatter,
                 "git returned scoped commit {commit} outside the target's first-parent walk"
             ),
+            Self::ScopedPatchWorkerPanicked { activity } => {
+                write!(
+                    formatter,
+                    "scoped patch worker panicked while attempting to {activity}"
+                )
+            },
         }
     }
 }
@@ -1962,6 +2036,7 @@ mod tests {
     use super::ScopedPatchComparisonError;
     use super::ahead_behind_for_heads;
     use super::command::GitCommandExecution;
+    use super::concurrent_scoped_patch_reads;
     use super::descendant_commits;
     use super::head_object_id;
     use super::scoped_patch_command_output;
@@ -1979,6 +2054,7 @@ mod tests {
 
     const INITIAL_PRIMARY: &str = "first\nsecond\nthird\n";
     const INITIAL_SECONDARY: &str = "secondary\n";
+    const PRIMARY_BACKUP_PATH: &str = "src/primary.rs~backup";
     const PRIMARY_PATH: &str = "src/primary.rs";
     const SCRIPT_PATH: &str = "scripts/run.sh";
     const SECONDARY_PATH: &str = "src/secondary.rs";
@@ -2063,6 +2139,28 @@ mod tests {
                 target,
             )
         }
+    }
+
+    #[test]
+    fn concurrent_scoped_patch_read_maps_a_worker_panic_to_git_error() {
+        let (panicked_read, completed_read) = concurrent_scoped_patch_reads(
+            || -> Result<(), ScopedPatchComparisonError> {
+                std::panic::resume_unwind(Box::new("scoped patch worker fixture"))
+            },
+            "read panicking fixture",
+            || Ok(()),
+            "read completed fixture",
+        );
+
+        assert!(matches!(
+            panicked_read,
+            Err(ScopedPatchComparisonError::Git(
+                GitError::ScopedPatchWorkerPanicked {
+                    activity: "read panicking fixture",
+                }
+            ))
+        ));
+        assert!(completed_read.is_ok());
     }
 
     #[test]
@@ -2392,6 +2490,25 @@ mod tests {
     }
 
     #[test]
+    fn integrated_rename_with_later_target_edit_preserves_proof() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        fixture.git(&["mv", PRIMARY_PATH, "src/renamed.rs"])?;
+        let protected_tip = fixture.commit("protected rename")?;
+        fixture.amend("amended rename")?;
+        fixture.write(
+            "src/renamed.rs",
+            "first\nsecond\nthird\nlater target edit\n",
+        )?;
+        let target = fixture.commit("later edit after integrated rename")?;
+
+        assert_eq!(
+            fixture.equivalence(&tree_scopes(&["src"])?, &protected_tip, &target)?,
+            ScopedPatchComparison::Equivalent
+        );
+        Ok(())
+    }
+
+    #[test]
     fn target_side_rename_does_not_hide_missing_protected_modification() -> FixtureResult {
         let fixture = PatchEquivalenceFixture::new()?;
         fixture.write(PRIMARY_PATH, "protected content\n")?;
@@ -2464,6 +2581,26 @@ mod tests {
         fixture.write(PRIMARY_PATH, "integrated protected content\n")?;
         fixture.write(SECONDARY_PATH, "target conflicting content\n")?;
         let target = fixture.commit("target scoped and unscoped modifications")?;
+
+        assert_eq!(
+            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            ScopedPatchComparison::Equivalent
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn file_scope_ignores_conflict_at_tracked_tilde_sibling() -> FixtureResult {
+        let mut fixture = PatchEquivalenceFixture::new()?;
+        fixture.write(PRIMARY_BACKUP_PATH, "tracked sibling baseline\n")?;
+        fixture.phase_start_head = fixture.commit("track tilde sibling")?;
+        fixture.write(PRIMARY_PATH, "integrated protected content\n")?;
+        fixture.write(PRIMARY_BACKUP_PATH, "protected sibling content\n")?;
+        let protected_tip = fixture.commit("protected scoped and sibling modifications")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(PRIMARY_PATH, "integrated protected content\n")?;
+        fixture.write(PRIMARY_BACKUP_PATH, "target sibling content\n")?;
+        let target = fixture.commit("target scoped and sibling modifications")?;
 
         assert_eq!(
             fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,

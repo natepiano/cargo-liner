@@ -3,24 +3,21 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
+use std::thread;
 
-use super::constants::GIT_CACHED_ARGUMENT;
-use super::constants::GIT_DIFF_COMMAND;
-use super::constants::GIT_EXCLUDE_STANDARD_ARGUMENT;
-use super::constants::GIT_HEAD_REVISION;
-use super::constants::GIT_LS_FILES_COMMAND;
-use super::constants::GIT_NAME_STATUS_ARGUMENT;
 use super::constants::GIT_NO_RENAMES_ARGUMENT;
 use super::constants::GIT_NUL_TERMINATED_ARGUMENT;
-use super::constants::GIT_OTHERS_ARGUMENT;
 use super::constants::GIT_PORCELAIN_ARGUMENT;
 use super::constants::GIT_STATUS_COMMAND;
+use super::constants::GIT_UNTRACKED_FILES_ALL_ARGUMENT;
 use super::fingerprint;
 use super::fingerprint::StoredWorkingTreeFingerprint;
 use super::fingerprint::WorkingTreeFingerprint;
 use super::git_output;
 use super::git_output::DriftFingerprintError;
+use super::git_output::FullDriftObservationActivity;
 use super::git_output::IncursionAttributionAnchorState;
+use super::git_output::WorkingTreeStatusPaths;
 use super::ordering;
 use super::report::DriftComparisonMode;
 use super::selection::DriftComparisonChoice;
@@ -300,26 +297,10 @@ fn observe_cheap(
     repository_root: &Path,
     previous: &WorkingTreeFingerprint,
 ) -> Result<FingerprintObservation, DriftFingerprintError> {
-    let status = git_output::run_git(
-        repository_root,
-        &[
-            GIT_STATUS_COMMAND,
-            GIT_PORCELAIN_ARGUMENT,
-            GIT_NUL_TERMINATED_ARGUMENT,
-        ],
-    )?;
-    let untracked = git_output::run_git(
-        repository_root,
-        &[
-            GIT_LS_FILES_COMMAND,
-            GIT_NUL_TERMINATED_ARGUMENT,
-            GIT_OTHERS_ARGUMENT,
-            GIT_EXCLUDE_STANDARD_ARGUMENT,
-        ],
-    )?;
+    let working_tree_status = observe_working_tree_status(repository_root)?;
     let current = WorkingTreeFingerprint {
-        tracked_paths:   git_output::parse_status_paths(&status.stdout)?,
-        untracked_paths: git_output::parse_path_list(&untracked.stdout)?,
+        tracked_paths:   working_tree_status.tracked(),
+        untracked_paths: working_tree_status.untracked,
     }
     .normalized();
     let changes = CheapDeltaChanges {
@@ -358,7 +339,23 @@ fn observe_full(
         }
         reservation_anchors.insert(*reservation_id, phase_start);
     }
-    let (history, committed_by_anchor) = observe_phase_history(repository_root, &anchors)?;
+    let (phase_history, working_tree_status) = thread::scope(|scope| {
+        let phase_history_worker = scope.spawn(|| observe_phase_history(repository_root, &anchors));
+        let working_tree_status_worker =
+            scope.spawn(|| observe_working_tree_status(repository_root));
+        (
+            join_full_observation_worker(
+                phase_history_worker,
+                FullDriftObservationActivity::PhaseHistory,
+            ),
+            join_full_observation_worker(
+                working_tree_status_worker,
+                FullDriftObservationActivity::WorkingTreeStatus,
+            ),
+        )
+    });
+    let (history, committed_by_anchor) = phase_history?;
+    let working_tree_status = working_tree_status?;
     let anchor_states = match &history {
         FullPhaseHistoryObservation::NoReservationAnchor => HashMap::new(),
         FullPhaseHistoryObservation::Anchored { anchor_states, .. } => anchor_states.clone(),
@@ -391,38 +388,11 @@ fn observe_full(
             },
         )
         .collect::<Result<HashMap<_, _>, _>>()?;
-    let staged = git_output::run_git(
-        repository_root,
-        &[
-            GIT_DIFF_COMMAND,
-            GIT_CACHED_ARGUMENT,
-            GIT_NAME_STATUS_ARGUMENT,
-            GIT_NUL_TERMINATED_ARGUMENT,
-            GIT_NO_RENAMES_ARGUMENT,
-            GIT_HEAD_REVISION,
-        ],
-    )?;
-    let unstaged = git_output::run_git(
-        repository_root,
-        &[
-            GIT_DIFF_COMMAND,
-            GIT_NAME_STATUS_ARGUMENT,
-            GIT_NUL_TERMINATED_ARGUMENT,
-            GIT_NO_RENAMES_ARGUMENT,
-        ],
-    )?;
-    let untracked = git_output::run_git(
-        repository_root,
-        &[
-            GIT_LS_FILES_COMMAND,
-            GIT_NUL_TERMINATED_ARGUMENT,
-            GIT_OTHERS_ARGUMENT,
-            GIT_EXCLUDE_STANDARD_ARGUMENT,
-        ],
-    )?;
-    let staged_paths = git_output::parse_name_status_paths(&staged.stdout)?;
-    let unstaged_paths = git_output::parse_name_status_paths(&unstaged.stdout)?;
-    let untracked_paths = git_output::parse_path_list(&untracked.stdout)?;
+    let WorkingTreeStatusPaths {
+        staged: staged_paths,
+        unstaged: unstaged_paths,
+        untracked: untracked_paths,
+    } = working_tree_status;
     let mut tracked_cache_paths = staged_paths.clone();
     tracked_cache_paths.extend(unstaged_paths.iter().cloned());
     ordering::normalize_paths(&mut tracked_cache_paths);
@@ -442,6 +412,31 @@ fn observe_full(
         }),
         cache_value,
     })
+}
+
+fn observe_working_tree_status(
+    repository_root: &Path,
+) -> Result<WorkingTreeStatusPaths, DriftFingerprintError> {
+    let status = git_output::run_git(
+        repository_root,
+        &[
+            GIT_STATUS_COMMAND,
+            GIT_PORCELAIN_ARGUMENT,
+            GIT_NUL_TERMINATED_ARGUMENT,
+            GIT_NO_RENAMES_ARGUMENT,
+            GIT_UNTRACKED_FILES_ALL_ARGUMENT,
+        ],
+    )?;
+    git_output::parse_working_tree_status(&status.stdout)
+}
+
+fn join_full_observation_worker<T>(
+    worker: thread::ScopedJoinHandle<'_, Result<T, DriftFingerprintError>>,
+    activity: FullDriftObservationActivity,
+) -> Result<T, DriftFingerprintError> {
+    worker
+        .join()
+        .map_err(|_| DriftFingerprintError::WorkerPanicked { activity })?
 }
 
 fn observe_phase_history(
