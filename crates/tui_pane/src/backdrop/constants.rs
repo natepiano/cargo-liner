@@ -398,8 +398,10 @@ pub(super) const CAPTURE_TEST_PROCESS_ANCESTOR_PID: i32 = 1;
 pub(super) const CAPTURE_TEST_TERMINAL_PROGRAM_OWNER_PID: i32 = 2;
 /// Maximum number of replacement capture workers a monitor may launch.
 ///
-/// A worker abandoned after [`CAPTURE_ATTEMPT_DEADLINE`] can remain blocked in
-/// `ScreenCaptureKit` for the life of the process. This bound limits those retained threads.
+/// The bound counts replacements since the last result the monitor received, so a worker that
+/// recovers does not spend the allowance. A worker abandoned after [`CAPTURE_ATTEMPT_DEADLINE`]
+/// can remain blocked in `ScreenCaptureKit` for the life of the process, and the bound still limits
+/// the threads retained by a run that never recovers.
 pub(super) const MAX_CAPTURE_WORKER_REPLACEMENTS: usize = 3;
 /// Maximum number of completed capture attempt diagnostics retained between drains.
 ///

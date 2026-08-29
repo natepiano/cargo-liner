@@ -25,7 +25,7 @@ pub(crate) enum BackdropNotice {
     None,
     /// Tell the reader how to grant Screen Recording access.
     ScreenRecordingAccessInstruction,
-    /// Report that a capture attempt exceeded its deadline and was abandoned.
+    /// Report that a capture attempt exceeded its deadline and was given up on.
     CaptureStalled,
     /// Report that repeated worker abandonment exhausted the replacement bound.
     CaptureRecoveryStopped,

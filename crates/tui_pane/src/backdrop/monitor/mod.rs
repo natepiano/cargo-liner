@@ -159,6 +159,18 @@ enum CaptureAttemptProgress {
     Outstanding(OutstandingCaptureAttempt),
 }
 
+/// Whether the current capture worker has answered since the last deadline it
+/// missed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CaptureWorkerResponsiveness {
+    /// Something has come back from this worker since its last missed deadline,
+    /// so a deadline it misses now is one slow attempt rather than a blocked
+    /// thread.
+    Answering,
+    /// This worker missed a deadline and has returned nothing since.
+    SilentSinceDeadline,
+}
+
 impl LastSuccessfulDesktop {
     /// The successful desktop, where one has arrived.
     fn available(&self) -> Option<&Desktop> {
@@ -200,46 +212,49 @@ impl CaptureWorkerLauncher {
 /// Every channel holds a single message. The monitor sends no second capture request while one is
 /// outstanding, while a position request that arrives during the previous lookup is dropped. No
 /// worker is joined, so a window server that never answers cannot hold up app exit. A capture
-/// worker abandoned after `CAPTURE_ATTEMPT_DEADLINE` may remain blocked for the life of the
-/// process; `MAX_CAPTURE_WORKER_REPLACEMENTS` bounds how many such threads the monitor creates.
+/// worker is abandoned only after a second consecutive missed `CAPTURE_ATTEMPT_DEADLINE` and may
+/// remain blocked for the life of the process; `MAX_CAPTURE_WORKER_REPLACEMENTS` bounds how many
+/// such threads the monitor creates.
 #[derive(Debug)]
 pub struct BackdropMonitor {
     /// The current worker endpoints, or that capture can no longer continue.
-    capture_worker:              CaptureWorkerAvailability,
+    capture_worker:                CaptureWorkerAvailability,
     /// How initial and replacement capture workers are launched.
-    capture_worker_launcher:     CaptureWorkerLauncher,
+    capture_worker_launcher:       CaptureWorkerLauncher,
     /// Successful replacement launches after the initial worker.
-    worker_replacements:         usize,
+    worker_replacements:           usize,
+    /// Whether the active capture worker has answered since its last missed deadline.
+    capture_worker_responsiveness: CaptureWorkerResponsiveness,
     /// Windows the position worker should look up next.
-    watches:                     Sender<u32>,
+    watches:                       Sender<u32>,
     /// Where the position worker last found the window it was given, or
     /// [`None`] where the window server would not describe it.
-    frames:                      Receiver<Option<Frame>>,
+    frames:                        Receiver<Option<Frame>>,
     /// The newest desktop that captured successfully, retained across failures.
-    last_successful_desktop:     LastSuccessfulDesktop,
+    last_successful_desktop:       LastSuccessfulDesktop,
     /// The outcome of the newest completed capture attempt.
-    status:                      BackdropStatus,
+    status:                        BackdropStatus,
     /// What terminal window the newest completed capture attempt selected.
-    latest_window_selection:     LatestCaptureAttemptWindowSelection,
+    latest_window_selection:       LatestCaptureAttemptWindowSelection,
     /// Completed attempt diagnostics not yet taken by the caller.
-    completed_attempts:          VecDeque<CompletedCaptureAttemptDiagnostic>,
+    completed_attempts:            VecDeque<CompletedCaptureAttemptDiagnostic>,
     /// The sequence to assign to the next accepted capture request.
-    next_sequence:               CaptureAttemptSequence,
+    next_sequence:                 CaptureAttemptSequence,
     /// The newest window frame that has arrived, a frame or two behind
     /// where the window is now.
-    frame:                       Option<Frame>,
+    frame:                         Option<Frame>,
     /// The area of the newest capture the caller is drawing over, read
     /// afresh every frame.
-    current:                     Option<Backdrop>,
+    current:                       Option<Backdrop>,
     /// Request timing used to pace routine and retry captures.
-    capture_request_cadence:     CaptureRequestCadence,
+    capture_request_cadence:       CaptureRequestCadence,
     /// The attempt the active worker has not returned yet.
-    capture_attempt_progress:    CaptureAttemptProgress,
+    capture_attempt_progress:      CaptureAttemptProgress,
     /// Where the window stood on the previous frame, which is how a
     /// window being dragged is told from one standing still.
-    placement:                   Option<Placement>,
+    placement:                     Option<Placement>,
     /// Progress and phase-dependent data for terminal-window identification.
-    window_identification_state: WindowIdentificationState,
+    window_identification_state:   WindowIdentificationState,
 }
 
 /// One capture, as the worker is asked for it.
@@ -288,6 +303,7 @@ impl BackdropMonitor {
             capture_worker,
             capture_worker_launcher,
             worker_replacements: 0,
+            capture_worker_responsiveness: CaptureWorkerResponsiveness::Answering,
             watches,
             frames,
             last_successful_desktop: LastSuccessfulDesktop::default(),
@@ -455,6 +471,8 @@ impl BackdropMonitor {
             };
             match receive_result {
                 Ok(capture_attempt_result) => {
+                    self.worker_replacements = 0;
+                    self.capture_worker_responsiveness = CaptureWorkerResponsiveness::Answering;
                     self.record_capture_attempt_result(capture_attempt_result);
                 },
                 Err(TryRecvError::Empty) => return,
@@ -466,7 +484,12 @@ impl BackdropMonitor {
         }
     }
 
-    /// Record and abandon the outstanding attempt once its deadline has elapsed.
+    /// Record an outstanding attempt as stalled once its deadline has elapsed.
+    ///
+    /// Replace the capture worker only when it has returned nothing since a previous missed
+    /// deadline. A display captured for the first time in a while can legitimately take seconds;
+    /// replacing its worker would abandon a thread still running its capture and make it compete
+    /// with the replacement.
     fn recover_stalled_capture_attempt(&mut self, now: Instant) {
         let CaptureAttemptProgress::Outstanding(outstanding_capture_attempt) =
             self.capture_attempt_progress
@@ -483,7 +506,13 @@ impl BackdropMonitor {
             CaptureAttemptWindowSelection::SelectionNotReached,
             CaptureFailure::AttemptStalled,
         ));
-        self.replace_capture_worker();
+        match self.capture_worker_responsiveness {
+            CaptureWorkerResponsiveness::Answering => {
+                self.capture_worker_responsiveness =
+                    CaptureWorkerResponsiveness::SilentSinceDeadline;
+            },
+            CaptureWorkerResponsiveness::SilentSinceDeadline => self.replace_capture_worker(),
+        }
     }
 
     /// Record a disconnected worker and replace it when the replacement allowance remains.
@@ -514,6 +543,7 @@ impl BackdropMonitor {
             Ok(active_capture_worker) => {
                 self.capture_worker = CaptureWorkerAvailability::Active(active_capture_worker);
                 self.worker_replacements += 1;
+                self.capture_worker_responsiveness = CaptureWorkerResponsiveness::Answering;
                 self.capture_request_cadence = CaptureRequestCadence::DueImmediately;
             },
             Err(failure) => self.status = BackdropStatus::Failed(failure),
@@ -652,7 +682,7 @@ mod tests {
     use crate::backdrop::desktop::CaptureAttemptTestCase;
 
     #[test]
-    fn stalled_capture_is_recorded_and_its_replacement_accepts_the_next_attempt() {
+    fn a_single_stalled_capture_is_recorded_without_replacing_the_worker() {
         let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
 
         assert_eq!(
@@ -687,11 +717,106 @@ mod tests {
             monitor.status(),
             BackdropStatus::Failed(CaptureFailure::ShareableContentQueryFailed),
         );
-        let replacement_diagnostics: Vec<_> = monitor
+        let following_attempt_diagnostics: Vec<_> = monitor
             .take_completed_capture_attempt_diagnostics()
             .collect();
-        assert_eq!(replacement_diagnostics.len(), 1);
-        assert_eq!(replacement_diagnostics[0].sequence().number(), 2);
+        assert_eq!(following_attempt_diagnostics.len(), 1);
+        assert_eq!(following_attempt_diagnostics[0].sequence().number(), 2);
+    }
+
+    #[test]
+    fn a_worker_that_answers_between_stalls_is_never_replaced() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+
+        for _ in 0..=MAX_CAPTURE_WORKER_REPLACEMENTS {
+            assert_eq!(
+                capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+                Ok(()),
+            );
+            assert_ne!(
+                monitor.status(),
+                BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
+            );
+            assert_eq!(
+                capture_test_driver.complete_capture_attempt(
+                    &mut monitor,
+                    CaptureAttemptTestCase::ShareableContentQueryFails,
+                ),
+                Ok(()),
+            );
+            assert_ne!(
+                monitor.status(),
+                BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
+            );
+        }
+
+        assert_eq!(
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            Ok(()),
+        );
+        assert_ne!(
+            monitor.status(),
+            BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
+        );
+    }
+
+    #[test]
+    fn a_replaced_worker_that_answers_restores_the_replacement_allowance() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+
+        // Each pass replaces the worker -- two stalls with nothing returned in
+        // between -- and then has the replacement answer. More passes are made
+        // than the bound allows replacements, so reaching the end proves the
+        // answer restored the allowance rather than the run spending it once.
+        for _ in 0..=MAX_CAPTURE_WORKER_REPLACEMENTS {
+            for _ in 0..2 {
+                assert_eq!(
+                    capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+                    Ok(()),
+                );
+            }
+            assert_ne!(
+                monitor.status(),
+                BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
+            );
+            assert_eq!(
+                capture_test_driver.complete_capture_attempt(
+                    &mut monitor,
+                    CaptureAttemptTestCase::ShareableContentQueryFails,
+                ),
+                Ok(()),
+            );
+        }
+
+        assert_eq!(
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            Ok(()),
+        );
+        assert_ne!(
+            monitor.status(),
+            BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
+        );
+    }
+
+    #[test]
+    fn two_consecutive_stalls_replace_the_worker() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+
+        assert_eq!(
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            Ok(()),
+        );
+        assert_eq!(
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            Ok(()),
+        );
+        assert_eq!(
+            capture_test_driver.complete_capture_attempt(
+                &mut monitor,
+                CaptureAttemptTestCase::ShareableContentQueryFails,
+            ),
+            Ok(()),
+        );
     }
 
     #[test]
@@ -726,7 +851,7 @@ mod tests {
     #[test]
     fn capture_worker_replacements_stop_at_the_process_bound() {
         let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
-        let stalled_attempts = MAX_CAPTURE_WORKER_REPLACEMENTS + 1;
+        let stalled_attempts = 2 * (MAX_CAPTURE_WORKER_REPLACEMENTS + 1);
 
         for _ in 0..stalled_attempts {
             assert_eq!(

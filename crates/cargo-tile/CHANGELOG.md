@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - The attract screen's notice names the real cause. The Settings instruction now appears only when Screen Recording access is denied; every other capture failure gets a neutral line.
 - A favorites row the parser cannot read can now be deleted, and one that moved underneath you is refused with a message rather than deleted wrongly.
-- A wedged desktop capture no longer strands the backdrop: an attempt is abandoned after five seconds and its worker replaced up to three times.
+- A wedged desktop capture no longer strands the backdrop: an attempt is given up on after five seconds, and a worker that misses a second deadline without answering in between is replaced, up to three times since its last result. Moving the terminal to another monitor makes one capture legitimately slow, and that alone no longer disables the backdrop for the rest of the run.
 - Toasts repaint from the framework's own next-visual-change deadline, so an expiring toast no longer holds the app awake between frames it has nothing to draw.
 - The attract screen comes on when the grid goes idle. Settling which window the app is drawn in asked ScreenCaptureKit, which takes some seventy milliseconds a call and was called from the drawing thread, so the first seconds of a run drew no frames at all -- which looks exactly like a screen that never starts.
 - The display no longer freezes on startup. The window-position query and the keyboard thread both read the terminal, and losing the race for one byte parked the whole app in a read nothing was coming for -- an animation that never started, a grid that never repainted, and a keypress the only way out.
