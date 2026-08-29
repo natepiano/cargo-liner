@@ -498,10 +498,10 @@ mod tests {
     use tui_pane::KeyBind;
     use uuid::Uuid;
 
-    use super::super::rows::FavoriteRowRecognition;
     use super::*;
     use crate::constants::FAVORITE_DIRECTION_KEY;
     use crate::constants::FAVORITE_MODE_KEY;
+    use crate::favorites::rows::FavoriteRowRecognition;
 
     const FIRST_ID: &str = "01a03f5e-9c14-7b41-8a02-1de4c7c9b330";
     const FIRST_SAVED: &str = "2026-08-26T09:02:44.870-07:00";

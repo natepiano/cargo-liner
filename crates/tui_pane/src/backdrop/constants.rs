@@ -390,6 +390,12 @@ pub(super) const CAPTURE_REFRESH: Duration = Duration::from_millis(1000);
 /// a window parked off every display is not asking the window server
 /// for a full capture every frame.
 pub(super) const CAPTURE_RETRY: Duration = Duration::from_millis(150);
+/// Synthetic owner pid for the frontmost-application candidate path.
+pub(super) const CAPTURE_TEST_FRONTMOST_OWNER_PID: i32 = 3;
+/// Synthetic owner pid accepted by the process-ancestry candidate path.
+pub(super) const CAPTURE_TEST_PROCESS_ANCESTOR_PID: i32 = 1;
+/// Synthetic owner pid for the terminal-program candidate path.
+pub(super) const CAPTURE_TEST_TERMINAL_PROGRAM_OWNER_PID: i32 = 2;
 /// Maximum number of replacement capture workers a monitor may launch.
 ///
 /// A worker abandoned after [`CAPTURE_ATTEMPT_DEADLINE`] can remain blocked in
@@ -400,12 +406,6 @@ pub(super) const MAX_CAPTURE_WORKER_REPLACEMENTS: usize = 3;
 /// At the [`CAPTURE_RETRY`] cadence, 64 diagnostics span about ten seconds, far longer than a
 /// rendered-frame interval, while bounding storage for callers that never drain the queue.
 pub(super) const MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS: usize = 64;
-/// Synthetic owner pid for the frontmost-application candidate path.
-pub(super) const CAPTURE_TEST_FRONTMOST_OWNER_PID: i32 = 3;
-/// Synthetic owner pid accepted by the process-ancestry candidate path.
-pub(super) const CAPTURE_TEST_PROCESS_ANCESTOR_PID: i32 = 1;
-/// Synthetic owner pid for the terminal-program candidate path.
-pub(super) const CAPTURE_TEST_TERMINAL_PROGRAM_OWNER_PID: i32 = 2;
 /// How many passes are made before the window is given up on and the
 /// size heuristic carries the run.
 ///

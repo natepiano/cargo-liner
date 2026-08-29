@@ -24,8 +24,10 @@
 //! puts that wait on a thread with nothing to draw, and the render loop
 //! reuses the last answer for the frame or two it takes to arrive.
 
+mod capture_test_driver;
+mod window_identification;
+
 use std::collections::VecDeque;
-use std::io;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -39,21 +41,23 @@ use crossbeam_channel::TryRecvError;
 use crossbeam_channel::TrySendError;
 use ratatui::layout::Rect;
 
+pub use self::capture_test_driver::BackdropMonitorCaptureTestDriver;
+pub use self::capture_test_driver::CaptureTestDriverError;
+use self::capture_test_driver::CaptureTestWorkerEndpoints;
+pub use self::window_identification::LastSuccessfulCaptureWindowId;
+pub use self::window_identification::LatestCaptureAttemptWindowSelection;
+pub use self::window_identification::WindowIdentification;
+use self::window_identification::WindowIdentificationState;
 use super::Backdrop;
 use super::CaptureWindowTarget;
-use super::TerminalWindowSearchOutcome;
 use super::constants::CAPTURE_ATTEMPT_DEADLINE;
 use super::constants::CAPTURE_REFRESH;
 use super::constants::CAPTURE_RETRY;
-use super::constants::IDENTIFY_MARKER;
-use super::constants::IDENTIFY_PASSES;
-use super::constants::IDENTIFY_RETRY;
 use super::constants::MAX_CAPTURE_WORKER_REPLACEMENTS;
 use super::constants::MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
 use super::desktop;
 use super::desktop::CaptureAttemptResult;
 use super::desktop::CaptureAttemptSequence;
-use super::desktop::CaptureAttemptTestCase;
 use super::desktop::CaptureAttemptWindowSelection;
 use super::desktop::CaptureFailure;
 use super::desktop::CompletedCaptureAttemptDiagnostic;
@@ -61,204 +65,6 @@ use super::desktop::Desktop;
 use super::desktop::Frame;
 use super::desktop::Metrics;
 use super::desktop::Placement;
-use super::query;
-
-/// Progress toward selecting the terminal window whose desktop should be captured.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WindowIdentification {
-    /// No identification pass has been attempted.
-    NotAttempted,
-    /// Identification is still retrying.
-    Pending,
-    /// Identification settled on this window-server id.
-    Identified {
-        /// The selected window-server id.
-        window_id: u32,
-    },
-    /// Identification attempts are exhausted, so capture uses frontmost-or-size selection.
-    ///
-    /// This describes window selection and does not report whether a capture succeeded.
-    Fallback,
-}
-
-/// Identification progress and the data retained only while a terminal-window search is active.
-#[derive(Debug, Default)]
-enum WindowIdentificationState {
-    /// No identification pass has been attempted.
-    #[default]
-    NotAttempted,
-    /// The terminal position query has failed and no marker title has been installed.
-    PendingBeforeMarker {
-        /// How many identification passes have run.
-        attempts_consumed: u32,
-        /// When the most recent pass ran.
-        attempted_at:      Instant,
-    },
-    /// A marker title is installed while later passes look for the window wearing it.
-    PendingWithMarker {
-        /// How many identification passes have run.
-        attempts_consumed: u32,
-        /// When the most recent pass ran.
-        attempted_at:      Instant,
-        /// The titles to restore after the marker identifies a window or the search ends.
-        previous_titles:   Vec<(u32, Option<String>)>,
-    },
-    /// Identification settled on this exact window.
-    Identified { window_id: u32 },
-    /// Identification attempts are exhausted and capture should use the candidate-set heuristic.
-    Fallback,
-}
-
-impl WindowIdentificationState {
-    /// Project the private search state into the public identification report.
-    const fn report(&self) -> WindowIdentification {
-        match self {
-            Self::NotAttempted => window_identification(0, TerminalWindowSearchOutcome::NotFound),
-            Self::PendingBeforeMarker {
-                attempts_consumed, ..
-            }
-            | Self::PendingWithMarker {
-                attempts_consumed, ..
-            } => window_identification(*attempts_consumed, TerminalWindowSearchOutcome::NotFound),
-            Self::Identified { window_id } => WindowIdentification::Identified {
-                window_id: *window_id,
-            },
-            Self::Fallback => WindowIdentification::Fallback,
-        }
-    }
-
-    /// Project the search state into the target passed through the capture worker.
-    const fn capture_window_target(&self) -> CaptureWindowTarget {
-        match self {
-            Self::Identified { window_id } => CaptureWindowTarget::PreferWindow {
-                window_id: *window_id,
-            },
-            Self::NotAttempted
-            | Self::PendingBeforeMarker { .. }
-            | Self::PendingWithMarker { .. }
-            | Self::Fallback => CaptureWindowTarget::TerminalWindowHeuristic,
-        }
-    }
-
-    /// Run the next due identification pass and retain any data required by a later pass.
-    fn identify(&mut self, out: &mut impl Write) -> WindowIdentification {
-        match self {
-            Self::Identified { .. } | Self::Fallback => return self.report(),
-            Self::PendingBeforeMarker { attempted_at, .. }
-            | Self::PendingWithMarker { attempted_at, .. }
-                if attempted_at.elapsed() < IDENTIFY_RETRY =>
-            {
-                return self.report();
-            },
-            Self::NotAttempted
-            | Self::PendingBeforeMarker { .. }
-            | Self::PendingWithMarker { .. } => {},
-        }
-
-        match std::mem::take(self) {
-            Self::NotAttempted => self.run_first_attempt(out),
-            Self::PendingBeforeMarker {
-                attempts_consumed, ..
-            } => self.run_marker_setup_attempt(out, attempts_consumed + 1, Instant::now()),
-            Self::PendingWithMarker {
-                attempts_consumed,
-                previous_titles,
-                ..
-            } => self.run_marker_lookup_attempt(
-                out,
-                attempts_consumed + 1,
-                Instant::now(),
-                previous_titles,
-            ),
-            terminal_state @ (Self::Identified { .. } | Self::Fallback) => {
-                *self = terminal_state;
-            },
-        }
-        self.report()
-    }
-
-    /// Ask the terminal for its window position before installing a marker title.
-    fn run_first_attempt(&mut self, out: &mut impl Write) {
-        let attempted_at = Instant::now();
-        let terminal_window_search_outcome = query::window_origin(out)
-            .map_or(TerminalWindowSearchOutcome::NotFound, desktop::window_at);
-        match terminal_window_search_outcome {
-            TerminalWindowSearchOutcome::Found { window_id } => {
-                *self = Self::Identified { window_id };
-            },
-            TerminalWindowSearchOutcome::NotFound => {
-                self.run_marker_setup_attempt(out, 1, attempted_at);
-            },
-        }
-    }
-
-    /// Install the marker after retaining the titles that may need restoration.
-    fn run_marker_setup_attempt(
-        &mut self,
-        out: &mut impl Write,
-        attempts_consumed: u32,
-        attempted_at: Instant,
-    ) {
-        let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
-        let previous_titles = desktop::window_titles();
-        if set_title(out, &marker).is_err() {
-            *self = if attempts_consumed >= IDENTIFY_PASSES {
-                Self::Fallback
-            } else {
-                Self::PendingBeforeMarker {
-                    attempts_consumed,
-                    attempted_at,
-                }
-            };
-            return;
-        }
-        self.run_marker_lookup_attempt(out, attempts_consumed, attempted_at, previous_titles);
-    }
-
-    /// Look for the window wearing the installed marker and retain its original titles if needed.
-    fn run_marker_lookup_attempt(
-        &mut self,
-        out: &mut impl Write,
-        attempts_consumed: u32,
-        attempted_at: Instant,
-        previous_titles: Vec<(u32, Option<String>)>,
-    ) {
-        let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
-        match desktop::window_titled(&marker) {
-            TerminalWindowSearchOutcome::Found { window_id } => {
-                let restored = previous_titles
-                    .iter()
-                    .find(|(id, _)| *id == window_id)
-                    .and_then(|(_, title)| title.as_deref());
-                let _ = set_title(out, restored.unwrap_or(""));
-                *self = Self::Identified { window_id };
-            },
-            TerminalWindowSearchOutcome::NotFound if attempts_consumed >= IDENTIFY_PASSES => {
-                let _ = set_title(out, "");
-                *self = Self::Fallback;
-            },
-            TerminalWindowSearchOutcome::NotFound => {
-                *self = Self::PendingWithMarker {
-                    attempts_consumed,
-                    attempted_at,
-                    previous_titles,
-                };
-            },
-        }
-    }
-}
-
-/// The window id used by the most recent successful capture.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LastSuccessfulCaptureWindowId {
-    /// No capture has succeeded yet.
-    WaitingForFirstSuccess,
-    /// The most recent successful capture used this window-server id.
-    Available {
-        /// The window-server id used by the capture.
-        window_id: u32,
-    },
-}
 
 /// The result of the capture worker's latest completed attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -269,15 +75,6 @@ pub enum BackdropStatus {
     Ready,
     /// The latest capture attempt failed at the reported stage.
     Failed(CaptureFailure),
-}
-
-/// What the monitor knows about the latest completed attempt's window selection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LatestCaptureAttemptWindowSelection {
-    /// No capture attempt has completed yet.
-    WaitingForFirstResult,
-    /// The newest completed attempt reached this window-selection state.
-    Completed(CaptureAttemptWindowSelection),
 }
 
 /// The most recent desktop known to have captured successfully.
@@ -325,20 +122,6 @@ enum CaptureWorkerLauncher {
     },
 }
 
-/// The capture endpoints currently available to a synchronous test driver.
-#[derive(Debug)]
-enum CaptureTestWorkerEndpoints {
-    /// The monitor has not installed a worker yet, or no worker remains available.
-    NoActiveWorker,
-    /// Endpoints corresponding to the monitor's active synthetic worker.
-    Active {
-        /// Requests taken from the monitor.
-        requests: Receiver<CaptureRequest>,
-        /// Results returned to the monitor.
-        captures: Sender<CaptureAttemptResult>,
-    },
-}
-
 /// The most recent accepted capture request time used to pace later requests.
 #[derive(Clone, Copy, Debug)]
 enum CaptureRequestCadence {
@@ -376,29 +159,6 @@ enum CaptureAttemptProgress {
     Outstanding(OutstandingCaptureAttempt),
 }
 
-/// Why a synchronous capture-driver operation could not reach the monitor.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CaptureTestDriverError {
-    /// The monitor did not make a capture request available to the driver.
-    CaptureRequestUnavailable,
-    /// The driver could not return the completed capture attempt to the monitor.
-    CaptureResultUnavailable,
-    /// The driver could not access the active synthetic worker endpoints.
-    CaptureWorkerEndpointsUnavailable,
-}
-
-/// A synchronous capture worker used by client-crate acceptance tests.
-///
-/// The driver receives requests created by [`BackdropMonitor`], preserving the monitor's normal
-/// sequence assignment, then runs the production window-selection helper with synthetic windows.
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct BackdropMonitorCaptureTestDriver {
-    /// The current synthetic worker's endpoints, replaced whenever the monitor abandons a worker.
-    endpoints: Arc<Mutex<CaptureTestWorkerEndpoints>>,
-}
-
 impl LastSuccessfulDesktop {
     /// The successful desktop, where one has arrived.
     fn available(&self) -> Option<&Desktop> {
@@ -419,11 +179,11 @@ impl CaptureWorkerLauncher {
                 thread::Builder::new()
                     .name("backdrop-capture".to_string())
                     .spawn(move || capture_loop(&incoming, &outgoing))
-                    .map_err(|_| CaptureFailure::CaptureWorkerLaunchFailed)?;
+                    .map_err(|_| CaptureFailure::WorkerLaunchFailed)?;
             },
             Self::TestDriver { endpoints } => {
                 let Ok(mut endpoints) = endpoints.lock() else {
-                    return Err(CaptureFailure::CaptureWorkerLaunchFailed);
+                    return Err(CaptureFailure::WorkerLaunchFailed);
                 };
                 *endpoints = CaptureTestWorkerEndpoints::Active {
                     requests: incoming,
@@ -440,8 +200,8 @@ impl CaptureWorkerLauncher {
 /// Every channel holds a single message. The monitor sends no second capture request while one is
 /// outstanding, while a position request that arrives during the previous lookup is dropped. No
 /// worker is joined, so a window server that never answers cannot hold up app exit. A capture
-/// worker abandoned after [`CAPTURE_ATTEMPT_DEADLINE`] may remain blocked for the life of the
-/// process; [`MAX_CAPTURE_WORKER_REPLACEMENTS`] bounds how many such threads the monitor creates.
+/// worker abandoned after `CAPTURE_ATTEMPT_DEADLINE` may remain blocked for the life of the
+/// process; `MAX_CAPTURE_WORKER_REPLACEMENTS` bounds how many such threads the monitor creates.
 #[derive(Debug)]
 pub struct BackdropMonitor {
     /// The current worker endpoints, or that capture can no longer continue.
@@ -502,19 +262,6 @@ impl BackdropMonitor {
     /// [`refresh`](Self::refresh).
     #[must_use]
     pub fn new() -> Self { Self::with_capture_worker_launcher(CaptureWorkerLauncher::Threaded) }
-
-    /// Build a monitor with a synchronous capture driver for a client crate's acceptance tests.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn with_capture_test_driver() -> (Self, BackdropMonitorCaptureTestDriver) {
-        let endpoints = Arc::new(Mutex::new(CaptureTestWorkerEndpoints::NoActiveWorker));
-        let monitor = Self::with_capture_worker_launcher(CaptureWorkerLauncher::TestDriver {
-            endpoints: Arc::clone(&endpoints),
-        });
-        let capture_test_driver = BackdropMonitorCaptureTestDriver { endpoints };
-        (monitor, capture_test_driver)
-    }
-
     /// Build the monitor and launch its initial capture worker.
     fn with_capture_worker_launcher(capture_worker_launcher: CaptureWorkerLauncher) -> Self {
         let (capture_worker, status) = match capture_worker_launcher.launch() {
@@ -734,7 +481,7 @@ impl BackdropMonitor {
         self.record_capture_attempt_result(CaptureAttemptResult::failed(
             outstanding_capture_attempt.sequence,
             CaptureAttemptWindowSelection::SelectionNotReached,
-            CaptureFailure::CaptureAttemptStalled,
+            CaptureFailure::AttemptStalled,
         ));
         self.replace_capture_worker();
     }
@@ -743,13 +490,13 @@ impl BackdropMonitor {
     fn handle_disconnected_capture_worker(&mut self) {
         match self.capture_attempt_progress {
             CaptureAttemptProgress::Idle => {
-                self.status = BackdropStatus::Failed(CaptureFailure::CaptureWorkerDisconnected);
+                self.status = BackdropStatus::Failed(CaptureFailure::WorkerDisconnected);
             },
             CaptureAttemptProgress::Outstanding(outstanding_capture_attempt) => {
                 self.record_capture_attempt_result(CaptureAttemptResult::failed(
                     outstanding_capture_attempt.sequence,
                     CaptureAttemptWindowSelection::SelectionNotReached,
-                    CaptureFailure::CaptureWorkerDisconnected,
+                    CaptureFailure::WorkerDisconnected,
                 ));
             },
         }
@@ -760,8 +507,7 @@ impl BackdropMonitor {
     fn replace_capture_worker(&mut self) {
         self.capture_worker = CaptureWorkerAvailability::PermanentlyUnavailable;
         if self.worker_replacements == MAX_CAPTURE_WORKER_REPLACEMENTS {
-            self.status =
-                BackdropStatus::Failed(CaptureFailure::CaptureWorkerReplacementLimitReached);
+            self.status = BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached);
             return;
         }
         match self.capture_worker_launcher.launch() {
@@ -858,178 +604,6 @@ impl BackdropMonitor {
     }
 }
 
-impl BackdropMonitorCaptureTestDriver {
-    /// Maximum replacement workers launched after the initial capture worker.
-    pub const MAX_CAPTURE_WORKER_REPLACEMENTS: usize = MAX_CAPTURE_WORKER_REPLACEMENTS;
-    /// Maximum completed-attempt diagnostics retained by a monitor between drains.
-    pub const MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS: usize =
-        MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
-
-    /// Take the request currently waiting on the active synthetic worker.
-    fn take_capture_request(&self) -> Result<CaptureRequest, CaptureTestDriverError> {
-        let endpoints = self
-            .endpoints
-            .lock()
-            .map_err(|_| CaptureTestDriverError::CaptureRequestUnavailable)?;
-        match &*endpoints {
-            CaptureTestWorkerEndpoints::NoActiveWorker => {
-                Err(CaptureTestDriverError::CaptureRequestUnavailable)
-            },
-            CaptureTestWorkerEndpoints::Active { requests, .. } => requests
-                .try_recv()
-                .map_err(|_| CaptureTestDriverError::CaptureRequestUnavailable),
-        }
-    }
-
-    /// Return a completed attempt through the active synthetic worker.
-    fn send_capture_result(
-        &self,
-        capture_attempt_result: CaptureAttemptResult,
-    ) -> Result<(), CaptureTestDriverError> {
-        let endpoints = self
-            .endpoints
-            .lock()
-            .map_err(|_| CaptureTestDriverError::CaptureResultUnavailable)?;
-        match &*endpoints {
-            CaptureTestWorkerEndpoints::NoActiveWorker => {
-                Err(CaptureTestDriverError::CaptureResultUnavailable)
-            },
-            CaptureTestWorkerEndpoints::Active { captures, .. } => captures
-                .try_send(capture_attempt_result)
-                .map_err(|_| CaptureTestDriverError::CaptureResultUnavailable),
-        }
-    }
-
-    /// Start one synthetic capture attempt without returning a result.
-    fn start_capture_attempt(
-        &self,
-        monitor: &mut BackdropMonitor,
-    ) -> Result<OutstandingCaptureAttempt, CaptureTestDriverError> {
-        monitor.window_identification_state = WindowIdentificationState::NotAttempted;
-        monitor.request_capture_if_worker_available(Metrics::for_capture_test());
-        let request = self.take_capture_request()?;
-        let CaptureAttemptProgress::Outstanding(outstanding_capture_attempt) =
-            monitor.capture_attempt_progress
-        else {
-            return Err(CaptureTestDriverError::CaptureRequestUnavailable);
-        };
-        if request.sequence != outstanding_capture_attempt.sequence {
-            return Err(CaptureTestDriverError::CaptureRequestUnavailable);
-        }
-        Ok(outstanding_capture_attempt)
-    }
-
-    /// Complete one synthetic attempt and leave it waiting on the monitor's capture channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CaptureTestDriverError`] when the monitor cannot exchange the request or result.
-    pub fn send_capture_attempt(
-        &self,
-        monitor: &mut BackdropMonitor,
-        capture_attempt_test_case: CaptureAttemptTestCase,
-    ) -> Result<(), CaptureTestDriverError> {
-        monitor.window_identification_state = match capture_attempt_test_case {
-            CaptureAttemptTestCase::PinnedWindow { window_id } => {
-                WindowIdentificationState::Identified { window_id }
-            },
-            CaptureAttemptTestCase::ShareableContentQueryFails
-            | CaptureAttemptTestCase::WindowOwnedByProcessAncestor { .. }
-            | CaptureAttemptTestCase::WindowOwnedByTerminalProgram { .. }
-            | CaptureAttemptTestCase::WindowOwnedByFrontmostApplication { .. } => {
-                WindowIdentificationState::NotAttempted
-            },
-        };
-        monitor.request_capture_if_worker_available(Metrics::for_capture_test());
-        let request = self.take_capture_request()?;
-        let capture_attempt_result = desktop::capture_attempt_for_test(
-            request.sequence,
-            request.window_target,
-            capture_attempt_test_case,
-        );
-        self.send_capture_result(capture_attempt_result)
-    }
-
-    /// Complete one synthetic attempt and make its diagnostic available to monitor consumers.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CaptureTestDriverError`] when the monitor cannot exchange the request or result.
-    pub fn complete_capture_attempt(
-        &self,
-        monitor: &mut BackdropMonitor,
-        capture_attempt_test_case: CaptureAttemptTestCase,
-    ) -> Result<(), CaptureTestDriverError> {
-        self.send_capture_attempt(monitor, capture_attempt_test_case)?;
-        monitor.receive_capture_attempt_results();
-        Ok(())
-    }
-
-    /// Disconnect the active synthetic worker while one capture attempt is outstanding.
-    ///
-    /// The monitor observes the disconnected result channel and records the outstanding attempt as
-    /// [`CaptureFailure::CaptureWorkerDisconnected`] before installing replacement endpoints.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CaptureTestDriverError`] when the monitor cannot start an attempt or the driver
-    /// cannot access the active worker endpoints.
-    pub fn disconnect_capture_worker_during_attempt(
-        &self,
-        monitor: &mut BackdropMonitor,
-    ) -> Result<(), CaptureTestDriverError> {
-        self.start_capture_attempt(monitor)?;
-        {
-            let mut endpoints = self
-                .endpoints
-                .lock()
-                .map_err(|_| CaptureTestDriverError::CaptureWorkerEndpointsUnavailable)?;
-            if !matches!(&*endpoints, CaptureTestWorkerEndpoints::Active { .. }) {
-                return Err(CaptureTestDriverError::CaptureWorkerEndpointsUnavailable);
-            }
-            *endpoints = CaptureTestWorkerEndpoints::NoActiveWorker;
-        }
-        monitor.receive_capture_attempt_results();
-        Ok(())
-    }
-
-    /// Start one synthetic attempt, return no result, and advance the monitor to its deadline.
-    ///
-    /// The monitor abandons the synthetic worker and installs fresh driver endpoints exactly as it
-    /// abandons and replaces a production worker blocked in `ScreenCaptureKit`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CaptureTestDriverError`] when the monitor does not make the request available.
-    pub fn abandon_capture_attempt_after_deadline(
-        &self,
-        monitor: &mut BackdropMonitor,
-    ) -> Result<(), CaptureTestDriverError> {
-        let outstanding_capture_attempt = self.start_capture_attempt(monitor)?;
-        monitor.recover_stalled_capture_attempt(
-            outstanding_capture_attempt.requested_at + CAPTURE_ATTEMPT_DEADLINE,
-        );
-        Ok(())
-    }
-}
-
-/// Map consumed identification attempts to the progress reported to callers.
-const fn window_identification(
-    attempts_consumed: u32,
-    terminal_window_search_outcome: TerminalWindowSearchOutcome,
-) -> WindowIdentification {
-    match terminal_window_search_outcome {
-        TerminalWindowSearchOutcome::Found { window_id } => {
-            WindowIdentification::Identified { window_id }
-        },
-        TerminalWindowSearchOutcome::NotFound => match attempts_consumed {
-            0 => WindowIdentification::NotAttempted,
-            IDENTIFY_PASSES.. => WindowIdentification::Fallback,
-            _ => WindowIdentification::Pending,
-        },
-    }
-}
-
 /// Worker loop: capture the display for each cell size asked for and
 /// send the result back. Exits when the monitor drops and the request
 /// channel disconnects.
@@ -1046,21 +620,6 @@ fn capture_loop(requests: &Receiver<CaptureRequest>, captures: &Sender<CaptureAt
             break;
         }
     }
-}
-
-/// Ask the terminal to wear `title`, and see the request out to it.
-///
-/// Control characters are dropped rather than sent on: a title read
-/// back from the window server is text of unknown provenance, and one
-/// carrying an escape of its own would be a command rather than a
-/// title.
-fn set_title(out: &mut impl Write, title: &str) -> io::Result<()> {
-    let title: String = title
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect();
-    write!(out, "\u{1b}]2;{title}\u{7}")?;
-    out.flush()
 }
 
 /// Worker loop: look up each window asked about and send back where it
@@ -1080,132 +639,160 @@ fn position_loop(watches: &Receiver<u32>, frames: &Sender<Option<Frame>>) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
-    use super::CaptureWindowTarget;
-    use super::IDENTIFY_PASSES;
-    use super::TerminalWindowSearchOutcome;
-    use super::WindowIdentification;
-    use super::WindowIdentificationState;
-    use super::window_identification;
-
-    const WINDOW_ID: u32 = 42;
+    use super::BackdropMonitor;
+    use super::BackdropStatus;
+    use super::CaptureAttemptSequence;
+    use super::CaptureAttemptWindowSelection;
+    use super::CaptureFailure;
+    use super::CaptureTestDriverError;
+    use super::CompletedCaptureAttemptDiagnostic;
+    use super::LatestCaptureAttemptWindowSelection;
+    use super::MAX_CAPTURE_WORKER_REPLACEMENTS;
+    use super::MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
+    use crate::backdrop::desktop::CaptureAttemptTestCase;
 
     #[test]
-    fn identification_is_not_attempted_before_a_pass_runs() {
+    fn stalled_capture_is_recorded_and_its_replacement_accepts_the_next_attempt() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+
         assert_eq!(
-            window_identification(0, TerminalWindowSearchOutcome::NotFound),
-            WindowIdentification::NotAttempted,
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            Ok(()),
         );
-    }
-
-    #[test]
-    fn a_found_window_is_identified_with_its_window_id() {
         assert_eq!(
-            window_identification(
-                1,
-                TerminalWindowSearchOutcome::Found {
-                    window_id: WINDOW_ID,
-                },
+            monitor.status(),
+            BackdropStatus::Failed(CaptureFailure::AttemptStalled),
+        );
+        let stalled_diagnostics: Vec<_> = monitor
+            .take_completed_capture_attempt_diagnostics()
+            .collect();
+        assert_eq!(stalled_diagnostics.len(), 1);
+        assert_eq!(
+            stalled_diagnostics[0].window_selection(),
+            CaptureAttemptWindowSelection::SelectionNotReached,
+        );
+        assert_eq!(
+            stalled_diagnostics[0].outcome(),
+            Err(CaptureFailure::AttemptStalled),
+        );
+
+        assert_eq!(
+            capture_test_driver.complete_capture_attempt(
+                &mut monitor,
+                CaptureAttemptTestCase::ShareableContentQueryFails,
             ),
-            WindowIdentification::Identified {
-                window_id: WINDOW_ID,
-            },
+            Ok(()),
+        );
+        assert_eq!(
+            monitor.status(),
+            BackdropStatus::Failed(CaptureFailure::ShareableContentQueryFailed),
+        );
+        let replacement_diagnostics: Vec<_> = monitor
+            .take_completed_capture_attempt_diagnostics()
+            .collect();
+        assert_eq!(replacement_diagnostics.len(), 1);
+        assert_eq!(replacement_diagnostics[0].sequence().number(), 2);
+    }
+
+    #[test]
+    fn disconnected_capture_worker_completes_the_outstanding_attempt_as_failed() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+
+        assert_eq!(
+            capture_test_driver.disconnect_capture_worker_during_attempt(&mut monitor),
+            Ok(()),
+        );
+        assert_eq!(
+            monitor.status(),
+            BackdropStatus::Failed(CaptureFailure::WorkerDisconnected),
+        );
+        assert_ne!(monitor.status(), BackdropStatus::WaitingForFirstResult);
+
+        let disconnected_diagnostics: Vec<_> = monitor
+            .take_completed_capture_attempt_diagnostics()
+            .collect();
+        assert_eq!(disconnected_diagnostics.len(), 1);
+        assert_eq!(disconnected_diagnostics[0].sequence().number(), 1);
+        assert_eq!(
+            disconnected_diagnostics[0].window_selection(),
+            CaptureAttemptWindowSelection::SelectionNotReached,
+        );
+        assert_eq!(
+            disconnected_diagnostics[0].outcome(),
+            Err(CaptureFailure::WorkerDisconnected),
         );
     }
 
     #[test]
-    fn the_first_spent_allowance_stays_pending() {
+    fn capture_worker_replacements_stop_at_the_process_bound() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let stalled_attempts = MAX_CAPTURE_WORKER_REPLACEMENTS + 1;
+
+        for _ in 0..stalled_attempts {
+            assert_eq!(
+                capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+                Ok(()),
+            );
+        }
+
         assert_eq!(
-            window_identification(1, TerminalWindowSearchOutcome::NotFound),
-            WindowIdentification::Pending,
+            monitor.status(),
+            BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached),
+        );
+        assert_eq!(
+            monitor.take_completed_capture_attempt_diagnostics().count(),
+            stalled_attempts,
+        );
+        assert_eq!(
+            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
+            Err(CaptureTestDriverError::RequestUnavailable),
         );
     }
 
     #[test]
-    fn the_last_remaining_allowance_stays_pending() {
+    fn completed_attempt_diagnostics_retain_newest_attempts_within_bound() {
+        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
+        let retention = MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
+        let completed_attempts = retention + 1;
+        for _ in 0..completed_attempts {
+            assert_eq!(
+                capture_test_driver.complete_capture_attempt(
+                    &mut monitor,
+                    CaptureAttemptTestCase::ShareableContentQueryFails,
+                ),
+                Ok(()),
+            );
+        }
+
+        let retained_sequences: Vec<_> = monitor
+            .take_completed_capture_attempt_diagnostics()
+            .map(CompletedCaptureAttemptDiagnostic::sequence)
+            .collect();
+
+        assert_eq!(retained_sequences.len(), retention);
         assert_eq!(
-            window_identification(IDENTIFY_PASSES - 1, TerminalWindowSearchOutcome::NotFound,),
-            WindowIdentification::Pending,
+            usize::try_from(retained_sequences[0].number()),
+            Ok(completed_attempts - retention + 1),
         );
+        assert_eq!(
+            usize::try_from(retained_sequences[retention - 1].number()),
+            Ok(completed_attempts),
+        );
+        for sequence_pair in retained_sequences.windows(2) {
+            assert_eq!(
+                sequence_pair[1],
+                CaptureAttemptSequence::from(sequence_pair[0].number().wrapping_add(1)),
+            );
+        }
     }
 
     #[test]
-    fn exhausting_every_allowance_uses_fallback() {
-        assert_eq!(
-            window_identification(IDENTIFY_PASSES, TerminalWindowSearchOutcome::NotFound,),
-            WindowIdentification::Fallback,
-        );
-    }
-
-    #[test]
-    fn not_attempted_state_projects_report_and_capture_target() {
-        let state = WindowIdentificationState::NotAttempted;
-
-        assert_eq!(state.report(), WindowIdentification::NotAttempted);
-        assert_eq!(
-            state.capture_window_target(),
-            CaptureWindowTarget::TerminalWindowHeuristic,
-        );
-    }
-
-    #[test]
-    fn pending_before_marker_state_projects_report_and_capture_target() {
-        let state = WindowIdentificationState::PendingBeforeMarker {
-            attempts_consumed: 1,
-            attempted_at:      Instant::now(),
-        };
-
-        assert_eq!(state.report(), WindowIdentification::Pending);
-        assert_eq!(
-            state.capture_window_target(),
-            CaptureWindowTarget::TerminalWindowHeuristic,
-        );
-    }
-
-    #[test]
-    fn pending_with_marker_state_projects_report_and_capture_target() {
-        let state = WindowIdentificationState::PendingWithMarker {
-            attempts_consumed: 1,
-            attempted_at:      Instant::now(),
-            previous_titles:   Vec::new(),
-        };
-
-        assert_eq!(state.report(), WindowIdentification::Pending);
-        assert_eq!(
-            state.capture_window_target(),
-            CaptureWindowTarget::TerminalWindowHeuristic,
-        );
-    }
-
-    #[test]
-    fn identified_state_projects_report_and_capture_target() {
-        let state = WindowIdentificationState::Identified {
-            window_id: WINDOW_ID,
-        };
+    fn monitor_without_a_completed_attempt_waits_for_its_first_selection_result() {
+        let monitor = BackdropMonitor::new();
 
         assert_eq!(
-            state.report(),
-            WindowIdentification::Identified {
-                window_id: WINDOW_ID,
-            },
-        );
-        assert_eq!(
-            state.capture_window_target(),
-            CaptureWindowTarget::PreferWindow {
-                window_id: WINDOW_ID,
-            },
-        );
-    }
-
-    #[test]
-    fn fallback_state_projects_report_and_capture_target() {
-        let state = WindowIdentificationState::Fallback;
-
-        assert_eq!(state.report(), WindowIdentification::Fallback);
-        assert_eq!(
-            state.capture_window_target(),
-            CaptureWindowTarget::TerminalWindowHeuristic,
+            monitor.latest_capture_attempt_window_selection(),
+            LatestCaptureAttemptWindowSelection::WaitingForFirstResult,
         );
     }
 }

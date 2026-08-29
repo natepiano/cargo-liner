@@ -65,7 +65,13 @@ const fn cargo_tile_framework_global_shortcut_visibility(
 ) -> FrameworkGlobalShortcutVisibility {
     match action {
         GlobalAction::Dismiss => FrameworkGlobalShortcutVisibility::Hidden,
-        _ => FrameworkGlobalShortcutVisibility::Shown,
+        GlobalAction::Quit
+        | GlobalAction::Restart
+        | GlobalAction::NextPane
+        | GlobalAction::PrevPane
+        | GlobalAction::OpenKeymap
+        | GlobalAction::OpenSettings
+        | GlobalAction::OpenGlobalShortcuts => FrameworkGlobalShortcutVisibility::Shown,
     }
 }
 

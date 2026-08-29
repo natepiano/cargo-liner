@@ -126,7 +126,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// Return the earliest instant when an active toast can next change what
     /// it renders.
     ///
-    /// This scans the stored toasts without building [`super::ToastView`]s.
+    /// This scans the stored toasts without building `ToastView`s.
     /// Each toast combines its line-height, countdown, tracked-item, and
     /// lifetime deadlines.
     #[must_use]

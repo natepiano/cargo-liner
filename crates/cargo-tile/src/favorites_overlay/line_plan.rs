@@ -1,6 +1,5 @@
-//! Cached favorites lines, table layout, navigation, and rendering.
+//! Cached favorites lines, navigation, and rendering.
 
-use std::ops::Range;
 use std::path::Path;
 use std::time::Instant;
 
@@ -9,8 +8,6 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use tui_pane::ColumnSpec;
-use tui_pane::ColumnWidths;
 use tui_pane::PaneFocusState;
 use tui_pane::blend_color;
 use tui_pane::error_color;
@@ -21,27 +18,25 @@ use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::bindings::FavoritesSurfaceBindings;
-use super::bindings::ParameterColumnDescriptor;
-use super::bindings::column_descriptors;
-use super::bindings::mode_label;
+use super::constants::FAVORITE_REMOVAL_FADE;
+use super::constants::FOOTER_HEIGHT;
+use super::constants::POPUP_MAX_WIDTH;
+use super::constants::POPUP_SIDE_MARGIN;
 use super::content::FavoriteModeSection;
 use super::content::FavoriteRowLifecycle;
 use super::content::FavoriteRowLookup;
-use super::content::FavoriteRowView;
 use super::content::FavoritesOverlayContent;
 use super::content::UnrecognizedFavoriteView;
+use super::parameter_column;
+use super::table_layout;
+use super::table_layout::FavoriteSectionTableLayout;
 use crate::app::AppOverlay;
 use crate::app::OpenFavoritesCurrentParameters;
 use crate::attract;
-use crate::constants::COLUMN_GAP;
-use crate::constants::FAVORITE_REMOVAL_FADE;
-use crate::constants::FAVORITE_ROW_PREFIX_WIDTH;
-use crate::constants::FOOTER_HEIGHT;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
-use crate::constants::POPUP_MAX_WIDTH;
-use crate::constants::POPUP_SIDE_MARGIN;
 use crate::favorites::FavoriteId;
+use crate::favorites::FavoriteRemovalTarget;
 use crate::favorites::UnrecognizedFavoriteRemovalLocator;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,6 +60,28 @@ pub(super) enum CachedOverlayLine {
 pub(super) enum FavoriteRowIdentity {
     Recognized(FavoriteId),
     Unrecognized(UnrecognizedFavoriteRemovalLocator),
+}
+
+impl From<FavoriteRowIdentity> for FavoriteRemovalTarget {
+    fn from(identity: FavoriteRowIdentity) -> Self {
+        match identity {
+            FavoriteRowIdentity::Recognized(favorite_id) => Self::Recognized(favorite_id),
+            FavoriteRowIdentity::Unrecognized(removal_locator) => {
+                Self::Unrecognized(removal_locator)
+            },
+        }
+    }
+}
+
+impl From<FavoriteRemovalTarget> for FavoriteRowIdentity {
+    fn from(removal_target: FavoriteRemovalTarget) -> Self {
+        match removal_target {
+            FavoriteRemovalTarget::Recognized(favorite_id) => Self::Recognized(favorite_id),
+            FavoriteRemovalTarget::Unrecognized(removal_locator) => {
+                Self::Unrecognized(removal_locator)
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -320,13 +337,13 @@ fn append_section(
             .push(non_row_line(String::new(), Style::default()));
     }
     plan.lines.push(non_row_line(
-        format!("Attract: {}", mode_label(section.mode)),
+        format!("Attract: {}", parameter_column::mode_label(section.mode)),
         Style::default()
             .fg(title_color())
             .add_modifier(Modifier::BOLD),
     ));
 
-    let descriptors = column_descriptors(section.mode);
+    let descriptors = parameter_column::column_descriptors(section.mode);
     let key_labels = bindings.column_labels(section.mode);
     let visible = table_layout.visible_parameter_columns(horizontal_page, width);
     let headings = descriptors
@@ -334,7 +351,7 @@ fn append_section(
         .map(|descriptor| descriptor.heading)
         .collect::<Vec<_>>();
     plan.lines.push(non_row_line(
-        format_table_line(
+        table_layout::format_table_line(
             "Saved",
             &headings,
             table_layout.saved_width,
@@ -346,7 +363,7 @@ fn append_section(
             .add_modifier(Modifier::BOLD),
     ));
     plan.lines.push(non_row_line(
-        format_table_line(
+        table_layout::format_table_line(
             "",
             key_labels,
             table_layout.saved_width,
@@ -371,7 +388,7 @@ fn append_section(
             } else {
                 FavoriteRowCurrentParameters::Different
             },
-            tail:               format_table_tail(
+            tail:               table_layout::format_table_tail(
                 &row.saved,
                 &cells,
                 table_layout.saved_width,
@@ -411,156 +428,6 @@ fn append_unrecognized(plan: &mut CachedLinePlan, rows: &[UnrecognizedFavoriteVi
 
 fn non_row_line(text: String, style: Style) -> CachedOverlayLine {
     CachedOverlayLine::NonRow(Line::from(text).style(style))
-}
-
-#[derive(Clone, Debug)]
-struct FavoriteSectionTableLayout {
-    saved_width:      u16,
-    parameter_widths: ColumnWidths,
-}
-
-impl FavoriteSectionTableLayout {
-    fn measure(section: &FavoriteModeSection, bindings: &FavoritesSurfaceBindings) -> Self {
-        let descriptors = column_descriptors(section.mode);
-        let key_labels = bindings.column_labels(section.mode);
-        Self {
-            saved_width:      measured_saved_width(&section.rows),
-            parameter_widths: measured_parameter_widths(descriptors, key_labels, &section.rows),
-        }
-    }
-
-    fn visible_parameter_columns(&self, horizontal_page: usize, width: u16) -> Range<usize> {
-        visible_parameter_columns(
-            horizontal_page,
-            width,
-            self.saved_width,
-            &self.parameter_widths,
-        )
-    }
-
-    fn last_horizontal_column_page(&self, width: u16) -> usize {
-        let column_count = self.parameter_widths.to_constraints().len();
-        (0..column_count)
-            .find(|page| self.visible_parameter_columns(*page, width).end == column_count)
-            .unwrap_or_else(|| column_count.saturating_sub(1))
-    }
-}
-
-#[cfg(test)]
-pub(super) struct FavoriteSectionTableLayoutForTest {
-    pub(super) saved_width:      u16,
-    pub(super) parameter_widths: ColumnWidths,
-}
-
-#[cfg(test)]
-pub(super) fn favorite_section_table_layout_for_test(
-    section: &FavoriteModeSection,
-    bindings: &FavoritesSurfaceBindings,
-) -> FavoriteSectionTableLayoutForTest {
-    let table_layout = FavoriteSectionTableLayout::measure(section, bindings);
-    FavoriteSectionTableLayoutForTest {
-        saved_width:      table_layout.saved_width,
-        parameter_widths: table_layout.parameter_widths,
-    }
-}
-
-fn measured_saved_width(rows: &[FavoriteRowView]) -> u16 {
-    rows.iter().fold(5_u16, |width, row| {
-        width.max(u16::try_from(UnicodeWidthStr::width(row.saved.as_str())).unwrap_or(u16::MAX))
-    })
-}
-
-fn measured_parameter_widths(
-    descriptors: &[ParameterColumnDescriptor],
-    key_labels: &[String],
-    rows: &[FavoriteRowView],
-) -> ColumnWidths {
-    let specs = descriptors
-        .iter()
-        .map(|descriptor| {
-            ColumnSpec::fit(
-                u16::try_from(UnicodeWidthStr::width(descriptor.heading)).unwrap_or(u16::MAX),
-            )
-        })
-        .collect();
-    let mut widths = ColumnWidths::new(specs);
-    for (column, label) in key_labels.iter().enumerate() {
-        widths.observe_cell_usize(column, UnicodeWidthStr::width(label.as_str()));
-    }
-    for row in rows {
-        for (column, descriptor) in descriptors.iter().enumerate() {
-            let value = descriptor.render_value(row.settings);
-            widths.observe_cell_usize(column, UnicodeWidthStr::width(value.as_str()));
-        }
-    }
-    widths
-}
-
-fn visible_parameter_columns(
-    horizontal_page: usize,
-    width: u16,
-    saved_width: u16,
-    parameter_widths: &ColumnWidths,
-) -> Range<usize> {
-    let column_count = parameter_widths.to_constraints().len();
-    if column_count == 0 {
-        return 0..0;
-    }
-    let start = horizontal_page.min(column_count - 1);
-    let pinned = FAVORITE_ROW_PREFIX_WIDTH.saturating_add(usize::from(saved_width));
-    let available = usize::from(width).saturating_sub(pinned);
-    let mut used: usize = 0;
-    let mut end = start;
-    for column in start..column_count {
-        let cost = usize::from(parameter_widths.get(column)).saturating_add(COLUMN_GAP);
-        if end > start && used.saturating_add(cost) > available {
-            break;
-        }
-        used = used.saturating_add(cost);
-        end = column + 1;
-    }
-    start..end
-}
-
-fn format_table_line<T: AsRef<str>>(
-    saved: &str,
-    cells: &[T],
-    saved_width: u16,
-    parameter_widths: &ColumnWidths,
-    visible: Range<usize>,
-) -> String {
-    format!(
-        "{}{}",
-        " ".repeat(FAVORITE_ROW_PREFIX_WIDTH),
-        format_table_tail(saved, cells, saved_width, parameter_widths, visible)
-    )
-}
-
-fn format_table_tail<T: AsRef<str>>(
-    saved: &str,
-    cells: &[T],
-    saved_width: u16,
-    parameter_widths: &ColumnWidths,
-    visible: Range<usize>,
-) -> String {
-    let mut line = String::new();
-    push_display_padded(&mut line, saved, usize::from(saved_width));
-    for column in visible {
-        line.push_str(&" ".repeat(COLUMN_GAP));
-        if let Some(cell) = cells.get(column) {
-            push_display_padded(
-                &mut line,
-                cell.as_ref(),
-                usize::from(parameter_widths.get(column)),
-            );
-        }
-    }
-    line
-}
-
-fn push_display_padded(line: &mut String, value: &str, width: usize) {
-    line.push_str(value);
-    line.push_str(&" ".repeat(width.saturating_sub(UnicodeWidthStr::width(value))));
 }
 
 pub(super) fn popup_width(area: Rect) -> u16 {
@@ -633,15 +500,13 @@ mod tests {
     use tui_pane::Framework;
     use tui_pane::Keymap;
 
-    use super::super::bindings::BAND_COLUMNS_FOR_TEST as BAND_COLUMNS;
-    use super::super::content::FavoriteRowsView;
     use super::*;
     use crate::app::App;
     use crate::app::AppPaneId;
     use crate::app::OpenFavoritesCurrentParameters;
-    use crate::attract::AttractMode;
     use crate::favorites;
     use crate::favorites::FavoriteRowRecognition;
+    use crate::favorites_overlay::content::FavoriteRowsView;
     use crate::keymap;
 
     const MOVING_BAND_ROW: &str = r#"
@@ -696,21 +561,6 @@ fraying = "leading"
             .expect("test keymap should resolve")
     }
 
-    fn display_column(line: &str, value: &str) -> usize {
-        let byte_index = line
-            .find(value)
-            .expect("rendered table value should be present");
-        UnicodeWidthStr::width(&line[..byte_index])
-    }
-
-    fn moving_band_table_layout(keymap: &Keymap<App>) -> FavoriteSectionTableLayout {
-        let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
-            .expect("moving-band fixture should parse");
-        let view = FavoriteRowsView::from(&rows);
-        let bindings = FavoritesSurfaceBindings::resolve(keymap);
-        FavoriteSectionTableLayout::measure(&view.sections[0], &bindings)
-    }
-
     fn current_parameters(text: &str) -> OpenFavoritesCurrentParameters {
         favorites::parse_rows_for_overlay_test(text)
             .expect("current-parameters fixture should parse")
@@ -719,83 +569,6 @@ fraying = "leading"
             .expect("current-parameters fixture should have a recognized row")
             .settings
             .into()
-    }
-
-    #[test]
-    fn exactly_fitting_parameter_column_is_visible() {
-        let keymap = keymap_from("");
-        let table_layout = moving_band_table_layout(&keymap);
-        let width = u16::try_from(
-            FAVORITE_ROW_PREFIX_WIDTH
-                + usize::from(table_layout.saved_width)
-                + COLUMN_GAP
-                + usize::from(table_layout.parameter_widths.get(0)),
-        )
-        .expect("exact table width should fit u16");
-
-        assert_eq!(table_layout.visible_parameter_columns(0, width), 0..1);
-        let header = format_table_line(
-            "Saved",
-            &BAND_COLUMNS.map(|descriptor| descriptor.heading),
-            table_layout.saved_width,
-            &table_layout.parameter_widths,
-            0..1,
-        );
-        assert_eq!(UnicodeWidthStr::width(header.as_str()), usize::from(width));
-    }
-
-    #[test]
-    fn too_narrow_table_still_renders_one_clipped_parameter_column() {
-        let keymap = keymap_from("");
-        let table_layout = moving_band_table_layout(&keymap);
-        let exact_width = usize::from(table_layout.saved_width)
-            + FAVORITE_ROW_PREFIX_WIDTH
-            + COLUMN_GAP
-            + usize::from(table_layout.parameter_widths.get(0));
-        let width = u16::try_from(exact_width - 1).expect("narrow table width should fit u16");
-        let visible = table_layout.visible_parameter_columns(0, width);
-
-        assert_eq!(visible, 0..1);
-        let headings = BAND_COLUMNS.map(|descriptor| descriptor.heading);
-        let labels = FavoritesSurfaceBindings::resolve(&keymap)
-            .column_labels(AttractMode::MovingBand)
-            .to_vec();
-        let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
-            .expect("moving-band fixture should parse");
-        let view = FavoriteRowsView::from(&rows);
-        let row = &view.sections[0].rows[0];
-        let cells = BAND_COLUMNS.map(|descriptor| descriptor.render_value(row.settings));
-        let header = format_table_line(
-            "Saved",
-            &headings,
-            table_layout.saved_width,
-            &table_layout.parameter_widths,
-            visible.clone(),
-        );
-        let key_line = format_table_line(
-            "",
-            &labels,
-            table_layout.saved_width,
-            &table_layout.parameter_widths,
-            visible.clone(),
-        );
-        let cell_line = format_table_line(
-            &row.saved,
-            &cells,
-            table_layout.saved_width,
-            &table_layout.parameter_widths,
-            visible,
-        );
-
-        assert!(UnicodeWidthStr::width(header.as_str()) > usize::from(width));
-        assert_eq!(
-            display_column(&header, "Direction"),
-            display_column(&key_line, "←↑↓→")
-        );
-        assert_eq!(
-            display_column(&header, "Direction"),
-            display_column(&cell_line, "left")
-        );
     }
 
     #[test]

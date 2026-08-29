@@ -27,7 +27,7 @@ pub(crate) const ATTRACT_FADE_STEP: u8 = 3;
 pub(crate) const ATTRACT_RETURN_QUIET: Duration = Duration::from_secs(3);
 /// How long the attract screen may want a desktop capture and have none
 /// before it says so. A capture takes a few frames to arrive and is
-/// retaken on [`CAPTURE_REFRESH`]'s cadence, so a gap shorter than this
+/// retaken on the backdrop's capture-refresh interval's cadence, so a gap shorter than this
 /// is the ordinary working of the thing; a gap longer than it is an
 /// animation drawing nothing, which looks from outside exactly like one
 /// that never came on.
@@ -183,27 +183,6 @@ pub(crate) const KEYMAP_FILENAME: &str = "keymap.toml";
 /// [`tui_pane::ThemeRegistry::from_dir_with_builtins`].
 pub(crate) const THEMES_DIRNAME: &str = "themes";
 
-// favorites overlay
-/// Cells between two parameter columns in a favorite's row.
-pub(crate) const COLUMN_GAP: usize = 2;
-/// Rows the favorites table keeps even when the popup is squeezed.
-pub(crate) const CONTENT_MIN_HEIGHT: u16 = 1;
-/// TOML table name the favorites overlay's bindings are read from.
-pub(crate) const FAVORITES_SCOPE: &str = "favorites";
-/// Section heading the keymap overlay gives the favorites scope.
-pub(crate) const FAVORITES_SECTION: &str = "Favorites";
-/// How long a deleted favorite's row stays on screen, fading, before
-/// the table closes over it.
-pub(crate) const FAVORITE_REMOVAL_FADE: Duration = Duration::from_millis(400);
-/// Cells reserved for a favorite row's selection, currency, and separator.
-pub(crate) const FAVORITE_ROW_PREFIX_WIDTH: usize = 3;
-/// Rows the favorites popup reserves along its bottom for the footer.
-pub(crate) const FOOTER_HEIGHT: u16 = 1;
-/// Widest the favorites popup grows, however wide the terminal is.
-pub(crate) const POPUP_MAX_WIDTH: u16 = 110;
-/// Columns left clear either side of the favorites popup.
-pub(crate) const POPUP_SIDE_MARGIN: u16 = 4;
-
 // settings overlay
 /// Values `appearance.mode` cycles through, in stepper order.
 pub(crate) const APPEARANCE_MODES: [&str; 3] = ["auto", "light", "dark"];
@@ -235,6 +214,15 @@ pub(crate) const SETTINGS_POPUP_WIDTH: u16 = 64;
 /// restart. Distinct from [`APP_NAME`], which is padded for the status
 /// line.
 pub(crate) const BINARY_NAME: &str = "cargo-tile";
+/// The coordination sibling in this workspace, reached as `cargo
+/// berth`. Unlike [`SIBLING_SUBCOMMAND_NAME`] it does not run all day:
+/// it is fired from a hook, does its work in well under one
+/// [`PROCESS_POLL_MILLIS`] and exits. Withholding its cell until it has
+/// work under it would not help, because it never has any -- what it
+/// needs is to be left out of the scan altogether, which is what
+/// [`DEFAULT_EXCLUDED`] names it for. The capture shim skips it for the
+/// matching reason: a run that short has no build to mirror.
+pub(crate) const COORDINATION_SUBCOMMAND_NAME: &str = "berth";
 /// The word cargo knows this tool by, which is the binary's name with
 /// cargo's own prefix taken off. Cargo runs `cargo tile ...` by finding
 /// `cargo-tile` on the path and handing it this word ahead of every
@@ -247,15 +235,6 @@ pub(crate) const SUBCOMMAND_NAME: &str = "tile";
 /// [`DEFAULT_HIDDEN_WHEN_IDLE`] names, being the command that runs all
 /// day without compiling anything.
 pub(crate) const SIBLING_SUBCOMMAND_NAME: &str = "port";
-/// The coordination sibling in this workspace, reached as `cargo
-/// berth`. Unlike [`SIBLING_SUBCOMMAND_NAME`] it does not run all day:
-/// it is fired from a hook, does its work in well under one
-/// [`PROCESS_POLL_MILLIS`] and exits. Withholding its cell until it has
-/// work under it would not help, because it never has any -- what it
-/// needs is to be left out of the scan altogether, which is what
-/// [`DEFAULT_EXCLUDED`] names it for. The capture shim skips it for the
-/// matching reason: a run that short has no build to mirror.
-pub(crate) const COORDINATION_SUBCOMMAND_NAME: &str = "berth";
 
 // iterm2
 /// Environment variable naming the terminal emulator in use.

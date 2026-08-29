@@ -61,6 +61,7 @@ use crate::app::App;
 use crate::app::ProcessTree;
 use crate::app::Updates;
 use crate::attract;
+use crate::attract::BackdropNotice;
 use crate::attract::Grid;
 use crate::attract::Work;
 use crate::constants::ANCESTRY_ELISION;
@@ -217,11 +218,11 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// an idle grid has to say.
 fn draw_backdrop_notice(frame: &mut Frame, app: &App, body: Rect) {
     let notice = match app.attract.backdrop_notice(Instant::now()) {
-        attract::BackdropNotice::None => return,
-        attract::BackdropNotice::ScreenRecordingAccessInstruction => ATTRACT_NO_BACKDROP_NOTICE,
-        attract::BackdropNotice::CaptureStalled => ATTRACT_BACKDROP_STALLED_NOTICE,
-        attract::BackdropNotice::CaptureRecoveryStopped => ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE,
-        attract::BackdropNotice::CaptureUnavailable => ATTRACT_BACKDROP_UNAVAILABLE_NOTICE,
+        BackdropNotice::None => return,
+        BackdropNotice::ScreenRecordingAccessInstruction => ATTRACT_NO_BACKDROP_NOTICE,
+        BackdropNotice::CaptureStalled => ATTRACT_BACKDROP_STALLED_NOTICE,
+        BackdropNotice::CaptureRecoveryStopped => ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE,
+        BackdropNotice::CaptureUnavailable => ATTRACT_BACKDROP_UNAVAILABLE_NOTICE,
     };
     let Some(row) = body.bottom().checked_sub(1) else {
         return;

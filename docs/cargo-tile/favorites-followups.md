@@ -67,7 +67,7 @@
 
 `Desktop::capture` returns `Result<Desktop, CaptureFailure>` on both the macOS and non-macOS paths. `CaptureFailure` is a public field-less enum naming the stage that failed — unsupported platform, shareable-content query, Screen Recording access not granted, terminal window not found, display not found, screenshot, pixel extraction, image reduction — with two helpers, `classify_result` and `classify_option`, standing where every `.ok()?` used to.
 
-`SCShareableContent::get()` runs first and `shareable_content_failure` classifies a query that has already failed, reading `screen_capture_access_is_granted` (a direct `CGPreflightScreenCaptureAccess` call). Exclusion window ids are deduplicated by `deduplicate_windows_by_id` before the `SCContentFilter` is built. `reduce_capture` folds the three reduction steps behind one seam.
+`SCShareableContent::get()` runs first and `shareable_content_failure` classifies a query that has already failed, reading `screen_capture_access_is_granted` (a direct `CGPreflightScreenCaptureAccess` call). Exclusion window ids are deduplicated by `deduplicate_windows_by_id` before the `SCContentFilter` is built. `reduce_capture` folds the three reduction steps behind one call.
 
 `BackdropMonitor` holds the newest successful desktop (`LastSuccessfulDesktop`) separately from the newest attempt's outcome (`BackdropStatus`: waiting for a first result, ready, or failed carrying a `CaptureFailure`), and its worker channel carries `Result<Desktop, CaptureFailure>` so failures reach the monitor instead of being dropped. `status()` exposes the latest attempt; a later success clears a stored failure, and a failure never removes a desktop already on screen. `CaptureFailure` and `BackdropStatus` are re-exported from `backdrop/mod.rs` and `lib.rs` under `#[cfg(feature = "backdrop")]`.
 
@@ -82,7 +82,7 @@
 **Gotchas:**
 - `CGPreflightScreenCaptureAccess` never prompts and cannot distinguish a refusal from a process that has never been asked.
 - In `objc2-core-graphics` 0.3.2 that call is declared safe; wrapping it in `unsafe` trips the workspace lints rather than satisfying them.
-- Only two of the eight classification sites can be reached without a window server. The rest are proven by the shape of the code, not by a test.
+- Only two of the eight classification sites can be reached without a window server. The rest are proven by how the code is structured, not by a test.
 - Per Invariant 1 the new `desktop.rs` tests compile but do not execute until the final workspace gate: `failed_shareable_content_query_with_access_reports_query_failure`, `failed_shareable_content_query_without_access_reports_permission_denial`, `image_reduction_rejects_a_cell_too_large_for_the_image`, `image_reduction_returns_the_implied_grid_and_colors`, and the retained `exclusion_windows_are_deduplicated_by_id_in_original_order`.
 
 **Ruled out:**
@@ -448,7 +448,7 @@ Every completed desktop-capture attempt produces one `CompletedCaptureAttemptDia
 
 `Attract::refresh_backdrop` drains after every monitor refresh and writes one `backdrop_attempt:` line per record; the transition-only `backdrop:` line still carries the latest selection. `terminal.rs` drains once more after the event loop, ahead of both the restart and the return paths. That final drain uses a non-blocking receive, so it is best-effort: an attempt still in flight at quit is never written.
 
-The selection machinery was hoisted out of the macOS-only module so tests drive the production path rather than a copy of it. `TerminalWindowCandidate`, `terminal_window_candidates`, `select_capture_window`, `windows_owned_by` and `frontmost_owner` are target-independent; `names()` lives on a macOS-only `TerminalProgramWindowCandidate` trait. `BackdropMonitor::with_capture_test_driver()` and `capture_attempt_for_test` are `#[doc(hidden)]` public surface that drives the real monitor and the real selector, and six cargo-tile tests use it.
+The selection machinery was moved out of the macOS-only module so tests drive the production path rather than a copy of it. `TerminalWindowCandidate`, `terminal_window_candidates`, `select_capture_window`, `windows_owned_by` and `frontmost_owner` are target-independent; `names()` lives on a macOS-only `TerminalProgramWindowCandidate` trait. `BackdropMonitor::with_capture_test_driver()` and `capture_attempt_for_test` are `#[doc(hidden)]` public surface that drives the real monitor and the real selector, and six cargo-tile tests use it.
 
 **Files:**
 - `crates/tui_pane/src/backdrop/desktop.rs` — the capture path, the target-independent selection helpers, the diagnostic type, and the hidden test entry point
@@ -461,7 +461,7 @@ The selection machinery was hoisted out of the macOS-only module so tests drive 
 **Binds later work:** the drain is `take_completed_capture_attempt_diagnostics` returning `CompletedCaptureAttemptDiagnostic`, not the worker-side `CaptureAttemptResult`. The shutdown drain is best-effort, so nothing downstream may promise that the last requested attempt was recorded. `select_capture_window` and `capture_attempt_for_test` each take a `pinned: Option<u32>`, which the window-selection type work must convert along with the others. The `#[doc(hidden)]` test surface ships in production builds deliberately and needs migrating with the capture parameter.
 
 **Gotchas:**
-- `crates/tui_pane/src/backdrop/**` compiles only under the `backdrop` feature, and anything reachable solely from its `#[cfg(target_os = "macos")]` module is dead code on Linux, where CI denies it. No `verify.sh` line catches this and macOS reports nothing. The check is `cargo clippy --target x86_64-unknown-linux-gnu -p tui_pane --all-features -- -D warnings`. Hoisting a type out of the macOS module for testing is exactly what triggers it.
+- `crates/tui_pane/src/backdrop/**` compiles only under the `backdrop` feature, and anything reachable solely from its `#[cfg(target_os = "macos")]` module is dead code on Linux, where CI denies it. No `verify.sh` line catches this and macOS reports nothing. The check is `cargo clippy --target x86_64-unknown-linux-gnu -p tui_pane --all-features -- -D warnings`. Moving a type out of the macOS module for testing is exactly what triggers it.
 - `into_diagnostic_and_desktop_result` exists in two target-gated forms: the macOS one cannot be `const` because it moves an `Arc<Desktop>`, and clippy requires `const` on the other.
 - `verify.sh test tui_pane` compiles none of `backdrop/**`, so behavior that must actually execute needs a cargo-tile-side test. That is where this phase's tests live.
 
@@ -479,10 +479,10 @@ The monitor bounds every capture attempt. `CAPTURE_ATTEMPT_DEADLINE` (5s) and
 `recover_stalled_capture_attempt(Instant::now())` right after draining results: an outstanding
 attempt older than the deadline is completed by a synthesized `CaptureAttemptResult` carrying its
 own `CaptureAttemptSequence`, `CaptureAttemptWindowSelection::SelectionNotReached` and
-`CaptureFailure::CaptureAttemptStalled`, and its worker is replaced. Replacement marks the old
+`CaptureFailure::AttemptStalled`, and its worker is replaced. Replacement marks the old
 worker `PermanentlyUnavailable`, relaunches through `CaptureWorkerLauncher`, and resets the
 cadence to `DueImmediately`; at the bound the monitor stops replacing and reports
-`BackdropStatus::Failed(CaptureFailure::CaptureWorkerReplacementLimitReached)`. The wedged thread
+`BackdropStatus::Failed(CaptureFailure::WorkerReplacementLimitReached)`. The wedged thread
 is never joined — it leaks, deliberately.
 
 `monitor.rs` carries the domain types this introduced: `ActiveCaptureWorker` and
@@ -495,8 +495,8 @@ flight. `BackdropMonitor::new` no longer discards the spawn result, and
 `receive_capture_attempt_results` tells `TryRecvError::Empty` from `Disconnected`, completing the
 outstanding attempt as failed on the latter.
 
-`CaptureFailure` gained four variants: `CaptureAttemptStalled`, `CaptureWorkerLaunchFailed`,
-`CaptureWorkerDisconnected`, `CaptureWorkerReplacementLimitReached`. In `cargo-tile`,
+`CaptureFailure` gained four variants: `AttemptStalled`, `WorkerLaunchFailed`,
+`WorkerDisconnected`, `WorkerReplacementLimitReached`. In `cargo-tile`,
 `classify_backdrop_notice` takes `AttractScreenVisibility::{Hidden, Showing}` as an explicit
 input so a stall is reported ahead of the cached-backdrop suppression while still never painting
 over the working grid; the attract screen says `attract: desktop capture stalled -- retrying with
@@ -530,7 +530,7 @@ notice arm placed ahead of the grace-period arms must test attract-screen visibi
 paints across the user's panes.
 
 **Ruled out:** naming the launch failure after thread spawning — the test-driver arm installs
-endpoints and spawns nothing, so `CaptureWorkerLaunchFailed` covers both. Converting the
+endpoints and spawns nothing, so `WorkerLaunchFailed` covers both. Converting the
 CoreGraphics-boundary options (`platform::number`, `query::window_origin`,
 `TerminalWindowCandidate::owner`, `window_titles`) as part of the window-selection type work: they
 are a foreign-API read path, not the selection domain.
@@ -552,7 +552,7 @@ are a foreign-API read path, not the selection domain.
 - `crates/tui_pane/src/backdrop/mod.rs` — two private re-export lines
 
 **Gotchas:**
-- Hoisting a type out of the macOS `platform` module is not enough for Linux — the *variant construction* has to be target-independent too, or `cargo clippy --target x86_64-unknown-linux-gnu -p tui_pane --all-features -- -D warnings` denies the variant as never constructed. macOS reports nothing and no `verify.sh` line catches it.
+- Moving a type out of the macOS `platform` module is not enough for Linux — the *variant construction* has to be target-independent too, or `cargo clippy --target x86_64-unknown-linux-gnu -p tui_pane --all-features -- -D warnings` denies the variant as never constructed. macOS reports nothing and no `verify.sh` line catches it.
 - `verify.sh test tui_pane` leaves the `backdrop` feature disabled, so every unit test in `monitor.rs` is invisible to it; the feature-enabled backdrop suite is the gate that runs them.
 
 **Ruled out:**

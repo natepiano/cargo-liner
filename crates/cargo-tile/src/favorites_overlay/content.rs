@@ -1,5 +1,6 @@
 //! Display-ready favorites content and row lifecycle state.
 
+use std::mem;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -87,6 +88,24 @@ impl FavoritesOverlayContent {
             | Self::Unparseable { .. }
             | Self::Unreadable { .. } => 0,
         }
+    }
+
+    /// Collapse to the emptier content state a completed removal may have reached.
+    pub(super) fn normalize_after_removal(&mut self) {
+        let current = mem::replace(self, Self::NoneSaved);
+        *self = match current {
+            Self::Rows(rows) if rows.saved_count() == 0 => {
+                if rows.unrecognized.is_empty() {
+                    Self::NoneSaved
+                } else {
+                    Self::OnlyUnrecognized(UnrecognizedFavoritesView {
+                        rows: rows.unrecognized,
+                    })
+                }
+            },
+            Self::OnlyUnrecognized(rows) if rows.rows.is_empty() => Self::NoneSaved,
+            other => other,
+        };
     }
 }
 

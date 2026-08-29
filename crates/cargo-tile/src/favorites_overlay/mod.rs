@@ -1,49 +1,40 @@
 //! App-owned modal for browsing attract-screen favorites.
 
 mod bindings;
+mod constants;
 mod content;
 mod line_plan;
+mod notice;
+mod pane;
+mod parameter_column;
+mod table_layout;
 
-use std::mem;
 use std::time::Duration;
 use std::time::Instant;
 
-use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::Wrap;
-use tui_pane::Bindings;
 use tui_pane::Keymap;
-use tui_pane::Mode;
-use tui_pane::Pane;
 use tui_pane::PopupFrame;
-use tui_pane::Shortcuts;
-use tui_pane::TabStop;
 use tui_pane::ToastStyle;
 use tui_pane::Viewport;
 use tui_pane::ViewportOverflow;
-use tui_pane::error_color;
 use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::title_color;
-use tui_pane::warning_color;
 
 use self::bindings::FavoritesSurfaceBindings;
 use self::bindings::SelectedFavoriteActions;
-use self::bindings::direction_name;
-use self::bindings::drift_name;
-use self::bindings::fraying_name;
-use self::bindings::pixel_fill_name;
-use self::bindings::pixel_resolve_name;
-use self::bindings::text_fill_name;
+use self::constants::CONTENT_MIN_HEIGHT;
+use self::constants::FAVORITE_REMOVAL_FADE;
+use self::constants::FOOTER_HEIGHT;
 use self::content::FavoriteRowLifecycle;
 use self::content::FavoriteRowLookup;
 use self::content::FavoriteRowLookupMut;
 pub(crate) use self::content::FavoritesOverlayContent;
-pub(crate) use self::content::UnrecognizedFavoritesView;
 use self::line_plan::CachedLinePlan;
 use self::line_plan::CachedOverlayLine;
 use self::line_plan::CachedSurfaceWidth;
@@ -55,17 +46,18 @@ use self::line_plan::popup_width;
 use self::line_plan::rendered_line;
 use self::line_plan::row_lifecycle;
 use self::line_plan::wrapped_notice_height;
+use self::notice::FavoritesOverlayNotice;
+use self::notice::deletion_refusal_message;
+use self::notice::favorite_adjustment_message;
+use self::notice::favorites_heading;
+use self::notice::render_notice;
+pub(crate) use self::pane::FavoritesOverlayAction;
+pub(crate) use self::pane::FavoritesOverlayPane;
 use crate::app::App;
 use crate::app::AppOverlay;
-use crate::app::AppPaneId;
 use crate::app::OpenFavoritesCurrentParameters;
 use crate::app::OpenFavoritesOverlayState;
 use crate::attract::SettingsApplicationOutcome;
-use crate::constants::CONTENT_MIN_HEIGHT;
-use crate::constants::FAVORITE_REMOVAL_FADE;
-use crate::constants::FAVORITES_SCOPE;
-use crate::constants::FAVORITES_SECTION;
-use crate::constants::FOOTER_HEIGHT;
 use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
 use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::constants::POPUP_CHROME_HEIGHT;
@@ -74,113 +66,15 @@ use crate::favorites;
 use crate::favorites::AttractSettings;
 use crate::favorites::FavoriteRemovalTarget;
 use crate::favorites::FavoritesFileState;
-use crate::favorites::FavoritesMutation;
 use crate::favorites::FavoritesMutationError;
 use crate::favorites::FavoritesRetryInstruction;
 use crate::terminal::VisualDeadline;
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub(crate) enum FavoritesOverlayAction {
-        SelectPrevious => ("select_previous", "Select the previous favorite");
-        SelectNext => ("select_next", "Select the next favorite");
-        PageColumnsLeft => ("page_columns_left", "Show the previous parameter column");
-        PageColumnsRight => ("page_columns_right", "Show the next parameter column");
-        Load => ("load", "Load the selected favorite");
-        Delete => ("delete", "Delete the selected favorite");
-        Close => ("close", "Close favorites");
-    }
-}
-
-/// Keymap host for the app-owned favorites modal.
-pub(crate) struct FavoritesOverlayPane;
-
-impl Pane<App> for FavoritesOverlayPane {
-    const APP_PANE_ID: AppPaneId = AppPaneId::Favorites;
-
-    fn mode() -> fn(&App) -> Mode<App> { |_app| Mode::Static }
-
-    fn tab_stop() -> TabStop<App> { TabStop::never() }
-}
-
-impl Shortcuts<App> for FavoritesOverlayPane {
-    type Actions = FavoritesOverlayAction;
-
-    const SCOPE_NAME: &'static str = FAVORITES_SCOPE;
-    const SECTION_NAME: &'static str = FAVORITES_SECTION;
-
-    fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
-            [KeyCode::Up, 'k'] => FavoritesOverlayAction::SelectPrevious,
-            [KeyCode::Down, 'j'] => FavoritesOverlayAction::SelectNext,
-            [KeyCode::Left, 'h'] => FavoritesOverlayAction::PageColumnsLeft,
-            [KeyCode::Right, 'l'] => FavoritesOverlayAction::PageColumnsRight,
-            KeyCode::Enter => FavoritesOverlayAction::Load,
-            'x' => FavoritesOverlayAction::Delete,
-            KeyCode::Esc => FavoritesOverlayAction::Close,
-        }
-    }
-
-    fn dispatcher() -> fn(Self::Actions, &mut App) { dispatch }
-}
-
-fn dispatch(action: FavoritesOverlayAction, app: &mut App) {
-    let mut overlay = mem::take(&mut app.favorites_overlay);
-    match overlay.handle_action(action) {
-        FavoritesOverlayActionOutcome::Quiet => {},
-        FavoritesOverlayActionOutcome::Load(settings) => {
-            let application = app.attract.apply_settings(settings);
-            close_overlay(&mut overlay, app);
-            app.attract.request_show();
-            report_application_outcome(&mut overlay, app, application);
-        },
-        FavoritesOverlayActionOutcome::Close => close_overlay(&mut overlay, app),
-    }
-    app.favorites_overlay = overlay;
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-enum FavoritesOverlayNotice {
-    #[default]
-    NoNotice,
-    DeletionRefused {
-        message: String,
-    },
-    DeletionConfirmation {
-        message: String,
-    },
-    FavoriteAdjusted {
-        message: String,
-    },
-}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 enum FavoriteRemovalCommitState {
     #[default]
     NoCommitPending,
     Pending(FavoriteRowIdentity),
-}
-
-impl From<FavoriteRowIdentity> for FavoriteRemovalTarget {
-    fn from(identity: FavoriteRowIdentity) -> Self {
-        match identity {
-            FavoriteRowIdentity::Recognized(favorite_id) => Self::Recognized(favorite_id),
-            FavoriteRowIdentity::Unrecognized(removal_locator) => {
-                Self::Unrecognized(removal_locator)
-            },
-        }
-    }
-}
-
-impl From<FavoriteRemovalTarget> for FavoriteRowIdentity {
-    fn from(removal_target: FavoriteRemovalTarget) -> Self {
-        match removal_target {
-            FavoriteRemovalTarget::Recognized(favorite_id) => Self::Recognized(favorite_id),
-            FavoriteRemovalTarget::Unrecognized(removal_locator) => {
-                Self::Unrecognized(removal_locator)
-            },
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -737,7 +631,7 @@ impl FavoritesOverlay {
                 FavoriteRowIdentity::Recognized(_) | FavoriteRowIdentity::Unrecognized(_),
             ) => {},
         }
-        normalize_content_after_removal(&mut open_state.content);
+        open_state.content.normalize_after_removal();
     }
 
     fn select_favorite(&mut self, identity: &FavoriteRowIdentity) {
@@ -935,10 +829,6 @@ impl FavoritesOverlay {
     }
 }
 
-fn favorites_heading(saved_count: usize) -> String {
-    format!(" Favorites -- {saved_count} saved -- ● matches the current parameters ")
-}
-
 fn removal_visual_deadline(
     lifecycles: impl Iterator<Item = FavoriteRowLifecycle>,
     now: Instant,
@@ -955,33 +845,6 @@ fn removal_visual_deadline(
             deadline.earlier(VisualDeadline::At(removal_done.min(next_frame)))
         },
     )
-}
-
-fn deletion_refusal_message(
-    retry: &FavoritesRetryInstruction,
-    error: &FavoritesMutationError,
-) -> String {
-    if matches!(error, FavoritesMutationError::UnrecognizedFavoriteChanged) {
-        return "The favorites file changed after this row was loaded; nothing was deleted. Close \
-                and reopen favorites, then try again."
-            .to_string();
-    }
-    favorites::favorite_refusal_message(FavoritesMutation::Delete, retry, error)
-}
-
-fn render_notice(frame: &mut Frame<'_>, notice: &FavoritesOverlayNotice, area: Rect) {
-    let (message, color) = match notice {
-        FavoritesOverlayNotice::NoNotice => return,
-        FavoritesOverlayNotice::DeletionRefused { message } => (message, error_color()),
-        FavoritesOverlayNotice::DeletionConfirmation { message }
-        | FavoritesOverlayNotice::FavoriteAdjusted { message } => (message, warning_color()),
-    };
-    frame.render_widget(
-        Paragraph::new(message.as_str())
-            .style(Style::default().fg(color))
-            .wrap(Wrap { trim: false }),
-        area,
-    );
 }
 
 fn close_overlay(overlay: &mut FavoritesOverlay, app: &mut App) {
@@ -1046,134 +909,6 @@ fn push_scheduled_toast(app: &mut App, title: &str, body: &str, style: ToastStyl
     );
 }
 
-fn favorite_adjustment_message(requested: AttractSettings, effective: AttractSettings) -> String {
-    let mut fields = Vec::new();
-    match (requested, effective) {
-        (AttractSettings::MovingBand(requested), AttractSettings::MovingBand(effective)) => {
-            record_adjustment(
-                &mut fields,
-                "direction",
-                direction_name(requested.direction),
-                direction_name(effective.direction),
-            );
-            record_numeric_adjustment(&mut fields, "width", &requested.width, &effective.width);
-            record_numeric_adjustment(&mut fields, "speed", &requested.speed, &effective.speed);
-            record_numeric_adjustment(
-                &mut fields,
-                "tail_speed",
-                &requested.tail_speed,
-                &effective.tail_speed,
-            );
-            record_adjustment(
-                &mut fields,
-                "fraying",
-                fraying_name(requested.fraying),
-                fraying_name(effective.fraying),
-            );
-        },
-        (AttractSettings::MovingText(requested), AttractSettings::MovingText(effective)) => {
-            record_adjustment(
-                &mut fields,
-                "direction",
-                direction_name(requested.direction),
-                direction_name(effective.direction),
-            );
-            record_numeric_adjustment(&mut fields, "speed", &requested.speed, &effective.speed);
-            record_numeric_adjustment(&mut fields, "spread", &requested.spread, &effective.spread);
-            record_adjustment(
-                &mut fields,
-                "drift",
-                drift_name(requested.drift),
-                drift_name(effective.drift),
-            );
-            record_adjustment(
-                &mut fields,
-                "fill",
-                text_fill_name(requested.fill),
-                text_fill_name(effective.fill),
-            );
-        },
-        (AttractSettings::Pixelate(requested), AttractSettings::Pixelate(effective)) => {
-            record_adjustment(
-                &mut fields,
-                "direction",
-                direction_name(requested.direction),
-                direction_name(effective.direction),
-            );
-            record_numeric_adjustment(&mut fields, "speed", &requested.speed, &effective.speed);
-            record_numeric_adjustment(
-                &mut fields,
-                "wave_percent",
-                &requested.wave_percent,
-                &effective.wave_percent,
-            );
-            record_numeric_adjustment(
-                &mut fields,
-                "block_columns",
-                &requested.block_columns,
-                &effective.block_columns,
-            );
-            record_adjustment(
-                &mut fields,
-                "resolve",
-                pixel_resolve_name(requested.resolve),
-                pixel_resolve_name(effective.resolve),
-            );
-            record_adjustment(
-                &mut fields,
-                "fill",
-                pixel_fill_name(requested.fill),
-                pixel_fill_name(effective.fill),
-            );
-        },
-        (
-            AttractSettings::MovingBand(_)
-            | AttractSettings::MovingText(_)
-            | AttractSettings::Pixelate(_),
-            AttractSettings::MovingBand(_)
-            | AttractSettings::MovingText(_)
-            | AttractSettings::Pixelate(_),
-        ) => fields.push("mode changed unexpectedly".to_string()),
-    }
-    format!("Adjusted favorite for this terminal: {}", fields.join(", "))
-}
-
-fn record_adjustment(fields: &mut Vec<String>, name: &str, requested: &str, effective: &str) {
-    if requested != effective {
-        fields.push(format!("{name} {requested} -> {effective}"));
-    }
-}
-
-fn record_numeric_adjustment<T: std::fmt::Display + Eq>(
-    fields: &mut Vec<String>,
-    name: &str,
-    requested: &T,
-    effective: &T,
-) {
-    if requested != effective {
-        fields.push(format!("{name} {requested} -> {effective}"));
-    }
-}
-
-fn normalize_content_after_removal(content: &mut FavoritesOverlayContent) {
-    let current = mem::replace(content, FavoritesOverlayContent::NoneSaved);
-    *content = match current {
-        FavoritesOverlayContent::Rows(rows) if rows.saved_count() == 0 => {
-            if rows.unrecognized.is_empty() {
-                FavoritesOverlayContent::NoneSaved
-            } else {
-                FavoritesOverlayContent::OnlyUnrecognized(UnrecognizedFavoritesView {
-                    rows: rows.unrecognized,
-                })
-            }
-        },
-        FavoritesOverlayContent::OnlyUnrecognized(rows) if rows.rows.is_empty() => {
-            FavoritesOverlayContent::NoneSaved
-        },
-        other => other,
-    };
-}
-
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -1193,24 +928,25 @@ mod tests {
     use tui_pane::BandFraying;
     use tui_pane::FocusedPane;
     use tui_pane::Framework;
-    use tui_pane::KeyBind;
     use tui_pane::PixelFill;
     use tui_pane::PixelResolve;
     use tui_pane::ToastVisualDeadline;
     use unicode_width::UnicodeWidthStr;
 
-    use super::bindings::BAND_COLUMNS_FOR_TEST as BAND_COLUMNS;
+    use super::constants::COLUMN_GAP;
+    use super::constants::FAVORITE_ROW_PREFIX_WIDTH;
     use super::content::FavoriteRowsView;
-    use super::line_plan::FavoriteSectionTableLayoutForTest;
-    use super::line_plan::favorite_section_table_layout_for_test;
     use super::line_plan::removal_alpha_for_test as removal_alpha;
+    use super::pane::dispatch;
+    use super::parameter_column::BAND_COLUMNS_FOR_TEST as BAND_COLUMNS;
+    use super::table_layout::FavoriteSectionTableLayoutForTest;
+    use super::table_layout::favorite_section_table_layout_for_test;
     use super::*;
+    use crate::app::AppPaneId;
     use crate::app::Updates;
     use crate::attract::AttractGridPresentation;
     use crate::attract::AttractVisibilityInstruction;
     use crate::attract::Work;
-    use crate::constants::COLUMN_GAP;
-    use crate::constants::FAVORITE_ROW_PREFIX_WIDTH;
     use crate::favorites;
     use crate::favorites::FavoriteId;
     use crate::keymap;
@@ -1424,47 +1160,6 @@ fraying = "leading"
                 })
             })
             .collect()
-    }
-
-    #[test]
-    fn modal_scope_includes_load_and_delete() {
-        let scope = FavoritesOverlayPane::defaults().into_scope_map();
-        let cases = [
-            (
-                KeyBind::from(KeyCode::Up),
-                FavoritesOverlayAction::SelectPrevious,
-            ),
-            (KeyBind::from('k'), FavoritesOverlayAction::SelectPrevious),
-            (
-                KeyBind::from(KeyCode::Down),
-                FavoritesOverlayAction::SelectNext,
-            ),
-            (KeyBind::from('j'), FavoritesOverlayAction::SelectNext),
-            (
-                KeyBind::from(KeyCode::Left),
-                FavoritesOverlayAction::PageColumnsLeft,
-            ),
-            (KeyBind::from('h'), FavoritesOverlayAction::PageColumnsLeft),
-            (
-                KeyBind::from(KeyCode::Right),
-                FavoritesOverlayAction::PageColumnsRight,
-            ),
-            (KeyBind::from('l'), FavoritesOverlayAction::PageColumnsRight),
-            (KeyBind::from(KeyCode::Enter), FavoritesOverlayAction::Load),
-            (KeyBind::from('x'), FavoritesOverlayAction::Delete),
-            (KeyBind::from(KeyCode::Esc), FavoritesOverlayAction::Close),
-        ];
-        for (binding, action) in cases {
-            assert_eq!(scope.action_for(&binding), Some(action));
-        }
-    }
-
-    #[test]
-    fn heading_explains_the_current_parameters_mark() {
-        assert_eq!(
-            favorites_heading(2),
-            " Favorites -- 2 saved -- ● matches the current parameters "
-        );
     }
 
     #[test]

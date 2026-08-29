@@ -8,7 +8,7 @@ use super::ToastView;
 use super::TrackedItem;
 use super::TrackedItemView;
 use super::manager::ToastVisualDeadline;
-use super::render::format::fade_level;
+use super::render;
 use super::toast_body_width;
 use super::view::ToastActionState;
 use crate::ACTIVITY_SPINNER;
@@ -537,10 +537,10 @@ fn next_linger_fade_deadline(
     if elapsed >= linger {
         return ToastVisualDeadline::NoVisualChangeScheduled;
     }
-    let current_level = fade_level(linger_fade_progress(elapsed, linger));
+    let current_level = render::fade_level(linger_fade_progress(elapsed, linger));
     let mut earliest_nanos = elapsed.as_nanos().saturating_add(1);
     let mut latest_nanos = linger.as_nanos();
-    if fade_level(linger_fade_progress(
+    if render::fade_level(linger_fade_progress(
         duration_from_nanos(latest_nanos),
         linger,
     )) == current_level
@@ -549,7 +549,7 @@ fn next_linger_fade_deadline(
     }
     while earliest_nanos < latest_nanos {
         let midpoint_nanos = earliest_nanos + (latest_nanos - earliest_nanos) / 2;
-        let midpoint_level = fade_level(linger_fade_progress(
+        let midpoint_level = render::fade_level(linger_fade_progress(
             duration_from_nanos(midpoint_nanos),
             linger,
         ));

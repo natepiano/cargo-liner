@@ -443,8 +443,6 @@ mod tests {
     use std::path::PathBuf;
 
     use super::KeymapEditContext;
-    use super::edit_selected_global_shortcut;
-    use super::selectable_rows;
     use crate::AppContext;
     use crate::Bindings;
     use crate::FocusedPane;
@@ -549,9 +547,9 @@ mod tests {
             framework:    Framework::new(FocusedPane::App(TestPaneId::Main)),
             inline_error: None,
         };
-        edit_selected_global_shortcut(&mut app, &keymap);
+        super::edit_selected_global_shortcut(&mut app, &keymap);
 
-        let editor_rows = selectable_rows(&app, &keymap);
+        let editor_rows = super::selectable_rows(&app, &keymap);
         let selected = editor_rows
             .get(app.framework().keymap_pane.viewport().pos())
             .expect("the full editor must select the compact row");

@@ -37,6 +37,7 @@
 //! going away, and content appearing under a strip still crossing it is
 //! the crowded look the screen exists to avoid.
 
+mod backdrop_notice;
 mod held_key;
 mod moving_band;
 mod moving_text;
@@ -56,10 +57,6 @@ use tui_pane::BackdropMonitor;
 use tui_pane::BackdropStatus;
 use tui_pane::BandDirection;
 use tui_pane::BandSettings;
-use tui_pane::CaptureAttemptSequence;
-use tui_pane::CaptureAttemptWindowSelection;
-use tui_pane::CaptureFailure;
-use tui_pane::CompletedCaptureAttemptDiagnostic;
 use tui_pane::DriftingText;
 use tui_pane::LastSuccessfulCaptureWindowId;
 use tui_pane::LatestCaptureAttemptWindowSelection;
@@ -70,6 +67,15 @@ use tui_pane::TravelingBand;
 use tui_pane::WindowIdentification;
 use tui_pane::pane_background;
 
+use self::backdrop_notice::AttractScreenVisibility;
+use self::backdrop_notice::BackdropDiagnostic;
+use self::backdrop_notice::BackdropGracePeriod;
+pub(crate) use self::backdrop_notice::BackdropNotice;
+use self::backdrop_notice::BackdropWait;
+use self::backdrop_notice::CurrentBackdrop;
+use self::backdrop_notice::backdrop_diagnostic_record;
+use self::backdrop_notice::classify_backdrop_notice;
+use self::backdrop_notice::note_backdrop_attempts;
 use self::held_key::HeldKey;
 use self::moving_band::MovingBandAction;
 pub(crate) use self::moving_band::MovingBandPane;
@@ -119,179 +125,6 @@ pub(crate) enum Work {
     Idle,
     /// Something is running, so the attract screen gives it back.
     Running,
-}
-
-/// What the status line should say about desktop capture.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BackdropNotice {
-    /// Do not draw a notice.
-    None,
-    /// Tell the reader how to grant Screen Recording access.
-    ScreenRecordingAccessInstruction,
-    /// Report that a capture attempt exceeded its deadline and was abandoned.
-    CaptureStalled,
-    /// Report that repeated worker abandonment exhausted the replacement bound.
-    CaptureRecoveryStopped,
-    /// Report that capture is unavailable and diagnostics recorded why.
-    CaptureUnavailable,
-}
-
-/// Whether the attract screen can present a backdrop notice.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AttractScreenVisibility {
-    /// The ordinary working grid is visible instead of the attract screen.
-    Hidden,
-    /// The attract screen is visible.
-    Showing,
-}
-
-/// Whether the missing-backdrop grace period has elapsed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BackdropGracePeriod {
-    /// The grace period still gives the capture worker time to reply.
-    Remaining,
-    /// The grace period has elapsed without a current backdrop.
-    Elapsed,
-}
-
-/// Whether the attract screen is waiting for a desktop backdrop.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BackdropWait {
-    /// A desktop is on screen, so no missing backdrop is being timed.
-    NotWaiting,
-    /// No desktop has been available since this instant.
-    WaitingSince(Instant),
-}
-
-/// Whether the monitor has a desktop that renderers can use now.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CurrentBackdrop {
-    /// No usable desktop is available.
-    Missing,
-    /// A usable desktop is available, including one retained after a later failure.
-    Available,
-}
-
-/// Values written together when attract backdrop diagnostics change.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct BackdropDiagnostic {
-    /// The most recent window-selection report.
-    window_identification:   WindowIdentification,
-    /// The capture worker's latest completed result.
-    backdrop_status:         BackdropStatus,
-    /// The window id used by the last successful capture, if one has succeeded.
-    captured_window_id:      LastSuccessfulCaptureWindowId,
-    /// What terminal window the latest completed capture attempt selected.
-    latest_window_selection: LatestCaptureAttemptWindowSelection,
-}
-
-/// Values written for each completed backdrop capture attempt.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct BackdropAttemptDiagnostic {
-    /// The monitor-local sequence assigned to the attempt.
-    sequence:         CaptureAttemptSequence,
-    /// What terminal window the completed attempt selected.
-    window_selection: CaptureAttemptWindowSelection,
-    /// Whether the capture succeeded or which stage failed.
-    backdrop_status:  BackdropStatus,
-}
-
-impl From<CompletedCaptureAttemptDiagnostic> for BackdropAttemptDiagnostic {
-    fn from(completed_capture_attempt_diagnostic: CompletedCaptureAttemptDiagnostic) -> Self {
-        let backdrop_status = match completed_capture_attempt_diagnostic.outcome() {
-            Ok(()) => BackdropStatus::Ready,
-            Err(failure) => BackdropStatus::Failed(failure),
-        };
-        Self {
-            sequence: completed_capture_attempt_diagnostic.sequence(),
-            window_selection: completed_capture_attempt_diagnostic.window_selection(),
-            backdrop_status,
-        }
-    }
-}
-
-/// Format the transition-only backdrop summary record.
-fn backdrop_diagnostic_record(backdrop_diagnostic: BackdropDiagnostic) -> String {
-    format!(
-        "backdrop: report={:?} capture_status={:?} captured_window_id={:?} \
-         latest_attempt_window_selection={:?}",
-        backdrop_diagnostic.window_identification,
-        backdrop_diagnostic.backdrop_status,
-        backdrop_diagnostic.captured_window_id,
-        backdrop_diagnostic.latest_window_selection,
-    )
-}
-
-/// Write one record for every completed capture attempt in order.
-fn note_backdrop_attempts<T>(
-    capture_attempts: impl IntoIterator<Item = T>,
-    mut note: impl FnMut(&str),
-) where
-    T: Into<BackdropAttemptDiagnostic>,
-{
-    for capture_attempt in capture_attempts {
-        let backdrop_attempt_diagnostic = capture_attempt.into();
-        note(&format!(
-            "backdrop_attempt: sequence={:?} window_selection={:?} capture_status={:?}",
-            backdrop_attempt_diagnostic.sequence,
-            backdrop_attempt_diagnostic.window_selection,
-            backdrop_attempt_diagnostic.backdrop_status,
-        ));
-    }
-}
-
-/// Select the status-line outcome from attract visibility and capture state.
-///
-/// A hidden attract screen suppresses every notice. While the screen is showing, stalled recovery
-/// failures take priority over a retained current backdrop; other statuses remain subject to the
-/// current-backdrop and grace-period suppression.
-const fn classify_backdrop_notice(
-    attract_screen_visibility: AttractScreenVisibility,
-    grace_period: BackdropGracePeriod,
-    current_backdrop: CurrentBackdrop,
-    backdrop_status: BackdropStatus,
-) -> BackdropNotice {
-    match (
-        attract_screen_visibility,
-        grace_period,
-        current_backdrop,
-        backdrop_status,
-    ) {
-        (
-            AttractScreenVisibility::Showing,
-            _,
-            _,
-            BackdropStatus::Failed(CaptureFailure::CaptureAttemptStalled),
-        ) => BackdropNotice::CaptureStalled,
-        (
-            AttractScreenVisibility::Showing,
-            _,
-            _,
-            BackdropStatus::Failed(CaptureFailure::CaptureWorkerReplacementLimitReached),
-        ) => BackdropNotice::CaptureRecoveryStopped,
-        (AttractScreenVisibility::Hidden, _, _, _)
-        | (AttractScreenVisibility::Showing, _, CurrentBackdrop::Available, _)
-        | (
-            AttractScreenVisibility::Showing,
-            BackdropGracePeriod::Remaining,
-            CurrentBackdrop::Missing,
-            _,
-        ) => BackdropNotice::None,
-        (
-            AttractScreenVisibility::Showing,
-            BackdropGracePeriod::Elapsed,
-            CurrentBackdrop::Missing,
-            BackdropStatus::Failed(CaptureFailure::ScreenRecordingAccessNotGranted),
-        ) => BackdropNotice::ScreenRecordingAccessInstruction,
-        (
-            AttractScreenVisibility::Showing,
-            BackdropGracePeriod::Elapsed,
-            CurrentBackdrop::Missing,
-            BackdropStatus::WaitingForFirstResult
-            | BackdropStatus::Ready
-            | BackdropStatus::Failed(_),
-        ) => BackdropNotice::CaptureUnavailable,
-    }
 }
 
 /// What the reader has instructed the attract screen to do, which
@@ -581,64 +414,64 @@ impl AnimationSizing {
 /// The attract screen's state between frames.
 pub(crate) struct Attract {
     /// Keeps the captured desktop up to date on a worker thread.
-    monitor:                BackdropMonitor,
+    monitor:                   BackdropMonitor,
     /// Which animation is being drawn, and which keymap scope the
     /// reader's keys resolve against while it is on screen.
-    mode:                   AttractMode,
+    mode:                      AttractMode,
     /// Terminal area used to size the current animation before its
     /// parameters are read or drawn.
-    laid_out_area:          FrameArea,
+    laid_out_area:             FrameArea,
     /// Resize input received after the most recent frame layout.
-    pending_resize:         PendingTerminalResize,
+    pending_resize:            PendingTerminalResize,
     /// Last terminal area applied to each animation's internal buffers.
-    animation_sizing:       AnimationSizing,
+    animation_sizing:          AnimationSizing,
     /// Complete configuration displaced by the latest wholesale replacement.
-    replacement_undo:       ReplacementUndoState,
+    replacement_undo:          ReplacementUndoState,
     /// The strip of characters crossing the grid.
-    band:                   TravelingBand,
+    band:                      TravelingBand,
     /// The window of characters drifting line by line.
-    text:                   DriftingText,
+    text:                      DriftingText,
     /// The desktop drawn as itself, coarsening under a travelling wave.
-    pixels:                 ResolvingPixels,
+    pixels:                    ResolvingPixels,
     /// How far into a run of presses of one of the band's steering keys
     /// the reader is, which is what lets a held key move it further per
     /// press.
-    held_band:              HeldKey<MovingBandAction>,
+    held_band:                 HeldKey<MovingBandAction>,
     /// The same for the text's own keys. One run each, so turning
     /// between the animations does not hand the second whatever speed
     /// the first was climbing at.
-    held_text:              HeldKey<MovingTextAction>,
+    held_text:                 HeldKey<MovingTextAction>,
     /// And the same again for the pixelate screen's.
-    held_pixels:            HeldKey<PixelateAction>,
+    held_pixels:               HeldKey<PixelateAction>,
     /// How far the strip is carried toward the ground it is drawn on,
     /// on the alpha scale [`tui_pane::blend_color`] reads. Starts at
     /// [`u8::MAX`] so the app opens with nothing over its grid.
-    faded:                  u8,
+    faded:                     u8,
     /// When the strip was last moved on, so its speed is a speed rather
     /// than a step per frame.
-    advanced_at:            Instant,
+    advanced_at:               Instant,
     /// What the reader has told the screen to do, which the roster does
     /// not get to overrule either way.
-    visibility_instruction: AttractVisibilityInstruction,
+    visibility_instruction:    AttractVisibilityInstruction,
     /// Whether the grid is drawn under the attract screen or left out
     /// of the frame altogether.
-    grid_presentation:      AttractGridPresentation,
+    grid_presentation:         AttractGridPresentation,
     /// Whether the display was being held still when the strip was last
     /// drawn, which is what says the gap since then is not travel the
     /// strip owes.
-    held:                   bool,
+    held:                      bool,
     /// Where the screen stands with the roster, which is what keeps a
     /// hand-over from turning around part way through it.
-    standing:               Standing,
+    standing:                  Standing,
     /// Whether the screen is waiting for a backdrop, including when that wait began.
-    backdrop_wait:          BackdropWait,
+    backdrop_wait:             BackdropWait,
     /// The attract backdrop values most recently written to the probe, so
     /// unchanged capture and window-selection results do not repeat every frame.
-    noted_backdrop:         BackdropDiagnostic,
+    noted_backdrop_diagnostic: BackdropDiagnostic,
     /// The last reading written to the frame log, so the log carries a
     /// line where the screen changed its mind rather than one per
     /// frame. See [`Attract::note_standing`].
-    noted:                  Option<Reading>,
+    noted:                     Option<Reading>,
 }
 
 /// What the screen decided on a frame, in the terms that decide whether
@@ -664,32 +497,32 @@ impl Attract {
     /// An attract screen that is not yet showing.
     pub(crate) fn new() -> Self {
         Self {
-            monitor:                BackdropMonitor::new(),
-            mode:                   AttractMode::default(),
-            laid_out_area:          FrameArea::NeverLaidOut,
-            pending_resize:         PendingTerminalResize::NotReported,
-            animation_sizing:       AnimationSizing::default(),
-            replacement_undo:       ReplacementUndoState::Unavailable,
-            band:                   TravelingBand::new(),
-            text:                   DriftingText::new(),
-            pixels:                 ResolvingPixels::new(),
-            held_band:              HeldKey::new(),
-            held_text:              HeldKey::new(),
-            held_pixels:            HeldKey::new(),
-            faded:                  u8::MAX,
-            advanced_at:            Instant::now(),
-            visibility_instruction: AttractVisibilityInstruction::FollowRoster,
-            grid_presentation:      AttractGridPresentation::OverGrid,
-            held:                   false,
-            standing:               Standing::Showing,
-            backdrop_wait:          BackdropWait::NotWaiting,
-            noted_backdrop:         BackdropDiagnostic {
+            monitor:                   BackdropMonitor::new(),
+            mode:                      AttractMode::default(),
+            laid_out_area:             FrameArea::NeverLaidOut,
+            pending_resize:            PendingTerminalResize::NotReported,
+            animation_sizing:          AnimationSizing::default(),
+            replacement_undo:          ReplacementUndoState::Unavailable,
+            band:                      TravelingBand::new(),
+            text:                      DriftingText::new(),
+            pixels:                    ResolvingPixels::new(),
+            held_band:                 HeldKey::new(),
+            held_text:                 HeldKey::new(),
+            held_pixels:               HeldKey::new(),
+            faded:                     u8::MAX,
+            advanced_at:               Instant::now(),
+            visibility_instruction:    AttractVisibilityInstruction::FollowRoster,
+            grid_presentation:         AttractGridPresentation::OverGrid,
+            held:                      false,
+            standing:                  Standing::Showing,
+            backdrop_wait:             BackdropWait::NotWaiting,
+            noted_backdrop_diagnostic: BackdropDiagnostic {
                 window_identification:   WindowIdentification::NotAttempted,
                 backdrop_status:         BackdropStatus::WaitingForFirstResult,
                 captured_window_id:      LastSuccessfulCaptureWindowId::WaitingForFirstSuccess,
                 latest_window_selection: LatestCaptureAttemptWindowSelection::WaitingForFirstResult,
             },
-            noted:                  None,
+            noted:                     None,
         }
     }
 
@@ -1077,8 +910,8 @@ impl Attract {
         };
         // Noted when any reported value changes, so paced identification
         // retries and an unchanged capture failure do not write one line per frame.
-        if self.noted_backdrop != backdrop_diagnostic {
-            self.noted_backdrop = backdrop_diagnostic;
+        if self.noted_backdrop_diagnostic != backdrop_diagnostic {
+            self.noted_backdrop_diagnostic = backdrop_diagnostic;
             probe::note(&backdrop_diagnostic_record(backdrop_diagnostic));
         }
     }
@@ -1359,10 +1192,10 @@ impl Attract {
                 BackdropGracePeriod::Remaining
             },
         };
-        let current_backdrop = match self.monitor.current() {
-            Some(_) => CurrentBackdrop::Available,
-            None => CurrentBackdrop::Missing,
-        };
+        let current_backdrop = self
+            .monitor
+            .current()
+            .map_or(CurrentBackdrop::Missing, |_| CurrentBackdrop::Available);
         classify_backdrop_notice(
             attract_screen_visibility,
             grace_period,
@@ -1412,15 +1245,12 @@ mod tests {
     use std::collections::HashSet;
 
     use ratatui::layout::Rect;
-    use tui_pane::BackdropMonitorCaptureTestDriver;
     use tui_pane::BandDirection;
     use tui_pane::BandFraying;
     use tui_pane::CaptureAttemptTestCase;
-    use tui_pane::CaptureWindowSelectionMethod;
     use tui_pane::FRAME_POLL_MILLIS;
     use tui_pane::PixelFill;
     use tui_pane::PixelResolve;
-    use tui_pane::TerminalWindowCandidateSource;
     use tui_pane::TextDrift;
     use tui_pane::TextFill;
 
@@ -1438,324 +1268,6 @@ mod tests {
     /// covers several seconds -- long enough to outlast the quiet a
     /// screen waits before coming back.
     const POLL: Duration = Duration::from_millis(FRAME_POLL_MILLIS);
-    /// Capture failure stages exercised by the notice classifier.
-    const CAPTURE_FAILURES: [CaptureFailure; 12] = [
-        CaptureFailure::UnsupportedPlatform,
-        CaptureFailure::CaptureAttemptStalled,
-        CaptureFailure::CaptureWorkerLaunchFailed,
-        CaptureFailure::CaptureWorkerDisconnected,
-        CaptureFailure::CaptureWorkerReplacementLimitReached,
-        CaptureFailure::ScreenRecordingAccessNotGranted,
-        CaptureFailure::ShareableContentQueryFailed,
-        CaptureFailure::TerminalWindowNotFound,
-        CaptureFailure::DisplayNotFound,
-        CaptureFailure::ScreenshotCaptureFailed,
-        CaptureFailure::PixelExtractionFailed,
-        CaptureFailure::ImageReductionFailed,
-    ];
-
-    /// Collect records from the production per-attempt writer.
-    fn capture_attempt_records<T>(capture_attempts: impl IntoIterator<Item = T>) -> Vec<String>
-    where
-        T: Into<BackdropAttemptDiagnostic>,
-    {
-        let mut records = Vec::new();
-        note_backdrop_attempts(capture_attempts, |record| records.push(record.to_owned()));
-        records
-    }
-
-    #[test]
-    fn backdrop_summary_reports_the_latest_attempt_window_selection() {
-        let latest_window_selection = LatestCaptureAttemptWindowSelection::Completed(
-            CaptureAttemptWindowSelection::Selected {
-                window_id: 42,
-                method:    CaptureWindowSelectionMethod::PinnedWindow,
-            },
-        );
-        let backdrop_diagnostic = BackdropDiagnostic {
-            window_identification: WindowIdentification::Identified { window_id: 42 },
-            backdrop_status: BackdropStatus::Ready,
-            captured_window_id: LastSuccessfulCaptureWindowId::Available { window_id: 42 },
-            latest_window_selection,
-        };
-
-        let record = backdrop_diagnostic_record(backdrop_diagnostic);
-
-        assert!(record.contains(&format!(
-            "latest_attempt_window_selection={latest_window_selection:?}"
-        )));
-    }
-
-    #[test]
-    fn failed_attempt_before_window_selection_reports_selection_not_reached() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
-        assert_eq!(
-            capture_test_driver.complete_capture_attempt(
-                &mut monitor,
-                CaptureAttemptTestCase::ShareableContentQueryFails,
-            ),
-            Ok(()),
-        );
-
-        let records = capture_attempt_records(monitor.take_completed_capture_attempt_diagnostics());
-
-        assert_eq!(
-            records,
-            ["backdrop_attempt: sequence=CaptureAttemptSequence(1) \
-              window_selection=SelectionNotReached \
-              capture_status=Failed(ShareableContentQueryFailed)"],
-        );
-    }
-
-    #[test]
-    fn stalled_capture_is_recorded_and_its_replacement_accepts_the_next_attempt() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
-
-        assert_eq!(
-            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
-            Ok(()),
-        );
-        assert_eq!(
-            monitor.status(),
-            BackdropStatus::Failed(CaptureFailure::CaptureAttemptStalled),
-        );
-        let stalled_diagnostics: Vec<_> = monitor
-            .take_completed_capture_attempt_diagnostics()
-            .collect();
-        assert_eq!(stalled_diagnostics.len(), 1);
-        assert_eq!(
-            stalled_diagnostics[0].window_selection(),
-            CaptureAttemptWindowSelection::SelectionNotReached,
-        );
-        assert_eq!(
-            stalled_diagnostics[0].outcome(),
-            Err(CaptureFailure::CaptureAttemptStalled),
-        );
-
-        assert_eq!(
-            capture_test_driver.complete_capture_attempt(
-                &mut monitor,
-                CaptureAttemptTestCase::ShareableContentQueryFails,
-            ),
-            Ok(()),
-        );
-        assert_eq!(
-            monitor.status(),
-            BackdropStatus::Failed(CaptureFailure::ShareableContentQueryFailed),
-        );
-        let replacement_diagnostics: Vec<_> = monitor
-            .take_completed_capture_attempt_diagnostics()
-            .collect();
-        assert_eq!(replacement_diagnostics.len(), 1);
-        assert_eq!(replacement_diagnostics[0].sequence().number(), 2);
-    }
-
-    #[test]
-    fn disconnected_capture_worker_completes_the_outstanding_attempt_as_failed() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
-
-        assert_eq!(
-            capture_test_driver.disconnect_capture_worker_during_attempt(&mut monitor),
-            Ok(()),
-        );
-        assert_eq!(
-            monitor.status(),
-            BackdropStatus::Failed(CaptureFailure::CaptureWorkerDisconnected),
-        );
-        assert_ne!(monitor.status(), BackdropStatus::WaitingForFirstResult);
-
-        let disconnected_diagnostics: Vec<_> = monitor
-            .take_completed_capture_attempt_diagnostics()
-            .collect();
-        assert_eq!(disconnected_diagnostics.len(), 1);
-        assert_eq!(disconnected_diagnostics[0].sequence().number(), 1);
-        assert_eq!(
-            disconnected_diagnostics[0].window_selection(),
-            CaptureAttemptWindowSelection::SelectionNotReached,
-        );
-        assert_eq!(
-            disconnected_diagnostics[0].outcome(),
-            Err(CaptureFailure::CaptureWorkerDisconnected),
-        );
-    }
-
-    #[test]
-    fn capture_worker_replacements_stop_at_the_process_bound() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
-        let stalled_attempts =
-            BackdropMonitorCaptureTestDriver::MAX_CAPTURE_WORKER_REPLACEMENTS + 1;
-
-        for _ in 0..stalled_attempts {
-            assert_eq!(
-                capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
-                Ok(()),
-            );
-        }
-
-        assert_eq!(
-            monitor.status(),
-            BackdropStatus::Failed(CaptureFailure::CaptureWorkerReplacementLimitReached),
-        );
-        assert_eq!(
-            monitor.take_completed_capture_attempt_diagnostics().count(),
-            stalled_attempts,
-        );
-        assert_eq!(
-            capture_test_driver.abandon_capture_attempt_after_deadline(&mut monitor),
-            Err(tui_pane::CaptureTestDriverError::CaptureRequestUnavailable),
-        );
-    }
-
-    #[test]
-    fn every_capture_window_selection_method_is_reported() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
-        let cases = [
-            (
-                CaptureAttemptTestCase::PinnedWindow { window_id: 41 },
-                CaptureAttemptWindowSelection::Selected {
-                    window_id: 41,
-                    method:    CaptureWindowSelectionMethod::PinnedWindow,
-                },
-            ),
-            (
-                CaptureAttemptTestCase::WindowOwnedByProcessAncestor { window_id: 42 },
-                CaptureAttemptWindowSelection::Selected {
-                    window_id: 42,
-                    method:    CaptureWindowSelectionMethod::ClosestSizeMatch {
-                        candidates: TerminalWindowCandidateSource::ProcessAncestry,
-                    },
-                },
-            ),
-            (
-                CaptureAttemptTestCase::WindowOwnedByTerminalProgram { window_id: 43 },
-                CaptureAttemptWindowSelection::Selected {
-                    window_id: 43,
-                    method:    CaptureWindowSelectionMethod::ClosestSizeMatch {
-                        candidates: TerminalWindowCandidateSource::TerminalProgramName,
-                    },
-                },
-            ),
-            (
-                CaptureAttemptTestCase::WindowOwnedByFrontmostApplication { window_id: 44 },
-                CaptureAttemptWindowSelection::Selected {
-                    window_id: 44,
-                    method:    CaptureWindowSelectionMethod::ClosestSizeMatch {
-                        candidates: TerminalWindowCandidateSource::FrontmostApplication,
-                    },
-                },
-            ),
-        ];
-        for (capture_attempt_test_case, _) in cases {
-            assert_eq!(
-                capture_test_driver
-                    .complete_capture_attempt(&mut monitor, capture_attempt_test_case),
-                Ok(()),
-            );
-        }
-        let completed_capture_attempt_diagnostics: Vec<_> = monitor
-            .take_completed_capture_attempt_diagnostics()
-            .collect();
-
-        let records =
-            capture_attempt_records(completed_capture_attempt_diagnostics.iter().copied());
-
-        assert_eq!(records.len(), cases.len());
-        for ((record, completed_capture_attempt_diagnostic), (_, window_selection)) in records
-            .iter()
-            .zip(&completed_capture_attempt_diagnostics)
-            .zip(cases)
-        {
-            assert_eq!(
-                completed_capture_attempt_diagnostic.window_selection(),
-                window_selection,
-            );
-            assert!(record.contains(&format!("window_selection={window_selection:?}")));
-        }
-    }
-
-    #[test]
-    fn identical_attempt_outcomes_write_distinct_sequence_records() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
-        for _ in 0..2 {
-            assert_eq!(
-                capture_test_driver.complete_capture_attempt(
-                    &mut monitor,
-                    CaptureAttemptTestCase::ShareableContentQueryFails,
-                ),
-                Ok(()),
-            );
-        }
-        let completed_capture_attempt_diagnostics: Vec<_> = monitor
-            .take_completed_capture_attempt_diagnostics()
-            .collect();
-
-        let records =
-            capture_attempt_records(completed_capture_attempt_diagnostics.iter().copied());
-
-        assert_eq!(
-            records,
-            [
-                "backdrop_attempt: sequence=CaptureAttemptSequence(1) \
-                 window_selection=SelectionNotReached \
-                 capture_status=Failed(ShareableContentQueryFailed)",
-                "backdrop_attempt: sequence=CaptureAttemptSequence(2) \
-                 window_selection=SelectionNotReached \
-                 capture_status=Failed(ShareableContentQueryFailed)",
-            ],
-        );
-        assert_ne!(
-            completed_capture_attempt_diagnostics[0].sequence(),
-            completed_capture_attempt_diagnostics[1].sequence(),
-        );
-    }
-
-    #[test]
-    fn completed_attempt_diagnostics_retain_newest_attempts_within_bound() {
-        let (mut monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
-        let retention = BackdropMonitorCaptureTestDriver::MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS;
-        let completed_attempts = retention + 1;
-        for _ in 0..completed_attempts {
-            assert_eq!(
-                capture_test_driver.complete_capture_attempt(
-                    &mut monitor,
-                    CaptureAttemptTestCase::ShareableContentQueryFails,
-                ),
-                Ok(()),
-            );
-        }
-
-        let retained_sequences: Vec<_> = monitor
-            .take_completed_capture_attempt_diagnostics()
-            .map(CompletedCaptureAttemptDiagnostic::sequence)
-            .collect();
-
-        assert_eq!(retained_sequences.len(), retention);
-        assert_eq!(
-            usize::try_from(retained_sequences[0].number()),
-            Ok(completed_attempts - retention + 1),
-        );
-        assert_eq!(
-            usize::try_from(retained_sequences[retention - 1].number()),
-            Ok(completed_attempts),
-        );
-        for sequence_pair in retained_sequences.windows(2) {
-            assert_eq!(
-                sequence_pair[1],
-                CaptureAttemptSequence::from(sequence_pair[0].number().wrapping_add(1)),
-            );
-        }
-    }
-
-    #[test]
-    fn monitor_without_a_completed_attempt_waits_for_its_first_selection_result() {
-        let monitor = BackdropMonitor::new();
-
-        assert_eq!(
-            monitor.latest_capture_attempt_window_selection(),
-            LatestCaptureAttemptWindowSelection::WaitingForFirstResult,
-        );
-    }
-
     #[test]
     fn completed_attempt_arriving_after_identify_is_recorded_during_refresh() {
         let (monitor, capture_test_driver) = BackdropMonitor::with_capture_test_driver();
@@ -2346,182 +1858,6 @@ mod tests {
             BackdropNotice::CaptureUnavailable,
             "a capture missing at the grace boundary is reported",
         );
-    }
-
-    #[test]
-    fn hidden_attract_screen_suppresses_every_backdrop_status() {
-        for grace_period in [BackdropGracePeriod::Remaining, BackdropGracePeriod::Elapsed] {
-            for current_backdrop in [CurrentBackdrop::Missing, CurrentBackdrop::Available] {
-                for backdrop_status in
-                    [BackdropStatus::WaitingForFirstResult, BackdropStatus::Ready]
-                {
-                    assert_eq!(
-                        classify_backdrop_notice(
-                            AttractScreenVisibility::Hidden,
-                            grace_period,
-                            current_backdrop,
-                            backdrop_status,
-                        ),
-                        BackdropNotice::None,
-                        "grace_period={grace_period:?} current_backdrop={current_backdrop:?} \
-                         backdrop_status={backdrop_status:?}",
-                    );
-                }
-                for failure in CAPTURE_FAILURES {
-                    assert_eq!(
-                        classify_backdrop_notice(
-                            AttractScreenVisibility::Hidden,
-                            grace_period,
-                            current_backdrop,
-                            BackdropStatus::Failed(failure),
-                        ),
-                        BackdropNotice::None,
-                        "grace_period={grace_period:?} current_backdrop={current_backdrop:?} \
-                         failure={failure:?}",
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn backdrop_notice_waits_for_the_grace_period_except_after_a_worker_stalls() {
-        for backdrop_status in [BackdropStatus::WaitingForFirstResult, BackdropStatus::Ready] {
-            assert_eq!(
-                classify_backdrop_notice(
-                    AttractScreenVisibility::Showing,
-                    BackdropGracePeriod::Remaining,
-                    CurrentBackdrop::Missing,
-                    backdrop_status,
-                ),
-                BackdropNotice::None,
-                "backdrop_status={backdrop_status:?}",
-            );
-        }
-        for failure in CAPTURE_FAILURES {
-            let expected = match failure {
-                CaptureFailure::CaptureAttemptStalled => BackdropNotice::CaptureStalled,
-                CaptureFailure::CaptureWorkerReplacementLimitReached => {
-                    BackdropNotice::CaptureRecoveryStopped
-                },
-                CaptureFailure::UnsupportedPlatform
-                | CaptureFailure::CaptureWorkerLaunchFailed
-                | CaptureFailure::CaptureWorkerDisconnected
-                | CaptureFailure::ScreenRecordingAccessNotGranted
-                | CaptureFailure::ShareableContentQueryFailed
-                | CaptureFailure::TerminalWindowNotFound
-                | CaptureFailure::DisplayNotFound
-                | CaptureFailure::ScreenshotCaptureFailed
-                | CaptureFailure::PixelExtractionFailed
-                | CaptureFailure::ImageReductionFailed => BackdropNotice::None,
-            };
-            assert_eq!(
-                classify_backdrop_notice(
-                    AttractScreenVisibility::Showing,
-                    BackdropGracePeriod::Remaining,
-                    CurrentBackdrop::Missing,
-                    BackdropStatus::Failed(failure),
-                ),
-                expected,
-                "failure={failure:?}",
-            );
-        }
-    }
-
-    #[test]
-    fn overdue_missing_backdrop_reports_waiting_and_ready_as_unavailable() {
-        for backdrop_status in [BackdropStatus::WaitingForFirstResult, BackdropStatus::Ready] {
-            assert_eq!(
-                classify_backdrop_notice(
-                    AttractScreenVisibility::Showing,
-                    BackdropGracePeriod::Elapsed,
-                    CurrentBackdrop::Missing,
-                    backdrop_status,
-                ),
-                BackdropNotice::CaptureUnavailable,
-                "backdrop_status={backdrop_status:?}",
-            );
-        }
-    }
-
-    #[test]
-    fn only_access_failure_selects_the_screen_recording_instruction() {
-        for failure in CAPTURE_FAILURES {
-            let expected = match failure {
-                CaptureFailure::ScreenRecordingAccessNotGranted => {
-                    BackdropNotice::ScreenRecordingAccessInstruction
-                },
-                CaptureFailure::CaptureAttemptStalled => BackdropNotice::CaptureStalled,
-                CaptureFailure::CaptureWorkerReplacementLimitReached => {
-                    BackdropNotice::CaptureRecoveryStopped
-                },
-                CaptureFailure::UnsupportedPlatform
-                | CaptureFailure::CaptureWorkerLaunchFailed
-                | CaptureFailure::CaptureWorkerDisconnected
-                | CaptureFailure::ShareableContentQueryFailed
-                | CaptureFailure::TerminalWindowNotFound
-                | CaptureFailure::DisplayNotFound
-                | CaptureFailure::ScreenshotCaptureFailed
-                | CaptureFailure::PixelExtractionFailed
-                | CaptureFailure::ImageReductionFailed => BackdropNotice::CaptureUnavailable,
-            };
-            assert_eq!(
-                classify_backdrop_notice(
-                    AttractScreenVisibility::Showing,
-                    BackdropGracePeriod::Elapsed,
-                    CurrentBackdrop::Missing,
-                    BackdropStatus::Failed(failure),
-                ),
-                expected,
-                "failure={failure:?}",
-            );
-        }
-    }
-
-    #[test]
-    fn current_backdrop_suppresses_every_failure_notice_except_a_stalled_worker() {
-        for grace_period in [BackdropGracePeriod::Remaining, BackdropGracePeriod::Elapsed] {
-            for backdrop_status in [BackdropStatus::WaitingForFirstResult, BackdropStatus::Ready] {
-                assert_eq!(
-                    classify_backdrop_notice(
-                        AttractScreenVisibility::Showing,
-                        grace_period,
-                        CurrentBackdrop::Available,
-                        backdrop_status,
-                    ),
-                    BackdropNotice::None,
-                    "grace_period={grace_period:?} backdrop_status={backdrop_status:?}",
-                );
-            }
-            for failure in CAPTURE_FAILURES {
-                let expected = match failure {
-                    CaptureFailure::CaptureAttemptStalled => BackdropNotice::CaptureStalled,
-                    CaptureFailure::CaptureWorkerReplacementLimitReached => {
-                        BackdropNotice::CaptureRecoveryStopped
-                    },
-                    CaptureFailure::UnsupportedPlatform
-                    | CaptureFailure::CaptureWorkerLaunchFailed
-                    | CaptureFailure::CaptureWorkerDisconnected
-                    | CaptureFailure::ScreenRecordingAccessNotGranted
-                    | CaptureFailure::ShareableContentQueryFailed
-                    | CaptureFailure::TerminalWindowNotFound
-                    | CaptureFailure::DisplayNotFound
-                    | CaptureFailure::ScreenshotCaptureFailed
-                    | CaptureFailure::PixelExtractionFailed
-                    | CaptureFailure::ImageReductionFailed => BackdropNotice::None,
-                };
-                assert_eq!(
-                    classify_backdrop_notice(
-                        AttractScreenVisibility::Showing,
-                        grace_period,
-                        CurrentBackdrop::Available,
-                        BackdropStatus::Failed(failure),
-                    ),
-                    expected,
-                    "grace_period={grace_period:?} failure={failure:?}",
-                );
-            }
-        }
     }
 
     /// A screen that came on by itself takes the reader's keys once it

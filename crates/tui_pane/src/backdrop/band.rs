@@ -575,7 +575,7 @@ impl TravelingBand {
     /// `BAND_BEHIND_FADE` leaves enough of the sampled colour in every
     /// cell background for neighbouring desktop cells to remain
     /// distinct. Covered cells add glyph ink at the desktop colour,
-    /// with [`BAND_EDGE_FALLOFF_CELLS`] carrying both boundaries toward
+    /// with `BAND_EDGE_FALLOFF_CELLS` carrying both boundaries toward
     /// each cell's own sampled background.
     ///
     /// Leaving carries both layers toward whatever each cell was
@@ -631,7 +631,7 @@ impl TravelingBand {
     ///
     /// Each cell is measured to its far boundary from either end of the
     /// strip. That keeps sub-cell motion in the first and last cells and
-    /// raises the ink over [`BAND_EDGE_FALLOFF_CELLS`] instead of in one
+    /// raises the ink over `BAND_EDGE_FALLOFF_CELLS` instead of in one
     /// boundary cell.
     fn glyph_strength(&self, column: u16, row: u16, strip_coverage: u8) -> u8 {
         let span = self.span();

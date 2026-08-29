@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A saved favorite whose parameters match the running attract screen is marked with `●`, and the popup's title says how many rows are saved and what the mark means.
 - `commands.excluded` in `config.toml` names cargo subcommands the scan drops entirely — no cell, no summary line, no attribution. Defaults to `["berth"]`, whose hook fires several times a second and opened a cell per invocation that closed before it could draw. The capture shim skips the same command.
 - Press `u` to restore the full attract configuration displaced by the latest random draw or favorite load, with a notice when terminal bounds adjust it or there is nothing to undo.
 - Press `r` to draw a fresh attract mode and all of its parameters at random, and show the result.
@@ -47,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report test progress, not just build progress. `cargo nextest run` counts its tests the way cargo counts units, and the working-directory heading names which count is on screen: `building`, then `testing`. Runs with no terminal report too -- nextest draws no bar there, so the count is read from its per-test lines instead.
 
 ### Fixed
+- The attract screen's notice names the real cause. The Settings instruction now appears only when Screen Recording access is denied; every other capture failure gets a neutral line.
+- A favorites row the parser cannot read can now be deleted, and one that moved underneath you is refused with a message rather than deleted wrongly.
+- A wedged desktop capture no longer strands the backdrop: an attempt is abandoned after five seconds and its worker replaced up to three times.
+- Toasts repaint from the framework's own next-visual-change deadline, so an expiring toast no longer holds the app awake between frames it has nothing to draw.
 - The attract screen comes on when the grid goes idle. Settling which window the app is drawn in asked ScreenCaptureKit, which takes some seventy milliseconds a call and was called from the drawing thread, so the first seconds of a run drew no frames at all -- which looks exactly like a screen that never starts.
 - The display no longer freezes on startup. The window-position query and the keyboard thread both read the terminal, and losing the race for one byte parked the whole app in a read nothing was coming for -- an animation that never started, a grid that never repainted, and a keypress the only way out.
 - Capture logs are now deleted once their run ends -- by the run itself, and by the grid for runs killed outright -- instead of accumulating forever. The directory had reached 60,872 files and 426 MB, which cost a 166 ms `read_dir` on every scan and left 27% of pids carrying an older run's log to be mistaken for their own.
@@ -88,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report the state of an invocation the lead command is driving, not just the lead's own. A nested cargo -- `cargo doc` under a `cargo port` lint run, say -- waiting on the build-directory lock now says `blocked` on its own row; before, every row but the lead was left blank. A row with no capture of its own stays blank rather than borrowing the reading from the row above it.
 
 ### Changed
+- Saving a favorite now says whether it added a row or refreshed an existing one's timestamp, instead of reporting the same thing either way.
+- The favorites footer offers only what the current selection can actually do, so `enter` is not advertised with nothing selected.
+- The moving-band attract screen paints the desktop into every cell it has a sample for and fades the strip's edges into it, rather than leaving the rest of the pane flat.
+- `x` no longer appears in the global-shortcuts list. It still dismisses, and it is still rebindable in the keymap editor.
 - App-owned modals now consume every key and click ahead of framework overlays and the grid. Framework overlays close through their own toggle or cancel binding, so `x` no longer dismisses one globally.
 - The moving-text attract screen's fast and slow runs of lines now merge into one another instead of meeting at a hard edge. The speed change was concentrated into a narrow run of lines in the middle of each span, which read as a boundary between two blocks; it is spread across the whole span now.
 - The moving-text attract screen starts a quarter slower than it did.

@@ -678,6 +678,7 @@ mod tests {
 
     use super::*;
     use crate::attract::SettingsApplicationOutcome;
+    use crate::favorites::FavoritesFileState;
 
     const FAVORITE_ROW: &str = r#"
 [[favorite]]
@@ -735,7 +736,7 @@ fraying = "leading"
         let current_parameters = app.attract.current_settings().into();
         let keymap = Rc::clone(&app.keymap);
         app.favorites_overlay.open_file_state(
-            favorites::FavoritesFileState::Loaded {
+            FavoritesFileState::Loaded {
                 path: path.clone(),
                 rows,
             },
@@ -791,7 +792,7 @@ fraying = "leading"
         let current_parameters = app.attract.current_settings().into();
         let keymap = Rc::clone(&app.keymap);
         app.favorites_overlay.open_file_state(
-            favorites::FavoritesFileState::Loaded {
+            FavoritesFileState::Loaded {
                 path: PathBuf::from("/tmp/favorites.toml"),
                 rows,
             },
