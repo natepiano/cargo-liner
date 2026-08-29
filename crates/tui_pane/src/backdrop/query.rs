@@ -28,15 +28,36 @@ use std::io::Write;
 
 use super::constants::POSITION_QUERY;
 
-/// Where the emulator says the window this app is drawn in stands, in
-/// the window server's own point space, or [`None`] where the terminal
-/// did not answer with a position.
-///
-/// [`None`] covers every way this can come to nothing: a terminal that
-/// does not know the query, one that answers with something else, a
-/// reply that arrived behind more input than the wait allows for. All
-/// of them mean the same thing to the caller, which is that the window
-/// has to be settled some other way.
+/// What the emulator said about where the window this app is drawn
+/// in stands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum TerminalWindowPosition {
+    /// The terminal did not answer with a position.
+    ///
+    /// This covers every way the query can come to nothing: a terminal
+    /// that does not know it, one that answers with something else, or
+    /// a reply that arrived behind more input than the wait allows for.
+    /// All of them mean the window has to be settled some other way.
+    NotReported,
+    /// The terminal answered, putting its window's top-left corner
+    /// here in the window server's own point space.
+    Reported {
+        /// The window's top-left corner. Either coordinate may be
+        /// negative: a display standing left of or above the main one
+        /// puts every window on it at negative coordinates.
+        origin: (f64, f64),
+    },
+}
+
+impl TerminalWindowPosition {
+    /// Read the terminal's position answer out of the bytes it sent
+    /// back.
+    fn in_reply(reply: &[u8]) -> Self {
+        parse_position(reply).map_or(Self::NotReported, |origin| Self::Reported { origin })
+    }
+}
+
+/// Ask where the emulator says the window this app is drawn in stands.
 ///
 /// # Cost
 ///
@@ -44,9 +65,11 @@ use super::constants::POSITION_QUERY;
 /// carries whatever output was queued ahead of it -- which under a
 /// running animation is most of what this waits for. Past the flush
 /// the emulator has the query in hand and the reply is prompt.
-pub(super) fn window_origin(out: &mut impl Write) -> Option<(f64, f64)> {
-    ask(out).ok()?;
-    parse_position(&reply())
+pub(super) fn window_origin(out: &mut impl Write) -> TerminalWindowPosition {
+    if ask(out).is_err() {
+        return TerminalWindowPosition::NotReported;
+    }
+    TerminalWindowPosition::in_reply(&reply())
 }
 
 /// Put the query on the wire and see it out to the emulator.
@@ -234,8 +257,10 @@ mod tests {
     #[test]
     fn reads_the_position_out_of_a_reply() {
         assert_eq!(
-            parse_position(b"\x1b[3;1720;0t"),
-            Some((1720.0, 0.0)),
+            TerminalWindowPosition::in_reply(b"\x1b[3;1720;0t"),
+            TerminalWindowPosition::Reported {
+                origin: (1720.0, 0.0),
+            },
             "the reply iTerm2 sends should read as the window's corner"
         );
     }
@@ -243,8 +268,10 @@ mod tests {
     #[test]
     fn reads_a_window_on_a_display_left_of_the_main_one() {
         assert_eq!(
-            parse_position(b"\x1b[3;-1720;-200t"),
-            Some((-1720.0, -200.0)),
+            TerminalWindowPosition::in_reply(b"\x1b[3;-1720;-200t"),
+            TerminalWindowPosition::Reported {
+                origin: (-1720.0, -200.0),
+            },
             "a display left of and above the main one puts its windows \
              at negative coordinates"
         );
@@ -253,14 +280,18 @@ mod tests {
     #[test]
     fn drops_a_keystroke_that_beat_the_reply_out_of_the_queue() {
         assert_eq!(
-            parse_position(b"a\x1b[3;12;34t"),
-            Some((12.0, 34.0)),
+            TerminalWindowPosition::in_reply(b"a\x1b[3;12;34t"),
+            TerminalWindowPosition::Reported {
+                origin: (12.0, 34.0),
+            },
             "input typed before the reply arrived should not cost the \
              window"
         );
         assert_eq!(
-            parse_position(b"\x1b[A\x1b[3;12;34t"),
-            Some((12.0, 34.0)),
+            TerminalWindowPosition::in_reply(b"\x1b[A\x1b[3;12;34t"),
+            TerminalWindowPosition::Reported {
+                origin: (12.0, 34.0),
+            },
             "an arrow key is itself an escape sequence, and the reply \
              is the last one in the queue"
         );
@@ -269,24 +300,24 @@ mod tests {
     #[test]
     fn refuses_a_reply_that_is_not_a_position() {
         assert_eq!(
-            parse_position(b"\x1b[8;87;244t"),
-            None,
+            TerminalWindowPosition::in_reply(b"\x1b[8;87;244t"),
+            TerminalWindowPosition::NotReported,
             "the size report shares the reply's grammar and answers a \
              different question"
         );
         assert_eq!(
-            parse_position(b"\x1b[3;1720;0;9t"),
-            None,
+            TerminalWindowPosition::in_reply(b"\x1b[3;1720;0;9t"),
+            TerminalWindowPosition::NotReported,
             "a position carries two numbers and no more"
         );
         assert_eq!(
-            parse_position(b"\x1b[3;1720t"),
-            None,
+            TerminalWindowPosition::in_reply(b"\x1b[3;1720t"),
+            TerminalWindowPosition::NotReported,
             "a position carries two numbers and no fewer"
         );
         assert_eq!(
-            parse_position(b"\x1b[3;wide;0t"),
-            None,
+            TerminalWindowPosition::in_reply(b"\x1b[3;wide;0t"),
+            TerminalWindowPosition::NotReported,
             "a coordinate that is not a number is not a position"
         );
     }
@@ -294,14 +325,14 @@ mod tests {
     #[test]
     fn refuses_a_terminal_that_said_nothing() {
         assert_eq!(
-            parse_position(b""),
-            None,
+            TerminalWindowPosition::in_reply(b""),
+            TerminalWindowPosition::NotReported,
             "a terminal that does not know the query answers nothing \
              at all"
         );
         assert_eq!(
-            parse_position(b"\x1b[3;1720;0"),
-            None,
+            TerminalWindowPosition::in_reply(b"\x1b[3;1720;0"),
+            TerminalWindowPosition::NotReported,
             "a reply cut off before its terminator is one the wait ran \
              out on"
         );

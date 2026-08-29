@@ -58,9 +58,13 @@ use crate::backdrop::desktop::CaptureWindowTarget;
 use crate::backdrop::desktop::Desktop;
 use crate::backdrop::desktop::Frame;
 use crate::backdrop::desktop::Metrics;
+use crate::backdrop::desktop::TerminalWindowSearchOutcome;
+use crate::backdrop::desktop::TitledWindow;
+use crate::backdrop::desktop::WindowTitle;
 use crate::backdrop::desktop::candidate;
 use crate::backdrop::desktop::candidate::TerminalWindowCandidate;
 use crate::backdrop::desktop::candidate::TerminalWindowCandidates;
+use crate::backdrop::desktop::candidate::TerminalWindowOwner;
 use crate::process;
 
 /// How many bytes one pixel of the captured image occupies.
@@ -248,11 +252,14 @@ fn capture_selected_window(
 /// CoreGraphics rather than `ScreenCaptureKit`, for the reason
 /// [`Listed::on_screen`] gives: this is called from the thread that
 /// draws.
-pub(in crate::backdrop::desktop) fn window_titles() -> Vec<(u32, Option<String>)> {
+pub(in crate::backdrop::desktop) fn window_titles() -> Vec<TitledWindow> {
     terminal_windows(&Listed::on_screen())
         .windows
         .into_iter()
-        .map(|window| (window.number, window.title.clone()))
+        .map(|window| TitledWindow {
+            window_id: window.number,
+            title:     window.title.clone(),
+        })
         .collect()
 }
 
@@ -260,17 +267,19 @@ pub(in crate::backdrop::desktop) fn window_titles() -> Vec<(u32, Option<String>)
 ///
 /// CoreGraphics rather than `ScreenCaptureKit`, for the reason
 /// [`Listed::on_screen`] gives.
-pub(in crate::backdrop::desktop) fn window_titled(marker: &str) -> Option<u32> {
+pub(in crate::backdrop::desktop) fn window_titled(marker: &str) -> TerminalWindowSearchOutcome {
     terminal_windows(&Listed::on_screen())
         .windows
         .into_iter()
-        .find(|window| {
-            window
-                .title
-                .as_deref()
-                .is_some_and(|title| title.contains(marker))
+        .find(|window| match &window.title {
+            WindowTitle::Reported(title) => title.contains(marker),
+            WindowTitle::Withheld => false,
         })
-        .map(|window| window.number)
+        .map_or(TerminalWindowSearchOutcome::NotFound, |window| {
+            TerminalWindowSearchOutcome::Found {
+                window_id: window.number,
+            }
+        })
 }
 
 /// See [`desktop::window_at`].
@@ -278,14 +287,16 @@ pub(in crate::backdrop::desktop) fn window_titled(marker: &str) -> Option<u32> {
 /// CoreGraphics rather than `ScreenCaptureKit`, for the reason
 /// [`Listed::on_screen`] gives. Nothing here filters for windows
 /// that are on screen because the list asked for holds no others.
-pub(in crate::backdrop::desktop) fn window_at(origin: (f64, f64)) -> Option<u32> {
+pub(in crate::backdrop::desktop) fn window_at(origin: (f64, f64)) -> TerminalWindowSearchOutcome {
     terminal_windows(&Listed::on_screen())
         .windows
         .into_iter()
         .map(|window| (window.number, away(window.bounds, origin)))
         .filter(|(_, away)| *away <= POSITION_TOLERANCE)
         .min_by(|(_, left), (_, right)| left.total_cmp(right))
-        .map(|(window_id, _)| window_id)
+        .map_or(TerminalWindowSearchOutcome::NotFound, |(window_id, _)| {
+            TerminalWindowSearchOutcome::Found { window_id }
+        })
 }
 
 /// How far a window's corner stands from `origin`, for
@@ -334,7 +345,10 @@ fn windows_above(window: u32) -> Vec<u32> {
         return Vec::new();
     };
     (0..list.count())
-        .filter_map(|index| number(entry(&list, index)?))
+        .filter_map(|index| match number(entry(&list, index)?) {
+            DescribedWindowNumber::Numbered { window_id } => Some(window_id),
+            DescribedWindowNumber::Unnumbered => None,
+        })
         .collect()
 }
 
@@ -482,16 +496,37 @@ fn text(described: &CFDictionary, key: Key) -> Option<String> {
     )
 }
 
-/// A window's own number, out of the dictionary describing it.
+/// Whether the window server numbered a window in the dictionary
+/// describing it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DescribedWindowNumber {
+    /// The description carried no window number a caller could use:
+    /// the key was absent, held something other than a number, or held
+    /// one no `u32` can represent. A window that cannot be named is of
+    /// no use to either caller, so both drop it.
+    Unnumbered,
+    /// The window server numbers the described window this way.
+    Numbered {
+        /// The window server's own number for the window.
+        window_id: u32,
+    },
+}
+
+/// A window's own number, out of the dictionary describing it, where
+/// the window server supplied one a caller can use.
 ///
 /// # Invariants
 ///
 /// `described` must be one of [`entry`]'s dictionaries, and so must
 /// hold Core Foundation objects for the same reason its array does.
-fn number(described: &CFDictionary) -> Option<u32> {
+fn number(described: &CFDictionary) -> DescribedWindowNumber {
     // A window number is a `u32` that CoreGraphics reports as a
     // signed one.
-    u32::try_from(integer(described, Key::Number)?).ok()
+    integer(described, Key::Number)
+        .and_then(|number| u32::try_from(number).ok())
+        .map_or(DescribedWindowNumber::Unnumbered, |window_id| {
+            DescribedWindowNumber::Numbered { window_id }
+        })
 }
 
 /// A window's bounds, out of the dictionary describing it.
@@ -630,9 +665,13 @@ trait TerminalProgramWindowCandidate {
 }
 
 impl TerminalWindowCandidate for SCWindow {
-    fn owner(&self) -> Option<i32> {
+    fn owner(&self) -> TerminalWindowOwner {
         self.owning_application()
-            .map(|application| application.process_id())
+            .map_or(TerminalWindowOwner::Unnamed, |application| {
+                TerminalWindowOwner::Application {
+                    pid: application.process_id(),
+                }
+            })
     }
 
     fn frontmost(&self) -> bool {
@@ -658,15 +697,14 @@ impl TerminalProgramWindowCandidate for SCWindow {
 struct Listed {
     /// The window server's own number for it.
     number: u32,
-    /// The pid of the application that owns it.
-    owner:  Option<i32>,
+    /// Which application owns it. [`TerminalWindowOwner::Unnamed`]
+    /// means the dictionary named no owner to match to a process.
+    owner:  TerminalWindowOwner,
     /// The name that application answers to, folded.
     name:   Option<String>,
-    /// What it is titled, where the window server will say -- which
-    /// it will not without Screen Recording permission. Nothing
-    /// here can make it answer, and [`window_at`] is the path that
-    /// does not need it to.
-    title:  Option<String>,
+    /// What it is titled. [`window_at`] is the path that does not need
+    /// the window server to report a title.
+    title:  WindowTitle,
     /// Where it stands, in the space `CGDisplayBounds` measures.
     bounds: CoreGraphicsRect,
     /// Which layer it is drawn on.
@@ -703,11 +741,17 @@ impl Listed {
     /// Everything else is optional here because it is optional
     /// there.
     fn read(described: &CFDictionary) -> Option<Self> {
+        let DescribedWindowNumber::Numbered { window_id } = number(described) else {
+            return None;
+        };
         Some(Self {
-            number: number(described)?,
-            owner:  integer(described, Key::Owner),
+            number: window_id,
+            owner:  integer(described, Key::Owner).map_or(TerminalWindowOwner::Unnamed, |pid| {
+                TerminalWindowOwner::Application { pid }
+            }),
             name:   text(described, Key::OwnerName).map(|name| folded(&name)),
-            title:  text(described, Key::Title),
+            title:  text(described, Key::Title)
+                .map_or(WindowTitle::Withheld, WindowTitle::Reported),
             bounds: bounds(described)?,
             layer:  integer(described, Key::Layer).unwrap_or_default(),
         })
@@ -715,7 +759,7 @@ impl Listed {
 }
 
 impl TerminalWindowCandidate for Listed {
-    fn owner(&self) -> Option<i32> { self.owner }
+    fn owner(&self) -> TerminalWindowOwner { self.owner }
 
     fn frontmost(&self) -> bool { self.layer == 0 }
 }

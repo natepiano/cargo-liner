@@ -19,7 +19,10 @@ use crate::backdrop::constants::IDENTIFY_PASSES;
 use crate::backdrop::constants::IDENTIFY_RETRY;
 use crate::backdrop::desktop;
 use crate::backdrop::desktop::CaptureAttemptWindowSelection;
+use crate::backdrop::desktop::TitledWindow;
+use crate::backdrop::desktop::WindowTitle;
 use crate::backdrop::query;
+use crate::backdrop::query::TerminalWindowPosition;
 
 /// Progress toward selecting the terminal window whose desktop should be captured.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,7 +62,7 @@ pub(super) enum WindowIdentificationState {
         /// When the most recent pass ran.
         attempted_at:      Instant,
         /// The titles to restore after the marker identifies a window or the search ends.
-        previous_titles:   Vec<(u32, Option<String>)>,
+        previous_titles:   Vec<TitledWindow>,
     },
     /// Identification settled on this exact window.
     Identified { window_id: u32 },
@@ -138,8 +141,10 @@ impl WindowIdentificationState {
     /// Ask the terminal for its window position before installing a marker title.
     fn run_first_attempt(&mut self, out: &mut impl Write) {
         let attempted_at = Instant::now();
-        let terminal_window_search_outcome = query::window_origin(out)
-            .map_or(TerminalWindowSearchOutcome::NotFound, desktop::window_at);
+        let terminal_window_search_outcome = match query::window_origin(out) {
+            TerminalWindowPosition::Reported { origin } => desktop::window_at(origin),
+            TerminalWindowPosition::NotReported => TerminalWindowSearchOutcome::NotFound,
+        };
         match terminal_window_search_outcome {
             TerminalWindowSearchOutcome::Found { window_id } => {
                 *self = Self::Identified { window_id };
@@ -179,16 +184,19 @@ impl WindowIdentificationState {
         out: &mut impl Write,
         attempts_consumed: u32,
         attempted_at: Instant,
-        previous_titles: Vec<(u32, Option<String>)>,
+        previous_titles: Vec<TitledWindow>,
     ) {
         let marker = format!("{IDENTIFY_MARKER}{}", std::process::id());
         match desktop::window_titled(&marker) {
             TerminalWindowSearchOutcome::Found { window_id } => {
                 let restored = previous_titles
                     .iter()
-                    .find(|(id, _)| *id == window_id)
-                    .and_then(|(_, title)| title.as_deref());
-                let _ = set_title(out, restored.unwrap_or(""));
+                    .find(|window| window.window_id == window_id)
+                    .map_or("", |window| match &window.title {
+                        WindowTitle::Reported(title) => title.as_str(),
+                        WindowTitle::Withheld => "",
+                    });
+                let _ = set_title(out, restored);
                 *self = Self::Identified { window_id };
             },
             TerminalWindowSearchOutcome::NotFound if attempts_consumed >= IDENTIFY_PASSES => {

@@ -33,13 +33,67 @@ pub(in crate::backdrop) enum TerminalWindowSearchOutcome {
     /// No terminal window satisfied the lookup.
     NotFound,
     /// The lookup found this window-server id.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(
+            dead_code,
+            reason = "only the macOS backend finds windows because other platforms have no window server"
+        )
+    )]
     Found { window_id: u32 },
+}
+
+/// Which application the window server says owns a window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::backdrop::desktop) enum TerminalWindowOwner {
+    /// The window server named no owning application, so the window
+    /// cannot be matched to a process at all.
+    Unnamed,
+    /// The window belongs to the application running under this pid.
+    Application {
+        /// The owning application's process id.
+        pid: i32,
+    },
+}
+
+/// One of the emulator's windows and the title it wore when the list
+/// was read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::backdrop) struct TitledWindow {
+    /// The window server's own number for the window.
+    pub(in crate::backdrop) window_id: u32,
+    /// What the window server says the window is titled.
+    pub(in crate::backdrop) title:     WindowTitle,
+}
+
+/// What the window server will say a window is titled.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::backdrop) enum WindowTitle {
+    /// The window server would not say, which is what it does without
+    /// Screen Recording permission. Nothing here can make it answer.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(
+            dead_code,
+            reason = "only the macOS backend reads window titles because other platforms have no window server"
+        )
+    )]
+    Withheld,
+    /// The window server reports this title.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(
+            dead_code,
+            reason = "only the macOS backend reads window titles because other platforms have no window server"
+        )
+    )]
+    Reported(String),
 }
 
 /// Window-server facts used to classify terminal-window candidates.
 pub(in crate::backdrop::desktop) trait TerminalWindowCandidate {
-    /// The pid of the application that owns the window, when available.
-    fn owner(&self) -> Option<i32>;
+    /// Which application the window server says owns the window.
+    fn owner(&self) -> TerminalWindowOwner;
 
     /// Whether this window can identify the frontmost application.
     fn frontmost(&self) -> bool;
@@ -76,9 +130,10 @@ pub(in crate::backdrop::desktop) fn terminal_window_candidates<W: TerminalWindow
             windows: terminal_program_windows,
         };
     }
-    let frontmost_application_windows = frontmost_owner(windows).map_or_else(Vec::new, |owner| {
-        windows_owned_by(windows, |candidate_owner| candidate_owner == owner)
-    });
+    let frontmost_application_windows = match frontmost_owner(windows) {
+        TerminalWindowOwner::Application { pid } => windows_owned_by(windows, |owner| owner == pid),
+        TerminalWindowOwner::Unnamed => Vec::new(),
+    };
     TerminalWindowCandidates {
         source:  TerminalWindowCandidateSource::FrontmostApplication,
         windows: frontmost_application_windows,
@@ -92,16 +147,19 @@ pub(in crate::backdrop::desktop) fn windows_owned_by<W: TerminalWindowCandidate>
 ) -> Vec<&W> {
     windows
         .iter()
-        .filter(|window| window.owner().is_some_and(&wanted))
+        .filter(|window| match window.owner() {
+            TerminalWindowOwner::Application { pid } => wanted(pid),
+            TerminalWindowOwner::Unnamed => false,
+        })
         .collect()
 }
 
-/// The pid of the application owning the frontmost candidate window.
-fn frontmost_owner<W: TerminalWindowCandidate>(windows: &[W]) -> Option<i32> {
+/// Which application owns the frontmost candidate window.
+fn frontmost_owner<W: TerminalWindowCandidate>(windows: &[W]) -> TerminalWindowOwner {
     windows
         .iter()
         .find(|window| window.frontmost())
-        .and_then(TerminalWindowCandidate::owner)
+        .map_or(TerminalWindowOwner::Unnamed, TerminalWindowCandidate::owner)
 }
 
 /// Select a pinned window or the closest candidate and report how it was selected.
@@ -168,16 +226,20 @@ struct CaptureAttemptTestWindow {
 }
 
 impl TerminalWindowCandidate for CaptureAttemptTestWindow {
-    fn owner(&self) -> Option<i32> {
-        Some(match self.ownership {
-            CaptureAttemptTestWindowOwnership::ProcessAncestor => CAPTURE_TEST_PROCESS_ANCESTOR_PID,
-            CaptureAttemptTestWindowOwnership::TerminalProgram => {
-                CAPTURE_TEST_TERMINAL_PROGRAM_OWNER_PID
+    fn owner(&self) -> TerminalWindowOwner {
+        TerminalWindowOwner::Application {
+            pid: match self.ownership {
+                CaptureAttemptTestWindowOwnership::ProcessAncestor => {
+                    CAPTURE_TEST_PROCESS_ANCESTOR_PID
+                },
+                CaptureAttemptTestWindowOwnership::TerminalProgram => {
+                    CAPTURE_TEST_TERMINAL_PROGRAM_OWNER_PID
+                },
+                CaptureAttemptTestWindowOwnership::FrontmostApplication => {
+                    CAPTURE_TEST_FRONTMOST_OWNER_PID
+                },
             },
-            CaptureAttemptTestWindowOwnership::FrontmostApplication => {
-                CAPTURE_TEST_FRONTMOST_OWNER_PID
-            },
-        })
+        }
     }
 
     fn frontmost(&self) -> bool {

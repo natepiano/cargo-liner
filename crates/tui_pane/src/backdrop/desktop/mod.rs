@@ -31,6 +31,8 @@ use ratatui::style::Color;
 
 pub(super) use self::candidate::CaptureWindowTarget;
 pub(super) use self::candidate::TerminalWindowSearchOutcome;
+pub(super) use self::candidate::TitledWindow;
+pub(super) use self::candidate::WindowTitle;
 pub(super) use self::candidate::capture_attempt_for_test;
 pub use self::capture_attempt::CaptureAttemptResult;
 pub use self::capture_attempt::CaptureAttemptSequence;
@@ -292,7 +294,7 @@ pub(super) fn window_frame(window: u32) -> Option<Frame> { platform::window_fram
                   macOS module this delegates to calls the window server"
     )
 )]
-pub(super) fn window_titles() -> Vec<(u32, Option<String>)> { platform::window_titles() }
+pub(super) fn window_titles() -> Vec<TitledWindow> { platform::window_titles() }
 
 /// Whether the emulator has a window whose title holds `marker`.
 ///
@@ -311,9 +313,7 @@ pub(super) fn window_titles() -> Vec<(u32, Option<String>)> { platform::window_t
     )
 )]
 pub(super) fn window_titled(marker: &str) -> TerminalWindowSearchOutcome {
-    platform::window_titled(marker).map_or(TerminalWindowSearchOutcome::NotFound, |window_id| {
-        TerminalWindowSearchOutcome::Found { window_id }
-    })
+    platform::window_titled(marker)
 }
 
 /// Whether an emulator window stands at `origin`.
@@ -339,9 +339,7 @@ pub(super) fn window_titled(marker: &str) -> TerminalWindowSearchOutcome {
     )
 )]
 pub(super) fn window_at(origin: (f64, f64)) -> TerminalWindowSearchOutcome {
-    platform::window_at(origin).map_or(TerminalWindowSearchOutcome::NotFound, |window_id| {
-        TerminalWindowSearchOutcome::Found { window_id }
-    })
+    platform::window_at(origin)
 }
 
 /// A distance measured in cells, as a whole number of them.

@@ -9,6 +9,8 @@ use crate::backdrop::desktop::CaptureFailure;
 use crate::backdrop::desktop::CaptureWindowTarget;
 use crate::backdrop::desktop::Frame;
 use crate::backdrop::desktop::Metrics;
+use crate::backdrop::desktop::TerminalWindowSearchOutcome;
+use crate::backdrop::desktop::TitledWindow;
 use crate::backdrop::desktop::candidate;
 
 /// No capture backend outside macOS, so nothing is drawn.
@@ -27,12 +29,14 @@ pub(in crate::backdrop::desktop) const fn capture(
 pub(in crate::backdrop::desktop) const fn window_frame(_: u32) -> Option<Frame> { None }
 
 /// No windows to describe, so no title tells one from another.
-pub(in crate::backdrop::desktop) const fn window_titles() -> Vec<(u32, Option<String>)> {
-    Vec::new()
-}
+pub(in crate::backdrop::desktop) const fn window_titles() -> Vec<TitledWindow> { Vec::new() }
 
 /// Nothing wears the marker where nothing can be asked.
-pub(in crate::backdrop::desktop) const fn window_titled(_: &str) -> Option<u32> { None }
+pub(in crate::backdrop::desktop) const fn window_titled(_: &str) -> TerminalWindowSearchOutcome {
+    TerminalWindowSearchOutcome::NotFound
+}
 
 /// Nothing stands anywhere where there are no windows to describe.
-pub(in crate::backdrop::desktop) const fn window_at(_: (f64, f64)) -> Option<u32> { None }
+pub(in crate::backdrop::desktop) const fn window_at(_: (f64, f64)) -> TerminalWindowSearchOutcome {
+    TerminalWindowSearchOutcome::NotFound
+}
