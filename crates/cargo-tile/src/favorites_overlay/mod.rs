@@ -33,17 +33,17 @@ use tui_pane::warning_color;
 
 use self::bindings::FavoritesSurfaceBindings;
 use self::bindings::SelectedFavoriteActions;
+use self::bindings::direction_name;
+use self::bindings::drift_name;
+use self::bindings::fraying_name;
+use self::bindings::pixel_fill_name;
+use self::bindings::pixel_resolve_name;
+use self::bindings::text_fill_name;
 use self::content::FavoriteRowLifecycle;
 use self::content::FavoriteRowLookup;
 use self::content::FavoriteRowLookupMut;
 pub(crate) use self::content::FavoritesOverlayContent;
 pub(crate) use self::content::UnrecognizedFavoritesView;
-use self::content::direction_name;
-use self::content::drift_name;
-use self::content::fraying_name;
-use self::content::pixel_fill_name;
-use self::content::pixel_resolve_name;
-use self::content::text_fill_name;
 use self::line_plan::CachedLinePlan;
 use self::line_plan::CachedOverlayLine;
 use self::line_plan::CachedSurfaceWidth;
@@ -1727,17 +1727,10 @@ travel_left = "界"
     }
 
     #[test]
-    fn load_uses_retained_settings_and_reverses_fade_out() {
+    fn load_applies_selected_settings_and_reverses_fade_out() {
         let keymap = keymap_from("");
-        let mut overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
+        let overlay = open_at_width(loaded_state(MOVING_BAND_ROW), &keymap, 100);
         let (_, settings) = selected(&overlay);
-        let AppOverlay::Favorites(open_state) = &mut overlay.state else {
-            panic!("fixture should contain recognized rows");
-        };
-        let FavoritesOverlayContent::Rows(rows) = &mut open_state.content else {
-            panic!("fixture should contain recognized rows");
-        };
-        rows.sections[0].rows[0].cells[0] = "lossy-display-value".to_string();
 
         let mut app = App::new_for_test().expect("test app should build");
         let now = Instant::now();

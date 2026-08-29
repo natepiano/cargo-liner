@@ -426,11 +426,7 @@ impl AttractMode {
 
     fn draw(seed: u64) -> Self {
         let index = random::bounded_index(seed, Self::INDEX_BOUND);
-        match index {
-            0 => Self::MovingBand,
-            1 => Self::MovingText,
-            _ => Self::Pixelate,
-        }
+        Self::ALL[index]
     }
 }
 
@@ -1356,6 +1352,13 @@ mod tests {
             saved,
             "the first frame keeps the parameters read before it",
         );
+    }
+
+    #[test]
+    fn draw_reaches_every_mode_declared_in_all() {
+        let drawn_modes = (0..=4095).map(AttractMode::draw).collect::<HashSet<_>>();
+
+        assert_eq!(drawn_modes, AttractMode::ALL.into_iter().collect());
     }
 
     #[test]

@@ -358,32 +358,33 @@ Saving a parameter set reports which of two things happened. `FavoriteRows::push
 
 **Ruled out:** a boolean or an `Option` for the outcome — both answers are ordinary successes and each renders different text; a second comparison key for dedup, which would duplicate the persistence schema.
 
-### Phase 12 — A column heading carries its own value  · status: todo
+### Phase 12 — A column heading carries its own value  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** Reordering the overlay's parameter columns cannot put a value under the wrong heading.
+`ParameterColumnDescriptor` carries `value_renderer: fn(AttractSettings) -> String` beside its `heading`, reached through `pub(super) fn render_value(self, AttractSettings) -> String` so the private field stays private. `BAND_COLUMNS`, `TEXT_COLUMNS` and `PIXEL_COLUMNS` each pair a heading with the renderer for its own column, so reordering a table moves the value with its heading and no index-matched second vector exists to fall out of step.
 
-**Spec:**
+`favorite_cells` and the `cells: Vec<String>` field on `FavoriteRowView` are gone. `line_plan.rs` derives both the measured column widths and the rendered row tail from the section's descriptors and `row.settings`; `measured_parameter_widths` and `append_section` both take `column_descriptors(section.mode)`, and `FavoriteRowsView::from` keys each section by `favorite.settings.mode()`, so a renderer never receives another mode's settings.
 
-`column_descriptors(mode)` and `favorite_cells(settings)` are independent vectors matched only by index, so reordering one silently misaligns every row with no compiler complaint. Give `ParameterColumnDescriptor` the function that renders its own column's value and delete the parallel vector. It runs while rebuilding the plan, not per frame (Invariant 3).
+The six `const fn` value-name helpers — `direction_name`, `fraying_name`, `drift_name`, `text_fill_name`, `pixel_resolve_name`, `pixel_fill_name` — live in `bindings.rs` beside the renderers that call them, keeping the split's dependency direction: `bindings` imports nothing from `content`.
 
-`AttractMode::draw` (`attract/mod.rs:427`) has the same shape: it computes an index bounded by `AttractMode::ALL`, then maps `0`, `1` and everything else through a separate match, so a fourth mode would silently draw as `Pixelate`. Index `ALL` directly so adding a mode updates selection by construction. No trait and no generic — the array length is already the bound.
-
-Headings and blank lines stay `CachedOverlayLine::NonRow` and never enter the navigation index.
+`AttractMode::draw` indexes `AttractMode::ALL` directly rather than mapping indices through a separate match, so a mode added to `ALL` is drawable by construction instead of needing a second edit.
 
 **Files:**
-- `crates/cargo-tile/src/favorites_overlay/bindings.rs` — `ParameterColumnDescriptor` carries its value renderer; `column_descriptors` updated
-- `crates/cargo-tile/src/favorites_overlay/content.rs` — `favorite_cells` (`:273`) deleted and the cached cells removed from the row view; the six `const fn` value-name helpers below it (`direction_name` `:300`, `fraying_name` `:309`, `drift_name` `:318`, `text_fill_name` `:325`, `pixel_resolve_name` `:332`, `pixel_fill_name` `:340`) **move to `bindings.rs`** beside the descriptor renderers that now call them — leaving them here would make `bindings` import from `content`, reversing Phase 8's direction
-- `crates/cargo-tile/src/favorites_overlay/mod.rs` — update the imports of the moved helpers (`:41` `direction_name`, `:44` `pixel_fill_name`) to their new home
-- `crates/cargo-tile/src/favorites_overlay/line_plan.rs` — rows render through the descriptors instead of the deleted cells
-- `crates/cargo-tile/src/attract/mod.rs` — `AttractMode::draw` indexes `ALL`
+- `crates/cargo-tile/src/favorites_overlay/bindings.rs` — the three descriptor tables, the per-column value renderers, the six value-name helpers, and the regression proving a reordered table keeps each heading with its value
+- `crates/cargo-tile/src/favorites_overlay/content.rs` — row views carrying settings and timestamp only, with no rendered cells
+- `crates/cargo-tile/src/favorites_overlay/line_plan.rs` — renders and measures every column through its descriptor
+- `crates/cargo-tile/src/favorites_overlay/mod.rs` — imports the moved helpers from `bindings`; the load regression asserts against the selected row's settings rather than a mutated display cell
+- `crates/cargo-tile/src/attract/mod.rs` — `draw` indexes `ALL`, with a regression that every mode declared in `ALL` is reachable
 
-**Constraints from prior phases:** Phase 7 turned `FavoriteRowRecognition::Unrecognized` into a struct variant `{ diagnostic, removal_locator }`, so `FavoriteRowsView::from` names its fields; carry that through the split unchanged. Phase 8 put `column_descriptors` in `bindings.rs` and kept **`favorite_cells` in `content.rs`**, beside `FavoriteRowView::from`, which calls it — placing it in `line_plan.rs` would have made `content` depend on `line_plan` while `line_plan` already depends on `content`. So the deletion here spans both files: the renderer and its cached cells leave `content.rs`, and `line_plan.rs` switches to rendering through the descriptors. Phases 9 and 10 changed the row prefix and the width budget in `line_plan.rs`; the column values themselves are untouched by both, so this phase is additive to them. Phase 10's matching pipeline must survive that addition intact: `build_line_plan` takes `current_parameters: &OpenFavoritesCurrentParameters` as its second argument and decides `FavoriteRowCurrentParameters::{Unrecognized, Different, Matching}` once per rebuild, storing it on `CachedOverlayLine::Row` so `rendered_line` never re-compares. Keep that signature, keep the comparison out of the per-row render, and keep the three-cell budget taken from `constants::FAVORITE_ROW_PREFIX_WIDTH` in both `visible_parameter_columns` and `format_table_line` rather than reintroducing a literal. The marker tests `row_marker_renders_every_selected_and_current_combination`, `every_row_with_matching_settings_is_current` and `unrecognized_row_is_never_marked_current`, and `terminal.rs`'s `coalesced_resize_refreshes_currency_after_attract_reclamping`, must still pass unedited once the descriptors own the values. Phase 8 also narrowed `ParameterColumnDescriptor`'s fields: only `heading` is `pub(super)`, while `action_names` and `separator` are private to `bindings.rs`. `line_plan.rs` therefore cannot read the value renderer as a bare field — expose it as `pub(super)` or reach it through a `pub(super)` method on the descriptor. Each leaf module carries its own narrow test-module lint block: `content.rs` and `bindings.rs` expect only `clippy::expect_used`; `line_plan.rs` expects `clippy::expect_used` **and** `clippy::panic` (`line_plan.rs:617`, added in Phase 9 and pushed down by Phase 10's tests); `mod.rs` expects `clippy::panic` and `clippy::unchecked_time_subtraction` as well. Warnings are denied and an unfulfilled `#[expect]` is itself an error, so preserve only the expectations each module actually triggers and add only the lints a new test needs.
+**Gotchas:**
+- A column's value is rendered twice per plan rebuild, once to measure its width and once to draw it. Caching it back onto the row restores exactly the parallel array this phase deleted. The cost is bounded by the rebuild (Invariant 3) and by `CachedSurfaceWidth::Rendered`, never per frame.
+- `AttractMode::ALL[index]` cannot panic because `INDEX_BOUND` is `NonZeroIndexBound::try_from_len(Self::ALL.len())` and `random::bounded_index` returns `candidate % bound`. Decoupling the bound from the array length reintroduces an index panic.
+- A renderer handed another mode's settings returns a diagnostic string rather than panicking, because the workspace denies `panic`, `unwrap` and `expect` and the arm is unreachable by construction rather than by type.
 
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` with a test proving heading and value stay paired when the descriptor order changes, and one proving a mode added to `AttractMode::ALL` is reachable from `draw`
-- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
+**Ruled out:**
+- Caching the rendered cells back onto the row view to avoid rendering twice — it restores the index-matched parallel array.
+- A trait or generic over the descriptor tables — the array length is already the bound.
 
 ### Phase 13 — A framework shortcut can be hidden, and a refused delete says what to do  · status: todo
 

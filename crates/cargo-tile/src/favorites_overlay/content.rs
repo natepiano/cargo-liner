@@ -5,12 +5,6 @@ use std::time::Instant;
 
 use chrono::Datelike;
 use chrono::Local;
-use tui_pane::BandDirection;
-use tui_pane::BandFraying;
-use tui_pane::PixelFill;
-use tui_pane::PixelResolve;
-use tui_pane::TextDrift;
-use tui_pane::TextFill;
 
 use crate::attract::AttractMode;
 use crate::favorites::AttractSettings;
@@ -212,7 +206,6 @@ pub(super) struct FavoriteRowView {
     pub(super) id:        FavoriteId,
     pub(super) settings:  AttractSettings,
     pub(super) saved:     String,
-    pub(super) cells:     Vec<String>,
     pub(super) lifecycle: FavoriteRowLifecycle,
 }
 
@@ -222,7 +215,6 @@ impl From<&Favorite> for FavoriteRowView {
             id:        favorite.id,
             settings:  favorite.settings,
             saved:     format_timestamp(favorite),
-            cells:     favorite_cells(favorite.settings),
             lifecycle: FavoriteRowLifecycle::Active,
         }
     }
@@ -267,80 +259,6 @@ fn format_timestamp(favorite: &Favorite) -> String {
         favorite.saved.format("%d %b %H:%M:%S").to_string()
     } else {
         favorite.saved.format("%d %b %Y %H:%M:%S").to_string()
-    }
-}
-
-fn favorite_cells(settings: AttractSettings) -> Vec<String> {
-    match settings {
-        AttractSettings::MovingBand(settings) => vec![
-            direction_name(settings.direction).to_string(),
-            settings.width.to_string(),
-            settings.speed.to_string(),
-            settings.tail_speed.to_string(),
-            fraying_name(settings.fraying).to_string(),
-        ],
-        AttractSettings::MovingText(settings) => vec![
-            direction_name(settings.direction).to_string(),
-            settings.speed.to_string(),
-            settings.spread.to_string(),
-            drift_name(settings.drift).to_string(),
-            text_fill_name(settings.fill).to_string(),
-        ],
-        AttractSettings::Pixelate(settings) => vec![
-            direction_name(settings.direction).to_string(),
-            settings.speed.to_string(),
-            settings.wave_percent.to_string(),
-            settings.block_columns.to_string(),
-            pixel_resolve_name(settings.resolve).to_string(),
-            pixel_fill_name(settings.fill).to_string(),
-        ],
-    }
-}
-
-pub(super) const fn direction_name(direction: BandDirection) -> &'static str {
-    match direction {
-        BandDirection::Left => "left",
-        BandDirection::Right => "right",
-        BandDirection::Up => "up",
-        BandDirection::Down => "down",
-    }
-}
-
-pub(super) const fn fraying_name(fraying: BandFraying) -> &'static str {
-    match fraying {
-        BandFraying::Trailing => "trailing",
-        BandFraying::Both => "both",
-        BandFraying::Leading => "leading",
-        BandFraying::Neither => "neither",
-    }
-}
-
-pub(super) const fn drift_name(drift: TextDrift) -> &'static str {
-    match drift {
-        TextDrift::Together => "together",
-        TextDrift::Apart => "apart",
-    }
-}
-
-pub(super) const fn text_fill_name(fill: TextFill) -> &'static str {
-    match fill {
-        TextFill::Bars => "bars",
-        TextFill::Glyphs => "glyphs",
-    }
-}
-
-pub(super) const fn pixel_resolve_name(resolve: PixelResolve) -> &'static str {
-    match resolve {
-        PixelResolve::Blend => "blend",
-        PixelResolve::Step => "step",
-        PixelResolve::Scatter => "scatter",
-    }
-}
-
-pub(super) const fn pixel_fill_name(fill: PixelFill) -> &'static str {
-    match fill {
-        PixelFill::Solid => "solid",
-        PixelFill::Shades => "shades",
     }
 }
 

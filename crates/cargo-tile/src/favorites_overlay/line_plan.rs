@@ -356,6 +356,10 @@ fn append_section(
         Style::default().fg(label_color()),
     ));
     for row in &section.rows {
+        let cells = descriptors
+            .iter()
+            .map(|descriptor| descriptor.render_value(row.settings))
+            .collect::<Vec<_>>();
         let line_index = plan.lines.len();
         if row.lifecycle == FavoriteRowLifecycle::Active {
             plan.selectable_line_index.push(line_index);
@@ -369,7 +373,7 @@ fn append_section(
             },
             tail:               format_table_tail(
                 &row.saved,
-                &row.cells,
+                &cells,
                 table_layout.saved_width,
                 &table_layout.parameter_widths,
                 visible.clone(),
@@ -484,8 +488,9 @@ fn measured_parameter_widths(
         widths.observe_cell_usize(column, UnicodeWidthStr::width(label.as_str()));
     }
     for row in rows {
-        for (column, cell) in row.cells.iter().enumerate() {
-            widths.observe_cell_usize(column, UnicodeWidthStr::width(cell.as_str()));
+        for (column, descriptor) in descriptors.iter().enumerate() {
+            let value = descriptor.render_value(row.settings);
+            widths.observe_cell_usize(column, UnicodeWidthStr::width(value.as_str()));
         }
     }
     widths
@@ -759,6 +764,7 @@ fraying = "leading"
             .expect("moving-band fixture should parse");
         let view = FavoriteRowsView::from(&rows);
         let row = &view.sections[0].rows[0];
+        let cells = BAND_COLUMNS.map(|descriptor| descriptor.render_value(row.settings));
         let header = format_table_line(
             "Saved",
             &headings,
@@ -775,7 +781,7 @@ fraying = "leading"
         );
         let cell_line = format_table_line(
             &row.saved,
-            &row.cells,
+            &cells,
             table_layout.saved_width,
             &table_layout.parameter_widths,
             visible,
