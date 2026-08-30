@@ -121,9 +121,10 @@ contents, but still permits a complete shim to read a validator or invoke an
 engine from a different contract version.
 
 Stage and validate one immutable versioned bundle containing the `cargo-berth`
-binary and the exact `~/.claude/scripts/berth/` tree: every registered shim, the
-Python coordinator and package, `tests/test_hook_rendering.py`, and every
-generated consumer artifact, including `generated/envelope_validation.jq` and
+binary and one complete berth implementation tree: every hook implementation,
+the Python coordinator implementation and package, `tests/test_hook_rendering.py`,
+and every generated consumer artifact, including
+`generated/envelope_validation.jq` and
 `generated/status_payload_tables.py`. Record the bundle identifier and
 timing-harness digest in every timing summary. Nothing inside a published bundle
 is edited or removed in place.
@@ -135,16 +136,18 @@ in-flight measurement straddled two engine binaries. The new fingerprint guard
 refuses such a run, but it cannot identify the unversioned script-tree and
 harness revision behind an older result.
 
-Registered hook paths resolve a stable launcher. The launcher reads the active
-bundle identifier exactly once, resolves that bundle to an absolute path, and
-executes its shim; every shim resolves the Python coordinator, generated
-consumers, and `cargo-berth` from that same captured bundle. Publish by
-atomically replacing the single active bundle identifier in the same directory,
-retaining the previous bundle while an invocation may still hold its path and
-for rollback.
+Registered hook paths and the existing `python3 -m berth.claim_state` entry point
+remain stable bootstraps outside the immutable bundles. Each bootstrap reads the
+active bundle identifier exactly once, resolves that bundle to an absolute path,
+and executes its selected hook or coordinator implementation; every path resolves
+the Python package, generated consumers, and `cargo-berth` from that same captured
+bundle. Publish by atomically replacing the single active bundle identifier in
+the same directory, retaining the previous bundle while an invocation may still
+hold its path and for rollback.
 
-Acceptance holds old invocations open across publication and starts concurrent
-new invocations throughout it. Every invocation observes either the complete old
+Acceptance holds old hook and direct coordinator invocations open across
+publication and starts concurrent new hook and `python3 -m berth.claim_state`
+invocations throughout it. Every invocation observes either the complete old
 bundle or the complete new bundle; none observes partial contents, a missing
 generated directory, or a shim/coordinator/validator/engine version mixture. A
 timing run records one bundle identifier and harness digest, refuses if either
