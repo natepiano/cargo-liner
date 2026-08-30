@@ -80,7 +80,7 @@ fn empty_board_is_headless_and_declares_no_integration_order() {
     );
     assert!(String::from_utf8_lossy(&text.stdout).contains("--json"));
     assert!(!String::from_utf8_lossy(&text.stdout).contains(ENTER_ALTERNATE_SCREEN));
-    assert!(!String::from_utf8_lossy(&text.stdout).contains("ReservationRow"));
+    assert!(!String::from_utf8_lossy(&text.stdout).contains("BoardReservationSnapshot"));
 }
 
 #[test]
@@ -109,7 +109,10 @@ fn waiting_successor_lifecycle_is_queryable_while_omitted_from_board_rows() {
         complete_board["waiting"]["entries"][0]["successor"],
         fixture.successor_id
     );
-    assert!(!has_reservation_row(&complete_board, &fixture.successor_id));
+    assert!(!has_reservation_snapshot(
+        &complete_board,
+        &fixture.successor_id
+    ));
     assert_reservation_lifecycle(
         fixture.repository.path(),
         &fixture.successor_id,
@@ -173,7 +176,7 @@ fn both_unresolved_overlap_endpoints_are_queryable_while_omitted_from_board_rows
     assert_eq!(overlap["blocker"], blocker_id);
     assert_eq!(overlap["deferred"], deferred_id);
     for reservation_id in [&blocker_id, &deferred_id] {
-        assert!(!has_reservation_row(&complete_board, reservation_id));
+        assert!(!has_reservation_snapshot(&complete_board, reservation_id));
     }
     assert_reservation_lifecycle(repository.path(), &blocker_id, "outstanding", &blocker_tip);
     assert_reservation_lifecycle(
@@ -728,8 +731,8 @@ fn every_reachable_edge_readiness_has_its_own_action_or_settlement() {
         "wait for the predecessor to reach trunk",
     );
     assert_eq!(
-        reservation_row(&not_integrated, &fixture.predecessor_id)["integration_evidence"]["status"]
-            ["status"],
+        board_reservation_snapshot(&not_integrated, &fixture.predecessor_id)["integration_evidence"]
+            ["status"]["status"],
         "not_integrated"
     );
 
@@ -803,8 +806,8 @@ fn rewritten_and_unknown_predecessor_evidence_have_distinct_recoveries() {
     let unknown = board_data(unknown_fixture.repository.path());
     assert_waiting_reason(&unknown, "predecessor_object_unknown", "does not resolve");
     assert_eq!(
-        reservation_row(&unknown, &unknown_fixture.predecessor_id)["integration_evidence"]["status"]
-            ["status"],
+        board_reservation_snapshot(&unknown, &unknown_fixture.predecessor_id)["integration_evidence"]
+            ["status"]["status"],
         "object_unknown"
     );
 }
@@ -892,7 +895,7 @@ fn release_dispositions_remain_resolved_when_trunk_rewrites() {
     let dispositions = reservation_ids
         .iter()
         .map(|reservation_id| {
-            reservation_row(&clean, reservation_id)["lifecycle"]["disposition"]["kind"]
+            board_reservation_snapshot(&clean, reservation_id)["lifecycle"]["disposition"]["kind"]
                 .as_str()
                 .expect("released row should carry a disposition")
                 .to_owned()
@@ -908,7 +911,7 @@ fn release_dispositions_remain_resolved_when_trunk_rewrites() {
         ]
     );
     assert_eq!(
-        reservation_row(&clean, &reservation_ids[0])["integration_evidence"]["status"]["status"],
+        board_reservation_snapshot(&clean, &reservation_ids[0])["integration_evidence"]["status"]["status"],
         "integrated"
     );
 
@@ -918,18 +921,18 @@ fn release_dispositions_remain_resolved_when_trunk_rewrites() {
     );
     let rewritten = board_data(repository.path());
     for reservation_id in &reservation_ids[..2] {
-        let row = reservation_row(&rewritten, reservation_id);
-        assert_eq!(row["visibility"], "resolved_audit");
-        assert_eq!(row["edit_blocking_status"], "clear");
+        let reservation_snapshot = board_reservation_snapshot(&rewritten, reservation_id);
+        assert_eq!(reservation_snapshot["visibility"], "resolved_audit");
+        assert_eq!(reservation_snapshot["edit_blocking_status"], "clear");
         assert_eq!(
-            row["integration_evidence"]["status"]["status"],
+            reservation_snapshot["integration_evidence"]["status"]["status"],
             "trunk_rewritten"
         );
     }
     for reservation_id in &reservation_ids[2..] {
-        let row = reservation_row(&rewritten, reservation_id);
-        assert_eq!(row["visibility"], "resolved_audit");
-        assert_eq!(row["edit_blocking_status"], "clear");
+        let reservation_snapshot = board_reservation_snapshot(&rewritten, reservation_id);
+        assert_eq!(reservation_snapshot["visibility"], "resolved_audit");
+        assert_eq!(reservation_snapshot["edit_blocking_status"], "clear");
     }
     assert_eq!(
         rewritten["resolved"]["entries"].as_array().map(Vec::len),
@@ -938,7 +941,7 @@ fn release_dispositions_remain_resolved_when_trunk_rewrites() {
 }
 
 #[test]
-fn board_json_renders_a_cached_scoped_patch_equivalence_proof() {
+fn board_json_renders_a_retained_scoped_patch_equivalence_proof() {
     let repository = initialized_repository();
     let reservation_id =
         reservation_id(&claim(repository.path(), "file:scoped-proof.rs", FIRST_RUN));
@@ -964,7 +967,8 @@ fn board_json_renders_a_cached_scoped_patch_equivalence_proof() {
     );
 
     let board = board_data(repository.path());
-    let status = &reservation_row(&board, &reservation_id)["integration_evidence"]["status"];
+    let status =
+        &board_reservation_snapshot(&board, &reservation_id)["integration_evidence"]["status"];
     assert_eq!(status["status"], "integrated");
     assert_eq!(status["trunk_oid"], trunk_oid);
     assert_eq!(status["proof"], "scoped_patch_equivalent");
@@ -1025,10 +1029,10 @@ fn renew_is_activity_but_unrelated_events_and_head_movement_are_not() {
 
     let data = board_data(repository.path());
     assert_eq!(
-        reservation_row(&data, &fresh_id)["freshness"]["status"],
+        board_reservation_snapshot(&data, &fresh_id)["freshness"]["status"],
         "fresh"
     );
-    let stale_row = reservation_row(&data, &stale_id);
+    let stale_row = board_reservation_snapshot(&data, &stale_id);
     assert_eq!(
         stale_row["freshness"]["status"], "stale",
         "stale row: {stale_row}"
@@ -1123,16 +1127,16 @@ fn unconstrained_holders_show_all_liveness_states_and_distinct_history_failures(
         "unknown",
     ]) {
         assert_eq!(
-            reservation_row(&data, reservation_id)["holder"]["liveness"],
+            board_reservation_snapshot(&data, reservation_id)["holder"]["liveness"],
             expected_liveness
         );
     }
     assert_eq!(
-        reservation_row(&data, &reservation_ids[3])["ahead_behind_main"]["status"],
+        board_reservation_snapshot(&data, &reservation_ids[3])["ahead_behind_main"]["status"],
         "unavailable"
     );
     assert_eq!(
-        reservation_row(&data, &unrelated_id)["ahead_behind_main"]["status"],
+        board_reservation_snapshot(&data, &unrelated_id)["ahead_behind_main"]["status"],
         "unrelated"
     );
 }
@@ -1151,7 +1155,7 @@ fn assert_waiting_reason(data: &serde_json::Value, reason: &str, instruction_fra
     assert_ne!(waiting[0]["action"], "waiting");
 }
 
-fn reservation_row<'board>(
+fn board_reservation_snapshot<'board>(
     data: &'board serde_json::Value,
     reservation_id: &str,
 ) -> &'board serde_json::Value {
@@ -1159,16 +1163,16 @@ fn reservation_row<'board>(
         .into_iter()
         .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
         .map(|entry| entry.get("reservation").unwrap_or(entry))
-        .find(|row| row["reservation_id"] == reservation_id)
-        .expect("reservation should have a board row")
+        .find(|snapshot| snapshot["reservation_id"] == reservation_id)
+        .expect("reservation should have a board snapshot")
 }
 
-fn has_reservation_row(data: &serde_json::Value, reservation_id: &str) -> bool {
+fn has_reservation_snapshot(data: &serde_json::Value, reservation_id: &str) -> bool {
     ["ready_now", "unconstrained_reservations", "resolved"]
         .into_iter()
         .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
         .map(|entry| entry.get("reservation").unwrap_or(entry))
-        .any(|row| row["reservation_id"] == reservation_id)
+        .any(|snapshot| snapshot["reservation_id"] == reservation_id)
 }
 
 fn assert_reservation_lifecycle(
@@ -1217,14 +1221,14 @@ fn assert_integration_statuses(
 ) {
     for reservation_id in reservation_ids {
         assert_eq!(
-            reservation_row(data, reservation_id)["integration_evidence"]["status"]["status"],
+            board_reservation_snapshot(data, reservation_id)["integration_evidence"]["status"]["status"],
             expected_status
         );
     }
 }
 
 fn assert_not_integrated_and_blocking(data: &serde_json::Value, reservation_id: &str) {
-    let reservation = reservation_row(data, reservation_id);
+    let reservation = board_reservation_snapshot(data, reservation_id);
     assert_eq!(
         reservation["integration_evidence"]["status"]["status"],
         "not_integrated"
@@ -1994,7 +1998,7 @@ fn board_git_cost_separates_each_scaling_dimension() {
 }
 
 #[test]
-fn scoped_patch_cache_reuses_positive_verdicts_after_process_restart() {
+fn retained_scoped_patch_verdicts_reuse_positive_results_after_process_restart() {
     let positive =
         rewritten_reservation_fixture(TargetRewrite::Equivalent, ReservationCompletion::Released);
     let first_positive = run_board_with_git_trace(positive.repository.path());
@@ -2008,7 +2012,7 @@ fn scoped_patch_cache_reuses_positive_verdicts_after_process_restart() {
         1
     );
     let positive_board = json_output(&first_positive.output);
-    let positive_status = &reservation_row(
+    let positive_status = &board_reservation_snapshot(
         &positive_board["payload"]["data"],
         &positive.reservation_id,
     )["integration_evidence"]["status"];
@@ -2068,7 +2072,7 @@ fn scoped_patch_cache_reuses_positive_verdicts_after_process_restart() {
 }
 
 #[test]
-fn scoped_patch_cache_reuses_negative_verdicts_after_process_restart() {
+fn retained_scoped_patch_verdicts_reuse_negative_results_after_process_restart() {
     let negative =
         rewritten_reservation_fixture(TargetRewrite::Different, ReservationCompletion::Released);
     let first_negative = run_board_with_git_trace(negative.repository.path());
@@ -2083,7 +2087,7 @@ fn scoped_patch_cache_reuses_negative_verdicts_after_process_restart() {
     );
     let negative_board = json_output(&first_negative.output);
     assert_eq!(
-        reservation_row(&negative_board["payload"]["data"], &negative.reservation_id,)["integration_evidence"]
+        board_reservation_snapshot(&negative_board["payload"]["data"], &negative.reservation_id,)["integration_evidence"]
             ["status"]["status"],
         "trunk_rewritten"
     );
@@ -2187,7 +2191,7 @@ fn persistent_object_unknown_records_one_attempt_without_starving_other_subjects
     assert!(first.output.status.success());
     assert_eq!(merge_base_ancestor_invocations(&first), 0);
     assert_eq!(
-        reservation_row(
+        board_reservation_snapshot(
             &json_output(&first.output)["payload"]["data"],
             &fixture.reservation_ids[0],
         )["integration_evidence"]["status"]["status"],
@@ -2206,7 +2210,7 @@ fn persistent_object_unknown_records_one_attempt_without_starving_other_subjects
             &fixture.target,
         );
         assert_eq!(
-            reservation_row(
+            board_reservation_snapshot(
                 &json_output(&traced.output)["payload"]["data"],
                 &fixture.reservation_ids[0],
             )["integration_evidence"]["status"]["status"],
@@ -2223,7 +2227,7 @@ fn persistent_object_unknown_records_one_attempt_without_starving_other_subjects
             &fixture.target,
         );
         assert_eq!(
-            reservation_row(
+            board_reservation_snapshot(
                 &json_output(&traced.output)["payload"]["data"],
                 &fixture.reservation_ids[0],
             )["integration_evidence"]["status"]["status"],
@@ -2295,7 +2299,8 @@ fn reachability_integrates_every_outstanding_subject_without_scoped_comparisons(
     assert_integration_statuses(several_data, &several.reservation_ids, "integrated");
     for reservation_id in &several.reservation_ids {
         assert_eq!(
-            reservation_row(several_data, reservation_id)["integration_evidence"]["status"]["proof"],
+            board_reservation_snapshot(several_data, reservation_id)["integration_evidence"]["status"]
+                ["proof"],
             "protected_tip_ancestor"
         );
     }
@@ -2325,8 +2330,8 @@ fn deferred_comparison_rejects_a_refuted_ancestor_proof() {
         std::slice::from_ref(&fixture.reservation_id),
         "not_integrated",
     );
-    let row = reservation_row(data, &fixture.reservation_id);
-    assert_eq!(row["edit_blocking_status"], "clear");
+    let reservation_snapshot = board_reservation_snapshot(data, &fixture.reservation_id);
+    assert_eq!(reservation_snapshot["edit_blocking_status"], "clear");
     let alert = data["alerts"]["entries"]
         .as_array()
         .and_then(|alerts| {
@@ -2431,7 +2436,7 @@ fn lost_evidence_alert_covers_an_unknown_protected_tip() {
     );
 
     let unknown_tip_board = board_data(unknown_tip_repository.path());
-    let unknown_tip_row = reservation_row(&unknown_tip_board, &unknown_tip_id);
+    let unknown_tip_row = board_reservation_snapshot(&unknown_tip_board, &unknown_tip_id);
     assert_eq!(unknown_tip_row["edit_blocking_status"], "clear");
     assert_eq!(
         unknown_tip_row["integration_evidence"]["status"]["status"],
@@ -2522,7 +2527,7 @@ fn legacy_release_then_resnapshot_replays_to_a_lost_evidence_alert() {
     );
 
     let legacy_board = board_data(legacy_repository.path());
-    let legacy_row = reservation_row(&legacy_board, &legacy_id);
+    let legacy_row = board_reservation_snapshot(&legacy_board, &legacy_id);
     assert_eq!(legacy_row["lifecycle"]["stage"], "released");
     assert_eq!(legacy_row["edit_blocking_status"], "clear");
     assert!(
@@ -2565,11 +2570,13 @@ fn deferred_comparison_preserves_a_scoped_patch_equivalence_proof() {
         "integrated",
     );
     assert_eq!(
-        reservation_row(data, &fixture.reservation_id)["integration_evidence"]["status"]["proof"],
+        board_reservation_snapshot(data, &fixture.reservation_id)["integration_evidence"]["status"]
+            ["proof"],
         "scoped_patch_equivalent"
     );
     assert_eq!(
-        reservation_row(data, &fixture.reservation_id)["integration_evidence"]["status"]["trunk_oid"],
+        board_reservation_snapshot(data, &fixture.reservation_id)["integration_evidence"]["status"]
+            ["trunk_oid"],
         fixture.target
     );
     assert_integration_statuses(data, &competing_reservations, "trunk_rewritten");
@@ -2677,8 +2684,8 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
 }
 
 #[test]
-fn uncached_comparisons_advance_through_every_distinct_subject() {
-    let fixture = uncached_comparison_reservations_fixture(4);
+fn comparisons_without_retained_verdicts_advance_through_every_distinct_subject() {
+    let fixture = comparison_reservations_without_retained_verdicts_fixture(4);
     let mut compared_scopes = Vec::new();
 
     for _ in 0..fixture.reservation_ids.len() {
@@ -3254,7 +3261,7 @@ fn assert_proof_subject_change_rechecks(
         TargetRewrite::Different => "trunk_rewritten",
     };
     assert_eq!(
-        reservation_row(
+        board_reservation_snapshot(
             &json_output(&rechecked.output)["payload"]["data"],
             &fixture.reservation_id,
         )["integration_evidence"]["status"]["status"],
@@ -3396,8 +3403,10 @@ fn reverted_scoped_patch_proof_fixture() -> RevertedScopedPatchProofFixture {
     let warmed = run_board_with_git_trace(repository.path());
     assert!(warmed.output.status.success());
     let warmed_board = json_output(&warmed.output);
-    let warmed_status = &reservation_row(&warmed_board["payload"]["data"], &reservation_id)["integration_evidence"]
-        ["status"];
+    let warmed_status = &board_reservation_snapshot(
+        &warmed_board["payload"]["data"],
+        &reservation_id,
+    )["integration_evidence"]["status"];
     assert_eq!(warmed_status["status"], "integrated");
     assert_eq!(warmed_status["proof"], "scoped_patch_equivalent");
     assert_eq!(warmed_status["trunk_oid"], earlier_proof_target);
@@ -3522,7 +3531,7 @@ fn warmed_ancestor_proof_after_trunk_rewrite() -> RewrittenReservationFixture {
     assert!(warmed.output.status.success());
     let warmed_board = json_output(&warmed.output);
     assert_eq!(
-        reservation_row(&warmed_board["payload"]["data"], &reservation_id)["integration_evidence"]
+        board_reservation_snapshot(&warmed_board["payload"]["data"], &reservation_id)["integration_evidence"]
             ["status"]["proof"],
         "protected_tip_ancestor"
     );
@@ -3614,13 +3623,13 @@ fn reachable_outstanding_reservations_fixture(
     }
 }
 
-fn uncached_comparison_reservations_fixture(
+fn comparison_reservations_without_retained_verdicts_fixture(
     reservation_count: usize,
 ) -> OutstandingReservationFixture {
     let repository = initialized_repository();
     let phase_start_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     let scopes = (0..reservation_count)
-        .map(|index| format!("src/uncached-{index}.rs"))
+        .map(|index| format!("src/without-retained-verdict-{index}.rs"))
         .collect::<Vec<_>>();
     let reservation_ids = scopes
         .iter()
@@ -3637,7 +3646,7 @@ fn uncached_comparison_reservations_fixture(
             repository.path().join(scope),
             format!("pub fn {}() {{}}\n", fixture_function_name(scope)),
         )
-        .expect("uncached protected source should write");
+        .expect("protected source without a retained verdict should write");
     }
     git(repository.path(), &["add", "src"]);
     git(
@@ -3648,7 +3657,7 @@ fn uncached_comparison_reservations_fixture(
             "commit",
             "--quiet",
             "-m",
-            "uncached protected content",
+            "protected content without a retained verdict",
         ],
     );
     let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);

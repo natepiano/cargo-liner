@@ -7,7 +7,7 @@ use std::fmt::Formatter;
 use std::path::PathBuf;
 
 use super::classification;
-use super::classification::PriorClassification;
+use super::classification::PreLockForeignPathClassification;
 use super::fingerprint;
 use super::git_output::DriftFingerprintError;
 use super::identity::DriftActingIdentity;
@@ -90,14 +90,14 @@ enum DriftTransactionRejection {
 }
 
 struct DriftMutationContext<'observation> {
-    request:                     DriftRequest,
-    ledger:                      &'observation Ledger,
-    acting_identity:             DriftActingIdentity,
-    resolved_edit_authorization: ResolvedEditAuthorization,
-    identity_validation:         CoordinationIdentityValidationContext,
-    path_case:                   PathCase,
-    observation:                 &'observation FingerprintObservation,
-    prior_classification:        &'observation PriorClassification,
+    request:                              DriftRequest,
+    ledger:                               &'observation Ledger,
+    acting_identity:                      DriftActingIdentity,
+    resolved_edit_authorization:          ResolvedEditAuthorization,
+    identity_validation:                  CoordinationIdentityValidationContext,
+    path_case:                            PathCase,
+    observation:                          &'observation FingerprintObservation,
+    pre_lock_foreign_path_classification: &'observation PreLockForeignPathClassification,
 }
 
 /// Execute one cheap or full drift observation and reconcile any changed paths.
@@ -189,10 +189,14 @@ fn prepare_drift_execution(
         worktree_context,
         recovery_command_line,
     );
-    let Some(worktree_id) = comparable_worktree(worktree_context, &request)? else {
-        return Ok(PreparedDriftExecution::NothingToCompare {
-            comparison: request.comparison,
-        });
+    let worktree_id = match comparable_worktree(worktree_context, &request)? {
+        WorktreeComparability::Comparable(worktree_id) => worktree_id,
+        WorktreeComparability::IdentityUnavailable
+        | WorktreeComparability::DeferredPendingRewrite => {
+            return Ok(PreparedDriftExecution::NothingToCompare {
+                comparison: request.comparison,
+            });
+        },
     };
     let initial_reservations = RetainedReservationSet::replay(events)?;
     let acting_identity =
@@ -291,7 +295,7 @@ fn execute_inner(
         return Ok(Enrollment::Enrolled(report));
     }
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
-    let prior_classification = PriorClassification::build(
+    let pre_lock_foreign_path_classification = PreLockForeignPathClassification::build(
         &initial_reservations,
         &initial_subjects.reporting,
         &observation.changes,
@@ -305,7 +309,7 @@ fn execute_inner(
         identity_validation,
         path_case,
         observation: &observation,
-        prior_classification: &prior_classification,
+        pre_lock_foreign_path_classification: &pre_lock_foreign_path_classification,
     };
     let mut report = transact_classification(&mutation_context)?;
     provenance::name_incursion_commits(
@@ -356,7 +360,17 @@ fn validated_drift_identity(
     ))
 }
 
-/// The worktree this run reports for, or nothing when it has no comparison to make.
+/// Whether this run can compare the current worktree now.
+enum WorktreeComparability {
+    /// The worktree has an identity and git is not rewriting it.
+    Comparable(WorktreeId),
+    /// A post-commit run cannot identify the worktree it would compare.
+    IdentityUnavailable,
+    /// Git is still replaying commits, so comparison waits for the final reference move.
+    DeferredPendingRewrite,
+}
+
+/// Determine whether this run can compare the current worktree now.
 ///
 /// A post-commit run stands aside for a worktree with no recorded identity, and every run
 /// stands aside while git is still replaying commits onto a moved base: git runs
@@ -366,7 +380,7 @@ fn validated_drift_identity(
 fn comparable_worktree(
     worktree_context: &WorktreeContext,
     request: &DriftRequest,
-) -> Result<Option<WorktreeId>, DriftExecutionError> {
+) -> Result<WorktreeComparability, DriftExecutionError> {
     let worktree_id =
         match ledger::read_worktree_identity(worktree_context.administrative_directory()) {
             Ok(worktree_id) => worktree_id,
@@ -376,14 +390,14 @@ fn comparable_worktree(
                     DriftReservationSelection::EveryActiveForPostCommit { .. }
                 ) =>
             {
-                return Ok(None);
+                return Ok(WorktreeComparability::IdentityUnavailable);
             },
             Err(error) => return Err(DriftExecutionError::Ledger(error)),
         };
     if git::rewrite_in_progress(worktree_context.administrative_directory()) {
-        return Ok(None);
+        return Ok(WorktreeComparability::DeferredPendingRewrite);
     }
-    Ok(Some(worktree_id))
+    Ok(WorktreeComparability::Comparable(worktree_id))
 }
 
 /// The report to give when no subject has a comparison worth making.
@@ -534,7 +548,7 @@ fn transact_classification(
                 &reservations,
                 &subjects,
                 &context.observation.changes,
-                context.prior_classification,
+                context.pre_lock_foreign_path_classification,
                 context.path_case,
                 context.observation.comparison,
             ) {

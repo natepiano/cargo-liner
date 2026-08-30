@@ -149,12 +149,12 @@ pub(crate) enum LostEvidenceRecovery {
         #[schemars(with = "String")]
         trunk_oid: GitObjectId,
         /// The typed resolution available after the operator verifies the work.
-        action:    RecoveryAction,
+        action:    LostEvidenceRecoveryCommand,
     },
     /// No trunk object resolved; trunk must resolve before any repair is available.
     ResolveTrunkFirst {
         /// The typed resolution that becomes available after trunk resolves.
-        action: RecoveryAction,
+        action: LostEvidenceRecoveryCommand,
     },
 }
 
@@ -162,7 +162,7 @@ pub(crate) enum LostEvidenceRecovery {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(rename = "lost_evidence_recovery_action")]
 #[serde(tag = "action", rename_all = "snake_case")]
-pub(crate) enum RecoveryAction {
+pub(crate) enum LostEvidenceRecoveryCommand {
     /// Replace lost Git-backed evidence with an operator-verified trunk commit.
     ResolveIntegratedAs {
         #[schemars(with = "String")]
@@ -331,7 +331,7 @@ pub(crate) fn for_lost_integration_evidence(
         IntegrationEvidenceStatus::Integrated { .. } => return Ok(Vec::new()),
     };
 
-    let action = RecoveryAction::ResolveIntegratedAs {
+    let action = LostEvidenceRecoveryCommand::ResolveIntegratedAs {
         reservation_id: reservation.id(),
     };
     let recovery = match repository_trunk {

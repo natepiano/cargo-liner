@@ -11,7 +11,7 @@ use std::str::FromStr;
 
 use super::ordering;
 use crate::git;
-use crate::git::GitCommandExecution;
+use crate::git::GitCommandOutputAvailability;
 use crate::git::Reachability;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
@@ -67,13 +67,13 @@ impl Display for FullDriftObservationActivity {
 }
 
 /// The path sets represented by one porcelain working-tree status response.
-pub(super) struct WorkingTreeStatusPaths {
+pub(super) struct WorkingTreeChangePartition {
     pub(super) staged:    Vec<ReservationScopePath>,
     pub(super) unstaged:  Vec<ReservationScopePath>,
     pub(super) untracked: Vec<ReservationScopePath>,
 }
 
-impl WorkingTreeStatusPaths {
+impl WorkingTreeChangePartition {
     pub(super) fn tracked(&self) -> Vec<ReservationScopePath> {
         let mut tracked = self
             .staged
@@ -200,12 +200,14 @@ pub(super) fn run_git(
 }
 
 pub(super) fn completed_git_output(
-    command_execution: GitCommandExecution,
+    output_availability: GitCommandOutputAvailability,
     arguments: &[impl AsRef<str>],
 ) -> Result<Output, DriftFingerprintError> {
-    let output = match command_execution {
-        GitCommandExecution::Completed(output) => output,
-        GitCommandExecution::CouldNotRun(error) => return Err(DriftFingerprintError::Io(error)),
+    let output = match output_availability {
+        GitCommandOutputAvailability::Available(output) => output,
+        GitCommandOutputAvailability::Unavailable(error) => {
+            return Err(DriftFingerprintError::Io(error));
+        },
     };
     if output.status.success() {
         Ok(output)
@@ -353,7 +355,7 @@ pub(super) fn parse_phase_committed_paths(
 
 pub(super) fn parse_working_tree_status(
     bytes: &[u8],
-) -> Result<WorkingTreeStatusPaths, DriftFingerprintError> {
+) -> Result<WorkingTreeChangePartition, DriftFingerprintError> {
     let fields = nul_fields(bytes);
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
@@ -399,7 +401,7 @@ pub(super) fn parse_working_tree_status(
     ordering::normalize_paths(&mut staged);
     ordering::normalize_paths(&mut unstaged);
     ordering::normalize_paths(&mut untracked);
-    Ok(WorkingTreeStatusPaths {
+    Ok(WorkingTreeChangePartition {
         staged,
         unstaged,
         untracked,
@@ -434,7 +436,7 @@ mod tests {
     use super::parse_phase_committed_paths;
     use super::parse_working_tree_status;
     use crate::git;
-    use crate::git::GitCommandExecution;
+    use crate::git::GitCommandOutputAvailability;
     use crate::git::Reachability;
     use crate::ids::GitObjectId;
 
@@ -560,7 +562,7 @@ mod tests {
     #[test]
     fn unavailable_and_unsuccessful_git_executions_remain_distinct() {
         let unavailable = completed_git_output(
-            GitCommandExecution::CouldNotRun(std::io::Error::new(
+            GitCommandOutputAvailability::Unavailable(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "git missing",
             )),
@@ -569,7 +571,7 @@ mod tests {
         assert!(matches!(unavailable, Err(DriftFingerprintError::Io(_))));
 
         let unsuccessful = completed_git_output(
-            GitCommandExecution::Completed(Output {
+            GitCommandOutputAvailability::Available(Output {
                 status: ExitStatus::from_raw(1 << 8),
                 stdout: Vec::new(),
                 stderr: b"rejected".to_vec(),

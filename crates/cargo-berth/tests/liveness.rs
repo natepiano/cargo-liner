@@ -528,14 +528,12 @@ fn foreign_administrative_directory_is_refused_without_sweeping_its_marker() {
                 .expect("foreign path should be UTF-8"),
         ],
     );
-    assert!(
-        run_berth(
-            &worktree,
-            &["claim", "file:local", "--run", FIRST_RUN, "--json"],
-        )
-        .status
-        .success()
+    let local_claim = run_berth(
+        &worktree,
+        &["claim", "file:local", "--run", FIRST_RUN, "--json"],
     );
+    assert!(local_claim.status.success());
+    let local_reservation_id = reservation_id(&local_claim);
     assert!(
         run_berth(
             &foreign_worktree,
@@ -559,6 +557,14 @@ fn foreign_administrative_directory_is_refused_without_sweeping_its_marker() {
 
     let blocked = run_berth(repository.path(), &["check", "file:local", "--json"]);
     assert_eq!(blocked.status.code(), Some(1));
+    let board = run_berth(repository.path(), &["board", "--json"]);
+    assert!(board.status.success());
+    let board_envelope = json_output(&board);
+    assert_eq!(
+        board_reservation_snapshot(&board_envelope["payload"]["data"], &local_reservation_id,)["holder"]
+            ["liveness"],
+        "unknown"
+    );
     assert_eq!(
         fs::read(foreign_marker).expect("foreign marker should remain"),
         marker_before
@@ -1457,6 +1463,18 @@ fn reservation_id(claim: &Output) -> String {
         .as_str()
         .expect("claim should return a reservation id")
         .to_owned()
+}
+
+fn board_reservation_snapshot<'board>(
+    data: &'board serde_json::Value,
+    reservation_id: &str,
+) -> &'board serde_json::Value {
+    ["ready_now", "unconstrained_reservations", "resolved"]
+        .into_iter()
+        .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
+        .map(|entry| entry.get("reservation").unwrap_or(entry))
+        .find(|snapshot| snapshot["reservation_id"] == reservation_id)
+        .expect("reservation should have a board snapshot")
 }
 
 fn commit_file(repository_root: &Path, path: &str, contents: &str, message: &str) {

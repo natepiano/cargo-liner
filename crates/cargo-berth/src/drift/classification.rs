@@ -39,11 +39,11 @@ enum WideningAttempt {
     Attributed,
 }
 
-pub(super) struct PriorClassification {
+pub(super) struct PreLockForeignPathClassification {
     foreign_paths: HashSet<(ReservationId, String)>,
 }
 
-impl PriorClassification {
+impl PreLockForeignPathClassification {
     pub(super) fn build(
         reservations: &RetainedReservationSet,
         subject_ids: &[ReservationId],
@@ -228,7 +228,7 @@ pub(super) fn classify_locked(
     reservations: &RetainedReservationSet,
     subjects: &ResolvedDriftSubjects,
     changes: &ObservedDriftChanges,
-    prior: &PriorClassification,
+    prior: &PreLockForeignPathClassification,
     path_case: PathCase,
     comparison: DriftComparisonMode,
 ) -> Result<DriftTransactionDecision, ReservationReplayError> {

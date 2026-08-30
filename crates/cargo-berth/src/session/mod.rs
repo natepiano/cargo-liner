@@ -21,33 +21,27 @@ use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 
-static CURRENT_PROCESS_HARNESS_SESSION: OnceLock<String> = OnceLock::new();
+static CURRENT_PROCESS_HARNESS_SESSION: OnceLock<HarnessSessionId> = OnceLock::new();
 
 /// One harness session identifier supplied to a single command invocation.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
-struct HarnessSessionId(String);
+pub(crate) struct HarnessSessionId(String);
 
 impl HarnessSessionId {
     const MAXIMUM_CHARACTERS: usize = 256;
 
     fn from_current_process() -> HarnessSessionIdentity {
-        CURRENT_PROCESS_HARNESS_SESSION
-            .get()
-            .cloned()
-            .map_or_else(
-                || {
-                    std::env::var_os(HARNESS_SESSION_ENVIRONMENT)
-                        .and_then(|value| value.into_string().ok())
-                },
-                Some,
+        if let Some(harness_session_id) = CURRENT_PROCESS_HARNESS_SESSION.get().cloned() {
+            return HarnessSessionIdentity::Available(harness_session_id);
+        }
+        std::env::var_os(HARNESS_SESSION_ENVIRONMENT)
+            .and_then(|value| value.into_string().ok())
+            .and_then(|value| value.parse().ok())
+            .map_or(
+                HarnessSessionIdentity::Unavailable,
+                HarnessSessionIdentity::Available,
             )
-            .map_or(HarnessSessionIdentity::Unavailable, |value| {
-                value.parse().ok().map_or(
-                    HarnessSessionIdentity::Unavailable,
-                    HarnessSessionIdentity::Available,
-                )
-            })
     }
 }
 
@@ -62,7 +56,7 @@ pub(crate) enum CurrentProcessHarnessSessionSelection {
 
 /// Select the harness session parsed by a private hook boundary.
 pub(crate) fn select_current_process_harness_session(
-    harness_session_id: String,
+    harness_session_id: HarnessSessionId,
 ) -> CurrentProcessHarnessSessionSelection {
     if CURRENT_PROCESS_HARNESS_SESSION
         .set(harness_session_id)
@@ -188,7 +182,7 @@ pub(crate) enum SessionIdentityStoreError {
 
 /// A harness session id was empty, too long, or contained a control character.
 #[derive(Debug)]
-struct InvalidHarnessSessionId;
+pub(crate) struct InvalidHarnessSessionId;
 
 /// Resolve the current process's harness session from the mapping beside the journal.
 pub(crate) fn resolve(ledger_directory: &Path) -> SessionIdentityLookup {

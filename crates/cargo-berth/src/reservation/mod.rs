@@ -115,21 +115,21 @@ impl From<ScopedPatchEquivalenceVerdict> for DurableScopedPatchComparison {
 
 /// One definitive scoped patch verdict retained for an immutable target.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ScopedPatchEquivalenceCacheEntry {
+struct RetainedScopedPatchTargetVerdict {
     subject: IntegrationProofSubjectRevision,
     target:  GitObjectId,
     verdict: ScopedPatchEquivalenceVerdict,
 }
 
-/// The bounded durable verdict cache for the most recently recorded reconciliation targets.
+/// Durable scoped patch verdicts retained for the most recently recorded reconciliation targets.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ScopedPatchEquivalenceCache {
-    entries: VecDeque<ScopedPatchEquivalenceCacheEntry>,
+pub(crate) struct RetainedScopedPatchTargetVerdicts {
+    entries: VecDeque<RetainedScopedPatchTargetVerdict>,
 }
 
-/// Whether the durable scoped patch cache answers one requested subject and target.
+/// Whether a retained scoped patch verdict applies to one requested subject and target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ScopedPatchEquivalenceCacheLookup {
+pub(crate) enum ScopedPatchTargetVerdictAvailability {
     /// The stored subject and target match the request.
     Hit(DurableScopedPatchComparison),
     /// No stored verdict applies to the request.
@@ -150,28 +150,28 @@ declare_wire_enum! {
 
 /// One definitive successor-incorporation verdict retained for an immutable head.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct SuccessorScopedPatchEquivalenceCacheEntry {
+struct RetainedSuccessorScopedPatchTargetVerdict {
     subject:        IntegrationProofSubjectRevision,
     successor_head: GitObjectId,
     verdict:        SuccessorScopedPatchEquivalenceVerdict,
 }
 
-/// The bounded durable verdict cache for recently observed successor heads.
+/// Durable scoped patch verdicts retained for recently observed successor heads.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SuccessorScopedPatchEquivalenceCache {
-    entries: VecDeque<SuccessorScopedPatchEquivalenceCacheEntry>,
+pub(crate) struct RetainedSuccessorScopedPatchTargetVerdicts {
+    entries: VecDeque<RetainedSuccessorScopedPatchTargetVerdict>,
 }
 
-/// Whether the successor-incorporation cache answers one proof subject and head.
+/// Whether a retained successor-incorporation verdict applies to one proof subject and head.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SuccessorScopedPatchEquivalenceCacheLookup {
+pub(crate) enum SuccessorScopedPatchTargetVerdictAvailability {
     /// The stored proof subject and successor head match the request.
     Hit(SuccessorScopedPatchEquivalenceVerdict),
     /// No stored successor-incorporation verdict applies to the request.
     Miss,
 }
 
-/// The scheduling order for uncached scoped comparisons at one trunk target.
+/// The scheduling order for scoped comparisons without a retained verdict at one trunk target.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum ScopedPatchEvaluationPriority {
     /// This proof subject has not been compared with the target.
@@ -188,13 +188,13 @@ struct ScopedPatchComparisonAttempt {
     generation: ProjectionGeneration,
 }
 
-/// The bounded attempt history for the most recently recorded reconciliation targets.
+/// The bounded evaluation schedule for the most recently recorded reconciliation targets.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct ScopedPatchComparisonAttemptHistory {
+struct ScopedPatchTargetEvaluationSchedule {
     entries: VecDeque<ScopedPatchComparisonAttempt>,
 }
 
-impl ScopedPatchComparisonAttemptHistory {
+impl ScopedPatchTargetEvaluationSchedule {
     fn priority(
         &self,
         subject: IntegrationProofSubjectRevision,
@@ -229,15 +229,15 @@ impl ScopedPatchComparisonAttemptHistory {
 
 /// Attempt generations for recent successor heads under the current proof subject.
 ///
-/// The retention limit matches the successor verdict cache, so an unvisited retained head sorts
-/// ahead of retried transient failures. Recording a new proof subject removes every superseded
-/// subject before applying that limit.
+/// The retention limit matches the retained successor verdict limit, so an unvisited retained
+/// head sorts ahead of retried transient failures. Recording a new proof subject removes every
+/// superseded subject before applying that limit.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct SuccessorScopedPatchComparisonAttemptHistory {
+struct SuccessorScopedPatchTargetEvaluationSchedule {
     entries: VecDeque<ScopedPatchComparisonAttempt>,
 }
 
-impl SuccessorScopedPatchComparisonAttemptHistory {
+impl SuccessorScopedPatchTargetEvaluationSchedule {
     fn priority(
         &self,
         subject: IntegrationProofSubjectRevision,
@@ -270,19 +270,19 @@ impl SuccessorScopedPatchComparisonAttemptHistory {
     }
 }
 
-impl ScopedPatchEquivalenceCache {
+impl RetainedScopedPatchTargetVerdicts {
     /// Look up a verdict only when both immutable proof inputs match.
     pub(crate) fn lookup(
         &self,
         subject: IntegrationProofSubjectRevision,
         target: &GitObjectId,
-    ) -> ScopedPatchEquivalenceCacheLookup {
+    ) -> ScopedPatchTargetVerdictAvailability {
         for entry in &self.entries {
             if entry.subject == subject && entry.target == *target {
-                return ScopedPatchEquivalenceCacheLookup::Hit(entry.verdict.into());
+                return ScopedPatchTargetVerdictAvailability::Hit(entry.verdict.into());
             }
         }
-        ScopedPatchEquivalenceCacheLookup::Miss
+        ScopedPatchTargetVerdictAvailability::Miss
     }
 
     fn record(
@@ -296,7 +296,7 @@ impl ScopedPatchEquivalenceCache {
         if self.entries.len() == SCOPED_PATCH_TARGET_RETENTION_LIMIT {
             std::mem::drop(self.entries.pop_front());
         }
-        self.entries.push_back(ScopedPatchEquivalenceCacheEntry {
+        self.entries.push_back(RetainedScopedPatchTargetVerdict {
             subject,
             target: target.clone(),
             verdict,
@@ -304,19 +304,19 @@ impl ScopedPatchEquivalenceCache {
     }
 }
 
-impl SuccessorScopedPatchEquivalenceCache {
+impl RetainedSuccessorScopedPatchTargetVerdicts {
     /// Look up a verdict only when both immutable successor-proof inputs match.
     pub(crate) fn lookup(
         &self,
         subject: IntegrationProofSubjectRevision,
         successor_head: &GitObjectId,
-    ) -> SuccessorScopedPatchEquivalenceCacheLookup {
+    ) -> SuccessorScopedPatchTargetVerdictAvailability {
         for entry in &self.entries {
             if entry.subject == subject && entry.successor_head == *successor_head {
-                return SuccessorScopedPatchEquivalenceCacheLookup::Hit(entry.verdict);
+                return SuccessorScopedPatchTargetVerdictAvailability::Hit(entry.verdict);
             }
         }
-        SuccessorScopedPatchEquivalenceCacheLookup::Miss
+        SuccessorScopedPatchTargetVerdictAvailability::Miss
     }
 
     fn record(
@@ -331,7 +331,7 @@ impl SuccessorScopedPatchEquivalenceCache {
             std::mem::drop(self.entries.pop_front());
         }
         self.entries
-            .push_back(SuccessorScopedPatchEquivalenceCacheEntry {
+            .push_back(RetainedSuccessorScopedPatchTargetVerdict {
                 subject,
                 successor_head: successor_head.clone(),
                 verdict,
@@ -349,28 +349,28 @@ pub(crate) struct RetainedReservationSet {
 /// One reservation retained for overlap, evidence, and audit decisions.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Reservation {
-    id:                         ReservationId,
-    revision:                   ReservationRevision,
-    integration_proof_subject:  IntegrationProofSubjectRevision,
-    scoped_patch_verdicts:      ScopedPatchEquivalenceCache,
-    scoped_patch_attempts:      ScopedPatchComparisonAttemptHistory,
-    successor_patch_verdicts:   SuccessorScopedPatchEquivalenceCache,
-    successor_patch_attempts:   SuccessorScopedPatchComparisonAttemptHistory,
-    scopes:                     ReservationScopeSet,
-    authorizations:             Vec<ConflictAuthorization>,
-    source:                     ClaimSource,
-    purpose:                    ReservationPurpose,
-    head_snapshot:              ClaimHeadSnapshot,
-    phase_start_head:           ProtectedPhaseStartHead,
-    actor:                      JournalActor,
-    lifecycle:                  ReservationLifecycle,
-    retained_protected_tip:     RetainedProtectedTip,
-    integration_trunk_snapshot: IntegrationTrunkSnapshot,
-    integration_status:         IntegrationEvidenceStatus,
-    worktree_root:              CanonicalWorktreeRoot,
-    worktree_locator:           WorktreeAdministrativeLocator,
-    claimed_at:                 RecordedAt,
-    last_activity_at:           RecordedAt,
+    id:                                                ReservationId,
+    revision:                                          ReservationRevision,
+    integration_proof_subject:                         IntegrationProofSubjectRevision,
+    retained_scoped_patch_target_verdicts:             RetainedScopedPatchTargetVerdicts,
+    scoped_patch_target_evaluation_schedule:           ScopedPatchTargetEvaluationSchedule,
+    retained_successor_scoped_patch_verdicts:          RetainedSuccessorScopedPatchTargetVerdicts,
+    successor_scoped_patch_target_evaluation_schedule: SuccessorScopedPatchTargetEvaluationSchedule,
+    scopes:                                            ReservationScopeSet,
+    authorizations:                                    Vec<ConflictAuthorization>,
+    source:                                            ClaimSource,
+    purpose:                                           ReservationPurpose,
+    head_snapshot:                                     ClaimHeadSnapshot,
+    phase_start_head:                                  ProtectedPhaseStartHead,
+    actor:                                             JournalActor,
+    lifecycle:                                         ReservationLifecycle,
+    retained_protected_tip:                            RetainedProtectedTip,
+    integration_trunk_snapshot:                        IntegrationTrunkSnapshot,
+    integration_status:                                IntegrationEvidenceStatus,
+    worktree_root:                                     CanonicalWorktreeRoot,
+    worktree_locator:                                  WorktreeAdministrativeLocator,
+    claimed_at:                                        RecordedAt,
+    last_activity_at:                                  RecordedAt,
 }
 
 /// Whether a holder has explicitly demonstrated recent reservation activity.
@@ -1285,30 +1285,43 @@ impl RetainedReservationSet {
             return Err(ReservationReplayError::DuplicateClaim(replayed_claim.id));
         }
         self.reservations.push(Reservation {
-            id:                         replayed_claim.id,
-            revision:                   ReservationRevision::from(1),
-            integration_proof_subject:  IntegrationProofSubjectRevision::INITIAL,
-            scoped_patch_verdicts:      ScopedPatchEquivalenceCache::default(),
-            scoped_patch_attempts:      ScopedPatchComparisonAttemptHistory::default(),
-            successor_patch_verdicts:   SuccessorScopedPatchEquivalenceCache::default(),
-            successor_patch_attempts:   SuccessorScopedPatchComparisonAttemptHistory::default(),
-            scopes:                     replayed_claim.scopes.clone(),
-            authorizations:             vec![replayed_claim.authorization.clone()],
-            source:                     replayed_claim.source.clone(),
-            purpose:                    replayed_claim.purpose.clone(),
-            head_snapshot:              replayed_claim.head_snapshot.clone(),
-            phase_start_head:           replayed_claim.phase_start_head.clone(),
-            actor:                      replayed_claim.actor.clone(),
-            lifecycle:                  ReservationLifecycle::Active,
-            retained_protected_tip:     RetainedProtectedTip::NotCheckpointed,
-            integration_trunk_snapshot: IntegrationTrunkSnapshot::AtClaim(
+            id:                                                replayed_claim.id,
+            revision:                                          ReservationRevision::from(1),
+            integration_proof_subject:
+                IntegrationProofSubjectRevision::INITIAL,
+            retained_scoped_patch_target_verdicts:
+                RetainedScopedPatchTargetVerdicts::default(),
+            scoped_patch_target_evaluation_schedule:
+                ScopedPatchTargetEvaluationSchedule::default(),
+            retained_successor_scoped_patch_verdicts:
+                RetainedSuccessorScopedPatchTargetVerdicts::default(),
+            successor_scoped_patch_target_evaluation_schedule:
+                SuccessorScopedPatchTargetEvaluationSchedule::default(),
+            scopes:                                            replayed_claim.scopes.clone(),
+            authorizations:                                    vec![
+                replayed_claim.authorization.clone(),
+            ],
+            source:                                            replayed_claim.source.clone(),
+            purpose:                                           replayed_claim.purpose.clone(),
+            head_snapshot:                                     replayed_claim.head_snapshot.clone(),
+            phase_start_head:                                  replayed_claim
+                .phase_start_head
+                .clone(),
+            actor:                                             replayed_claim.actor.clone(),
+            lifecycle:                                         ReservationLifecycle::Active,
+            retained_protected_tip:
+                RetainedProtectedTip::NotCheckpointed,
+            integration_trunk_snapshot:                        IntegrationTrunkSnapshot::AtClaim(
                 replayed_claim.trunk_at_claim.clone(),
             ),
-            integration_status:         IntegrationEvidenceStatus::NotIntegrated,
-            worktree_root:              replayed_claim.worktree_root.clone(),
-            worktree_locator:           replayed_claim.worktree_locator.clone(),
-            claimed_at:                 replayed_claim.recorded_at.clone(),
-            last_activity_at:           replayed_claim.recorded_at.clone(),
+            integration_status:
+                IntegrationEvidenceStatus::NotIntegrated,
+            worktree_root:                                     replayed_claim.worktree_root.clone(),
+            worktree_locator:                                  replayed_claim
+                .worktree_locator
+                .clone(),
+            claimed_at:                                        replayed_claim.recorded_at.clone(),
+            last_activity_at:                                  replayed_claim.recorded_at.clone(),
         });
         Ok(())
     }
@@ -1486,10 +1499,10 @@ impl RetainedReservationSet {
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.scoped_patch_comparison_subject_mut(reservation_id, subject)?;
         reservation
-            .scoped_patch_verdicts
+            .retained_scoped_patch_target_verdicts
             .record(subject, target, verdict);
         reservation
-            .scoped_patch_attempts
+            .scoped_patch_target_evaluation_schedule
             .record(subject, target, generation);
         reservation.advance_revision()
     }
@@ -1503,7 +1516,7 @@ impl RetainedReservationSet {
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.scoped_patch_comparison_subject_mut(reservation_id, subject)?;
         reservation
-            .scoped_patch_attempts
+            .scoped_patch_target_evaluation_schedule
             .record(subject, target, generation);
         reservation.advance_revision()
     }
@@ -1518,11 +1531,13 @@ impl RetainedReservationSet {
     ) -> Result<(), ReservationReplayError> {
         let predecessor =
             self.scoped_patch_comparison_subject_mut(predecessor_reservation_id, subject)?;
+        predecessor.retained_successor_scoped_patch_verdicts.record(
+            subject,
+            successor_head,
+            verdict,
+        );
         predecessor
-            .successor_patch_verdicts
-            .record(subject, successor_head, verdict);
-        predecessor
-            .successor_patch_attempts
+            .successor_scoped_patch_target_evaluation_schedule
             .record(subject, successor_head, generation);
         predecessor.advance_revision()
     }
@@ -1537,7 +1552,7 @@ impl RetainedReservationSet {
         let predecessor =
             self.scoped_patch_comparison_subject_mut(predecessor_reservation_id, subject)?;
         predecessor
-            .successor_patch_attempts
+            .successor_scoped_patch_target_evaluation_schedule
             .record(subject, successor_head, generation);
         predecessor.advance_revision()
     }
@@ -1776,10 +1791,13 @@ impl Reservation {
             .checked_add(1)
             .map(IntegrationProofSubjectRevision)
             .ok_or(ReservationReplayError::IntegrationProofSubjectRevisionExhausted(self.id))?;
-        self.scoped_patch_verdicts = ScopedPatchEquivalenceCache::default();
-        self.scoped_patch_attempts = ScopedPatchComparisonAttemptHistory::default();
-        self.successor_patch_verdicts = SuccessorScopedPatchEquivalenceCache::default();
-        self.successor_patch_attempts = SuccessorScopedPatchComparisonAttemptHistory::default();
+        self.retained_scoped_patch_target_verdicts = RetainedScopedPatchTargetVerdicts::default();
+        self.scoped_patch_target_evaluation_schedule =
+            ScopedPatchTargetEvaluationSchedule::default();
+        self.retained_successor_scoped_patch_verdicts =
+            RetainedSuccessorScopedPatchTargetVerdicts::default();
+        self.successor_scoped_patch_target_evaluation_schedule =
+            SuccessorScopedPatchTargetEvaluationSchedule::default();
         Ok(())
     }
 
@@ -1791,8 +1809,10 @@ impl Reservation {
     }
 
     /// Borrow the durable scoped patch verdict for this reservation.
-    pub(crate) const fn scoped_patch_equivalence_cache(&self) -> &ScopedPatchEquivalenceCache {
-        &self.scoped_patch_verdicts
+    pub(crate) const fn retained_scoped_patch_target_verdicts(
+        &self,
+    ) -> &RetainedScopedPatchTargetVerdicts {
+        &self.retained_scoped_patch_target_verdicts
     }
 
     /// Return this proof subject's scheduling priority for one trunk target.
@@ -1800,15 +1820,15 @@ impl Reservation {
         &self,
         target: &GitObjectId,
     ) -> ScopedPatchEvaluationPriority {
-        self.scoped_patch_attempts
+        self.scoped_patch_target_evaluation_schedule
             .priority(self.integration_proof_subject, target)
     }
 
-    /// Borrow cached scoped-equivalence verdicts for successor incorporation.
-    pub(crate) const fn successor_scoped_patch_equivalence_cache(
+    /// Borrow retained scoped patch verdicts for successor incorporation.
+    pub(crate) const fn retained_successor_scoped_patch_target_verdicts(
         &self,
-    ) -> &SuccessorScopedPatchEquivalenceCache {
-        &self.successor_patch_verdicts
+    ) -> &RetainedSuccessorScopedPatchTargetVerdicts {
+        &self.retained_successor_scoped_patch_verdicts
     }
 
     /// Return this proof subject's scheduling priority for one successor head.
@@ -1816,7 +1836,7 @@ impl Reservation {
         &self,
         successor_head: &GitObjectId,
     ) -> ScopedPatchEvaluationPriority {
-        self.successor_patch_attempts
+        self.successor_scoped_patch_target_evaluation_schedule
             .priority(self.integration_proof_subject, successor_head)
     }
 
@@ -2155,9 +2175,9 @@ mod tests {
     use super::IntegrationProofSubjectRevision;
     use super::ReservationEvidenceState;
     use super::RetainedReservationSet;
-    use super::ScopedPatchEquivalenceCacheLookup;
     use super::ScopedPatchEvaluationPriority;
-    use super::SuccessorScopedPatchComparisonAttemptHistory;
+    use super::ScopedPatchTargetVerdictAvailability;
+    use super::SuccessorScopedPatchTargetEvaluationSchedule;
     use super::constants::SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT;
     use super::lifecycle::EditBlockingStatus;
     use crate::ids::CoordinationRunId;
@@ -2400,16 +2420,16 @@ mod tests {
 
             assert_eq!(
                 reservation
-                    .scoped_patch_equivalence_cache()
+                    .retained_scoped_patch_target_verdicts()
                     .lookup(reservation.integration_proof_subject_revision(), &target,),
-                ScopedPatchEquivalenceCacheLookup::Hit(expected)
+                ScopedPatchTargetVerdictAvailability::Hit(expected)
             );
         }
         Ok(())
     }
 
     #[test]
-    fn scoped_patch_history_retains_two_targets_and_evicts_the_oldest()
+    fn retained_scoped_patch_verdicts_keep_two_targets_and_evict_the_oldest()
     -> Result<(), Box<dyn std::error::Error>> {
         let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
         let first_target = TRUNK_OID.parse::<GitObjectId>()?;
@@ -2427,38 +2447,38 @@ mod tests {
         let reservation = first_two.reservation(reservation_id)?;
 
         assert_eq!(
-            reservation.scoped_patch_equivalence_cache().lookup(
+            reservation.retained_scoped_patch_target_verdicts().lookup(
                 reservation.integration_proof_subject_revision(),
                 &first_target
             ),
-            ScopedPatchEquivalenceCacheLookup::Hit(DurableScopedPatchComparison::Equivalent)
+            ScopedPatchTargetVerdictAvailability::Hit(DurableScopedPatchComparison::Equivalent)
         );
         assert_eq!(
-            reservation.scoped_patch_equivalence_cache().lookup(
+            reservation.retained_scoped_patch_target_verdicts().lookup(
                 reservation.integration_proof_subject_revision(),
                 &second_target,
             ),
-            ScopedPatchEquivalenceCacheLookup::Hit(DurableScopedPatchComparison::Different)
+            ScopedPatchTargetVerdictAvailability::Hit(DurableScopedPatchComparison::Different)
         );
 
         let third = scoped_patch_equivalence_checked_at(5, THIRD_TRUNK_OID, "integrated")?;
         let retained = RetainedReservationSet::replay(&[claim, checkpoint, first, second, third])?;
         let reservation = retained.reservation(reservation_id)?;
 
-        assert_cache_miss(reservation, &first_target);
+        assert_no_retained_scoped_patch_target_verdict(reservation, &first_target);
         assert_eq!(
-            reservation.scoped_patch_equivalence_cache().lookup(
+            reservation.retained_scoped_patch_target_verdicts().lookup(
                 reservation.integration_proof_subject_revision(),
                 &second_target,
             ),
-            ScopedPatchEquivalenceCacheLookup::Hit(DurableScopedPatchComparison::Different)
+            ScopedPatchTargetVerdictAvailability::Hit(DurableScopedPatchComparison::Different)
         );
         assert_eq!(
-            reservation.scoped_patch_equivalence_cache().lookup(
+            reservation.retained_scoped_patch_target_verdicts().lookup(
                 reservation.integration_proof_subject_revision(),
                 &third_target,
             ),
-            ScopedPatchEquivalenceCacheLookup::Hit(DurableScopedPatchComparison::Equivalent)
+            ScopedPatchTargetVerdictAvailability::Hit(DurableScopedPatchComparison::Equivalent)
         );
         assert_eq!(
             reservation.scoped_patch_evaluation_priority(&first_target),
@@ -2476,43 +2496,43 @@ mod tests {
     }
 
     #[test]
-    fn successor_attempt_history_retains_only_bounded_current_subject_heads()
+    fn successor_scoped_patch_schedule_retains_only_bounded_current_subject_heads()
     -> Result<(), Box<dyn std::error::Error>> {
         let superseded_subject = IntegrationProofSubjectRevision::INITIAL;
         let current_subject = IntegrationProofSubjectRevision(2);
         let superseded_head = TRUNK_OID.parse::<GitObjectId>()?;
         let generation = ProjectionGeneration::from(3);
-        let mut history = SuccessorScopedPatchComparisonAttemptHistory::default();
-        history.record(superseded_subject, &superseded_head, generation);
+        let mut evaluation_schedule = SuccessorScopedPatchTargetEvaluationSchedule::default();
+        evaluation_schedule.record(superseded_subject, &superseded_head, generation);
 
         for successor_number in 1..=SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT + 1 {
             let successor_head = format!("{successor_number:040x}").parse::<GitObjectId>()?;
-            history.record(current_subject, &successor_head, generation);
+            evaluation_schedule.record(current_subject, &successor_head, generation);
         }
 
         let evicted_head = format!("{:040x}", 1).parse::<GitObjectId>()?;
         let oldest_retained_head = format!("{:040x}", 2).parse::<GitObjectId>()?;
         assert_eq!(
-            history.entries.len(),
+            evaluation_schedule.entries.len(),
             SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT
         );
         assert_eq!(
-            history.priority(superseded_subject, &superseded_head),
+            evaluation_schedule.priority(superseded_subject, &superseded_head),
             ScopedPatchEvaluationPriority::NotAttempted
         );
         assert_eq!(
-            history.priority(current_subject, &evicted_head),
+            evaluation_schedule.priority(current_subject, &evicted_head),
             ScopedPatchEvaluationPriority::NotAttempted
         );
         assert_eq!(
-            history.priority(current_subject, &oldest_retained_head),
+            evaluation_schedule.priority(current_subject, &oldest_retained_head),
             ScopedPatchEvaluationPriority::LastAttemptedAt(generation)
         );
         Ok(())
     }
 
     #[test]
-    fn proof_subject_changes_invalidate_widen_resnapshot_and_replacement_caches()
+    fn proof_subject_changes_remove_retained_verdicts_after_widen_resnapshot_and_replacement()
     -> Result<(), Box<dyn std::error::Error>> {
         let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
         let target = TRUNK_OID.parse::<GitObjectId>()?;
@@ -2535,7 +2555,10 @@ mod tests {
             checked.clone(),
             widen,
         ])?;
-        assert_cache_miss(widened.reservation(reservation_id)?, &target);
+        assert_no_retained_scoped_patch_target_verdict(
+            widened.reservation(reservation_id)?,
+            &target,
+        );
 
         let resnapshot = journal_event(
             4,
@@ -2555,7 +2578,10 @@ mod tests {
             checked.clone(),
             resnapshot,
         ])?;
-        assert_cache_miss(resnapshotted.reservation(reservation_id)?, &target);
+        assert_no_retained_scoped_patch_target_verdict(
+            resnapshotted.reservation(reservation_id)?,
+            &target,
+        );
 
         let replacement = journal_event(
             6,
@@ -2577,7 +2603,10 @@ mod tests {
             checked,
             replacement,
         ])?;
-        assert_cache_miss(replaced.reservation(reservation_id)?, &target);
+        assert_no_retained_scoped_patch_target_verdict(
+            replaced.reservation(reservation_id)?,
+            &target,
+        );
         Ok(())
     }
 
@@ -2897,12 +2926,15 @@ mod tests {
         Ok(())
     }
 
-    fn assert_cache_miss(reservation: &super::Reservation, target: &GitObjectId) {
+    fn assert_no_retained_scoped_patch_target_verdict(
+        reservation: &super::Reservation,
+        target: &GitObjectId,
+    ) {
         assert_eq!(
             reservation
-                .scoped_patch_equivalence_cache()
+                .retained_scoped_patch_target_verdicts()
                 .lookup(reservation.integration_proof_subject_revision(), target,),
-            ScopedPatchEquivalenceCacheLookup::Miss
+            ScopedPatchTargetVerdictAvailability::Miss
         );
     }
 

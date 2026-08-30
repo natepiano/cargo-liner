@@ -30,8 +30,8 @@ use crate::gate::permit::PendingBypassMarkerImport;
 use crate::gate::permit::RecoveredPendingBypassMarker;
 use crate::git;
 use crate::git::CandidateHeadReachability;
-use crate::git::DescendantCommitQuery;
 use crate::git::GitError;
+use crate::git::ProtectedTipSuccessorHeadClassification;
 use crate::git::ProtectedTipSuccessorHeads;
 use crate::git::Reachability;
 use crate::git::ScopedPatchComparison;
@@ -78,11 +78,11 @@ use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::ScopedPatchComparisonObservation;
-use crate::reservation::ScopedPatchEquivalenceCacheLookup;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
 use crate::reservation::ScopedPatchEvaluationPriority;
-use crate::reservation::SuccessorScopedPatchEquivalenceCacheLookup;
+use crate::reservation::ScopedPatchTargetVerdictAvailability;
 use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
+use crate::reservation::SuccessorScopedPatchTargetVerdictAvailability;
 use crate::scope::ScopeKind;
 use crate::worktree::WorktreeHead;
 use crate::worktree::WorktreeLiveness;
@@ -180,15 +180,16 @@ struct ReconciliationPlan {
 
 struct ReconciliationEvidenceContext<'context> {
     berth_config:                             &'context BerthConfig,
-    scoped_patch_evaluation_memo:             &'context mut ScopedPatchEvaluationMemo,
-    successor_scoped_patch_evaluation_budget: &'context mut SuccessorScopedPatchEvaluationBudget,
+    scoped_patch_evaluation_budget: &'context mut ReconciliationScopedPatchEvaluationBudget,
+    successor_scoped_patch_evaluation_budget:
+        &'context mut ReconciliationSuccessorScopedPatchEvaluationBudget,
 }
 
 struct TargetIntegrationEvidenceContext<'context> {
-    repository_root:              &'context Path,
-    repository_trunk:             &'context RepositoryTrunk,
-    integration_reachability:     &'context BatchedIntegrationReachability,
-    scoped_patch_evaluation_memo: &'context mut ScopedPatchEvaluationMemo,
+    repository_root:                &'context Path,
+    repository_trunk:               &'context RepositoryTrunk,
+    integration_reachability:       &'context BatchedIntegrationReachability,
+    scoped_patch_evaluation_budget: &'context mut ReconciliationScopedPatchEvaluationBudget,
 }
 
 #[derive(Clone)]
@@ -377,7 +378,7 @@ impl BatchedIntegrationReachability {
 
 #[derive(Clone, Copy)]
 enum EvidenceRevalidationObservation {
-    /// Current git evidence or a durable cache verdict supplies the status.
+    /// Current git evidence or a retained durable verdict supplies the status.
     Apply,
     /// The bounded scoped comparison did not run, so materialized evidence was retained.
     PreserveMaterialized,
@@ -389,12 +390,12 @@ enum EvidenceRevalidationObservation {
 enum ScopedPatchComparisonJournalUpdate {
     /// No new definitive verdict needs a journal record.
     Unchanged,
-    /// A comparison ran but produced no durable cache verdict.
+    /// A comparison ran but produced no durable verdict to retain.
     Attempted {
         subject: IntegrationProofSubjectRevision,
         target:  GitObjectId,
     },
-    /// A cache miss produced a definitive verdict for this subject and target.
+    /// No retained verdict existed, and the comparison produced a definitive result.
     Checked {
         subject: IntegrationProofSubjectRevision,
         target:  GitObjectId,
@@ -445,7 +446,7 @@ enum ScopedPatchEvaluationContext {
 
 /// Reuses identical proof inputs and admits one scoped comparison per trunk target.
 #[derive(Default)]
-struct ScopedPatchEvaluationMemo {
+struct ReconciliationScopedPatchEvaluationBudget {
     comparisons:       HashMap<ScopedPatchEvaluationKey, ScopedPatchComparison>,
     evaluated_targets: HashSet<GitObjectId>,
 }
@@ -455,11 +456,11 @@ struct ScopedPatchEvaluationMemo {
 /// Reachability remains batched for all heads. Scoped equivalence is deliberately admitted once,
 /// and durable attempt generations rotate the next cold target to the front on later passes.
 #[derive(Default)]
-struct SuccessorScopedPatchEvaluationBudget {
+struct ReconciliationSuccessorScopedPatchEvaluationBudget {
     comparison_performed: bool,
 }
 
-impl SuccessorScopedPatchEvaluationBudget {
+impl ReconciliationSuccessorScopedPatchEvaluationBudget {
     fn evaluate(
         &mut self,
         evaluate: impl FnOnce() -> ScopedPatchComparison,
@@ -518,7 +519,7 @@ struct SuccessorIncorporationObservation {
     operations:     Vec<JournalOperation>,
 }
 
-impl ScopedPatchEvaluationMemo {
+impl ReconciliationScopedPatchEvaluationBudget {
     fn evaluate(
         &mut self,
         scoped_patch_evaluation_key: ScopedPatchEvaluationKey,
@@ -801,12 +802,12 @@ fn prepare_reconciliation_transaction(
         .map_err(ReconciliationPlanningError::Reservation)?;
     let ordering_graph =
         OrderingGraph::replay(state.events()).map_err(ReconciliationPlanningError::Edge)?;
-    let mut scoped_patch_evaluation_memo = ScopedPatchEvaluationMemo::default();
+    let mut scoped_patch_evaluation_budget = ReconciliationScopedPatchEvaluationBudget::default();
     let mut successor_scoped_patch_evaluation_budget =
-        SuccessorScopedPatchEvaluationBudget::default();
+        ReconciliationSuccessorScopedPatchEvaluationBudget::default();
     let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
         berth_config,
-        scoped_patch_evaluation_memo: &mut scoped_patch_evaluation_memo,
+        scoped_patch_evaluation_budget: &mut scoped_patch_evaluation_budget,
         successor_scoped_patch_evaluation_budget: &mut successor_scoped_patch_evaluation_budget,
     };
     let mut reconciliation_plan = build_plan(
@@ -875,8 +876,8 @@ fn build_plan(
                 repository_root,
                 repository_trunk: &repository_trunk,
                 integration_reachability: &integration_reachability,
-                scoped_patch_evaluation_memo: reconciliation_evidence_context
-                    .scoped_patch_evaluation_memo,
+                scoped_patch_evaluation_budget: reconciliation_evidence_context
+                    .scoped_patch_evaluation_budget,
             };
             let indexed_evidence = scoped_patch_evaluation_order(reservations, &repository_trunk)
                 .into_iter()
@@ -1011,12 +1012,12 @@ pub(crate) fn prepare_gate_reconciliation(
     let reservations =
         RetainedReservationSet::replay(events).map_err(GateReconciliationError::Reservation)?;
     let ordering_graph = OrderingGraph::replay(events).map_err(GateReconciliationError::Edge)?;
-    let mut scoped_patch_evaluation_memo = ScopedPatchEvaluationMemo::default();
+    let mut scoped_patch_evaluation_budget = ReconciliationScopedPatchEvaluationBudget::default();
     let mut successor_scoped_patch_evaluation_budget =
-        SuccessorScopedPatchEvaluationBudget::default();
+        ReconciliationSuccessorScopedPatchEvaluationBudget::default();
     let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
         berth_config,
-        scoped_patch_evaluation_memo: &mut scoped_patch_evaluation_memo,
+        scoped_patch_evaluation_budget: &mut scoped_patch_evaluation_budget,
         successor_scoped_patch_evaluation_budget: &mut successor_scoped_patch_evaluation_budget,
     };
     let mut reconciliation = build_plan(
@@ -1075,10 +1076,11 @@ fn observe_proposed_trunk(
     )
     .map_err(GateReconciliationError::Reservation)?;
     let mut target_evidence_context = TargetIntegrationEvidenceContext {
-        repository_root:              worktree_context.repository_root(),
-        repository_trunk:             &repository_trunk,
-        integration_reachability:     &integration_reachability,
-        scoped_patch_evaluation_memo: reconciliation_evidence_context.scoped_patch_evaluation_memo,
+        repository_root:                worktree_context.repository_root(),
+        repository_trunk:               &repository_trunk,
+        integration_reachability:       &integration_reachability,
+        scoped_patch_evaluation_budget: reconciliation_evidence_context
+            .scoped_patch_evaluation_budget,
     };
     let mut indexed_evidence = scoped_patch_evaluation_order(reservations, &repository_trunk)
         .into_iter()
@@ -1280,7 +1282,7 @@ fn observe_outstanding_repository_evidence(
                         previous_trunk: trunk_snapshot.clone(),
                     }
                 };
-            integration_status_with_cache(
+            integration_status_with_retained_verdict(
                 target_evidence_context,
                 reservation,
                 &protected_tip,
@@ -1352,7 +1354,7 @@ fn revalidate_release(
     materialized: &IntegrationEvidenceStatus,
 ) -> IntegrationStatusObservation {
     match target_evidence_context.repository_trunk {
-        RepositoryTrunk::Resolved(current_trunk_oid) => integration_status_with_cache(
+        RepositoryTrunk::Resolved(current_trunk_oid) => integration_status_with_retained_verdict(
             target_evidence_context,
             reservation,
             protected_tip,
@@ -1368,7 +1370,7 @@ fn revalidate_release(
     }
 }
 
-fn integration_status_with_cache(
+fn integration_status_with_retained_verdict(
     target_evidence_context: &mut TargetIntegrationEvidenceContext<'_>,
     reservation: &Reservation,
     protected_tip: &ProtectedReservationTip,
@@ -1378,12 +1380,12 @@ fn integration_status_with_cache(
 ) -> IntegrationStatusObservation {
     let subject = reservation.integration_proof_subject_revision();
     match reservation
-        .scoped_patch_equivalence_cache()
+        .retained_scoped_patch_target_verdicts()
         .lookup(subject, target)
     {
-        ScopedPatchEquivalenceCacheLookup::Hit(scoped_patch_comparison) => {
+        ScopedPatchTargetVerdictAvailability::Hit(scoped_patch_comparison) => {
             IntegrationStatusObservation {
-                status:                  integration_status_from_cached_scoped_patch_comparison(
+                status:                  integration_status_from_retained_scoped_patch_comparison(
                     scoped_patch_comparison,
                     target,
                     &scoped_patch_evaluation_context,
@@ -1393,11 +1395,11 @@ fn integration_status_with_cache(
                 scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
             }
         },
-        ScopedPatchEquivalenceCacheLookup::Miss => {
+        ScopedPatchTargetVerdictAvailability::Miss => {
             let repository_root = target_evidence_context.repository_root;
             let integration_reachability = target_evidence_context.integration_reachability;
-            let scoped_patch_evaluation_memo =
-                &mut *target_evidence_context.scoped_patch_evaluation_memo;
+            let scoped_patch_evaluation_budget =
+                &mut *target_evidence_context.scoped_patch_evaluation_budget;
             let scoped_patch_evaluation_key = ScopedPatchEvaluationKey {
                 phase_start_head: reservation.phase_start_head().as_ref().clone(),
                 protected_tip:    protected_tip.as_ref().clone(),
@@ -1414,7 +1416,7 @@ fn integration_status_with_cache(
                 context:          scoped_patch_evaluation_context.clone(),
             };
             let observe_scoped_patch_comparison = || {
-                scoped_patch_evaluation_memo.evaluate(scoped_patch_evaluation_key, || {
+                scoped_patch_evaluation_budget.evaluate(scoped_patch_evaluation_key, || {
                     let target_history = integration_reachability
                         .target_history_after_phase_start(reservation.phase_start_head().as_ref());
                     git::scoped_patch_equivalence_with_target_history(
@@ -1508,7 +1510,7 @@ fn scoped_patch_journal_update(
     }
 }
 
-fn integration_status_from_cached_scoped_patch_comparison(
+fn integration_status_from_retained_scoped_patch_comparison(
     scoped_patch_comparison: DurableScopedPatchComparison,
     target: &GitObjectId,
     scoped_patch_evaluation_context: &ScopedPatchEvaluationContext,
@@ -1665,7 +1667,7 @@ enum EvidenceRevalidation<'evidence> {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one grouped pass keeps reachability, cache lookup, scheduling, and snapshot facts coherent"
+    reason = "one grouped pass keeps reachability, retained verdict lookup, scheduling, and snapshot facts coherent"
 )]
 fn successor_incorporation_evidence(
     repository_root: &Path,
@@ -1673,7 +1675,7 @@ fn successor_incorporation_evidence(
     ordering_graph: &OrderingGraph,
     repository_observation_scope: RepositoryObservationScope,
     reservation_snapshots: &[RepositoryReservationSnapshot],
-    evaluation_budget: &mut SuccessorScopedPatchEvaluationBudget,
+    evaluation_budget: &mut ReconciliationSuccessorScopedPatchEvaluationBudget,
 ) -> Result<SuccessorIncorporationObservation, ReservationReplayError> {
     let snapshots_by_reservation = reservation_snapshots
         .iter()
@@ -1773,38 +1775,50 @@ fn successor_incorporation_evidence(
                 )
             }));
         },
-        Ok(descendant_commit_queries) => {
-            let protected_tip_queries = descendant_commit_queries.iter().step_by(2);
-            let phase_start_queries = descendant_commit_queries.iter().skip(1).step_by(2);
-            for ((evidence_subject, descendant_commit_query), phase_start_query) in
+        Ok(protected_tip_successor_head_classifications) => {
+            let protected_tip_classifications = protected_tip_successor_head_classifications
+                .iter()
+                .step_by(2);
+            let phase_start_classifications = protected_tip_successor_head_classifications
+                .iter()
+                .skip(1)
+                .step_by(2);
+            for ((evidence_subject, successor_head_classification), phase_start_classification) in
                 evidence_subjects
                     .into_iter()
-                    .zip(protected_tip_queries)
-                    .zip(phase_start_queries)
+                    .zip(protected_tip_classifications)
+                    .zip(phase_start_classifications)
             {
-                let phase_start_target_histories = match phase_start_query {
-                    DescendantCommitQuery::AncestorObjectUnknown => HashMap::new(),
-                    DescendantCommitQuery::Classified(classified_heads) => classified_heads
-                        .iter()
-                        .filter_map(|classified_head| match classified_head {
-                            CandidateHeadReachability::Descendant {
-                                head,
-                                first_parent_commits_after_ancestor,
-                            } => Some((head.clone(), first_parent_commits_after_ancestor.clone())),
-                            CandidateHeadReachability::NotDescendant(_)
-                            | CandidateHeadReachability::ObjectUnknown(_) => None,
-                        })
-                        .collect(),
+                let phase_start_target_histories = match phase_start_classification {
+                    ProtectedTipSuccessorHeadClassification::AncestorObjectUnknown => {
+                        HashMap::new()
+                    },
+                    ProtectedTipSuccessorHeadClassification::Classified(classified_heads) => {
+                        classified_heads
+                            .iter()
+                            .filter_map(|classified_head| match classified_head {
+                                CandidateHeadReachability::Descendant {
+                                    head,
+                                    first_parent_commits_after_ancestor,
+                                } => Some((
+                                    head.clone(),
+                                    first_parent_commits_after_ancestor.clone(),
+                                )),
+                                CandidateHeadReachability::NotDescendant(_)
+                                | CandidateHeadReachability::ObjectUnknown(_) => None,
+                            })
+                            .collect()
+                    },
                 };
                 let predecessor = evidence_subject.reservation;
                 let predecessor_id = predecessor.id();
                 let subject = predecessor.integration_proof_subject_revision();
                 let predecessor_index = by_predecessor.len();
-                let incorporation = match descendant_commit_query {
-                    DescendantCommitQuery::AncestorObjectUnknown => {
+                let incorporation = match successor_head_classification {
+                    ProtectedTipSuccessorHeadClassification::AncestorObjectUnknown => {
                         PredecessorSuccessorIncorporation::PredecessorObjectUnknown
                     },
-                    DescendantCommitQuery::Classified(classified_heads) => {
+                    ProtectedTipSuccessorHeadClassification::Classified(classified_heads) => {
                         let mut evidence_by_head = HashMap::new();
                         for classified_head in classified_heads {
                             match classified_head {
@@ -1826,20 +1840,20 @@ fn successor_incorporation_evidence(
                                         PriorIntegrationStatus::Proven
                                     ) {
                                         match predecessor
-                                            .successor_scoped_patch_equivalence_cache()
+                                            .retained_successor_scoped_patch_target_verdicts()
                                             .lookup(subject, head)
                                         {
-                                            SuccessorScopedPatchEquivalenceCacheLookup::Hit(
+                                            SuccessorScopedPatchTargetVerdictAvailability::Hit(
                                                 SuccessorScopedPatchEquivalenceVerdict::Equivalent,
                                             ) => {
                                                 SuccessorIncorporationEvidence::ScopedPatchEquivalent
                                             },
-                                            SuccessorScopedPatchEquivalenceCacheLookup::Hit(
+                                            SuccessorScopedPatchTargetVerdictAvailability::Hit(
                                                 SuccessorScopedPatchEquivalenceVerdict::Different,
                                             ) => {
                                                 SuccessorIncorporationEvidence::NotIncorporated
                                             },
-                                            SuccessorScopedPatchEquivalenceCacheLookup::Miss => {
+                                            SuccessorScopedPatchTargetVerdictAvailability::Miss => {
                                                 pending_comparisons.push(
                                                     SuccessorScopedPatchEvaluationCandidate {
                                                         predecessor_index,

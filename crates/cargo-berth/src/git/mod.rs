@@ -17,7 +17,7 @@ use std::str::FromStr;
 use std::string::FromUtf8Error;
 use std::thread;
 
-pub(crate) use command::GitCommandExecution;
+pub(crate) use command::GitCommandOutputAvailability;
 pub(crate) use command::git_execution as execute_read_only_git;
 use command::git_output;
 use command::git_output_dynamic;
@@ -339,16 +339,19 @@ pub(crate) enum ScopedPatchTargetHistory<'history> {
 enum ProtectedScopedChanges {
     NoChanges,
     Affected {
-        paths:                   Vec<String>,
-        protected_scoped_rename: ProtectedScopedRename,
+        paths:                          Vec<String>,
+        scoped_replay_rename_detection: ScopedReplayRenameDetection,
     },
     Unreadable,
 }
 
+/// Whether a scoped replay must follow a rename inside the protected scope.
 #[derive(Clone, Copy)]
-enum ProtectedScopedRename {
-    Absent,
-    Present,
+enum ScopedReplayRenameDetection {
+    /// No protected-scope rename was detected, so rename following stays disabled.
+    DisabledWithoutProtectedRename,
+    /// A protected-scope rename was detected, so rename following is required.
+    RequiredForProtectedRename,
 }
 
 enum ProtectedScopedReplayState {
@@ -600,14 +603,14 @@ pub(crate) fn branch_commit_reachability(
     )
 }
 
-/// The reflog-proven replacement refs found at one deleted local branch's object tip.
-pub(crate) enum LocalBranchReplacementTipMatches {
-    /// No local branch at the object records a rename from the deleted branch.
-    NoMatches,
-    /// Exactly one local branch at the object records the rename.
-    ExactlyOne(FullRefName),
-    /// More than one local branch at the object records the rename.
-    MultipleMatches,
+/// Whether one rename target was proven for a deleted local branch's object tip.
+pub(crate) enum LocalBranchRenameTargetResolution {
+    /// No local branch at the object proves a rename from the deleted branch.
+    NotProven,
+    /// Exactly one local branch at the object proves the rename.
+    Unique(FullRefName),
+    /// Several local branches prove the rename, so no single target can be chosen.
+    Ambiguous,
 }
 
 /// Whether a local branch's newest reflog entry proves it replaced a deleted branch.
@@ -620,11 +623,11 @@ pub(crate) enum LocalBranchRenameProof {
 }
 
 /// Find whether exactly one local branch at `tip` has proof it replaced the deleted branch.
-pub(crate) fn local_branch_replacement_tip_matches(
+pub(crate) fn local_branch_rename_target_resolution(
     repository_root: &Path,
     tip: &GitObjectId,
     deleted_reference: &FullRefName,
-) -> Result<LocalBranchReplacementTipMatches, GitError> {
+) -> Result<LocalBranchRenameTargetResolution, GitError> {
     let arguments = vec![
         GIT_FOR_EACH_REF_COMMAND.to_owned(),
         GIT_FULL_REF_FORMAT_ARG.to_owned(),
@@ -654,16 +657,16 @@ pub(crate) fn local_branch_replacement_tip_matches(
                 .map_or(true, |reference| reference != deleted_reference)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut proven_replacements = LocalBranchReplacementTipMatches::NoMatches;
+    let mut proven_replacements = LocalBranchRenameTargetResolution::NotProven;
     for reference in references {
         match local_branch_rename_proof(repository_root, deleted_reference, &reference)? {
             LocalBranchRenameProof::Recorded => match proven_replacements {
-                LocalBranchReplacementTipMatches::NoMatches => {
-                    proven_replacements = LocalBranchReplacementTipMatches::ExactlyOne(reference);
+                LocalBranchRenameTargetResolution::NotProven => {
+                    proven_replacements = LocalBranchRenameTargetResolution::Unique(reference);
                 },
-                LocalBranchReplacementTipMatches::ExactlyOne(_)
-                | LocalBranchReplacementTipMatches::MultipleMatches => {
-                    return Ok(LocalBranchReplacementTipMatches::MultipleMatches);
+                LocalBranchRenameTargetResolution::Unique(_)
+                | LocalBranchRenameTargetResolution::Ambiguous => {
+                    return Ok(LocalBranchRenameTargetResolution::Ambiguous);
                 },
             },
             LocalBranchRenameProof::NotRecorded => {},
@@ -780,11 +783,11 @@ pub(crate) fn rewritten_phase_anchor(
 }
 
 fn scoped_patch_command_output(
-    command_execution: GitCommandExecution,
+    output_availability: GitCommandOutputAvailability,
 ) -> Result<Output, ScopedPatchComparisonError> {
-    match command_execution {
-        GitCommandExecution::Completed(output) => Ok(output),
-        GitCommandExecution::CouldNotRun(error) => Err(GitError::Io(error).into()),
+    match output_availability {
+        GitCommandOutputAvailability::Available(output) => Ok(output),
+        GitCommandOutputAvailability::Unavailable(error) => Err(GitError::Io(error).into()),
     }
 }
 
@@ -865,12 +868,12 @@ fn compare_scoped_patch(
         HistoryRelationship::Unavailable => return Ok(ScopedPatchComparison::Unavailable),
     }
 
-    let (affected_paths, protected_scoped_rename) = match protected_scoped_changes? {
+    let (affected_paths, scoped_replay_rename_detection) = match protected_scoped_changes? {
         ProtectedScopedChanges::NoChanges => return Ok(ScopedPatchComparison::Different),
         ProtectedScopedChanges::Affected {
             paths,
-            protected_scoped_rename,
-        } => (paths, protected_scoped_rename),
+            scoped_replay_rename_detection,
+        } => (paths, scoped_replay_rename_detection),
         ProtectedScopedChanges::Unreadable => {
             return Ok(ScopedPatchComparison::Unavailable);
         },
@@ -886,13 +889,13 @@ fn compare_scoped_patch(
         )
     };
     let (target_scoped_change_position, protected_scoped_change) =
-        match (protected_scoped_rename, protected_scoped_replay) {
+        match (scoped_replay_rename_detection, protected_scoped_replay) {
             (
-                ProtectedScopedRename::Absent,
+                ScopedReplayRenameDetection::DisabledWithoutProtectedRename,
                 ProtectedScopedReplayState::EvaluatedAssumingNoRename(protected_scoped_change),
             ) => (locate_target_scoped_commits(), protected_scoped_change),
             (
-                ProtectedScopedRename::Present,
+                ScopedReplayRenameDetection::RequiredForProtectedRename,
                 ProtectedScopedReplayState::EvaluatedAssumingNoRename(_),
             ) => concurrent_scoped_patch_reads(
                 locate_target_scoped_commits,
@@ -904,13 +907,13 @@ fn compare_scoped_patch(
                         protected_tip,
                         target,
                         scopes,
-                        ProtectedScopedRename::Present,
+                        ScopedReplayRenameDetection::RequiredForProtectedRename,
                     )
                 },
                 "replay the protected scoped change with renames",
             ),
             (
-                protected_scoped_rename,
+                scoped_replay_rename_detection,
                 ProtectedScopedReplayState::RequiredAfterRenameClassification,
             ) => concurrent_scoped_patch_reads(
                 locate_target_scoped_commits,
@@ -922,7 +925,7 @@ fn compare_scoped_patch(
                         protected_tip,
                         target,
                         scopes,
-                        protected_scoped_rename,
+                        scoped_replay_rename_detection,
                     )
                 },
                 "replay the protected scoped change",
@@ -968,7 +971,7 @@ fn initial_scoped_patch_evidence(
                         protected_tip,
                         target,
                         scopes,
-                        ProtectedScopedRename::Absent,
+                        ScopedReplayRenameDetection::DisabledWithoutProtectedRename,
                     )
                 },
                 "replay the protected scoped change without renames",
@@ -1030,18 +1033,18 @@ fn target_contains_protected_scoped_change(
     protected_tip: &GitObjectId,
     target: &GitObjectId,
     scopes: &ReservationScopeSet,
-    protected_scoped_rename: ProtectedScopedRename,
+    scoped_replay_rename_detection: ScopedReplayRenameDetection,
 ) -> Result<ScopedPatchComparison, ScopedPatchComparisonError> {
     let mut replay_arguments = vec![
         GIT_MERGE_TREE_COMMAND.to_owned(),
         GIT_WRITE_TREE_ARG.to_owned(),
         GIT_NUL_TERMINATED_ARG.to_owned(),
     ];
-    match protected_scoped_rename {
-        ProtectedScopedRename::Absent => {
+    match scoped_replay_rename_detection {
+        ScopedReplayRenameDetection::DisabledWithoutProtectedRename => {
             replay_arguments.push(GIT_STRATEGY_OPTION_NO_RENAMES_ARG.to_owned());
         },
-        ProtectedScopedRename::Present => {},
+        ScopedReplayRenameDetection::RequiredForProtectedRename => {},
     }
     replay_arguments.extend([
         format!("{GIT_MERGE_BASE_ARG_PREFIX}{phase_start_head}"),
@@ -1488,7 +1491,8 @@ fn protected_scoped_changes(
     let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
     let mut fields = output_text.split('\0');
     let mut affected_paths = Vec::new();
-    let mut protected_scoped_rename = ProtectedScopedRename::Absent;
+    let mut scoped_replay_rename_detection =
+        ScopedReplayRenameDetection::DisabledWithoutProtectedRename;
     loop {
         let Some(status) = fields.next() else {
             return Ok(ProtectedScopedChanges::Unreadable);
@@ -1515,7 +1519,8 @@ fn protected_scoped_changes(
             let source_is_covered = scopes.covers_path(first_path.as_bytes());
             let destination_is_covered = scopes.covers_path(second_path.as_bytes());
             if source_is_covered && destination_is_covered {
-                protected_scoped_rename = ProtectedScopedRename::Present;
+                scoped_replay_rename_detection =
+                    ScopedReplayRenameDetection::RequiredForProtectedRename;
             }
             if source_is_covered {
                 affected_paths.push(first_path.to_owned());
@@ -1542,7 +1547,7 @@ fn protected_scoped_changes(
     } else {
         Ok(ProtectedScopedChanges::Affected {
             paths: affected_paths,
-            protected_scoped_rename,
+            scoped_replay_rename_detection,
         })
     }
 }
@@ -2152,7 +2157,7 @@ pub(crate) fn phase_committed_path_diffs(
     repository_root: &Path,
     anchors: &[GitObjectId],
     target: &GitObjectId,
-) -> GitCommandExecution {
+) -> GitCommandOutputAvailability {
     let input = anchors.iter().fold(String::new(), |mut input, anchor| {
         let _ = writeln!(input, "{anchor} {target}");
         input
@@ -2191,10 +2196,10 @@ pub(crate) fn incursion_path_log(
             .iter()
             .map(|path| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{path}")),
     );
-    let execution = git_output_dynamic(repository_root, &arguments).into();
+    let output_availability = git_output_dynamic(repository_root, &arguments).into();
     IncursionPathLogInvocation {
         arguments,
-        execution,
+        output_availability,
     }
 }
 
@@ -2273,10 +2278,12 @@ pub(crate) fn commits_outside_origin_basis(
         .map_err(GitError::InvalidObjectId)
 }
 
-fn completed_git_command(command_execution: GitCommandExecution) -> Result<Output, GitError> {
-    match command_execution {
-        GitCommandExecution::Completed(output) => Ok(output),
-        GitCommandExecution::CouldNotRun(error) => Err(GitError::Io(error)),
+fn completed_git_command(
+    output_availability: GitCommandOutputAvailability,
+) -> Result<Output, GitError> {
+    match output_availability {
+        GitCommandOutputAvailability::Available(output) => Ok(output),
+        GitCommandOutputAvailability::Unavailable(error) => Err(GitError::Io(error)),
     }
 }
 
@@ -2284,7 +2291,7 @@ fn completed_git_command(command_execution: GitCommandExecution) -> Result<Outpu
 pub(crate) fn descendant_commits(
     repository_root: &Path,
     predecessors: &[ProtectedTipSuccessorHeads<'_>],
-) -> Result<Vec<DescendantCommitQuery>, GitError> {
+) -> Result<Vec<ProtectedTipSuccessorHeadClassification>, GitError> {
     if predecessors.is_empty() {
         return Ok(Vec::new());
     }
@@ -2318,9 +2325,9 @@ pub(crate) fn descendant_commits(
         .iter()
         .map(|predecessor| {
             if !commit_ancestry_graph.contains(predecessor.protected_tip) {
-                return DescendantCommitQuery::AncestorObjectUnknown;
+                return ProtectedTipSuccessorHeadClassification::AncestorObjectUnknown;
             }
-            DescendantCommitQuery::Classified(
+            ProtectedTipSuccessorHeadClassification::Classified(
                 predecessor
                     .successor_heads
                     .iter()
@@ -2508,9 +2515,9 @@ pub(crate) enum Reachability {
 /// One incursion path-log invocation and the exact arguments supplied to git.
 pub(crate) struct IncursionPathLogInvocation {
     /// The arguments supplied after the git binary.
-    pub(crate) arguments: Vec<String>,
-    /// Whether the git process completed or could not run.
-    pub(crate) execution: GitCommandExecution,
+    pub(crate) arguments:           Vec<String>,
+    /// Whether that invocation left a process output available.
+    pub(crate) output_availability: GitCommandOutputAvailability,
 }
 
 /// One candidate head's relation to a protected predecessor tip.
@@ -2562,7 +2569,7 @@ impl ReservationRetentionRefRepair {
 }
 
 /// The grouped descendant result for one protected predecessor tip.
-pub(crate) enum DescendantCommitQuery {
+pub(crate) enum ProtectedTipSuccessorHeadClassification {
     /// Every candidate head received its own typed reachability result.
     Classified(Vec<CandidateHeadReachability>),
     /// The protected predecessor tip does not resolve as a commit.
@@ -2748,14 +2755,14 @@ mod tests {
     use super::AheadBehind;
     use super::CandidateHeadReachability;
     use super::CommitObjectResolution;
-    use super::DescendantCommitQuery;
     use super::GitError;
+    use super::ProtectedTipSuccessorHeadClassification;
     use super::ProtectedTipSuccessorHeads;
     use super::ScopedPatchComparison;
     use super::ScopedPatchComparisonError;
     use super::ScopedPatchTargetHistory;
     use super::ahead_behind_for_heads;
-    use super::command::GitCommandExecution;
+    use super::command::GitCommandOutputAvailability;
     use super::commit_object_resolution;
     use super::concurrent_scoped_patch_reads;
     use super::descendant_commits;
@@ -2941,14 +2948,26 @@ mod tests {
     }
 
     #[test]
-    fn scoped_patch_command_spawn_failure_is_unavailable() {
-        let command_execution =
-            GitCommandExecution::from(Command::new("cargo-berth-missing-git").output());
+    fn scoped_patch_command_spawn_failure_is_unavailable() -> Result<(), Box<dyn Error>> {
+        let spawn_failure = Command::new("cargo-berth-missing-git")
+            .output()
+            .err()
+            .ok_or_else(|| io::Error::other("the missing git fixture should fail to spawn"))?;
+        let expected_kind = spawn_failure.kind();
+        let expected_message = spawn_failure.to_string();
+        let output_availability = GitCommandOutputAvailability::from(Err(spawn_failure));
+        let comparison = scoped_patch_command_output(output_availability);
 
         assert!(matches!(
-            scoped_patch_command_output(command_execution),
+            &comparison,
             Err(ScopedPatchComparisonError::Git(GitError::Io(_)))
         ));
+        assert!(matches!(
+            comparison,
+            Err(ScopedPatchComparisonError::Git(GitError::Io(error)))
+                if error.kind() == expected_kind && error.to_string() == expected_message
+        ));
+        Ok(())
     }
 
     #[test]
@@ -3000,9 +3019,9 @@ mod tests {
         assert!(matches!(
             results.as_slice(),
             [
-                DescendantCommitQuery::Classified(mixed),
-                DescendantCommitQuery::AncestorObjectUnknown,
-                DescendantCommitQuery::Classified(unrelated),
+                ProtectedTipSuccessorHeadClassification::Classified(mixed),
+                ProtectedTipSuccessorHeadClassification::AncestorObjectUnknown,
+                ProtectedTipSuccessorHeadClassification::Classified(unrelated),
             ] if matches!(
                 mixed.as_slice(),
                 [

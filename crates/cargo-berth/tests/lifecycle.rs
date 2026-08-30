@@ -23,6 +23,7 @@ const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const EXECUTABLE_PERMISSIONS: u32 = 0o755;
 const FAILED_REFERENCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_FAILED_REFERENCE";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+const GIT_UNSPAWNABLE_DIAGNOSTIC: &str = "The reservation ledger could not be read: could not run git: No such file or directory (os error 2)";
 const GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const INITIAL_COMMIT_TAG: &str = "initial-state";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
@@ -495,6 +496,29 @@ fn failed_reference_query_is_not_reported_as_a_missing_trunk() {
             .all(|event| event["op"] != "claim"),
         "the failed reference query must not take the absent-trunk claim path"
     );
+}
+
+#[test]
+fn unspawnable_git_preserves_the_complete_io_diagnostic() {
+    let repository = initialized_repository();
+    let empty_path = tempdir().expect("empty PATH directory should exist");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["init", "--json"])
+        .current_dir(repository.path())
+        .env("PATH", empty_path.path())
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("cargo-berth should remain spawnable when git is unavailable");
+    let envelope = json_output(&output);
+    let diagnostic = envelope["message"]
+        .as_str()
+        .expect("Git failure should carry a diagnostic");
+
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(envelope["status"], "ledger_unreadable");
+    assert_eq!(diagnostic.as_bytes(), GIT_UNSPAWNABLE_DIAGNOSTIC.as_bytes());
 }
 
 #[test]

@@ -243,7 +243,7 @@ fn attribution_batch(
             let path_log_invocation =
                 git::incursion_path_log(repository_root, &subjects.target, &subjects.paths);
             let path_log = git_output::completed_git_output(
-                path_log_invocation.execution,
+                path_log_invocation.output_availability,
                 &path_log_invocation.arguments,
             )?;
             git_output::parse_incursion_path_log(&path_log.stdout)

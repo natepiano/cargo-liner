@@ -97,8 +97,8 @@ pub(crate) struct BoardModel {
     settled_ordering_constraints:       BoardSection<SettledOrderingConstraint>,
     unresolved_overlaps:                BoardSection<UnresolvedOverlap>,
     recorded_overlap_answers:           BoardSection<RecordedAnswer>,
-    unconstrained_reservations:         BoardSection<ReservationRow>,
-    resolved:                           BoardSection<ReservationRow>,
+    unconstrained_reservations:         BoardSection<BoardReservationSnapshot>,
+    resolved:                           BoardSection<BoardReservationSnapshot>,
     available_forced_permits:           BoardSection<AvailableForcedPermit>,
     bypass_audit:                       BoardSection<BypassAuditEntry>,
     outstanding_incursions:             BoardSection<OutstandingIncursion>,
@@ -142,7 +142,7 @@ enum IntegrationOrderDeclaration {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct ReservationRow {
+struct BoardReservationSnapshot {
     reservation_id:       ReservationId,
     holder:               ReservationHolder,
     source:               ClaimSource,
@@ -194,7 +194,7 @@ enum BoardReservationVisibility {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct ReadyReservation {
     relation:    ReadinessTie,
-    reservation: ReservationRow,
+    reservation: BoardReservationSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -580,16 +580,16 @@ impl BoardModel {
             });
         }
         let observed_at = RecordedAt::now();
-        let (rows, ahead_behind_computations) = reservation_rows(
+        let (reservation_snapshots, ahead_behind_computations) = board_reservation_snapshots(
             repository_root,
             &reservations,
             &report.repository_snapshot,
             &observed_at,
         )?;
-        let active_ids = rows
+        let active_ids = reservation_snapshots
             .iter()
-            .filter(|row| row.visibility != BoardReservationVisibility::ResolvedAudit)
-            .map(|row| row.reservation_id)
+            .filter(|snapshot| snapshot.visibility != BoardReservationVisibility::ResolvedAudit)
+            .map(|snapshot| snapshot.reservation_id)
             .collect::<HashSet<_>>();
 
         let mut waiting = Vec::new();
@@ -671,27 +671,27 @@ impl BoardModel {
             .iter()
             .flat_map(|overlap| [overlap.deferred, overlap.blocker])
             .collect::<HashSet<_>>();
-        let ready_now = rows
+        let ready_now = reservation_snapshots
             .iter()
-            .filter(|row| row.visibility != BoardReservationVisibility::ResolvedAudit)
-            .filter(|row| involved.contains(&row.reservation_id))
-            .filter(|row| !waiting_successors.contains(&row.reservation_id))
-            .filter(|row| !deferred_endpoints.contains(&row.reservation_id))
+            .filter(|snapshot| snapshot.visibility != BoardReservationVisibility::ResolvedAudit)
+            .filter(|snapshot| involved.contains(&snapshot.reservation_id))
+            .filter(|snapshot| !waiting_successors.contains(&snapshot.reservation_id))
+            .filter(|snapshot| !deferred_endpoints.contains(&snapshot.reservation_id))
             .cloned()
             .map(|reservation| ReadyReservation {
                 relation: ReadinessTie::Unordered,
                 reservation,
             })
             .collect();
-        let unconstrained_reservations = rows
+        let unconstrained_reservations = reservation_snapshots
             .iter()
-            .filter(|row| row.visibility != BoardReservationVisibility::ResolvedAudit)
-            .filter(|row| !involved.contains(&row.reservation_id))
+            .filter(|snapshot| snapshot.visibility != BoardReservationVisibility::ResolvedAudit)
+            .filter(|snapshot| !involved.contains(&snapshot.reservation_id))
             .cloned()
             .collect();
-        let resolved = rows
+        let resolved = reservation_snapshots
             .iter()
-            .filter(|row| row.visibility == BoardReservationVisibility::ResolvedAudit)
+            .filter(|snapshot| snapshot.visibility == BoardReservationVisibility::ResolvedAudit)
             .cloned()
             .collect();
         let recorded_overlap_answers = recorded_answers(events, &report.constraints)?;
@@ -699,7 +699,11 @@ impl BoardModel {
         let bypass_audit = bypass_audit(events);
         let (outstanding_incursions, recorded_incursion_answers) =
             incursion_sections(&reservations);
-        let alerts = board_alerts(&report.alerts, &rows, &report.unrecorded_bypass_occurrences)?;
+        let alerts = board_alerts(
+            &report.alerts,
+            &reservation_snapshots,
+            &report.unrecorded_bypass_occurrences,
+        )?;
         let git_cost = board_git_cost(
             &reservations,
             &report.constraints,
@@ -750,9 +754,14 @@ impl BoardModel {
                 self.unconstrained_reservations
                     .entries
                     .iter()
-                    .map(|row| row.reservation_id),
+                    .map(|snapshot| snapshot.reservation_id),
             )
-            .chain(self.resolved.entries.iter().map(|row| row.reservation_id))
+            .chain(
+                self.resolved
+                    .entries
+                    .iter()
+                    .map(|snapshot| snapshot.reservation_id),
+            )
             .chain(self.waiting.entries.iter().map(|entry| entry.successor))
             .chain(
                 self.unresolved_overlaps
@@ -797,15 +806,15 @@ impl<Entry> BoardSection<Entry> {
     }
 }
 
-fn reservation_rows(
+fn board_reservation_snapshots(
     repository_root: &Path,
     reservations: &RetainedReservationSet,
     snapshot: &RepositorySnapshot,
     observed_at: &RecordedAt,
-) -> Result<(Vec<ReservationRow>, u64), BoardError> {
+) -> Result<(Vec<BoardReservationSnapshot>, u64), BoardError> {
     let (ahead_by_worktree, ahead_behind_computations) =
         ahead_behind_by_worktree(repository_root, reservations, snapshot)?;
-    let mut rows = Vec::new();
+    let mut reservation_snapshots = Vec::new();
     for reservation in reservations.iter() {
         let repository_reservation = snapshot.reservation(reservation.id())?;
         let ahead_behind_main = *ahead_by_worktree
@@ -826,7 +835,7 @@ fn reservation_rows(
             },
         };
         let visibility = reservation_visibility(reservation);
-        rows.push(ReservationRow {
+        reservation_snapshots.push(BoardReservationSnapshot {
             reservation_id: reservation.id(),
             holder: ReservationHolder {
                 worktree_id:   reservation.actor().worktree,
@@ -845,7 +854,7 @@ fn reservation_rows(
             ahead_behind_main,
         });
     }
-    Ok((rows, ahead_behind_computations))
+    Ok((reservation_snapshots, ahead_behind_computations))
 }
 
 fn ahead_behind_by_worktree(
@@ -1318,27 +1327,29 @@ fn incursion_sections(
 
 fn board_alerts(
     alerts: &[Alert],
-    rows: &[ReservationRow],
+    reservation_snapshots: &[BoardReservationSnapshot],
     unrecorded_bypasses: &[BypassOccurrenceTime],
 ) -> Result<Vec<BoardAlert>, BoardError> {
     let mut board_alerts = alerts
         .iter()
         .map(board_alert)
         .collect::<Result<Vec<_>, BoardError>>()?;
-    board_alerts.extend(rows.iter().filter_map(|row| match &row.freshness {
-        ReservationFreshness::Stale { .. }
-            if row.visibility != BoardReservationVisibility::ResolvedAudit =>
-        {
-            Some(BoardAlert::StaleReservation {
-                reservation_id: row.reservation_id,
-                freshness:      row.freshness.clone(),
-                resolution:     StaleReservationResolutionAction::Renew {
-                    reservation_id: row.reservation_id,
-                },
-            })
+    board_alerts.extend(reservation_snapshots.iter().filter_map(
+        |snapshot| match &snapshot.freshness {
+            ReservationFreshness::Stale { .. }
+                if snapshot.visibility != BoardReservationVisibility::ResolvedAudit =>
+            {
+                Some(BoardAlert::StaleReservation {
+                    reservation_id: snapshot.reservation_id,
+                    freshness:      snapshot.freshness.clone(),
+                    resolution:     StaleReservationResolutionAction::Renew {
+                        reservation_id: snapshot.reservation_id,
+                    },
+                })
+            },
+            ReservationFreshness::Fresh { .. } | ReservationFreshness::Stale { .. } => None,
         },
-        ReservationFreshness::Fresh { .. } | ReservationFreshness::Stale { .. } => None,
-    }));
+    ));
     if !unrecorded_bypasses.is_empty() {
         board_alerts.push(BoardAlert::UnrecordedBypasses {
             count: u64::try_from(unrecorded_bypasses.len()).unwrap_or(u64::MAX),

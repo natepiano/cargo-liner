@@ -2473,26 +2473,39 @@ impl OutputPayload {
 
 fn blocked_message(conflicts: &[ReservationConflict]) -> String {
     let mut message = overlap_holder_description(conflicts);
-    if let Some(disposition) = first_touch_disposition_description(conflicts) {
-        message.push(' ');
-        message.push_str(&disposition);
+    match first_touch_disposition_description(conflicts) {
+        FirstTouchHolderRecoveryDescription::NotApplicable => {},
+        FirstTouchHolderRecoveryDescription::Described(disposition) => {
+            message.push(' ');
+            message.push_str(&disposition);
+        },
     }
     message
 }
 
+/// Whether blocked first-touch holders need a disposition description.
+enum FirstTouchHolderRecoveryDescription {
+    /// None of the blocking reservations came from a first-touch edit.
+    NotApplicable,
+    /// The description names how each first-touch holder can clear its reservation.
+    Described(String),
+}
+
 /// Name the verbs that clear a first-touch holder, which no other message reaches.
-fn first_touch_disposition_description(conflicts: &[ReservationConflict]) -> Option<String> {
+fn first_touch_disposition_description(
+    conflicts: &[ReservationConflict],
+) -> FirstTouchHolderRecoveryDescription {
     let first_touch_holders = conflicts
         .iter()
         .filter(|conflict| matches!(conflict.source, ClaimSource::FirstTouch))
         .map(|conflict| conflict.reservation_id.to_string())
         .collect::<Vec<_>>();
     match first_touch_holders.as_slice() {
-        [] => None,
-        [reservation_id] => Some(format!(
+        [] => FirstTouchHolderRecoveryDescription::NotApplicable,
+        [reservation_id] => FirstTouchHolderRecoveryDescription::Described(format!(
             "Reservation {reservation_id} came from a first-touch edit, so its holder clears it with cargo-berth release {reservation_id} once the work is on trunk, cargo-berth resolve {reservation_id} --integrated-as <TRUNK_OID> after that release when git cannot prove the integration, or cargo-berth resolve {reservation_id} --abandon --why <WHY> when the work is discarded."
         )),
-        [_, _, ..] => Some(format!(
+        [_, _, ..] => FirstTouchHolderRecoveryDescription::Described(format!(
             "Reservations {} came from first-touch edits, so a holder clears one with cargo-berth release <RESERVATION_ID> once the work is on trunk, cargo-berth resolve <RESERVATION_ID> --integrated-as <TRUNK_OID> after that release when git cannot prove the integration, or cargo-berth resolve <RESERVATION_ID> --abandon --why <WHY> when the work is discarded.",
             first_touch_holders.join(", ")
         )),

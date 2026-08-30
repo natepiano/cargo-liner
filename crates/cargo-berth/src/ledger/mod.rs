@@ -5,7 +5,6 @@ mod journal;
 mod lock;
 mod projection;
 
-use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -276,6 +275,30 @@ pub(crate) enum EditAuthorization {
     Unidentified,
 }
 
+/// The coordination run selected from the current process environment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EnvironmentCoordinationRunSelection {
+    /// The environment did not supply a coordination run.
+    NotSupplied,
+    /// The supplied value was unusable, so authorization falls back to the marker.
+    UnusableFallbackToMarker,
+    /// The environment identified one validated coordination run.
+    Identified(CoordinationRunId),
+}
+
+impl EnvironmentCoordinationRunSelection {
+    fn from_current_process() -> Self {
+        let Some(value) = std::env::var_os(COORDINATION_RUN_ENVIRONMENT) else {
+            return Self::NotSupplied;
+        };
+        value
+            .into_string()
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .map_or(Self::UnusableFallbackToMarker, Self::Identified)
+    }
+}
+
 /// The filesystem result of retiring one coordination-run marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoordinationRunMarkerRemoval {
@@ -293,7 +316,7 @@ impl EditAuthorization {
     fn resolve_for_worktree(worktree_context: &WorktreeContext, worktree_id: WorktreeId) -> Self {
         Self::resolve_from_sources(
             session::resolve(&worktree_context.ledger_directory()),
-            std::env::var_os(COORDINATION_RUN_ENVIRONMENT),
+            EnvironmentCoordinationRunSelection::from_current_process(),
             worktree_context.administrative_directory(),
             worktree_id,
         )
@@ -301,7 +324,7 @@ impl EditAuthorization {
 
     fn resolve_from_sources(
         session_identity: SessionIdentityLookup,
-        environment_run: Option<OsString>,
+        environment_run_selection: EnvironmentCoordinationRunSelection,
         worktree_administrative_directory: &Path,
         worktree_id: WorktreeId,
     ) -> Self {
@@ -312,15 +335,13 @@ impl EditAuthorization {
                 worktree_id,
             };
         }
-        if let Some(environment) = environment_run
-            .and_then(|value| value.into_string().ok())
-            .and_then(|value| value.parse().ok())
-            .map(|coordination_run_id| Self::Environment {
+        if let EnvironmentCoordinationRunSelection::Identified(coordination_run_id) =
+            environment_run_selection
+        {
+            return Self::Environment {
                 coordination_run_id,
                 worktree_id,
-            })
-        {
-            return environment;
+            };
         }
         let marker_path = worktree_administrative_directory.join(COORDINATION_RUN_MARKER_FILE_NAME);
         if let Some(marker) = fs::read_to_string(marker_path)
@@ -1838,6 +1859,7 @@ mod tests {
     use super::CoordinationRunMarkerRemoval;
     use super::CorrectableTransactionInput;
     use super::EditAuthorization;
+    use super::EnvironmentCoordinationRunSelection;
     use super::ForcedIntegrationReason;
     use super::JournalEvent;
     use super::JournalOperation;
@@ -2147,7 +2169,7 @@ mod tests {
         assert_eq!(
             EditAuthorization::resolve_from_sources(
                 crate::session::SessionIdentityLookup::Unavailable,
-                Some(environment_run.to_string().into()),
+                EnvironmentCoordinationRunSelection::Identified(environment_run),
                 administrative_directory.path(),
                 administrative_worktree,
             ),
@@ -2167,7 +2189,7 @@ mod tests {
                         session_reservation,
                     ),
                 ),
-                Some(environment_run.to_string().into()),
+                EnvironmentCoordinationRunSelection::Identified(environment_run),
                 administrative_directory.path(),
                 administrative_worktree,
             ),
@@ -2181,7 +2203,7 @@ mod tests {
         assert_eq!(
             EditAuthorization::resolve_from_sources(
                 crate::session::SessionIdentityLookup::Unavailable,
-                None,
+                EnvironmentCoordinationRunSelection::NotSupplied,
                 administrative_directory.path(),
                 administrative_worktree,
             ),
@@ -2190,7 +2212,6 @@ mod tests {
                 worktree_id:         administrative_worktree,
             }
         );
-
         fs::remove_file(
             administrative_directory
                 .path()
@@ -2200,7 +2221,7 @@ mod tests {
         assert_eq!(
             EditAuthorization::resolve_from_sources(
                 crate::session::SessionIdentityLookup::Unavailable,
-                Some(environment_run.to_string().into()),
+                EnvironmentCoordinationRunSelection::Identified(environment_run),
                 administrative_directory.path(),
                 administrative_worktree,
             ),
@@ -2212,7 +2233,7 @@ mod tests {
         assert_eq!(
             EditAuthorization::resolve_from_sources(
                 crate::session::SessionIdentityLookup::Unavailable,
-                None,
+                EnvironmentCoordinationRunSelection::NotSupplied,
                 administrative_directory.path(),
                 administrative_worktree,
             ),

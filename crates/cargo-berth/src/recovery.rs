@@ -561,7 +561,14 @@ fn recovery_operation(
     current_worktree_id: WorktreeId,
     current_worktree_root: CanonicalWorktreeRoot,
     current_worktree_administrative_locator: WorktreeAdministrativeLocator,
-) -> Result<(JournalOperation, ResolvePayloadSeed, RecoveryAction), RecoveryRejection> {
+) -> Result<
+    (
+        JournalOperation,
+        ResolvePayloadSeed,
+        PostCommitRecoveryMarkerAction,
+    ),
+    RecoveryRejection,
+> {
     match recovery_request {
         ReservationRecoveryDecision::Recovered => {
             if reservation.actor().worktree == current_worktree_id {
@@ -569,9 +576,11 @@ fn recovery_operation(
             }
             let committed_action = match reservation.lifecycle() {
                 ReservationLifecycle::Active => {
-                    RecoveryAction::PublishMarker(reservation.actor().run)
+                    PostCommitRecoveryMarkerAction::PublishMarker(reservation.actor().run)
                 },
-                ReservationLifecycle::Outstanding { .. } => RecoveryAction::None,
+                ReservationLifecycle::Outstanding { .. } => {
+                    PostCommitRecoveryMarkerAction::NoMarkerPublicationRequired
+                },
                 ReservationLifecycle::Released { .. } => {
                     return Err(RecoveryRejection::AlreadyResolved);
                 },
@@ -633,7 +642,7 @@ fn recovery_operation(
                     reservation_id,
                     disposition,
                 },
-                RecoveryAction::None,
+                PostCommitRecoveryMarkerAction::NoMarkerPublicationRequired,
             ))
         },
         ReservationRecoveryDecision::Abandon(reason) => disposition_operation(
@@ -653,7 +662,14 @@ fn disposition_operation(
     reservation: &Reservation,
     reservation_id: ReservationId,
     disposition: ReleaseDisposition,
-) -> Result<(JournalOperation, ResolvePayloadSeed, RecoveryAction), RecoveryRejection> {
+) -> Result<
+    (
+        JournalOperation,
+        ResolvePayloadSeed,
+        PostCommitRecoveryMarkerAction,
+    ),
+    RecoveryRejection,
+> {
     match reservation.lifecycle() {
         ReservationLifecycle::Active | ReservationLifecycle::Outstanding { .. } => Ok((
             JournalOperation::Release {
@@ -664,7 +680,7 @@ fn disposition_operation(
                 reservation_id,
                 disposition,
             },
-            RecoveryAction::None,
+            PostCommitRecoveryMarkerAction::NoMarkerPublicationRequired,
         )),
         ReservationLifecycle::Released { .. } => Err(RecoveryRejection::AlreadyResolved),
     }
@@ -682,13 +698,15 @@ fn canonical_root(
 }
 
 struct RecoveryCommittedAction {
-    committed_action:     RecoveryAction,
+    committed_action:     PostCommitRecoveryMarkerAction,
     resolve_payload_seed: ResolvePayloadSeed,
     retention_deletions:  Vec<ReservationId>,
 }
 
-enum RecoveryAction {
-    None,
+enum PostCommitRecoveryMarkerAction {
+    /// The reservation's lifecycle publishes no coordination-run marker.
+    NoMarkerPublicationRequired,
+    /// The reservation publishes this coordination run as its marker.
     PublishMarker(CoordinationRunId),
 }
 
@@ -703,8 +721,8 @@ impl RecoveryCommittedAction {
             &self.retention_deletions,
         )?;
         match self.committed_action {
-            RecoveryAction::None => {},
-            RecoveryAction::PublishMarker(coordination_run_id) => {
+            PostCommitRecoveryMarkerAction::NoMarkerPublicationRequired => {},
+            PostCommitRecoveryMarkerAction::PublishMarker(coordination_run_id) => {
                 worktree_context.publish_coordination_run_marker(coordination_run_id)?;
             },
         }

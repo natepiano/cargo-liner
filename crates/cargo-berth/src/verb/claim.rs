@@ -154,13 +154,11 @@ impl SymbolicReferenceDepth {
     }
 }
 
-enum ReferenceFileReadError {
-    GitResolutionRequired,
-    Claim(ClaimError),
-}
-
-impl From<ClaimError> for ReferenceFileReadError {
-    fn from(error: ClaimError) -> Self { Self::Claim(error) }
+enum FilesystemReferenceResolution {
+    Resolved(GitObjectId),
+    RequiresGitResolution {
+        rejection_if_git_reports_missing: ClaimError,
+    },
 }
 
 struct PreparedClaim {
@@ -1323,26 +1321,32 @@ fn read_reference(
     reference: &str,
 ) -> Result<GitObjectId, ClaimError> {
     match read_reference_from_files(worktree_context.common_git_directory(), reference) {
-        Ok(object_id) => Ok(object_id),
-        Err(filesystem_error) => {
-            match git::reference_lookup(worktree_context.repository_root(), reference)? {
-                ReferenceLookup::Present(object_id) => Ok(object_id),
-                ReferenceLookup::Missing => match filesystem_error {
-                    ReferenceFileReadError::GitResolutionRequired
-                    | ReferenceFileReadError::Claim(ClaimError::MissingReference(_)) => {
-                        Err(ClaimError::MissingReference(reference.to_owned()))
-                    },
-                    ReferenceFileReadError::Claim(error) => Err(error),
-                },
-            }
-        },
+        FilesystemReferenceResolution::Resolved(object_id) => Ok(object_id),
+        FilesystemReferenceResolution::RequiresGitResolution {
+            rejection_if_git_reports_missing,
+        } => resolve_reference_through_git(
+            worktree_context,
+            reference,
+            rejection_if_git_reports_missing,
+        ),
+    }
+}
+
+fn resolve_reference_through_git(
+    worktree_context: &WorktreeContext,
+    reference: &str,
+    rejection_if_git_reports_missing: ClaimError,
+) -> Result<GitObjectId, ClaimError> {
+    match git::reference_lookup(worktree_context.repository_root(), reference)? {
+        ReferenceLookup::Present(object_id) => Ok(object_id),
+        ReferenceLookup::Missing => Err(rejection_if_git_reports_missing),
     }
 }
 
 fn read_reference_from_files(
     common_git_directory: &Path,
     reference: &str,
-) -> Result<GitObjectId, ReferenceFileReadError> {
+) -> FilesystemReferenceResolution {
     read_reference_from_files_at_depth(
         common_git_directory,
         reference,
@@ -1354,17 +1358,34 @@ fn read_reference_from_files_at_depth(
     common_git_directory: &Path,
     reference: &str,
     depth: SymbolicReferenceDepth,
-) -> Result<GitObjectId, ReferenceFileReadError> {
+) -> FilesystemReferenceResolution {
     match fs::read_to_string(common_git_directory.join(reference)) {
         Ok(value) => parse_reference_value(common_git_directory, reference, &value, depth),
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            read_packed_reference(common_git_directory, reference)
-                .map_err(ReferenceFileReadError::Claim)
+            match read_packed_reference(common_git_directory, reference) {
+                Ok(object_id) => FilesystemReferenceResolution::Resolved(object_id),
+                Err(ClaimError::MissingReference(_)) => {
+                    FilesystemReferenceResolution::RequiresGitResolution {
+                        rejection_if_git_reports_missing: ClaimError::MissingReference(
+                            reference.to_owned(),
+                        ),
+                    }
+                },
+                Err(error) => FilesystemReferenceResolution::RequiresGitResolution {
+                    rejection_if_git_reports_missing: error,
+                },
+            }
         },
         Err(error) if error.kind() == ErrorKind::NotADirectory => {
-            Err(ReferenceFileReadError::GitResolutionRequired)
+            FilesystemReferenceResolution::RequiresGitResolution {
+                rejection_if_git_reports_missing: ClaimError::MissingReference(
+                    reference.to_owned(),
+                ),
+            }
         },
-        Err(error) => Err(ReferenceFileReadError::Claim(ClaimError::Io(error))),
+        Err(error) => FilesystemReferenceResolution::RequiresGitResolution {
+            rejection_if_git_reports_missing: ClaimError::Io(error),
+        },
     }
 }
 
@@ -1373,18 +1394,24 @@ fn parse_reference_value(
     reference: &str,
     value: &str,
     depth: SymbolicReferenceDepth,
-) -> Result<GitObjectId, ReferenceFileReadError> {
+) -> FilesystemReferenceResolution {
     let value = value.trim();
     if let Some(target) = value.strip_prefix("ref: ") {
-        return read_reference_from_files_at_depth(
-            common_git_directory,
-            target,
-            depth.descend(reference)?,
-        );
+        return match depth.descend(reference) {
+            Ok(depth) => read_reference_from_files_at_depth(common_git_directory, target, depth),
+            Err(error) => FilesystemReferenceResolution::RequiresGitResolution {
+                rejection_if_git_reports_missing: error,
+            },
+        };
     }
-    value.parse().map_err(|_| {
-        ReferenceFileReadError::Claim(ClaimError::InvalidStoredReference(reference.to_owned()))
-    })
+    value.parse().map_or_else(
+        |_| FilesystemReferenceResolution::RequiresGitResolution {
+            rejection_if_git_reports_missing: ClaimError::InvalidStoredReference(
+                reference.to_owned(),
+            ),
+        },
+        FilesystemReferenceResolution::Resolved,
+    )
 }
 
 fn read_packed_reference(

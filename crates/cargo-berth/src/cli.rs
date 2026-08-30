@@ -93,6 +93,7 @@ use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::session;
 use crate::session::CurrentProcessHarnessSessionSelection;
+use crate::session::HarnessSessionId;
 use crate::verb::board;
 use crate::verb::board::BoardDisplayOutcome;
 use crate::verb::board::BoardOutputSelection;
@@ -643,7 +644,7 @@ impl Cli {
         let output_format = command.output_format();
         let recovery_command_line = RecoveryCommandLine::current_process();
         match command.execute(output_format, &recovery_command_line) {
-            CommandExecution::Response(output_envelope) => {
+            CommandOutputOwnership::CallerRendersResponse(output_envelope) => {
                 match post_tool_use_invocation {
                     PostToolUseInvocation::NotRequested => {},
                     PostToolUseInvocation::Drift => {
@@ -671,7 +672,7 @@ impl Cli {
                 }
                 berth_exit.into()
             },
-            CommandExecution::BoardTerminalRestored => BerthExit::Clear.into(),
+            CommandOutputOwnership::BoardPresentedAndTerminalRestored => BerthExit::Clear.into(),
         }
     }
 }
@@ -698,7 +699,7 @@ impl Command {
         self,
         output_format: CliOutputFormat,
         recovery_command_line: &RecoveryCommandLine,
-    ) -> CommandExecution {
+    ) -> CommandOutputOwnership {
         let output_envelope = match self {
             Self::Init(init_arguments) => {
                 initialize_ledger(init_arguments.initialization_request())
@@ -710,10 +711,10 @@ impl Command {
                     | BoardDisplayOutcome::TerminalDidNotOpen(output_envelope)
                     | BoardDisplayOutcome::TerminalFailedAfterOpening(output_envelope)
                     | BoardDisplayOutcome::FactsUnavailable(output_envelope) => {
-                        CommandExecution::Response(Box::new(output_envelope))
+                        CommandOutputOwnership::CallerRendersResponse(Box::new(output_envelope))
                     },
                     BoardDisplayOutcome::TerminalRestored => {
-                        CommandExecution::BoardTerminalRestored
+                        CommandOutputOwnership::BoardPresentedAndTerminalRestored
                     },
                 };
             },
@@ -764,7 +765,7 @@ impl Command {
                 )
             },
         };
-        CommandExecution::Response(Box::new(output_envelope))
+        CommandOutputOwnership::CallerRendersResponse(Box::new(output_envelope))
     }
 
     /// Return this command's requested output representation.
@@ -811,12 +812,12 @@ impl Command {
     }
 }
 
-/// Whether command execution produced an envelope or owned the terminal itself.
-enum CommandExecution {
-    /// Emit this response through the resolved output representation.
-    Response(Box<OutputEnvelope>),
-    /// The board TUI exited after restoring the terminal.
-    BoardTerminalRestored,
+/// Who owns presenting a command's result once the command has run.
+enum CommandOutputOwnership {
+    /// The caller renders this response through the resolved output representation.
+    CallerRendersResponse(Box<OutputEnvelope>),
+    /// The board TUI presented itself and restored the terminal before returning.
+    BoardPresentedAndTerminalRestored,
 }
 
 impl PathArguments {
@@ -881,14 +882,15 @@ impl ClaimArguments {
             PhaseStartSelection::CurrentHead,
             PhaseStartSelection::Protected,
         );
-        let overlap_authorization = overlap_authorization_request(
+        let overlap_selection = overlap_selection(
             before,
             after,
             defer,
             override_reservation,
-            overlap_why,
-            proposal,
+            overlap_why.as_deref(),
+            proposal.as_deref(),
         )?;
+        let overlap_authorization = overlap_authorization_request(overlap_selection);
         Ok(ClaimRequest {
             declared_scopes,
             source,
@@ -903,15 +905,31 @@ impl ClaimArguments {
     }
 }
 
-fn overlap_authorization_request(
+/// Convert the clap-owned overlap arguments into the one answer they encode.
+fn overlap_selection(
     before: Option<ReservationId>,
     after: Option<ReservationId>,
     defer: Option<ReservationId>,
     override_reservation: Option<ReservationId>,
-    overlap_why: Option<String>,
-    proposal: Option<String>,
-) -> Result<OverlapAuthorizationRequest, String> {
-    let answer = match (before, after, defer, override_reservation) {
+    overlap_why: Option<&str>,
+    proposal: Option<&str>,
+) -> Result<OverlapSelection, String> {
+    let permissive_overlap_details = || {
+        let authorization_reason = overlap_why
+            .ok_or_else(|| "a permissive overlap answer requires --overlap-why".to_owned())?
+            .parse::<OverlapAuthorizationReason>()
+            .map_err(|error| error.to_string())?;
+        let proposal_submission = match proposal {
+            Some(token) => OverlapProposalSubmission::Apply(Box::new(
+                token
+                    .parse::<OverlapProposalToken>()
+                    .map_err(|error| error.to_string())?,
+            )),
+            None => OverlapProposalSubmission::Mint,
+        };
+        Ok::<_, String>((authorization_reason, proposal_submission))
+    };
+    Ok(match (before, after, defer, override_reservation) {
         (None, None, None, None) => {
             if overlap_why.is_some() || proposal.is_some() {
                 return Err(
@@ -919,38 +937,129 @@ fn overlap_authorization_request(
                         .to_owned(),
                 );
             }
-            return Ok(OverlapAuthorizationRequest::Absent);
+            OverlapSelection::NoOverlapRequested
         },
-        (Some(blocker), None, None, None) => PermissiveOverlapAnswer::Sequence {
-            blocker,
-            direction: OrderingDirection::RequesterBeforeHolder,
+        (Some(blocker_reservation_id), None, None, None) => {
+            let (authorization_reason, proposal_submission) = permissive_overlap_details()?;
+            OverlapSelection::RequesterBeforeHolder {
+                blocker_reservation_id,
+                authorization_reason,
+                proposal_submission,
+            }
         },
-        (None, Some(blocker), None, None) => PermissiveOverlapAnswer::Sequence {
-            blocker,
-            direction: OrderingDirection::HolderBeforeRequester,
+        (None, Some(blocker_reservation_id), None, None) => {
+            let (authorization_reason, proposal_submission) = permissive_overlap_details()?;
+            OverlapSelection::RequesterAfterHolder {
+                blocker_reservation_id,
+                authorization_reason,
+                proposal_submission,
+            }
         },
-        (None, None, Some(blocker), None) => PermissiveOverlapAnswer::Defer { blocker },
-        (None, None, None, Some(blocker)) => PermissiveOverlapAnswer::Override { blocker },
+        (None, None, Some(blocker_reservation_id), None) => {
+            let (authorization_reason, proposal_submission) = permissive_overlap_details()?;
+            OverlapSelection::Defer {
+                blocker_reservation_id,
+                authorization_reason,
+                proposal_submission,
+            }
+        },
+        (None, None, None, Some(blocker_reservation_id)) => {
+            let (authorization_reason, proposal_submission) = permissive_overlap_details()?;
+            OverlapSelection::Override {
+                blocker_reservation_id,
+                authorization_reason,
+                proposal_submission,
+            }
+        },
         _ => return Err("choose only one overlap answer".to_owned()),
-    };
-    let reason = overlap_why
-        .ok_or_else(|| "a permissive overlap answer requires --overlap-why".to_owned())?
-        .parse::<OverlapAuthorizationReason>()
-        .map_err(|error| error.to_string())?;
-    let proposal_submission = proposal.map_or(Ok(OverlapProposalSubmission::Mint), |token| {
-        token
-            .parse::<OverlapProposalToken>()
-            .map(Box::new)
-            .map(OverlapProposalSubmission::Apply)
-            .map_err(|error| error.to_string())
-    })?;
-    Ok(OverlapAuthorizationRequest::Permissive(Box::new(
-        PermissiveOverlapAuthorizationRequest {
-            answer,
-            reason,
+    })
+}
+
+/// Whether and how the caller permits one reservation overlap.
+enum OverlapSelection {
+    /// The caller did not request a permissive overlap answer.
+    NoOverlapRequested,
+    /// The requester must integrate before the current reservation holder.
+    RequesterBeforeHolder {
+        blocker_reservation_id: ReservationId,
+        authorization_reason:   OverlapAuthorizationReason,
+        proposal_submission:    OverlapProposalSubmission,
+    },
+    /// The current reservation holder must integrate before the requester.
+    RequesterAfterHolder {
+        blocker_reservation_id: ReservationId,
+        authorization_reason:   OverlapAuthorizationReason,
+        proposal_submission:    OverlapProposalSubmission,
+    },
+    /// The requester defers its integration until the overlap is resolved.
+    Defer {
+        blocker_reservation_id: ReservationId,
+        authorization_reason:   OverlapAuthorizationReason,
+        proposal_submission:    OverlapProposalSubmission,
+    },
+    /// The requester proceeds despite the current reservation holder's overlap.
+    Override {
+        blocker_reservation_id: ReservationId,
+        authorization_reason:   OverlapAuthorizationReason,
+        proposal_submission:    OverlapProposalSubmission,
+    },
+}
+
+fn overlap_authorization_request(selection: OverlapSelection) -> OverlapAuthorizationRequest {
+    let (answer, reason, proposal_submission) = match selection {
+        OverlapSelection::NoOverlapRequested => return OverlapAuthorizationRequest::Absent,
+        OverlapSelection::RequesterBeforeHolder {
+            blocker_reservation_id,
+            authorization_reason,
             proposal_submission,
-        },
-    )))
+        } => (
+            PermissiveOverlapAnswer::Sequence {
+                blocker:   blocker_reservation_id,
+                direction: OrderingDirection::RequesterBeforeHolder,
+            },
+            authorization_reason,
+            proposal_submission,
+        ),
+        OverlapSelection::RequesterAfterHolder {
+            blocker_reservation_id,
+            authorization_reason,
+            proposal_submission,
+        } => (
+            PermissiveOverlapAnswer::Sequence {
+                blocker:   blocker_reservation_id,
+                direction: OrderingDirection::HolderBeforeRequester,
+            },
+            authorization_reason,
+            proposal_submission,
+        ),
+        OverlapSelection::Defer {
+            blocker_reservation_id,
+            authorization_reason,
+            proposal_submission,
+        } => (
+            PermissiveOverlapAnswer::Defer {
+                blocker: blocker_reservation_id,
+            },
+            authorization_reason,
+            proposal_submission,
+        ),
+        OverlapSelection::Override {
+            blocker_reservation_id,
+            authorization_reason,
+            proposal_submission,
+        } => (
+            PermissiveOverlapAnswer::Override {
+                blocker: blocker_reservation_id,
+            },
+            authorization_reason,
+            proposal_submission,
+        ),
+    };
+    OverlapAuthorizationRequest::Permissive(Box::new(PermissiveOverlapAuthorizationRequest {
+        answer,
+        reason,
+        proposal_submission,
+    }))
 }
 
 impl ReservationArguments {
@@ -1006,7 +1115,7 @@ enum PostToolUseWorkingDirectory {
 }
 
 struct PostToolUseDriftInvocation {
-    harness_session_id: String,
+    harness_session_id: HarnessSessionId,
     working_directory:  PostToolUseWorkingDirectory,
 }
 
@@ -1049,9 +1158,9 @@ impl PostToolUseDriftInvocation {
         let harness_session_id = object
             .get("session_id")
             .and_then(serde_json::Value::as_str)
-            .filter(|session_id| !session_id.is_empty())
             .ok_or(PostToolUseDriftInvocationError::InvalidPayload)?
-            .to_owned();
+            .parse::<HarnessSessionId>()
+            .map_err(|_| PostToolUseDriftInvocationError::InvalidPayload)?;
         let working_directory = object
             .get("cwd")
             .and_then(serde_json::Value::as_str)
@@ -1523,14 +1632,14 @@ fn refresh_managed_hook_after_trunk_deletion(
             return;
         },
     };
-    let mut renamed_reference = git::LocalBranchReplacementTipMatches::NoMatches;
+    let mut renamed_reference = git::LocalBranchRenameTargetResolution::NotProven;
     for attempt in 0..MAXIMUM_REPLACEMENT_LOOKUP_ATTEMPTS {
-        renamed_reference = match git::local_branch_replacement_tip_matches(
+        renamed_reference = match git::local_branch_rename_target_resolution(
             worktree_context.repository_root(),
             previous_tip,
             deleted_reference,
         ) {
-            Ok(git::LocalBranchReplacementTipMatches::NoMatches)
+            Ok(git::LocalBranchRenameTargetResolution::NotProven)
                 if attempt + 1 < MAXIMUM_REPLACEMENT_LOOKUP_ATTEMPTS =>
             {
                 std::thread::sleep(REPLACEMENT_LOOKUP_RETRY_INTERVAL);
@@ -1547,14 +1656,14 @@ fn refresh_managed_hook_after_trunk_deletion(
         break;
     }
     let renamed_reference = match renamed_reference {
-        git::LocalBranchReplacementTipMatches::ExactlyOne(reference) => reference,
-        git::LocalBranchReplacementTipMatches::NoMatches => {
+        git::LocalBranchRenameTargetResolution::Unique(reference) => reference,
+        git::LocalBranchRenameTargetResolution::NotProven => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth found no local branch with reflog proof that it was renamed from {deleted_reference}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
             ));
             return;
         },
-        git::LocalBranchReplacementTipMatches::MultipleMatches => {
+        git::LocalBranchRenameTargetResolution::Ambiguous => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth found multiple local branches with reflog proof that they were renamed from {deleted_reference}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
             ));

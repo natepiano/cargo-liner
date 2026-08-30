@@ -20,17 +20,17 @@ pub(super) enum GitHookExecutionPolicy {
     SuppressedForRetentionRef,
 }
 
-/// Whether a git invocation produced a complete process output.
-pub(crate) enum GitCommandExecution {
+/// Whether a git invocation left a complete process output available.
+pub(crate) enum GitCommandOutputAvailability {
     /// The process ran to completion, including a possible non-zero exit status.
-    Completed(Output),
-    /// The invocation returned an I/O error instead of a process output.
-    CouldNotRun(io::Error),
+    Available(Output),
+    /// No process output exists; the invocation returned this I/O error instead.
+    Unavailable(io::Error),
 }
 
-impl From<io::Result<Output>> for GitCommandExecution {
+impl From<io::Result<Output>> for GitCommandOutputAvailability {
     fn from(output: io::Result<Output>) -> Self {
-        output.map_or_else(Self::CouldNotRun, Self::Completed)
+        output.map_or_else(Self::Unavailable, Self::Available)
     }
 }
 
@@ -77,7 +77,10 @@ pub(super) fn git_output<const ARGUMENT_COUNT: usize>(
 }
 
 /// Run one read-only git operation through the typed process-execution boundary.
-pub(crate) fn git_execution(repository_root: &Path, arguments: &[&str]) -> GitCommandExecution {
+pub(crate) fn git_execution(
+    repository_root: &Path,
+    arguments: &[&str],
+) -> GitCommandOutputAvailability {
     git_command(repository_root).args(arguments).output().into()
 }
 

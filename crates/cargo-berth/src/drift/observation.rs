@@ -17,7 +17,7 @@ use super::git_output;
 use super::git_output::DriftFingerprintError;
 use super::git_output::FullDriftObservationActivity;
 use super::git_output::IncursionAttributionAnchorState;
-use super::git_output::WorkingTreeStatusPaths;
+use super::git_output::WorkingTreeChangePartition;
 use super::ordering;
 use super::report::DriftComparisonMode;
 use super::selection::DriftComparisonChoice;
@@ -388,7 +388,7 @@ fn observe_full(
             },
         )
         .collect::<Result<HashMap<_, _>, _>>()?;
-    let WorkingTreeStatusPaths {
+    let WorkingTreeChangePartition {
         staged: staged_paths,
         unstaged: unstaged_paths,
         untracked: untracked_paths,
@@ -416,7 +416,7 @@ fn observe_full(
 
 fn observe_working_tree_status(
     repository_root: &Path,
-) -> Result<WorkingTreeStatusPaths, DriftFingerprintError> {
+) -> Result<WorkingTreeChangePartition, DriftFingerprintError> {
     let status = git_output::run_git(
         repository_root,
         &[

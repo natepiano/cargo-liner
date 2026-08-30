@@ -2242,7 +2242,7 @@ fn prepared_gate_advances_each_subject_at_actual_and_proposed_targets() {
     assert!(board.status.success());
     let data = &json_output(&board)["payload"]["data"];
     for reservation_id in &fixture.reservation_ids {
-        let row = reservation_row(data, reservation_id);
+        let row = board_reservation_snapshot(data, reservation_id);
         assert_eq!(
             row["integration_evidence"]["status"]["status"],
             "integrated"
@@ -3218,7 +3218,7 @@ fn json_output(output: &Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("command should print JSON")
 }
 
-fn reservation_row<'board>(
+fn board_reservation_snapshot<'board>(
     data: &'board serde_json::Value,
     reservation_id: &str,
 ) -> &'board serde_json::Value {

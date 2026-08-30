@@ -13,11 +13,11 @@ use super::AnswerAcquisition;
 use super::BoardAlert;
 use super::BoardIntegrationEvidence;
 use super::BoardModel;
+use super::BoardReservationSnapshot;
 use super::BypassAuditEntry;
 use super::OrderingConsequence;
 use super::OverrideConsequence;
 use super::RecordedAnswer;
-use super::ReservationRow;
 use super::StaleReservationResolutionAction;
 use super::SymmetricDeferralConsequence;
 use super::WaitingAction;
@@ -171,7 +171,7 @@ fn stale_reservation_alert_names_the_renew_resolution() -> FixtureResult<()> {
     let actor = fixture.main_actor();
     let reservation = fixture.claim(&actor, "stale.rs", ConflictAuthorization::NoConflict)?;
     let model = fixture.model()?;
-    let fresh_row = reservation_row(&model, reservation.reservation_id)?.clone();
+    let fresh_row = board_reservation_snapshot(&model, reservation.reservation_id)?.clone();
     assert!(board_alerts(&[], std::slice::from_ref(&fresh_row), &[])?.is_empty());
 
     let mut stale_row = fresh_row;
@@ -350,25 +350,25 @@ fn release_dispositions_remain_typed_in_resolved_rows() -> FixtureResult<()> {
 
     let model = fixture.model()?;
     assert!(matches!(
-        &reservation_row(&model, integrated.reservation_id)?.lifecycle,
+        &board_reservation_snapshot(&model, integrated.reservation_id)?.lifecycle,
         ReservationLifecycle::Released {
             disposition: ReleaseDisposition::Integrated,
         }
     ));
     assert!(matches!(
-        &reservation_row(&model, rewritten.reservation_id)?.lifecycle,
+        &board_reservation_snapshot(&model, rewritten.reservation_id)?.lifecycle,
         ReservationLifecycle::Released {
             disposition: ReleaseDisposition::RewrittenIntegration(_),
         }
     ));
     assert!(matches!(
-        &reservation_row(&model, abandoned.reservation_id)?.lifecycle,
+        &board_reservation_snapshot(&model, abandoned.reservation_id)?.lifecycle,
         ReservationLifecycle::Released {
             disposition: ReleaseDisposition::Abandoned(_),
         }
     ));
     assert!(matches!(
-        &reservation_row(&model, retired.reservation_id)?.lifecycle,
+        &board_reservation_snapshot(&model, retired.reservation_id)?.lifecycle,
         ReservationLifecycle::Released {
             disposition: ReleaseDisposition::RetiredOrphan(_),
         }
@@ -409,7 +409,8 @@ fn assert_checkpoint_not_integrated_and_incorporation_actions() -> FixtureResult
     };
     assert!(instruction.contains("reach trunk"));
     assert!(matches!(
-        &reservation_row(&not_integrated, initial.predecessor.reservation_id)?.integration_evidence,
+        &board_reservation_snapshot(&not_integrated, initial.predecessor.reservation_id)?
+            .integration_evidence,
         BoardIntegrationEvidence::Current {
             status: IntegrationEvidenceStatus::NotIntegrated,
         }
@@ -427,7 +428,8 @@ fn assert_checkpoint_not_integrated_and_incorporation_actions() -> FixtureResult
     };
     assert!(instruction.contains("reader's own rebase"));
     assert!(matches!(
-        &reservation_row(&integrated, initial.predecessor.reservation_id)?.integration_evidence,
+        &board_reservation_snapshot(&integrated, initial.predecessor.reservation_id)?
+            .integration_evidence,
         BoardIntegrationEvidence::Current {
             status: IntegrationEvidenceStatus::Integrated { .. },
         }
@@ -469,7 +471,7 @@ fn assert_trunk_rewritten_action() -> FixtureResult<()> {
     assert!(instruction.contains("trunk rewrite"));
     assert_eq!(resolve_flag, "resolve --integrated-as <trunk-oid>");
     assert!(matches!(
-        &reservation_row(&rewritten_model, rewritten.predecessor.reservation_id)?
+        &board_reservation_snapshot(&rewritten_model, rewritten.predecessor.reservation_id)?
             .integration_evidence,
         BoardIntegrationEvidence::Current {
             status: IntegrationEvidenceStatus::TrunkRewritten,
@@ -506,7 +508,8 @@ fn assert_object_unknown_action() -> FixtureResult<()> {
     };
     assert!(instruction.contains("does not resolve"));
     assert!(matches!(
-        &reservation_row(&unknown_model, unknown.predecessor.reservation_id)?.integration_evidence,
+        &board_reservation_snapshot(&unknown_model, unknown.predecessor.reservation_id)?
+            .integration_evidence,
         BoardIntegrationEvidence::Current {
             status: IntegrationEvidenceStatus::ObjectUnknown,
         }
@@ -862,10 +865,10 @@ fn assert_authorized_overlap(overlaps: &AuthorizedOverlapSet, blocker_id: Reserv
     assert_eq!(overlap.scopes.as_slice()[0].kind, ScopeKind::File);
 }
 
-fn reservation_row(
+fn board_reservation_snapshot(
     model: &BoardModel,
     reservation_id: ReservationId,
-) -> FixtureResult<&ReservationRow> {
+) -> FixtureResult<&BoardReservationSnapshot> {
     model
         .ready_now
         .entries
