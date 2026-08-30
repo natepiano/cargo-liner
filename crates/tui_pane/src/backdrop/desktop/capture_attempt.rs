@@ -121,6 +121,9 @@ pub enum CaptureFailure {
     TerminalWindowNotFound,
     /// No display could be matched to the selected terminal window.
     DisplayNotFound,
+    /// Another process's display capture was still in flight when the call deadline ran out, so
+    /// this attempt never asked for one.
+    ScreenshotTurnTimedOut,
     /// `ScreenCaptureKit` could not capture the selected display.
     ScreenshotFailed,
     /// The display capture was requested, but macOS did not answer within the call deadline, so the

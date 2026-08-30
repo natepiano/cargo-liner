@@ -201,7 +201,7 @@ mod tests {
     use super::*;
 
     /// Capture failure stages exercised by the notice classifier.
-    const CAPTURE_FAILURES: [CaptureFailure; 15] = [
+    const CAPTURE_FAILURES: [CaptureFailure; 16] = [
         CaptureFailure::UnsupportedPlatform,
         CaptureFailure::AttemptStalled,
         CaptureFailure::CaptureWorkerReplaced,
@@ -213,6 +213,7 @@ mod tests {
         CaptureFailure::ShareableContentQueryTimedOut,
         CaptureFailure::TerminalWindowNotFound,
         CaptureFailure::DisplayNotFound,
+        CaptureFailure::ScreenshotTurnTimedOut,
         CaptureFailure::ScreenshotFailed,
         CaptureFailure::ScreenshotTimedOut,
         CaptureFailure::PixelExtractionFailed,
@@ -456,6 +457,7 @@ mod tests {
                 | CaptureFailure::ShareableContentQueryTimedOut
                 | CaptureFailure::TerminalWindowNotFound
                 | CaptureFailure::DisplayNotFound
+                | CaptureFailure::ScreenshotTurnTimedOut
                 | CaptureFailure::ScreenshotFailed
                 | CaptureFailure::ScreenshotTimedOut
                 | CaptureFailure::PixelExtractionFailed
@@ -509,6 +511,7 @@ mod tests {
                 | CaptureFailure::ShareableContentQueryTimedOut
                 | CaptureFailure::TerminalWindowNotFound
                 | CaptureFailure::DisplayNotFound
+                | CaptureFailure::ScreenshotTurnTimedOut
                 | CaptureFailure::ScreenshotFailed
                 | CaptureFailure::ScreenshotTimedOut
                 | CaptureFailure::PixelExtractionFailed
@@ -557,6 +560,7 @@ mod tests {
                     | CaptureFailure::ShareableContentQueryTimedOut
                     | CaptureFailure::TerminalWindowNotFound
                     | CaptureFailure::DisplayNotFound
+                    | CaptureFailure::ScreenshotTurnTimedOut
                     | CaptureFailure::ScreenshotFailed
                     | CaptureFailure::ScreenshotTimedOut
                     | CaptureFailure::PixelExtractionFailed

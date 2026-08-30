@@ -8,12 +8,17 @@
 use std::collections::HashSet;
 use std::env;
 use std::ffi::c_void;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::fs::TryLockError;
 use std::future::Future;
+use std::path::Path;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
 use std::thread::Thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -58,6 +63,8 @@ use crate::backdrop::constants::CAPTURE_CALL_DEADLINE;
 use crate::backdrop::constants::EMULATOR_NAME_FLOOR;
 use crate::backdrop::constants::POSITION_TOLERANCE;
 use crate::backdrop::constants::SAMPLES_PER_CELL;
+use crate::backdrop::constants::SCREENSHOT_TURN_LOCK_FILE;
+use crate::backdrop::constants::SCREENSHOT_TURN_POLL;
 use crate::backdrop::constants::TERM_PROGRAM_ENV;
 use crate::backdrop::desktop;
 use crate::backdrop::desktop::CaptureAttemptResult;
@@ -93,6 +100,69 @@ enum BoundedWait<T> {
     /// The deadline elapsed with no answer; the request was abandoned.
     TimedOut,
 }
+
+/// This process's turn to have a screenshot request in flight, shared with every other process of
+/// this user that captures through this module.
+///
+/// Measured overlapping screenshot requests from different processes block one another until one
+/// process goes away, while a process alone succeeds; starting a fresh process does not escape the
+/// condition. The file lock keeps only one process inside the screenshot call at a time.
+enum ScreenshotTurn {
+    /// The lock is held; it is released when this value drops.
+    Exclusive {
+        /// The open lock file that holds this process's exclusive lock.
+        file: File,
+    },
+    /// The lock file could not be used, so the screenshot proceeds unserialized rather than every
+    /// attempt failing over a courtesy between instances.
+    Unguarded,
+}
+
+impl ScreenshotTurn {
+    /// Acquire this process's screenshot turn from the shared per-user lock file.
+    fn acquire(deadline: Duration) -> Result<Self, ScreenshotTurnTimedOut> {
+        Self::acquire_at(&env::temp_dir().join(SCREENSHOT_TURN_LOCK_FILE), deadline)
+    }
+
+    /// Acquire this process's screenshot turn from `path`.
+    fn acquire_at(path: &Path, deadline: Duration) -> Result<Self, ScreenshotTurnTimedOut> {
+        let started_at = Instant::now();
+        let Ok(file) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+        else {
+            return Ok(Self::Unguarded);
+        };
+
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self::Exclusive { file }),
+                Err(TryLockError::WouldBlock) => {
+                    if started_at.elapsed() >= deadline {
+                        return Err(ScreenshotTurnTimedOut);
+                    }
+                    thread::sleep(SCREENSHOT_TURN_POLL);
+                },
+                Err(TryLockError::Error(_)) => return Ok(Self::Unguarded),
+            }
+        }
+    }
+}
+
+impl Drop for ScreenshotTurn {
+    fn drop(&mut self) {
+        if let Self::Exclusive { file } = self {
+            let _ = file.unlock();
+        }
+    }
+}
+
+/// Another process's screenshot was still in flight when the deadline ran out.
+#[derive(Debug)]
+struct ScreenshotTurnTimedOut;
 
 /// Wakes a future poll by unparking the thread driving it.
 struct ThreadUnparker {
@@ -296,6 +366,8 @@ fn capture_selected_window(
         .with_width(image.0)
         .with_height(image.1);
 
+    let turn = ScreenshotTurn::acquire(CAPTURE_CALL_DEADLINE)
+        .map_err(|ScreenshotTurnTimedOut| CaptureFailure::ScreenshotTurnTimedOut)?;
     let captured = match block_on_with_deadline(
         AsyncSCScreenshotManager::capture_image(&filter, &configuration),
         CAPTURE_CALL_DEADLINE,
@@ -305,6 +377,7 @@ fn capture_selected_window(
         },
         BoundedWait::TimedOut => return Err(CaptureFailure::ScreenshotTimedOut),
     };
+    drop(turn);
     let pixels = CaptureFailure::PixelExtractionFailed.classify_result(captured.rgba_data())?;
     let (columns, rows, colors) = reduce_capture(&pixels, image, cell)?;
     Ok(Desktop {
@@ -1114,10 +1187,13 @@ impl CaptureFailure {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::fs::OpenOptions;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::task::Poll;
     use std::task::Waker;
+    use std::thread;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -1125,6 +1201,13 @@ mod tests {
 
     use super::BoundedWait;
     use super::CaptureFailure;
+    use super::ScreenshotTurn;
+    use super::ScreenshotTurnTimedOut;
+
+    /// Return a process-local path unique to one screenshot-turn test.
+    fn screenshot_turn_test_path(test_name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("tui-pane-{test_name}-{}.lock", std::process::id()))
+    }
 
     /// The three names iTerm2 answers to, as
     /// [`named_emulator_windows`](super::named_emulator_windows)
@@ -1135,6 +1218,102 @@ mod tests {
     const APPLICATION: &str = "iTerm2";
     /// iTerm2's bundle identifier.
     const BUNDLE: &str = "com.googlecode.iterm2";
+
+    #[test]
+    fn a_free_turn_is_taken_at_once() {
+        let path = screenshot_turn_test_path("a-free-turn-is-taken-at-once");
+        let started_at = Instant::now();
+
+        let turn = ScreenshotTurn::acquire_at(&path, Duration::from_millis(200))
+            .expect("a free screenshot turn should be acquired");
+        let elapsed = started_at.elapsed();
+
+        assert!(matches!(turn, ScreenshotTurn::Exclusive { .. }));
+        assert!(elapsed < super::SCREENSHOT_TURN_POLL);
+        std::fs::remove_file(path).expect("the test lock file should be removable");
+    }
+
+    #[test]
+    fn a_held_turn_times_out_at_the_deadline() {
+        let path = screenshot_turn_test_path("a-held-turn-times-out-at-the-deadline");
+        let holder = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .expect("the test lock file should open");
+        holder.lock().expect("the holder should acquire the lock");
+        let deadline = Duration::from_millis(60);
+        let started_at = Instant::now();
+
+        let outcome = ScreenshotTurn::acquire_at(&path, deadline);
+
+        assert!(matches!(outcome, Err(ScreenshotTurnTimedOut)));
+        assert!(started_at.elapsed() >= deadline);
+        holder.unlock().expect("the holder should release the lock");
+        std::fs::remove_file(path).expect("the test lock file should be removable");
+    }
+
+    #[test]
+    fn a_released_turn_is_taken_by_the_waiter() {
+        let path = screenshot_turn_test_path("a-released-turn-is-taken-by-the-waiter");
+        let holder = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .expect("the test lock file should open");
+        holder.lock().expect("the holder should acquire the lock");
+        let hold = Duration::from_millis(40);
+        let started_at = Instant::now();
+        let holder_thread = thread::spawn(move || {
+            thread::sleep(hold);
+            holder.unlock().expect("the holder should release the lock");
+        });
+
+        let turn = ScreenshotTurn::acquire_at(&path, Duration::from_secs(1))
+            .expect("the waiter should acquire the released lock");
+
+        assert!(matches!(&turn, ScreenshotTurn::Exclusive { .. }));
+        assert!(started_at.elapsed() >= hold);
+        holder_thread
+            .join()
+            .expect("the holder thread should finish");
+        drop(turn);
+        std::fs::remove_file(path).expect("the test lock file should be removable");
+    }
+
+    #[test]
+    fn dropping_the_turn_releases_it() {
+        let path = screenshot_turn_test_path("dropping-the-turn-releases-it");
+        let turn = ScreenshotTurn::acquire_at(&path, Duration::from_millis(200))
+            .expect("a free screenshot turn should be acquired");
+        let second = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("the second lock handle should open");
+        assert!(matches!(&turn, ScreenshotTurn::Exclusive { .. }));
+
+        drop(turn);
+
+        second
+            .try_lock()
+            .expect("dropping the turn should release its lock");
+        second
+            .unlock()
+            .expect("the second handle should release the lock");
+        std::fs::remove_file(path).expect("the test lock file should be removable");
+    }
+
+    #[test]
+    fn an_unusable_path_falls_back_to_unguarded() {
+        let outcome = ScreenshotTurn::acquire_at(&std::env::temp_dir(), Duration::from_millis(50));
+
+        assert!(matches!(outcome, Ok(ScreenshotTurn::Unguarded)));
+    }
 
     #[test]
     fn bounded_wait_times_out_after_the_deadline() {

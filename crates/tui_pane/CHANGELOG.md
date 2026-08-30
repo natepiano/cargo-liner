@@ -13,6 +13,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `ResolvingPixels` draws the backdrop as itself under a travelling wave of coarseness, clumping cells into blocks that share an averaged colour inside the wave and leaving them their own outside it. The block grid is cut from the area's origin and stays cut there, so blocks resolve rather than the picture boiling. `PixelResolve` chooses how a block hands its cells back and `PixelFill` what a cell is drawn with. Widening the wave past the whole of its axis flattens the way its coarseness falls away from the middle, so the field can be asked to stand at one coarseness the whole way round. The wave is read at the cell rather than at the block, so one narrower than a block crosses it instead of turning the whole of it over at once.
 
 ### Fixed
+- The backdrop's display screenshot is serialized across processes with a file lock, because overlapping screenshot requests from different processes block one another.
 - A window-server call macOS never answers no longer blocks a capture worker forever: each call gets four seconds, then the attempt fails and is retried.
 - `CaptureFailure::CaptureWorkerReplaced` distinguishes a capture worker abandoned and replaced after a second consecutive missed deadline from a single attempt that missed its deadline.
 - The backdrop monitor replaces a capture worker only after a second consecutive missed deadline,
