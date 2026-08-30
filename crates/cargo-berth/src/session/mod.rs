@@ -29,7 +29,8 @@ static CURRENT_PROCESS_HARNESS_SESSION: OnceLock<HarnessSessionId> = OnceLock::n
 pub(crate) struct HarnessSessionId(String);
 
 impl HarnessSessionId {
-    const MAXIMUM_CHARACTERS: usize = 256;
+    /// Maximum number of characters accepted from a private hook boundary.
+    pub(crate) const MAXIMUM_CHARACTERS: usize = 256;
 
     fn from_current_process() -> HarnessSessionIdentity {
         if let Some(harness_session_id) = CURRENT_PROCESS_HARNESS_SESSION.get().cloned() {
@@ -72,10 +73,14 @@ impl FromStr for HarnessSessionId {
     type Err = InvalidHarnessSessionId;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if !value.is_empty()
-            && value.len() <= Self::MAXIMUM_CHARACTERS
-            && value.chars().all(|character| !character.is_control())
-        {
+        let character_count = value.chars().try_fold(0, |character_count, character| {
+            if character_count == Self::MAXIMUM_CHARACTERS || character.is_control() {
+                Err(InvalidHarnessSessionId)
+            } else {
+                Ok(character_count + 1)
+            }
+        })?;
+        if character_count > 0 {
             Ok(Self(value.to_owned()))
         } else {
             Err(InvalidHarnessSessionId)

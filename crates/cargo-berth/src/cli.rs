@@ -2031,10 +2031,13 @@ mod tests {
     use super::CommandResponseRendering;
     use super::CommandVerb;
     use super::PostCommitHookRequest;
+    use super::PostToolUseDriftInvocation;
+    use super::PostToolUseDriftInvocationError;
     use super::command_response_rendering;
     use super::exit_for_parser_error;
     use super::without_subcommand_name;
     use crate::exit::BerthExit;
+    use crate::session::HarnessSessionId;
     use crate::verb::board::BoardOutputSelection;
     use crate::verb::claim::ClaimRequest;
 
@@ -2050,6 +2053,67 @@ mod tests {
             command_response_rendering(CliOutputFormat::Json, PostCommitHookRequest::Requested,),
             CommandResponseRendering::OutputEnvelope(CliOutputFormat::Json),
         );
+    }
+
+    #[test]
+    fn multibyte_harness_session_id_uses_character_limit() {
+        let accepted_session_id = "é".repeat(HarnessSessionId::MAXIMUM_CHARACTERS);
+        let accepted_payload = serde_json::json!({
+            "tool_name": "Bash",
+            "session_id": accepted_session_id,
+        });
+        let expected_harness_session_id = accepted_session_id.parse::<HarnessSessionId>();
+
+        assert!(matches!(
+            (
+                PostToolUseDriftInvocation::from_value(&accepted_payload),
+                expected_harness_session_id,
+            ),
+            (
+                Ok(PostToolUseDriftInvocation {
+                    harness_session_id,
+                    ..
+                }),
+                Ok(expected_harness_session_id),
+            ) if harness_session_id == expected_harness_session_id
+        ));
+
+        let rejected_session_id = "é".repeat(HarnessSessionId::MAXIMUM_CHARACTERS + 1);
+        let rejected_payload = serde_json::json!({
+            "tool_name": "Bash",
+            "session_id": rejected_session_id,
+        });
+
+        assert!(matches!(
+            PostToolUseDriftInvocation::from_value(&rejected_payload),
+            Err(PostToolUseDriftInvocationError::InvalidPayload)
+        ));
+    }
+
+    #[test]
+    fn overlong_harness_session_id_is_an_invalid_payload() {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "session_id": "a".repeat(HarnessSessionId::MAXIMUM_CHARACTERS + 1),
+        });
+
+        assert!(matches!(
+            PostToolUseDriftInvocation::from_value(&payload),
+            Err(PostToolUseDriftInvocationError::InvalidPayload)
+        ));
+    }
+
+    #[test]
+    fn control_character_harness_session_id_is_an_invalid_payload() {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "session_id": "session\u{0000}",
+        });
+
+        assert!(matches!(
+            PostToolUseDriftInvocation::from_value(&payload),
+            Err(PostToolUseDriftInvocationError::InvalidPayload)
+        ));
     }
 
     #[test]

@@ -5,6 +5,7 @@ mod journal;
 mod lock;
 mod projection;
 
+use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -291,6 +292,12 @@ impl EnvironmentCoordinationRunSelection {
         let Some(value) = std::env::var_os(COORDINATION_RUN_ENVIRONMENT) else {
             return Self::NotSupplied;
         };
+        Self::from(value)
+    }
+}
+
+impl From<OsString> for EnvironmentCoordinationRunSelection {
+    fn from(value: OsString) -> Self {
         value
             .into_string()
             .ok()
@@ -1839,6 +1846,7 @@ impl std::error::Error for CorrectableTransactionInput {}
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::ffi::OsString;
     use std::fs;
     use std::process::Command;
     use std::sync::Arc;
@@ -2243,6 +2251,64 @@ mod tests {
         let worktree_context = WorktreeContext::discover(repository.path())
             .expect("scratch worktree should be discovered");
         assert!(super::resolve_identity(&worktree_context).is_ok());
+    }
+
+    #[test]
+    fn unusable_environment_coordination_run_falls_back_to_marker_then_unidentified() {
+        let administrative_directory = tempdir().expect("administrative directory should exist");
+        let marker_run = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c"
+            .parse::<CoordinationRunId>()
+            .expect("marker run should parse");
+        let administrative_worktree =
+            worktree_identity(administrative_directory.path(), WorktreeKind::Linked)
+                .expect("marker worktree identity should resolve")
+                .id;
+        fs::write(
+            administrative_directory
+                .path()
+                .join(COORDINATION_RUN_MARKER_FILE_NAME),
+            format!("{marker_run}\n"),
+        )
+        .expect("coordination marker should write");
+        let unusable_environment_run_selections = ["", "01900a1b-not-a-valid-uuid"]
+            .map(|value| EnvironmentCoordinationRunSelection::from(OsString::from(value)));
+
+        for environment_run_selection in unusable_environment_run_selections {
+            assert_eq!(
+                environment_run_selection,
+                EnvironmentCoordinationRunSelection::UnusableFallbackToMarker
+            );
+            assert_eq!(
+                EditAuthorization::resolve_from_sources(
+                    crate::session::SessionIdentityLookup::Unavailable,
+                    environment_run_selection,
+                    administrative_directory.path(),
+                    administrative_worktree,
+                ),
+                EditAuthorization::Marker {
+                    coordination_run_id: marker_run,
+                    worktree_id:         administrative_worktree,
+                }
+            );
+        }
+
+        fs::remove_file(
+            administrative_directory
+                .path()
+                .join(COORDINATION_RUN_MARKER_FILE_NAME),
+        )
+        .expect("coordination marker should remove");
+        for environment_run_selection in unusable_environment_run_selections {
+            assert_eq!(
+                EditAuthorization::resolve_from_sources(
+                    crate::session::SessionIdentityLookup::Unavailable,
+                    environment_run_selection,
+                    administrative_directory.path(),
+                    administrative_worktree,
+                ),
+                EditAuthorization::Unidentified
+            );
+        }
     }
 
     #[test]

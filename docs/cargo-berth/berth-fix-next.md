@@ -177,3 +177,35 @@ unresolved attribution rather than treating the ten-percent figure as settled.
 
 Surfaced as F020 during the Phase 17 closure review; deferred because changing
 probe ordering would have invalidated the two completed measurement runs.
+
+## First-touch selection loses the exact session reservation to replay order
+
+A successful claim already re-points the current harness-session mapping to the
+new reservation: `session::apply_journal_event` publishes every `Claim` and
+`Widen` reservation identity. The mapping becomes stale on the next pre-edit
+first-touch check, not at the claim.
+
+`claim::acquire_first_touch` resolves an exact
+`EditAuthorization::Session { coordination_run_id, reservation_id, worktree_id }`
+but carries only the coordination run and worktree into
+`reuse_first_touch_reservation`. That function gathers every active reservation
+for the run and worktree, and `partition_first_touch_protected_scopes` chooses
+the first covering reservation in replay order. Its `AlreadyHeld` outcome then
+publishes that older reservation back into the session mapping, undoing the
+successful claim; subsequent PostToolUse drift widens the older reservation.
+
+Carry a semantic `FirstTouchReservationSelection` through locked validation,
+with distinct `SessionMappedReservation`, `SingleActiveRunReservation`,
+`NoActiveRunReservation`, and `AmbiguousActiveRunReservations` states. When an
+active session mapping names a reservation, that exact reservation owns
+already-held and widening outcomes; replay order must not replace it. Without
+an exact mapping, multiple eligible reservations produce the named ambiguity
+state rather than silently choosing one.
+
+Acceptance: one fixture claims reservation A, then claims overlapping
+reservation B in the same session and proves the mapping names B immediately
+after the claim; the next first-touch check reports B and leaves the mapping on
+B; a later newly touched path widens B rather than A. A second fixture removes
+the usable session mapping while two active run reservations are eligible and
+proves `AmbiguousActiveRunReservations` reaches the caller with candidate IDs
+and no append, widen, or mapping publication.

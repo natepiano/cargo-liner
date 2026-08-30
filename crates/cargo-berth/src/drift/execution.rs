@@ -69,7 +69,7 @@ struct PostWritePathAttribution {
 }
 
 enum PreparedDriftExecution {
-    NothingToCompare { comparison: DriftComparisonChoice },
+    CompletedUnchanged(Box<DriftReport>),
     Observed(Box<ObservedDriftExecution>),
 }
 
@@ -183,21 +183,39 @@ fn prepare_drift_execution(
     events: &[JournalEvent],
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<PreparedDriftExecution, DriftExecutionError> {
-    let resolved_edit_authorization = ledger::resolve_identity(worktree_context)?;
+    let (resolved_edit_authorization, worktree_id) = match request.reservation {
+        DriftReservationSelection::EveryActiveForPostCommit { .. } => {
+            let worktree_id = match prepare_worktree_comparison(
+                comparable_worktree(worktree_context, &request)?,
+                request.comparison,
+            ) {
+                WorktreeComparisonReadiness::Ready(worktree_id) => worktree_id,
+                WorktreeComparisonReadiness::CompletedUnchanged(report) => {
+                    return Ok(PreparedDriftExecution::CompletedUnchanged(report));
+                },
+            };
+            (ledger::resolve_identity(worktree_context)?, worktree_id)
+        },
+        DriftReservationSelection::Explicit(_)
+        | DriftReservationSelection::SessionMappingOrSingleActive => {
+            let resolved_edit_authorization = ledger::resolve_identity(worktree_context)?;
+            let worktree_id = match prepare_worktree_comparison(
+                comparable_worktree(worktree_context, &request)?,
+                request.comparison,
+            ) {
+                WorktreeComparisonReadiness::Ready(worktree_id) => worktree_id,
+                WorktreeComparisonReadiness::CompletedUnchanged(report) => {
+                    return Ok(PreparedDriftExecution::CompletedUnchanged(report));
+                },
+            };
+            (resolved_edit_authorization, worktree_id)
+        },
+    };
     let identity_validation = CoordinationIdentityValidationContext::for_user_command(
         resolved_edit_authorization,
         worktree_context,
         recovery_command_line,
     );
-    let worktree_id = match comparable_worktree(worktree_context, &request)? {
-        WorktreeComparability::Comparable(worktree_id) => worktree_id,
-        WorktreeComparability::IdentityUnavailable
-        | WorktreeComparability::DeferredPendingRewrite => {
-            return Ok(PreparedDriftExecution::NothingToCompare {
-                comparison: request.comparison,
-            });
-        },
-    };
     let initial_reservations = RetainedReservationSet::replay(events)?;
     let acting_identity =
         validated_drift_identity(worktree_id, &initial_reservations, &identity_validation)?;
@@ -243,8 +261,8 @@ fn execute_inner(
         resolved_edit_authorization,
         identity_validation,
     ) = match prepared {
-        PreparedDriftExecution::NothingToCompare { comparison } => {
-            return Ok(nothing_to_compare(comparison));
+        PreparedDriftExecution::CompletedUnchanged(report) => {
+            return Ok(Enrollment::Enrolled(*report));
         },
         PreparedDriftExecution::Observed(observed) => {
             let ObservedDriftExecution {
@@ -361,13 +379,22 @@ fn validated_drift_identity(
 }
 
 /// Whether this run can compare the current worktree now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WorktreeComparability {
     /// The worktree has an identity and git is not rewriting it.
     Comparable(WorktreeId),
-    /// A post-commit run cannot identify the worktree it would compare.
-    IdentityUnavailable,
+    /// No identity has been recorded yet for the worktree.
+    IdentityNotRecorded,
     /// Git is still replaying commits, so comparison waits for the final reference move.
     DeferredPendingRewrite,
+}
+
+/// Whether drift should observe the worktree or return its completed no-change report.
+enum WorktreeComparisonReadiness {
+    /// The worktree can proceed to fingerprint observation.
+    Ready(WorktreeId),
+    /// No worktree comparison ran and the empty unchanged report is complete.
+    CompletedUnchanged(Box<DriftReport>),
 }
 
 /// Determine whether this run can compare the current worktree now.
@@ -384,15 +411,15 @@ fn comparable_worktree(
     let worktree_id =
         match ledger::read_worktree_identity(worktree_context.administrative_directory()) {
             Ok(worktree_id) => worktree_id,
-            Err(_)
+            Err(LedgerError::Io(error))
                 if matches!(
                     request.reservation,
                     DriftReservationSelection::EveryActiveForPostCommit { .. }
-                ) =>
+                ) && error.kind() == std::io::ErrorKind::NotFound =>
             {
-                return Ok(WorktreeComparability::IdentityUnavailable);
+                return Ok(WorktreeComparability::IdentityNotRecorded);
             },
-            Err(error) => return Err(DriftExecutionError::Ledger(error)),
+            Err(error) => return Err(error.into()),
         };
     if git::rewrite_in_progress(worktree_context.administrative_directory()) {
         return Ok(WorktreeComparability::DeferredPendingRewrite);
@@ -400,9 +427,23 @@ fn comparable_worktree(
     Ok(WorktreeComparability::Comparable(worktree_id))
 }
 
-/// The report to give when no subject has a comparison worth making.
-fn nothing_to_compare(comparison: DriftComparisonChoice) -> Enrollment<DriftReport> {
-    Enrollment::Enrolled(DriftReport::unchanged(comparison.report_mode(), &[]))
+/// Convert worktree comparability into either observation readiness or a final report.
+fn prepare_worktree_comparison(
+    comparability: WorktreeComparability,
+    comparison: DriftComparisonChoice,
+) -> WorktreeComparisonReadiness {
+    match comparability {
+        WorktreeComparability::Comparable(worktree_id) => {
+            WorktreeComparisonReadiness::Ready(worktree_id)
+        },
+        WorktreeComparability::IdentityNotRecorded
+        | WorktreeComparability::DeferredPendingRewrite => {
+            WorktreeComparisonReadiness::CompletedUnchanged(Box::new(DriftReport::unchanged(
+                comparison.report_mode(),
+                &[],
+            )))
+        },
+    }
 }
 
 fn claim_post_write_paths(
@@ -677,4 +718,173 @@ impl From<PathCaseError> for DriftExecutionError {
 
 impl From<ClaimError> for DriftExecutionError {
     fn from(error: ClaimError) -> Self { Self::Claim(error) }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests should panic on unexpected fixture and preparation states"
+)]
+mod tests {
+    use std::fs;
+    use std::io::ErrorKind;
+    use std::path::PathBuf;
+
+    use serde_json::Value;
+    use tempfile::TempDir;
+    use tempfile::tempdir;
+
+    use super::PreparedDriftExecution;
+    use super::prepare_drift_execution;
+    use crate::coordination_identity::RecoveryCommandLine;
+    use crate::drift::constants::DRIFT_CACHE_FILE_PREFIX;
+    use crate::drift::report::DriftComparisonMode;
+    use crate::drift::report::DriftPathAttributionOutcome;
+    use crate::drift::report::DriftReport;
+    use crate::drift::selection::DriftComparisonChoice;
+    use crate::drift::selection::DriftRequest;
+    use crate::drift::selection::DriftReservationSelection;
+    use crate::drift::selection::PostCommitWideningSelection;
+    use crate::ledger;
+    use crate::ledger::LedgerError;
+    use crate::ledger::WorktreeContext;
+    use crate::output::OutputEnvelope;
+
+    struct WorktreeComparisonFixture {
+        repository:       TempDir,
+        worktree_context: WorktreeContext,
+    }
+
+    impl WorktreeComparisonFixture {
+        fn new() -> Self {
+            let repository = tempdir().expect("temporary repository should exist");
+            fs::create_dir(repository.path().join(".git"))
+                .expect("git administrative directory should exist");
+            let worktree_context = WorktreeContext::discover(repository.path())
+                .expect("worktree should be discovered");
+            Self {
+                repository,
+                worktree_context,
+            }
+        }
+
+        fn fingerprint_cache_paths(&self) -> Vec<PathBuf> {
+            let cache_directory = self.repository.path().join(".git/cargo-berth");
+            fs::read_dir(cache_directory).map_or_else(
+                |_| Vec::new(),
+                |entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .filter(|entry| {
+                            entry
+                                .file_name()
+                                .to_str()
+                                .is_some_and(|name| name.starts_with(DRIFT_CACHE_FILE_PREFIX))
+                        })
+                        .map(|entry| entry.path())
+                        .collect()
+                },
+            )
+        }
+
+        fn assert_worktree_identity_absent(&self) {
+            let error =
+                ledger::read_worktree_identity(self.worktree_context.administrative_directory())
+                    .expect_err("worktree identity file should remain absent");
+            let LedgerError::Io(error) = error else {
+                panic!("missing worktree identity should report a filesystem error");
+            };
+            assert_eq!(error.kind(), ErrorKind::NotFound);
+        }
+    }
+
+    #[test]
+    fn drift_reports_no_change_when_worktree_identity_is_not_recorded() {
+        let fixture = WorktreeComparisonFixture::new();
+        let request = post_commit_request();
+
+        fixture.assert_worktree_identity_absent();
+        let prepared = prepare_drift_execution(
+            request,
+            &fixture.worktree_context,
+            &[],
+            &RecoveryCommandLine::current_process(),
+        )
+        .expect("missing post-commit identity should be accepted");
+
+        fixture.assert_worktree_identity_absent();
+        assert!(fixture.fingerprint_cache_paths().is_empty());
+        assert_unchanged_empty_report(prepared);
+        assert!(fixture.fingerprint_cache_paths().is_empty());
+    }
+
+    #[test]
+    fn drift_reports_no_change_while_a_rewrite_is_pending() {
+        let fixture = WorktreeComparisonFixture::new();
+        ledger::resolve_identity(&fixture.worktree_context)
+            .expect("worktree identity should be available");
+        fs::create_dir(
+            fixture
+                .worktree_context
+                .administrative_directory()
+                .join("rebase-merge"),
+        )
+        .expect("rewrite marker should exist");
+        let request = post_commit_request();
+
+        let prepared = prepare_drift_execution(
+            request,
+            &fixture.worktree_context,
+            &[],
+            &RecoveryCommandLine::current_process(),
+        )
+        .expect("pending rewrite should defer comparison");
+
+        assert!(fixture.fingerprint_cache_paths().is_empty());
+        assert_unchanged_empty_report(prepared);
+        assert!(fixture.fingerprint_cache_paths().is_empty());
+    }
+
+    fn post_commit_request() -> DriftRequest {
+        DriftRequest {
+            comparison:  DriftComparisonChoice::FullPhaseStart,
+            reservation: DriftReservationSelection::EveryActiveForPostCommit {
+                widening: PostCommitWideningSelection::SessionMappingOrSingleCandidate,
+            },
+        }
+    }
+
+    fn assert_unchanged_empty_report(prepared: PreparedDriftExecution) {
+        let PreparedDriftExecution::CompletedUnchanged(report) = prepared else {
+            panic!("non-comparable worktree should complete without observation");
+        };
+        let report = *report;
+        assert_eq!(
+            report,
+            DriftReport {
+                comparison:       DriftComparisonMode::FullPhaseStart,
+                path_attribution: DriftPathAttributionOutcome::NotNeeded,
+                results:          Vec::new(),
+            }
+        );
+        assert!(!report.has_reportable_effect());
+        assert!(!report.has_blocking_effect());
+
+        let output_envelope = serde_json::to_value(OutputEnvelope::drift(report))
+            .expect("drift output should serialize");
+        assert_eq!(output_envelope["status"], "clear");
+        assert_eq!(output_envelope["exit_code"], 0);
+        assert_eq!(output_envelope["reservations"], Value::Array(Vec::new()));
+        assert_eq!(output_envelope["blocked_by"], Value::Array(Vec::new()));
+        assert_eq!(output_envelope["payload"]["kind"], "drift");
+        assert_eq!(
+            output_envelope["payload"]["data"]["widening"]["status"],
+            "not_needed"
+        );
+        assert_eq!(
+            output_envelope["payload"]["data"]["results"],
+            Value::Array(Vec::new())
+        );
+    }
 }

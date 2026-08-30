@@ -94,6 +94,28 @@ fn unconfigured_drift_does_not_create_a_worktree_identity() {
 }
 
 #[test]
+fn post_commit_drift_rejects_a_malformed_recorded_worktree_identity() {
+    let repository = initialized_repository();
+    claim(repository.path(), "file:claimed.txt", FIRST_RUN);
+    let worktree_id_path = repository.path().join(WORKTREE_ID_PATH);
+    fs::write(&worktree_id_path, "not-a-worktree-identity\n")
+        .expect("malformed worktree identity should write");
+
+    let rejected = post_commit_drift(repository.path(), &[]);
+    let envelope = json_output(&rejected);
+
+    assert_eq!(rejected.status.code(), Some(4));
+    assert_eq!(envelope["status"], "ledger_unreadable");
+    assert_eq!(envelope["payload"]["kind"], "no_facts");
+    assert!(
+        envelope["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("invalid stored worktree identity")),
+        "malformed identity failure lost its diagnostic: {envelope}"
+    );
+}
+
+#[test]
 fn full_classification_covers_silent_and_widen_rows() {
     let covered_repository = initialized_repository();
     let covered_id = claim(covered_repository.path(), "file:claimed.txt", FIRST_RUN);
