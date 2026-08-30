@@ -101,7 +101,12 @@ type GeneratedSchemas = BTreeMap<String, Value>;
 
 /// Regenerate the checked-in v1 contract entirely in memory.
 pub(crate) fn generate_output_contract() -> Result<String, serde_json::Error> {
-    let schemas = generated_schemas()?;
+    generate_output_contract_with_reservation_lifecycle::<ReservationLifecycleSnapshot>()
+}
+
+fn generate_output_contract_with_reservation_lifecycle<LifecycleSchema: JsonSchema>()
+-> Result<String, serde_json::Error> {
+    let schemas = generated_schemas::<LifecycleSchema>()?;
     let consumer_metadata = consumer_metadata(&schemas)?;
     let consumer_artifacts = render_consumer_artifacts(&consumer_metadata, &schemas)?;
     let fixtures = generated_fixtures();
@@ -146,7 +151,7 @@ pub(crate) fn embedded_consumer_artifacts(
     ))
 }
 
-fn generated_schemas() -> Result<GeneratedSchemas, serde_json::Error> {
+fn generated_schemas<LifecycleSchema: JsonSchema>() -> Result<GeneratedSchemas, serde_json::Error> {
     let mut schemas = BTreeMap::new();
     schemas.insert(
         "canonical_worktree_root".to_owned(),
@@ -198,7 +203,7 @@ fn generated_schemas() -> Result<GeneratedSchemas, serde_json::Error> {
     );
     schemas.insert(
         "reservation_lifecycle".to_owned(),
-        schema_value::<ReservationLifecycleSnapshot>()?,
+        schema_value::<LifecycleSchema>()?,
     );
     schemas.insert(
         "reservation_lifecycle_query".to_owned(),
@@ -1286,58 +1291,185 @@ fn render_consumer_artifacts(
     reason = "the generated static Python module is clearer as one sequential template"
 )]
 fn render_python_tables(consumer_metadata: &ConsumerMetadata) -> String {
-    let mut rendered = String::from(
-        r"# Generated from docs/cargo-berth/generated/output-contract.json.
-from __future__ import annotations
-
-from collections.abc import Mapping
-from typing import Final, NamedTuple, cast
-
-
-class OutcomeRule(NamedTuple):
-    verb: str
-    status: str
-    exit_code: int
-    payload_kind: str
-    data_policy: str
-    discriminants: tuple[tuple[tuple[str, ...], str], ...]
-    required_paths: tuple[tuple[str, ...], ...]
-    forbidden_paths: tuple[tuple[str, ...], ...]
-    emission: str
-
-
-",
-    );
-    write_python_frozen_set(&mut rendered, "KNOWN_VERBS", &consumer_metadata.verbs);
     let payload_kinds = sorted_unique(
         consumer_metadata
             .outcomes
             .iter()
             .map(|rule| rule.payload_kind.as_str()),
     );
-    write_python_frozen_set(&mut rendered, "KNOWN_PAYLOAD_KINDS", &payload_kinds);
     let statuses = consumer_metadata
         .statuses
         .iter()
         .map(|metadata| metadata.status.as_str())
         .collect::<Vec<_>>();
-    write_python_frozen_set(&mut rendered, "KNOWN_STATUSES", &statuses);
+    let payload_data_requirements = sorted_unique(
+        consumer_metadata
+            .outcomes
+            .iter()
+            .map(|rule| rule.data_policy.as_str()),
+    );
+    let outcome_emission_dispositions = sorted_unique(
+        consumer_metadata
+            .outcomes
+            .iter()
+            .map(|rule| rule.emission.as_str()),
+    );
+    let replay_failure_reasons = consumer_metadata
+        .replay_failures
+        .iter()
+        .map(|failure| failure.reason.as_str())
+        .collect::<Vec<_>>();
+    let replay_failure_subject_kinds = sorted_unique(
+        consumer_metadata
+            .replay_failures
+            .iter()
+            .map(|failure| failure.subject_kind.as_str()),
+    );
+    let coordination_identity_rejection_kinds =
+        coordination_identity_rejection_kinds(&consumer_metadata.outcomes);
+    let mut rendered = String::from(
+        r"# Generated from docs/cargo-berth/generated/output-contract.json.
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Final, Literal, NamedTuple, TypeAlias, TypeGuard, cast
+
+
+",
+    );
+    write_python_literal_alias(&mut rendered, "CommandVerbValue", &consumer_metadata.verbs);
+    write_python_literal_alias(&mut rendered, "OutputStatusValue", &statuses);
+    write_python_literal_alias(&mut rendered, "OutputPayloadKindValue", &payload_kinds);
+    write_python_literal_alias(
+        &mut rendered,
+        "PayloadDataRequirement",
+        &payload_data_requirements,
+    );
+    write_python_literal_alias(
+        &mut rendered,
+        "OutcomeEmissionDisposition",
+        &outcome_emission_dispositions,
+    );
+    write_python_literal_alias(
+        &mut rendered,
+        "IntegrationProofValue",
+        &consumer_metadata.integration_proofs,
+    );
+    write_python_literal_alias(
+        &mut rendered,
+        "TrunkObservationAtClaimValue",
+        &consumer_metadata.trunk_at_claim_alternatives,
+    );
+    write_python_literal_alias(
+        &mut rendered,
+        "LostIntegrationEvidenceStatusValue",
+        &consumer_metadata.lost_integration_evidence_statuses,
+    );
+    write_python_literal_alias(
+        &mut rendered,
+        "ReplayFailureReasonValue",
+        &replay_failure_reasons,
+    );
+    write_python_literal_alias(
+        &mut rendered,
+        "ReplayFailureSubjectKindValue",
+        &replay_failure_subject_kinds,
+    );
+    write_python_literal_alias(
+        &mut rendered,
+        "CoordinationIdentityRejectionKindValue",
+        &coordination_identity_rejection_kinds,
+    );
+    rendered.push_str(
+        r"class OutcomeRule(NamedTuple):
+    verb: CommandVerbValue
+    status: OutputStatusValue
+    exit_code: int
+    payload_kind: OutputPayloadKindValue
+    data_policy: PayloadDataRequirement
+    discriminants: tuple[tuple[tuple[str, ...], str], ...]
+    required_paths: tuple[tuple[str, ...], ...]
+    forbidden_paths: tuple[tuple[str, ...], ...]
+    emission: OutcomeEmissionDisposition
+
+
+",
+    );
+    write_python_frozen_set(
+        &mut rendered,
+        "KNOWN_VERBS",
+        "CommandVerbValue",
+        &consumer_metadata.verbs,
+    );
+    write_python_frozen_set(
+        &mut rendered,
+        "KNOWN_PAYLOAD_KINDS",
+        "OutputPayloadKindValue",
+        &payload_kinds,
+    );
+    write_python_frozen_set(
+        &mut rendered,
+        "KNOWN_STATUSES",
+        "OutputStatusValue",
+        &statuses,
+    );
+    write_python_frozen_set(
+        &mut rendered,
+        "REPLAY_FAILURE_REASONS",
+        "ReplayFailureReasonValue",
+        &replay_failure_reasons,
+    );
+    write_python_type_guard(
+        &mut rendered,
+        "is_command_verb_value",
+        "CommandVerbValue",
+        "KNOWN_VERBS",
+    );
+    write_python_type_guard(
+        &mut rendered,
+        "is_output_status_value",
+        "OutputStatusValue",
+        "KNOWN_STATUSES",
+    );
+    write_python_type_guard(
+        &mut rendered,
+        "is_output_payload_kind_value",
+        "OutputPayloadKindValue",
+        "KNOWN_PAYLOAD_KINDS",
+    );
+    write_python_type_guard(
+        &mut rendered,
+        "is_replay_failure_reason_value",
+        "ReplayFailureReasonValue",
+        "REPLAY_FAILURE_REASONS",
+    );
     write_python_frozen_set(
         &mut rendered,
         "INTEGRATION_PROOFS",
+        "IntegrationProofValue",
         &consumer_metadata.integration_proofs,
     );
     write_python_frozen_set(
         &mut rendered,
         "TRUNK_AT_CLAIM_ALTERNATIVES",
+        "TrunkObservationAtClaimValue",
         &consumer_metadata.trunk_at_claim_alternatives,
     );
     write_python_frozen_set(
         &mut rendered,
         "LOST_INTEGRATION_EVIDENCE_STATUSES",
+        "LostIntegrationEvidenceStatusValue",
         &consumer_metadata.lost_integration_evidence_statuses,
     );
-    rendered.push_str("REPLAY_FAILURE_SUBJECT_KINDS: Final[dict[str, str]] = {\n");
+    write_python_frozen_set(
+        &mut rendered,
+        "COORDINATION_IDENTITY_REJECTION_KINDS",
+        "CoordinationIdentityRejectionKindValue",
+        &coordination_identity_rejection_kinds,
+    );
+    rendered.push_str(
+        "REPLAY_FAILURE_SUBJECT_KINDS: Final[dict[ReplayFailureReasonValue, ReplayFailureSubjectKindValue]] = {\n",
+    );
     for failure in &consumer_metadata.replay_failures {
         let _ = writeln!(
             rendered,
@@ -1349,16 +1481,18 @@ class OutcomeRule(NamedTuple):
     write_python_mapping(
         &mut rendered,
         "VERB_PAYLOAD_KINDS",
+        "CommandVerbValue",
         consumer_metadata,
         |rule| rule.verb.as_str(),
     );
     write_python_mapping(
         &mut rendered,
         "STATUS_PAYLOAD_KINDS",
+        "OutputStatusValue",
         consumer_metadata,
         |rule| rule.status.as_str(),
     );
-    rendered.push_str("FIXED_STATUS_EXIT_CODES: Final[dict[str, int]] = {\n");
+    rendered.push_str("FIXED_STATUS_EXIT_CODES: Final[dict[OutputStatusValue, int]] = {\n");
     for metadata in &consumer_metadata.statuses {
         let _ = writeln!(
             rendered,
@@ -1426,11 +1560,7 @@ def _valid_identity_rejection(value: object) -> bool:
         return False
     rejection = cast(dict[object, object], value)
     return (
-        rejection.get("kind") in {
-            "stale_session_mapping",
-            "stale_marker_run",
-            "session_worktree_mismatch",
-        }
+        rejection.get("kind") in COORDINATION_IDENTITY_REJECTION_KINDS
         and _nonempty_string(rejection.get("coordination_run_id"))
         and _valid_recovery_actions(rejection.get("recovery_actions"))
     )
@@ -1479,7 +1609,7 @@ def _valid_replay_failure(data: object) -> bool:
         return False
     failure = cast(dict[object, object], data)
     reason = failure.get("reason")
-    if not isinstance(reason, str):
+    if not is_replay_failure_reason_value(reason):
         return False
     expected_subject = REPLAY_FAILURE_SUBJECT_KINDS.get(reason)
     subject = failure.get("subject")
@@ -1512,7 +1642,10 @@ def _valid_foreign_actor_resolution(data: object) -> bool:
     )
 
 
-def _valid_special_payload(payload_kind: str, payload: Mapping[str, object]) -> bool:
+def _valid_special_payload(
+    payload_kind: OutputPayloadKindValue,
+    payload: Mapping[str, object],
+) -> bool:
     data = payload.get("data")
     if not _valid_nested_contract_values(payload):
         return False
@@ -1530,13 +1663,13 @@ def _valid_special_payload(payload_kind: str, payload: Mapping[str, object]) -> 
 
 
 def valid_outcome_tuple(
-    verb: str,
-    status: str,
+    verb: CommandVerbValue,
+    status: OutputStatusValue,
     exit_code: int,
     payload: Mapping[str, object],
 ) -> bool:
     payload_kind = payload.get("kind")
-    if not isinstance(payload_kind, str):
+    if not is_output_payload_kind_value(payload_kind):
         return False
     for rule in OUTCOME_RULES:
         if (
@@ -1567,17 +1700,41 @@ def valid_outcome_tuple(
     rendered
 }
 
-fn write_python_frozen_set(rendered: &mut String, name: &str, values: &[impl AsRef<str>]) {
-    let _ = writeln!(rendered, "{name}: Final[frozenset[str]] = frozenset({{");
+fn write_python_literal_alias(rendered: &mut String, name: &str, values: &[impl AsRef<str>]) {
+    let _ = writeln!(rendered, "{name}: TypeAlias = Literal[");
+    for value in values {
+        let _ = writeln!(rendered, "    {:?},", value.as_ref());
+    }
+    rendered.push_str("]\n\n");
+}
+
+fn write_python_frozen_set(
+    rendered: &mut String,
+    name: &str,
+    value_type: &str,
+    values: &[impl AsRef<str>],
+) {
+    let _ = writeln!(
+        rendered,
+        "{name}: Final[frozenset[{value_type}]] = frozenset({{"
+    );
     for value in values {
         let _ = writeln!(rendered, "    {:?},", value.as_ref());
     }
     rendered.push_str("})\n\n");
 }
 
+fn write_python_type_guard(rendered: &mut String, name: &str, alias: &str, values: &str) {
+    let _ = writeln!(
+        rendered,
+        "def {name}(value: object) -> TypeGuard[{alias}]:\n    return isinstance(value, str) and value in {values}\n"
+    );
+}
+
 fn write_python_mapping<Key>(
     rendered: &mut String,
     name: &str,
+    key_type: &str,
     consumer_metadata: &ConsumerMetadata,
     key: Key,
 ) where
@@ -1590,7 +1747,10 @@ fn write_python_mapping<Key>(
             .or_default()
             .push(&rule.payload_kind);
     }
-    let _ = writeln!(rendered, "{name}: Final[dict[str, frozenset[str]]] = {{");
+    let _ = writeln!(
+        rendered,
+        "{name}: Final[dict[{key_type}, frozenset[OutputPayloadKindValue]]] = {{"
+    );
     for (key, values) in mapping {
         let values = sorted_unique(values);
         let _ = writeln!(rendered, "    {key:?}: frozenset({{");
@@ -1607,6 +1767,17 @@ fn sorted_unique<'value>(values: impl IntoIterator<Item = &'value str>) -> Vec<&
     values.sort_unstable();
     values.dedup();
     values
+}
+
+fn coordination_identity_rejection_kinds(outcomes: &[OutcomeRule]) -> Vec<&str> {
+    sorted_unique(
+        outcomes
+            .iter()
+            .filter(|rule| rule.payload_kind == "coordination_identity")
+            .flat_map(|rule| &rule.discriminants)
+            .filter(|discriminant| discriminant.path == ["data", "kind"])
+            .map(|discriminant| discriminant.value.as_str()),
+    )
 }
 
 fn python_discriminants(discriminants: &[OutcomeDiscriminant]) -> String {
@@ -1784,12 +1955,14 @@ def cargo_berth_valid_contract_envelope:\n\
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::fmt::Write as _;
     use std::fs;
     use std::io::Write as _;
     use std::path::Path;
     use std::process::Command;
     use std::process::Stdio;
 
+    use schemars::JsonSchema;
     use serde_json::Value;
 
     use super::CONTRACT_NAME;
@@ -1797,10 +1970,11 @@ mod tests {
     use super::consumer_artifacts_from_contract;
     use super::embedded_consumer_artifacts;
     use super::generate_output_contract;
+    use super::generate_output_contract_with_reservation_lifecycle;
     use super::resolved_schema;
-    use super::schema_value;
     use crate::ledger::JournalOperation;
-    use crate::reservation::ReservationLifecycleSnapshot;
+    use crate::reservation::ProtectedReservationTip;
+    use crate::reservation::ReleaseDisposition;
 
     const CHECKED_CONTRACT: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1853,6 +2027,167 @@ mod tests {
         ] {
             assert!(serialized.contains(required), "missing {required}");
         }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one test audits every generated closed-domain alias and typed use"
+    )]
+    fn generated_python_exports_wire_name_discriminators() {
+        let generated = generate_output_contract().expect("contract generation should succeed");
+        let contract: Value =
+            serde_json::from_str(&generated).expect("generated contract should be JSON");
+        let metadata =
+            serde_json::from_value::<ConsumerMetadata>(contract["consumer_metadata"].clone())
+                .expect("consumer metadata should decode");
+        let (python_tables, _) = consumer_artifacts_from_contract(&generated)
+            .expect("Python tables should derive from the contract");
+        let verb_values = metadata
+            .verbs
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let status_values = metadata
+            .statuses
+            .iter()
+            .map(|metadata| metadata.status.as_str())
+            .collect::<Vec<_>>();
+        let payload_kind_values = super::sorted_unique(
+            metadata
+                .outcomes
+                .iter()
+                .map(|outcome| outcome.payload_kind.as_str()),
+        );
+        let payload_data_requirements = super::sorted_unique(
+            metadata
+                .outcomes
+                .iter()
+                .map(|outcome| outcome.data_policy.as_str()),
+        );
+        let outcome_emission_dispositions = super::sorted_unique(
+            metadata
+                .outcomes
+                .iter()
+                .map(|outcome| outcome.emission.as_str()),
+        );
+        let replay_failure_reasons = metadata
+            .replay_failures
+            .iter()
+            .map(|failure| failure.reason.as_str())
+            .collect::<Vec<_>>();
+        let replay_failure_subject_kinds = super::sorted_unique(
+            metadata
+                .replay_failures
+                .iter()
+                .map(|failure| failure.subject_kind.as_str()),
+        );
+        let coordination_identity_rejection_kinds =
+            super::coordination_identity_rejection_kinds(&metadata.outcomes);
+        let integration_proofs = metadata
+            .integration_proofs
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let trunk_at_claim_alternatives = metadata
+            .trunk_at_claim_alternatives
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let lost_integration_evidence_statuses = metadata
+            .lost_integration_evidence_statuses
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+
+        for (alias, wire_values) in [
+            ("CommandVerbValue", verb_values),
+            ("OutputStatusValue", status_values),
+            ("OutputPayloadKindValue", payload_kind_values),
+            ("PayloadDataRequirement", payload_data_requirements),
+            ("OutcomeEmissionDisposition", outcome_emission_dispositions),
+            ("IntegrationProofValue", integration_proofs),
+            ("TrunkObservationAtClaimValue", trunk_at_claim_alternatives),
+            (
+                "LostIntegrationEvidenceStatusValue",
+                lost_integration_evidence_statuses,
+            ),
+            ("ReplayFailureReasonValue", replay_failure_reasons),
+            (
+                "ReplayFailureSubjectKindValue",
+                replay_failure_subject_kinds,
+            ),
+            (
+                "CoordinationIdentityRejectionKindValue",
+                coordination_identity_rejection_kinds,
+            ),
+        ] {
+            let mut values = String::new();
+            for value in wire_values {
+                let _ = writeln!(values, "    {value:?},");
+            }
+            let expected = format!("{alias}: TypeAlias = Literal[\n{values}]\n\n");
+            assert!(
+                python_tables.contains(&expected),
+                "missing {alias} derived from wire values"
+            );
+        }
+
+        for (guard, alias, known_values) in [
+            ("is_command_verb_value", "CommandVerbValue", "KNOWN_VERBS"),
+            (
+                "is_output_status_value",
+                "OutputStatusValue",
+                "KNOWN_STATUSES",
+            ),
+            (
+                "is_output_payload_kind_value",
+                "OutputPayloadKindValue",
+                "KNOWN_PAYLOAD_KINDS",
+            ),
+            (
+                "is_replay_failure_reason_value",
+                "ReplayFailureReasonValue",
+                "REPLAY_FAILURE_REASONS",
+            ),
+        ] {
+            let expected = format!(
+                "def {guard}(value: object) -> TypeGuard[{alias}]:\n    return isinstance(value, str) and value in {known_values}\n"
+            );
+            assert!(python_tables.contains(&expected), "missing {guard}");
+        }
+
+        for typed_use in [
+            "    verb: CommandVerbValue",
+            "    status: OutputStatusValue",
+            "    payload_kind: OutputPayloadKindValue",
+            "    data_policy: PayloadDataRequirement",
+            "    emission: OutcomeEmissionDisposition",
+            "KNOWN_VERBS: Final[frozenset[CommandVerbValue]]",
+            "KNOWN_STATUSES: Final[frozenset[OutputStatusValue]]",
+            "KNOWN_PAYLOAD_KINDS: Final[frozenset[OutputPayloadKindValue]]",
+            "REPLAY_FAILURE_REASONS: Final[frozenset[ReplayFailureReasonValue]]",
+            "INTEGRATION_PROOFS: Final[frozenset[IntegrationProofValue]]",
+            "TRUNK_AT_CLAIM_ALTERNATIVES: Final[frozenset[TrunkObservationAtClaimValue]]",
+            "LOST_INTEGRATION_EVIDENCE_STATUSES: Final[frozenset[LostIntegrationEvidenceStatusValue]]",
+            "COORDINATION_IDENTITY_REJECTION_KINDS: Final[frozenset[CoordinationIdentityRejectionKindValue]]",
+            "dict[ReplayFailureReasonValue, ReplayFailureSubjectKindValue]",
+            "dict[CommandVerbValue, frozenset[OutputPayloadKindValue]]",
+            "dict[OutputStatusValue, frozenset[OutputPayloadKindValue]]",
+            "dict[OutputStatusValue, int]",
+            "    verb: CommandVerbValue,",
+            "    status: OutputStatusValue,",
+        ] {
+            assert!(
+                python_tables.contains(typed_use),
+                "missing generated typed use {typed_use}"
+            );
+        }
+        assert!(
+            python_tables
+                .contains("rejection.get(\"kind\") in COORDINATION_IDENTITY_REJECTION_KINDS")
+        );
+        assert!(!python_tables.contains("rejection.get(\"kind\") in {"));
     }
 
     #[test]
@@ -2071,16 +2406,43 @@ mod tests {
 
     #[test]
     fn renaming_a_rust_type_keeps_generated_artifacts_byte_identical() {
-        type RenamedReservationLifecycleDto = ReservationLifecycleSnapshot;
-        assert_eq!(
-            schema_value::<ReservationLifecycleSnapshot>()
-                .expect("reservation lifecycle schema should generate"),
-            schema_value::<RenamedReservationLifecycleDto>()
-                .expect("renamed lifecycle schema should generate")
-        );
-        let generated = generate_output_contract().expect("contract generation should succeed");
-        assert!(!generated.contains("ReservationLifecycleSnapshot"));
-        assert!(generated.contains("reservation_lifecycle"));
+        /// A point-in-time reading of one reservation's lifecycle.
+        #[allow(
+            dead_code,
+            reason = "the distinct test type exists only to exercise schema generation"
+        )]
+        #[derive(JsonSchema)]
+        #[schemars(rename = "reservation_lifecycle")]
+        #[serde(tag = "status", rename_all = "snake_case")]
+        enum RenamedReservationLifecycleDto {
+            /// Work remains active without a protected checkpoint.
+            Active,
+            /// A protected checkpoint awaits integration or terminal resolution.
+            Outstanding {
+                /// The retained checkpoint commit.
+                protected_tip: ProtectedReservationTip,
+            },
+            /// A terminal disposition followed a protected checkpoint.
+            ReleasedAfterCheckpoint {
+                /// The retained checkpoint commit.
+                protected_tip: ProtectedReservationTip,
+                /// The recorded terminal disposition.
+                disposition:   ReleaseDisposition,
+            },
+            /// A terminal disposition ended work that never reached a checkpoint.
+            ReleasedWithoutCheckpoint {
+                /// The recorded terminal disposition.
+                disposition: ReleaseDisposition,
+            },
+        }
+
+        let original = generate_output_contract().expect("contract generation should succeed");
+        let renamed =
+            generate_output_contract_with_reservation_lifecycle::<RenamedReservationLifecycleDto>()
+                .expect("renamed contract generation should succeed");
+        assert_eq!(original.as_bytes(), renamed.as_bytes());
+        assert!(!original.contains("ReservationLifecycleSnapshot"));
+        assert!(original.contains("reservation_lifecycle"));
     }
 
     fn contract_value() -> Value {
