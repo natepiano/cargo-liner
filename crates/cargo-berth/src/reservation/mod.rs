@@ -1843,6 +1843,17 @@ impl Reservation {
     /// Return the reservation's owning actor.
     pub(crate) const fn actor(&self) -> &JournalActor { &self.actor }
 
+    /// Return whether this active reservation belongs to the named run and worktree.
+    pub(crate) fn is_active_for_coordination_run_and_worktree(
+        &self,
+        coordination_run_id: CoordinationRunId,
+        worktree_id: WorktreeId,
+    ) -> bool {
+        self.actor.run == coordination_run_id
+            && self.actor.worktree == worktree_id
+            && matches!(self.lifecycle, ReservationLifecycle::Active)
+    }
+
     /// Borrow the normalized scopes this reservation currently protects.
     pub(crate) const fn scopes(&self) -> &ReservationScopeSet { &self.scopes }
 

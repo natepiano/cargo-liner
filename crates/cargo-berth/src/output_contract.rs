@@ -330,6 +330,12 @@ fn outcome_rules() -> Vec<OutcomeRule> {
             "blocked",
         ),
         payload_status_rule(
+            CommandVerb::Check,
+            OutputStatus::AmbiguousActiveRunReservations,
+            "first_touch_reservation_selection",
+            "ambiguous_active_run_reservations",
+        ),
+        payload_status_rule(
             CommandVerb::Claim,
             OutputStatus::Claimed,
             "claim",
@@ -367,6 +373,12 @@ fn outcome_rules() -> Vec<OutcomeRule> {
             CommandVerb::Drift,
             OutputStatus::DriftAttributionRequired,
             "drift",
+        ),
+        payload_status_rule(
+            CommandVerb::Drift,
+            OutputStatus::AmbiguousActiveRunReservations,
+            "first_touch_reservation_selection",
+            "ambiguous_active_run_reservations",
         ),
         simple_rule(CommandVerb::Drift, OutputStatus::ObjectUnknown, "drift"),
         payload_status_rule(

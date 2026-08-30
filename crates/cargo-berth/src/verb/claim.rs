@@ -70,10 +70,8 @@ use crate::output::OutputEnvelope;
 use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
-use crate::reservation::EditBlockingStatus;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
-use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::WidenScopeBinding;
@@ -82,7 +80,9 @@ use crate::scope::PathCase;
 use crate::scope::PathCaseError;
 use crate::scope::ReservationScopeSet;
 use crate::session;
+use crate::session::FirstTouchSessionReservationMapping;
 use crate::session::SessionIdentityMappingPublication;
+use crate::session::SessionReservationIdentity;
 
 const HEADS_REF_PREFIX: &str = "refs/heads/";
 
@@ -347,6 +347,79 @@ pub(crate) enum FirstTouchClaimExecution {
     ReservationLimitReached(u32),
 }
 
+/// The reservation identity chosen for one locked first-touch validation.
+enum FirstTouchReservationSelection<'reservation> {
+    /// The current harness-session mapping names this active reservation.
+    SessionMappedReservation(&'reservation Reservation),
+    /// No usable mapping exists, and this is the run's only active reservation.
+    SingleActiveRunReservation(&'reservation Reservation),
+    /// No usable mapping exists, and the run has no active reservation.
+    NoActiveRunReservation,
+    /// No usable mapping exists, and several active reservations are eligible.
+    AmbiguousActiveRunReservations {
+        /// Every eligible reservation id in deterministic order.
+        candidate_reservation_ids: Vec<ReservationId>,
+    },
+}
+
+impl<'reservation> FirstTouchReservationSelection<'reservation> {
+    /// Choose the reservation named by the harness-session mapping read under the ledger lock.
+    ///
+    /// The mapping is read inside the transaction, so it cannot move between that read and this
+    /// decision. The acting coordination run is not: it is the invoking process's own identity,
+    /// resolved before the lock. A mapping naming a different run is therefore treated as no
+    /// usable mapping and falls through to the unmapped selection, which admits only reservations
+    /// belonging to the acting run — so a mapping written by another run can never redirect this
+    /// widen onto that run's reservation.
+    fn from_locked_session_mapping(
+        reservations: &'reservation RetainedReservationSet,
+        session_reservation_identity: SessionReservationIdentity,
+        coordination_run_id: CoordinationRunId,
+        worktree_id: WorktreeId,
+    ) -> Self {
+        if session_reservation_identity.coordination_run_id() == coordination_run_id
+            && let Some(reservation) = reservations.iter().find(|reservation| {
+                reservation.id() == session_reservation_identity.reservation_id()
+                    && reservation.is_active_for_coordination_run_and_worktree(
+                        coordination_run_id,
+                        worktree_id,
+                    )
+            })
+        {
+            return Self::SessionMappedReservation(reservation);
+        }
+        Self::from_unmapped_active_run_reservations(reservations, coordination_run_id, worktree_id)
+    }
+
+    fn from_unmapped_active_run_reservations(
+        reservations: &'reservation RetainedReservationSet,
+        coordination_run_id: CoordinationRunId,
+        worktree_id: WorktreeId,
+    ) -> Self {
+        let active_run_reservations = reservations
+            .iter()
+            .filter(|reservation| {
+                reservation
+                    .is_active_for_coordination_run_and_worktree(coordination_run_id, worktree_id)
+            })
+            .collect::<Vec<_>>();
+        match active_run_reservations.as_slice() {
+            [] => Self::NoActiveRunReservation,
+            [reservation] => Self::SingleActiveRunReservation(reservation),
+            [_, _, ..] => {
+                let mut candidate_reservation_ids = active_run_reservations
+                    .iter()
+                    .map(|reservation| reservation.id())
+                    .collect::<Vec<_>>();
+                candidate_reservation_ids.sort_by_cached_key(ToString::to_string);
+                Self::AmbiguousActiveRunReservations {
+                    candidate_reservation_ids,
+                }
+            },
+        }
+    }
+}
+
 struct CommittedFirstTouchAcquisition {
     kind:             FirstTouchReservationAcquisitionKind,
     reservation_id:   ReservationId,
@@ -366,6 +439,14 @@ struct FirstTouchValidationContext {
     maximum_reservations:  u32,
 }
 
+#[derive(Clone, Copy)]
+struct FirstTouchReservationReuseContext {
+    first_touch_session_reservation_mapping: FirstTouchSessionReservationMapping,
+    coordination_run_id:                     CoordinationRunId,
+    worktree_id:                             WorktreeId,
+    path_case:                               PathCase,
+}
+
 enum FirstTouchClaimRejection {
     Blocked {
         scopes:    ReservationScopeSet,
@@ -376,6 +457,9 @@ enum FirstTouchClaimRejection {
     CoordinationIdentity(CoordinationIdentityRejection),
     InvalidCanonicalWorktreeRoot,
     ReservationLimitReached(u32),
+    AmbiguousActiveRunReservations {
+        candidate_reservation_ids: Vec<ReservationId>,
+    },
 }
 
 fn acquire(
@@ -578,6 +662,13 @@ fn first_touch_execution_from_outcome(
             scopes,
             conflicts,
         }) => Ok(FirstTouchClaimExecution::Blocked { scopes, conflicts }),
+        LedgerCommittedActionOutcome::Rejected(
+            FirstTouchClaimRejection::AmbiguousActiveRunReservations {
+                candidate_reservation_ids,
+            },
+        ) => Err(ClaimError::AmbiguousActiveRunReservations {
+            candidate_reservation_ids,
+        }),
         LedgerCommittedActionOutcome::Rejected(FirstTouchClaimRejection::Replay(error)) => {
             Err(ClaimError::ReservationReplay(error))
         },
@@ -770,6 +861,8 @@ fn validate_first_touch_transaction(
     ) {
         return CommittedActionValidation::Reject(rejection);
     }
+    let first_touch_session_mapping =
+        session::resolve_first_touch_mapping(&worktree_context.ledger_directory());
     let requested_scopes = prepared_claim.scopes.clone();
     let conflicts = reservations.conflicts_for_first_touch(
         &requested_scopes,
@@ -791,15 +884,19 @@ fn validate_first_touch_transaction(
             });
         },
     };
-    let (protected_scopes, conflict_outcome) = match reuse_first_touch_reservation(
+    let reuse = select_first_touch_reservation_reuse(
         &reservations,
         requested_scopes,
         protected_scopes,
         conflict_outcome,
-        coordination_run_id,
-        worktree_id,
-        path_case,
-    ) {
+        FirstTouchReservationReuseContext {
+            first_touch_session_reservation_mapping: first_touch_session_mapping,
+            coordination_run_id,
+            worktree_id,
+            path_case,
+        },
+    );
+    let (protected_scopes, conflict_outcome) = match reuse {
         FirstTouchReservationReuse::AppendRequired { scopes, conflicts } => (scopes, conflicts),
         FirstTouchReservationReuse::Complete(validation) => return validation,
     };
@@ -822,6 +919,53 @@ fn validate_first_touch_transaction(
     }
 }
 
+fn select_first_touch_reservation_reuse(
+    reservations: &RetainedReservationSet,
+    requested_scopes: ReservationScopeSet,
+    protected_scopes: ReservationScopeSet,
+    conflicts: FirstTouchConflictOutcome,
+    context: FirstTouchReservationReuseContext,
+) -> FirstTouchReservationReuse {
+    let FirstTouchReservationReuseContext {
+        first_touch_session_reservation_mapping,
+        coordination_run_id,
+        worktree_id,
+        path_case,
+    } = context;
+    match first_touch_session_reservation_mapping {
+        FirstTouchSessionReservationMapping::Mapped(session_reservation_identity) => {
+            reuse_first_touch_reservation(
+                reservations,
+                requested_scopes,
+                protected_scopes,
+                conflicts,
+                FirstTouchReservationSelection::from_locked_session_mapping(
+                    reservations,
+                    session_reservation_identity,
+                    coordination_run_id,
+                    worktree_id,
+                ),
+                path_case,
+            )
+        },
+        FirstTouchSessionReservationMapping::AvailableSessionWithoutMapping
+        | FirstTouchSessionReservationMapping::HarnessSessionUnavailable => {
+            reuse_first_touch_reservation(
+                reservations,
+                requested_scopes,
+                protected_scopes,
+                conflicts,
+                FirstTouchReservationSelection::from_unmapped_active_run_reservations(
+                    reservations,
+                    coordination_run_id,
+                    worktree_id,
+                ),
+                path_case,
+            )
+        },
+    }
+}
+
 enum FirstTouchReservationReuse {
     AppendRequired {
         scopes:    ReservationScopeSet,
@@ -840,36 +984,53 @@ fn reuse_first_touch_reservation(
     requested_scopes: ReservationScopeSet,
     protected_scopes: ReservationScopeSet,
     conflicts: FirstTouchConflictOutcome,
-    coordination_run_id: CoordinationRunId,
-    worktree_id: WorktreeId,
+    first_touch_reservation_selection: FirstTouchReservationSelection<'_>,
     path_case: PathCase,
 ) -> FirstTouchReservationReuse {
-    let own_active_reservations = reservations
-        .iter()
-        .filter(|reservation| {
-            is_own_active_blocking_reservation(reservation, coordination_run_id, worktree_id)
-        })
-        .collect::<Vec<_>>();
-    let protected_scopes = match partition_first_touch_protected_scopes(
-        &protected_scopes,
-        &own_active_reservations,
-        path_case,
-    ) {
-        FirstTouchProtectedScopeOwnership::AlreadyHeld(reservation) => {
-            return already_held_first_touch(reservation, protected_scopes, conflicts);
+    let reservation = match first_touch_reservation_selection {
+        FirstTouchReservationSelection::SessionMappedReservation(reservation)
+        | FirstTouchReservationSelection::SingleActiveRunReservation(reservation) => reservation,
+        FirstTouchReservationSelection::NoActiveRunReservation => {
+            return FirstTouchReservationReuse::AppendRequired {
+                scopes: protected_scopes,
+                conflicts,
+            };
         },
-        FirstTouchProtectedScopeOwnership::Residual(residual) => residual,
+        FirstTouchReservationSelection::AmbiguousActiveRunReservations {
+            candidate_reservation_ids,
+        } => {
+            return FirstTouchReservationReuse::Complete(CommittedActionValidation::Reject(
+                FirstTouchClaimRejection::AmbiguousActiveRunReservations {
+                    candidate_reservation_ids,
+                },
+            ));
+        },
     };
-    let own_first_touch_reservation = own_active_reservations
-        .iter()
-        .copied()
-        .find(|reservation| matches!(reservation.source(), ClaimSource::FirstTouch));
-    let Some(reservation) = own_first_touch_reservation else {
-        return FirstTouchReservationReuse::AppendRequired {
-            scopes: protected_scopes,
-            conflicts,
+    let protected_scopes =
+        match partition_first_touch_protected_scopes(&protected_scopes, reservation, path_case) {
+            FirstTouchProtectedScopeOwnership::AlreadyHeld(reservation) => {
+                return already_held_first_touch(reservation, protected_scopes, conflicts);
+            },
+            FirstTouchProtectedScopeOwnership::Residual(residual) => residual,
         };
-    };
+    widen_first_touch_reservation(
+        reservations,
+        requested_scopes,
+        protected_scopes,
+        conflicts,
+        reservation,
+        path_case,
+    )
+}
+
+fn widen_first_touch_reservation(
+    reservations: &RetainedReservationSet,
+    requested_scopes: ReservationScopeSet,
+    protected_scopes: ReservationScopeSet,
+    conflicts: FirstTouchConflictOutcome,
+    reservation: &Reservation,
+    path_case: PathCase,
+) -> FirstTouchReservationReuse {
     let added = protected_scopes
         .as_slice()
         .iter()
@@ -914,36 +1075,25 @@ fn reuse_first_touch_reservation(
 
 fn partition_first_touch_protected_scopes<'reservation>(
     protected_scopes: &ReservationScopeSet,
-    own_active_reservations: &[&'reservation Reservation],
+    reservation: &'reservation Reservation,
     path_case: PathCase,
 ) -> FirstTouchProtectedScopeOwnership<'reservation> {
-    let mut covering_reservations = Vec::new();
-    let mut residual = Vec::new();
-    for candidate in protected_scopes.as_slice() {
-        match own_active_reservations.iter().copied().find(|reservation| {
-            reservation
+    let residual = protected_scopes
+        .as_slice()
+        .iter()
+        .filter(|candidate| {
+            !reservation
                 .scopes()
                 .as_slice()
                 .iter()
                 .any(|held| held.contains(candidate, path_case))
-        }) {
-            Some(reservation) => covering_reservations.push(reservation),
-            None => residual.push(candidate.clone()),
-        }
-    }
-    if let Ok(residual) = ReservationScopeSet::try_from(residual) {
-        return FirstTouchProtectedScopeOwnership::Residual(residual);
-    }
-
-    // Replay order breaks ties: use the first participating `FirstTouch` reservation,
-    // otherwise the first holder of the first protected scope in normalized set order.
-    let reporting_reservation = own_active_reservations
-        .iter()
-        .copied()
-        .filter(|reservation| matches!(reservation.source(), ClaimSource::FirstTouch))
-        .find(|reservation| covering_reservations.contains(reservation))
-        .unwrap_or(covering_reservations[0]);
-    FirstTouchProtectedScopeOwnership::AlreadyHeld(reporting_reservation)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    ReservationScopeSet::try_from(residual).map_or(
+        FirstTouchProtectedScopeOwnership::AlreadyHeld(reservation),
+        FirstTouchProtectedScopeOwnership::Residual,
+    )
 }
 
 fn already_held_first_touch(
@@ -960,17 +1110,6 @@ fn already_held_first_touch(
             conflicts,
         }),
     ))
-}
-
-fn is_own_active_blocking_reservation(
-    reservation: &Reservation,
-    coordination_run_id: CoordinationRunId,
-    worktree_id: WorktreeId,
-) -> bool {
-    reservation.actor().run == coordination_run_id
-        && reservation.actor().worktree == worktree_id
-        && matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-        && reservation.edit_blocking_status() == EditBlockingStatus::Blocking
 }
 
 enum FirstTouchScopeDecision {
@@ -1471,9 +1610,15 @@ pub(crate) enum ClaimError {
     InvalidTrunkReference,
     MissingReference(String),
     InvalidStoredReference(String),
-    SymbolicReferenceDepthExceeded { reference: String, maximum: u8 },
+    SymbolicReferenceDepthExceeded {
+        reference: String,
+        maximum:   u8,
+    },
     NonUtf8WorktreeRoot,
     InvalidCanonicalWorktreeRoot,
+    AmbiguousActiveRunReservations {
+        candidate_reservation_ids: Vec<ReservationId>,
+    },
 }
 
 impl Display for ClaimError {
@@ -1516,6 +1661,17 @@ impl Display for ClaimError {
             Self::InvalidCanonicalWorktreeRoot => {
                 formatter.write_str("the worktree root is not a canonical absolute path")
             },
+            Self::AmbiguousActiveRunReservations {
+                candidate_reservation_ids,
+            } => write!(
+                formatter,
+                "first-touch reservation selection is ambiguous among active reservations {}",
+                candidate_reservation_ids
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 }
@@ -1544,6 +1700,12 @@ impl ClaimError {
             },
             Self::Ledger(error) => OutputEnvelope::ledger_error(command_verb, &error),
             Self::ReservationReplay(error) => OutputEnvelope::replay_failure(command_verb, &error),
+            Self::AmbiguousActiveRunReservations {
+                candidate_reservation_ids,
+            } => OutputEnvelope::ambiguous_active_run_reservations(
+                command_verb,
+                candidate_reservation_ids,
+            ),
             error => OutputEnvelope::ledger_unreadable(command_verb, &error.to_string()),
         }
     }

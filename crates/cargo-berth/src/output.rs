@@ -402,6 +402,8 @@ declare_output_contract_metadata! {
         DriftCollision => ("drift_collision", BlockedByOverlap);
         /// Unclaimed paths require an explicit reservation attribution.
         DriftAttributionRequired => ("drift_attribution_required", BlockedByOverlap);
+        /// Several active reservations are eligible, and no session mapping selects one.
+        AmbiguousActiveRunReservations => ("ambiguous_active_run_reservations", BlockedByOverlap);
         /// Repository policy permits no additional live reservations.
         ReservationLimitReached => ("reservation_limit_reached", BlockedByOverlap);
         /// Repository policy permits no additional ordering edges.
@@ -517,6 +519,8 @@ enum OutputFacts {
     Board(#[schemars(with = "serde_json::Value")] Box<BoardModel>),
     /// One reservation's lifecycle or a typed unknown-id rejection.
     Reservation(ReservationLifecycleQueryPayload),
+    /// The locked first-touch reservation-selection result.
+    FirstTouchReservationSelection(FirstTouchReservationSelectionPayload),
     /// Facts returned by `check`.
     Check(CheckPayload),
     /// Facts returned by `claim`.
@@ -1070,6 +1074,19 @@ enum CheckPayload {
         /// Every holder whose live scopes intersected the request.
         #[schemars(with = "Vec<serde_json::Value>")]
         conflicts: Vec<ReservationConflict>,
+    },
+}
+
+/// Typed outcomes returned when first-touch validation must select an active reservation.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "first_touch_reservation_selection_payload")]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum FirstTouchReservationSelectionPayload {
+    /// No usable session mapping distinguishes several eligible active reservations.
+    AmbiguousActiveRunReservations {
+        /// Every eligible reservation id in ascending deterministic order.
+        #[schemars(with = "Vec<String>")]
+        candidate_reservation_ids: Vec<ReservationId>,
     },
 }
 
@@ -1887,6 +1904,33 @@ impl OutputEnvelope {
         }
     }
 
+    /// Build a mutation-free rejection when no mapping selects one active reservation.
+    pub(crate) fn ambiguous_active_run_reservations(
+        command_verb: CommandVerb,
+        candidate_reservation_ids: Vec<ReservationId>,
+    ) -> Self {
+        let rendered_candidates = candidate_reservation_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self {
+            verb:         command_verb,
+            status:       OutputStatus::AmbiguousActiveRunReservations,
+            exit_code:    BerthExit::BlockedByOverlap,
+            reservations: candidate_reservation_ids.clone(),
+            blocked_by:   Vec::new(),
+            message:      format!(
+                "No usable harness-session mapping selects one active reservation among {rendered_candidates}. No reservation was appended or widened, and no harness-session mapping was published."
+            ),
+            payload:      OutputPayload::from_facts(OutputFacts::FirstTouchReservationSelection(
+                FirstTouchReservationSelectionPayload::AmbiguousActiveRunReservations {
+                    candidate_reservation_ids,
+                },
+            )),
+        }
+    }
+
     /// Build a blocked mutation-free edit check.
     pub(crate) fn blocked_check(
         scopes: ReservationScopeSet,
@@ -1947,6 +1991,7 @@ impl OutputEnvelope {
             | OutputStatus::TerminalViewFailed
             | OutputStatus::Claimed
             | OutputStatus::DriftAttributionRequired
+            | OutputStatus::AmbiguousActiveRunReservations
             | OutputStatus::ReservationLimitReached
             | OutputStatus::OrderingEdgeLimitReached
             | OutputStatus::BlockedByOverlap
@@ -2232,6 +2277,13 @@ impl OutputEnvelope {
                     "COORDINATION IDENTITY: {} requires one recovery action before continuing. {rejection}",
                     rejection.wire_kind()
                 ),
+            },
+            OutputFacts::FirstTouchReservationSelection(
+                FirstTouchReservationSelectionPayload::AmbiguousActiveRunReservations { .. },
+            ) => PostToolUseRendering::Feedback {
+                summary: "cargo-berth could not select one active reservation for first-touch attribution."
+                    .to_owned(),
+                detail:  format!("DRIFT ATTRIBUTION REQUIRED: {}", self.message),
             },
             OutputFacts::NoFacts if matches!(self.status, OutputStatus::Unconfigured) => {
                 PostToolUseRendering::NoFeedback

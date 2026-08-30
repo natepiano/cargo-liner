@@ -332,6 +332,129 @@ fn clear_check_creates_then_widens_one_exact_file_reservation() {
     assert_board_contains_every_claim_source(repository.path());
 }
 
+#[test]
+fn session_mapped_reservation_survives_first_touch_and_receives_widen() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let session_id = "overlapping-claim-session";
+    let reservations = claim_overlapping_reservations(repository.path(), session_id);
+
+    assert_session_mapping(
+        repository.path(),
+        session_id,
+        FIRST_RUN,
+        &reservations.newer,
+    );
+    let events_after_claims = journal_events(repository.path());
+    assert_eq!(events_after_claims.len(), 2);
+    assert_eq!(events_after_claims[0]["reservation_id"], reservations.older);
+    assert_eq!(events_after_claims[1]["reservation_id"], reservations.newer);
+
+    let already_held = run_berth_with_session(
+        repository.path(),
+        &["check", "file:shared/child.rs", "--json"],
+        session_id,
+    );
+    let already_held_envelope = json_output(&already_held);
+    let already_held_acquisition = &already_held_envelope["payload"]["data"]["acquisition"];
+    assert!(already_held.status.success());
+    assert_eq!(already_held_envelope["status"], "clear");
+    assert_eq!(already_held_acquisition["kind"], "already_held");
+    assert_eq!(
+        already_held_acquisition["reservation_id"],
+        reservations.newer
+    );
+    assert_eq!(journal_events(repository.path()), events_after_claims);
+    assert_session_mapping(
+        repository.path(),
+        session_id,
+        FIRST_RUN,
+        &reservations.newer,
+    );
+
+    let widened = run_berth_with_session(
+        repository.path(),
+        &["check", "file:later.rs", "--json"],
+        session_id,
+    );
+    let widened_envelope = json_output(&widened);
+    let widened_acquisition = &widened_envelope["payload"]["data"]["acquisition"];
+    assert!(widened.status.success());
+    assert_eq!(widened_acquisition["kind"], "widened");
+    assert_eq!(widened_acquisition["reservation_id"], reservations.newer);
+    let widened_events = journal_events(repository.path());
+    assert_eq!(widened_events.len(), 3);
+    assert_first_touch_widen_event(&widened_events[2], &reservations.newer);
+    assert!(
+        !widened_events.iter().any(|event| {
+            event["op"] == "widen" && event["reservation_id"] == reservations.older
+        })
+    );
+    assert_session_mapping(
+        repository.path(),
+        session_id,
+        FIRST_RUN,
+        &reservations.newer,
+    );
+}
+
+#[test]
+fn missing_mapping_with_two_eligible_reservations_reports_ambiguity_without_mutation() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let session_id = "ambiguous-overlapping-claim-session";
+    let reservations = claim_overlapping_reservations(repository.path(), session_id);
+    assert_session_mapping(
+        repository.path(),
+        session_id,
+        FIRST_RUN,
+        &reservations.newer,
+    );
+    fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
+        .expect("session mapping should be removed before ambiguous first touch");
+    let journal_before = fs::read(repository.path().join(JOURNAL_PATH))
+        .expect("journal should read before ambiguous first touch");
+    let projection_before = fs::read(repository.path().join(PROJECTION_PATH))
+        .expect("projection should read before ambiguous first touch");
+
+    let ambiguous = run_berth_with_session(
+        repository.path(),
+        &["check", "file:shared/child.rs", "--json"],
+        session_id,
+    );
+    let envelope = json_output(&ambiguous);
+    let mut expected_candidate_ids = vec![reservations.older, reservations.newer];
+    expected_candidate_ids.sort();
+    let expected_candidates = serde_json::json!(expected_candidate_ids);
+
+    assert_eq!(ambiguous.status.code(), Some(1));
+    assert_eq!(envelope["exit_code"], 1);
+    assert_eq!(envelope["status"], "ambiguous_active_run_reservations");
+    assert_eq!(
+        envelope["payload"]["kind"],
+        "first_touch_reservation_selection"
+    );
+    assert_eq!(
+        envelope["payload"]["data"]["status"],
+        "ambiguous_active_run_reservations"
+    );
+    assert_eq!(
+        envelope["payload"]["data"]["candidate_reservation_ids"],
+        expected_candidates
+    );
+    assert_eq!(envelope["reservations"], expected_candidates);
+    assert_eq!(envelope["blocked_by"], serde_json::json!([]));
+    assert_eq!(
+        fs::read(repository.path().join(JOURNAL_PATH))
+            .expect("journal should reread after ambiguous first touch"),
+        journal_before
+    );
+    assert_eq!(
+        fs::read(repository.path().join(PROJECTION_PATH))
+            .expect("projection should reread after ambiguous first touch"),
+        projection_before
+    );
+    assert!(!repository.path().join(SESSION_MAPPING_PATH).exists());
+}
+
 fn assert_first_touch_claim_event(event: &serde_json::Value, coordination_run_id: &str) {
     assert_eq!(event["schema_version"], 2);
     assert_eq!(event["op"], "claim");
@@ -581,11 +704,19 @@ fn claims_without_run_continue_the_worktree_coordination_run() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
     let first_claim = run_berth(repository.path(), &["claim", "tree:crates/a", "--json"]);
     assert!(first_claim.status.success());
+    let first_reservation_id = json_output(&first_claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("first claim should report its reservation")
+        .to_owned();
     let first_run = fs::read_to_string(repository.path().join(MARKER_PATH))
         .expect("first coordination marker should read");
 
     let second_claim = run_berth(repository.path(), &["claim", "tree:crates/b", "--json"]);
     assert!(second_claim.status.success());
+    let second_reservation_id = json_output(&second_claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("second claim should report its reservation")
+        .to_owned();
     assert_eq!(
         fs::read_to_string(repository.path().join(MARKER_PATH))
             .expect("second coordination marker should read"),
@@ -596,8 +727,15 @@ fn claims_without_run_continue_the_worktree_coordination_run() {
         repository.path(),
         &["check", "file:crates/a/x.rs", "--json"],
     );
-    assert!(check.status.success());
-    assert_eq!(json_output(&check)["status"], "clear");
+    let envelope = json_output(&check);
+    let mut expected_candidate_ids = vec![first_reservation_id, second_reservation_id];
+    expected_candidate_ids.sort();
+    assert_eq!(check.status.code(), Some(1));
+    assert_eq!(envelope["status"], "ambiguous_active_run_reservations");
+    assert_eq!(
+        envelope["payload"]["data"]["candidate_reservation_ids"],
+        serde_json::json!(expected_candidate_ids)
+    );
 }
 
 #[test]
@@ -772,6 +910,55 @@ fn unpaired_plan_flags_are_usage_errors_and_rejection_sweeps_stale_marker() {
         !repository.path().join(MARKER_PATH).exists(),
         "reconciliation should sweep a marker without a matching active reservation"
     );
+}
+
+struct OverlappingReservationIds {
+    newer: String,
+    older: String,
+}
+
+fn claim_overlapping_reservations(
+    repository_root: &Path,
+    session_id: &str,
+) -> OverlappingReservationIds {
+    let older_claim = run_berth_with_session(
+        repository_root,
+        &["claim", "tree:shared", "--run", FIRST_RUN, "--json"],
+        session_id,
+    );
+    assert!(
+        older_claim.status.success(),
+        "older claim failed: {}",
+        String::from_utf8_lossy(&older_claim.stdout)
+    );
+    let older = json_output(&older_claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("older claim should report its reservation")
+        .to_owned();
+
+    let newer_claim = run_berth_with_session(
+        repository_root,
+        &[
+            "claim",
+            "file:shared/child.rs",
+            "--run",
+            FIRST_RUN,
+            "--json",
+        ],
+        session_id,
+    );
+    assert!(
+        newer_claim.status.success(),
+        "newer claim failed: {}",
+        String::from_utf8_lossy(&newer_claim.stdout)
+    );
+    let newer = json_output(&newer_claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("newer claim should report its reservation")
+        .to_owned();
+    assert_ne!(newer, older);
+
+    OverlappingReservationIds { newer, older }
 }
 
 #[derive(Clone, Copy)]

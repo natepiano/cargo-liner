@@ -135,6 +135,17 @@ pub(crate) enum SessionIdentityLookup {
     Unavailable,
 }
 
+/// The current harness session's mapping state for locked first-touch selection.
+#[derive(Clone, Copy)]
+pub(crate) enum FirstTouchSessionReservationMapping {
+    /// The current harness session maps to one run and reservation.
+    Mapped(SessionReservationIdentity),
+    /// A valid harness session id has no readable reservation mapping.
+    AvailableSessionWithoutMapping,
+    /// The current invocation supplied no usable harness session id.
+    HarnessSessionUnavailable,
+}
+
 /// Whether the current command's harness-session identity was published.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -192,10 +203,25 @@ pub(crate) struct InvalidHarnessSessionId;
 
 /// Resolve the current process's harness session from the mapping beside the journal.
 pub(crate) fn resolve(ledger_directory: &Path) -> SessionIdentityLookup {
+    match resolve_first_touch_mapping(ledger_directory) {
+        FirstTouchSessionReservationMapping::Mapped(session_reservation_identity) => {
+            SessionIdentityLookup::Mapped(session_reservation_identity)
+        },
+        FirstTouchSessionReservationMapping::AvailableSessionWithoutMapping
+        | FirstTouchSessionReservationMapping::HarnessSessionUnavailable => {
+            SessionIdentityLookup::Unavailable
+        },
+    }
+}
+
+/// Resolve whether locked first-touch selection has a session and reservation mapping.
+pub(crate) fn resolve_first_touch_mapping(
+    ledger_directory: &Path,
+) -> FirstTouchSessionReservationMapping {
     let HarnessSessionIdentity::Available(harness_session_id) =
         HarnessSessionId::from_current_process()
     else {
-        return SessionIdentityLookup::Unavailable;
+        return FirstTouchSessionReservationMapping::HarnessSessionUnavailable;
     };
     let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
     fs::read(&mapping_path)
@@ -203,8 +229,8 @@ pub(crate) fn resolve(ledger_directory: &Path) -> SessionIdentityLookup {
         .and_then(|bytes| serde_json::from_slice::<SessionIdentityStore>(&bytes).ok())
         .and_then(|store| store.identities.get(&harness_session_id).copied())
         .map_or(
-            SessionIdentityLookup::Unavailable,
-            SessionIdentityLookup::Mapped,
+            FirstTouchSessionReservationMapping::AvailableSessionWithoutMapping,
+            FirstTouchSessionReservationMapping::Mapped,
         )
 }
 

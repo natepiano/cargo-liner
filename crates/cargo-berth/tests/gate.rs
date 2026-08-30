@@ -335,7 +335,7 @@ fn session_mapping_authorizes_only_its_live_claim_and_retires_at_checkpoint() {
 }
 
 #[test]
-fn session_mapping_authorizes_every_reservation_owned_by_its_run() {
+fn session_mapping_selects_its_reservation_while_marker_only_check_is_ambiguous() {
     let repository = initialized_repository();
     let session_id = "same-run-reservations";
     let first = run_berth_with_session(
@@ -352,6 +352,7 @@ fn session_mapping_authorizes_every_reservation_owned_by_its_run() {
         session_id,
     );
     assert!(first.status.success());
+    let first_reservation_id = reservation_id(&first);
     let second = claim(
         repository.path(),
         "file:second.txt",
@@ -360,6 +361,7 @@ fn session_mapping_authorizes_every_reservation_owned_by_its_run() {
         "second-phase",
     );
     assert!(second.status.success());
+    let second_reservation_id = reservation_id(&second);
 
     let session_check = run_berth_with_session(
         repository.path(),
@@ -367,11 +369,30 @@ fn session_mapping_authorizes_every_reservation_owned_by_its_run() {
         session_id,
     );
     let marker_check = run_berth(repository.path(), &["check", "file:second.txt", "--json"]);
+    let session_envelope = json_output(&session_check);
+    let marker_envelope = json_output(&marker_check);
+    let mut expected_candidate_ids = vec![first_reservation_id.clone(), second_reservation_id];
+    expected_candidate_ids.sort();
 
     assert!(session_check.status.success());
-    assert!(marker_check.status.success());
-    assert_eq!(json_output(&session_check)["status"], "clear");
-    assert_eq!(json_output(&marker_check)["status"], "clear");
+    assert_eq!(session_envelope["status"], "clear");
+    assert_eq!(
+        session_envelope["payload"]["data"]["acquisition"]["kind"],
+        "widened"
+    );
+    assert_eq!(
+        session_envelope["payload"]["data"]["acquisition"]["reservation_id"],
+        first_reservation_id
+    );
+    assert_eq!(marker_check.status.code(), Some(1));
+    assert_eq!(
+        marker_envelope["status"],
+        "ambiguous_active_run_reservations"
+    );
+    assert_eq!(
+        marker_envelope["payload"]["data"]["candidate_reservation_ids"],
+        serde_json::json!(expected_candidate_ids)
+    );
 }
 
 #[test]

@@ -220,7 +220,7 @@ fn proposal_round_trip_records_separate_reasons_and_exact_file_scope() {
 }
 
 #[test]
-fn multi_path_first_touch_does_not_duplicate_answered_scopes() {
+fn multi_path_first_touch_widens_the_single_answered_reservation() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let holder = claim(
@@ -275,7 +275,11 @@ fn multi_path_first_touch_does_not_duplicate_answered_scopes() {
         .status
         .success()
     );
-    let first_touch_reservation_id = assert_first_touch_append(repository.path());
+    assert_single_active_reservation_widen(
+        repository.path(),
+        &answered_reservation_id,
+        "src/free.rs",
+    );
     assert!(
         check(repository.path(), &["file:src/lib.rs"], FIRST_RUN)
             .status
@@ -291,7 +295,11 @@ fn multi_path_first_touch_does_not_duplicate_answered_scopes() {
         .status
         .success()
     );
-    assert_first_touch_widen(repository.path(), &first_touch_reservation_id);
+    assert_single_active_reservation_widen(
+        repository.path(),
+        &answered_reservation_id,
+        "src/other.rs",
+    );
     assert!(
         check(repository.path(), &["file:src/lib.rs"], FIRST_RUN)
             .status
@@ -1656,29 +1664,21 @@ fn apply_proposal_without_run(
     )
 }
 
-fn assert_first_touch_append(repository_root: &Path) -> String {
-    let appended = last_journal_event(repository_root);
-    assert_eq!(appended["op"], "claim");
-    assert_eq!(appended["source"]["kind"], "first_touch");
-    assert_eq!(appended["authorization"]["kind"], "no_conflict");
-    assert_eq!(
-        appended["scopes"],
-        serde_json::json!([{"kind": "file", "path": "src/free.rs"}])
-    );
-    appended["reservation_id"]
-        .as_str()
-        .expect("first-touch reservation identifier should be a string")
-        .to_owned()
-}
-
-fn assert_first_touch_widen(repository_root: &Path, first_touch_reservation_id: &str) {
+fn assert_single_active_reservation_widen(
+    repository_root: &Path,
+    reservation_id: &str,
+    added_scope: &str,
+) {
     let widened = last_journal_event(repository_root);
     assert_eq!(widened["op"], "widen");
-    assert_eq!(widened["reservation_id"], first_touch_reservation_id);
-    assert_eq!(widened["authorization"]["kind"], "no_conflict");
+    assert_eq!(widened["reservation_id"], reservation_id);
+    assert_eq!(
+        widened["authorization"]["kind"],
+        "existing_answers_cover_every_overlap"
+    );
     assert_eq!(
         widened["added_scopes"],
-        serde_json::json!([{"kind": "file", "path": "src/other.rs"}])
+        serde_json::json!([{"kind": "file", "path": added_scope}])
     );
 }
 
