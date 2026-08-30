@@ -179,7 +179,7 @@ enum PreviousMain {
 pub(crate) enum IntegrationRequest {
     /// Apply normal gate policy.
     EnforceOrdering,
-    /// Mint a one-use permit carrying this inseparable non-empty reason.
+    /// Issue a one-use permit carrying this inseparable non-empty reason.
     ForceOnce(ForcedIntegrationReason),
 }
 

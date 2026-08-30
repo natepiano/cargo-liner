@@ -1272,7 +1272,7 @@ impl Ledger {
 
     fn begin_initialization(&self) -> Result<LedgerTransaction, LedgerError> {
         let lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
-        let repo_instance_id = read_or_mint_repo_instance_id(&self.paths.repo_instance_id)?;
+        let repo_instance_id = read_or_create_repo_instance_id(&self.paths.repo_instance_id)?;
         let (journal, journal_initialization) = Journal::open_or_create(&self.paths.journal)?;
         self.begin_locked_transaction(lock, journal, journal_initialization, repo_instance_id)
     }
@@ -1461,8 +1461,8 @@ fn validate_journal_repository(
     }
 }
 
-/// Read or mint the clone-wide identity stored beside the journal.
-fn read_or_mint_repo_instance_id(path: &Path) -> Result<RepoInstanceId, LedgerError> {
+/// Read or create the clone-wide identity stored beside the journal.
+fn read_or_create_repo_instance_id(path: &Path) -> Result<RepoInstanceId, LedgerError> {
     match fs::read_to_string(path) {
         Ok(identifier) => identifier
             .trim()
@@ -1474,7 +1474,7 @@ fn read_or_mint_repo_instance_id(path: &Path) -> Result<RepoInstanceId, LedgerEr
             {
                 Ok(identity_file) => identity_file,
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    return read_or_mint_repo_instance_id(path);
+                    return read_or_create_repo_instance_id(path);
                 },
                 Err(error) => return Err(LedgerError::Io(error)),
             };
@@ -1486,13 +1486,13 @@ fn read_or_mint_repo_instance_id(path: &Path) -> Result<RepoInstanceId, LedgerEr
     }
 }
 
-/// Mint or read a worktree's non-recyclable identity inside its administrative directory.
+/// Create or read a worktree's non-recyclable identity inside its administrative directory.
 pub(crate) fn worktree_identity(
     administrative_directory: &Path,
     kind: WorktreeKind,
 ) -> Result<WorktreeIdentity, LedgerError> {
     Ok(WorktreeIdentity {
-        id: mint_or_read_worktree_id(administrative_directory)?,
+        id: create_or_read_worktree_id(administrative_directory)?,
         kind,
     })
 }
@@ -1513,8 +1513,8 @@ pub(crate) fn resolve_identity(
     ))
 }
 
-/// Mint the worktree's identity on first use and read it on every later one.
-fn mint_or_read_worktree_id(administrative_directory: &Path) -> Result<WorktreeId, LedgerError> {
+/// Create the worktree's identity on first use and read it on every later one.
+fn create_or_read_worktree_id(administrative_directory: &Path) -> Result<WorktreeId, LedgerError> {
     let identity_path = administrative_directory.join(WORKTREE_ID_FILE_NAME);
     match fs::read_to_string(&identity_path) {
         Ok(identifier) => identifier
@@ -1530,7 +1530,7 @@ fn mint_or_read_worktree_id(administrative_directory: &Path) -> Result<WorktreeI
             {
                 Ok(identity_file) => identity_file,
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    return mint_or_read_worktree_id(administrative_directory);
+                    return create_or_read_worktree_id(administrative_directory);
                 },
                 Err(error) => return Err(LedgerError::Io(error)),
             };
@@ -1542,7 +1542,7 @@ fn mint_or_read_worktree_id(administrative_directory: &Path) -> Result<WorktreeI
     }
 }
 
-/// Read an existing worktree identity without minting a replacement.
+/// Read an existing worktree identity without creating a replacement.
 pub(crate) fn read_worktree_identity(
     administrative_directory: &Path,
 ) -> Result<WorktreeId, LedgerError> {
@@ -1917,20 +1917,20 @@ mod tests {
     }
 
     #[test]
-    fn recycled_administrative_directory_mints_a_new_worktree_identity() {
+    fn recycled_administrative_directory_creates_a_new_worktree_identity() {
         let temporary_directory = tempdir().expect("temporary directory should exist");
         let administrative_directory = temporary_directory.path().join("worktrees").join("phase");
         fs::create_dir_all(&administrative_directory)
             .expect("administrative directory should exist");
         let first_identity = worktree_identity(&administrative_directory, WorktreeKind::Linked)
-            .expect("first identity should mint");
+            .expect("first identity should be created");
 
         fs::remove_dir_all(&administrative_directory)
             .expect("administrative directory should prune");
         fs::create_dir_all(&administrative_directory)
             .expect("administrative directory should recreate");
         let second_identity = worktree_identity(&administrative_directory, WorktreeKind::Linked)
-            .expect("second identity should mint");
+            .expect("second identity should be created");
 
         assert_ne!(first_identity.id, second_identity.id);
         assert_eq!(second_identity.kind, WorktreeKind::Linked);
@@ -2165,7 +2165,7 @@ mod tests {
             .expect("marker run should parse");
         let administrative_worktree =
             worktree_identity(administrative_directory.path(), WorktreeKind::Linked)
-                .expect("marker worktree identity should mint")
+                .expect("marker worktree identity should be created")
                 .id;
         fs::write(
             administrative_directory

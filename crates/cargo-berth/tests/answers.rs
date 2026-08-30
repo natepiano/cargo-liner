@@ -366,7 +366,7 @@ fn checkpointed_first_touch_reservation_is_neither_reused_nor_widened() {
 }
 
 #[test]
-fn unidentified_caller_can_mint_and_spend_its_proposal() {
+fn unidentified_caller_can_issue_and_spend_its_proposal() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let holder = claim(
@@ -745,7 +745,7 @@ fn proposal_tokens_are_bound_to_the_holder_and_requester() {
 }
 
 #[test]
-fn permissive_answer_is_blocked_by_multiple_holders_without_minting() {
+fn permissive_answer_is_blocked_by_multiple_holders_without_issuing() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let (_third_directory, third_root) = foreign_worktree(&repository, "third");
@@ -796,7 +796,7 @@ fn permissive_answer_is_blocked_by_multiple_holders_without_minting() {
 }
 
 #[test]
-fn permissive_answer_without_a_conflict_is_blocked_without_minting() {
+fn permissive_answer_without_a_conflict_is_blocked_without_issuing() {
     let repository = initialized_repository();
     let holder = claim(
         repository.path(),

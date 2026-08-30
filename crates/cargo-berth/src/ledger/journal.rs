@@ -266,7 +266,7 @@ fn recorded_json_string_contents_bytes(value: &str) -> usize {
 pub(crate) struct IncursionIncidentId(Uuid);
 
 impl IncursionIncidentId {
-    /// Mint a new non-recyclable incident identity.
+    /// Create a new non-recyclable incident identity.
     pub(crate) fn new() -> Self { Self(Uuid::now_v7()) }
 }
 

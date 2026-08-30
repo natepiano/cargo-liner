@@ -482,7 +482,7 @@ struct ClaimArguments {
         requires = PLAN_ARGUMENT
     )]
     phase:                Option<WorkPlanPhase>,
-    /// Use this UUID-v7 coordination run instead of minting one.
+    /// Use this UUID-v7 coordination run instead of creating one.
     #[arg(long = RUN_ARGUMENT, value_name = RUN_VALUE_NAME)]
     run:                  Option<CoordinationRunId>,
     /// Record the full phase-start commit used for later drift comparison.

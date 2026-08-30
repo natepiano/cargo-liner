@@ -224,7 +224,7 @@ fn check_reuses_its_runs_reservation_without_git_or_a_duplicate_append() {
 }
 
 #[test]
-fn clear_check_mints_then_widens_one_exact_file_reservation() {
+fn clear_check_creates_then_widens_one_exact_file_reservation() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
 
     let first = run_berth(
@@ -242,7 +242,7 @@ fn clear_check_mints_then_widens_one_exact_file_reservation() {
     let first_acquisition = &first_envelope["payload"]["data"]["acquisition"];
     let coordination_run_id = first_acquisition["coordination_run_id"]
         .as_str()
-        .expect("clear check should return its minted coordination run");
+        .expect("clear check should return its created coordination run");
     let reservation_id = first_acquisition["reservation_id"]
         .as_str()
         .expect("clear check should return its reservation");
@@ -674,7 +674,7 @@ fn a_first_touch_holder_block_names_the_verbs_that_clear_it() {
     let reservation_id =
         json_output(&first_touch)["payload"]["data"]["acquisition"]["reservation_id"]
             .as_str()
-            .expect("a clear check should mint a first-touch reservation")
+            .expect("a clear check should create a first-touch reservation")
             .to_owned();
 
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");

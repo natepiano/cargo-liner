@@ -299,7 +299,7 @@ fn assert_drift_revalidates_marker_after_observation() {
 }
 
 #[test]
-fn post_write_drift_mints_a_first_touch_reservation_when_none_exists() {
+fn post_write_drift_creates_a_first_touch_reservation_when_none_exists() {
     let repository = initialized_repository();
     fs::write(repository.path().join("written-by-bash.rs"), "new\n")
         .expect("post-write path should write");

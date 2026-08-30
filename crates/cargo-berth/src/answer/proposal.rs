@@ -95,7 +95,7 @@ pub(crate) enum RequesterCoordinationIdentity {
 pub(crate) struct OverlapRequester {
     /// The coordination identity the caller actually presented.
     coordination_identity: RequesterCoordinationIdentity,
-    /// The worktree in which the candidate claim would be minted.
+    /// The worktree in which the candidate claim would be created.
     worktree_id:           WorktreeId,
     /// The candidate claim's work-plan or explicit provenance.
     source:                ClaimSource,
@@ -201,7 +201,7 @@ impl PermissiveOverlapAnswer {
 }
 
 impl OverlapRequester {
-    /// Identify the caller and worktree without minting a reservation id.
+    /// Identify the caller and worktree without creating a reservation id.
     pub(crate) const fn new(
         coordination_identity: RequesterCoordinationIdentity,
         worktree_id: WorktreeId,

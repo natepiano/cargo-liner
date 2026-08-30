@@ -125,10 +125,10 @@ uuid_identifier!(ForcedIntegrationPermitId);
 uuid_identifier!(RepoInstanceId);
 uuid_identifier!(WorktreeId);
 
-macro_rules! uuid_identifier_minter {
+macro_rules! uuid_identifier {
     (future $name:ident) => {
         impl $name {
-            /// Mint a new non-recyclable identifier.
+            /// Create a new non-recyclable identifier.
             #[cfg_attr(
                 not(test),
                 expect(
@@ -141,19 +141,19 @@ macro_rules! uuid_identifier_minter {
     };
     ($name:ident) => {
         impl $name {
-            /// Mint a new non-recyclable identifier.
+            /// Create a new non-recyclable identifier.
             pub(crate) fn new() -> Self { Self(Uuid::now_v7()) }
         }
     };
 }
 
-uuid_identifier_minter!(ReservationId);
-uuid_identifier_minter!(CoordinationRunId);
-uuid_identifier_minter!(EdgeId);
-uuid_identifier_minter!(EventId);
-uuid_identifier_minter!(ForcedIntegrationPermitId);
-uuid_identifier_minter!(RepoInstanceId);
-uuid_identifier_minter!(WorktreeId);
+uuid_identifier!(ReservationId);
+uuid_identifier!(CoordinationRunId);
+uuid_identifier!(EdgeId);
+uuid_identifier!(EventId);
+uuid_identifier!(ForcedIntegrationPermitId);
+uuid_identifier!(RepoInstanceId);
+uuid_identifier!(WorktreeId);
 
 numeric_identifier!(
     JournalByteOffset,

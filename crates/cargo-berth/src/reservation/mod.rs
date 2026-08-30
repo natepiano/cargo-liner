@@ -2884,7 +2884,7 @@ mod tests {
 
     /// A second entered path must not re-raise the first one alongside it.
     #[test]
-    fn an_incursion_adding_one_path_mints_an_incident_for_that_path_alone()
+    fn an_incursion_adding_one_path_creates_an_incident_for_that_path_alone()
     -> Result<(), Box<dyn std::error::Error>> {
         let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
         let [claim, ..] = lifecycle_events()?;
