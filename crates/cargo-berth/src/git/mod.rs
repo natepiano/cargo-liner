@@ -22,10 +22,13 @@ pub(crate) use command::git_execution as execute_read_only_git;
 use command::git_output;
 use command::git_output_dynamic;
 use command::git_output_dynamic_with_input;
+use constants::GIT_AMBIGUOUS_OBJECT_SUFFIX;
 use constants::GIT_ANCESTOR_RANGE_INFIX;
 use constants::GIT_BATCH_CHECK_ARG;
+use constants::GIT_BATCH_CHECK_OBJECT_FORMAT_ARG;
 use constants::GIT_CAT_FILE_COMMAND;
 use constants::GIT_CHERRY_MARK_ARG;
+use constants::GIT_COMMIT_OBJECT_TYPE;
 use constants::GIT_COMMIT_PEEL_SUFFIX;
 use constants::GIT_COMMON_DIRECTORY_ARG;
 use constants::GIT_COUNT_ARG;
@@ -43,6 +46,7 @@ use constants::GIT_HEAD_REVISION;
 use constants::GIT_HOOKS_PATH;
 use constants::GIT_IGNORE_MISSING_ARG;
 use constants::GIT_IS_ANCESTOR_ARG;
+use constants::GIT_LEFT_COMMIT_MARK;
 use constants::GIT_LEFT_RIGHT_ARG;
 use constants::GIT_LITERAL_TOP_PATHSPEC_PREFIX;
 use constants::GIT_LOCAL_BRANCH_REF_PREFIX;
@@ -62,7 +66,6 @@ use constants::GIT_NO_MERGES_ARG;
 use constants::GIT_NO_RENAMES_ARG;
 use constants::GIT_NOT_ANCESTOR_EXIT_CODE;
 use constants::GIT_NUL_TERMINATED_ARG;
-use constants::GIT_OCTOPUS_ARG;
 use constants::GIT_PARENTS_ARG;
 use constants::GIT_PATH_ARG;
 use constants::GIT_PATH_FORMAT_ABSOLUTE_ARG;
@@ -77,9 +80,11 @@ use constants::GIT_REFLOG_SHOW_ARG;
 use constants::GIT_REFLOG_SUBJECT_FORMAT_ARG;
 use constants::GIT_REV_LIST_COMMAND;
 use constants::GIT_REV_PARSE_COMMAND;
+use constants::GIT_RIGHT_COMMIT_MARK;
 use constants::GIT_SHOW_TOPLEVEL_ARG;
 use constants::GIT_STDIN_ARG;
 use constants::GIT_STRATEGY_OPTION_NO_RENAMES_ARG;
+use constants::GIT_SYMBOLIC_REF_COMMAND;
 use constants::GIT_SYMMETRIC_RANGE_INFIX;
 use constants::GIT_UPDATE_REF_COMMAND;
 use constants::GIT_WORKTREE_COMMAND;
@@ -96,6 +101,12 @@ use crate::ledger::FullRefName;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
 
+const GIT_DETACHED_HEAD_EXIT_CODE: i32 = 1;
+const GIT_MISSING_REFERENCE_EXIT_CODE: i32 = 2;
+const GIT_QUIET_ARG: &str = "--quiet";
+const GIT_SHOW_REF_COMMAND: &str = "show-ref";
+const GIT_SHOW_REF_EXISTS_ARG: &str = "--exists";
+
 /// A worktree's live relationship to the configured trunk.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -108,9 +119,90 @@ pub(crate) enum AheadBehind {
     Unavailable,
 }
 
+/// One candidate commit's typed relation to a resolved target commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CommitCandidateReachability {
+    /// The candidate is an ancestor of the target.
+    Ancestor,
+    /// The candidate resolves as a commit but is not an ancestor of the target.
+    NotAncestor,
+    /// No object resolves from the submitted expression.
+    Missing,
+    /// More than one object matches the submitted expression.
+    Ambiguous,
+    /// The expression resolves, but not to a commit object.
+    WrongType { object_type: String },
+}
+
+/// One target commit and every candidate classified by the same object-resolution batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CommitTargetReachability {
+    /// The target resolves as a commit and every candidate has a typed result.
+    Resolved {
+        target:     GitObjectId,
+        candidates: Vec<CommitCandidateReachability>,
+    },
+    /// No object resolves from the target expression.
+    Missing,
+    /// More than one object matches the target expression.
+    Ambiguous,
+    /// The target expression resolves, but not to a commit object.
+    WrongType { object_type: String },
+}
+
+/// Candidate commits resolved by one object batch before its graph classification.
+#[derive(Default)]
+pub(crate) struct ResolvedBatchCommitCandidates(HashSet<GitObjectId>);
+
+impl ResolvedBatchCommitCandidates {
+    /// Report whether the object batch resolved this candidate as a commit.
+    pub(crate) fn contains(&self, candidate: &GitObjectId) -> bool { self.0.contains(candidate) }
+}
+
+/// One target-reachability answer and the candidate availability proved by its object batch.
+pub(crate) struct CommitTargetReachabilityObservation {
+    /// The target and every candidate's graph relation when the target resolved.
+    pub(crate) reachability:        CommitTargetReachability,
+    /// Candidate commits safe to reuse during the same admitted operation.
+    pub(crate) resolved_candidates: ResolvedBatchCommitCandidates,
+    /// First-parent target intervals for candidate ancestors proved by the same graph walk.
+    pub(crate) target_histories:    PhaseStartTargetFirstParentHistories,
+}
+
+/// Target first-parent intervals keyed by a phase start proved to be its ancestor.
+#[derive(Default)]
+pub(crate) struct PhaseStartTargetFirstParentHistories(HashMap<GitObjectId, Vec<GitObjectId>>);
+
+impl PhaseStartTargetFirstParentHistories {
+    /// Borrow the target interval after one phase start when the graph proved it.
+    pub(crate) fn after_phase_start(
+        &self,
+        phase_start: &GitObjectId,
+    ) -> ScopedPatchTargetHistory<'_> {
+        self.0
+            .get(phase_start)
+            .map_or(ScopedPatchTargetHistory::NeedsGitQueries, |commits| {
+                ScopedPatchTargetHistory::ProvenFirstParentInterval { commits }
+            })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CommitObjectResolution {
+    Resolved(GitObjectId),
+    Missing,
+    Ambiguous,
+    WrongType { object_type: String },
+}
+
 /// The parent links needed to compare multiple worktree histories with one revision walk.
 struct CommitAncestryGraph {
     parents_by_commit: HashMap<GitObjectId, Vec<GitObjectId>>,
+}
+
+struct ResolvedTargetCommitHistory {
+    target: GitObjectId,
+    graph:  CommitAncestryGraph,
 }
 
 impl CommitAncestryGraph {
@@ -128,6 +220,28 @@ impl CommitAncestryGraph {
             }
         }
         ancestors
+    }
+
+    fn first_parent_commits_after(
+        &self,
+        tip: &GitObjectId,
+        excluded_ancestor: &GitObjectId,
+    ) -> Vec<GitObjectId> {
+        let excluded_commits = self.ancestors_including(excluded_ancestor);
+        let mut commits = Vec::new();
+        let mut current = tip;
+        while !excluded_commits.contains(current) {
+            commits.push(current.clone());
+            let Some(first_parent) = self
+                .parents_by_commit
+                .get(current)
+                .and_then(|parents| parents.first())
+            else {
+                break;
+            };
+            current = first_parent;
+        }
+        commits
     }
 }
 
@@ -213,6 +327,15 @@ enum HistoryRelationship {
     Unavailable,
 }
 
+/// Existing evidence about whether a scoped comparison's histories share ancestry.
+#[derive(Clone, Copy)]
+pub(crate) enum ScopedPatchTargetHistory<'history> {
+    /// The admitted graph proved shared history and supplied the exact target interval.
+    ProvenFirstParentInterval { commits: &'history [GitObjectId] },
+    /// Existing evidence did not prove shared history, so Git must read both facts.
+    NeedsGitQueries,
+}
+
 enum ProtectedScopedChanges {
     NoChanges,
     Affected {
@@ -228,6 +351,17 @@ enum ProtectedScopedRename {
     Present,
 }
 
+enum ProtectedScopedReplayState {
+    RequiredAfterRenameClassification,
+    EvaluatedAssumingNoRename(Result<ScopedPatchComparison, ScopedPatchComparisonError>),
+}
+
+struct InitialScopedPatchEvidence {
+    history_relationship:     Result<HistoryRelationship, ScopedPatchComparisonError>,
+    protected_scoped_changes: Result<ProtectedScopedChanges, ScopedPatchComparisonError>,
+    protected_scoped_replay:  ProtectedScopedReplayState,
+}
+
 enum TargetScopedChangePosition {
     Absent,
     Contiguous,
@@ -238,6 +372,16 @@ enum TargetScopedChangePosition {
 enum TargetPhaseIntegrationCommits {
     Identified(Vec<GitObjectId>),
     Unresolved,
+}
+
+struct TargetFirstParentHistory {
+    commits:        Vec<GitObjectId>,
+    scoped_commits: Vec<GitObjectId>,
+}
+
+struct ScopedSymmetricDifference {
+    protected_has_unmatched_commit: bool,
+    target_unmatched_commits:       HashSet<GitObjectId>,
 }
 
 /// Whether a conflicted replay is still usable for one reservation's proof.
@@ -330,6 +474,129 @@ pub(crate) fn branch_object_id(
     object_id(
         repository_root,
         &format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"),
+    )
+}
+
+/// Ask Git for the branch reference named by `HEAD`.
+pub(crate) fn symbolic_head_reference(repository_root: &Path) -> Result<FullRefName, GitError> {
+    let output = completed_git_command(
+        git_output(
+            repository_root,
+            [GIT_SYMBOLIC_REF_COMMAND, GIT_HEAD_REVISION],
+        )
+        .into(),
+    )?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_SYMBOLIC_REF_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let reference = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    reference
+        .trim()
+        .parse()
+        .map_err(|_| GitError::InvalidReferenceName { reference })
+}
+
+/// Whether Git currently reports `HEAD` as attached to a branch or detached.
+pub(crate) enum HeadAttachment {
+    /// `HEAD` names this full branch reference.
+    Branch { full_ref: FullRefName },
+    /// `HEAD` names a commit directly.
+    Detached,
+}
+
+/// Ask Git whether `HEAD` is attached to a branch or detached.
+pub(crate) fn head_attachment(repository_root: &Path) -> Result<HeadAttachment, GitError> {
+    let output = git_output(
+        repository_root,
+        [GIT_SYMBOLIC_REF_COMMAND, GIT_QUIET_ARG, GIT_HEAD_REVISION],
+    )?;
+    if output.status.success() {
+        let reference = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+        return reference
+            .trim()
+            .parse()
+            .map(|full_ref| HeadAttachment::Branch { full_ref })
+            .map_err(|_| GitError::InvalidReferenceName { reference });
+    }
+    if output.status.code() == Some(GIT_DETACHED_HEAD_EXIT_CODE) {
+        return Ok(HeadAttachment::Detached);
+    }
+    Err(GitError::CommandFailed {
+        command: GIT_SYMBOLIC_REF_COMMAND,
+        stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
+}
+
+/// The two commits recorded by one active-reservation checkpoint.
+pub(crate) struct ReservationCheckpointCommits {
+    /// The invoking worktree commit protected by the checkpoint.
+    pub(crate) protected_tip: GitObjectId,
+    /// The configured trunk commit observed by the same object batch.
+    pub(crate) trunk:         GitObjectId,
+}
+
+/// Resolve the checkpoint's known commit expressions through one object batch.
+pub(crate) fn reservation_checkpoint_commits(
+    repository_root: &Path,
+    trunk_branch: &str,
+) -> Result<ReservationCheckpointCommits, GitError> {
+    let trunk_expression = format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{trunk_branch}");
+    let expressions = [GIT_HEAD_REVISION.to_owned(), trunk_expression.clone()];
+    let [protected_tip, trunk] = commit_object_resolutions(repository_root, &expressions)?
+        .try_into()
+        .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
+            expected: expressions.len(),
+            actual:   resolutions.len(),
+        })?;
+    Ok(ReservationCheckpointCommits {
+        protected_tip: required_commit_expression(GIT_HEAD_REVISION, protected_tip)?,
+        trunk:         required_commit_expression(&trunk_expression, trunk)?,
+    })
+}
+
+fn required_commit_expression(
+    expression: &str,
+    resolution: CommitObjectResolution,
+) -> Result<GitObjectId, GitError> {
+    match resolution {
+        CommitObjectResolution::Resolved(object_id) => Ok(object_id),
+        CommitObjectResolution::Missing => Err(GitError::MissingCommitExpression {
+            expression: expression.to_owned(),
+        }),
+        CommitObjectResolution::Ambiguous => Err(GitError::AmbiguousCommitExpression {
+            expression: expression.to_owned(),
+        }),
+        CommitObjectResolution::WrongType { object_type } => {
+            Err(GitError::WrongCommitExpressionType {
+                expression: expression.to_owned(),
+                object_type,
+            })
+        },
+    }
+}
+
+/// Resolve `HEAD` and classify every candidate ancestor through one object batch.
+pub(crate) fn head_commit_reachability(
+    repository_root: &Path,
+    candidate_ancestors: &[GitObjectId],
+) -> Result<CommitTargetReachability, GitError> {
+    commit_target_reachability(repository_root, GIT_HEAD_REVISION, candidate_ancestors)
+        .map(|observation| observation.reachability)
+}
+
+/// Resolve one local branch and classify every candidate ancestor through one object batch.
+pub(crate) fn branch_commit_reachability(
+    repository_root: &Path,
+    branch: &str,
+    candidate_ancestors: &[GitObjectId],
+) -> Result<CommitTargetReachabilityObservation, GitError> {
+    commit_target_reachability(
+        repository_root,
+        &format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"),
+        candidate_ancestors,
     )
 }
 
@@ -468,37 +735,10 @@ pub(crate) fn newly_reachable_commits(
 /// end, the phase's anchor still describes the history the branch is being lifted off, so
 /// a comparison taken now reads the new base's commits as this phase's work. There is no
 /// drift answer worth giving about a history that is still being written.
-pub(crate) fn rewrite_in_progress(repository_root: &Path) -> Result<bool, GitError> {
-    for state_path in [GIT_REBASE_MERGE_STATE_PATH, GIT_REBASE_APPLY_STATE_PATH] {
-        if repository_path(repository_root, state_path)?.exists() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Resolve one of git's administrative paths for the invoking worktree.
-fn repository_path(repository_root: &Path, name: &str) -> Result<PathBuf, GitError> {
-    let output = git_output(
-        repository_root,
-        [
-            GIT_REV_PARSE_COMMAND,
-            GIT_PATH_FORMAT_ABSOLUTE_ARG,
-            GIT_PATH_ARG,
-            name,
-        ],
-    )?;
-    if !output.status.success() {
-        return Err(GitError::CommandFailed {
-            command: GIT_REV_PARSE_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    Ok(PathBuf::from(
-        String::from_utf8(output.stdout)
-            .map_err(GitError::InvalidOutput)?
-            .trim(),
-    ))
+pub(crate) fn rewrite_in_progress(worktree_administrative_directory: &Path) -> bool {
+    [GIT_REBASE_MERGE_STATE_PATH, GIT_REBASE_APPLY_STATE_PATH]
+        .iter()
+        .any(|state_path| worktree_administrative_directory.join(state_path).exists())
 }
 
 /// Locate a rewritten branch's replayed phase commits and return the commit beneath them.
@@ -564,12 +804,32 @@ pub(crate) fn scoped_patch_equivalence(
     protected_tip: &GitObjectId,
     target: &GitObjectId,
 ) -> Result<ScopedPatchComparison, GitError> {
+    scoped_patch_equivalence_with_target_history(
+        repository_root,
+        phase_start_head,
+        scopes,
+        protected_tip,
+        target,
+        ScopedPatchTargetHistory::NeedsGitQueries,
+    )
+}
+
+/// Compare scoped changes while reusing an admitted phase-start ancestry result.
+pub(crate) fn scoped_patch_equivalence_with_target_history(
+    repository_root: &Path,
+    phase_start_head: &GitObjectId,
+    scopes: &ReservationScopeSet,
+    protected_tip: &GitObjectId,
+    target: &GitObjectId,
+    target_history: ScopedPatchTargetHistory<'_>,
+) -> Result<ScopedPatchComparison, GitError> {
     match compare_scoped_patch(
         repository_root,
         phase_start_head,
         scopes,
         protected_tip,
         target,
+        target_history,
     ) {
         Ok(scoped_patch_comparison) => Ok(scoped_patch_comparison),
         Err(ScopedPatchComparisonError::Git(GitError::Io(_))) => {
@@ -585,12 +845,19 @@ fn compare_scoped_patch(
     scopes: &ReservationScopeSet,
     protected_tip: &GitObjectId,
     target: &GitObjectId,
+    target_history: ScopedPatchTargetHistory<'_>,
 ) -> Result<ScopedPatchComparison, ScopedPatchComparisonError> {
-    let (history_relationship, protected_scoped_changes) = concurrent_scoped_patch_reads(
-        || history_relationship(repository_root, phase_start_head, target),
-        "compare scoped history",
-        || protected_scoped_changes(repository_root, phase_start_head, scopes, protected_tip),
-        "identify protected scoped paths",
+    let InitialScopedPatchEvidence {
+        history_relationship,
+        protected_scoped_changes,
+        protected_scoped_replay,
+    } = initial_scoped_patch_evidence(
+        repository_root,
+        phase_start_head,
+        scopes,
+        protected_tip,
+        target,
+        target_history,
     );
     match history_relationship? {
         HistoryRelationship::Shared => {},
@@ -609,29 +876,58 @@ fn compare_scoped_patch(
         },
     };
 
-    let (target_scoped_change_position, protected_scoped_change) = concurrent_scoped_patch_reads(
-        || {
-            target_scoped_change_position(
-                repository_root,
-                phase_start_head,
-                protected_tip,
-                target,
-                &affected_paths,
-            )
-        },
-        "locate target scoped commits",
-        || {
-            target_contains_protected_scoped_change(
-                repository_root,
-                phase_start_head,
-                protected_tip,
-                target,
-                scopes,
+    let locate_target_scoped_commits = || {
+        target_scoped_change_position(
+            repository_root,
+            phase_start_head,
+            protected_tip,
+            target,
+            &affected_paths,
+        )
+    };
+    let (target_scoped_change_position, protected_scoped_change) =
+        match (protected_scoped_rename, protected_scoped_replay) {
+            (
+                ProtectedScopedRename::Absent,
+                ProtectedScopedReplayState::EvaluatedAssumingNoRename(protected_scoped_change),
+            ) => (locate_target_scoped_commits(), protected_scoped_change),
+            (
+                ProtectedScopedRename::Present,
+                ProtectedScopedReplayState::EvaluatedAssumingNoRename(_),
+            ) => concurrent_scoped_patch_reads(
+                locate_target_scoped_commits,
+                "locate target scoped commits",
+                || {
+                    target_contains_protected_scoped_change(
+                        repository_root,
+                        phase_start_head,
+                        protected_tip,
+                        target,
+                        scopes,
+                        ProtectedScopedRename::Present,
+                    )
+                },
+                "replay the protected scoped change with renames",
+            ),
+            (
                 protected_scoped_rename,
-            )
-        },
-        "replay the protected scoped change",
-    );
+                ProtectedScopedReplayState::RequiredAfterRenameClassification,
+            ) => concurrent_scoped_patch_reads(
+                locate_target_scoped_commits,
+                "locate target scoped commits",
+                || {
+                    target_contains_protected_scoped_change(
+                        repository_root,
+                        phase_start_head,
+                        protected_tip,
+                        target,
+                        scopes,
+                        protected_scoped_rename,
+                    )
+                },
+                "replay the protected scoped change",
+            ),
+        };
     match target_scoped_change_position? {
         TargetScopedChangePosition::Contiguous => {},
         TargetScopedChangePosition::Absent
@@ -642,6 +938,71 @@ fn compare_scoped_patch(
     }
 
     protected_scoped_change
+}
+
+fn initial_scoped_patch_evidence(
+    repository_root: &Path,
+    phase_start_head: &GitObjectId,
+    scopes: &ReservationScopeSet,
+    protected_tip: &GitObjectId,
+    target: &GitObjectId,
+    target_history: ScopedPatchTargetHistory<'_>,
+) -> InitialScopedPatchEvidence {
+    match target_history {
+        ScopedPatchTargetHistory::ProvenFirstParentInterval { commits } => {
+            debug_assert!(commits.iter().all(|commit| commit != phase_start_head));
+            let (protected_scoped_changes, protected_scoped_replay) = concurrent_scoped_patch_reads(
+                || {
+                    protected_scoped_changes(
+                        repository_root,
+                        phase_start_head,
+                        scopes,
+                        protected_tip,
+                    )
+                },
+                "identify protected scoped paths",
+                || {
+                    target_contains_protected_scoped_change(
+                        repository_root,
+                        phase_start_head,
+                        protected_tip,
+                        target,
+                        scopes,
+                        ProtectedScopedRename::Absent,
+                    )
+                },
+                "replay the protected scoped change without renames",
+            );
+            InitialScopedPatchEvidence {
+                history_relationship: Ok(HistoryRelationship::Shared),
+                protected_scoped_changes,
+                protected_scoped_replay: ProtectedScopedReplayState::EvaluatedAssumingNoRename(
+                    protected_scoped_replay,
+                ),
+            }
+        },
+        ScopedPatchTargetHistory::NeedsGitQueries => {
+            let (history_relationship, protected_scoped_changes) = concurrent_scoped_patch_reads(
+                || history_relationship(repository_root, phase_start_head, target),
+                "compare scoped history",
+                || {
+                    protected_scoped_changes(
+                        repository_root,
+                        phase_start_head,
+                        scopes,
+                        protected_tip,
+                    )
+                },
+                "identify protected scoped paths",
+            );
+            InitialScopedPatchEvidence {
+                history_relationship,
+                protected_scoped_changes,
+                protected_scoped_replay:
+                    ProtectedScopedReplayState::RequiredAfterRenameClassification,
+            }
+        },
+    }
 }
 
 fn history_relationship(
@@ -858,52 +1219,24 @@ fn target_scoped_change_position(
     target: &GitObjectId,
     affected_paths: &[String],
 ) -> Result<TargetScopedChangePosition, ScopedPatchComparisonError> {
-    let (target_commits, protected_scoped_commits, target_scoped_commits, equivalent_commits) =
-        thread::scope(|scope| {
-            let target_commits = scope
-                .spawn(|| first_parent_commits_after(repository_root, phase_start_head, target));
-            let protected_scoped_commits = scope.spawn(|| {
-                first_parent_commits_after_in_paths(
-                    repository_root,
-                    phase_start_head,
-                    protected_tip,
-                    affected_paths,
-                )
-            });
-            let target_scoped_commits = scope.spawn(|| {
-                first_parent_commits_after_in_paths(
-                    repository_root,
-                    phase_start_head,
-                    target,
-                    affected_paths,
-                )
-            });
-            let equivalent_commits = scope.spawn(|| {
-                scoped_patch_equivalent_commits(
-                    repository_root,
-                    phase_start_head,
-                    protected_tip,
-                    target,
-                    affected_paths,
-                )
-            });
-            (
-                join_scoped_patch_worker(target_commits, "walk target first-parent commits"),
-                join_scoped_patch_worker(protected_scoped_commits, "walk protected scoped commits"),
-                join_scoped_patch_worker(target_scoped_commits, "walk target scoped commits"),
-                join_scoped_patch_worker(equivalent_commits, "match scoped patch commits"),
+    let (target_history, symmetric_difference) = concurrent_scoped_patch_reads(
+        || target_first_parent_history(repository_root, phase_start_head, target, affected_paths),
+        "walk target first-parent history",
+        || {
+            scoped_symmetric_difference(
+                repository_root,
+                phase_start_head,
+                protected_tip,
+                target,
+                affected_paths,
             )
-        });
-    let target_commits = target_commits?;
-    let protected_scoped_commits = protected_scoped_commits?;
-    let target_scoped_commits = target_scoped_commits?;
-    let equivalent_commits = equivalent_commits?;
-    let target_phase_integration_commits = classify_target_phase_integration_commits(
-        &target_commits,
-        &protected_scoped_commits,
-        &target_scoped_commits,
-        &equivalent_commits,
+        },
+        "compare protected and target scoped commits",
     );
+    let target_history = target_history?;
+    let symmetric_difference = symmetric_difference?;
+    let target_phase_integration_commits =
+        classify_target_phase_integration_commits(&target_history, &symmetric_difference);
     let TargetPhaseIntegrationCommits::Identified(scoped_commits) =
         target_phase_integration_commits
     else {
@@ -915,7 +1248,8 @@ fn target_scoped_change_position(
     let positions = scoped_commits
         .iter()
         .map(|scoped_commit| {
-            target_commits
+            target_history
+                .commits
                 .iter()
                 .position(|target_commit| target_commit == scoped_commit)
                 .ok_or_else(|| GitError::ScopedCommitMissingFromTargetWalk {
@@ -931,33 +1265,31 @@ fn target_scoped_change_position(
 }
 
 fn classify_target_phase_integration_commits(
-    target_commits: &[GitObjectId],
-    protected_scoped_commits: &[GitObjectId],
-    target_scoped_commits: &[GitObjectId],
-    scoped_patch_equivalent_commits: &[GitObjectId],
+    target_history: &TargetFirstParentHistory,
+    symmetric_difference: &ScopedSymmetricDifference,
 ) -> TargetPhaseIntegrationCommits {
-    if protected_scoped_commits.is_empty() || target_scoped_commits.is_empty() {
+    if target_history.scoped_commits.is_empty() {
         return TargetPhaseIntegrationCommits::Identified(Vec::new());
     }
 
-    let mut identified_target_commits = target_commits
+    let mut identified_target_commits = target_history
+        .scoped_commits
         .iter()
         .filter(|target_commit| {
-            protected_scoped_commits.contains(target_commit)
-                || scoped_patch_equivalent_commits.contains(target_commit)
+            !symmetric_difference
+                .target_unmatched_commits
+                .contains(target_commit)
         })
         .cloned()
         .collect::<Vec<_>>();
 
-    if protected_scoped_commits.iter().all(|protected_commit| {
-        target_commits.contains(protected_commit)
-            || scoped_patch_equivalent_commits.contains(protected_commit)
-    }) && !identified_target_commits.is_empty()
+    if !symmetric_difference.protected_has_unmatched_commit && !identified_target_commits.is_empty()
     {
         return TargetPhaseIntegrationCommits::Identified(identified_target_commits);
     }
 
-    let unmatched_target_commits = target_scoped_commits
+    let unmatched_target_commits = target_history
+        .scoped_commits
         .iter()
         .filter(|target_commit| !identified_target_commits.contains(target_commit))
         .cloned()
@@ -966,7 +1298,8 @@ fn classify_target_phase_integration_commits(
         return TargetPhaseIntegrationCommits::Unresolved;
     };
     identified_target_commits.push(unmatched_target_commit.clone());
-    let identified_target_commits = target_commits
+    let identified_target_commits = target_history
+        .commits
         .iter()
         .filter(|target_commit| identified_target_commits.contains(target_commit))
         .cloned()
@@ -974,18 +1307,17 @@ fn classify_target_phase_integration_commits(
     TargetPhaseIntegrationCommits::Identified(identified_target_commits)
 }
 
-fn scoped_patch_equivalent_commits(
+fn scoped_symmetric_difference(
     repository_root: &Path,
     phase_start_head: &GitObjectId,
     protected_tip: &GitObjectId,
     target: &GitObjectId,
     affected_paths: &[String],
-) -> Result<Vec<GitObjectId>, ScopedPatchComparisonError> {
+) -> Result<ScopedSymmetricDifference, ScopedPatchComparisonError> {
     let mut arguments = vec![
         GIT_REV_LIST_COMMAND.to_owned(),
         GIT_CHERRY_MARK_ARG.to_owned(),
         GIT_LEFT_RIGHT_ARG.to_owned(),
-        GIT_NO_MERGES_ARG.to_owned(),
         GIT_NO_RENAMES_ARG.to_owned(),
         format!("{protected_tip}{GIT_SYMMETRIC_RANGE_INFIX}{target}"),
         format!("{GIT_EXCLUDE_REVISION_PREFIX}{phase_start_head}"),
@@ -996,54 +1328,133 @@ fn scoped_patch_equivalent_commits(
             .iter()
             .map(|path| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{path}")),
     );
-    Ok(scoped_rev_list(repository_root, &arguments)?
-        .lines()
-        .filter_map(|line| line.strip_prefix(GIT_EQUIVALENT_COMMIT_MARK))
-        .map(|commit| commit.parse().map_err(GitError::InvalidObjectId))
-        .collect::<Result<Vec<_>, _>>()?)
+    let output = scoped_rev_list(repository_root, &arguments)?;
+    let mut protected_has_unmatched_commit = false;
+    let mut target_unmatched_commits = HashSet::new();
+    for line in output.lines() {
+        let mut characters = line.chars();
+        let Some(commit_mark) = characters.next() else {
+            continue;
+        };
+        let commit = characters
+            .as_str()
+            .parse()
+            .map_err(GitError::InvalidObjectId)?;
+        match commit_mark {
+            GIT_LEFT_COMMIT_MARK => protected_has_unmatched_commit = true,
+            GIT_RIGHT_COMMIT_MARK => {
+                target_unmatched_commits.insert(commit);
+            },
+            GIT_EQUIVALENT_COMMIT_MARK => {},
+            _ => {
+                return Err(GitError::InvalidScopedHistoryLine {
+                    line: line.to_owned(),
+                }
+                .into());
+            },
+        }
+    }
+    Ok(ScopedSymmetricDifference {
+        protected_has_unmatched_commit,
+        target_unmatched_commits,
+    })
 }
 
-fn first_parent_commits_after(
-    repository_root: &Path,
-    excluded_ancestor: &GitObjectId,
-    tip: &GitObjectId,
-) -> Result<Vec<GitObjectId>, ScopedPatchComparisonError> {
-    let arguments = vec![
-        GIT_REV_LIST_COMMAND.to_owned(),
-        GIT_FIRST_PARENT_ARG.to_owned(),
-        tip.to_string(),
-        format!("{GIT_EXCLUDE_REVISION_PREFIX}{excluded_ancestor}"),
-    ];
-    Ok(scoped_rev_list(repository_root, &arguments)?
-        .lines()
-        .map(|commit| commit.parse().map_err(GitError::InvalidObjectId))
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
-fn first_parent_commits_after_in_paths(
+fn target_first_parent_history(
     repository_root: &Path,
     excluded_ancestor: &GitObjectId,
     tip: &GitObjectId,
     affected_paths: &[String],
-) -> Result<Vec<GitObjectId>, ScopedPatchComparisonError> {
-    let mut arguments = vec![
-        GIT_REV_LIST_COMMAND.to_owned(),
-        GIT_FIRST_PARENT_ARG.to_owned(),
+) -> Result<TargetFirstParentHistory, ScopedPatchComparisonError> {
+    let record_format = format!("--format=%x00{TARGET_FIRST_PARENT_RECORD_MARKER}%x00%H");
+    let arguments = [
+        GIT_LOG_COMMAND.to_owned(),
+        GIT_NUL_TERMINATED_ARG.to_owned(),
+        GIT_NAME_ONLY_ARG.to_owned(),
         GIT_NO_RENAMES_ARG.to_owned(),
+        GIT_FIRST_PARENT_ARG.to_owned(),
+        record_format,
         tip.to_string(),
         format!("{GIT_EXCLUDE_REVISION_PREFIX}{excluded_ancestor}"),
         GIT_PATHSPEC_SEPARATOR.to_owned(),
     ];
-    arguments.extend(
-        affected_paths
-            .iter()
-            .map(|path| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{path}")),
-    );
-    Ok(scoped_rev_list(repository_root, &arguments)?
-        .lines()
-        .map(|commit| commit.parse().map_err(GitError::InvalidObjectId))
-        .collect::<Result<Vec<_>, _>>()?)
+    let output =
+        scoped_patch_command_output(git_output_dynamic(repository_root, &arguments).into())?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_LOG_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        }
+        .into());
+    }
+    parse_target_first_parent_history(&output.stdout, affected_paths)
 }
+
+fn parse_target_first_parent_history(
+    output: &[u8],
+    affected_paths: &[String],
+) -> Result<TargetFirstParentHistory, ScopedPatchComparisonError> {
+    let fields = output.split(|byte| *byte == b'\0').collect::<Vec<_>>();
+    let mut commits = Vec::new();
+    let mut scoped_commits = Vec::new();
+    let mut index = 0;
+    while index < fields.len() {
+        while fields.get(index).is_some_and(|field| field.is_empty()) {
+            index += 1;
+        }
+        if index == fields.len() {
+            break;
+        }
+        if fields[index] != TARGET_FIRST_PARENT_RECORD_MARKER.as_bytes() {
+            return Err(GitError::InvalidScopedHistoryLine {
+                line: String::from_utf8_lossy(fields[index]).into_owned(),
+            }
+            .into());
+        }
+        index += 1;
+        let Some(commit_field) = fields.get(index) else {
+            return Err(GitError::InvalidScopedHistoryLine {
+                line: "target history ended before its commit".to_owned(),
+            }
+            .into());
+        };
+        index += 1;
+        let commit = str::from_utf8(commit_field)
+            .map_err(|_| GitError::InvalidScopedHistoryLine {
+                line: String::from_utf8_lossy(commit_field).into_owned(),
+            })?
+            .parse::<GitObjectId>()
+            .map_err(GitError::InvalidObjectId)?;
+        let mut affects_scope = false;
+        while index < fields.len() {
+            if fields[index].is_empty() {
+                index += 1;
+                if fields
+                    .get(index)
+                    .is_none_or(|field| *field == TARGET_FIRST_PARENT_RECORD_MARKER.as_bytes())
+                {
+                    break;
+                }
+                continue;
+            }
+            let path = fields[index].strip_prefix(b"\n").unwrap_or(fields[index]);
+            affects_scope |= affected_paths
+                .iter()
+                .any(|affected_path| path == affected_path.as_bytes());
+            index += 1;
+        }
+        if affects_scope {
+            scoped_commits.push(commit.clone());
+        }
+        commits.push(commit);
+    }
+    Ok(TargetFirstParentHistory {
+        commits,
+        scoped_commits,
+    })
+}
+
+const TARGET_FIRST_PARENT_RECORD_MARKER: &str = "cargo-berth-target-first-parent";
 
 fn protected_scoped_changes(
     repository_root: &Path,
@@ -1288,14 +1699,38 @@ pub(crate) fn update_local_branch(
     }
 }
 
-/// Resolve a revision while treating an ordinary unresolved name as a typed absence.
+/// Resolve a full reference while preserving Git failures separately from a missing reference.
 pub(crate) fn reference_lookup(
     repository_root: &Path,
-    revision: &str,
+    reference: &str,
 ) -> Result<ReferenceLookup, GitError> {
-    let output = git_output(repository_root, [GIT_REV_PARSE_COMMAND, revision])?;
+    reference
+        .parse::<FullRefName>()
+        .map_err(|_| GitError::InvalidReferenceName {
+            reference: reference.to_owned(),
+        })?;
+    let existence_output = git_output(
+        repository_root,
+        [GIT_SHOW_REF_COMMAND, GIT_SHOW_REF_EXISTS_ARG, reference],
+    )?;
+    if !existence_output.status.success() {
+        if existence_output.status.code() == Some(GIT_MISSING_REFERENCE_EXIT_CODE) {
+            return Ok(ReferenceLookup::Missing);
+        }
+        return Err(GitError::CommandFailed {
+            command: GIT_SHOW_REF_COMMAND,
+            stderr:  String::from_utf8_lossy(&existence_output.stderr)
+                .trim()
+                .to_owned(),
+        });
+    }
+
+    let output = git_output(repository_root, [GIT_REV_PARSE_COMMAND, reference])?;
     if !output.status.success() {
-        return Ok(ReferenceLookup::Missing);
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_PARSE_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
     }
     let object_id = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
     object_id
@@ -1426,6 +1861,250 @@ pub(crate) fn reachability(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the resolved and three unavailable target states share one candidate batch"
+)]
+fn commit_target_reachability(
+    repository_root: &Path,
+    target_expression: &str,
+    candidate_ancestors: &[GitObjectId],
+) -> Result<CommitTargetReachabilityObservation, GitError> {
+    let candidate_expressions = candidate_ancestors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if candidate_expressions.is_empty() {
+        let [target_resolution] =
+            commit_object_resolutions(repository_root, &[target_expression.to_owned()])?
+                .try_into()
+                .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
+                    expected: 1,
+                    actual:   resolutions.len(),
+                })?;
+        let reachability = match target_resolution {
+            CommitObjectResolution::Resolved(target) => CommitTargetReachability::Resolved {
+                target,
+                candidates: Vec::new(),
+            },
+            CommitObjectResolution::Missing => CommitTargetReachability::Missing,
+            CommitObjectResolution::Ambiguous => CommitTargetReachability::Ambiguous,
+            CommitObjectResolution::WrongType { object_type } => {
+                CommitTargetReachability::WrongType { object_type }
+            },
+        };
+        return Ok(CommitTargetReachabilityObservation {
+            reachability,
+            resolved_candidates: ResolvedBatchCommitCandidates::default(),
+            target_histories: PhaseStartTargetFirstParentHistories::default(),
+        });
+    }
+    let (target_history, candidate_resolutions) = thread::scope(|scope| {
+        let target_history_worker =
+            scope.spawn(|| target_commit_history(repository_root, target_expression));
+        let candidate_resolution_worker =
+            scope.spawn(|| commit_object_resolutions(repository_root, &candidate_expressions));
+        let target_history =
+            target_history_worker
+                .join()
+                .map_err(|_| GitError::ConcurrentReadWorkerPanicked {
+                    activity: "read target commit history",
+                })?;
+        let candidate_resolutions = candidate_resolution_worker.join().map_err(|_| {
+            GitError::ConcurrentReadWorkerPanicked {
+                activity: "resolve candidate commit objects",
+            }
+        })??;
+        Ok::<_, GitError>((target_history, candidate_resolutions))
+    })?;
+    let resolved_candidates = ResolvedBatchCommitCandidates(
+        candidate_resolutions
+            .iter()
+            .filter_map(|resolution| match resolution {
+                CommitObjectResolution::Resolved(candidate) => Some(candidate.clone()),
+                CommitObjectResolution::Missing
+                | CommitObjectResolution::Ambiguous
+                | CommitObjectResolution::WrongType { .. } => None,
+            })
+            .collect(),
+    );
+    let ResolvedTargetCommitHistory {
+        target,
+        graph: target_history,
+    } = match target_history {
+        Ok(target_history) => target_history,
+        Err(history_error) => {
+            let [target_resolution] =
+                commit_object_resolutions(repository_root, &[target_expression.to_owned()])?
+                    .try_into()
+                    .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
+                        expected: 1,
+                        actual:   resolutions.len(),
+                    })?;
+            match target_resolution {
+                CommitObjectResolution::Resolved(_) => return Err(history_error),
+                CommitObjectResolution::Missing => {
+                    return Ok(CommitTargetReachabilityObservation {
+                        reachability: CommitTargetReachability::Missing,
+                        resolved_candidates,
+                        target_histories: PhaseStartTargetFirstParentHistories::default(),
+                    });
+                },
+                CommitObjectResolution::Ambiguous => {
+                    return Ok(CommitTargetReachabilityObservation {
+                        reachability: CommitTargetReachability::Ambiguous,
+                        resolved_candidates,
+                        target_histories: PhaseStartTargetFirstParentHistories::default(),
+                    });
+                },
+                CommitObjectResolution::WrongType { object_type } => {
+                    return Ok(CommitTargetReachabilityObservation {
+                        reachability: CommitTargetReachability::WrongType { object_type },
+                        resolved_candidates,
+                        target_histories: PhaseStartTargetFirstParentHistories::default(),
+                    });
+                },
+            }
+        },
+    };
+    if candidate_resolutions.is_empty() {
+        return Ok(CommitTargetReachabilityObservation {
+            reachability: CommitTargetReachability::Resolved {
+                target,
+                candidates: Vec::new(),
+            },
+            resolved_candidates,
+            target_histories: PhaseStartTargetFirstParentHistories::default(),
+        });
+    }
+    let target_histories = PhaseStartTargetFirstParentHistories(
+        candidate_resolutions
+            .iter()
+            .filter_map(|resolution| match resolution {
+                CommitObjectResolution::Resolved(candidate)
+                    if target_history.contains(candidate) =>
+                {
+                    Some((
+                        candidate.clone(),
+                        target_history.first_parent_commits_after(&target, candidate),
+                    ))
+                },
+                CommitObjectResolution::Resolved(_)
+                | CommitObjectResolution::Missing
+                | CommitObjectResolution::Ambiguous
+                | CommitObjectResolution::WrongType { .. } => None,
+            })
+            .collect(),
+    );
+    let candidates = candidate_resolutions
+        .into_iter()
+        .map(|resolution| match resolution {
+            CommitObjectResolution::Resolved(candidate) if target_history.contains(&candidate) => {
+                CommitCandidateReachability::Ancestor
+            },
+            CommitObjectResolution::Resolved(_) => CommitCandidateReachability::NotAncestor,
+            CommitObjectResolution::Missing => CommitCandidateReachability::Missing,
+            CommitObjectResolution::Ambiguous => CommitCandidateReachability::Ambiguous,
+            CommitObjectResolution::WrongType { object_type } => {
+                CommitCandidateReachability::WrongType { object_type }
+            },
+        })
+        .collect();
+    Ok(CommitTargetReachabilityObservation {
+        reachability: CommitTargetReachability::Resolved { target, candidates },
+        resolved_candidates,
+        target_histories,
+    })
+}
+
+fn target_commit_history(
+    repository_root: &Path,
+    target_expression: &str,
+) -> Result<ResolvedTargetCommitHistory, GitError> {
+    let arguments = [
+        GIT_REV_LIST_COMMAND.to_owned(),
+        GIT_PARENTS_ARG.to_owned(),
+        target_expression.to_owned(),
+    ];
+    let output = completed_git_command(git_output_dynamic(repository_root, &arguments).into())?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_REV_LIST_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    let target = output_text
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().next())
+        .ok_or(GitError::MissingTargetCommitHistory)?
+        .parse()
+        .map_err(GitError::InvalidObjectId)?;
+    let graph = CommitAncestryGraph::try_from(output_text.as_str())?;
+    Ok(ResolvedTargetCommitHistory { target, graph })
+}
+
+fn commit_object_resolutions(
+    repository_root: &Path,
+    expressions: &[String],
+) -> Result<Vec<CommitObjectResolution>, GitError> {
+    let input = expressions
+        .iter()
+        .fold(String::new(), |mut input, expression| {
+            let _ = writeln!(input, "{expression}");
+            input
+        });
+    let arguments = [
+        GIT_CAT_FILE_COMMAND.to_owned(),
+        GIT_BATCH_CHECK_OBJECT_FORMAT_ARG.to_owned(),
+    ];
+    let output = completed_git_command(
+        git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into(),
+    )?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_CAT_FILE_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
+    let resolutions = output_text
+        .lines()
+        .map(commit_object_resolution)
+        .collect::<Result<Vec<_>, _>>()?;
+    if resolutions.len() != expressions.len() {
+        return Err(GitError::InvalidBatchObjectCount {
+            expected: expressions.len(),
+            actual:   resolutions.len(),
+        });
+    }
+    Ok(resolutions)
+}
+
+fn commit_object_resolution(line: &str) -> Result<CommitObjectResolution, GitError> {
+    if line.ends_with(GIT_MISSING_OBJECT_SUFFIX) {
+        return Ok(CommitObjectResolution::Missing);
+    }
+    if line.ends_with(GIT_AMBIGUOUS_OBJECT_SUFFIX) {
+        return Ok(CommitObjectResolution::Ambiguous);
+    }
+    let Some((object_id, object_type)) = line.split_once(' ') else {
+        return Err(GitError::InvalidBatchObjectLine {
+            line: line.to_owned(),
+        });
+    };
+    if object_type != GIT_COMMIT_OBJECT_TYPE {
+        return Ok(CommitObjectResolution::WrongType {
+            object_type: object_type.to_owned(),
+        });
+    }
+    object_id
+        .parse()
+        .map(CommitObjectResolution::Resolved)
+        .map_err(GitError::InvalidObjectId)
+}
+
 /// Classify every candidate ancestor against one target with a fixed number of git invocations.
 pub(crate) fn reachability_to_target(
     repository_root: &Path,
@@ -1449,21 +2128,7 @@ pub(crate) fn reachability_to_target(
     if matches!(target_availability, CommitAvailability::ObjectUnknown) {
         return Ok(vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
     }
-    let target_text = target.to_string();
-    let arguments = [GIT_REV_LIST_COMMAND.to_owned(), target_text];
-    let output = completed_git_command(git_output_dynamic(repository_root, &arguments).into())?;
-    if !output.status.success() {
-        return Err(GitError::CommandFailed {
-            command: GIT_REV_LIST_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    let output_text = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
-    let target_history = output_text
-        .lines()
-        .map(str::parse)
-        .collect::<Result<HashSet<GitObjectId>, _>>()
-        .map_err(GitError::InvalidObjectId)?;
+    let target_history = target_commit_history(repository_root, &target.to_string())?.graph;
     Ok(candidate_ancestors
         .iter()
         .zip(candidate_availability)
@@ -1503,48 +2168,12 @@ pub(crate) fn phase_committed_path_diffs(
     git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into()
 }
 
-/// Find the shared base whose range covers every usable incursion-attribution anchor.
-pub(crate) fn incursion_attribution_union_base(
-    repository_root: &Path,
-    anchors: &[GitObjectId],
-) -> Result<IncursionAttributionUnionBase, GitError> {
-    let mut arguments = Vec::with_capacity(anchors.len() + 2);
-    arguments.push(GIT_MERGE_BASE_COMMAND.to_owned());
-    arguments.push(GIT_OCTOPUS_ARG.to_owned());
-    arguments.extend(anchors.iter().map(ToString::to_string));
-    let output = completed_git_command(git_output_dynamic(repository_root, &arguments).into())?;
-    if output.status.code() == Some(GIT_NO_MERGE_BASE_EXIT_CODE) {
-        return Ok(IncursionAttributionUnionBase::UnrelatedHistories);
-    }
-    if !output.status.success() {
-        return Err(GitError::CommandFailed {
-            command: GIT_MERGE_BASE_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    let common_ancestor = String::from_utf8(output.stdout).map_err(GitError::InvalidOutput)?;
-    let common_ancestor = common_ancestor
-        .trim()
-        .parse()
-        .map_err(GitError::InvalidObjectId)?;
-    Ok(IncursionAttributionUnionBase::CommonAncestor(
-        common_ancestor,
-    ))
-}
-
-/// Read every selected path's commits from one union range.
+/// Read every selected path's commits for later per-anchor membership filtering.
 pub(crate) fn incursion_path_log(
     repository_root: &Path,
-    union_base: &IncursionAttributionUnionBase,
     target: &GitObjectId,
     paths: &[ReservationScopePath],
 ) -> IncursionPathLogInvocation {
-    let range = match union_base {
-        IncursionAttributionUnionBase::CommonAncestor(common_ancestor) => {
-            format!("{common_ancestor}{GIT_ANCESTOR_RANGE_INFIX}{target}")
-        },
-        IncursionAttributionUnionBase::UnrelatedHistories => target.to_string(),
-    };
     let record_format = format!("--format=%x00{INCURSION_ATTRIBUTION_RECORD_MARKER}%x00%H%x00%s");
     let mut arguments = Vec::with_capacity(paths.len() + 8);
     arguments.extend([
@@ -1554,7 +2183,7 @@ pub(crate) fn incursion_path_log(
         GIT_NO_RENAMES_ARG.to_owned(),
         GIT_DENSE_COMBINED_ARG.to_owned(),
         record_format,
-        range,
+        target.to_string(),
         GIT_PATHSPEC_SEPARATOR.to_owned(),
     ]);
     arguments.extend(
@@ -1572,20 +2201,22 @@ pub(crate) fn incursion_path_log(
 /// The record boundary emitted by the batched incursion-attribution log.
 pub(crate) const INCURSION_ATTRIBUTION_RECORD_MARKER: &str = "cargo-berth-incursion-commit";
 
-/// Select each phase start's exact `anchor..target` members from one ancestry graph.
+/// Read each phase start's complete `anchor..target` membership through one graph.
 pub(crate) fn incursion_range_commits(
     repository_root: &Path,
     anchors: &[GitObjectId],
     target: &GitObjectId,
-    candidates: &[GitObjectId],
 ) -> Result<Vec<HashSet<GitObjectId>>, GitError> {
-    let input =
-        std::iter::once(target)
-            .chain(anchors)
-            .fold(String::new(), |mut input, object_id| {
-                let _ = writeln!(input, "{object_id}");
-                input
-            });
+    let requested_objects = std::iter::once(target)
+        .chain(anchors)
+        .cloned()
+        .collect::<Vec<_>>();
+    let input = requested_objects
+        .iter()
+        .fold(String::new(), |mut input, object_id| {
+            let _ = writeln!(input, "{object_id}");
+            input
+        });
     let arguments = [
         GIT_REV_LIST_COMMAND.to_owned(),
         GIT_IGNORE_MISSING_ARG.to_owned(),
@@ -1611,11 +2242,8 @@ pub(crate) fn incursion_range_commits(
                 return HashSet::new();
             }
             let anchor_history = commit_ancestry_graph.ancestors_including(anchor);
-            candidates
-                .iter()
-                .filter(|candidate| {
-                    target_history.contains(candidate) && !anchor_history.contains(candidate)
-                })
+            target_history
+                .difference(&anchor_history)
                 .cloned()
                 .collect()
         })
@@ -1706,7 +2334,14 @@ pub(crate) fn descendant_commits(
                             .ancestors_including(successor_head)
                             .contains(predecessor.protected_tip)
                         {
-                            CandidateHeadReachability::Descendant(successor_head.clone())
+                            CandidateHeadReachability::Descendant {
+                                head:                                successor_head.clone(),
+                                first_parent_commits_after_ancestor: commit_ancestry_graph
+                                    .first_parent_commits_after(
+                                        successor_head,
+                                        predecessor.protected_tip,
+                                    ),
+                            }
                         } else {
                             CandidateHeadReachability::NotDescendant(successor_head.clone())
                         }
@@ -1811,6 +2446,35 @@ pub(crate) fn update_reservation_retention_refs(
     refs::apply_transaction(repository_root, &input)
 }
 
+/// Apply retention changes using candidate commits resolved earlier in the same locked pass.
+pub(crate) fn update_reservation_retention_refs_from_resolved_batch(
+    repository_root: &Path,
+    repairs: &[ReservationRetentionRefRepair],
+    deletions: &[ReservationId],
+    resolved_candidates: &ResolvedBatchCommitCandidates,
+) -> Result<(), GitError> {
+    let input = repairs
+        .iter()
+        .filter(|repair| resolved_candidates.contains(&repair.protected_tip))
+        .fold(String::new(), |mut input, repair| {
+            let _ = writeln!(
+                input,
+                "update {} {}",
+                refs::name(repair.reservation_id),
+                repair.protected_tip
+            );
+            input
+        });
+    let input = deletions.iter().fold(input, |mut input, reservation_id| {
+        let _ = writeln!(input, "delete {}", refs::name(*reservation_id));
+        input
+    });
+    if input.is_empty() {
+        return Ok(());
+    }
+    refs::apply_transaction(repository_root, &input)
+}
+
 /// Return the full private ref used to retain one reservation's protected tip.
 pub(crate) fn reservation_retention_ref_name(reservation_id: ReservationId) -> String {
     refs::name(reservation_id)
@@ -1841,14 +2505,6 @@ pub(crate) enum Reachability {
     ObjectUnknown,
 }
 
-/// The common base used to walk all usable incursion-attribution ranges together.
-pub(crate) enum IncursionAttributionUnionBase {
-    /// Every usable phase start shares this ancestor.
-    CommonAncestor(GitObjectId),
-    /// Git found no common history across the supplied phase starts.
-    UnrelatedHistories,
-}
-
 /// One incursion path-log invocation and the exact arguments supplied to git.
 pub(crate) struct IncursionPathLogInvocation {
     /// The arguments supplied after the git binary.
@@ -1860,7 +2516,12 @@ pub(crate) struct IncursionPathLogInvocation {
 /// One candidate head's relation to a protected predecessor tip.
 pub(crate) enum CandidateHeadReachability {
     /// The candidate head contains the protected predecessor tip.
-    Descendant(GitObjectId),
+    Descendant {
+        /// The classified candidate head.
+        head:                                GitObjectId,
+        /// Its first-parent interval after the queried ancestor.
+        first_parent_commits_after_ancestor: Vec<GitObjectId>,
+    },
     /// The candidate head resolves but does not contain the predecessor tip.
     NotDescendant(GitObjectId),
     /// This candidate head does not resolve as a commit.
@@ -1939,10 +2600,14 @@ pub(crate) enum GitError {
     InvalidOutput(FromUtf8Error),
     /// Git printed text that was not a full object id.
     InvalidObjectId(InvalidGitObjectId),
-    /// Git printed text that was not a valid full reference name.
+    /// A supplied or returned full reference name is invalid.
     InvalidReferenceName { reference: String },
     /// `cat-file --batch-check` did not classify every submitted object.
     InvalidBatchObjectCount { expected: usize, actual: usize },
+    /// `cat-file --batch-check` printed a record without an object status or type.
+    InvalidBatchObjectLine { line: String },
+    /// A batched scoped-history query printed a record outside its typed grammar.
+    InvalidScopedHistoryLine { line: String },
     /// The expected branch object is not an ancestor of the proposed object.
     NonFastForwardBranchUpdate {
         previous: GitObjectId,
@@ -1960,6 +2625,19 @@ pub(crate) enum GitError {
     },
     /// A path-limited first-parent walk returned a commit absent from the full walk.
     ScopedCommitMissingFromTargetWalk { commit: GitObjectId },
+    /// A target-history read completed without identifying its requested tip.
+    MissingTargetCommitHistory,
+    /// No object resolves from a required commit expression.
+    MissingCommitExpression { expression: String },
+    /// More than one object matches a required commit expression.
+    AmbiguousCommitExpression { expression: String },
+    /// A required commit expression resolves to another object type.
+    WrongCommitExpressionType {
+        expression:  String,
+        object_type: String,
+    },
+    /// One independent Git read ended before returning its typed observation.
+    ConcurrentReadWorkerPanicked { activity: &'static str },
     /// One parallel scoped-proof worker ended before returning its typed observation.
     ScopedPatchWorkerPanicked { activity: &'static str },
 }
@@ -1978,12 +2656,24 @@ impl Display for GitError {
                 write!(formatter, "git printed an invalid object id: {error}")
             },
             Self::InvalidReferenceName { reference } => {
-                write!(formatter, "git printed an invalid ref name: {reference:?}")
+                write!(formatter, "invalid full git reference name: {reference:?}")
             },
             Self::InvalidBatchObjectCount { expected, actual } => write!(
                 formatter,
                 "git cat-file classified {actual} objects when {expected} were submitted"
             ),
+            Self::InvalidBatchObjectLine { line } => {
+                write!(
+                    formatter,
+                    "git cat-file printed an invalid object record: {line:?}"
+                )
+            },
+            Self::InvalidScopedHistoryLine { line } => {
+                write!(
+                    formatter,
+                    "git printed an invalid scoped-history record: {line:?}"
+                )
+            },
             Self::NonFastForwardBranchUpdate { previous, proposed } => write!(
                 formatter,
                 "refusing non-fast-forward branch update from {previous} to {proposed}"
@@ -1999,6 +2689,34 @@ impl Display for GitError {
                 formatter,
                 "git returned scoped commit {commit} outside the target's first-parent walk"
             ),
+            Self::MissingTargetCommitHistory => {
+                formatter.write_str("git returned an empty target commit history")
+            },
+            Self::MissingCommitExpression { expression } => {
+                write!(
+                    formatter,
+                    "git commit expression {expression:?} does not resolve"
+                )
+            },
+            Self::AmbiguousCommitExpression { expression } => {
+                write!(
+                    formatter,
+                    "git commit expression {expression:?} is ambiguous"
+                )
+            },
+            Self::WrongCommitExpressionType {
+                expression,
+                object_type,
+            } => write!(
+                formatter,
+                "git commit expression {expression:?} resolves to a {object_type} object"
+            ),
+            Self::ConcurrentReadWorkerPanicked { activity } => {
+                write!(
+                    formatter,
+                    "git read worker panicked while attempting to {activity}"
+                )
+            },
             Self::ScopedPatchWorkerPanicked { activity } => {
                 write!(
                     formatter,
@@ -2029,18 +2747,22 @@ mod tests {
 
     use super::AheadBehind;
     use super::CandidateHeadReachability;
+    use super::CommitObjectResolution;
     use super::DescendantCommitQuery;
     use super::GitError;
     use super::ProtectedTipSuccessorHeads;
     use super::ScopedPatchComparison;
     use super::ScopedPatchComparisonError;
+    use super::ScopedPatchTargetHistory;
     use super::ahead_behind_for_heads;
     use super::command::GitCommandExecution;
+    use super::commit_object_resolution;
     use super::concurrent_scoped_patch_reads;
     use super::descendant_commits;
     use super::head_object_id;
     use super::scoped_patch_command_output;
     use super::scoped_patch_equivalence;
+    use super::scoped_patch_equivalence_with_target_history;
     use crate::ids::GitObjectId;
     use crate::ledger::ProtectedPhaseStartHead;
     use crate::ledger::ReservationScope;
@@ -2061,6 +2783,30 @@ mod tests {
     const UNAVAILABLE_OBJECT_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     type FixtureResult<T = ()> = Result<T, Box<dyn Error>>;
+
+    #[test]
+    fn batch_object_records_preserve_every_resolution_failure() -> FixtureResult {
+        let object_id = UNAVAILABLE_OBJECT_ID.parse::<GitObjectId>()?;
+        assert_eq!(
+            commit_object_resolution(&format!("{object_id} commit"))?,
+            CommitObjectResolution::Resolved(object_id.clone())
+        );
+        assert_eq!(
+            commit_object_resolution("missing-expression missing")?,
+            CommitObjectResolution::Missing
+        );
+        assert_eq!(
+            commit_object_resolution("ambiguous-expression ambiguous")?,
+            CommitObjectResolution::Ambiguous
+        );
+        assert_eq!(
+            commit_object_resolution(&format!("{object_id} tree"))?,
+            CommitObjectResolution::WrongType {
+                object_type: "tree".to_owned(),
+            }
+        );
+        Ok(())
+    }
 
     struct PatchEquivalenceFixture {
         repository:       TempDir,
@@ -2164,6 +2910,37 @@ mod tests {
     }
 
     #[test]
+    fn proven_target_history_keeps_a_shared_scoped_commit() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        fixture.write(PRIMARY_PATH, "shared scoped change\n")?;
+        let shared_scoped_commit = fixture.commit("shared scoped change")?;
+        fixture.write(SECONDARY_PATH, "protected unscoped change\n")?;
+        let protected_tip = fixture.commit("protected unscoped change")?;
+
+        fixture.reset_to(&shared_scoped_commit)?;
+        fixture.write(SCRIPT_PATH, "#!/bin/sh\necho target\n")?;
+        let target = fixture.commit("target unscoped change")?;
+        let target_history = [target.clone(), shared_scoped_commit];
+        let scopes = file_scopes(&[PRIMARY_PATH])?;
+
+        let proven_comparison = scoped_patch_equivalence_with_target_history(
+            fixture.root(),
+            &fixture.phase_start_head,
+            &scopes,
+            &protected_tip,
+            &target,
+            ScopedPatchTargetHistory::ProvenFirstParentInterval {
+                commits: &target_history,
+            },
+        )?;
+        let queried_comparison = fixture.equivalence(&scopes, &protected_tip, &target)?;
+
+        assert_eq!(proven_comparison, ScopedPatchComparison::Equivalent);
+        assert_eq!(proven_comparison, queried_comparison);
+        Ok(())
+    }
+
+    #[test]
     fn scoped_patch_command_spawn_failure_is_unavailable() {
         let command_execution =
             GitCommandExecution::from(Command::new("cargo-berth-missing-git").output());
@@ -2229,7 +3006,10 @@ mod tests {
             ] if matches!(
                 mixed.as_slice(),
                 [
-                    CandidateHeadReachability::Descendant(classified_descendant),
+                    CandidateHeadReachability::Descendant {
+                        head: classified_descendant,
+                        ..
+                    },
                     CandidateHeadReachability::ObjectUnknown(classified_unresolvable),
                 ] if classified_descendant == &descendant
                     && classified_unresolvable == &unresolvable

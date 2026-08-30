@@ -1624,16 +1624,29 @@ impl Journal {
 
     /// Append exactly one complete JSON record and sync it before cache publication.
     pub(super) fn append(&self, event: &JournalEvent) -> Result<(), JournalAppendError> {
-        let mut record = serde_json::to_vec(event).map_err(JournalAppendError::Serialization)?;
-        record.push(b'\n');
-        if record.len() > MAXIMUM_JOURNAL_RECORD_BYTES {
-            return Err(JournalAppendError::RecordTooLarge {
-                bytes: record.len(),
-            });
+        self.append_events(std::slice::from_ref(event))
+    }
+
+    /// Append one validated reconciliation set with one durable write barrier.
+    pub(super) fn append_events(&self, events: &[JournalEvent]) -> Result<(), JournalAppendError> {
+        let mut records = Vec::new();
+        for event in events {
+            let mut record =
+                serde_json::to_vec(event).map_err(JournalAppendError::Serialization)?;
+            record.push(b'\n');
+            if record.len() > MAXIMUM_JOURNAL_RECORD_BYTES {
+                return Err(JournalAppendError::RecordTooLarge {
+                    bytes: record.len(),
+                });
+            }
+            records.extend(record);
+        }
+        if records.is_empty() {
+            return Ok(());
         }
 
         let mut journal_file = OpenOptions::new().append(true).open(&self.path)?;
-        journal_file.write_all(&record)?;
+        journal_file.write_all(&records)?;
         journal_file.sync_all()?;
         Ok(())
     }

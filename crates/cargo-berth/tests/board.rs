@@ -1965,7 +1965,7 @@ fn board_git_cost_separates_each_scaling_dimension() {
     assert_eq!(
         trace
             .lines()
-            .filter(|line| line.starts_with("rev-parse refs/heads/main"))
+            .filter(|line| *line == "cat-file --batch-check=%(objectname) %(objecttype)")
             .count(),
         1
     );
@@ -2316,7 +2316,7 @@ fn deferred_comparison_rejects_a_refuted_ancestor_proof() {
     assert!(traced.output.status.success());
     assert_eq!(
         scoped_patch_comparison_attempts(&traced, &fixture.phase_start_head, &fixture.target),
-        1
+        0
     );
     let board = json_output(&traced.output);
     let data = &board["payload"]["data"];
@@ -2555,7 +2555,7 @@ fn deferred_comparison_preserves_a_scoped_patch_equivalence_proof() {
     assert!(deferred.output.status.success());
     assert_eq!(
         scoped_patch_comparison_attempts(&deferred, &fixture.phase_start_head, &fixture.target,),
-        1
+        0
     );
     let deferred_board = json_output(&deferred.output);
     let data = &deferred_board["payload"]["data"];
@@ -2610,7 +2610,7 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
             &reservation.phase_start_head,
             &reservation.target,
         ),
-        1
+        0
     );
     assert_ne!(fixture.earlier_proof_target, reservation.target);
     let deferred_board = json_output(&deferred.output);
@@ -2652,7 +2652,7 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
             &reservation.phase_start_head,
             &reservation.target,
         ),
-        1
+        0
     );
     let replayed_board = json_output(&replayed.output);
     let replayed_data = &replayed_board["payload"]["data"];
@@ -2761,12 +2761,12 @@ fn distinct_cold_proof_subjects_are_bounded_to_one_git_evaluation_per_target() {
         );
 
         let expected_argv_total = match target_rewrite {
-            TargetRewrite::Equivalent => 10,
-            TargetRewrite::Different => 9,
+            TargetRewrite::Equivalent => 6,
+            TargetRewrite::Different => 5,
         };
         assert!(!one_argv.is_empty());
-        assert_eq!(one_argv.len(), expected_argv_total);
-        assert_eq!(twenty_argv.len(), expected_argv_total);
+        assert_eq!(one_argv.len(), expected_argv_total, "{one_argv:#?}");
+        assert_eq!(twenty_argv.len(), expected_argv_total, "{twenty_argv:#?}");
         assert_eq!(twenty_argv.len(), one_argv.len());
         assert_eq!(merge_base_ancestor_invocations(&one_trace), 0);
         assert_eq!(
@@ -2972,7 +2972,7 @@ fn assert_batched_evidence_and_retention_queries(trace: &str) {
             .lines()
             .filter(|line| line.starts_with("cat-file --batch-check"))
             .count(),
-        2
+        1
     );
     assert_eq!(
         trace
@@ -3719,11 +3719,19 @@ fn scoped_patch_comparison_attempts(
     phase_start_head: &str,
     target: &str,
 ) -> usize {
-    let query = format!("merge-base {phase_start_head} {target}");
+    let merge_base_query = format!("merge-base {phase_start_head} {target}");
+    let excluded_phase_start = format!("^{phase_start_head}");
     fs::read_to_string(&traced_board.trace_path)
         .expect("git trace should read")
         .lines()
-        .filter(|line| *line == query)
+        .filter(|line| {
+            *line == merge_base_query
+                || (line.starts_with("rev-list --cherry-mark --left-right ")
+                    && line
+                        .split_whitespace()
+                        .any(|argument| argument == excluded_phase_start)
+                    && line.contains(target))
+        })
         .count()
 }
 
@@ -3848,13 +3856,14 @@ fn scoped_patch_git_argv(
                     "cat-file"
                         | "merge-base"
                         | "diff"
+                        | "log"
                         | "rev-list"
                         | "read-tree"
                         | "update-index"
                         | "write-tree"
                         | "merge-tree"
                 )
-            ) && (line == &"cat-file --batch-check"
+            ) && (line.starts_with("cat-file --batch-check=")
                 || line.contains(phase_start_head)
                 || line.contains(protected_tip)
                 || line.contains(target)

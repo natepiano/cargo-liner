@@ -15,6 +15,7 @@ use crate::alert::Alert;
 use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::board::BoardModel;
+use crate::board::LiveIncursionMembership;
 use crate::config::InitializationState;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::drift::DriftEffect;
@@ -94,6 +95,16 @@ pub(crate) struct OutputEnvelope {
     message:              String,
     /// The verb-keyed facts consumers need without parsing prose.
     payload:              OutputPayload,
+}
+
+/// Trusted rendering produced inside the installed `PostToolUse` engine process.
+pub(crate) enum PostToolUseRendering {
+    /// The hook has no feedback to publish.
+    NoFeedback,
+    /// The hook can publish this complete typed feedback without another validator process.
+    Feedback { summary: String, detail: String },
+    /// Incursion feedback still needs the post-drift live-board check.
+    RequiresLiveIncursionBoard,
 }
 
 /// A verb named in a JSON response.
@@ -2193,6 +2204,244 @@ impl OutputEnvelope {
         }
         rendered
     }
+
+    /// Render an installed-engine `PostToolUse` result without reparsing its serialized envelope.
+    pub(crate) fn post_tool_use_rendering(&self) -> PostToolUseRendering {
+        match &self.payload.facts {
+            OutputFacts::Drift(report) => self.post_tool_use_drift_rendering(report),
+            OutputFacts::ReplayFailure(failure) => {
+                let reason = serde_json::to_string(&failure.reason).map_or_else(
+                    |_| "unknown_replay_failure".to_owned(),
+                    |serialized| serialized.trim_matches('"').to_owned(),
+                );
+                PostToolUseRendering::Feedback {
+                    summary: "cargo-berth stopped on invalid reservation history after Bash."
+                        .to_owned(),
+                    detail:  format!(
+                        "REPLAY HARD STOP: {reason}. {} Review the cargo-berth journal. If the retained order is invalid and may be discarded, run `cargo-berth init --reinitialize-after-review --json`.",
+                        self.message
+                    ),
+                }
+            },
+            OutputFacts::CoordinationIdentity(rejection) => PostToolUseRendering::Feedback {
+                summary: "cargo-berth rejected drift under the current coordination identity."
+                    .to_owned(),
+                detail:  format!(
+                    "COORDINATION IDENTITY: {} requires one recovery action before continuing. {rejection}",
+                    rejection.wire_kind()
+                ),
+            },
+            OutputFacts::NoFacts if matches!(self.status, OutputStatus::Unconfigured) => {
+                PostToolUseRendering::NoFeedback
+            },
+            OutputFacts::NoFacts => PostToolUseRendering::Feedback {
+                summary: "cargo-berth could not inspect this Bash call.".to_owned(),
+                detail:  self.message.clone(),
+            },
+            OutputFacts::Init(_)
+            | OutputFacts::ProjectionRepair(_)
+            | OutputFacts::Reinitialize(_)
+            | OutputFacts::Board(_)
+            | OutputFacts::Reservation(_)
+            | OutputFacts::Check(_)
+            | OutputFacts::Claim(_)
+            | OutputFacts::Release(_)
+            | OutputFacts::Sequence(_)
+            | OutputFacts::Integrate(_)
+            | OutputFacts::Resolve(_)
+            | OutputFacts::Renew(_)
+            | OutputFacts::Identity(_) => PostToolUseRendering::Feedback {
+                summary: "cargo-berth rejected an unexpected PostToolUse response.".to_owned(),
+                detail:  self.message.clone(),
+            },
+        }
+    }
+
+    /// Render drift-reported incursions against a board read taken after that drift response.
+    pub(crate) fn post_tool_use_rendering_with_live_board(
+        &self,
+        live_board: &Self,
+    ) -> PostToolUseRendering {
+        let (OutputFacts::Drift(report), OutputFacts::Board(board)) =
+            (&self.payload.facts, &live_board.payload.facts)
+        else {
+            return unverifiable_live_incursion_rendering();
+        };
+        let mut immediate_stop_messages = Vec::new();
+        let mut notice_messages = Vec::new();
+        append_live_path_attribution_rendering(
+            &report.path_attribution,
+            &mut immediate_stop_messages,
+            &mut notice_messages,
+        );
+        for result in &report.results {
+            let ReservationDriftResult::Changed {
+                reservation_id,
+                effects,
+            } = result
+            else {
+                continue;
+            };
+            for effect in effects.as_slice() {
+                match effect {
+                    DriftEffect::Incursion {
+                        incident_id,
+                        foreign_reservation_ids,
+                        paths,
+                        commits,
+                    } => match board.live_incursion_membership(*incident_id) {
+                        LiveIncursionMembership::Outstanding => immediate_stop_messages.push(format!(
+                            "INCURSION: reservation {reservation_id} entered {}, held by {}; incident {incident_id}.{} STOP. Resolve with `cargo-berth resolve {reservation_id} --incursion {incident_id}` before making more changes.",
+                            paths
+                                .as_slice()
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            foreign_reservation_ids
+                                .as_slice()
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            render_incursion_commits(commits),
+                        )),
+                        LiveIncursionMembership::Recorded => {},
+                        LiveIncursionMembership::Unverifiable => {
+                            return unverifiable_live_incursion_rendering();
+                        },
+                    },
+                    DriftEffect::Widened { added_scopes } => notice_messages.push(format!(
+                        "AUTO-WIDEN: reservation {reservation_id} now covers {}",
+                        added_scopes
+                            .as_slice()
+                            .iter()
+                            .map(|scope| format!("file:{}", scope.path))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                    DriftEffect::Collision {
+                        foreign_reservation_ids,
+                        paths,
+                    } => immediate_stop_messages.push(format!(
+                        "COLLISION: reservation {reservation_id} could not widen to {} because {} now holds the path. STOP and resolve the overlap before making more changes.",
+                        paths
+                            .as_slice()
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        foreign_reservation_ids
+                            .as_slice()
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                }
+            }
+        }
+        let lost_evidence_messages = self
+            .payload
+            .alerts
+            .iter()
+            .filter(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        live_board_feedback(
+            immediate_stop_messages,
+            notice_messages,
+            lost_evidence_messages,
+        )
+    }
+
+    fn post_tool_use_drift_rendering(&self, report: &DriftReport) -> PostToolUseRendering {
+        if report.results.iter().any(|result| {
+            result_has_effect(result, |effect| {
+                matches!(effect, DriftEffect::Incursion { .. })
+            })
+        }) {
+            return PostToolUseRendering::RequiresLiveIncursionBoard;
+        }
+        let has_collision = report.results.iter().any(|result| {
+            result_has_effect(result, |effect| {
+                matches!(effect, DriftEffect::Collision { .. })
+            })
+        });
+        let has_widen = report.results.iter().any(|result| {
+            result_has_effect(result, |effect| {
+                matches!(effect, DriftEffect::Widened { .. })
+            })
+        });
+        let lost_evidence = self
+            .payload
+            .alerts
+            .iter()
+            .filter(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let (prefix, immediate_stop) = match &report.path_attribution {
+            DriftPathAttributionOutcome::FirstTouchReserved { .. } => {
+                ("FIRST-TOUCH CLAIM: ", false)
+            },
+            DriftPathAttributionOutcome::IncursionDetected { protection, .. } => match protection {
+                PostWriteFreePathProtection::NotAcquired => {
+                    ("POST-WRITE INCURSION: nothing was reserved. ", true)
+                },
+                PostWriteFreePathProtection::Acquired { .. } => ("POST-WRITE INCURSION: ", true),
+            },
+            DriftPathAttributionOutcome::Ambiguous { .. }
+            | DriftPathAttributionOutcome::CoordinationRunRequired { .. } => {
+                ("DRIFT ATTRIBUTION REQUIRED: ", true)
+            },
+            DriftPathAttributionOutcome::NotNeeded
+            | DriftPathAttributionOutcome::Attributed { .. }
+                if has_collision =>
+            {
+                ("COLLISION: ", true)
+            },
+            DriftPathAttributionOutcome::NotNeeded
+            | DriftPathAttributionOutcome::Attributed { .. }
+                if has_widen =>
+            {
+                ("AUTO-WIDEN: ", false)
+            },
+            DriftPathAttributionOutcome::NotNeeded
+            | DriftPathAttributionOutcome::Attributed { .. } => ("", false),
+        };
+        let mut messages = Vec::new();
+        if !prefix.is_empty() || report.has_reportable_effect() {
+            messages.push(format!("{prefix}{}", self.message));
+        }
+        messages.extend(lost_evidence);
+        if messages.is_empty() {
+            return PostToolUseRendering::NoFeedback;
+        }
+        let summary = if immediate_stop || has_collision {
+            "cargo-berth detected drift that requires an immediate stop."
+        } else if self
+            .payload
+            .alerts
+            .iter()
+            .any(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
+        {
+            "cargo-berth detected lost integration evidence for released work."
+        } else {
+            "cargo-berth widened this worktree reservation footprint."
+        };
+        PostToolUseRendering::Feedback {
+            summary: summary.to_owned(),
+            detail:  messages.join("\n"),
+        }
+    }
+}
+
+fn unverifiable_live_incursion_rendering() -> PostToolUseRendering {
+    PostToolUseRendering::Feedback {
+        summary: "cargo-berth could not verify the live incursion state.".to_owned(),
+        detail: "STOP: the PostToolUse drift response named an incursion, but a current board read could not verify whether it still needs resolution."
+            .to_owned(),
+    }
 }
 
 impl OutputPayload {
@@ -2453,6 +2702,54 @@ fn drift_message(report: &DriftReport) -> String {
         }
     }
     message
+}
+
+fn append_live_path_attribution_rendering(
+    attribution: &DriftPathAttributionOutcome,
+    immediate_stop_messages: &mut Vec<String>,
+    notice_messages: &mut Vec<String>,
+) {
+    let message = drift_path_attribution_message(attribution);
+    match attribution {
+        DriftPathAttributionOutcome::FirstTouchReserved { .. } => {
+            notice_messages.push(format!("FIRST-TOUCH CLAIM: {message}"));
+        },
+        DriftPathAttributionOutcome::IncursionDetected { .. } => {
+            immediate_stop_messages.push(format!("POST-WRITE INCURSION: {message}"));
+        },
+        DriftPathAttributionOutcome::Ambiguous { .. }
+        | DriftPathAttributionOutcome::CoordinationRunRequired { .. } => {
+            immediate_stop_messages.push(format!("DRIFT ATTRIBUTION REQUIRED: {message}"));
+        },
+        DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. } => {
+        },
+    }
+}
+
+fn live_board_feedback(
+    mut immediate_stop_messages: Vec<String>,
+    notice_messages: Vec<String>,
+    lost_evidence_messages: Vec<String>,
+) -> PostToolUseRendering {
+    if immediate_stop_messages.is_empty()
+        && notice_messages.is_empty()
+        && lost_evidence_messages.is_empty()
+    {
+        return PostToolUseRendering::NoFeedback;
+    }
+    let summary = if !immediate_stop_messages.is_empty() {
+        "cargo-berth detected drift that requires an immediate stop."
+    } else if !lost_evidence_messages.is_empty() {
+        "cargo-berth detected lost integration evidence for released work."
+    } else {
+        "cargo-berth widened this worktree reservation footprint."
+    };
+    immediate_stop_messages.extend(notice_messages);
+    immediate_stop_messages.extend(lost_evidence_messages);
+    PostToolUseRendering::Feedback {
+        summary: summary.to_owned(),
+        detail:  immediate_stop_messages.join("\n"),
+    }
 }
 
 fn drift_path_attribution_message(attribution: &DriftPathAttributionOutcome) -> String {

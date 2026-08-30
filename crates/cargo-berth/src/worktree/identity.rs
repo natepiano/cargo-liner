@@ -12,6 +12,42 @@ use crate::ledger::LedgerError;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
 
+/// The opaque identity observed with one registered-worktree snapshot.
+#[derive(Clone, Copy)]
+pub(super) enum RegisteredWorktreeIdentity {
+    /// The administrative directory contained a valid worktree identity.
+    Resolved(WorktreeId),
+    /// The administrative directory did not yield a valid worktree identity.
+    Unavailable,
+}
+
+impl RegisteredWorktreeIdentity {
+    /// Read the identity once for every consumer of one registry snapshot.
+    pub(super) fn observe(candidate: &WorktreeContext) -> Self {
+        ledger::read_worktree_identity(candidate.administrative_directory())
+            .map_or(Self::Unavailable, Self::Resolved)
+    }
+}
+
+/// The administrative backlink observed with one registered-worktree snapshot.
+#[derive(Clone, Copy)]
+pub(super) enum RegisteredWorktreeBacklink {
+    /// The administrative backlink names the registered worktree root.
+    Matches,
+    /// The backlink was absent, unreadable, or named another root.
+    Unavailable,
+}
+
+impl RegisteredWorktreeBacklink {
+    /// Read the backlink once for every consumer of one registry snapshot.
+    pub(super) fn observe(candidate: &WorktreeContext) -> Self {
+        match backlink_matches(candidate) {
+            Ok(true) => Self::Matches,
+            Ok(false) | Err(_) => Self::Unavailable,
+        }
+    }
+}
+
 /// The validated location of the same non-recyclable worktree holder.
 pub(super) enum ValidatedWorktreeOwner {
     /// The opaque identity remains at the recorded canonical root.
@@ -20,32 +56,50 @@ pub(super) enum ValidatedWorktreeOwner {
     Relocated { current_root: CanonicalWorktreeRoot },
 }
 
+/// The durable identity and location recorded for one reservation owner.
+#[derive(Clone, Copy)]
+pub(super) struct RecordedWorktreeOwner<'recorded> {
+    pub(super) repository: RepoInstanceId,
+    pub(super) worktree:   WorktreeId,
+    pub(super) root:       &'recorded CanonicalWorktreeRoot,
+    pub(super) locator:    &'recorded WorktreeAdministrativeLocator,
+}
+
+/// One registry snapshot's evidence about a possible reservation owner.
+#[derive(Clone, Copy)]
+pub(super) struct RegisteredWorktreeOwnerObservation<'observed> {
+    pub(super) context:  &'observed WorktreeContext,
+    pub(super) identity: RegisteredWorktreeIdentity,
+    pub(super) backlink: RegisteredWorktreeBacklink,
+}
+
 /// Validate repository, administrative directory, backlink, identity, and root together.
 pub(super) fn validate_same_owner(
     ledger_repository: RepoInstanceId,
-    recorded_repository: RepoInstanceId,
     common_git_directory: &Path,
-    recorded_worktree_id: WorktreeId,
-    recorded_root: &CanonicalWorktreeRoot,
-    recorded_locator: &WorktreeAdministrativeLocator,
-    candidate: &WorktreeContext,
+    recorded: RecordedWorktreeOwner<'_>,
+    observed: RegisteredWorktreeOwnerObservation<'_>,
 ) -> Result<ValidatedWorktreeOwner, LedgerError> {
-    if recorded_repository != ledger_repository
-        || candidate.common_git_directory() != common_git_directory
-        || candidate.administrative_locator() != recorded_locator
-        || ledger::read_worktree_identity(candidate.administrative_directory())?
-            != recorded_worktree_id
-        || !backlink_matches(candidate)?
+    if recorded.repository != ledger_repository
+        || observed.context.common_git_directory() != common_git_directory
+        || observed.context.administrative_locator() != recorded.locator
+        || !matches!(
+            observed.identity,
+            RegisteredWorktreeIdentity::Resolved(candidate_worktree_id)
+                if candidate_worktree_id == recorded.worktree
+        )
+        || !matches!(observed.backlink, RegisteredWorktreeBacklink::Matches)
     {
         return Err(LedgerError::WorktreeIdentityMismatch);
     }
-    let current_root = candidate
+    let current_root = observed
+        .context
         .repository_root()
         .to_str()
         .ok_or(LedgerError::NonUtf8AdministrativePath)?
         .parse()
         .map_err(|_| LedgerError::InvalidCanonicalWorktreeRoot)?;
-    if &current_root == recorded_root {
+    if &current_root == recorded.root {
         Ok(ValidatedWorktreeOwner::RecordedRoot)
     } else {
         Ok(ValidatedWorktreeOwner::Relocated { current_root })
@@ -65,8 +119,11 @@ fn backlink_matches(candidate: &WorktreeContext) -> Result<bool, LedgerError> {
             } else {
                 candidate.administrative_directory().join(backlink)
             };
-            Ok(fs::canonicalize(backlink)?
-                == fs::canonicalize(candidate.repository_root().join(".git"))?)
+            let registered_git_file = candidate.repository_root().join(".git");
+            if backlink == registered_git_file {
+                return Ok(true);
+            }
+            Ok(fs::canonicalize(backlink)? == fs::canonicalize(registered_git_file)?)
         },
     }
 }

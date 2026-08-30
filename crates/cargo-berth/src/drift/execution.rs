@@ -4,7 +4,6 @@ use std::convert::Infallible;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::path::Path;
 use std::path::PathBuf;
 
 use super::classification;
@@ -26,16 +25,18 @@ use super::selection::DriftRequest;
 use super::selection::DriftReservationSelection;
 use super::selection::DriftSelectionError;
 use super::selection::PostWriteFirstTouchRequirement;
+use super::selection::ResolvedDriftSubjects;
 use crate::config::Enrollment;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::coordination_identity::validate_coordination_identity;
+use crate::edge::RepositoryTrunk;
 use crate::git;
-use crate::git::GitError;
 use crate::ids::WorktreeId;
 use crate::ledger;
+use crate::ledger::JournalEvent;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
@@ -47,7 +48,7 @@ use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
-use crate::reconcile::RecoveredBypassReporting;
+use crate::reconcile::ReconciledDriftPreflight;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
@@ -65,6 +66,21 @@ use crate::verb::claim::FirstTouchConflictOutcome;
 struct PostWritePathAttribution {
     outcome: DriftPathAttributionOutcome,
     results: Vec<ReservationDriftResult>,
+}
+
+enum PreparedDriftExecution {
+    NothingToCompare { comparison: DriftComparisonChoice },
+    Observed(Box<ObservedDriftExecution>),
+}
+
+struct ObservedDriftExecution {
+    initial_reservations:        RetainedReservationSet,
+    initial_subjects:            ResolvedDriftSubjects,
+    cache_path:                  PathBuf,
+    observation:                 FingerprintObservation,
+    acting_identity:             DriftActingIdentity,
+    resolved_edit_authorization: ResolvedEditAuthorization,
+    identity_validation:         CoordinationIdentityValidationContext,
 }
 
 enum DriftTransactionRejection {
@@ -95,21 +111,37 @@ pub(crate) fn execute(
             return OutputEnvelope::ledger_unreadable(CommandVerb::Drift, &error.to_string());
         },
     };
-    let reconciliation_report =
-        match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
-            Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
-            Ok(Enrollment::Unconfigured {
-                expected_configuration_path,
-            }) => {
-                return OutputEnvelope::unconfigured(
-                    CommandVerb::Drift,
-                    &expected_configuration_path,
-                );
-            },
-            Err(error) => return error.into_output(CommandVerb::Drift),
-        };
-    let output_envelope = match execute_inner(request, &invocation_directory, recovery_command_line)
-    {
+    let reconciled_drift_preflight = match reconcile::reconcile_for_drift(
+        &invocation_directory,
+        |worktree_context, _, events| {
+            prepare_drift_execution(request, worktree_context, events, recovery_command_line)
+        },
+    ) {
+        Ok(Enrollment::Enrolled(reconciled_drift_preflight)) => reconciled_drift_preflight,
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => {
+            return OutputEnvelope::unconfigured(CommandVerb::Drift, &expected_configuration_path);
+        },
+        Err(error) => return error.into_output(CommandVerb::Drift),
+    };
+    let ReconciledDriftPreflight {
+        report: reconciliation_report,
+        worktree_context,
+        ledger,
+        observation,
+    } = reconciled_drift_preflight;
+    let repository_trunk = reconciliation_report.repository_trunk().clone();
+    let output_envelope = match observation.and_then(|prepared| {
+        execute_inner(
+            request,
+            &worktree_context,
+            &ledger,
+            prepared,
+            &repository_trunk,
+            recovery_command_line,
+        )
+    }) {
         Ok(Enrollment::Enrolled(report)) => OutputEnvelope::drift(report),
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
@@ -145,33 +177,24 @@ pub(crate) fn execute(
     output_envelope.with_alerts(reconciliation_report.alerts)
 }
 
-fn execute_inner(
+fn prepare_drift_execution(
     request: DriftRequest,
-    invocation_directory: &Path,
+    worktree_context: &WorktreeContext,
+    events: &[JournalEvent],
     recovery_command_line: &RecoveryCommandLine,
-) -> Result<Enrollment<DriftReport>, DriftExecutionError> {
-    let initial_snapshot = match Ledger::read_for_edit_check(invocation_directory)? {
-        Enrollment::Enrolled(initial_snapshot) => initial_snapshot,
-        Enrollment::Unconfigured {
-            expected_configuration_path,
-        } => {
-            return Ok(Enrollment::Unconfigured {
-                expected_configuration_path,
-            });
-        },
-    };
-    let worktree_context = initial_snapshot.worktree_context().clone();
-    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
-    let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
+) -> Result<PreparedDriftExecution, DriftExecutionError> {
+    let resolved_edit_authorization = ledger::resolve_identity(worktree_context)?;
     let identity_validation = CoordinationIdentityValidationContext::for_user_command(
         resolved_edit_authorization,
-        &worktree_context,
+        worktree_context,
         recovery_command_line,
     );
-    let Some(worktree_id) = comparable_worktree(&worktree_context, &request)? else {
-        return Ok(nothing_to_compare(request.comparison));
+    let Some(worktree_id) = comparable_worktree(worktree_context, &request)? else {
+        return Ok(PreparedDriftExecution::NothingToCompare {
+            comparison: request.comparison,
+        });
     };
-    let initial_reservations = RetainedReservationSet::replay(initial_snapshot.events())?;
+    let initial_reservations = RetainedReservationSet::replay(events)?;
     let acting_identity =
         validated_drift_identity(worktree_id, &initial_reservations, &identity_validation)?;
     let initial_subjects = request
@@ -186,6 +209,60 @@ fn execute_inner(
         &initial_subjects.reporting,
         &cache_path,
     )?;
+    Ok(PreparedDriftExecution::Observed(Box::new(
+        ObservedDriftExecution {
+            initial_reservations,
+            initial_subjects,
+            cache_path,
+            observation,
+            acting_identity,
+            resolved_edit_authorization,
+            identity_validation,
+        },
+    )))
+}
+
+fn execute_inner(
+    request: DriftRequest,
+    worktree_context: &WorktreeContext,
+    ledger: &Ledger,
+    prepared: PreparedDriftExecution,
+    repository_trunk: &RepositoryTrunk,
+    recovery_command_line: &RecoveryCommandLine,
+) -> Result<Enrollment<DriftReport>, DriftExecutionError> {
+    let (
+        initial_reservations,
+        initial_subjects,
+        cache_path,
+        observation,
+        acting_identity,
+        resolved_edit_authorization,
+        identity_validation,
+    ) = match prepared {
+        PreparedDriftExecution::NothingToCompare { comparison } => {
+            return Ok(nothing_to_compare(comparison));
+        },
+        PreparedDriftExecution::Observed(observed) => {
+            let ObservedDriftExecution {
+                initial_reservations,
+                initial_subjects,
+                cache_path,
+                observation,
+                acting_identity,
+                resolved_edit_authorization,
+                identity_validation,
+            } = *observed;
+            (
+                initial_reservations,
+                initial_subjects,
+                cache_path,
+                observation,
+                acting_identity,
+                resolved_edit_authorization,
+                identity_validation,
+            )
+        },
+    };
     if !observation
         .changes
         .has_changes_for(&initial_subjects.reporting)
@@ -222,7 +299,7 @@ fn execute_inner(
     )?;
     let mutation_context = DriftMutationContext {
         request,
-        ledger: &ledger,
+        ledger,
         acting_identity,
         resolved_edit_authorization,
         identity_validation,
@@ -235,6 +312,7 @@ fn execute_inner(
         worktree_context.repository_root(),
         &initial_reservations,
         &observation.changes,
+        repository_trunk,
         &mut report,
     )?;
     if matches!(
@@ -302,9 +380,7 @@ fn comparable_worktree(
             },
             Err(error) => return Err(DriftExecutionError::Ledger(error)),
         };
-    if git::rewrite_in_progress(worktree_context.repository_root())
-        .map_err(DriftExecutionError::Git)?
-    {
+    if git::rewrite_in_progress(worktree_context.administrative_directory()) {
         return Ok(None);
     }
     Ok(Some(worktree_id))
@@ -507,7 +583,6 @@ enum DriftExecutionError {
     Replay(ReservationReplayError),
     Selection(DriftSelectionError),
     Fingerprint(DriftFingerprintError),
-    Git(GitError),
     PathCase(PathCaseError),
     Transaction(LedgerTransactionError),
     Claim(ClaimError),
@@ -531,7 +606,6 @@ impl Display for DriftExecutionError {
             Self::Replay(error) => error.fmt(formatter),
             Self::Selection(error) => error.fmt(formatter),
             Self::Fingerprint(error) => error.fmt(formatter),
-            Self::Git(error) => error.fmt(formatter),
             Self::PathCase(error) => error.fmt(formatter),
             Self::Transaction(error) => error.fmt(formatter),
             Self::Claim(error) => error.fmt(formatter),

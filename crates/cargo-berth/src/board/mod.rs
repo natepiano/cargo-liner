@@ -107,6 +107,16 @@ pub(crate) struct BoardModel {
     git_cost:                           BoardGitCost,
 }
 
+/// Exclusive live-board membership for one drift-reported incursion incident.
+pub(crate) enum LiveIncursionMembership {
+    /// The incident remains outstanding and still requires feedback.
+    Outstanding,
+    /// A recorded answer resolved the incident before feedback rendering.
+    Recorded,
+    /// The board omitted the incident or represented it in both sections.
+    Unverifiable,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct BoardJournalPosition {
     generation:          ProjectionGeneration,
@@ -526,6 +536,28 @@ struct BoardGitCost {
 }
 
 impl BoardModel {
+    /// Classify one incident across the board's mutually exclusive live sections.
+    pub(crate) fn live_incursion_membership(
+        &self,
+        incident_id: IncursionIncidentId,
+    ) -> LiveIncursionMembership {
+        let is_outstanding = self
+            .outstanding_incursions
+            .entries
+            .iter()
+            .any(|incident| incident.incident_id == incident_id);
+        let is_recorded = self
+            .recorded_incursion_answers
+            .entries
+            .iter()
+            .any(|incident| incident.incident_id == incident_id);
+        match (is_outstanding, is_recorded) {
+            (true, false) => LiveIncursionMembership::Outstanding,
+            (false, true) => LiveIncursionMembership::Recorded,
+            (false, false) | (true, true) => LiveIncursionMembership::Unverifiable,
+        }
+    }
+
     /// Project the reconciled repository observation and its exact locked journal replay.
     #[allow(
         clippy::too_many_lines,

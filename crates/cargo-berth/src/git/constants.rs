@@ -23,6 +23,8 @@ pub(super) const GIT_REFLOG_COMMAND: &str = "reflog";
 pub(super) const GIT_REV_LIST_COMMAND: &str = "rev-list";
 /// The `rev-parse` subcommand.
 pub(super) const GIT_REV_PARSE_COMMAND: &str = "rev-parse";
+/// The `symbolic-ref` subcommand.
+pub(super) const GIT_SYMBOLIC_REF_COMMAND: &str = "symbolic-ref";
 /// The `update-ref` subcommand.
 pub(super) const GIT_UPDATE_REF_COMMAND: &str = "update-ref";
 /// The `worktree` subcommand.
@@ -31,6 +33,9 @@ pub(super) const GIT_WORKTREE_COMMAND: &str = "worktree";
 // flags
 /// Ask `cat-file` to classify one object per input line.
 pub(super) const GIT_BATCH_CHECK_ARG: &str = "--batch-check";
+/// Ask `cat-file` for the resolved object id and object type of each input expression.
+pub(super) const GIT_BATCH_CHECK_OBJECT_FORMAT_ARG: &str =
+    "--batch-check=%(objectname) %(objecttype)";
 /// Mark commits that have a patch-equivalent on the other side of a symmetric difference.
 pub(super) const GIT_CHERRY_MARK_ARG: &str = "--cherry-mark";
 /// Ask `rev-parse` for the shared administrative directory.
@@ -71,7 +76,6 @@ pub(super) const GIT_NO_RENAMES_ARG: &str = "--no-renames";
 /// Terminate each porcelain field with NUL so worktree paths remain verbatim.
 pub(super) const GIT_NUL_TERMINATED_ARG: &str = "-z";
 /// Find one common ancestor across every supplied commit.
-pub(super) const GIT_OCTOPUS_ARG: &str = "--octopus";
 /// Print each selected commit with its direct parents.
 pub(super) const GIT_PARENTS_ARG: &str = "--parents";
 /// Ask `rev-parse` to resolve its path result to an absolute path.
@@ -102,10 +106,18 @@ pub(super) const GIT_WRITE_TREE_ARG: &str = "--write-tree";
 pub(super) const GIT_WORKTREE_LIST_ARG: &str = "list";
 
 // output
+/// Suffix reported by `cat-file --batch-check` for an ambiguous object expression.
+pub(super) const GIT_AMBIGUOUS_OBJECT_SUFFIX: &str = " ambiguous";
+/// Object type required by commit-resolution queries.
+pub(super) const GIT_COMMIT_OBJECT_TYPE: &str = "commit";
 /// Prefix `--cherry-mark` gives a commit that has a patch-equivalent on the other side.
 pub(super) const GIT_EQUIVALENT_COMMIT_MARK: char = '=';
+/// Prefix `--left-right` gives a commit found only on the left side.
+pub(super) const GIT_LEFT_COMMIT_MARK: char = '<';
 /// Suffix reported by `cat-file --batch-check` for an unresolved object expression.
 pub(super) const GIT_MISSING_OBJECT_SUFFIX: &str = " missing";
+/// Prefix `--left-right` gives a commit found only on the right side.
+pub(super) const GIT_RIGHT_COMMIT_MARK: char = '>';
 
 // pathspecs
 /// Prefix that makes a repository-root-relative pathspec literal.

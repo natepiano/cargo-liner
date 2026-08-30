@@ -25,9 +25,11 @@ use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
+use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationSnapshot;
+use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::CoordinationRunMarkerRetirement;
@@ -62,6 +64,13 @@ struct ReleaseTransactionContext<'context> {
     trunk_branch:         &'context str,
     reservation_id:       ReservationId,
     invoking_worktree_id: WorktreeId,
+    lifecycle_admission:  ReleaseLifecycleAdmission,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ReleaseLifecycleAdmission {
+    ActiveCheckpointOnly,
+    AnyRetainedLifecycle,
 }
 
 /// Execute the release lifecycle operation and map every failure to the public envelope.
@@ -95,7 +104,17 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             .with_alerts(reconciliation_report.alerts);
         }
     }
-    let output_envelope = match execute_release(release_request) {
+    let release_result = match execute_release(
+        release_request,
+        ReleaseLifecycleAdmission::ActiveCheckpointOnly,
+    ) {
+        Err(ReleaseError::RequiresReconcileFirst) => execute_release(
+            release_request,
+            ReleaseLifecycleAdmission::AnyRetainedLifecycle,
+        ),
+        result => result,
+    };
+    let output_envelope = match release_result {
         Ok(Enrollment::Enrolled(release_payload)) => {
             if matches!(&release_payload, ReleasePayload::Released { .. }) {
                 reconciliation_report
@@ -107,23 +126,28 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
         }) => OutputEnvelope::unconfigured(CommandVerb::Release, &expected_configuration_path),
-        Err(ReleaseError::UnknownReservation(reservation_id)) => OutputEnvelope::invalid_input(
+        Err(error) => release_error_output(error),
+    };
+    output_envelope.with_alerts(reconciliation_report.alerts)
+}
+
+fn release_error_output(error: ReleaseError) -> OutputEnvelope {
+    match error {
+        ReleaseError::UnknownReservation(reservation_id) => OutputEnvelope::invalid_input(
             CommandVerb::Release,
             &format!("reservation {reservation_id} does not exist"),
         ),
-        Err(ReleaseError::AlreadyReleased(reservation_id)) => OutputEnvelope::invalid_input(
+        ReleaseError::AlreadyReleased(reservation_id) => OutputEnvelope::invalid_input(
             CommandVerb::Release,
             &format!("reservation {reservation_id} already has a final disposition"),
         ),
-        Err(ReleaseError::ForeignActiveReservation(reservation_id)) => {
-            OutputEnvelope::invalid_input(
-                CommandVerb::Release,
-                &format!(
-                    "reservation {reservation_id} is active in another worktree and must be checkpointed from its holder"
-                ),
-            )
-        },
-        Err(ReleaseError::Transaction(error)) => match error {
+        ReleaseError::ForeignActiveReservation(reservation_id) => OutputEnvelope::invalid_input(
+            CommandVerb::Release,
+            &format!(
+                "reservation {reservation_id} is active in another worktree and must be checkpointed from its holder"
+            ),
+        ),
+        ReleaseError::Transaction(error) => match error {
             LedgerTransactionError::CorrectableInput(error) => {
                 OutputEnvelope::invalid_input(CommandVerb::Release, &error.to_string())
             },
@@ -134,26 +158,23 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
                 OutputEnvelope::ledger_error(CommandVerb::Release, &error)
             },
         },
-        Err(ReleaseError::Config(error)) => {
+        ReleaseError::Config(error) => {
             OutputEnvelope::ledger_error(CommandVerb::Release, &LedgerError::Config(error))
         },
-        Err(ReleaseError::Ledger(error)) => {
-            OutputEnvelope::ledger_error(CommandVerb::Release, &error)
-        },
-        Err(ReleaseError::ReservationReplay(error)) => {
+        ReleaseError::Ledger(error) => OutputEnvelope::ledger_error(CommandVerb::Release, &error),
+        ReleaseError::ReservationReplay(error) => {
             OutputEnvelope::replay_failure(CommandVerb::Release, &error)
         },
-        Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string()),
-    };
-    output_envelope.with_alerts(reconciliation_report.alerts)
+        error => OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string()),
+    }
 }
 
 fn execute_release(
     release_request: ReleaseRequest,
+    lifecycle_admission: ReleaseLifecycleAdmission,
 ) -> Result<Enrollment<ReleasePayload>, ReleaseError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
     let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
@@ -164,7 +185,20 @@ fn execute_release(
             });
         },
     };
-    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+    if lifecycle_admission == ReleaseLifecycleAdmission::ActiveCheckpointOnly {
+        let worktree_identity = ledger::worktree_identity(
+            worktree_context.administrative_directory(),
+            worktree_context.worktree_kind(),
+        )?;
+        sweep_current_marker_against_active_reservations(
+            &worktree_context,
+            &ledger,
+            worktree_identity.id,
+            CoordinationRunId::new(),
+        )?;
+    }
+    let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
     let outcome = ledger
         .transact_with_committed_action(
             journal_mutation_actor.worktree_id,
@@ -173,10 +207,11 @@ fn execute_release(
                 validate_release_transaction(
                     &state,
                     ReleaseTransactionContext {
-                        repository_root:      worktree_context.repository_root(),
-                        trunk_branch:         &berth_config.trunk,
-                        reservation_id:       release_request.reservation_id,
+                        repository_root: worktree_context.repository_root(),
+                        trunk_branch: &berth_config.trunk,
+                        reservation_id: release_request.reservation_id,
                         invoking_worktree_id: journal_mutation_actor.worktree_id,
+                        lifecycle_admission,
                     },
                 )
             },
@@ -204,6 +239,9 @@ fn execute_release(
         LedgerCommittedActionOutcome::Rejected(ReleaseRejection::ForeignActiveReservation) => Err(
             ReleaseError::ForeignActiveReservation(release_request.reservation_id),
         ),
+        LedgerCommittedActionOutcome::Rejected(ReleaseRejection::RequiresReconcileFirst) => {
+            Err(ReleaseError::RequiresReconcileFirst)
+        },
         LedgerCommittedActionOutcome::Rejected(ReleaseRejection::Replay(error)) => {
             Err(ReleaseError::ReservationReplay(error))
         },
@@ -212,6 +250,38 @@ fn execute_release(
         },
         LedgerCommittedActionOutcome::Rejected(ReleaseRejection::EdgeReplay(error)) => {
             Err(ReleaseError::EdgeReplay(error))
+        },
+    }
+}
+
+fn sweep_current_marker_against_active_reservations(
+    worktree_context: &WorktreeContext,
+    ledger: &Ledger,
+    worktree_id: WorktreeId,
+    coordination_run_id: CoordinationRunId,
+) -> Result<(), ReleaseError> {
+    let outcome = ledger.transact(worktree_id, coordination_run_id, |state| {
+        let result = RetainedReservationSet::replay(state.events())
+            .map_err(ReleaseError::ReservationReplay)
+            .and_then(|reservations| {
+                worktree_context
+                    .sweep_coordination_run_marker(|marker_run_id| {
+                        reservations.iter().any(|reservation| {
+                            matches!(
+                                reservation.lifecycle(),
+                                reservation::ReservationLifecycle::Active
+                            ) && reservation.actor().worktree == worktree_id
+                                && reservation.actor().run == marker_run_id
+                        })
+                    })
+                    .map_err(ReleaseError::Ledger)
+            });
+        TransactionValidation::Reject(result)
+    })?;
+    match outcome {
+        LedgerTransactionOutcome::Rejected(result) => result,
+        LedgerTransactionOutcome::Appended { .. } => {
+            Err(ReleaseError::UnexpectedMarkerSweepMutation)
         },
     }
 }
@@ -248,6 +318,11 @@ fn validate_release_transaction(
         Ok(evidence_state) => evidence_state,
         Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Replay(error)),
     };
+    if context.lifecycle_admission == ReleaseLifecycleAdmission::ActiveCheckpointOnly
+        && !matches!(&evidence_state, ReservationEvidenceState::Active { .. })
+    {
+        return CommittedActionValidation::Reject(ReleaseRejection::RequiresReconcileFirst);
+    }
     let release_append = match operation_for_state(
         context.repository_root,
         context.trunk_branch,
@@ -348,15 +423,13 @@ fn checkpoint_operation(
     if release_repository_context.holder_worktree == HolderWorktree::Different {
         return Err(ReleaseRejection::ForeignActiveReservation);
     }
-    let protected_tip = ProtectedReservationTip::from(
-        reservation::current_head(release_repository_context.repository_root)
-            .map_err(ReleaseRejection::Git)?,
-    );
-    let trunk_oid = reservation::current_trunk(
+    let checkpoint_commits = git::reservation_checkpoint_commits(
         release_repository_context.repository_root,
         release_repository_context.trunk_branch,
     )
     .map_err(ReleaseRejection::Git)?;
+    let protected_tip = ProtectedReservationTip::from(checkpoint_commits.protected_tip);
+    let trunk_oid = checkpoint_commits.trunk;
     Ok(ReleaseAppend::new(
         JournalOperation::Checkpoint {
             reservation_id,
@@ -770,6 +843,7 @@ enum ReleaseRejection {
     UnknownReservation,
     AlreadyReleased,
     ForeignActiveReservation,
+    RequiresReconcileFirst,
     Replay(ReservationReplayError),
     Git(GitError),
     EdgeReplay(EdgeReplayError),
@@ -786,6 +860,8 @@ enum ReleaseError {
     UnknownReservation(ReservationId),
     AlreadyReleased(ReservationId),
     ForeignActiveReservation(ReservationId),
+    RequiresReconcileFirst,
+    UnexpectedMarkerSweepMutation,
     EdgeReplay(EdgeReplayError),
 }
 
@@ -813,6 +889,12 @@ impl Display for ReleaseError {
                 formatter,
                 "reservation {reservation_id} is active in another worktree"
             ),
+            Self::RequiresReconcileFirst => {
+                formatter.write_str("reservation lifecycle requires reconciliation")
+            },
+            Self::UnexpectedMarkerSweepMutation => {
+                formatter.write_str("marker sweep unexpectedly appended a journal event")
+            },
             Self::EdgeReplay(error) => write!(formatter, "ordering replay failed: {error}"),
         }
     }

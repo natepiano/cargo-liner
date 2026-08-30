@@ -455,14 +455,42 @@ fn observe_phase_history(
             HashMap::new(),
         ));
     }
-    let target = git::head_object_id(repository_root).map_err(DriftFingerprintError::from)?;
-    let reachability = git::reachability_to_target(repository_root, anchors, &target)
-        .map_err(DriftFingerprintError::from)?;
+    let (target, reachability) = match git::head_commit_reachability(repository_root, anchors)
+        .map_err(DriftFingerprintError::from)?
+    {
+        git::CommitTargetReachability::Resolved { target, candidates } => (target, candidates),
+        git::CommitTargetReachability::Missing => {
+            return Err(DriftFingerprintError::MalformedGitOutput(
+                "HEAD did not resolve to an object".to_owned(),
+            ));
+        },
+        git::CommitTargetReachability::Ambiguous => {
+            return Err(DriftFingerprintError::MalformedGitOutput(
+                "HEAD resolved ambiguously".to_owned(),
+            ));
+        },
+        git::CommitTargetReachability::WrongType { object_type } => {
+            return Err(DriftFingerprintError::MalformedGitOutput(format!(
+                "HEAD resolved to {object_type}, not a commit"
+            )));
+        },
+    };
     let anchor_states = anchors
         .iter()
         .cloned()
         .zip(reachability)
-        .map(|(anchor, reachability)| (anchor, reachability.into()))
+        .map(|(anchor, reachability)| {
+            let reachability = match reachability {
+                git::CommitCandidateReachability::Ancestor => git::Reachability::Ancestor,
+                git::CommitCandidateReachability::NotAncestor => git::Reachability::NotAncestor,
+                git::CommitCandidateReachability::Missing
+                | git::CommitCandidateReachability::Ambiguous
+                | git::CommitCandidateReachability::WrongType { .. } => {
+                    git::Reachability::ObjectUnknown
+                },
+            };
+            (anchor, reachability.into())
+        })
         .collect::<HashMap<_, _>>();
     let comparable_anchors = anchors
         .iter()

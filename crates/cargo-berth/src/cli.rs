@@ -79,6 +79,7 @@ use crate::ledger::WorkPlanReference;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::PostCommitRendering;
+use crate::output::PostToolUseRendering;
 use crate::recovery;
 use crate::recovery::IncursionAnswerScope;
 use crate::recovery::RenewRequest;
@@ -90,6 +91,8 @@ use crate::reservation::OrphanRetirementReason;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::ScopeKind;
+use crate::session;
+use crate::session::CurrentProcessHarnessSessionSelection;
 use crate::verb::board;
 use crate::verb::board::BoardDisplayOutcome;
 use crate::verb::board::BoardOutputSelection;
@@ -149,6 +152,12 @@ const RETIRE_ORPHAN_ARGUMENT_ID: &str = "retire_orphan";
 const RUN_ARGUMENT: &str = "run";
 const RUN_VALUE_NAME: &str = "COORDINATION_RUN_ID";
 const POST_COMMIT_HOOK_ENVIRONMENT: &str = "CARGO_BERTH_POST_COMMIT";
+const POST_TOOL_USE_NO_FEEDBACK_EXIT_CODE: u8 = 20;
+const POST_TOOL_USE_FEEDBACK_EXIT_CODE: u8 = 21;
+const POST_TOOL_USE_LIVE_BOARD_REQUIRED_EXIT_CODE: u8 = 22;
+const POST_TOOL_USE_PAYLOAD_ARGUMENT: &str = "post-tool-use-payload";
+const INVALID_POST_TOOL_USE_PAYLOAD_EXIT_CODE: u8 = 2;
+const UNAVAILABLE_POST_TOOL_USE_WORKING_DIRECTORY_EXIT_CODE: u8 = 3;
 const TRUNK_OID_VALUE_NAME: &str = "TRUNK_OID";
 const WHY_ARGUMENT: &str = "why";
 const WHY_VALUE_NAME: &str = "WHY";
@@ -234,10 +243,13 @@ struct BoardArguments {
         value_name = RESERVATION_VALUE_NAME,
         requires = JSON_ARGUMENT
     )]
-    reservation: Option<ReservationId>,
+    reservation:           Option<ReservationId>,
+    /// Read and apply one raw `PostToolUse` payload before assembling the board.
+    #[arg(long = POST_TOOL_USE_PAYLOAD_ARGUMENT, hide = true, requires = JSON_ARGUMENT)]
+    post_tool_use_payload: bool,
     /// The output representation requested for this command.
     #[command(flatten)]
-    json_output: JsonOutput,
+    json_output:           JsonOutput,
 }
 
 /// Coordination identity management commands.
@@ -492,13 +504,16 @@ struct ReservationArguments {
 struct DriftArguments {
     /// Name the active reservation to widen or receive an incursion record.
     #[arg(long = RESERVATION_ARGUMENT, value_name = RESERVATION_VALUE_NAME)]
-    reservation: Option<ReservationId>,
+    reservation:           Option<ReservationId>,
     /// Run the complete four-command comparison against the protected phase-start HEAD.
     #[arg(long = FULL_ARGUMENT)]
-    full:        bool,
+    full:                  bool,
+    /// Read and apply one raw `PostToolUse` payload before running drift.
+    #[arg(long = POST_TOOL_USE_PAYLOAD_ARGUMENT, hide = true, requires = JSON_ARGUMENT)]
+    post_tool_use_payload: bool,
     /// The output representation requested for this command.
     #[command(flatten)]
-    json_output: JsonOutput,
+    json_output:           JsonOutput,
 }
 
 /// Arguments for the `sequence` verb.
@@ -621,10 +636,30 @@ impl Cli {
             },
             command => command,
         };
+        let post_tool_use_invocation = match prepare_post_tool_use_invocation(&command) {
+            Ok(invocation) => invocation,
+            Err(error) => return error.exit_code(),
+        };
         let output_format = command.output_format();
         let recovery_command_line = RecoveryCommandLine::current_process();
         match command.execute(output_format, &recovery_command_line) {
             CommandExecution::Response(output_envelope) => {
+                match post_tool_use_invocation {
+                    PostToolUseInvocation::NotRequested => {},
+                    PostToolUseInvocation::Drift => {
+                        return emit_post_tool_use_rendering(
+                            output_envelope.post_tool_use_rendering(),
+                            &output_envelope,
+                        );
+                    },
+                    PostToolUseInvocation::LiveIncursionBoard { drift_envelope } => {
+                        return emit_post_tool_use_rendering(
+                            drift_envelope
+                                .post_tool_use_rendering_with_live_board(&output_envelope),
+                            &output_envelope,
+                        );
+                    },
+                }
                 let berth_exit = output_envelope.exit_code;
                 match command_response_rendering(output_format, post_commit_hook_request()) {
                     CommandResponseRendering::OutputEnvelope(output_format) => {
@@ -939,7 +974,12 @@ impl DriftArguments {
         } else {
             DriftComparisonChoice::CheapDelta
         };
-        let reservation = match post_commit_hook_request() {
+        let post_commit_hook_request = if self.post_tool_use_payload {
+            PostCommitHookRequest::Requested
+        } else {
+            post_commit_hook_request()
+        };
+        let reservation = match post_commit_hook_request {
             PostCommitHookRequest::Requested => {
                 DriftReservationSelection::EveryActiveForPostCommit {
                     widening: self.reservation.map_or(
@@ -958,6 +998,146 @@ impl DriftArguments {
             reservation,
         }
     }
+}
+
+enum PostToolUseWorkingDirectory {
+    CurrentProcess,
+    Supplied(PathBuf),
+}
+
+struct PostToolUseDriftInvocation {
+    harness_session_id: String,
+    working_directory:  PostToolUseWorkingDirectory,
+}
+
+enum PostToolUseInvocation {
+    NotRequested,
+    Drift,
+    LiveIncursionBoard { drift_envelope: Box<OutputEnvelope> },
+}
+
+#[derive(serde::Deserialize)]
+struct PostToolUseLiveIncursionBoardInput {
+    post_tool_use_payload: serde_json::Value,
+    drift_envelope:        Box<OutputEnvelope>,
+}
+
+enum PostToolUseDriftInvocationError {
+    InvalidPayload,
+    WorkingDirectoryUnavailable,
+}
+
+impl PostToolUseDriftInvocationError {
+    fn exit_code(self) -> ExitCode {
+        match self {
+            Self::InvalidPayload => ExitCode::from(INVALID_POST_TOOL_USE_PAYLOAD_EXIT_CODE),
+            Self::WorkingDirectoryUnavailable => {
+                ExitCode::from(UNAVAILABLE_POST_TOOL_USE_WORKING_DIRECTORY_EXIT_CODE)
+            },
+        }
+    }
+}
+
+impl PostToolUseDriftInvocation {
+    fn from_value(value: &serde_json::Value) -> Result<Self, PostToolUseDriftInvocationError> {
+        let object = value
+            .as_object()
+            .ok_or(PostToolUseDriftInvocationError::InvalidPayload)?;
+        if object.get("tool_name").and_then(serde_json::Value::as_str) != Some("Bash") {
+            return Err(PostToolUseDriftInvocationError::InvalidPayload);
+        }
+        let harness_session_id = object
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|session_id| !session_id.is_empty())
+            .ok_or(PostToolUseDriftInvocationError::InvalidPayload)?
+            .to_owned();
+        let working_directory = object
+            .get("cwd")
+            .and_then(serde_json::Value::as_str)
+            .filter(|working_directory| !working_directory.is_empty())
+            .map_or(
+                PostToolUseWorkingDirectory::CurrentProcess,
+                |working_directory| {
+                    PostToolUseWorkingDirectory::Supplied(PathBuf::from(working_directory))
+                },
+            );
+        Ok(Self {
+            harness_session_id,
+            working_directory,
+        })
+    }
+
+    fn apply(self) -> Result<(), PostToolUseDriftInvocationError> {
+        match self.working_directory {
+            PostToolUseWorkingDirectory::CurrentProcess => {},
+            PostToolUseWorkingDirectory::Supplied(working_directory) => {
+                env::set_current_dir(working_directory)
+                    .map_err(|_| PostToolUseDriftInvocationError::WorkingDirectoryUnavailable)?;
+            },
+        }
+        match session::select_current_process_harness_session(self.harness_session_id) {
+            CurrentProcessHarnessSessionSelection::Selected => Ok(()),
+            CurrentProcessHarnessSessionSelection::AlreadySelected => {
+                Err(PostToolUseDriftInvocationError::InvalidPayload)
+            },
+        }
+    }
+}
+
+fn prepare_post_tool_use_invocation(
+    command: &Command,
+) -> Result<PostToolUseInvocation, PostToolUseDriftInvocationError> {
+    let requested = match command {
+        Command::Drift(DriftArguments {
+            post_tool_use_payload: true,
+            ..
+        }) => PostToolUseInvocationKind::Drift,
+        Command::Board(BoardArguments {
+            post_tool_use_payload: true,
+            ..
+        }) => PostToolUseInvocationKind::LiveIncursionBoard,
+        Command::Init(_)
+        | Command::Board(_)
+        | Command::Check(_)
+        | Command::Claim(_)
+        | Command::Drift(_)
+        | Command::Release(_)
+        | Command::Sequence(_)
+        | Command::Integrate(_)
+        | Command::Resolve(_)
+        | Command::Renew(_)
+        | Command::Identity(_)
+        | Command::ReferenceTransaction(_)
+        | Command::RefreshManagedHookAfterTrunkDeletion(_) => {
+            return Ok(PostToolUseInvocation::NotRequested);
+        },
+    };
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|_| PostToolUseDriftInvocationError::InvalidPayload)?;
+    match requested {
+        PostToolUseInvocationKind::Drift => {
+            let value = serde_json::from_str::<serde_json::Value>(&input)
+                .map_err(|_| PostToolUseDriftInvocationError::InvalidPayload)?;
+            PostToolUseDriftInvocation::from_value(&value)?.apply()?;
+            Ok(PostToolUseInvocation::Drift)
+        },
+        PostToolUseInvocationKind::LiveIncursionBoard => {
+            let board_input = serde_json::from_str::<PostToolUseLiveIncursionBoardInput>(&input)
+                .map_err(|_| PostToolUseDriftInvocationError::InvalidPayload)?;
+            PostToolUseDriftInvocation::from_value(&board_input.post_tool_use_payload)?.apply()?;
+            Ok(PostToolUseInvocation::LiveIncursionBoard {
+                drift_envelope: board_input.drift_envelope,
+            })
+        },
+    }
+}
+
+enum PostToolUseInvocationKind {
+    Drift,
+    LiveIncursionBoard,
 }
 
 impl SequenceArguments {
@@ -1650,6 +1830,33 @@ fn emit_post_commit_response(output_envelope: &OutputEnvelope) {
         PostCommitRendering::Silent => {},
         PostCommitRendering::Warning(warning) => {
             let _ = writeln!(std::io::stderr().lock(), "{warning}");
+        },
+    }
+}
+
+fn emit_post_tool_use_rendering(
+    rendering: PostToolUseRendering,
+    source_envelope: &OutputEnvelope,
+) -> ExitCode {
+    match rendering {
+        PostToolUseRendering::NoFeedback => ExitCode::from(POST_TOOL_USE_NO_FEEDBACK_EXIT_CODE),
+        PostToolUseRendering::Feedback { summary, detail } => {
+            write_line(
+                serde_json::json!({
+                    "continue": true,
+                    "systemMessage": summary,
+                    "hookSpecificOutput": {
+                        "hookEventName": "PostToolUse",
+                        "additionalContext": detail,
+                    },
+                })
+                .to_string(),
+            );
+            ExitCode::from(POST_TOOL_USE_FEEDBACK_EXIT_CODE)
+        },
+        PostToolUseRendering::RequiresLiveIncursionBoard => {
+            emit_response(CliOutputFormat::Json, source_envelope);
+            ExitCode::from(POST_TOOL_USE_LIVE_BOARD_REQUIRED_EXIT_CODE)
         },
     }
 }

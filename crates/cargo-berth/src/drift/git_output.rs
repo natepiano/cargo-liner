@@ -36,6 +36,27 @@ pub(super) enum FullDriftObservationActivity {
     WorkingTreeStatus,
 }
 
+/// One independent read used to attribute committed incursion paths.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum IncursionAttributionActivity {
+    /// Read commits and selected paths from the target history.
+    PathLog,
+    /// Read phase-range membership from one ancestry graph.
+    CommitGraph,
+    /// Classify target commits against the independently resolved trunk basis.
+    OriginMembership,
+}
+
+impl Display for IncursionAttributionActivity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PathLog => "read incursion path history",
+            Self::CommitGraph => "read incursion ancestry",
+            Self::OriginMembership => "classify incursion commit origin",
+        })
+    }
+}
+
 impl Display for FullDriftObservationActivity {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -98,6 +119,9 @@ pub(super) enum DriftFingerprintError {
     WorkerPanicked {
         activity: FullDriftObservationActivity,
     },
+    IncursionAttributionWorkerPanicked {
+        activity: IncursionAttributionActivity,
+    },
 }
 
 impl Display for DriftFingerprintError {
@@ -134,6 +158,12 @@ impl Display for DriftFingerprintError {
                 write!(
                     formatter,
                     "drift observation worker panicked while attempting to {activity}"
+                )
+            },
+            Self::IncursionAttributionWorkerPanicked { activity } => {
+                write!(
+                    formatter,
+                    "drift attribution worker panicked while attempting to {activity}"
                 )
             },
         }

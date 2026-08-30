@@ -75,6 +75,65 @@ fn init_leaves_an_edited_configuration_untouched() {
 }
 
 #[test]
+fn claim_resolves_reftable_head_and_trunk_references() {
+    let repository = tempdir().expect("temporary repository should exist");
+    git(
+        repository.path(),
+        &[
+            "init",
+            "--quiet",
+            "--initial-branch",
+            "main",
+            "--ref-format=reftable",
+        ],
+    );
+    git(
+        repository.path(),
+        &["config", "user.email", "test@example.invalid"],
+    );
+    git(repository.path(), &["config", "user.name", "Berth Test"]);
+    fs::write(repository.path().join("README.md"), "reftable\n").expect("base file should write");
+    git(repository.path(), &["add", "README.md"]);
+    git(repository.path(), &["commit", "--quiet", "-m", "initial"]);
+    assert!(
+        run_berth(repository.path(), ["init", "--json"])
+            .status
+            .success()
+    );
+    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "configure berth",
+        ],
+    );
+
+    let claimed = run_berth(
+        repository.path(),
+        [
+            "claim",
+            "file:README.md",
+            "--run",
+            MAIN_COORDINATION_RUN_ID,
+            "--json",
+        ],
+    );
+
+    assert!(
+        claimed.status.success(),
+        "reftable claim failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&claimed.stdout),
+        String::from_utf8_lossy(&claimed.stderr),
+    );
+    assert_eq!(json_output(&claimed)["status"], "claimed");
+}
+
+#[test]
 fn init_from_a_subdirectory_writes_one_configuration_at_repository_root() {
     let repository = scratch_repository();
     let subdirectory = repository.path().join("crates").join("nested");

@@ -50,8 +50,17 @@ if [ "$1" = "--no-optional-locks" ]; then
         printf '%s\n' "$command_line" >> "$CARGO_BERTH_TEST_GIT_TRACE"
     )
 fi
-if [ "$2" = "merge-base" ] && { [ "$CARGO_BERTH_TEST_UNAVAILABLE_TARGET" = "*" ] || { [ -n "$CARGO_BERTH_TEST_UNAVAILABLE_TARGET" ] && [ "$4" = "$CARGO_BERTH_TEST_UNAVAILABLE_TARGET" ]; }; }; then
-    exit 2
+if { [ "$2" = "merge-tree" ] || { [ "$2" = "rev-list" ] && [ "$3" = "--cherry-mark" ]; }; } \
+    && [ -n "$CARGO_BERTH_TEST_UNAVAILABLE_TARGET" ]; then
+    if [ "$CARGO_BERTH_TEST_UNAVAILABLE_TARGET" = "*" ]; then
+        exit 2
+    fi
+    for argument in "$@"; do
+        case "$argument" in
+            --merge-base=*) ;;
+            *"$CARGO_BERTH_TEST_UNAVAILABLE_TARGET") exit 2 ;;
+        esac
+    done
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
@@ -688,7 +697,9 @@ fn unavailable_successor_comparison_is_retried_instead_of_cached() {
             fixture.repository.path(),
             "successor_scoped_patch_comparison_attempted"
         ),
-        1
+        1,
+        "unavailable successor argv: {:?}",
+        git_trace(&unavailable),
     );
     assert_eq!(
         journal_operation_count(
@@ -1504,15 +1515,22 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
     );
     let worktrees = tempdir().expect("worktree parent should exist");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
+    let predecessor_worktrees = (0..predecessor_count)
+        .map(|predecessor_index| {
+            let predecessor_branch = format!("predecessor-{predecessor_index}");
+            let predecessor_root =
+                add_worktree(repository.path(), worktrees.path(), &predecessor_branch);
+            (predecessor_branch, predecessor_root)
+        })
+        .collect::<Vec<_>>();
 
-    for predecessor_index in 0..predecessor_count {
-        let predecessor_branch = format!("predecessor-{predecessor_index}");
-        let predecessor_root =
-            add_worktree(repository.path(), worktrees.path(), &predecessor_branch);
+    for (predecessor_index, (predecessor_branch, predecessor_root)) in
+        predecessor_worktrees.iter().enumerate()
+    {
         let predecessor_path = format!("predecessors/predecessor-{predecessor_index}.rs");
         let predecessor_run = uuid::Uuid::now_v7().to_string();
         let predecessor = claim(
-            &predecessor_root,
+            predecessor_root,
             &format!("file:{predecessor_path}"),
             &predecessor_run,
         );
@@ -1537,9 +1555,9 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
             format!("pub fn protected_predecessor_{predecessor_index}() {{}}\n"),
         )
         .expect("predecessor source should write");
-        git(&predecessor_root, &["add", &predecessor_path]);
+        git(predecessor_root, &["add", &predecessor_path]);
         git(
-            &predecessor_root,
+            predecessor_root,
             &[
                 "commit",
                 "--quiet",
@@ -1548,7 +1566,7 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
             ],
         );
         assert!(
-            run_berth(&predecessor_root, &["release", &predecessor_id, "--json"])
+            run_berth(predecessor_root, &["release", &predecessor_id, "--json"])
                 .status
                 .success()
         );
@@ -1559,7 +1577,8 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
                 "core.hooksPath=/dev/null",
                 "merge",
                 "--quiet",
-                &predecessor_branch,
+                "--no-ff",
+                predecessor_branch.as_str(),
             ],
         );
     }
@@ -1980,7 +1999,7 @@ fn git_trace(traced: &TracedBerth) -> Vec<String> {
 fn scoped_patch_comparison_count(traced: &TracedBerth) -> usize {
     git_trace(traced)
         .iter()
-        .filter(|line| line.starts_with("merge-base "))
+        .filter(|line| line.starts_with("merge-tree "))
         .count()
 }
 
@@ -1992,9 +2011,9 @@ fn scoped_patch_comparisons_for_target(
     git_trace(traced)
         .iter()
         .filter(|line| {
-            line.starts_with("merge-base ")
-                && line.contains(phase_start_head)
-                && line.ends_with(target)
+            line.starts_with("merge-tree ")
+                && line.contains(&format!("--merge-base={phase_start_head}"))
+                && line.split_whitespace().any(|argument| argument == target)
         })
         .count()
 }

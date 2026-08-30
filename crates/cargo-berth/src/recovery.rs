@@ -107,6 +107,10 @@ pub(crate) struct RenewRequest {
 
 /// Execute one user-confirmed recovery decision.
 pub(crate) fn resolve(resolve_request: ResolveRequest) -> OutputEnvelope {
+    resolve_reservation(resolve_request)
+}
+
+fn resolve_reservation(resolve_request: ResolveRequest) -> OutputEnvelope {
     let resolved_reservation_id = resolve_request.reservation_id;
     let invocation_directory = match std::env::current_dir() {
         Ok(invocation_directory) => invocation_directory,
@@ -218,7 +222,7 @@ fn execute_every_incursion_resolution(
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
     let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
-    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let outcome = ledger.transact_reconciliation(
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,
@@ -275,7 +279,7 @@ fn execute_one_incursion_resolution(
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
     let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
-    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let outcome = ledger.transact(
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,
@@ -377,7 +381,7 @@ fn execute_reservation_resolution(
         },
     };
     let current_worktree_root = canonical_root(&worktree_context)?;
-    let ledger = Ledger::open(repository_root)?;
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let outcome = ledger
         .transact_with_committed_action(
             journal_mutation_actor.worktree_id,
@@ -493,7 +497,7 @@ fn execute_renewal(renew_request: RenewRequest) -> Result<(), RecoveryError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
     let journal_mutation_actor = ledger::resolve_identity(&worktree_context)?;
-    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let outcome = ledger.transact(
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,

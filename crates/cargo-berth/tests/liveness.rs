@@ -612,6 +612,51 @@ fn reconciliation_repairs_a_retention_ref_after_the_checkpoint_append_survives_f
 }
 
 #[test]
+fn active_checkpoint_release_reconciles_outstanding_retention_refs() {
+    let repository = initialized_repository();
+    git(
+        repository.path(),
+        &["switch", "--quiet", "-c", "release-reconcile"],
+    );
+    commit_file(repository.path(), "retained", "work\n", "retained work");
+    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let first_claim = run_berth(
+        repository.path(),
+        &["claim", "file:retained", "--run", FIRST_RUN, "--json"],
+    );
+    let first_reservation_id = reservation_id(&first_claim);
+    assert!(
+        run_berth(
+            repository.path(),
+            &["release", &first_reservation_id, "--json"]
+        )
+        .status
+        .success()
+    );
+    let first_retention_ref = format!("refs/cargo-berth/reservations/{first_reservation_id}");
+    git(
+        repository.path(),
+        &["update-ref", "-d", &first_retention_ref],
+    );
+
+    let active_claim = run_berth(
+        repository.path(),
+        &["claim", "file:active", "--run", SECOND_RUN, "--json"],
+    );
+    let active_reservation_id = reservation_id(&active_claim);
+    let active_release = run_berth(
+        repository.path(),
+        &["release", &active_reservation_id, "--json"],
+    );
+
+    assert!(active_release.status.success());
+    assert_eq!(
+        git_stdout(repository.path(), &["rev-parse", &first_retention_ref]),
+        protected_tip
+    );
+}
+
+#[test]
 fn terminal_release_omits_the_orphan_alert_it_resolves() {
     let repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");

@@ -7,25 +7,27 @@ and the evidence that produced it.
 
 `config.rs:158` parses `maximum_reservations` as an unrestricted `u32` and
 `ParsedConfigValues::finish` applies it with no upper bound. A predecessor's
-successor-equivalence cache and comparison-attempt history each retain at most
+`RetainedSuccessorScopedPatchTargetVerdicts` and
+`SuccessorScopedPatchTargetEvaluationSchedule` each retain at most
 `SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT = 512` entries
 (`reservation/constants.rs:9`), evicting oldest-first at
 `reservation/mod.rs:262-264` and `:330-332`. Nothing ties the two numbers
 together.
 
 Configure `maximum_reservations` above roughly 513 and a single predecessor can
-carry more live successor heads than its cache can retain. Verdicts for stable
-heads are then evicted and recomputed, and because the round-robin admits one
-cold comparison per reconciliation, the set of proven successors never closes:
-at least one edge keeps reporting `awaiting_successor_incorporation` on every
-pass. That is the conservative direction and never a false release, but at that
-configuration the permanent block Phase 4 exists to close reopens.
+carry more live successor heads than either retained structure can cover.
+Verdicts for stable heads are then evicted and recomputed, and because the
+round-robin admits one cold comparison per reconciliation, the set of proven
+successors never closes: at least one edge keeps reporting
+`awaiting_successor_incorporation` on every pass. That is the conservative
+direction and never a false release, but at that configuration the permanent
+block Phase 4 exists to close reopens.
 
 Unreachable at the shipped default of 128, which allows at most 127 successors
 per predecessor. The work is a validated configuration bound — reject or clamp a
 `maximum_reservations` the retention limit cannot serve, and say so in the config
-error — not a change to the successor cache, whose bound the Phase 4 Work Order
-required. `config.rs` owns it; no phase does.
+error — not a change to either retained structure, whose boundedness the Phase 4
+Work Order required. `config.rs` owns it; no phase does.
 
 Surfaced by the Phase 4 architect review and verified against the live tree.
 
@@ -119,23 +121,59 @@ contents, but still permits a complete shim to read a validator or invoke an
 engine from a different contract version.
 
 Stage and validate one immutable versioned bundle containing the `cargo-berth`
-binary, every registered shim, and every generated consumer artifact, including
-`generated/envelope_validation.jq` and `generated/status_payload_tables.py`.
-Nothing inside a published bundle is edited or removed in place.
+binary and the exact `~/.claude/scripts/berth/` tree: every registered shim, the
+Python coordinator and package, `tests/test_hook_rendering.py`, and every
+generated consumer artifact, including `generated/envelope_validation.jq` and
+`generated/status_payload_tables.py`. Record the bundle identifier and
+timing-harness digest in every timing summary. Nothing inside a published bundle
+is edited or removed in place.
+
+Phase 17 demonstrated the broader failure mode at 2026-08-29 20:03: entering the
+timing test class rewrote the installed uncommitted engine and generated
+consumers while the registered shims retained older timestamps, and the
+in-flight measurement straddled two engine binaries. The new fingerprint guard
+refuses such a run, but it cannot identify the unversioned script-tree and
+harness revision behind an older result.
 
 Registered hook paths resolve a stable launcher. The launcher reads the active
 bundle identifier exactly once, resolves that bundle to an absolute path, and
-executes its shim; the shim reads generated consumers and invokes `cargo-berth`
-from that same captured bundle. Publish by atomically replacing the single active
-bundle identifier in the same directory, retaining the previous bundle while an
-invocation may still hold its path and for rollback.
+executes its shim; every shim resolves the Python coordinator, generated
+consumers, and `cargo-berth` from that same captured bundle. Publish by
+atomically replacing the single active bundle identifier in the same directory,
+retaining the previous bundle while an invocation may still hold its path and
+for rollback.
 
 Acceptance holds old invocations open across publication and starts concurrent
 new invocations throughout it. Every invocation observes either the complete old
 bundle or the complete new bundle; none observes partial contents, a missing
-generated directory, or a shim/validator/engine version mixture. Failures before
-the active-version switch leave the old bundle active, and failures after it can
+generated directory, or a shim/coordinator/validator/engine version mixture. A
+timing run records one bundle identifier and harness digest, refuses if either
+changes, and can be reproduced from that immutable bundle. Failures before the
+active-version switch leave the old bundle active, and failures after it can
 restore the previous identifier with one atomic replacement.
 
 Surfaced when a Phase 16 timing run edited the canonical PostToolUse shim while
-three sessions were live.
+three sessions were live, and confirmed when Phase 17's 2026-08-29 20:03
+accidental install changed global artifacts during an active measurement.
+
+## Remove within-sample ordering bias from the fixed-cost probe ladder
+
+`HookRenderingTests.measure_fixed_cost_attribution_temperature` records the
+interpreter-only shim probe immediately before the generated-consumer-loading
+probe against the same fixture. The first Bash-hook spawn pays a warm-up that
+the second does not, so their subtraction moves startup cost between the two
+named components and can make a component negative even though their sum is
+unchanged.
+
+Before recording either probe in each sample, discard one unrecorded spawn of
+each probe hook. Record both probes only after those two warm-ups, leaving the
+five recorded samples, cold-page gate, component definitions, and 0.20-second
+outcome matrix unchanged.
+
+Acceptance instruments the two probe hooks and proves each receives one
+unrecorded invocation before either timed invocation, neither warm-up duration
+enters the published samples, and the timing summary continues to report
+unresolved attribution rather than treating the ten-percent figure as settled.
+
+Surfaced as F020 during the Phase 17 closure review; deferred because changing
+probe ordering would have invalidated the two completed measurement runs.

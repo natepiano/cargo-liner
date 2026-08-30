@@ -8,6 +8,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::path::Path;
 use std::path::PathBuf;
+use std::thread;
 
 use crate::alert;
 use crate::alert::Alert;
@@ -51,9 +52,11 @@ use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
+use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::RecoverableReconciliationAppendFailures;
 use crate::ledger::ReplayedLedgerState;
+use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
@@ -83,6 +86,7 @@ use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
 use crate::scope::ScopeKind;
 use crate::worktree::WorktreeHead;
 use crate::worktree::WorktreeLiveness;
+use crate::worktree::WorktreeMarkerSweepContext;
 use crate::worktree::WorktreeRegistry;
 use crate::worktree::WorktreeRelocation;
 use crate::worktree::liveness::WorktreeRegistryError;
@@ -114,6 +118,25 @@ pub(crate) struct ReconciliationReport {
     pub(crate) recovered_bypass_markers:      Vec<RecoveredPendingBypassMarker>,
     /// Git query dimensions observed while reconciliation assembled this report.
     pub(crate) git_cost:                      ReconciliationGitCost,
+}
+
+impl ReconciliationReport {
+    /// Return the trunk observation admitted by this reconciliation pass.
+    pub(crate) const fn repository_trunk(&self) -> &RepositoryTrunk {
+        self.repository_snapshot.trunk()
+    }
+}
+
+/// Reconciliation state retained for the drift observation that immediately follows it.
+pub(crate) struct ReconciledDriftPreflight<ConcurrentObservation> {
+    /// The one complete reconciliation result whose alerts accompany the drift response.
+    pub(crate) report:           ReconciliationReport,
+    /// The filesystem-discovered worktree identity shared with drift execution.
+    pub(crate) worktree_context: WorktreeContext,
+    /// The already-located ledger used by drift's later mutation transaction.
+    pub(crate) ledger:           Ledger,
+    /// Drift facts read concurrently after current-marker reconciliation.
+    pub(crate) observation:      ConcurrentObservation,
 }
 
 /// Git query dimensions owned by reconciliation rather than board row projection.
@@ -200,20 +223,100 @@ impl From<DeferredScopedPatchIntegrationStatus> for IntegrationStatusObservation
 
 /// Every integration-proof ancestor classified against one immutable trunk target.
 struct BatchedIntegrationReachability {
-    by_ancestor: HashMap<GitObjectId, Reachability>,
+    by_ancestor:         HashMap<GitObjectId, Reachability>,
+    resolved_candidates: git::ResolvedBatchCommitCandidates,
+    target_histories:    git::PhaseStartTargetFirstParentHistories,
 }
 
 impl BatchedIntegrationReachability {
+    fn observe_configured_trunk(
+        repository_root: &Path,
+        reservations: &RetainedReservationSet,
+        ordering_graph: &OrderingGraph,
+        trunk_branch: &str,
+    ) -> Result<(RepositoryTrunk, Self), ReservationReplayError> {
+        let candidate_ancestors = Self::candidate_ancestors(reservations, ordering_graph)?;
+        let observation =
+            git::branch_commit_reachability(repository_root, trunk_branch, &candidate_ancestors);
+        let Ok(observation) = observation else {
+            return Ok((
+                RepositoryTrunk::ObjectUnknown,
+                Self {
+                    by_ancestor:         HashMap::new(),
+                    resolved_candidates: git::ResolvedBatchCommitCandidates::default(),
+                    target_histories:    git::PhaseStartTargetFirstParentHistories::default(),
+                },
+            ));
+        };
+        let git::CommitTargetReachabilityObservation {
+            reachability,
+            resolved_candidates,
+            target_histories,
+        } = observation;
+        let git::CommitTargetReachability::Resolved { target, candidates } = reachability else {
+            return Ok((
+                RepositoryTrunk::ObjectUnknown,
+                Self {
+                    by_ancestor: HashMap::new(),
+                    resolved_candidates,
+                    target_histories,
+                },
+            ));
+        };
+        let by_ancestor = candidate_ancestors
+            .into_iter()
+            .zip(candidates)
+            .map(|(candidate_ancestor, reachability)| {
+                let reachability = match reachability {
+                    git::CommitCandidateReachability::Ancestor => Reachability::Ancestor,
+                    git::CommitCandidateReachability::NotAncestor => Reachability::NotAncestor,
+                    git::CommitCandidateReachability::Missing
+                    | git::CommitCandidateReachability::Ambiguous
+                    | git::CommitCandidateReachability::WrongType { .. } => {
+                        Reachability::ObjectUnknown
+                    },
+                };
+                (candidate_ancestor, reachability)
+            })
+            .collect();
+        Ok((
+            RepositoryTrunk::Resolved(target),
+            Self {
+                by_ancestor,
+                resolved_candidates,
+                target_histories,
+            },
+        ))
+    }
+
     fn observe(
         repository_root: &Path,
         reservations: &RetainedReservationSet,
+        ordering_graph: &OrderingGraph,
         repository_trunk: &RepositoryTrunk,
     ) -> Result<Self, ReservationReplayError> {
         let RepositoryTrunk::Resolved(target) = repository_trunk else {
             return Ok(Self {
-                by_ancestor: HashMap::new(),
+                by_ancestor:         HashMap::new(),
+                resolved_candidates: git::ResolvedBatchCommitCandidates::default(),
+                target_histories:    git::PhaseStartTargetFirstParentHistories::default(),
             });
         };
+        let candidate_ancestors = Self::candidate_ancestors(reservations, ordering_graph)?;
+        let reachability =
+            git::reachability_to_target(repository_root, &candidate_ancestors, target)
+                .unwrap_or_else(|_| vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
+        Ok(Self {
+            by_ancestor:         candidate_ancestors.into_iter().zip(reachability).collect(),
+            resolved_candidates: git::ResolvedBatchCommitCandidates::default(),
+            target_histories:    git::PhaseStartTargetFirstParentHistories::default(),
+        })
+    }
+
+    fn candidate_ancestors(
+        reservations: &RetainedReservationSet,
+        ordering_graph: &OrderingGraph,
+    ) -> Result<Vec<GitObjectId>, ReservationReplayError> {
         let mut candidate_ancestors = HashSet::new();
         for reservation in reservations.iter() {
             match reservation.evidence_state()? {
@@ -222,6 +325,7 @@ impl BatchedIntegrationReachability {
                     trunk_snapshot,
                     ..
                 } => {
+                    candidate_ancestors.insert(reservation.phase_start_head().as_ref().clone());
                     candidate_ancestors.insert(protected_tip.as_ref().clone());
                     candidate_ancestors.insert(trunk_snapshot);
                 },
@@ -229,26 +333,31 @@ impl BatchedIntegrationReachability {
                     protected_tip,
                     disposition,
                     ..
-                } => match disposition.revalidation_subject() {
-                    ReleaseRevalidationSubject::ProtectedTip => {
+                } => {
+                    if !matches!(
+                        disposition.revalidation_subject(),
+                        ReleaseRevalidationSubject::None
+                    ) {
+                        candidate_ancestors.insert(reservation.phase_start_head().as_ref().clone());
+                    }
+                    match disposition.revalidation_subject() {
+                        ReleaseRevalidationSubject::ProtectedTip => {
+                            candidate_ancestors.insert(protected_tip.as_ref().clone());
+                        },
+                        ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => {
+                            candidate_ancestors.insert(trunk_commit.as_ref().clone());
+                        },
+                        ReleaseRevalidationSubject::None => {},
+                    }
+                    if ordering_graph.has_nonterminal_dependent(reservation.id(), reservations)? {
                         candidate_ancestors.insert(protected_tip.as_ref().clone());
-                    },
-                    ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => {
-                        candidate_ancestors.insert(trunk_commit.as_ref().clone());
-                    },
-                    ReleaseRevalidationSubject::None => {},
+                    }
                 },
                 ReservationEvidenceState::Active { .. }
                 | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {},
             }
         }
-        let candidate_ancestors = candidate_ancestors.into_iter().collect::<Vec<_>>();
-        let reachability =
-            git::reachability_to_target(repository_root, &candidate_ancestors, target)
-                .unwrap_or_else(|_| vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
-        Ok(Self {
-            by_ancestor: candidate_ancestors.into_iter().zip(reachability).collect(),
-        })
+        Ok(candidate_ancestors.into_iter().collect())
     }
 
     fn for_ancestor(&self, ancestor: &GitObjectId) -> Reachability {
@@ -256,6 +365,13 @@ impl BatchedIntegrationReachability {
             .get(ancestor)
             .copied()
             .unwrap_or(Reachability::ObjectUnknown)
+    }
+
+    fn target_history_after_phase_start(
+        &self,
+        phase_start: &GitObjectId,
+    ) -> git::ScopedPatchTargetHistory<'_> {
+        self.target_histories.after_phase_start(phase_start)
     }
 }
 
@@ -377,7 +493,24 @@ struct SuccessorScopedPatchEvaluationCandidate {
     scopes:                     crate::scope::ReservationScopeSet,
     protected_tip:              GitObjectId,
     successor_head:             GitObjectId,
+    target_history:             SuccessorScopedPatchTargetHistory,
     priority:                   ScopedPatchEvaluationPriority,
+}
+
+enum SuccessorScopedPatchTargetHistory {
+    ProvenFirstParentInterval { commits: Vec<GitObjectId> },
+    NeedsGitQueries,
+}
+
+impl SuccessorScopedPatchTargetHistory {
+    fn as_git_evidence(&self) -> git::ScopedPatchTargetHistory<'_> {
+        match self {
+            Self::ProvenFirstParentInterval { commits } => {
+                git::ScopedPatchTargetHistory::ProvenFirstParentInterval { commits }
+            },
+            Self::NeedsGitQueries => git::ScopedPatchTargetHistory::NeedsGitQueries,
+        }
+    }
 }
 
 struct SuccessorIncorporationObservation {
@@ -430,10 +563,11 @@ struct ReconciliationChanges {
 
 struct ReconciliationAction {
     active_holders:                Vec<ActiveHolder>,
-    marker_contexts:               Vec<WorktreeContext>,
+    marker_contexts:               Vec<WorktreeMarkerSweepContext>,
     repository_root:               PathBuf,
     retention_repairs:             Vec<git::ReservationRetentionRefRepair>,
     retention_deletions:           Vec<ReservationId>,
+    resolved_retention_candidates: git::ResolvedBatchCommitCandidates,
     alert_subjects:                Vec<AlertSubject>,
     evidence:                      Vec<ReconciledEvidence>,
     repository_snapshot:           RepositorySnapshot,
@@ -474,6 +608,85 @@ pub(crate) fn reconcile(
         RepositoryObservationScope::CurrentOrderingGraph,
         recovered_bypass_reporting,
     )
+}
+
+/// Reconcile once while retaining the discovered worktree and opened ledger for drift.
+pub(crate) fn reconcile_for_drift<ConcurrentObservation>(
+    invocation_directory: &Path,
+    observe: impl FnOnce(&WorktreeContext, &Ledger, &[JournalEvent]) -> ConcurrentObservation + Send,
+) -> Result<Enrollment<ReconciledDriftPreflight<ConcurrentObservation>>, ReconcileError>
+where
+    ConcurrentObservation: Send,
+{
+    let worktree_context = WorktreeContext::discover(invocation_directory)?;
+    match BerthConfig::read(worktree_context.repository_root())? {
+        Enrollment::Enrolled(berth_config) => {
+            let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+            let observation_events =
+                drift_observation_events_after_current_marker_sweep(&worktree_context, &ledger)?;
+            let (report, observation) = thread::scope(|scope| {
+                let observation_worker =
+                    scope.spawn(|| observe(&worktree_context, &ledger, &observation_events));
+                let report = reconcile_with_open_ledger(
+                    &worktree_context,
+                    &ledger,
+                    &berth_config,
+                    RepositoryObservationScope::CurrentOrderingGraph,
+                    RecoveredBypassReporting::Defer,
+                );
+                let observation = observation_worker
+                    .join()
+                    .map_err(|_| ReconcileError::ConcurrentObservationWorkerPanicked);
+                (report, observation)
+            });
+            Ok(Enrollment::Enrolled(ReconciledDriftPreflight {
+                report: report?,
+                worktree_context,
+                ledger,
+                observation: observation?,
+            }))
+        },
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }),
+    }
+}
+
+fn drift_observation_events_after_current_marker_sweep(
+    worktree_context: &WorktreeContext,
+    ledger: &Ledger,
+) -> Result<Vec<JournalEvent>, ReconcileError> {
+    let worktree_identity = ledger::worktree_identity(
+        worktree_context.administrative_directory(),
+        worktree_context.worktree_kind(),
+    )?;
+    let outcome = ledger
+        .transact(worktree_identity.id, CoordinationRunId::new(), |state| {
+            let prepared_events = RetainedReservationSet::replay(state.events())
+                .map_err(ReconcileError::Replay)
+                .and_then(|reservations| {
+                    worktree_context
+                        .sweep_coordination_run_marker(|coordination_run_id| {
+                            reservations.iter().any(|reservation| {
+                                matches!(reservation.lifecycle(), ReservationLifecycle::Active)
+                                    && reservation.actor().worktree == worktree_identity.id
+                                    && reservation.actor().run == coordination_run_id
+                            })
+                        })
+                        .map_err(ReconcileError::Ledger)?;
+                    Ok(state.events().to_vec())
+                });
+            TransactionValidation::Reject(prepared_events)
+        })
+        .map_err(ReconcileError::Transaction)?;
+    match outcome {
+        LedgerTransactionOutcome::Rejected(prepared_events) => prepared_events,
+        LedgerTransactionOutcome::Appended { .. } => {
+            Err(ReconcileError::UnexpectedDriftPreflightMutation)
+        },
+    }
 }
 
 /// Reconcile with the ordering graph that would result if one request is admitted.
@@ -519,6 +732,23 @@ fn reconcile_enrolled(
     recovered_bypass_reporting: RecoveredBypassReporting,
 ) -> Result<ReconciliationReport, ReconcileError> {
     let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
+    reconcile_with_open_ledger(
+        worktree_context,
+        &ledger,
+        berth_config,
+        repository_observation_scope,
+        recovered_bypass_reporting,
+    )
+}
+
+/// Reconcile through one ledger already located from `worktree_context`.
+fn reconcile_with_open_ledger(
+    worktree_context: &WorktreeContext,
+    ledger: &Ledger,
+    berth_config: &BerthConfig,
+    repository_observation_scope: RepositoryObservationScope,
+    recovered_bypass_reporting: RecoveredBypassReporting,
+) -> Result<ReconciliationReport, ReconcileError> {
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
@@ -526,84 +756,20 @@ fn reconcile_enrolled(
         .transact_reconciliation(
             journal_mutation_actor.worktree_id,
             journal_mutation_actor.coordination_run_id,
-            |state| {
-                let reservations = match RetainedReservationSet::replay(state.events()) {
-                    Ok(reservations) => reservations,
-                    Err(error) => {
-                        return ReconciliationValidation::Reject(
-                            ReconciliationPlanningError::Reservation(error),
-                        );
-                    },
-                };
-                let ordering_graph = match OrderingGraph::replay(state.events()) {
-                    Ok(ordering_graph) => ordering_graph,
-                    Err(error) => {
-                        return ReconciliationValidation::Reject(
-                            ReconciliationPlanningError::Edge(error),
-                        );
-                    },
-                };
-                let worktree_registry =
-                    match WorktreeRegistry::read(worktree_context.repository_root()) {
-                        Ok(worktree_registry) => worktree_registry,
-                        Err(error) => {
-                            return ReconciliationValidation::Reject(
-                                ReconciliationPlanningError::WorktreeRegistry(error),
-                            );
-                        },
-                    };
-                let mut scoped_patch_evaluation_memo = ScopedPatchEvaluationMemo::default();
-                let mut successor_scoped_patch_evaluation_budget =
-                    SuccessorScopedPatchEvaluationBudget::default();
-                let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
-                    berth_config,
-                    scoped_patch_evaluation_memo: &mut scoped_patch_evaluation_memo,
-                    successor_scoped_patch_evaluation_budget:
-                        &mut successor_scoped_patch_evaluation_budget,
-                };
-                let mut reconciliation_plan = match build_plan(
-                    &reservations,
-                    &ordering_graph,
-                    repository_observation_scope,
-                    &worktree_registry,
-                    ledger_repository,
-                    worktree_context,
-                    &mut reconciliation_evidence_context,
-                ) {
-                    Ok(reconciliation_plan) => reconciliation_plan,
-                    Err(error) => {
-                        return ReconciliationValidation::Reject(
-                            ReconciliationPlanningError::Reservation(error),
-                        );
-                    },
-                };
-                let mut pending_bypasses = match permit::prepare_pending_bypass_recovery(
-                    worktree_context.common_git_directory(),
-                    state.events(),
-                ) {
-                    Ok(pending_bypasses) => pending_bypasses,
-                    Err(error) => {
-                        return ReconciliationValidation::Reject(
-                            ReconciliationPlanningError::PendingBypass(error),
-                        );
-                    },
-                };
-                let pending_bypass_imports = pending_bypasses.take_imports();
-                let recoverable_operations = pending_bypass_imports
-                    .iter()
-                    .map(|pending_import| pending_import.operation().clone())
-                    .collect();
-                reconciliation_plan.action.pending_bypass_imports = pending_bypass_imports;
-                reconciliation_plan.action.recovered_bypass_reporting = recovered_bypass_reporting;
-                reconciliation_plan.action.recovered_bypass_markers =
-                    pending_bypasses.take_completed_markers();
-                reconciliation_plan.action.unrecorded_bypass_occurrences =
-                    pending_bypasses.take_unrecorded_occurrences();
-                ReconciliationValidation::Apply {
-                    operations: reconciliation_plan.operations,
-                    recoverable_operations,
-                    action: reconciliation_plan.action,
-                }
+            |state| match prepare_reconciliation_transaction(
+                &state,
+                berth_config,
+                repository_observation_scope,
+                ledger_repository,
+                worktree_context,
+                recovered_bypass_reporting,
+            ) {
+                Ok(prepared) => ReconciliationValidation::Apply {
+                    operations:             prepared.operations,
+                    recoverable_operations: prepared.recoverable_operations,
+                    action:                 prepared.action,
+                },
+                Err(error) => ReconciliationValidation::Reject(error),
             },
             ReconciliationAction::commit,
         )
@@ -617,6 +783,70 @@ fn reconcile_enrolled(
     }
 }
 
+struct PreparedReconciliationTransaction {
+    operations:             Vec<JournalOperation>,
+    recoverable_operations: Vec<JournalOperation>,
+    action:                 ReconciliationAction,
+}
+
+fn prepare_reconciliation_transaction(
+    state: &ReplayedLedgerState<'_>,
+    berth_config: &BerthConfig,
+    repository_observation_scope: RepositoryObservationScope,
+    ledger_repository: RepoInstanceId,
+    worktree_context: &WorktreeContext,
+    recovered_bypass_reporting: RecoveredBypassReporting,
+) -> Result<PreparedReconciliationTransaction, ReconciliationPlanningError> {
+    let reservations = RetainedReservationSet::replay(state.events())
+        .map_err(ReconciliationPlanningError::Reservation)?;
+    let ordering_graph =
+        OrderingGraph::replay(state.events()).map_err(ReconciliationPlanningError::Edge)?;
+    let mut scoped_patch_evaluation_memo = ScopedPatchEvaluationMemo::default();
+    let mut successor_scoped_patch_evaluation_budget =
+        SuccessorScopedPatchEvaluationBudget::default();
+    let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
+        berth_config,
+        scoped_patch_evaluation_memo: &mut scoped_patch_evaluation_memo,
+        successor_scoped_patch_evaluation_budget: &mut successor_scoped_patch_evaluation_budget,
+    };
+    let mut reconciliation_plan = build_plan(
+        &reservations,
+        &ordering_graph,
+        repository_observation_scope,
+        ledger_repository,
+        worktree_context,
+        &mut reconciliation_evidence_context,
+    )
+    .map_err(|error| match error {
+        ReconciliationBuildError::Reservation(error) => {
+            ReconciliationPlanningError::Reservation(error)
+        },
+        ReconciliationBuildError::WorktreeRegistry(error) => {
+            ReconciliationPlanningError::WorktreeRegistry(error)
+        },
+    })?;
+    let mut pending_bypasses = permit::prepare_pending_bypass_recovery(
+        worktree_context.common_git_directory(),
+        state.events(),
+    )
+    .map_err(ReconciliationPlanningError::PendingBypass)?;
+    let pending_bypass_imports = pending_bypasses.take_imports();
+    let recoverable_operations = pending_bypass_imports
+        .iter()
+        .map(|pending_import| pending_import.operation().clone())
+        .collect();
+    reconciliation_plan.action.pending_bypass_imports = pending_bypass_imports;
+    reconciliation_plan.action.recovered_bypass_reporting = recovered_bypass_reporting;
+    reconciliation_plan.action.recovered_bypass_markers = pending_bypasses.take_completed_markers();
+    reconciliation_plan.action.unrecorded_bypass_occurrences =
+        pending_bypasses.take_unrecorded_occurrences();
+    Ok(PreparedReconciliationTransaction {
+        operations: reconciliation_plan.operations,
+        recoverable_operations,
+        action: reconciliation_plan.action,
+    })
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one locked observation keeps repository facts and their journal updates coherent"
@@ -625,37 +855,49 @@ fn build_plan(
     reservations: &RetainedReservationSet,
     ordering_graph: &OrderingGraph,
     repository_observation_scope: RepositoryObservationScope,
-    worktree_registry: &WorktreeRegistry,
     ledger_repository: RepoInstanceId,
     worktree_context: &WorktreeContext,
     reconciliation_evidence_context: &mut ReconciliationEvidenceContext<'_>,
-) -> Result<ReconciliationPlan, ReservationReplayError> {
+) -> Result<ReconciliationPlan, ReconciliationBuildError> {
     let common_git_directory = worktree_context.common_git_directory();
     let repository_root = worktree_context.repository_root();
+    let (worktree_registry, repository_trunk, integration_reachability, mut indexed_evidence) =
+        thread::scope(|scope| {
+            let worktree_registry = scope.spawn(|| WorktreeRegistry::read(worktree_context));
+            let (repository_trunk, integration_reachability) =
+                BatchedIntegrationReachability::observe_configured_trunk(
+                    repository_root,
+                    reservations,
+                    ordering_graph,
+                    &reconciliation_evidence_context.berth_config.trunk,
+                )?;
+            let mut target_evidence_context = TargetIntegrationEvidenceContext {
+                repository_root,
+                repository_trunk: &repository_trunk,
+                integration_reachability: &integration_reachability,
+                scoped_patch_evaluation_memo: reconciliation_evidence_context
+                    .scoped_patch_evaluation_memo,
+            };
+            let indexed_evidence = scoped_patch_evaluation_order(reservations, &repository_trunk)
+                .into_iter()
+                .map(|(index, reservation)| {
+                    repository_evidence(reservation, &mut target_evidence_context)
+                        .map(|observation| (index, observation))
+                })
+                .collect::<Result<Vec<_>, ReservationReplayError>>()?;
+            let worktree_registry = worktree_registry
+                .join()
+                .map_err(|_| WorktreeRegistryError::ObservationWorkerPanicked)??;
+            Ok::<_, ReconciliationBuildError>((
+                worktree_registry,
+                repository_trunk,
+                integration_reachability,
+                indexed_evidence,
+            ))
+        })?;
     let mut changes = ReconciliationChanges::default();
     let mut alert_subjects = Vec::new();
-    let mut trunk_resolution_calls = 0;
-    trunk_resolution_calls += 1;
-    let repository_trunk = reservation::current_trunk(
-        repository_root,
-        &reconciliation_evidence_context.berth_config.trunk,
-    )
-    .map_or(RepositoryTrunk::ObjectUnknown, RepositoryTrunk::Resolved);
-    let integration_reachability =
-        BatchedIntegrationReachability::observe(repository_root, reservations, &repository_trunk)?;
-    let mut target_evidence_context = TargetIntegrationEvidenceContext {
-        repository_root,
-        repository_trunk: &repository_trunk,
-        integration_reachability: &integration_reachability,
-        scoped_patch_evaluation_memo: reconciliation_evidence_context.scoped_patch_evaluation_memo,
-    };
-    let mut indexed_evidence = scoped_patch_evaluation_order(reservations, &repository_trunk)
-        .into_iter()
-        .map(|(index, reservation)| {
-            repository_evidence(reservation, &mut target_evidence_context)
-                .map(|observation| (index, observation))
-        })
-        .collect::<Result<Vec<_>, ReservationReplayError>>()?;
+    let trunk_resolution_calls = 1;
     indexed_evidence.sort_by_key(|(index, _)| *index);
     let repository_evidence_observations = indexed_evidence
         .into_iter()
@@ -724,6 +966,7 @@ fn build_plan(
             repository_root: repository_root.to_path_buf(),
             retention_repairs: changes.retention_repairs,
             retention_deletions: changes.retention_deletions,
+            resolved_retention_candidates: integration_reachability.resolved_candidates,
             alert_subjects,
             evidence: changes.evidence,
             repository_snapshot,
@@ -752,10 +995,11 @@ fn scoped_patch_evaluation_order<'reservation>(
 ///
 /// Each observed trunk target uses one `cat-file` batch and one grouped `rev-list` to classify all
 /// integration-proof ancestors. Graph predecessor queries use one grouped `rev-list` for every
-/// protected tip and successor head. Retention repair uses one `cat-file` batch and one
-/// `update-ref` transaction. These invocation counts are independent of the total retained-
-/// reservation count. Scoped patch comparisons reuse identical proof inputs and evaluate at most
-/// one distinct proof subject for each observed trunk target.
+/// protected tip and successor head. The initial object-resolution batch also supplies retention
+/// repair availability, after which one `update-ref` transaction applies every repair and deletion.
+/// These invocation counts are independent of the total retained-reservation count. Scoped patch
+/// comparisons reuse identical proof inputs and evaluate at most one distinct proof subject for
+/// each observed trunk target.
 pub(crate) fn prepare_gate_reconciliation(
     events: &[JournalEvent],
     generation: ProjectionGeneration,
@@ -767,8 +1011,6 @@ pub(crate) fn prepare_gate_reconciliation(
     let reservations =
         RetainedReservationSet::replay(events).map_err(GateReconciliationError::Reservation)?;
     let ordering_graph = OrderingGraph::replay(events).map_err(GateReconciliationError::Edge)?;
-    let worktree_registry = WorktreeRegistry::read(worktree_context.repository_root())
-        .map_err(GateReconciliationError::WorktreeRegistry)?;
     let mut scoped_patch_evaluation_memo = ScopedPatchEvaluationMemo::default();
     let mut successor_scoped_patch_evaluation_budget =
         SuccessorScopedPatchEvaluationBudget::default();
@@ -781,12 +1023,16 @@ pub(crate) fn prepare_gate_reconciliation(
         &reservations,
         &ordering_graph,
         RepositoryObservationScope::CurrentOrderingGraph,
-        &worktree_registry,
         ledger_repository,
         worktree_context,
         &mut reconciliation_evidence_context,
     )
-    .map_err(GateReconciliationError::Reservation)?;
+    .map_err(|error| match error {
+        ReconciliationBuildError::Reservation(error) => GateReconciliationError::Reservation(error),
+        ReconciliationBuildError::WorktreeRegistry(error) => {
+            GateReconciliationError::WorktreeRegistry(error)
+        },
+    })?;
     let proposed_observation = observe_proposed_trunk(
         &reservations,
         &ordering_graph,
@@ -824,6 +1070,7 @@ fn observe_proposed_trunk(
     let integration_reachability = BatchedIntegrationReachability::observe(
         worktree_context.repository_root(),
         reservations,
+        ordering_graph,
         &repository_trunk,
     )
     .map_err(GateReconciliationError::Reservation)?;
@@ -1168,12 +1415,15 @@ fn integration_status_with_cache(
             };
             let observe_scoped_patch_comparison = || {
                 scoped_patch_evaluation_memo.evaluate(scoped_patch_evaluation_key, || {
-                    git::scoped_patch_equivalence(
+                    let target_history = integration_reachability
+                        .target_history_after_phase_start(reservation.phase_start_head().as_ref());
+                    git::scoped_patch_equivalence_with_target_history(
                         repository_root,
                         reservation.phase_start_head().as_ref(),
                         reservation.scopes(),
                         protected_tip.as_ref(),
                         target,
+                        target_history,
                     )
                     .unwrap_or(ScopedPatchComparison::Unavailable)
                 })
@@ -1497,11 +1747,17 @@ fn successor_incorporation_evidence(
     }
     let protected_tip_successor_heads = evidence_subjects
         .iter()
-        .map(|subject| {
-            ProtectedTipSuccessorHeads::new(
-                subject.protected_reservation_tip.as_ref(),
-                &subject.successor_heads,
-            )
+        .flat_map(|subject| {
+            [
+                ProtectedTipSuccessorHeads::new(
+                    subject.protected_reservation_tip.as_ref(),
+                    &subject.successor_heads,
+                ),
+                ProtectedTipSuccessorHeads::new(
+                    subject.reservation.phase_start_head().as_ref(),
+                    &subject.successor_heads,
+                ),
+            ]
         })
         .collect::<Vec<_>>();
     let descendant_commit_results =
@@ -1518,9 +1774,28 @@ fn successor_incorporation_evidence(
             }));
         },
         Ok(descendant_commit_queries) => {
-            for (evidence_subject, descendant_commit_query) in
-                evidence_subjects.into_iter().zip(descendant_commit_queries)
+            let protected_tip_queries = descendant_commit_queries.iter().step_by(2);
+            let phase_start_queries = descendant_commit_queries.iter().skip(1).step_by(2);
+            for ((evidence_subject, descendant_commit_query), phase_start_query) in
+                evidence_subjects
+                    .into_iter()
+                    .zip(protected_tip_queries)
+                    .zip(phase_start_queries)
             {
+                let phase_start_target_histories = match phase_start_query {
+                    DescendantCommitQuery::AncestorObjectUnknown => HashMap::new(),
+                    DescendantCommitQuery::Classified(classified_heads) => classified_heads
+                        .iter()
+                        .filter_map(|classified_head| match classified_head {
+                            CandidateHeadReachability::Descendant {
+                                head,
+                                first_parent_commits_after_ancestor,
+                            } => Some((head.clone(), first_parent_commits_after_ancestor.clone())),
+                            CandidateHeadReachability::NotDescendant(_)
+                            | CandidateHeadReachability::ObjectUnknown(_) => None,
+                        })
+                        .collect(),
+                };
                 let predecessor = evidence_subject.reservation;
                 let predecessor_id = predecessor.id();
                 let subject = predecessor.integration_proof_subject_revision();
@@ -1533,15 +1808,15 @@ fn successor_incorporation_evidence(
                         let mut evidence_by_head = HashMap::new();
                         for classified_head in classified_heads {
                             match classified_head {
-                                CandidateHeadReachability::Descendant(head) => {
+                                CandidateHeadReachability::Descendant { head, .. } => {
                                     evidence_by_head.insert(
-                                        head,
+                                        head.clone(),
                                         SuccessorIncorporationEvidence::ProtectedTipAncestor,
                                     );
                                 },
                                 CandidateHeadReachability::ObjectUnknown(head) => {
                                     evidence_by_head.insert(
-                                        head,
+                                        head.clone(),
                                         SuccessorIncorporationEvidence::ObjectUnknown,
                                     );
                                 },
@@ -1552,7 +1827,7 @@ fn successor_incorporation_evidence(
                                     ) {
                                         match predecessor
                                             .successor_scoped_patch_equivalence_cache()
-                                            .lookup(subject, &head)
+                                            .lookup(subject, head)
                                         {
                                             SuccessorScopedPatchEquivalenceCacheLookup::Hit(
                                                 SuccessorScopedPatchEquivalenceVerdict::Equivalent,
@@ -1580,9 +1855,17 @@ fn successor_incorporation_evidence(
                                                             .as_ref()
                                                             .clone(),
                                                         successor_head: head.clone(),
+                                                        target_history: phase_start_target_histories
+                                                            .get(head)
+                                                            .map_or(
+                                                                SuccessorScopedPatchTargetHistory::NeedsGitQueries,
+                                                                |commits| SuccessorScopedPatchTargetHistory::ProvenFirstParentInterval {
+                                                                    commits: commits.clone(),
+                                                                },
+                                                            ),
                                                         priority: predecessor
                                                             .successor_scoped_patch_evaluation_priority(
-                                                                &head,
+                                                                head,
                                                             ),
                                                     },
                                                 );
@@ -1592,7 +1875,7 @@ fn successor_incorporation_evidence(
                                     } else {
                                         SuccessorIncorporationEvidence::NotIncorporated
                                     };
-                                    evidence_by_head.insert(head, evidence);
+                                    evidence_by_head.insert(head.clone(), evidence);
                                 },
                             }
                         }
@@ -1614,12 +1897,13 @@ fn successor_incorporation_evidence(
     let mut operations = Vec::new();
     for candidate in pending_comparisons {
         let comparison = evaluation_budget.evaluate(|| {
-            git::scoped_patch_equivalence(
+            git::scoped_patch_equivalence_with_target_history(
                 repository_root,
                 &candidate.phase_start_head,
                 &candidate.scopes,
                 &candidate.protected_tip,
                 &candidate.successor_head,
+                candidate.target_history.as_git_evidence(),
             )
             .unwrap_or(ScopedPatchComparison::Unavailable)
         });
@@ -1693,20 +1977,17 @@ impl ReconciliationAction {
                     .push(pending_import.into_recovered_marker());
             }
         }
-        git::update_reservation_retention_refs(
+        git::update_reservation_retention_refs_from_resolved_batch(
             &self.repository_root,
             &self.retention_repairs,
             &self.retention_deletions,
+            &self.resolved_retention_candidates,
         )?;
         for marker_context in self.marker_contexts {
-            let marker_worktree_id =
-                ledger::read_worktree_identity(marker_context.administrative_directory());
-            marker_context.sweep_coordination_run_marker(|coordination_run_id| {
-                marker_worktree_id.is_ok_and(|worktree_id| {
-                    self.active_holders.iter().any(|active_holder| {
-                        active_holder.worktree_id == worktree_id
-                            && active_holder.coordination_run_id == coordination_run_id
-                    })
+            marker_context.sweep_coordination_run_marker(|worktree_id, coordination_run_id| {
+                self.active_holders.iter().any(|active_holder| {
+                    active_holder.worktree_id == worktree_id
+                        && active_holder.coordination_run_id == coordination_run_id
                 })
             })?;
         }
@@ -1764,6 +2045,19 @@ enum ReconciliationPlanningError {
     PendingBypass(std::io::Error),
 }
 
+enum ReconciliationBuildError {
+    Reservation(ReservationReplayError),
+    WorktreeRegistry(WorktreeRegistryError),
+}
+
+impl From<ReservationReplayError> for ReconciliationBuildError {
+    fn from(error: ReservationReplayError) -> Self { Self::Reservation(error) }
+}
+
+impl From<WorktreeRegistryError> for ReconciliationBuildError {
+    fn from(error: WorktreeRegistryError) -> Self { Self::WorktreeRegistry(error) }
+}
+
 /// A reconciliation failure classified for command-boundary exit behavior.
 #[derive(Debug)]
 pub(crate) enum ReconcileError {
@@ -1775,6 +2069,8 @@ pub(crate) enum ReconcileError {
     MissingReadinessFact(MissingReadinessFact),
     Transaction(LedgerTransactionError),
     WorktreeRegistry(WorktreeRegistryError),
+    ConcurrentObservationWorkerPanicked,
+    UnexpectedDriftPreflightMutation,
 }
 
 impl ReconcileError {
@@ -1808,6 +2104,14 @@ impl ReconcileError {
             Self::WorktreeRegistry(error) => {
                 OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
             },
+            Self::ConcurrentObservationWorkerPanicked => OutputEnvelope::ledger_unreadable(
+                command_verb,
+                "concurrent drift observation worker panicked",
+            ),
+            Self::UnexpectedDriftPreflightMutation => OutputEnvelope::ledger_unreadable(
+                command_verb,
+                "drift marker preflight unexpectedly appended a journal event",
+            ),
         }
     }
 }
@@ -1823,6 +2127,12 @@ impl Display for ReconcileError {
             Self::MissingReadinessFact(error) => error.fmt(formatter),
             Self::Transaction(error) => error.fmt(formatter),
             Self::WorktreeRegistry(error) => error.fmt(formatter),
+            Self::ConcurrentObservationWorkerPanicked => {
+                formatter.write_str("concurrent drift observation worker panicked")
+            },
+            Self::UnexpectedDriftPreflightMutation => {
+                formatter.write_str("drift marker preflight unexpectedly mutated the journal")
+            },
         }
     }
 }

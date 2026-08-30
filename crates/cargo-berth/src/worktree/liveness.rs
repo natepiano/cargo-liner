@@ -22,13 +22,21 @@ use super::constants::LOCKED_FIELD;
 use super::constants::PRUNABLE_FIELD;
 use super::constants::WORKTREE_FIELD_PREFIX;
 use super::identity;
+use super::identity::RecordedWorktreeOwner;
+use super::identity::RegisteredWorktreeBacklink;
+use super::identity::RegisteredWorktreeIdentity;
+use super::identity::RegisteredWorktreeOwnerObservation;
 use super::identity::ValidatedWorktreeOwner;
 use crate::git;
 use crate::git::GitError;
+use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::RepoInstanceId;
+use crate::ids::WorktreeId;
 use crate::ledger::CanonicalWorktreeRoot;
+use crate::ledger::LedgerError;
+use crate::ledger::RegisteredWorktreeAvailability;
 use crate::ledger::WorktreeContext;
 use crate::reservation::Reservation;
 
@@ -83,9 +91,41 @@ pub(crate) struct WorktreeRegistry {
 }
 
 struct WorktreeRegistration {
-    root:  PathBuf,
-    state: WorktreeRegistrationState,
-    head:  WorktreeHead,
+    root:     PathBuf,
+    state:    WorktreeRegistrationState,
+    head:     WorktreeHead,
+    location: RegisteredWorktreeLocation,
+}
+
+enum RegisteredWorktreeLocation {
+    Discovered {
+        context:  WorktreeContext,
+        identity: RegisteredWorktreeIdentity,
+        backlink: RegisteredWorktreeBacklink,
+    },
+    Unavailable,
+}
+
+/// One worktree context and identity observed for marker retention in this pass.
+pub(crate) struct WorktreeMarkerSweepContext {
+    context:  WorktreeContext,
+    identity: RegisteredWorktreeIdentity,
+}
+
+impl WorktreeMarkerSweepContext {
+    /// Sweep a marker against the active holders from the same reconciliation snapshot.
+    pub(crate) fn sweep_coordination_run_marker(
+        &self,
+        is_active: impl Fn(WorktreeId, CoordinationRunId) -> bool,
+    ) -> Result<(), LedgerError> {
+        self.context
+            .sweep_coordination_run_marker(|coordination_run_id| match self.identity {
+                RegisteredWorktreeIdentity::Resolved(worktree_id) => {
+                    is_active(worktree_id, coordination_run_id)
+                },
+                RegisteredWorktreeIdentity::Unavailable => false,
+            })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -97,9 +137,19 @@ enum WorktreeRegistrationState {
 
 impl WorktreeRegistry {
     /// Read and parse the repository's registered worktrees once.
-    pub(crate) fn read(repository_root: &Path) -> Result<Self, WorktreeRegistryError> {
-        let porcelain = git::worktree_list_porcelain(repository_root)?;
-        Self::parse(&porcelain)
+    pub(crate) fn read(worktree_context: &WorktreeContext) -> Result<Self, WorktreeRegistryError> {
+        let porcelain = git::worktree_list_porcelain(worktree_context.repository_root())?;
+        let mut registry = Self::parse(&porcelain)?;
+        for registration in &mut registry.registrations {
+            if matches!(registration.state, WorktreeRegistrationState::Prunable) {
+                continue;
+            }
+            registration.location = registered_worktree_location(
+                &registration.root,
+                worktree_context.common_git_directory(),
+            )?;
+        }
+        Ok(registry)
     }
 
     /// Classify one recorded holder without treating any absence as abandonment.
@@ -150,7 +200,7 @@ impl WorktreeRegistry {
     pub(crate) fn marker_sweep_contexts(
         &self,
         common_git_directory: &Path,
-    ) -> Vec<WorktreeContext> {
+    ) -> Vec<WorktreeMarkerSweepContext> {
         self.registrations
             .iter()
             .filter(|registration| {
@@ -159,8 +209,18 @@ impl WorktreeRegistry {
                     WorktreeRegistrationState::Available | WorktreeRegistrationState::Locked
                 )
             })
-            .filter_map(|registration| WorktreeContext::discover(&registration.root).ok())
-            .filter(|context| context.common_git_directory() == common_git_directory)
+            .filter_map(|registration| match &registration.location {
+                RegisteredWorktreeLocation::Discovered {
+                    context, identity, ..
+                } if context.common_git_directory() == common_git_directory => {
+                    Some(WorktreeMarkerSweepContext {
+                        context:  context.clone(),
+                        identity: *identity,
+                    })
+                },
+                RegisteredWorktreeLocation::Discovered { .. }
+                | RegisteredWorktreeLocation::Unavailable => None,
+            })
             .collect()
     }
 
@@ -170,17 +230,28 @@ impl WorktreeRegistry {
         reservation: &Reservation,
         registration: &WorktreeRegistration,
     ) -> WorktreeLivenessObservation {
-        let Ok(candidate) = WorktreeContext::discover(&registration.root) else {
+        let RegisteredWorktreeLocation::Discovered {
+            context: candidate,
+            identity: candidate_identity,
+            backlink: candidate_backlink,
+        } = &registration.location
+        else {
             return observation(WorktreeLiveness::Unknown, WorktreeHead::Unavailable);
         };
         match identity::validate_same_owner(
             ledger_repository,
-            reservation.actor().repository,
             common_git_directory,
-            reservation.actor().worktree,
-            reservation.worktree_root(),
-            reservation.worktree_locator(),
-            &candidate,
+            RecordedWorktreeOwner {
+                repository: reservation.actor().repository,
+                worktree:   reservation.actor().worktree,
+                root:       reservation.worktree_root(),
+                locator:    reservation.worktree_locator(),
+            },
+            RegisteredWorktreeOwnerObservation {
+                context:  candidate,
+                identity: *candidate_identity,
+                backlink: *candidate_backlink,
+            },
         ) {
             Ok(ValidatedWorktreeOwner::RecordedRoot) => {
                 observation(WorktreeLiveness::Live, registration.head.clone())
@@ -232,9 +303,37 @@ impl WorktreeRegistry {
                     state = WorktreeRegistrationState::Prunable;
                 }
             }
-            registrations.push(WorktreeRegistration { root, state, head });
+            registrations.push(WorktreeRegistration {
+                root,
+                state,
+                head,
+                location: RegisteredWorktreeLocation::Unavailable,
+            });
         }
         Ok(Self { registrations })
+    }
+}
+
+fn registered_worktree_location(
+    root: &Path,
+    common_git_directory: &Path,
+) -> Result<RegisteredWorktreeLocation, WorktreeRegistryError> {
+    match WorktreeContext::from_registered_root(root, common_git_directory).map_err(|error| {
+        WorktreeRegistryError::InvalidRegisteredWorktreeContext {
+            root: root.to_path_buf(),
+            error,
+        }
+    })? {
+        RegisteredWorktreeAvailability::Readable(context) => {
+            let identity = RegisteredWorktreeIdentity::observe(&context);
+            let backlink = RegisteredWorktreeBacklink::observe(&context);
+            Ok(RegisteredWorktreeLocation::Discovered {
+                context,
+                identity,
+                backlink,
+            })
+        },
+        RegisteredWorktreeAvailability::Unavailable => Ok(RegisteredWorktreeLocation::Unavailable),
     }
 }
 
@@ -254,6 +353,10 @@ const fn observation(
 pub(crate) enum WorktreeRegistryError {
     /// Git could not list registered worktrees.
     Git(GitError),
+    /// The isolated registry observer stopped before returning a result.
+    ObservationWorkerPanicked,
+    /// A readable registered root produced an invalid administrative context.
+    InvalidRegisteredWorktreeContext { root: PathBuf, error: LedgerError },
     /// One porcelain record did not begin with its required worktree root.
     MissingRoot,
     /// A porcelain HEAD field was not UTF-8.
@@ -269,6 +372,16 @@ impl Display for WorktreeRegistryError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Git(error) => error.fmt(formatter),
+            Self::ObservationWorkerPanicked => {
+                formatter.write_str("the worktree registry observer stopped unexpectedly")
+            },
+            Self::InvalidRegisteredWorktreeContext { root, error } => {
+                write!(
+                    formatter,
+                    "registered worktree {} produced an invalid context: {error}",
+                    root.display()
+                )
+            },
             Self::MissingRoot => {
                 formatter.write_str("git worktree porcelain omitted a worktree root")
             },
@@ -291,4 +404,84 @@ impl Error for WorktreeRegistryError {}
 
 impl From<GitError> for WorktreeRegistryError {
     fn from(error: GitError) -> Self { Self::Git(error) }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use std::fs;
+    use std::process::Command;
+
+    use tempfile::tempdir;
+
+    use super::RegisteredWorktreeLocation;
+    use super::registered_worktree_location;
+    use crate::ids::WorktreeKind;
+    use crate::ledger::WorktreeContext;
+
+    #[test]
+    fn registered_separate_git_directory_main_worktree_is_readable_as_main() {
+        let temporary_directory = tempdir().expect("temporary repository parent should exist");
+        let repository_root = temporary_directory.path().join("worktree");
+        let administrative_directory = temporary_directory.path().join("administrative.git");
+        run_git(
+            temporary_directory.path(),
+            &[
+                "init",
+                "--quiet",
+                "--initial-branch=main",
+                "--separate-git-dir",
+                administrative_directory
+                    .to_str()
+                    .expect("administrative path should be UTF-8"),
+                repository_root
+                    .to_str()
+                    .expect("worktree path should be UTF-8"),
+            ],
+        );
+        run_git(&repository_root, &["config", "user.name", "Berth Test"]);
+        run_git(
+            &repository_root,
+            &["config", "user.email", "berth@example.invalid"],
+        );
+        fs::write(
+            repository_root.join("README.md"),
+            "separate git directory\n",
+        )
+        .expect("fixture file should write");
+        run_git(&repository_root, &["add", "README.md"]);
+        run_git(&repository_root, &["commit", "--quiet", "-m", "initial"]);
+        let worktree_context =
+            WorktreeContext::discover(&repository_root).expect("main worktree should be readable");
+
+        let location =
+            registered_worktree_location(&repository_root, worktree_context.common_git_directory())
+                .expect("registered main worktree should be readable");
+
+        assert!(matches!(
+            location,
+            RegisteredWorktreeLocation::Discovered { context, .. }
+                if context.worktree_kind() == WorktreeKind::Main
+                    && context.repository_root()
+                        == fs::canonicalize(repository_root)
+                            .expect("repository root should canonicalize")
+        ));
+    }
+
+    fn run_git(repository_root: &std::path::Path, arguments: &[&str]) {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(repository_root)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

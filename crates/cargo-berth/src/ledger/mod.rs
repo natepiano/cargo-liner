@@ -189,6 +189,14 @@ enum GitAdministrativeLayout {
     Linked { common_git_directory: PathBuf },
 }
 
+/// Whether a root from Git's registry has readable administrative metadata.
+pub(crate) enum RegisteredWorktreeAvailability {
+    /// The root has a validated administrative layout for this repository.
+    Readable(WorktreeContext),
+    /// The root disappeared, became unreadable, or now names another repository.
+    Unavailable,
+}
+
 /// A coordination-run marker atomically detached for content-based retirement.
 struct DetachedCoordinationRunMarker {
     administrative_directory: PathBuf,
@@ -367,6 +375,70 @@ impl WorktreeContext {
         Err(LedgerError::RepositoryNotFound)
     }
 
+    /// Validate one root already returned by Git's worktree registry.
+    pub(crate) fn from_registered_root(
+        repository_root: &Path,
+        common_git_directory: &Path,
+    ) -> Result<RegisteredWorktreeAvailability, LedgerError> {
+        let Ok(repository_root) = fs::canonicalize(repository_root) else {
+            return Ok(RegisteredWorktreeAvailability::Unavailable);
+        };
+        let dot_git = repository_root.join(".git");
+        if dot_git.is_dir() {
+            let Ok(registered_git_directory) = fs::canonicalize(&dot_git) else {
+                return Ok(RegisteredWorktreeAvailability::Unavailable);
+            };
+            if registered_git_directory != common_git_directory {
+                return Ok(RegisteredWorktreeAvailability::Unavailable);
+            }
+            return Self::build_registered(
+                &repository_root,
+                registered_git_directory.clone(),
+                registered_git_directory,
+                WorktreeKind::Main,
+            )
+            .map(RegisteredWorktreeAvailability::Readable);
+        }
+        if dot_git.is_file() {
+            let Ok(administrative_directory) = read_git_directory_file(&dot_git) else {
+                return Ok(RegisteredWorktreeAvailability::Unavailable);
+            };
+            let Ok(administrative_layout) =
+                read_git_administrative_layout(&administrative_directory)
+            else {
+                return Ok(RegisteredWorktreeAvailability::Unavailable);
+            };
+            return match administrative_layout {
+                GitAdministrativeLayout::Main
+                    if administrative_directory == common_git_directory =>
+                {
+                    Self::build_registered(
+                        &repository_root,
+                        administrative_directory.clone(),
+                        administrative_directory,
+                        WorktreeKind::Main,
+                    )
+                    .map(RegisteredWorktreeAvailability::Readable)
+                },
+                GitAdministrativeLayout::Linked {
+                    common_git_directory: registered_common_git_directory,
+                } if registered_common_git_directory == common_git_directory => {
+                    Self::build_registered(
+                        &repository_root,
+                        administrative_directory,
+                        registered_common_git_directory,
+                        WorktreeKind::Linked,
+                    )
+                    .map(RegisteredWorktreeAvailability::Readable)
+                },
+                GitAdministrativeLayout::Main | GitAdministrativeLayout::Linked { .. } => {
+                    Ok(RegisteredWorktreeAvailability::Unavailable)
+                },
+            };
+        }
+        Ok(RegisteredWorktreeAvailability::Unavailable)
+    }
+
     fn build(
         repository_root: &Path,
         worktree_administrative_directory: PathBuf,
@@ -389,6 +461,37 @@ impl WorktreeContext {
             SharedLedgerDirectory(common_git_directory.join(LEDGER_DIRECTORY_NAME));
         Ok(Self {
             repository_root,
+            administrative_directory: WorktreeAdministrativeDirectory(
+                worktree_administrative_directory,
+            ),
+            common_git_directory,
+            shared_ledger_directory,
+            administrative_locator,
+            worktree_kind,
+        })
+    }
+
+    fn build_registered(
+        repository_root: &Path,
+        worktree_administrative_directory: PathBuf,
+        common_git_directory: PathBuf,
+        worktree_kind: WorktreeKind,
+    ) -> Result<Self, LedgerError> {
+        let locator = match worktree_kind {
+            WorktreeKind::Main => ".".to_owned(),
+            WorktreeKind::Linked => worktree_administrative_directory
+                .strip_prefix(&common_git_directory)
+                .map_err(|_| LedgerError::AdministrativeDirectoryOutsideCommonGitDirectory)?
+                .to_str()
+                .ok_or(LedgerError::NonUtf8AdministrativePath)?
+                .to_owned(),
+        };
+        let administrative_locator = WorktreeAdministrativeLocator::from_str(&locator)
+            .map_err(|_| LedgerError::InvalidAdministrativeLocator(locator))?;
+        let shared_ledger_directory =
+            SharedLedgerDirectory(common_git_directory.join(LEDGER_DIRECTORY_NAME));
+        Ok(Self {
+            repository_root: repository_root.to_path_buf(),
             administrative_directory: WorktreeAdministrativeDirectory(
                 worktree_administrative_directory,
             ),
@@ -467,8 +570,19 @@ impl WorktreeContext {
     /// Remove a malformed or inactive marker while preserving an active run's marker.
     pub(crate) fn sweep_coordination_run_marker(
         &self,
-        active_run_matches: impl FnOnce(CoordinationRunId) -> bool,
+        active_run_matches: impl Fn(CoordinationRunId) -> bool,
     ) -> Result<(), LedgerError> {
+        let marker_path = self
+            .administrative_directory
+            .0
+            .join(COORDINATION_RUN_MARKER_FILE_NAME);
+        if fs::read_to_string(marker_path)
+            .ok()
+            .and_then(|marker| marker.trim().parse::<CoordinationRunId>().ok())
+            .is_some_and(&active_run_matches)
+        {
+            return Ok(());
+        }
         match self.detach_coordination_run_marker()? {
             CoordinationRunMarkerAtRetirement::AlreadyAbsent => Ok(()),
             CoordinationRunMarkerAtRetirement::Detached(detached_marker) => {
@@ -554,7 +668,7 @@ impl DetachedCoordinationRunMarker {
 
     fn sweep(
         self,
-        active_run_matches: impl FnOnce(CoordinationRunId) -> bool,
+        active_run_matches: impl Fn(CoordinationRunId) -> bool,
     ) -> Result<(), LedgerError> {
         let retirement_metadata = match fs::metadata(&self.retirement_path) {
             Ok(retirement_metadata) => retirement_metadata,
@@ -762,15 +876,21 @@ impl Ledger {
             },
         }
         let ledger = Self::at_common_git_directory(worktree_context.common_git_directory());
-        ledger.require_existing()?;
-        let repo_instance_id = read_repo_instance_id(&ledger.paths.repo_instance_id)?;
-        let replay = Journal::replay_read_only(&ledger.paths.journal)?;
-        validate_journal_repository(repo_instance_id, &replay)?;
-        read_validated(&ledger.paths.projection, repo_instance_id, &replay)?;
+        let events = ledger.read_validated_events()?;
         Ok(Enrollment::Enrolled(EditCheckLedgerSnapshot {
-            events: replay.events,
+            events,
             worktree_context,
         }))
+    }
+
+    /// Read validated journal truth without holding the mutation lock.
+    pub(crate) fn read_validated_events(&self) -> Result<Vec<JournalEvent>, LedgerError> {
+        self.require_existing()?;
+        let repo_instance_id = read_repo_instance_id(&self.paths.repo_instance_id)?;
+        let replay = Journal::replay_read_only(&self.paths.journal)?;
+        validate_journal_repository(repo_instance_id, &replay)?;
+        read_validated(&self.paths.projection, repo_instance_id, &replay)?;
+        Ok(replay.events)
     }
 
     /// Validate against one locked replay and append only the approved operation.
@@ -974,14 +1094,9 @@ impl Ledger {
                 recoverable_operations,
                 action,
             } => {
-                let mut session_mapping_publication = SessionIdentityMappingPublication::Published;
-                for operation in operations {
-                    let journal_append = transaction
-                        .append(worktree_id, coordination_run_id, operation)
-                        .map_err(LedgerCommittedActionError::Transaction)?;
-                    session_mapping_publication = session_mapping_publication
-                        .merge(journal_append.session_mapping_publication);
-                }
+                let mut session_mapping_publication = transaction
+                    .append_reconciliation_operations(worktree_id, coordination_run_id, operations)
+                    .map_err(LedgerCommittedActionError::Transaction)?;
                 let mut recoverable_failures = RecoverableReconciliationAppendFailures {
                     operations: Vec::new(),
                 };
@@ -1158,6 +1273,47 @@ impl Ledger {
 }
 
 impl LedgerTransaction {
+    fn append_reconciliation_operations(
+        &mut self,
+        worktree_id: WorktreeId,
+        coordination_run_id: CoordinationRunId,
+        operations: Vec<JournalOperation>,
+    ) -> Result<SessionIdentityMappingPublication, LedgerTransactionError> {
+        if operations.is_empty() {
+            return Ok(SessionIdentityMappingPublication::Published);
+        }
+        let actor = JournalActor {
+            repository: self.repo_instance_id,
+            worktree:   worktree_id,
+            run:        coordination_run_id,
+        };
+        let mut generation = self.replay.generation;
+        let mut events = Vec::with_capacity(operations.len());
+        for operation in operations {
+            generation = next_projection_generation(generation)
+                .map_err(LedgerTransactionError::LedgerUnreadable)?;
+            events.push(JournalEvent::for_operation(
+                actor.clone(),
+                generation,
+                operation,
+            ));
+        }
+        self.journal
+            .append_events(&events)
+            .map_err(journal_append_transaction_error)?;
+        self.replay = self
+            .journal
+            .replay_repairing_tail()
+            .map_err(LedgerError::from)
+            .map_err(LedgerTransactionError::LedgerUnreadable)?;
+        let mut session_mapping_publication = SessionIdentityMappingPublication::Published;
+        for event in &events {
+            session_mapping_publication = session_mapping_publication
+                .merge(session::apply_journal_event(&self.ledger_directory, event));
+        }
+        Ok(session_mapping_publication)
+    }
+
     fn append(
         &mut self,
         worktree_id: WorktreeId,
@@ -1175,22 +1331,9 @@ impl LedgerTransaction {
             next_generation,
             operation,
         );
-        self.journal.append(&event).map_err(|error| match error {
-            JournalAppendError::RecordTooLarge { bytes } => {
-                LedgerTransactionError::CorrectableInput(
-                    CorrectableTransactionInput::RecordTooLarge {
-                        bytes,
-                        maximum_bytes: MAXIMUM_JOURNAL_RECORD_BYTES,
-                    },
-                )
-            },
-            JournalAppendError::Io(error) => {
-                LedgerTransactionError::LedgerUnreadable(LedgerError::Io(error))
-            },
-            JournalAppendError::Serialization(error) => {
-                LedgerTransactionError::LedgerUnreadable(LedgerError::JournalEncoding(error))
-            },
-        })?;
+        self.journal
+            .append(&event)
+            .map_err(journal_append_transaction_error)?;
         self.replay = self
             .journal
             .replay_repairing_tail()
@@ -1225,6 +1368,23 @@ impl LedgerTransaction {
             ProjectionSynchronization::Current => Ok(()),
             ProjectionSynchronization::RebuildRequired => self.publish(paths),
         }
+    }
+}
+
+fn journal_append_transaction_error(error: JournalAppendError) -> LedgerTransactionError {
+    match error {
+        JournalAppendError::RecordTooLarge { bytes } => {
+            LedgerTransactionError::CorrectableInput(CorrectableTransactionInput::RecordTooLarge {
+                bytes,
+                maximum_bytes: MAXIMUM_JOURNAL_RECORD_BYTES,
+            })
+        },
+        JournalAppendError::Io(error) => {
+            LedgerTransactionError::LedgerUnreadable(LedgerError::Io(error))
+        },
+        JournalAppendError::Serialization(error) => {
+            LedgerTransactionError::LedgerUnreadable(LedgerError::JournalEncoding(error))
+        },
     }
 }
 

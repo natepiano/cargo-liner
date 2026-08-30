@@ -402,6 +402,15 @@ pub(crate) struct SessionWorktreeMismatchRejection {
 }
 
 impl CoordinationIdentityRejection {
+    /// Return the stable wire discriminator used by recovery consumers.
+    pub(crate) const fn wire_kind(&self) -> &'static str {
+        match self {
+            Self::StaleSessionMapping { .. } => "stale_session_mapping",
+            Self::StaleMarkerRun { .. } => "stale_marker_run",
+            Self::SessionWorktreeMismatch(_) => "session_worktree_mismatch",
+        }
+    }
+
     /// Return reservation ids directly named by this rejection.
     pub(crate) fn reservation_ids(&self) -> Vec<ReservationId> {
         match self {

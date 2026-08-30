@@ -20,6 +20,8 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
+const EXECUTABLE_PERMISSIONS: u32 = 0o755;
+const FAILED_REFERENCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_FAILED_REFERENCE";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const INITIAL_COMMIT_TAG: &str = "initial-state";
@@ -36,11 +38,62 @@ fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
+const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
+const REFERENCE_FAILURE_DIAGNOSTIC: &str = "injected reference backend failure";
+const REFERENCE_FAILURE_DIAGNOSTIC_ENVIRONMENT: &str =
+    "CARGO_BERTH_TEST_REFERENCE_FAILURE_DIAGNOSTIC";
+const REFERENCE_GIT_WRAPPER: &str = r#"#!/bin/sh
+if [ "$1" = "--no-optional-locks" ]; then
+    command_name="$2"
+    (
+        shift 2
+        command_line="$command_name"
+        for argument in "$@"; do command_line="$command_line $argument"; done
+        printf '%s\n' "$command_line" >> "$CARGO_BERTH_TEST_REFERENCE_TRACE"
+    )
+    if [ "$command_name" = "rev-parse" ]; then
+        for argument in "$@"; do
+            if [ "$argument" = "$CARGO_BERTH_TEST_FAILED_REFERENCE" ]; then
+                reference_query_count=0
+                if [ -f "$CARGO_BERTH_TEST_REFERENCE_QUERY_COUNT" ]; then
+                    IFS= read -r reference_query_count < "$CARGO_BERTH_TEST_REFERENCE_QUERY_COUNT"
+                fi
+                reference_query_count=$((reference_query_count + 1))
+                printf '%s\n' "$reference_query_count" > "$CARGO_BERTH_TEST_REFERENCE_QUERY_COUNT"
+                if [ "$reference_query_count" -gt 1 ]; then
+                    printf '%s\n' "$CARGO_BERTH_TEST_REFERENCE_FAILURE_DIAGNOSTIC" >&2
+                    exit 128
+                fi
+            fi
+        done
+    fi
+fi
+exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
+"#;
+const REFERENCE_QUERY_COUNT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REFERENCE_QUERY_COUNT";
+const REFERENCE_TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REFERENCE_TRACE";
 const RETENTION_REF_PREFIX: &str = "refs/cargo-berth/reservations/";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
+
+#[derive(Clone, Copy)]
+enum GitReferenceStorage {
+    Loose,
+    Reftable,
+}
+
+#[derive(Clone, Copy)]
+enum ReferenceQueryBehavior<'revision> {
+    Observe,
+    FailTrunkRevision(&'revision str),
+}
+
+struct ClaimGitTrace {
+    output:   Output,
+    commands: Vec<String>,
+}
 
 #[test]
 fn checkpoint_retains_commit_after_branch_deletion_and_git_gc() {
@@ -396,7 +449,104 @@ fn failed_journal_append_does_not_move_the_retention_ref() {
 }
 
 #[test]
-fn released_reservation_remains_clear_with_unresolvable_trunk_without_git_on_check() {
+fn missing_trunk_is_recorded_as_an_unresolved_reference() {
+    let repository = initialized_repository();
+    let missing_reference = "refs/heads/missing-trunk";
+    configure_trunk(repository.path(), "missing-trunk");
+
+    let claimed = claim(repository.path(), "file:README.md", FIRST_RUN);
+
+    assert!(
+        claimed.status.success(),
+        "claim with a missing trunk failed: {}",
+        String::from_utf8_lossy(&claimed.stdout)
+    );
+    assert_eq!(
+        last_claim_event(repository.path())["trunk_at_claim"]["reference"],
+        missing_reference
+    );
+}
+
+#[test]
+fn failed_reference_query_is_not_reported_as_a_missing_trunk() {
+    let repository = initialized_repository_with_reference_storage(GitReferenceStorage::Reftable);
+    let failed_reference = "refs/heads/main";
+
+    let traced = run_claim_with_git_trace(
+        repository.path(),
+        ReferenceQueryBehavior::FailTrunkRevision(failed_reference),
+    );
+    let envelope = json_output(&traced.output);
+
+    assert_eq!(traced.output.status.code(), Some(4));
+    assert_eq!(envelope["status"], "ledger_unreadable");
+    assert!(
+        envelope["message"].as_str().is_some_and(|message| {
+            message.contains("git rev-parse failed")
+                && message.contains(REFERENCE_FAILURE_DIAGNOSTIC)
+                && !message.contains("does not exist")
+        }),
+        "reference query failure lost its diagnostic: {envelope}"
+    );
+    assert!(rev_parse_query_count(&traced.commands, failed_reference) > 0);
+    assert!(
+        journal_events(repository.path())
+            .iter()
+            .all(|event| event["op"] != "claim"),
+        "the failed reference query must not take the absent-trunk claim path"
+    );
+}
+
+#[test]
+fn reftable_references_are_resolved_through_git() {
+    let repository = initialized_repository_with_reference_storage(GitReferenceStorage::Reftable);
+    let reference = "refs/heads/main";
+    let head = git_stdout(repository.path(), &["rev-parse", reference]);
+
+    assert_eq!(
+        git_stdout(
+            repository.path(),
+            &["config", "--get", "extensions.refstorage"]
+        ),
+        "reftable"
+    );
+    assert!(!repository.path().join(".git/refs/heads/main").exists());
+    assert!(!repository.path().join(".git/packed-refs").exists());
+
+    let traced = run_claim_with_git_trace(repository.path(), ReferenceQueryBehavior::Observe);
+
+    assert!(
+        traced.output.status.success(),
+        "reftable claim failed: {}",
+        String::from_utf8_lossy(&traced.output.stdout)
+    );
+    assert_eq!(last_claim_event(repository.path())["trunk_at_claim"], head);
+    assert!(rev_parse_query_count(&traced.commands, reference) > 0);
+}
+
+#[test]
+fn loose_reference_reads_spawn_no_git_process() {
+    let repository = initialized_repository();
+    let loose_reference = repository.path().join(".git/refs/heads/main");
+    assert!(loose_reference.is_file());
+
+    let traced = run_claim_with_git_trace(repository.path(), ReferenceQueryBehavior::Observe);
+
+    assert!(
+        traced.output.status.success(),
+        "loose-reference claim failed: {}",
+        String::from_utf8_lossy(&traced.output.stdout)
+    );
+    assert_eq!(
+        reference_lookup_command_count(&traced.commands, "refs/heads/main"),
+        0,
+        "loose reference read spawned a reference lookup: {:?}",
+        traced.commands,
+    );
+}
+
+#[test]
+fn released_reservation_remains_clear_after_git_confirms_an_unresolvable_trunk() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
@@ -436,14 +586,12 @@ fn released_reservation_remains_clear_with_unresolvable_trunk_without_git_on_che
     assert_eq!(json_output(&unknown)["status"], "object_unknown");
     fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
     assert!(run_berth(repository.path(), &["init"]).status.success());
-    let empty_path = tempdir().expect("empty PATH should exist");
     let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
         .current_dir(&second_root)
-        .env("PATH", empty_path.path())
         .env(RUN_ENVIRONMENT, SECOND_RUN)
         .output()
-        .expect("check should run without git");
+        .expect("check should run after git confirms the missing trunk");
 
     assert!(check.status.success());
     let check_json = json_output(&check);
@@ -471,10 +619,9 @@ fn released_reservation_remains_clear_with_unresolvable_trunk_without_git_on_che
     let replayed_check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
         .current_dir(&second_root)
-        .env("PATH", empty_path.path())
         .env(RUN_ENVIRONMENT, SECOND_RUN)
         .output()
-        .expect("check should run after replay without git");
+        .expect("check should run after replay and missing-trunk confirmation");
     assert!(replayed_check.status.success());
     let replayed_check_json = json_output(&replayed_check);
     assert_eq!(replayed_check_json["status"], "clear");
@@ -515,6 +662,19 @@ fn release_removes_only_the_marker_for_a_run_without_other_active_reservations()
     assert!(
         !newer_run_repository.path().join(MARKER_PATH).exists(),
         "reconciliation should sweep a marker with no matching active reservation"
+    );
+    let checkpoint_event = fs::read_to_string(newer_run_repository.path().join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .rev()
+        .find(|event| {
+            event["op"] == "checkpoint" && event["reservation_id"] == newer_run_reservation_id
+        })
+        .expect("release should append a checkpoint event");
+    assert_ne!(
+        checkpoint_event["actor"]["run"], SECOND_RUN,
+        "the checkpoint must not be authored by the run whose marker reconciliation retired"
     );
 
     let shared_run_repository = initialized_repository();
@@ -611,11 +771,28 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
 }
 
 fn initialized_repository() -> TempDir {
+    initialized_repository_with_reference_storage(GitReferenceStorage::Loose)
+}
+
+fn initialized_repository_with_reference_storage(
+    git_reference_storage: GitReferenceStorage,
+) -> TempDir {
     let repository = tempdir().expect("temporary repository should exist");
-    git(
-        repository.path(),
-        &["init", "--quiet", "--initial-branch=main"],
-    );
+    match git_reference_storage {
+        GitReferenceStorage::Loose => git(
+            repository.path(),
+            &["init", "--quiet", "--initial-branch=main"],
+        ),
+        GitReferenceStorage::Reftable => git(
+            repository.path(),
+            &[
+                "init",
+                "--quiet",
+                "--initial-branch=main",
+                "--ref-format=reftable",
+            ],
+        ),
+    }
     git(repository.path(), &["config", "user.name", "Berth Test"]);
     git(
         repository.path(),
@@ -628,6 +805,14 @@ fn initialized_repository() -> TempDir {
     git(repository.path(), &["tag", INITIAL_COMMIT_TAG]);
     assert!(run_berth(repository.path(), &["init"]).status.success());
     repository
+}
+
+fn configure_trunk(repository_root: &Path, trunk: &str) {
+    let configuration_path = repository_root.join(CONFIGURATION_PATH);
+    let configuration = fs::read_to_string(&configuration_path).expect("configuration should read");
+    let configured = configuration.replacen("trunk = \"main\"", &format!("trunk = \"{trunk}\""), 1);
+    assert_ne!(configuration, configured, "main trunk setting should exist");
+    fs::write(configuration_path, configured).expect("configured trunk should write");
 }
 
 fn claim(repository_root: &Path, scope: &str, run: &str) -> Output {
@@ -669,6 +854,96 @@ fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id
         .env(SESSION_ENVIRONMENT, session_id)
         .output()
         .expect("cargo-berth should run")
+}
+
+fn run_claim_with_git_trace(
+    repository_root: &Path,
+    reference_query_behavior: ReferenceQueryBehavior<'_>,
+) -> ClaimGitTrace {
+    let wrapper_directory = tempdir().expect("git wrapper directory should exist");
+    let wrapper_path = wrapper_directory.path().join("git");
+    let query_count_path = wrapper_directory.path().join("reference-query-count");
+    let trace_path = wrapper_directory.path().join("trace");
+    fs::write(&wrapper_path, REFERENCE_GIT_WRAPPER).expect("git wrapper should write");
+    fs::write(&query_count_path, "0\n").expect("reference query count should initialize");
+    fs::write(&trace_path, "").expect("git trace should initialize");
+    let mut permissions = fs::metadata(&wrapper_path)
+        .expect("git wrapper metadata should read")
+        .permissions();
+    permissions.set_mode(EXECUTABLE_PERMISSIONS);
+    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
+    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
+    let wrapped_path = std::env::join_paths(
+        std::iter::once(wrapper_directory.path().to_path_buf())
+            .chain(std::env::split_paths(&original_path)),
+    )
+    .expect("wrapped PATH should join");
+    let failed_reference = match reference_query_behavior {
+        ReferenceQueryBehavior::Observe => "",
+        ReferenceQueryBehavior::FailTrunkRevision(reference) => reference,
+    };
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["claim", "file:README.md", "--run", FIRST_RUN, "--json"])
+        .current_dir(repository_root)
+        .env("PATH", wrapped_path)
+        .env(FAILED_REFERENCE_ENVIRONMENT, failed_reference)
+        .env(REAL_GIT_ENVIRONMENT, git_binary())
+        .env(
+            REFERENCE_FAILURE_DIAGNOSTIC_ENVIRONMENT,
+            REFERENCE_FAILURE_DIAGNOSTIC,
+        )
+        .env(REFERENCE_QUERY_COUNT_ENVIRONMENT, &query_count_path)
+        .env(REFERENCE_TRACE_ENVIRONMENT, &trace_path)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("cargo-berth should run with traced git");
+    let commands = fs::read_to_string(trace_path)
+        .expect("git trace should read")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    ClaimGitTrace { output, commands }
+}
+
+fn reference_lookup_command_count(commands: &[String], reference: &str) -> usize {
+    commands
+        .iter()
+        .filter(|command| {
+            (command.starts_with("show-ref --exists ") || command.starts_with("rev-parse "))
+                && command
+                    .split_whitespace()
+                    .any(|argument| argument == reference)
+        })
+        .count()
+}
+
+fn rev_parse_query_count(commands: &[String], reference: &str) -> usize {
+    commands
+        .iter()
+        .filter(|command| {
+            command.starts_with("rev-parse ")
+                && command
+                    .split_whitespace()
+                    .any(|argument| argument == reference)
+        })
+        .count()
+}
+
+fn journal_events(repository_root: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(repository_root.join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("journal event should decode"))
+        .collect()
+}
+
+fn last_claim_event(repository_root: &Path) -> serde_json::Value {
+    journal_events(repository_root)
+        .into_iter()
+        .rev()
+        .find(|event| event["op"] == "claim")
+        .expect("journal should contain a claim event")
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) {

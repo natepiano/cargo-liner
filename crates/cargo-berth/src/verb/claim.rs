@@ -7,9 +7,6 @@ use std::fmt::Formatter;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
-use std::process::Command;
-use std::process::Output;
-use std::string::FromUtf8Error;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -33,6 +30,9 @@ use crate::coordination_identity::RecoveryCommandLine;
 use crate::coordination_identity::validate_coordination_identity;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingGraph;
+use crate::git;
+use crate::git::GitError;
+use crate::git::ReferenceLookup;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
@@ -82,12 +82,6 @@ use crate::scope::ReservationScopeSet;
 use crate::session;
 use crate::session::SessionIdentityMappingPublication;
 
-const GIT_BINARY: &str = "git";
-const GIT_FULL_REF_NAME_ARG: &str = "--quiet";
-const GIT_HEAD_REVISION: &str = "HEAD";
-const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
-const GIT_REV_PARSE_COMMAND: &str = "rev-parse";
-const GIT_SYMBOLIC_REF_COMMAND: &str = "symbolic-ref";
 const HEADS_REF_PREFIX: &str = "refs/heads/";
 
 /// A parsed claim whose provenance carries domain types rather than CLI options.
@@ -158,6 +152,15 @@ impl SymbolicReferenceDepth {
         }
         Ok(Self(self.0 + 1))
     }
+}
+
+enum ReferenceFileReadError {
+    GitResolutionRequired,
+    Claim(ClaimError),
+}
+
+impl From<ClaimError> for ReferenceFileReadError {
+    fn from(error: ClaimError) -> Self { Self::Claim(error) }
 }
 
 struct PreparedClaim {
@@ -401,7 +404,8 @@ fn acquire(
             declared_scopes.into_minimal_antichain(path_case)
         },
     };
-    let claim_repository_facts = ClaimRepositoryFacts::read(&worktree_context, &source)?;
+    let claim_repository_facts =
+        ClaimRepositoryFacts::read(&worktree_context, claim_run_validation)?;
     let phase_start_head = match phase_start {
         PhaseStartSelection::CurrentHead => {
             ProtectedPhaseStartHead::from(claim_repository_facts.current_head.clone())
@@ -419,12 +423,7 @@ fn acquire(
         },
     };
     let trunk_at_claim = read_trunk_commit(&worktree_context, &berth_config.trunk, &source)?;
-    let ledger = match &source {
-        ClaimSource::FirstTouch => Ledger::open_from_discovered_worktree(&worktree_context)?,
-        ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => {
-            Ledger::open(worktree_context.repository_root())?
-        },
-    };
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let reservation_id = ReservationId::new();
     let prepared_claim = PreparedClaim {
         reservation_id,
@@ -488,7 +487,7 @@ pub(crate) fn acquire_first_touch(
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let scopes = declared_scopes.into_exact_file_antichain(path_case);
     let source = ClaimSource::FirstTouch;
-    let repository_facts = ClaimRepositoryFacts::read(&worktree_context, &source)?;
+    let repository_facts = ClaimRepositoryFacts::read(&worktree_context, run_validation)?;
     let phase_start_head = ProtectedPhaseStartHead::from(repository_facts.current_head.clone());
     let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
         Enrollment::Enrolled(berth_config) => berth_config,
@@ -1157,6 +1156,10 @@ impl ClaimCoordinationRunSelection {
 }
 
 impl ClaimRunValidation {
+    const fn requires_live_head_revalidation(self) -> bool {
+        matches!(self, Self::ResolvedIdentityRequired(_))
+    }
+
     const fn actor_run_id(self) -> CoordinationRunId {
         match self {
             Self::IndependentWithPresentedIdentity(actor_run_id)
@@ -1232,18 +1235,14 @@ impl From<ClaimRunValidationError> for ClaimRejection {
 }
 
 impl ClaimRepositoryFacts {
-    fn read(worktree_context: &WorktreeContext, source: &ClaimSource) -> Result<Self, ClaimError> {
-        let repository_root = worktree_context.repository_root();
-        let (current_head, head_snapshot) = match source {
-            ClaimSource::FirstTouch => read_head_snapshot_from_files(worktree_context)?,
-            ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => {
-                let current_head = read_git_object_id(
-                    repository_root,
-                    &[GIT_REV_PARSE_COMMAND, GIT_HEAD_REVISION],
-                )?;
-                let head_snapshot = read_head_snapshot(repository_root, current_head.clone())?;
-                (current_head, head_snapshot)
-            },
+    fn read(
+        worktree_context: &WorktreeContext,
+        run_validation: ClaimRunValidation,
+    ) -> Result<Self, ClaimError> {
+        let (current_head, head_snapshot) = if run_validation.requires_live_head_revalidation() {
+            read_live_head_snapshot(worktree_context)?
+        } else {
+            read_head_snapshot_from_files(worktree_context)?
         };
         let worktree_root = worktree_context
             .repository_root()
@@ -1259,28 +1258,35 @@ impl ClaimRepositoryFacts {
     }
 }
 
+fn read_live_head_snapshot(
+    worktree_context: &WorktreeContext,
+) -> Result<(GitObjectId, ClaimHeadSnapshot), ClaimError> {
+    let current_head = crate::reservation::current_head(worktree_context.repository_root())?;
+    let head_snapshot = match git::head_attachment(worktree_context.repository_root())? {
+        git::HeadAttachment::Branch { full_ref } => ClaimHeadSnapshot::Branch {
+            full_ref,
+            head: ClaimHeadCommit::from(current_head.clone()),
+        },
+        git::HeadAttachment::Detached => ClaimHeadSnapshot::Detached {
+            head: ClaimHeadCommit::from(current_head.clone()),
+        },
+    };
+    Ok((current_head, head_snapshot))
+}
+
 fn read_trunk_commit(
     worktree_context: &WorktreeContext,
     trunk: &str,
-    source: &ClaimSource,
+    _source: &ClaimSource,
 ) -> Result<TrunkObservationAtClaim, ClaimError> {
     let trunk_ref = format!("{HEADS_REF_PREFIX}{trunk}");
-    match source {
-        ClaimSource::FirstTouch => {
-            match read_reference_from_files(worktree_context.common_git_directory(), &trunk_ref) {
-                Ok(trunk_commit) => Ok(TrunkObservationAtClaim::from(trunk_commit)),
-                Err(ClaimError::MissingReference(reference)) => reference
-                    .parse::<FullRefName>()
-                    .map(TrunkObservationAtClaim::from)
-                    .map_err(|_| ClaimError::InvalidTrunkReference),
-                Err(error) => Err(error),
-            }
-        },
-        ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => read_git_object_id(
-            worktree_context.repository_root(),
-            &[GIT_REV_PARSE_COMMAND, &trunk_ref],
-        )
-        .map(TrunkObservationAtClaim::from),
+    match read_reference(worktree_context, &trunk_ref) {
+        Ok(trunk_commit) => Ok(TrunkObservationAtClaim::from(trunk_commit)),
+        Err(ClaimError::MissingReference(reference)) => reference
+            .parse::<FullRefName>()
+            .map(TrunkObservationAtClaim::from)
+            .map_err(|_| ClaimError::InvalidTrunkReference),
+        Err(error) => Err(error),
     }
 }
 
@@ -1290,11 +1296,11 @@ fn read_head_snapshot_from_files(
     let head = fs::read_to_string(worktree_context.administrative_directory().join("HEAD"))?;
     let head = head.trim();
     if let Some(reference) = head.strip_prefix("ref: ") {
-        let full_ref = reference
-            .parse()
-            .map_err(|_| ClaimError::InvalidHeadReference)?;
-        let current_head =
-            read_reference_from_files(worktree_context.common_git_directory(), reference)?;
+        let full_ref = reference.parse().or_else(|_| {
+            git::symbolic_head_reference(worktree_context.repository_root())
+                .map_err(|_| ClaimError::InvalidHeadReference)
+        })?;
+        let current_head = read_reference(worktree_context, &full_ref.to_string())?;
         return Ok((
             current_head.clone(),
             ClaimHeadSnapshot::Branch {
@@ -1312,10 +1318,31 @@ fn read_head_snapshot_from_files(
     ))
 }
 
+fn read_reference(
+    worktree_context: &WorktreeContext,
+    reference: &str,
+) -> Result<GitObjectId, ClaimError> {
+    match read_reference_from_files(worktree_context.common_git_directory(), reference) {
+        Ok(object_id) => Ok(object_id),
+        Err(filesystem_error) => {
+            match git::reference_lookup(worktree_context.repository_root(), reference)? {
+                ReferenceLookup::Present(object_id) => Ok(object_id),
+                ReferenceLookup::Missing => match filesystem_error {
+                    ReferenceFileReadError::GitResolutionRequired
+                    | ReferenceFileReadError::Claim(ClaimError::MissingReference(_)) => {
+                        Err(ClaimError::MissingReference(reference.to_owned()))
+                    },
+                    ReferenceFileReadError::Claim(error) => Err(error),
+                },
+            }
+        },
+    }
+}
+
 fn read_reference_from_files(
     common_git_directory: &Path,
     reference: &str,
-) -> Result<GitObjectId, ClaimError> {
+) -> Result<GitObjectId, ReferenceFileReadError> {
     read_reference_from_files_at_depth(
         common_git_directory,
         reference,
@@ -1327,13 +1354,17 @@ fn read_reference_from_files_at_depth(
     common_git_directory: &Path,
     reference: &str,
     depth: SymbolicReferenceDepth,
-) -> Result<GitObjectId, ClaimError> {
+) -> Result<GitObjectId, ReferenceFileReadError> {
     match fs::read_to_string(common_git_directory.join(reference)) {
         Ok(value) => parse_reference_value(common_git_directory, reference, &value, depth),
         Err(error) if error.kind() == ErrorKind::NotFound => {
             read_packed_reference(common_git_directory, reference)
+                .map_err(ReferenceFileReadError::Claim)
         },
-        Err(error) => Err(ClaimError::Io(error)),
+        Err(error) if error.kind() == ErrorKind::NotADirectory => {
+            Err(ReferenceFileReadError::GitResolutionRequired)
+        },
+        Err(error) => Err(ReferenceFileReadError::Claim(ClaimError::Io(error))),
     }
 }
 
@@ -1342,7 +1373,7 @@ fn parse_reference_value(
     reference: &str,
     value: &str,
     depth: SymbolicReferenceDepth,
-) -> Result<GitObjectId, ClaimError> {
+) -> Result<GitObjectId, ReferenceFileReadError> {
     let value = value.trim();
     if let Some(target) = value.strip_prefix("ref: ") {
         return read_reference_from_files_at_depth(
@@ -1351,9 +1382,9 @@ fn parse_reference_value(
             depth.descend(reference)?,
         );
     }
-    value
-        .parse()
-        .map_err(|_| ClaimError::InvalidStoredReference(reference.to_owned()))
+    value.parse().map_err(|_| {
+        ReferenceFileReadError::Claim(ClaimError::InvalidStoredReference(reference.to_owned()))
+    })
 }
 
 fn read_packed_reference(
@@ -1381,62 +1412,6 @@ fn read_packed_reference(
     )
 }
 
-fn read_head_snapshot(
-    repository_root: &Path,
-    current_head: GitObjectId,
-) -> Result<ClaimHeadSnapshot, ClaimError> {
-    let output = git_output(
-        repository_root,
-        &[
-            GIT_SYMBOLIC_REF_COMMAND,
-            GIT_FULL_REF_NAME_ARG,
-            GIT_HEAD_REVISION,
-        ],
-    )?;
-    if output.status.success() {
-        let full_ref = String::from_utf8(output.stdout)?
-            .trim()
-            .parse()
-            .map_err(|_| ClaimError::InvalidHeadReference)?;
-        Ok(ClaimHeadSnapshot::Branch {
-            full_ref,
-            head: ClaimHeadCommit::from(current_head),
-        })
-    } else if output.status.code() == Some(1) {
-        Ok(ClaimHeadSnapshot::Detached {
-            head: ClaimHeadCommit::from(current_head),
-        })
-    } else {
-        Err(ClaimError::GitCommandFailed(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ))
-    }
-}
-
-fn read_git_object_id(
-    repository_root: &Path,
-    arguments: &[&str],
-) -> Result<GitObjectId, ClaimError> {
-    let output = git_output(repository_root, arguments)?;
-    if !output.status.success() {
-        return Err(ClaimError::GitCommandFailed(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
-    }
-    String::from_utf8(output.stdout)?
-        .trim()
-        .parse()
-        .map_err(ClaimError::InvalidGitObjectId)
-}
-
-fn git_output(repository_root: &Path, arguments: &[&str]) -> Result<Output, std::io::Error> {
-    Command::new(GIT_BINARY)
-        .arg(GIT_NO_OPTIONAL_LOCKS_ARG)
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()
-}
-
 enum ClaimRejection {
     Conflict(Vec<ReservationConflict>),
     AuthorizationRequired(Box<OverlapEscalationPayload>),
@@ -1451,6 +1426,7 @@ enum ClaimRejection {
 #[derive(Debug)]
 pub(crate) enum ClaimError {
     Io(std::io::Error),
+    Git(GitError),
     Config(ConfigError),
     Ledger(LedgerError),
     PathCase(PathCaseError),
@@ -1459,8 +1435,6 @@ pub(crate) enum ClaimError {
     EdgeReplay(EdgeReplayError),
     CoordinationIdentity(CoordinationIdentityRejection),
     InvalidGitObjectId(InvalidGitObjectId),
-    InvalidUtf8(FromUtf8Error),
-    GitCommandFailed(String),
     InvalidHeadReference,
     InvalidTrunkReference,
     MissingReference(String),
@@ -1474,6 +1448,7 @@ impl Display for ClaimError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "claim I/O failed: {error}"),
+            Self::Git(error) => error.fmt(formatter),
             Self::Config(error) => error.fmt(formatter),
             Self::Ledger(error) => error.fmt(formatter),
             Self::PathCase(error) => error.fmt(formatter),
@@ -1484,8 +1459,6 @@ impl Display for ClaimError {
             Self::EdgeReplay(error) => write!(formatter, "ordering replay failed: {error}"),
             Self::CoordinationIdentity(rejection) => rejection.fmt(formatter),
             Self::InvalidGitObjectId(error) => error.fmt(formatter),
-            Self::InvalidUtf8(error) => write!(formatter, "git output was not UTF-8: {error}"),
-            Self::GitCommandFailed(stderr) => write!(formatter, "git command failed: {stderr}"),
             Self::InvalidHeadReference => {
                 formatter.write_str("git returned an invalid full HEAD reference")
             },
@@ -1548,6 +1521,10 @@ impl From<std::io::Error> for ClaimError {
     fn from(error: std::io::Error) -> Self { Self::Io(error) }
 }
 
+impl From<GitError> for ClaimError {
+    fn from(error: GitError) -> Self { Self::Git(error) }
+}
+
 impl From<ConfigError> for ClaimError {
     fn from(error: ConfigError) -> Self { Self::Config(error) }
 }
@@ -1562,10 +1539,6 @@ impl From<PathCaseError> for ClaimError {
 
 impl From<LedgerTransactionError> for ClaimError {
     fn from(error: LedgerTransactionError) -> Self { Self::Transaction(error) }
-}
-
-impl From<FromUtf8Error> for ClaimError {
-    fn from(error: FromUtf8Error) -> Self { Self::InvalidUtf8(error) }
 }
 
 #[cfg(test)]

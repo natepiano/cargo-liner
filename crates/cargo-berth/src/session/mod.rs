@@ -9,6 +9,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -20,6 +21,8 @@ use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 
+static CURRENT_PROCESS_HARNESS_SESSION: OnceLock<String> = OnceLock::new();
+
 /// One harness session identifier supplied to a single command invocation.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
@@ -28,20 +31,46 @@ struct HarnessSessionId(String);
 impl HarnessSessionId {
     const MAXIMUM_CHARACTERS: usize = 256;
 
-    fn from_environment() -> HarnessSessionIdentity {
-        std::env::var_os(HARNESS_SESSION_ENVIRONMENT).map_or(
-            HarnessSessionIdentity::Unavailable,
-            |value| {
-                value
-                    .into_string()
-                    .ok()
-                    .and_then(|value| value.parse().ok())
-                    .map_or(
-                        HarnessSessionIdentity::Unavailable,
-                        HarnessSessionIdentity::Available,
-                    )
-            },
-        )
+    fn from_current_process() -> HarnessSessionIdentity {
+        CURRENT_PROCESS_HARNESS_SESSION
+            .get()
+            .cloned()
+            .map_or_else(
+                || {
+                    std::env::var_os(HARNESS_SESSION_ENVIRONMENT)
+                        .and_then(|value| value.into_string().ok())
+                },
+                Some,
+            )
+            .map_or(HarnessSessionIdentity::Unavailable, |value| {
+                value.parse().ok().map_or(
+                    HarnessSessionIdentity::Unavailable,
+                    HarnessSessionIdentity::Available,
+                )
+            })
+    }
+}
+
+/// Whether a private hook boundary selected its harness session for this process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CurrentProcessHarnessSessionSelection {
+    /// This process will resolve and publish mappings for the selected session.
+    Selected,
+    /// Another private boundary had already selected a session in this process.
+    AlreadySelected,
+}
+
+/// Select the harness session parsed by a private hook boundary.
+pub(crate) fn select_current_process_harness_session(
+    harness_session_id: String,
+) -> CurrentProcessHarnessSessionSelection {
+    if CURRENT_PROCESS_HARNESS_SESSION
+        .set(harness_session_id)
+        .is_ok()
+    {
+        CurrentProcessHarnessSessionSelection::Selected
+    } else {
+        CurrentProcessHarnessSessionSelection::AlreadySelected
     }
 }
 
@@ -164,7 +193,7 @@ struct InvalidHarnessSessionId;
 /// Resolve the current process's harness session from the mapping beside the journal.
 pub(crate) fn resolve(ledger_directory: &Path) -> SessionIdentityLookup {
     let HarnessSessionIdentity::Available(harness_session_id) =
-        HarnessSessionId::from_environment()
+        HarnessSessionId::from_current_process()
     else {
         return SessionIdentityLookup::Unavailable;
     };
@@ -214,7 +243,7 @@ pub(crate) fn publish_reservation_identity(
     reservation_id: ReservationId,
 ) -> SessionIdentityMappingPublication {
     let HarnessSessionIdentity::Available(harness_session_id) =
-        HarnessSessionId::from_environment()
+        HarnessSessionId::from_current_process()
     else {
         return SessionIdentityMappingPublication::Published;
     };
@@ -232,7 +261,7 @@ pub(crate) fn remove_current_mapping(
     ledger_directory: &Path,
 ) -> Result<CurrentSessionMappingRemoval, SessionIdentityStoreError> {
     let HarnessSessionIdentity::Available(harness_session_id) =
-        HarnessSessionId::from_environment()
+        HarnessSessionId::from_current_process()
     else {
         return Ok(CurrentSessionMappingRemoval::CurrentSessionUnavailable);
     };

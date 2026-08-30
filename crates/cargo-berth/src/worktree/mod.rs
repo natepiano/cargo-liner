@@ -6,5 +6,6 @@ pub(crate) mod liveness;
 
 pub(crate) use liveness::WorktreeHead;
 pub(crate) use liveness::WorktreeLiveness;
+pub(crate) use liveness::WorktreeMarkerSweepContext;
 pub(crate) use liveness::WorktreeRegistry;
 pub(crate) use liveness::WorktreeRelocation;

@@ -559,6 +559,48 @@ fn incursion_incident_round_trip_deduplicates_and_resolves() {
 }
 
 #[test]
+fn incursion_resolution_requires_current_enrollment() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let foreign_root = add_worktree(repository.path(), worktrees.path(), "unenrolled-foreign");
+    let subject_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
+    let _foreign_id = claim(&foreign_root, "tree:shared", SECOND_RUN);
+    fs::create_dir_all(repository.path().join("shared")).expect("shared directory should exist");
+    fs::write(repository.path().join("shared/entered.txt"), "incursion\n")
+        .expect("incursion path should write");
+    let observed = drift(repository.path(), &["--full", "--reservation", &subject_id]);
+    assert_eq!(json_output(&observed)["status"], "incursion");
+    let incident_id = journal_events(repository.path())
+        .into_iter()
+        .find(|event| event["op"] == "incursion")
+        .and_then(|event| event["incident_id"].as_str().map(str::to_owned))
+        .expect("drift should append an incident");
+    fs::remove_file(repository.path().join(CONFIGURATION_PATH))
+        .expect("configuration should remove");
+
+    let rejected = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &subject_id,
+            "--incursion",
+            &incident_id,
+            "--json",
+        ],
+    );
+
+    assert_eq!(rejected.status.code(), Some(4));
+    assert_eq!(json_output(&rejected)["status"], "unconfigured");
+    assert_eq!(
+        journal_events(repository.path())
+            .iter()
+            .filter(|event| event["op"] == "resolve_incursion")
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn linked_worktree_resolve_reports_recorded_same_actor_and_foreign_actor_outcomes() {
     let repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");
@@ -1914,16 +1956,18 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     );
     assert!(full.output.status.success());
     assert_eq!(full.fingerprint_commands(), vec!["diff-tree", "status"]);
-    assert_one_batched_phase_ancestry_command(&full.commands());
+    assert_batched_full_attribution_commands(&full.commands());
 
     let cheap = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(cheap.output.status.success());
     assert_eq!(cheap.fingerprint_commands(), vec!["status"]);
     assert_no_phase_ancestry_or_metadata_command(&cheap.commands());
+    let mut cheap_commands = cheap.commands();
+    cheap_commands.sort_unstable();
     assert_eq!(
-        cheap.commands(),
-        vec!["worktree", "rev-parse", "rev-parse", "rev-parse", "status",],
-        "the cheap PostToolUse engine path must reuse its discovered ledger",
+        cheap_commands,
+        vec!["cat-file", "status", "worktree"],
+        "the cheap PostToolUse engine path must reuse its discovered ledger and administrative directory",
     );
 
     fs::remove_file(fingerprint_cache(repository.path())).expect("fingerprint cache should delete");
@@ -1937,7 +1981,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
         json_output(&missing_cache.output)["payload"]["data"]["comparison"],
         "full_phase_start_fallback"
     );
-    assert_one_batched_phase_ancestry_command(&missing_cache.commands());
+    assert_batched_full_attribution_commands(&missing_cache.commands());
 
     fs::write(fingerprint_cache(repository.path()), "not json")
         .expect("corrupt fingerprint should write");
@@ -1947,7 +1991,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
         corrupt_cache.fingerprint_commands(),
         vec!["diff-tree", "status"]
     );
-    assert_one_batched_phase_ancestry_command(&corrupt_cache.commands());
+    assert_batched_full_attribution_commands(&corrupt_cache.commands());
 }
 
 #[test]
@@ -2860,13 +2904,14 @@ fn traced_drift(repository_root: &Path, arguments: &[&str]) -> TracedDrift {
     }
 }
 
-fn assert_one_batched_phase_ancestry_command(commands: &[String]) {
+fn assert_batched_full_attribution_commands(commands: &[String]) {
     assert_eq!(
         commands
             .iter()
             .filter(|command| command.as_str() == "rev-list")
             .count(),
-        1
+        1,
+        "full observation spends one batched phase-range ancestry walk",
     );
     assert!(!commands.iter().any(|command| command == "metadata"));
 }

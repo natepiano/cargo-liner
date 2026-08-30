@@ -3,9 +3,11 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
+use std::thread;
 
 use super::git_output;
 use super::git_output::DriftFingerprintError;
+use super::git_output::IncursionAttributionActivity;
 use super::git_output::IncursionAttributionAnchorState;
 use super::git_output::IncursionPathCommit;
 use super::observation::FullPhaseHistoryObservation;
@@ -17,19 +19,12 @@ use super::report::DriftReport;
 use super::report::IncursionCommit;
 use super::report::IncursionCommitOrigin;
 use super::report::ReservationDriftResult;
-use crate::config::BerthConfig;
-use crate::config::Enrollment;
+use crate::edge::RepositoryTrunk;
 use crate::git;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::IncursionPathSet;
 use crate::reservation::RetainedReservationSet;
-
-/// The trunk basis used to classify where an incursion commit originated.
-enum IncursionCommitOriginBasis {
-    ResolvedTrunk(GitObjectId),
-    CannotClassifyOrigin,
-}
 
 enum IncursionAttributionSubjectState {
     NoCommittedIncursion,
@@ -63,6 +58,20 @@ enum IncursionCommitOriginMembership {
     CannotClassifyOrigin,
 }
 
+impl IncursionCommitOriginMembership {
+    fn observe(
+        repository_root: &Path,
+        origin_basis: &RepositoryTrunk,
+        target: &GitObjectId,
+    ) -> Self {
+        let RepositoryTrunk::Resolved(origin_basis) = origin_basis else {
+            return Self::CannotClassifyOrigin;
+        };
+        git::commits_outside_origin_basis(repository_root, origin_basis, target)
+            .map_or(Self::CannotClassifyOrigin, Self::Classified)
+    }
+}
+
 /// Name the commits behind every entered path an incursion took from the phase range.
 ///
 /// The message a reader acts on names paths and reservation ids only, so a path that
@@ -73,6 +82,7 @@ pub(super) fn name_incursion_commits(
     repository_root: &Path,
     reservations: &RetainedReservationSet,
     changes: &ObservedDriftChanges,
+    repository_trunk: &RepositoryTrunk,
     report: &mut DriftReport,
 ) -> Result<(), DriftFingerprintError> {
     let IncursionAttributionSubjectState::Ready(subjects) =
@@ -80,8 +90,7 @@ pub(super) fn name_incursion_commits(
     else {
         return Ok(());
     };
-    let origin_basis = trunk_object_id(repository_root);
-    let batch = attribution_batch(repository_root, &origin_basis, &subjects)?;
+    let batch = attribution_batch(repository_root, repository_trunk, &subjects)?;
     for result in &mut report.results {
         let ReservationDriftResult::Changed {
             reservation_id,
@@ -197,7 +206,7 @@ fn committed_incursion_paths(
 
 fn attribution_batch(
     repository_root: &Path,
-    origin_basis: &IncursionCommitOriginBasis,
+    origin_basis: &RepositoryTrunk,
     subjects: &IncursionAttributionSubjects,
 ) -> Result<IncursionAttributionBatch, DriftFingerprintError> {
     let mut anchors = subjects
@@ -213,83 +222,69 @@ fn attribution_batch(
             )
         })
         .collect::<HashMap<_, _>>();
-    let usable_anchors = subjects
+    let has_usable_anchor = subjects
         .anchors
         .iter()
-        .filter(|anchor| anchor.state == IncursionAttributionAnchorState::UsableAncestor)
-        .map(|anchor| anchor.object_id.clone())
-        .collect::<Vec<_>>();
-    if usable_anchors.is_empty() {
+        .any(|anchor| anchor.state == IncursionAttributionAnchorState::UsableAncestor);
+    if !has_usable_anchor {
         return Ok(IncursionAttributionBatch {
             anchors,
             commits: Vec::new(),
             origin_membership: IncursionCommitOriginMembership::CannotClassifyOrigin,
         });
     }
-    let union_base = git::incursion_attribution_union_base(repository_root, &usable_anchors)
-        .map_err(DriftFingerprintError::from)?;
-    let path_log_invocation = git::incursion_path_log(
-        repository_root,
-        &union_base,
-        &subjects.target,
-        &subjects.paths,
-    );
-    let path_log = git_output::completed_git_output(
-        path_log_invocation.execution,
-        &path_log_invocation.arguments,
-    )?;
-    let commits = git_output::parse_incursion_path_log(&path_log.stdout)?;
-    let candidate_commits = commits
-        .iter()
-        .map(|commit| commit.commit.clone())
-        .collect::<Vec<_>>();
     let subject_anchor_ids = subjects
         .anchors
         .iter()
         .map(|anchor| anchor.object_id.clone())
         .collect::<Vec<_>>();
-    let range_commits = git::incursion_range_commits(
-        repository_root,
-        &subject_anchor_ids,
-        &subjects.target,
-        &candidate_commits,
-    )
-    .map_err(DriftFingerprintError::from)?;
-    for (anchor, range_commits) in subject_anchor_ids.iter().zip(range_commits) {
+    let (commits, range_commits_by_anchor, origin_membership) = thread::scope(|scope| {
+        let path_log_worker = scope.spawn(|| {
+            let path_log_invocation =
+                git::incursion_path_log(repository_root, &subjects.target, &subjects.paths);
+            let path_log = git_output::completed_git_output(
+                path_log_invocation.execution,
+                &path_log_invocation.arguments,
+            )?;
+            git_output::parse_incursion_path_log(&path_log.stdout)
+        });
+        let commit_graph_worker = scope.spawn(|| {
+            git::incursion_range_commits(repository_root, &subject_anchor_ids, &subjects.target)
+        });
+        let origin_membership_worker = scope.spawn(|| {
+            IncursionCommitOriginMembership::observe(
+                repository_root,
+                origin_basis,
+                &subjects.target,
+            )
+        });
+        let commits = path_log_worker.join().map_err(|_| {
+            DriftFingerprintError::IncursionAttributionWorkerPanicked {
+                activity: IncursionAttributionActivity::PathLog,
+            }
+        })??;
+        let range_commits_by_anchor = commit_graph_worker.join().map_err(|_| {
+            DriftFingerprintError::IncursionAttributionWorkerPanicked {
+                activity: IncursionAttributionActivity::CommitGraph,
+            }
+        })??;
+        let origin_membership = origin_membership_worker.join().map_err(|_| {
+            DriftFingerprintError::IncursionAttributionWorkerPanicked {
+                activity: IncursionAttributionActivity::OriginMembership,
+            }
+        })?;
+        Ok::<_, DriftFingerprintError>((commits, range_commits_by_anchor, origin_membership))
+    })?;
+    for (anchor, range_commits) in subject_anchor_ids.iter().zip(range_commits_by_anchor) {
         if let Some(attribution) = anchors.get_mut(anchor) {
             attribution.range_commits = range_commits;
         }
     }
-    // A `commits_outside_origin_basis` failure may only remove origin
-    // classification; it must not discard commits established by the path log
-    // and range-membership query.
-    let origin_membership = match origin_basis {
-        IncursionCommitOriginBasis::ResolvedTrunk(trunk) => {
-            git::commits_outside_origin_basis(repository_root, trunk, &subjects.target).map_or(
-                IncursionCommitOriginMembership::CannotClassifyOrigin,
-                IncursionCommitOriginMembership::Classified,
-            )
-        },
-        IncursionCommitOriginBasis::CannotClassifyOrigin => {
-            IncursionCommitOriginMembership::CannotClassifyOrigin
-        },
-    };
     Ok(IncursionAttributionBatch {
         anchors,
         commits,
         origin_membership,
     })
-}
-
-/// The trunk tip used to classify commit origin, or the semantic reason classification cannot run.
-fn trunk_object_id(repository_root: &Path) -> IncursionCommitOriginBasis {
-    let Ok(Enrollment::Enrolled(configuration)) = BerthConfig::read(repository_root) else {
-        return IncursionCommitOriginBasis::CannotClassifyOrigin;
-    };
-    git::branch_object_id(repository_root, &configuration.trunk).map_or(
-        IncursionCommitOriginBasis::CannotClassifyOrigin,
-        IncursionCommitOriginBasis::ResolvedTrunk,
-    )
 }
 
 fn commits_for_paths(

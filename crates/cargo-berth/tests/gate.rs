@@ -32,6 +32,7 @@ const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
+const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 9;
 const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
@@ -48,7 +49,17 @@ record=git
 for argument in "$@"; do
     record="${record}${separator}${argument}"
 done
+lock_attempt=0
+while ! /bin/mkdir "$CARGO_BERTH_TEST_GIT_TRACE.lock" 2>/dev/null; do
+    lock_attempt=$((lock_attempt + 1))
+    if [ "$lock_attempt" -ge 200 ]; then
+        printf '%s\n' 'timed out acquiring raw git trace lock' >&2
+        exit 24
+    fi
+    sleep 0.01
+done
 printf '%s\036' "$record" >> "$CARGO_BERTH_TEST_GIT_TRACE"
+/bin/rmdir "$CARGO_BERTH_TEST_GIT_TRACE.lock"
 if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "fail_phase_diff" ] \
     && [ "$1" = "--no-optional-locks" ] \
     && [ "$2" = "diff-tree" ] \
@@ -68,33 +79,16 @@ if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "fail_origin_classif
             ;;
     esac
 fi
-if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "remove_after_simple_rev_list" ] \
+if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "remove_after_target_history" ] \
     && [ "$1" = "--no-optional-locks" ] \
     && [ "$2" = "rev-list" ] \
-    && [ -n "${3:-}" ] \
-    && [ -z "${4:-}" ]; then
+    && [ "$3" = "--parents" ] \
+    && [ -n "${4:-}" ] \
+    && [ -z "${5:-}" ]; then
     "$CARGO_BERTH_TEST_REAL_GIT" "$@"
     status=$?
     /bin/rm -f "$0"
     exit "$status"
-fi
-exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
-"#;
-const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
-if [ "$1" = "--no-optional-locks" ]; then
-    case "$2" in
-        cat-file) printf '%s %s\n' "$2" "$3" >> "$CARGO_BERTH_TEST_GIT_TRACE" ;;
-        merge-base)
-            (
-                command_name="$2"
-                shift 2
-                printf '%s' "$command_name" >> "$CARGO_BERTH_TEST_GIT_TRACE"
-                for argument in "$@"; do printf ' %s' "$argument" >> "$CARGO_BERTH_TEST_GIT_TRACE"; done
-                printf '\n' >> "$CARGO_BERTH_TEST_GIT_TRACE"
-            )
-            ;;
-        rev-list) printf '%s\n' "$2" >> "$CARGO_BERTH_TEST_GIT_TRACE" ;;
-    esac
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
@@ -2157,9 +2151,8 @@ fn permit_consumption_waits_for_committed_and_aborted_does_not_spend_it() {
 }
 
 #[test]
-fn committed_hook_persists_one_scoped_patch_evaluation() {
+fn committed_hook_persists_one_scoped_patch_evaluation_record() {
     let repository = initialized_repository();
-    let phase_start_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     let claimed = claim(
         repository.path(),
         "file:src/lib.rs",
@@ -2206,24 +2199,15 @@ fn committed_hook_persists_one_scoped_patch_evaluation() {
     let target = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     assert!(!journal_text(repository.path()).contains("scoped_patch_equivalence_checked"));
 
-    let traced = run_private_hook_with_git_trace(
+    let committed = run_private_hook(
         repository.path(),
         "committed",
         &format!("{protected_tip} {target} refs/heads/main\n"),
     );
     assert!(
-        traced.output.status.success(),
+        committed.status.success(),
         "committed hook failed: {}",
-        String::from_utf8_lossy(&traced.output.stderr)
-    );
-    let trace = fs::read_to_string(&traced.trace_path).expect("git trace should read");
-    let scoped_evaluation = format!("merge-base {phase_start_head} {target}");
-    assert_eq!(
-        trace
-            .lines()
-            .filter(|command| *command == scoped_evaluation)
-            .count(),
-        1
+        String::from_utf8_lossy(&committed.stderr)
     );
     assert_eq!(
         journal_text(repository.path())
@@ -2425,7 +2409,12 @@ fn post_tool_use_git_subprocess_count_is_cardinality_invariant() {
     let one_reservation = post_commit_reservation_cardinality_trace(1);
     let twenty_reservations = post_commit_reservation_cardinality_trace(20);
 
-    assert_same_git_process_sequence(&one_reservation, &twenty_reservations);
+    assert_same_git_process_multiset(&one_reservation, &twenty_reservations);
+    assert_eq!(
+        one_reservation.len(),
+        POST_COMMIT_ENGINE_GIT_PROCESS_CEILING
+    );
+    assert!(twenty_reservations.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
     assert_eq!(
         one_reservation
             .iter()
@@ -2445,17 +2434,23 @@ fn post_tool_use_git_subprocess_count_is_cardinality_invariant() {
 #[test]
 fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
     let attributed_baseline = post_commit_path_commit_cardinality_trace(1, 1);
+    assert_eq!(
+        attributed_baseline.len(),
+        POST_COMMIT_ENGINE_GIT_PROCESS_CEILING
+    );
     assert_eq!(git_command_count(&attributed_baseline, "log"), 1);
     for path_count in [1, 4, 33] {
         for commit_count in [1, 14, 100] {
             let observed = post_commit_path_commit_cardinality_trace(path_count, commit_count);
-            assert_same_git_process_sequence(&attributed_baseline, &observed);
+            assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
+            assert_same_git_process_multiset(&attributed_baseline, &observed);
             assert_eq!(git_command_count(&observed, "log"), 1);
         }
     }
 
     for (path_count, commit_count) in [(0, 0), (0, 1), (0, 14), (0, 100), (1, 0), (4, 0), (33, 0)] {
         let observed = post_commit_path_commit_cardinality_trace(path_count, commit_count);
+        assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
         assert_eq!(git_command_count(&observed, "log"), 0);
     }
 }
@@ -2507,7 +2502,7 @@ fn batched_git_path_distinguishes_spawn_failure_from_completed_failure() {
             &unavailable_reservation,
             "--json",
         ],
-        RawGitBehavior::RemoveAfterSimpleRevList,
+        RawGitBehavior::RemoveAfterTargetHistory,
     );
     let unavailable_envelope = json_output(&unavailable);
     assert_eq!(unavailable_envelope["status"], "ledger_unreadable");
@@ -2517,9 +2512,11 @@ fn batched_git_path_distinguishes_spawn_failure_from_completed_failure() {
             .is_some_and(|message| message.contains("could not run drift fingerprint")),
         "spawn failure did not retain its typed diagnostic: {unavailable_envelope}"
     );
-    assert_eq!(
-        unavailable_trace.last().and_then(raw_git_command),
-        Some("rev-list")
+    assert!(
+        unavailable_trace
+            .iter()
+            .any(|invocation| raw_git_command(invocation) == Some("rev-list")),
+        "the failed batched history read was absent: {unavailable_trace:#?}"
     );
     assert_eq!(git_command_count(&unavailable_trace, "diff-tree"), 0);
 
@@ -2597,8 +2594,8 @@ fn incursion_report_survives_origin_classification_failure() {
         ],
     );
     let entering_commit = git_stdout(&subject_root, &["rev-parse", "HEAD"]);
-    let trunk_commit = git_stdout(repository.path(), &["rev-parse", "main"]);
-
+    let origin_basis = git_stdout(&subject_root, &["rev-parse", "refs/heads/main"]);
+    let origin_range = format!("{origin_basis}..{entering_commit}");
     let (reported, trace) = run_berth_with_raw_git_behavior(
         &subject_root,
         &["drift", "--full", "--reservation", &subject_id, "--json"],
@@ -2623,17 +2620,10 @@ fn incursion_report_survives_origin_classification_failure() {
     assert_eq!(commit["commit"], entering_commit);
     assert_eq!(commit["origin"], "unknown");
 
-    let origin_range = format!("{trunk_commit}..{entering_commit}");
     let origin_invocation_count = trace
         .iter()
         .filter(|invocation| {
-            invocation.arguments
-                == [
-                    "git",
-                    "--no-optional-locks",
-                    "rev-list",
-                    origin_range.as_str(),
-                ]
+            invocation.arguments == ["git", "--no-optional-locks", "rev-list", &origin_range]
         })
         .count();
     assert_eq!(origin_invocation_count, 1, "raw git trace: {trace:#?}");
@@ -2697,12 +2687,6 @@ fn deleting_the_retention_ref_leaves_no_hook_owned_reference() {
     assert!(!object_status.success());
 }
 
-struct TracedHook {
-    output:     Output,
-    trace_path: PathBuf,
-    _directory: TempDir,
-}
-
 #[derive(Debug, Eq, PartialEq)]
 struct RawGitInvocation {
     arguments: Vec<String>,
@@ -2711,7 +2695,7 @@ struct RawGitInvocation {
 #[derive(Clone, Copy)]
 enum RawGitBehavior {
     PassThrough,
-    RemoveAfterSimpleRevList,
+    RemoveAfterTargetHistory,
     FailPhaseDiff,
     FailOriginClassification,
 }
@@ -2720,7 +2704,7 @@ impl RawGitBehavior {
     const fn as_str(self) -> &'static str {
         match self {
             Self::PassThrough => "pass_through",
-            Self::RemoveAfterSimpleRevList => "remove_after_simple_rev_list",
+            Self::RemoveAfterTargetHistory => "remove_after_target_history",
             Self::FailPhaseDiff => "fail_phase_diff",
             Self::FailOriginClassification => "fail_origin_classification",
         }
@@ -3445,60 +3429,6 @@ fn run_hook_at_path(
         .expect("managed hook should finish")
 }
 
-fn run_private_hook_with_git_trace(
-    repository_root: &Path,
-    hook_phase: &str,
-    input: &str,
-) -> TracedHook {
-    let directory = tempdir().expect("wrapper directory should exist");
-    let wrapper_path = directory.path().join(GIT_BINARY);
-    let trace_path = directory.path().join("trace");
-    fs::write(&wrapper_path, TRACING_GIT_WRAPPER).expect("git wrapper should write");
-    let mut permissions = fs::metadata(&wrapper_path)
-        .expect("git wrapper metadata should read")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
-    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
-    let wrapped_path = std::env::join_paths(
-        std::iter::once(directory.path().to_path_buf())
-            .chain(std::env::split_paths(&original_path)),
-    )
-    .expect("wrapped PATH should join");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(["__reference-transaction", hook_phase, "refs/heads/main"])
-        .current_dir(repository_root)
-        .env(
-            REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
-            repository_root,
-        )
-        .env("PATH", wrapped_path)
-        .env(REAL_GIT_ENVIRONMENT, git_binary())
-        .env(TRACE_ENVIRONMENT, &trace_path)
-        .env_remove(BYPASS_ENVIRONMENT)
-        .env_remove(RUN_ENVIRONMENT)
-        .env_remove(SESSION_ENVIRONMENT)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("private gate should start");
-    child
-        .stdin
-        .take()
-        .expect("private gate stdin should exist")
-        .write_all(input.as_bytes())
-        .expect("private gate stdin should write");
-    let output = child
-        .wait_with_output()
-        .expect("private gate should finish");
-    TracedHook {
-        output,
-        trace_path,
-        _directory: directory,
-    }
-}
-
 fn post_commit_reservation_cardinality_trace(reservation_count: usize) -> Vec<RawGitInvocation> {
     let repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");
@@ -3854,7 +3784,7 @@ fn run_command_with_raw_git_behavior(
     fs::set_permissions(&wrapper_path, permissions).expect("git wrapper should be executable");
     let original_path = std::env::var_os("PATH").expect("test PATH should exist");
     let wrapped_path = match raw_git_behavior {
-        RawGitBehavior::RemoveAfterSimpleRevList => directory.path().as_os_str().to_owned(),
+        RawGitBehavior::RemoveAfterTargetHistory => directory.path().as_os_str().to_owned(),
         RawGitBehavior::PassThrough
         | RawGitBehavior::FailPhaseDiff
         | RawGitBehavior::FailOriginClassification => std::env::join_paths(
@@ -4302,7 +4232,10 @@ fn assert_one_suppressed_ref_transaction(invocations: &[RawGitInvocation]) {
 
 fn assert_same_git_invocation_sequence(left: &[RawGitInvocation], right: &[RawGitInvocation]) {
     assert_eq!(left.len(), right.len(), "left={left:#?}\nright={right:#?}");
-    for (left_invocation, right_invocation) in left.iter().zip(right) {
+    for (left_invocation, right_invocation) in normalized_git_invocations(left)
+        .into_iter()
+        .zip(normalized_git_invocations(right))
+    {
         assert_eq!(
             left_invocation.arguments.len(),
             right_invocation.arguments.len(),
@@ -4323,32 +4256,37 @@ fn assert_same_git_invocation_sequence(left: &[RawGitInvocation], right: &[RawGi
     }
 }
 
-fn assert_same_git_process_sequence(left: &[RawGitInvocation], right: &[RawGitInvocation]) {
+fn normalized_git_invocations(invocations: &[RawGitInvocation]) -> Vec<&RawGitInvocation> {
+    let mut invocations = invocations.iter().collect::<Vec<_>>();
+    let concurrent_startup_reads = invocations
+        .iter()
+        .take(3)
+        .take_while(|invocation| {
+            matches!(
+                raw_git_command(invocation),
+                Some("cat-file" | "rev-list" | "status" | "worktree")
+            )
+        })
+        .count();
+    if concurrent_startup_reads >= 2 {
+        invocations[..concurrent_startup_reads]
+            .sort_by(|left, right| left.arguments.cmp(&right.arguments));
+    }
+    invocations
+}
+
+fn assert_same_git_process_multiset(left: &[RawGitInvocation], right: &[RawGitInvocation]) {
     assert_eq!(left.len(), right.len(), "left={left:#?}\nright={right:#?}");
     assert_eq!(
-        normalized_git_process_sequence(left),
-        normalized_git_process_sequence(right),
+        canonical_git_command_multiset(left),
+        canonical_git_command_multiset(right),
         "left={left:#?}\nright={right:#?}"
     );
 }
 
-fn normalized_git_process_sequence(invocations: &[RawGitInvocation]) -> Vec<String> {
+fn canonical_git_command_multiset(invocations: &[RawGitInvocation]) -> Vec<String> {
     let mut sequence = raw_git_command_sequence(invocations);
-    let phase_head_index = invocations.iter().position(|invocation| {
-        invocation.arguments.windows(2).any(|arguments| {
-            matches!(arguments, [command, revision] if command == "rev-parse" && revision == "HEAD")
-        })
-    });
-    let working_tree_index = invocations
-        .iter()
-        .position(|invocation| raw_git_command(invocation) == Some("status"));
-    if let (Some(phase_head_index), Some(working_tree_index)) =
-        (phase_head_index, working_tree_index)
-    {
-        let concurrent_reads =
-            phase_head_index.min(working_tree_index)..=phase_head_index.max(working_tree_index);
-        sequence[concurrent_reads].sort();
-    }
+    sequence.sort();
     sequence
 }
 
