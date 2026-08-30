@@ -9,11 +9,11 @@ use super::claim::FirstTouchClaimRequest;
 use super::claim::FirstTouchConflictHandling;
 use super::claim::FirstTouchConflictOutcome;
 use crate::config::Enrollment;
+use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::RecoveryCommandLine;
-use crate::coordination_identity::validate_coordination_identity;
 use crate::ledger;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
@@ -240,16 +240,15 @@ fn decide(
         snapshot.worktree_context(),
         recovery_command_line,
     );
-    validate_coordination_identity(&reservations, &identity_validation).map_err(
-        |error| match error {
+    coordination_identity::validate_coordination_identity(&reservations, &identity_validation)
+        .map_err(|error| match error {
             CoordinationIdentityValidationError::Rejected(rejection) => {
                 CheckDecisionError::CoordinationIdentity(rejection)
             },
             CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
                 CheckDecisionError::Ledger(LedgerError::InvalidCanonicalWorktreeRoot)
             },
-        },
-    )?;
+        })?;
     let conflicts = reservations.conflicts_for_edit(
         &scopes,
         resolved_edit_authorization.edit_authorization(),

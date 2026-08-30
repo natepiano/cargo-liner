@@ -4,6 +4,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
+use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -212,7 +213,7 @@ fn install_managed_hook(
 /// A fully written replacement that is not visible at the managed hook path yet.
 struct PendingManagedHookReplacement {
     path: PathBuf,
-    file: fs::File,
+    file: File,
 }
 
 impl PendingManagedHookReplacement {

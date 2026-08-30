@@ -265,7 +265,7 @@ pub(crate) enum EditAuthorization {
         /// The worktree the invocation runs in, which decides the same-worktree exemption.
         worktree_id:         WorktreeId,
     },
-    /// The worktree marker supplied a run paired with its minted worktree identity.
+    /// The worktree marker supplied a run paired with its issued worktree identity.
     Marker {
         /// The run named by the marker.
         coordination_run_id: CoordinationRunId,
@@ -834,7 +834,7 @@ pub(crate) enum LedgerCommittedActionOutcome<Rejection, CommittedActionOutput> {
 /// A stored worktree identity paired with its separate worktree role.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WorktreeIdentity {
-    /// The opaque identity minted for this administrative directory instance.
+    /// The opaque identity issued for this administrative directory instance.
     pub(crate) id: WorktreeId,
     /// Whether this is the main or a linked worktree.
     kind:          WorktreeKind,
@@ -912,7 +912,7 @@ impl Ledger {
     }
 
     /// Read validated journal truth without holding the mutation lock.
-    pub(crate) fn read_validated_events(&self) -> Result<Vec<JournalEvent>, LedgerError> {
+    fn read_validated_events(&self) -> Result<Vec<JournalEvent>, LedgerError> {
         self.require_existing()?;
         let repo_instance_id = read_repo_instance_id(&self.paths.repo_instance_id)?;
         let replay = Journal::replay_read_only(&self.paths.journal)?;
@@ -1876,6 +1876,7 @@ mod tests {
     use super::LedgerError;
     use super::LedgerTransactionError;
     use super::LedgerTransactionOutcome;
+    use super::MAXIMUM_JOURNAL_RECORD_BYTES;
     use super::TransactionValidation;
     use super::WorktreeContext;
     use super::worktree_identity;
@@ -2323,7 +2324,7 @@ mod tests {
                 cause:           BypassCause::ForcedIntegration {
                     permit_id: ForcedIntegrationPermitId::new(),
                     reason:    "x"
-                        .repeat(super::MAXIMUM_JOURNAL_RECORD_BYTES)
+                        .repeat(MAXIMUM_JOURNAL_RECORD_BYTES)
                         .parse::<ForcedIntegrationReason>()
                         .expect("oversized reason should remain non-empty"),
                 },

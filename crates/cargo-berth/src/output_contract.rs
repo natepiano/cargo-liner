@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Error;
 use serde_json::Value;
 use serde_json::json;
 
@@ -17,6 +18,7 @@ use crate::drift::IncursionCommitOrigin;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::JournalOperation;
 use crate::ledger::TrunkObservationAtClaim;
+use crate::output;
 use crate::output::CommandVerb;
 use crate::output::IdentityPayload;
 use crate::output::IntegrationPayload;
@@ -27,7 +29,6 @@ use crate::output::ReplayFailureReason;
 use crate::output::ReplayFailureSubjectKind;
 use crate::output::ReservationLifecycleQueryPayload;
 use crate::output::ResolvePayload;
-use crate::output::output_facts_schema;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProof;
@@ -100,12 +101,12 @@ struct CheckedContract {
 type GeneratedSchemas = BTreeMap<String, Value>;
 
 /// Regenerate the checked-in v1 contract entirely in memory.
-pub(crate) fn generate_output_contract() -> Result<String, serde_json::Error> {
+fn generate_output_contract() -> Result<String, Error> {
     generate_output_contract_with_reservation_lifecycle::<ReservationLifecycleSnapshot>()
 }
 
 fn generate_output_contract_with_reservation_lifecycle<LifecycleSchema: JsonSchema>()
--> Result<String, serde_json::Error> {
+-> Result<String, Error> {
     let schemas = generated_schemas::<LifecycleSchema>()?;
     let consumer_metadata = consumer_metadata(&schemas)?;
     let consumer_artifacts = render_consumer_artifacts(&consumer_metadata, &schemas)?;
@@ -126,9 +127,7 @@ fn generate_output_contract_with_reservation_lifecycle<LifecycleSchema: JsonSche
 }
 
 /// Reproduce both consumer files from a serialized checked-in contract.
-pub(crate) fn consumer_artifacts_from_contract(
-    serialized_contract: &str,
-) -> Result<(String, String), serde_json::Error> {
+fn consumer_artifacts_from_contract(serialized_contract: &str) -> Result<(String, String), Error> {
     let checked_contract = serde_json::from_str::<CheckedContract>(serialized_contract)?;
     let regenerated = render_consumer_artifacts(
         &checked_contract.consumer_metadata,
@@ -141,9 +140,7 @@ pub(crate) fn consumer_artifacts_from_contract(
 }
 
 /// Read the consumer bytes embedded for installation after reproducibility validation.
-pub(crate) fn embedded_consumer_artifacts(
-    serialized_contract: &str,
-) -> Result<(String, String), serde_json::Error> {
+fn embedded_consumer_artifacts(serialized_contract: &str) -> Result<(String, String), Error> {
     let checked_contract = serde_json::from_str::<CheckedContract>(serialized_contract)?;
     Ok((
         checked_contract.consumer_artifacts.status_payload_tables,
@@ -151,7 +148,7 @@ pub(crate) fn embedded_consumer_artifacts(
     ))
 }
 
-fn generated_schemas<LifecycleSchema: JsonSchema>() -> Result<GeneratedSchemas, serde_json::Error> {
+fn generated_schemas<LifecycleSchema: JsonSchema>() -> Result<GeneratedSchemas, Error> {
     let mut schemas = BTreeMap::new();
     schemas.insert(
         "canonical_worktree_root".to_owned(),
@@ -187,7 +184,7 @@ fn generated_schemas<LifecycleSchema: JsonSchema>() -> Result<GeneratedSchemas, 
     );
     schemas.insert(
         "output_facts".to_owned(),
-        serde_json::to_value(output_facts_schema())?,
+        serde_json::to_value(output::output_facts_schema())?,
     );
     schemas.insert(
         "protected_reservation_tip".to_owned(),
@@ -216,13 +213,11 @@ fn generated_schemas<LifecycleSchema: JsonSchema>() -> Result<GeneratedSchemas, 
     Ok(schemas)
 }
 
-fn schema_value<SchemaType: JsonSchema>() -> Result<Value, serde_json::Error> {
+fn schema_value<SchemaType: JsonSchema>() -> Result<Value, Error> {
     serde_json::to_value(schemars::schema_for!(SchemaType))
 }
 
-fn consumer_metadata(
-    generated_schemas: &GeneratedSchemas,
-) -> Result<ConsumerMetadata, serde_json::Error> {
+fn consumer_metadata(generated_schemas: &GeneratedSchemas) -> Result<ConsumerMetadata, Error> {
     with_schema_requirements(
         ConsumerMetadata {
             verbs:                              CommandVerb::ALL
@@ -1105,7 +1100,7 @@ fn identity_rejection(kind: &'static str, reservation_id: &'static str) -> Value
 fn with_schema_requirements(
     mut consumer_metadata: ConsumerMetadata,
     generated_schemas: &GeneratedSchemas,
-) -> Result<ConsumerMetadata, serde_json::Error> {
+) -> Result<ConsumerMetadata, Error> {
     let output_facts_schema = generated_schemas
         .get("output_facts")
         .ok_or_else(|| contract_generation_error("output_facts schema is missing"))?;
@@ -1119,7 +1114,7 @@ fn with_schema_requirements(
 fn required_paths_for_outcome(
     output_facts_schema: &Value,
     outcome_rule: &OutcomeRule,
-) -> Result<Vec<Vec<String>>, serde_json::Error> {
+) -> Result<Vec<Vec<String>>, Error> {
     let alternatives = output_facts_schema["oneOf"]
         .as_array()
         .ok_or_else(|| contract_generation_error("output_facts schema has no alternatives"))?;
@@ -1271,14 +1266,14 @@ fn resolved_schema<'schema>(root_schema: &'schema Value, schema: &'schema Value)
         .unwrap_or(schema)
 }
 
-fn contract_generation_error(message: impl Into<String>) -> serde_json::Error {
+fn contract_generation_error(message: impl Into<String>) -> Error {
     serde_json::Error::io(std::io::Error::other(message.into()))
 }
 
 fn render_consumer_artifacts(
     consumer_metadata: &ConsumerMetadata,
     generated_schemas: &GeneratedSchemas,
-) -> Result<ConsumerArtifacts, serde_json::Error> {
+) -> Result<ConsumerArtifacts, Error> {
     let consumer_metadata = with_schema_requirements(consumer_metadata.clone(), generated_schemas)?;
     Ok(ConsumerArtifacts {
         envelope_validation_jq: render_jq_validator(&consumer_metadata)?,
@@ -1822,7 +1817,7 @@ fn python_tuple(values: &[String]) -> String {
     clippy::too_many_lines,
     reason = "the generated static jq module is clearer as one sequential template"
 )]
-fn render_jq_validator(consumer_metadata: &ConsumerMetadata) -> Result<String, serde_json::Error> {
+fn render_jq_validator(consumer_metadata: &ConsumerMetadata) -> Result<String, Error> {
     let outcome_rules = serde_json::to_string(&consumer_metadata.outcomes)?;
     let integration_proofs = serde_json::to_string(&consumer_metadata.integration_proofs)?;
     let trunk_at_claim_alternatives =

@@ -8,6 +8,8 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use schemars::JsonSchema;
+#[cfg(test)]
+use schemars::Schema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -181,7 +183,7 @@ pub(crate) enum PostCommitRendering {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(rename = "replay_failure_subject")]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
-pub(crate) enum ReplayFailureSubject {
+enum ReplayFailureSubject {
     /// A retained reservation or reservation mutation was invalid.
     Reservation(#[schemars(with = "String")] ReservationId),
     /// A retained incursion-incident record was invalid.
@@ -538,7 +540,7 @@ enum OutputFacts {
 }
 
 #[cfg(test)]
-pub(crate) fn output_facts_schema() -> schemars::Schema { schemars::schema_for!(OutputFacts) }
+pub(crate) fn output_facts_schema() -> Schema { schemars::schema_for!(OutputFacts) }
 
 /// The resources an `init` call created or left intact.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -741,7 +743,7 @@ pub(crate) enum IntegratedGateOutcome {
         #[schemars(with = "Vec<serde_json::Value>")]
         violations: Vec<IntegrationViolation>,
     },
-    /// A one-use permit was minted and consumed by the update.
+    /// A one-use permit was issued and consumed by the update.
     Forced {
         /// The durable permit identity.
         permit_id:           ForcedIntegrationPermitId,
@@ -867,7 +869,7 @@ impl From<CurrentSessionMappingRemoval> for IdentityPayload {
 enum ClaimPayload {
     /// A reservation was appended with this minimal antichain.
     Claimed {
-        /// The newly minted reservation identity.
+        /// The newly issued reservation identity.
         reservation_id:              ReservationId,
         /// The coordination run that owns the appended reservation.
         coordination_run_id:         CoordinationRunId,

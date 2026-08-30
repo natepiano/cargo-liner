@@ -12,6 +12,8 @@ use std::str::FromStr;
 use super::ordering;
 use crate::git;
 use crate::git::GitCommandOutputAvailability;
+use crate::git::GitError;
+use crate::git::INCURSION_ATTRIBUTION_RECORD_MARKER;
 use crate::git::Reachability;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
@@ -111,7 +113,7 @@ pub(super) enum DriftFingerprintError {
         command: String,
         stderr:  String,
     },
-    GitOperation(git::GitError),
+    GitOperation(GitError),
     MalformedGitOutput(String),
     NonUtf8Path(String),
     InvalidPath(String),
@@ -176,11 +178,11 @@ impl From<std::io::Error> for DriftFingerprintError {
     fn from(error: std::io::Error) -> Self { Self::Io(error) }
 }
 
-impl From<git::GitError> for DriftFingerprintError {
-    fn from(error: git::GitError) -> Self {
+impl From<GitError> for DriftFingerprintError {
+    fn from(error: GitError) -> Self {
         match error {
-            git::GitError::Io(error) => Self::Io(error),
-            git::GitError::CommandFailed { command, stderr } => Self::CommandFailed {
+            GitError::Io(error) => Self::Io(error),
+            GitError::CommandFailed { command, stderr } => Self::CommandFailed {
                 command: command.to_owned(),
                 stderr,
             },
@@ -236,7 +238,7 @@ pub(super) fn parse_incursion_path_log(
         if index == fields.len() {
             break;
         }
-        if fields[index] != git::INCURSION_ATTRIBUTION_RECORD_MARKER.as_bytes() {
+        if fields[index] != INCURSION_ATTRIBUTION_RECORD_MARKER.as_bytes() {
             return Err(DriftFingerprintError::MalformedGitOutput(
                 "incursion log record omitted its boundary marker".to_owned(),
             ));
@@ -265,9 +267,10 @@ pub(super) fn parse_incursion_path_log(
         while index < fields.len() {
             if fields[index].is_empty() {
                 index += 1;
-                if fields.get(index).is_none_or(|field| {
-                    *field == git::INCURSION_ATTRIBUTION_RECORD_MARKER.as_bytes()
-                }) {
+                if fields
+                    .get(index)
+                    .is_none_or(|field| *field == INCURSION_ATTRIBUTION_RECORD_MARKER.as_bytes())
+                {
                     break;
                 }
                 continue;
@@ -425,6 +428,7 @@ fn parse_path(bytes: &[u8]) -> Result<ReservationScopePath, DriftFingerprintErro
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::io::ErrorKind;
     use std::os::unix::process::ExitStatusExt;
     use std::process::ExitStatus;
     use std::process::Output;
@@ -435,8 +439,8 @@ mod tests {
     use super::parse_incursion_path_log;
     use super::parse_phase_committed_paths;
     use super::parse_working_tree_status;
-    use crate::git;
     use crate::git::GitCommandOutputAvailability;
+    use crate::git::INCURSION_ATTRIBUTION_RECORD_MARKER;
     use crate::git::Reachability;
     use crate::ids::GitObjectId;
 
@@ -513,7 +517,7 @@ mod tests {
         ];
         let mut output = Vec::new();
         output.push(0);
-        output.extend_from_slice(git::INCURSION_ATTRIBUTION_RECORD_MARKER.as_bytes());
+        output.extend_from_slice(INCURSION_ATTRIBUTION_RECORD_MARKER.as_bytes());
         output.push(0);
         output.extend_from_slice(COMMIT_OBJECT_ID.as_bytes());
         output.push(0);
@@ -563,7 +567,7 @@ mod tests {
     fn unavailable_and_unsuccessful_git_executions_remain_distinct() {
         let unavailable = completed_git_output(
             GitCommandOutputAvailability::Unavailable(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
+                ErrorKind::NotFound,
                 "git missing",
             )),
             &["log"],

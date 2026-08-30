@@ -1,7 +1,9 @@
 //! Board command over one reconciled locked replay shared by both renderers.
 
+use std::path::Path;
+
+use crate::board;
 use crate::board::BoardModel;
-use crate::board::reservation_lifecycle_snapshot;
 use crate::board::tui;
 use crate::board::tui::BoardTerminalViewRunFailure;
 use crate::board::tui::TerminalAttachment;
@@ -12,6 +14,7 @@ use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::ReservationLifecycleQueryRejection;
 use crate::reconcile;
+use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ReservationReplayError;
 
@@ -78,8 +81,8 @@ pub(crate) fn execute(
 }
 
 fn execute_complete_board(
-    invocation_directory: &std::path::Path,
-    report: &reconcile::ReconciliationReport,
+    invocation_directory: &Path,
+    report: &ReconciliationReport,
     output_format: CliOutputFormat,
 ) -> BoardDisplayOutcome {
     let board = match BoardModel::build(invocation_directory, report) {
@@ -123,10 +126,10 @@ fn execute_complete_board(
 }
 
 fn execute_reservation_lifecycle(
-    report: &reconcile::ReconciliationReport,
+    report: &ReconciliationReport,
     reservation_id: ReservationId,
 ) -> BoardDisplayOutcome {
-    match reservation_lifecycle_snapshot(report, reservation_id) {
+    match board::reservation_lifecycle_snapshot(report, reservation_id) {
         Ok(reservation_lifecycle_snapshot) => BoardDisplayOutcome::HeadlessResponse(
             OutputEnvelope::reservation_lifecycle(reservation_id, reservation_lifecycle_snapshot),
         ),

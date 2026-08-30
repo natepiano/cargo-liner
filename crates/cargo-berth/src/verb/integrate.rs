@@ -24,7 +24,7 @@ use crate::reconcile::ReconcileError;
 pub(crate) struct IntegrateRequest {
     /// The reservation whose current protected work should enter trunk.
     pub(crate) reservation_id: ReservationId,
-    /// Whether ordinary policy applies or one forced permit must be minted.
+    /// Whether ordinary policy applies or one forced permit must be issued.
     pub(crate) integration:    IntegrationRequest,
 }
 

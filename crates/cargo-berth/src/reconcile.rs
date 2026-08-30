@@ -30,11 +30,18 @@ use crate::gate::permit::PendingBypassMarkerImport;
 use crate::gate::permit::RecoveredPendingBypassMarker;
 use crate::git;
 use crate::git::CandidateHeadReachability;
+use crate::git::CommitCandidateReachability;
+use crate::git::CommitTargetReachability;
+use crate::git::CommitTargetReachabilityObservation;
 use crate::git::GitError;
+use crate::git::PhaseStartTargetFirstParentHistories;
 use crate::git::ProtectedTipSuccessorHeadClassification;
 use crate::git::ProtectedTipSuccessorHeads;
 use crate::git::Reachability;
+use crate::git::ReservationRetentionRefRepair;
+use crate::git::ResolvedBatchCommitCandidates;
 use crate::git::ScopedPatchComparison;
+use crate::git::ScopedPatchTargetHistory;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::JournalByteOffset;
@@ -83,6 +90,7 @@ use crate::reservation::ScopedPatchEvaluationPriority;
 use crate::reservation::ScopedPatchTargetVerdictAvailability;
 use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
 use crate::reservation::SuccessorScopedPatchTargetVerdictAvailability;
+use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::worktree::WorktreeHead;
 use crate::worktree::WorktreeLiveness;
@@ -225,8 +233,8 @@ impl From<DeferredScopedPatchIntegrationStatus> for IntegrationStatusObservation
 /// Every integration-proof ancestor classified against one immutable trunk target.
 struct BatchedIntegrationReachability {
     by_ancestor:         HashMap<GitObjectId, Reachability>,
-    resolved_candidates: git::ResolvedBatchCommitCandidates,
-    target_histories:    git::PhaseStartTargetFirstParentHistories,
+    resolved_candidates: ResolvedBatchCommitCandidates,
+    target_histories:    PhaseStartTargetFirstParentHistories,
 }
 
 impl BatchedIntegrationReachability {
@@ -249,12 +257,12 @@ impl BatchedIntegrationReachability {
                 },
             ));
         };
-        let git::CommitTargetReachabilityObservation {
+        let CommitTargetReachabilityObservation {
             reachability,
             resolved_candidates,
             target_histories,
         } = observation;
-        let git::CommitTargetReachability::Resolved { target, candidates } = reachability else {
+        let CommitTargetReachability::Resolved { target, candidates } = reachability else {
             return Ok((
                 RepositoryTrunk::ObjectUnknown,
                 Self {
@@ -269,13 +277,11 @@ impl BatchedIntegrationReachability {
             .zip(candidates)
             .map(|(candidate_ancestor, reachability)| {
                 let reachability = match reachability {
-                    git::CommitCandidateReachability::Ancestor => Reachability::Ancestor,
-                    git::CommitCandidateReachability::NotAncestor => Reachability::NotAncestor,
-                    git::CommitCandidateReachability::Missing
-                    | git::CommitCandidateReachability::Ambiguous
-                    | git::CommitCandidateReachability::WrongType { .. } => {
-                        Reachability::ObjectUnknown
-                    },
+                    CommitCandidateReachability::Ancestor => Reachability::Ancestor,
+                    CommitCandidateReachability::NotAncestor => Reachability::NotAncestor,
+                    CommitCandidateReachability::Missing
+                    | CommitCandidateReachability::Ambiguous
+                    | CommitCandidateReachability::WrongType { .. } => Reachability::ObjectUnknown,
                 };
                 (candidate_ancestor, reachability)
             })
@@ -371,7 +377,7 @@ impl BatchedIntegrationReachability {
     fn target_history_after_phase_start(
         &self,
         phase_start: &GitObjectId,
-    ) -> git::ScopedPatchTargetHistory<'_> {
+    ) -> ScopedPatchTargetHistory<'_> {
         self.target_histories.after_phase_start(phase_start)
     }
 }
@@ -456,8 +462,12 @@ struct ReconciliationScopedPatchEvaluationBudget {
 /// Reachability remains batched for all heads. Scoped equivalence is deliberately admitted once,
 /// and durable attempt generations rotate the next cold target to the front on later passes.
 #[derive(Default)]
-struct ReconciliationSuccessorScopedPatchEvaluationBudget {
-    comparison_performed: bool,
+enum ReconciliationSuccessorScopedPatchEvaluationBudget {
+    /// The one admitted scoped comparison is still available.
+    #[default]
+    Unspent,
+    /// The one admitted scoped comparison has already been performed.
+    Spent,
 }
 
 impl ReconciliationSuccessorScopedPatchEvaluationBudget {
@@ -465,11 +475,12 @@ impl ReconciliationSuccessorScopedPatchEvaluationBudget {
         &mut self,
         evaluate: impl FnOnce() -> ScopedPatchComparison,
     ) -> SuccessorScopedPatchComparisonObservation {
-        if self.comparison_performed {
-            SuccessorScopedPatchComparisonObservation::Deferred
-        } else {
-            self.comparison_performed = true;
-            SuccessorScopedPatchComparisonObservation::Observed(evaluate())
+        match self {
+            Self::Spent => SuccessorScopedPatchComparisonObservation::Deferred,
+            Self::Unspent => {
+                *self = Self::Spent;
+                SuccessorScopedPatchComparisonObservation::Observed(evaluate())
+            },
         }
     }
 }
@@ -491,7 +502,7 @@ struct SuccessorScopedPatchEvaluationCandidate {
     predecessor_reservation_id: ReservationId,
     subject:                    IntegrationProofSubjectRevision,
     phase_start_head:           GitObjectId,
-    scopes:                     crate::scope::ReservationScopeSet,
+    scopes:                     ReservationScopeSet,
     protected_tip:              GitObjectId,
     successor_head:             GitObjectId,
     target_history:             SuccessorScopedPatchTargetHistory,
@@ -504,12 +515,12 @@ enum SuccessorScopedPatchTargetHistory {
 }
 
 impl SuccessorScopedPatchTargetHistory {
-    fn as_git_evidence(&self) -> git::ScopedPatchTargetHistory<'_> {
+    fn as_git_evidence(&self) -> ScopedPatchTargetHistory<'_> {
         match self {
             Self::ProvenFirstParentInterval { commits } => {
-                git::ScopedPatchTargetHistory::ProvenFirstParentInterval { commits }
+                ScopedPatchTargetHistory::ProvenFirstParentInterval { commits }
             },
-            Self::NeedsGitQueries => git::ScopedPatchTargetHistory::NeedsGitQueries,
+            Self::NeedsGitQueries => ScopedPatchTargetHistory::NeedsGitQueries,
         }
     }
 }
@@ -557,7 +568,7 @@ pub(crate) struct GateReconciliationAction<Decision> {
 #[derive(Default)]
 struct ReconciliationChanges {
     operations:          Vec<JournalOperation>,
-    retention_repairs:   Vec<git::ReservationRetentionRefRepair>,
+    retention_repairs:   Vec<ReservationRetentionRefRepair>,
     retention_deletions: Vec<ReservationId>,
     evidence:            Vec<ReconciledEvidence>,
 }
@@ -566,9 +577,9 @@ struct ReconciliationAction {
     active_holders:                Vec<ActiveHolder>,
     marker_contexts:               Vec<WorktreeMarkerSweepContext>,
     repository_root:               PathBuf,
-    retention_repairs:             Vec<git::ReservationRetentionRefRepair>,
+    retention_repairs:             Vec<ReservationRetentionRefRepair>,
     retention_deletions:           Vec<ReservationId>,
-    resolved_retention_candidates: git::ResolvedBatchCommitCandidates,
+    resolved_retention_candidates: ResolvedBatchCommitCandidates,
     alert_subjects:                Vec<AlertSubject>,
     evidence:                      Vec<ReconciledEvidence>,
     repository_snapshot:           RepositorySnapshot,

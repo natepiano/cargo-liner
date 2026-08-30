@@ -424,7 +424,7 @@ purpose is to not do the work.
 Record the bypass once, on `prepared` and for the trunk ref only, under the
 same filter as §1. The other invocations have nothing to record. The
 marker-file branch further down the same script already gates on
-`[ "$1" = "prepared" ]`, so the shape is established in the file — the binary
+`[ "$1" = "prepared" ]`, so the form is established in the file — the binary
 call above it just does not use it.
 
 #### 4. Berth's own git calls re-enter its own hooks

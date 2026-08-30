@@ -1,5 +1,6 @@
 //! Coordination-identity validation and executable recovery instructions.
 
+use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
@@ -141,7 +142,7 @@ impl Display for EmptyRecoveryCommandLine {
     }
 }
 
-impl std::error::Error for EmptyRecoveryCommandLine {}
+impl Error for EmptyRecoveryCommandLine {}
 
 /// The identity facts and executable recovery policy for one validation.
 #[derive(Clone)]
@@ -350,7 +351,7 @@ impl Display for EmptyCoordinationIdentityRecoveryActions {
     }
 }
 
-impl std::error::Error for EmptyCoordinationIdentityRecoveryActions {}
+impl Error for EmptyCoordinationIdentityRecoveryActions {}
 
 /// Why a process-resolved coordination identity cannot authorize this command.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -478,7 +479,7 @@ impl Display for CoordinationIdentityRejection {
     }
 }
 
-impl std::error::Error for CoordinationIdentityRejection {}
+impl Error for CoordinationIdentityRejection {}
 
 /// Identity validation either found a caller-repairable rejection or an unusable root.
 #[derive(Debug)]
@@ -500,7 +501,7 @@ impl Display for CoordinationIdentityValidationError {
     }
 }
 
-impl std::error::Error for CoordinationIdentityValidationError {}
+impl Error for CoordinationIdentityValidationError {}
 
 /// Validate one coherently resolved authorization against retained reservations.
 pub(crate) fn validate_coordination_identity(

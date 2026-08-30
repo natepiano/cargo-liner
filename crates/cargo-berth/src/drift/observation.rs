@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::thread;
+use std::thread::ScopedJoinHandle;
 
 use super::constants::GIT_NO_RENAMES_ARGUMENT;
 use super::constants::GIT_NUL_TERMINATED_ARGUMENT;
@@ -22,6 +23,9 @@ use super::ordering;
 use super::report::DriftComparisonMode;
 use super::selection::DriftComparisonChoice;
 use crate::git;
+use crate::git::CommitCandidateReachability;
+use crate::git::CommitTargetReachability;
+use crate::git::Reachability;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
@@ -431,7 +435,7 @@ fn observe_working_tree_status(
 }
 
 fn join_full_observation_worker<T>(
-    worker: thread::ScopedJoinHandle<'_, Result<T, DriftFingerprintError>>,
+    worker: ScopedJoinHandle<'_, Result<T, DriftFingerprintError>>,
     activity: FullDriftObservationActivity,
 ) -> Result<T, DriftFingerprintError> {
     worker
@@ -458,18 +462,18 @@ fn observe_phase_history(
     let (target, reachability) = match git::head_commit_reachability(repository_root, anchors)
         .map_err(DriftFingerprintError::from)?
     {
-        git::CommitTargetReachability::Resolved { target, candidates } => (target, candidates),
-        git::CommitTargetReachability::Missing => {
+        CommitTargetReachability::Resolved { target, candidates } => (target, candidates),
+        CommitTargetReachability::Missing => {
             return Err(DriftFingerprintError::MalformedGitOutput(
                 "HEAD did not resolve to an object".to_owned(),
             ));
         },
-        git::CommitTargetReachability::Ambiguous => {
+        CommitTargetReachability::Ambiguous => {
             return Err(DriftFingerprintError::MalformedGitOutput(
                 "HEAD resolved ambiguously".to_owned(),
             ));
         },
-        git::CommitTargetReachability::WrongType { object_type } => {
+        CommitTargetReachability::WrongType { object_type } => {
             return Err(DriftFingerprintError::MalformedGitOutput(format!(
                 "HEAD resolved to {object_type}, not a commit"
             )));
@@ -481,13 +485,11 @@ fn observe_phase_history(
         .zip(reachability)
         .map(|(anchor, reachability)| {
             let reachability = match reachability {
-                git::CommitCandidateReachability::Ancestor => git::Reachability::Ancestor,
-                git::CommitCandidateReachability::NotAncestor => git::Reachability::NotAncestor,
-                git::CommitCandidateReachability::Missing
-                | git::CommitCandidateReachability::Ambiguous
-                | git::CommitCandidateReachability::WrongType { .. } => {
-                    git::Reachability::ObjectUnknown
-                },
+                CommitCandidateReachability::Ancestor => Reachability::Ancestor,
+                CommitCandidateReachability::NotAncestor => Reachability::NotAncestor,
+                CommitCandidateReachability::Missing
+                | CommitCandidateReachability::Ambiguous
+                | CommitCandidateReachability::WrongType { .. } => Reachability::ObjectUnknown,
             };
             (anchor, reachability.into())
         })

@@ -4,6 +4,7 @@ use std::convert::Infallible;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use super::classification;
@@ -27,11 +28,11 @@ use super::selection::DriftSelectionError;
 use super::selection::PostWriteFirstTouchRequirement;
 use super::selection::ResolvedDriftSubjects;
 use crate::config::Enrollment;
+use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::RecoveryCommandLine;
-use crate::coordination_identity::validate_coordination_identity;
 use crate::edge::RepositoryTrunk;
 use crate::git;
 use crate::ids::WorktreeId;
@@ -362,16 +363,15 @@ fn validated_drift_identity(
             LedgerError::WorktreeIdentityMismatch,
         ));
     }
-    validate_coordination_identity(reservations, identity_validation).map_err(
-        |error| match error {
+    coordination_identity::validate_coordination_identity(reservations, identity_validation)
+        .map_err(|error| match error {
             CoordinationIdentityValidationError::Rejected(rejection) => {
                 DriftExecutionError::CoordinationIdentity(rejection)
             },
             CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
                 DriftExecutionError::Ledger(LedgerError::InvalidCanonicalWorktreeRoot)
             },
-        },
-    )?;
+        })?;
     Ok(DriftActingIdentity::resolve(
         resolved_edit_authorization,
         reservations,
@@ -415,7 +415,7 @@ fn comparable_worktree(
                 if matches!(
                     request.reservation,
                     DriftReservationSelection::EveryActiveForPostCommit { .. }
-                ) && error.kind() == std::io::ErrorKind::NotFound =>
+                ) && error.kind() == ErrorKind::NotFound =>
             {
                 return Ok(WorktreeComparability::IdentityNotRecorded);
             },
@@ -566,9 +566,10 @@ fn transact_classification(
                     ));
                 },
             };
-            if let Err(error) =
-                validate_coordination_identity(&reservations, &context.identity_validation)
-            {
+            if let Err(error) = coordination_identity::validate_coordination_identity(
+                &reservations,
+                &context.identity_validation,
+            ) {
                 return ReconciliationValidation::Reject(
                     DriftTransactionRejection::CoordinationIdentity(error),
                 );

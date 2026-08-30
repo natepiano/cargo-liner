@@ -62,11 +62,11 @@ pub(crate) enum PermissiveOverlapAnswer {
     },
 }
 
-/// Whether a permissive invocation is minting or applying its proposal.
+/// Whether a permissive invocation issues a fresh proposal or applies an existing one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum OverlapProposalSubmission {
     /// Recompute and return the proposal without appending a journal fact.
-    Mint,
+    Issue,
     /// Apply only when this token equals the recomputed locked proposal.
     Apply(Box<OverlapProposalToken>),
 }

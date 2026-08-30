@@ -6527,7 +6527,7 @@
               "type": "object"
             },
             {
-              "description": "A one-use permit was minted and consumed by the update.",
+              "description": "A one-use permit was issued and consumed by the update.",
               "properties": {
                 "kind": {
                   "const": "forced",
@@ -6960,7 +6960,7 @@
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The newly minted reservation identity."
+                  "description": "The newly issued reservation identity."
                 },
                 "scopes": {
                   "description": "The exact durable footprint."
@@ -7579,7 +7579,7 @@
               "type": "object"
             },
             {
-              "description": "A one-use permit was minted and consumed by the update.",
+              "description": "A one-use permit was issued and consumed by the update.",
               "properties": {
                 "kind": {
                   "const": "forced",
@@ -9433,7 +9433,7 @@
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The newly minted reservation identity."
+                  "description": "The newly issued reservation identity."
                 },
                 "scopes": {
                   "description": "The exact durable footprint."
@@ -9992,7 +9992,7 @@
               "type": "object"
             },
             {
-              "description": "A one-use permit was minted and consumed by the update.",
+              "description": "A one-use permit was issued and consumed by the update.",
               "properties": {
                 "kind": {
                   "const": "forced",

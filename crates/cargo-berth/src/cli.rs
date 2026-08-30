@@ -26,6 +26,7 @@ use clap::Error;
 use clap::Parser;
 use clap::Subcommand;
 use clap::error::ErrorKind;
+use serde_json::Value;
 
 use crate::answer::OverlapAuthorizationReason;
 use crate::answer::OverlapAuthorizationRequest;
@@ -53,6 +54,7 @@ use crate::gate::GateError;
 use crate::gate::GateResult;
 use crate::gate::IntegrationRequest;
 use crate::gate::ManagedTrunkDeletion;
+use crate::gate::REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT;
 use crate::gate::ReferenceTransaction;
 use crate::gate::ReferenceTransactionIssuingDirectory;
 use crate::gate::ReferenceTransactionParseError;
@@ -60,6 +62,7 @@ use crate::gate::ReferenceTransactionPhase;
 use crate::gate::TrunkReferencePresence;
 use crate::gate::permit::EnvironmentBypassRetentionOutcome;
 use crate::git;
+use crate::git::LocalBranchRenameTargetResolution;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
@@ -925,7 +928,7 @@ fn overlap_selection(
                     .parse::<OverlapProposalToken>()
                     .map_err(|error| error.to_string())?,
             )),
-            None => OverlapProposalSubmission::Mint,
+            None => OverlapProposalSubmission::Issue,
         };
         Ok::<_, String>((authorization_reason, proposal_submission))
     };
@@ -1127,7 +1130,7 @@ enum PostToolUseInvocation {
 
 #[derive(serde::Deserialize)]
 struct PostToolUseLiveIncursionBoardInput {
-    post_tool_use_payload: serde_json::Value,
+    post_tool_use_payload: Value,
     drift_envelope:        Box<OutputEnvelope>,
 }
 
@@ -1148,7 +1151,7 @@ impl PostToolUseDriftInvocationError {
 }
 
 impl PostToolUseDriftInvocation {
-    fn from_value(value: &serde_json::Value) -> Result<Self, PostToolUseDriftInvocationError> {
+    fn from_value(value: &Value) -> Result<Self, PostToolUseDriftInvocationError> {
         let object = value
             .as_object()
             .ok_or(PostToolUseDriftInvocationError::InvalidPayload)?;
@@ -1505,7 +1508,7 @@ fn run_reference_transaction(
             return BerthExit::LedgerUnreadable.into();
         },
     };
-    let issuing_directory = env::var_os(gate::REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT)
+    let issuing_directory = env::var_os(REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT)
         .map_or(
             ReferenceTransactionIssuingDirectory::MissingFromLegacyHook,
             |issuing_directory| {
@@ -1632,14 +1635,14 @@ fn refresh_managed_hook_after_trunk_deletion(
             return;
         },
     };
-    let mut renamed_reference = git::LocalBranchRenameTargetResolution::NotProven;
+    let mut renamed_reference = LocalBranchRenameTargetResolution::NotProven;
     for attempt in 0..MAXIMUM_REPLACEMENT_LOOKUP_ATTEMPTS {
         renamed_reference = match git::local_branch_rename_target_resolution(
             worktree_context.repository_root(),
             previous_tip,
             deleted_reference,
         ) {
-            Ok(git::LocalBranchRenameTargetResolution::NotProven)
+            Ok(LocalBranchRenameTargetResolution::NotProven)
                 if attempt + 1 < MAXIMUM_REPLACEMENT_LOOKUP_ATTEMPTS =>
             {
                 std::thread::sleep(REPLACEMENT_LOOKUP_RETRY_INTERVAL);
@@ -1656,14 +1659,14 @@ fn refresh_managed_hook_after_trunk_deletion(
         break;
     }
     let renamed_reference = match renamed_reference {
-        git::LocalBranchRenameTargetResolution::Unique(reference) => reference,
-        git::LocalBranchRenameTargetResolution::NotProven => {
+        LocalBranchRenameTargetResolution::Unique(reference) => reference,
+        LocalBranchRenameTargetResolution::NotProven => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth found no local branch with reflog proof that it was renamed from {deleted_reference}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
             ));
             return;
         },
-        git::LocalBranchRenameTargetResolution::Ambiguous => {
+        LocalBranchRenameTargetResolution::Ambiguous => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth found multiple local branches with reflog proof that they were renamed from {deleted_reference}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
             ));

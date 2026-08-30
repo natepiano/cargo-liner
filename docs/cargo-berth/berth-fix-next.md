@@ -3,7 +3,7 @@
 Work this plan surfaced but does not implement. Each item names what it changes
 and the evidence that produced it.
 
-## Make `maximum_reservations` truthful against the successor-verdict retention bound
+## Make `maximum_reservations` match the successor-verdict retention bound
 
 `config.rs:158` parses `maximum_reservations` as an unrestricted `u32` and
 `ParsedConfigValues::finish` applies it with no upper bound. A predecessor's
@@ -69,7 +69,7 @@ fails for any future caller that passes a union.
 
 Replace the parameter pair and the retained incident's two fields with one type
 carrying each path alongside its blocking holders, so a union is unrepresentable
-rather than merely unwritten. This is a journal record-shape change: the existing
+rather than merely unwritten. This is a journal record-layout change: the existing
 answered incidents store paths and holders as independent arrays and must remain
 replayable, so the change carries a migration or a versioned reader.
 

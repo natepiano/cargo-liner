@@ -439,9 +439,9 @@ pub(crate) enum IncursionObservation {
     },
     /// Every entered path was already answered, and must not be raised again.
     AlreadyAnswered,
-    /// These paths are new to this overlap and need a freshly minted incident.
+    /// These paths are new to this overlap and need a freshly created incident.
     NewlyObserved {
-        /// The identity minted for the new incident.
+        /// The identity issued for the new incident.
         incident_id: IncursionIncidentId,
         /// Only the entered paths no incident accounts for yet.
         paths:       IncursionPathSet,
@@ -897,7 +897,7 @@ impl RetainedReservationSet {
     /// Coverage is decided one path at a time rather than by comparing whole sets. A
     /// straying edit is observed again on every drift run, so an observation that adds
     /// one path to an overlap already reported arrives as a superset of it; matching on
-    /// set equality minted a second incident that re-covered the first one's ground, and
+    /// set equality created a second incident that re-covered the first one's ground, and
     /// each then had to be answered separately.
     ///
     /// An answered path stays answered. The edit remains on disk after a disposition is
@@ -1701,7 +1701,7 @@ impl AuthorizedEditingIdentity {
     /// Whether this holder belongs to another worktree, the only foreignness that blocks.
     ///
     /// A holder in the caller's own worktree is never foreign, however many coordination
-    /// runs that worktree has minted. A run mismatch alone once blocked here, which let a
+    /// runs that worktree has issued. A run mismatch alone once blocked here, which let a
     /// worktree block itself with a reservation an earlier session in the same checkout
     /// had left behind.
     fn is_foreign(self, holder: &Reservation) -> bool {

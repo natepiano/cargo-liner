@@ -34,6 +34,7 @@ use crate::ids::EdgeId;
 use crate::ids::EventId;
 use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
+use crate::ids::InvalidGitObjectId;
 use crate::ids::InvalidUuidV7;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
@@ -353,7 +354,7 @@ declare_journal_operations! {
 pub(crate) enum JournalOperation {
     /// Acquire a new reservation and any conflict answer that authorized it.
     Claim {
-        /// The newly minted reservation identity.
+        /// The newly issued reservation identity.
         reservation_id:                  ReservationId,
         /// The paths claimed atomically by this reservation.
         scopes:                          ReservationScopeSet,
@@ -687,7 +688,7 @@ impl From<FullRefName> for TrunkObservationAtClaim {
 }
 
 impl FromStr for TrunkObservationAtClaim {
-    type Err = crate::ids::InvalidGitObjectId;
+    type Err = InvalidGitObjectId;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         value.parse::<GitObjectId>().map(Self::Resolved)

@@ -21,12 +21,12 @@ use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::config::Enrollment;
 use crate::config::GateMode;
+use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::coordination_identity::RunnableRecoveryCommandLine;
-use crate::coordination_identity::validate_coordination_identity;
 use crate::edge::IntegrationConstraintProjection;
 use crate::edge::IntegrationHold;
 use crate::edge::IntegrationReservationFacts;
@@ -34,6 +34,7 @@ use crate::edge::IntegrationSubject;
 use crate::edge::MissingReadinessFact;
 use crate::git;
 use crate::git::GitError;
+use crate::git::Reachability;
 use crate::ids::CoordinationRunId;
 use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
@@ -497,12 +498,12 @@ fn branch_rewrites(
             continue;
         }
         match git::reachability(invocation_directory, previous, proposed).map_err(GateError::Git)? {
-            git::Reachability::NotAncestor => rewrites.push(BranchRewrite {
+            Reachability::NotAncestor => rewrites.push(BranchRewrite {
                 reference: update.reference.clone(),
                 previous:  previous.clone(),
                 proposed:  proposed.clone(),
             }),
-            git::Reachability::Ancestor | git::Reachability::ObjectUnknown => {},
+            Reachability::Ancestor | Reachability::ObjectUnknown => {},
         }
     }
     Ok(rewrites)
@@ -801,9 +802,10 @@ fn evaluate_locked(
                         );
                     },
                 };
-                if let Err(error) =
-                    validate_coordination_identity(prepared.reservations(), &identity_validation)
-                {
+                if let Err(error) = coordination_identity::validate_coordination_identity(
+                    prepared.reservations(),
+                    &identity_validation,
+                ) {
                     let rejection = match error {
                         CoordinationIdentityValidationError::Rejected(rejection) => {
                             GateTransactionRejection::CoordinationIdentity(rejection)

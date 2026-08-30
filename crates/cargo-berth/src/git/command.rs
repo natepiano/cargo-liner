@@ -1,6 +1,7 @@
 //! Git command construction.
 
 use std::io;
+use std::io::Error;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -25,7 +26,7 @@ pub(crate) enum GitCommandOutputAvailability {
     /// The process ran to completion, including a possible non-zero exit status.
     Available(Output),
     /// No process output exists; the invocation returned this I/O error instead.
-    Unavailable(io::Error),
+    Unavailable(Error),
 }
 
 impl From<io::Result<Output>> for GitCommandOutputAvailability {

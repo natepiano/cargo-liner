@@ -8,11 +8,11 @@ use std::fmt::Formatter;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::config::Enrollment;
+use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::RecoveryCommandLine;
-use crate::coordination_identity::validate_coordination_identity;
 use crate::edge::EdgeDeclarationRejection;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingEdge;
@@ -165,8 +165,10 @@ fn execute_sequence(
                     ));
                 },
             };
-            if let Err(error) = validate_coordination_identity(&reservations, &identity_validation)
-            {
+            if let Err(error) = coordination_identity::validate_coordination_identity(
+                &reservations,
+                &identity_validation,
+            ) {
                 let rejection = match error {
                     CoordinationIdentityValidationError::Rejected(rejection) => {
                         SequenceRejection::CoordinationIdentity(rejection)

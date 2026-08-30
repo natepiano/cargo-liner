@@ -6,6 +6,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
@@ -288,7 +289,7 @@ impl SessionIdentityStore {
             Ok(bytes) => {
                 serde_json::from_slice(&bytes).map_err(SessionIdentityStoreError::Decoding)
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(SessionIdentityStoreError::Io(error)),
         }
     }

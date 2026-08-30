@@ -23,15 +23,16 @@ use crate::answer::RequesterCoordinationIdentity;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::config::Enrollment;
+use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::RecoveryCommandLine;
-use crate::coordination_identity::validate_coordination_identity;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingGraph;
 use crate::git;
 use crate::git::GitError;
+use crate::git::HeadAttachment;
 use crate::git::ReferenceLookup;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
@@ -68,6 +69,7 @@ use crate::output::CoordinationRunMarkerPublication;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
+use crate::reservation;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
@@ -113,7 +115,7 @@ pub(crate) enum ClaimCoordinationRunSelection {
 enum ClaimRunValidation {
     /// An explicit argument or process environment identifies a marker-independent caller.
     IndependentWithPresentedIdentity(CoordinationRunId),
-    /// A marker-independent caller presented no identity, so only its actor run is minted.
+    /// A marker-independent caller presented no identity, so only its actor run is issued.
     IndependentWithoutPresentedIdentity {
         /// The concrete run stamped on the new reservation and transaction.
         actor_run_id: CoordinationRunId,
@@ -1091,7 +1093,7 @@ fn validate_authorization(
             let authorization = ConflictAuthorization::from_approved_proposal(proposal);
             TransactionValidation::Append(Box::new(prepared_claim.into_operation(authorization)))
         },
-        OverlapProposalSubmission::Mint | OverlapProposalSubmission::Apply(_) => {
+        OverlapProposalSubmission::Issue | OverlapProposalSubmission::Apply(_) => {
             TransactionValidation::Reject(ClaimRejection::AuthorizationRequired(Box::new(
                 proposal.escalation(conflicts),
             )))
@@ -1199,8 +1201,11 @@ impl ClaimRunValidation {
                     worktree_context,
                     recovery_command_line,
                 );
-                validate_coordination_identity(reservations, &identity_validation)
-                    .map_err(ClaimRunValidationError::from)
+                coordination_identity::validate_coordination_identity(
+                    reservations,
+                    &identity_validation,
+                )
+                .map_err(ClaimRunValidationError::from)
             },
         }
     }
@@ -1259,13 +1264,13 @@ impl ClaimRepositoryFacts {
 fn read_live_head_snapshot(
     worktree_context: &WorktreeContext,
 ) -> Result<(GitObjectId, ClaimHeadSnapshot), ClaimError> {
-    let current_head = crate::reservation::current_head(worktree_context.repository_root())?;
+    let current_head = reservation::current_head(worktree_context.repository_root())?;
     let head_snapshot = match git::head_attachment(worktree_context.repository_root())? {
-        git::HeadAttachment::Branch { full_ref } => ClaimHeadSnapshot::Branch {
+        HeadAttachment::Branch { full_ref } => ClaimHeadSnapshot::Branch {
             full_ref,
             head: ClaimHeadCommit::from(current_head.clone()),
         },
-        git::HeadAttachment::Detached => ClaimHeadSnapshot::Detached {
+        HeadAttachment::Detached => ClaimHeadSnapshot::Detached {
             head: ClaimHeadCommit::from(current_head.clone()),
         },
     };

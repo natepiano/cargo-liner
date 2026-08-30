@@ -16,6 +16,7 @@ use std::process::Output;
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 use std::thread;
+use std::thread::ScopedJoinHandle;
 
 pub(crate) use command::GitCommandOutputAvailability;
 pub(crate) use command::git_execution as execute_read_only_git;
@@ -156,7 +157,7 @@ pub(crate) struct ResolvedBatchCommitCandidates(HashSet<GitObjectId>);
 
 impl ResolvedBatchCommitCandidates {
     /// Report whether the object batch resolved this candidate as a commit.
-    pub(crate) fn contains(&self, candidate: &GitObjectId) -> bool { self.0.contains(candidate) }
+    fn contains(&self, candidate: &GitObjectId) -> bool { self.0.contains(candidate) }
 }
 
 /// One target-reachability answer and the candidate availability proved by its object batch.
@@ -288,7 +289,7 @@ impl From<GitError> for ScopedPatchComparisonError {
 }
 
 fn join_scoped_patch_worker<T>(
-    worker: thread::ScopedJoinHandle<'_, Result<T, ScopedPatchComparisonError>>,
+    worker: ScopedJoinHandle<'_, Result<T, ScopedPatchComparisonError>>,
     activity: &'static str,
 ) -> Result<T, ScopedPatchComparisonError> {
     worker
@@ -382,9 +383,15 @@ struct TargetFirstParentHistory {
     scoped_commits: Vec<GitObjectId>,
 }
 
+/// Whether the protected tip carries a scoped commit with no equivalent on the target.
+enum ProtectedUnmatchedCommit {
+    Present,
+    Absent,
+}
+
 struct ScopedSymmetricDifference {
-    protected_has_unmatched_commit: bool,
-    target_unmatched_commits:       HashSet<GitObjectId>,
+    protected_unmatched_commit: ProtectedUnmatchedCommit,
+    target_unmatched_commits:   HashSet<GitObjectId>,
 }
 
 /// Whether a conflicted replay is still usable for one reservation's proof.
@@ -395,7 +402,7 @@ enum ScopedMergeConflictCoverage {
     CoveredByReservation,
     /// Git moved a reserved file aside because the target replaced it with a directory.
     DisplacedReservedFile,
-    /// Git's conflict records did not satisfy the documented `-z` shape.
+    /// Git's conflict records did not satisfy the documented `-z` record layout.
     Unreadable,
 }
 
@@ -615,7 +622,7 @@ pub(crate) enum LocalBranchRenameTargetResolution {
 
 /// Whether a local branch's newest reflog entry proves it replaced a deleted branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum LocalBranchRenameProof {
+enum LocalBranchRenameProof {
     /// The newest reflog entry records the candidate's rename from the deleted branch.
     Recorded,
     /// The candidate has no matching newest reflog entry.
@@ -676,7 +683,7 @@ pub(crate) fn local_branch_rename_target_resolution(
 }
 
 /// Read whether `candidate_reference` records a rename from `deleted_reference`.
-pub(crate) fn local_branch_rename_proof(
+fn local_branch_rename_proof(
     repository_root: &Path,
     deleted_reference: &FullRefName,
     candidate_reference: &FullRefName,
@@ -1286,7 +1293,10 @@ fn classify_target_phase_integration_commits(
         .cloned()
         .collect::<Vec<_>>();
 
-    if !symmetric_difference.protected_has_unmatched_commit && !identified_target_commits.is_empty()
+    if matches!(
+        symmetric_difference.protected_unmatched_commit,
+        ProtectedUnmatchedCommit::Absent
+    ) && !identified_target_commits.is_empty()
     {
         return TargetPhaseIntegrationCommits::Identified(identified_target_commits);
     }
@@ -1332,7 +1342,7 @@ fn scoped_symmetric_difference(
             .map(|path| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{path}")),
     );
     let output = scoped_rev_list(repository_root, &arguments)?;
-    let mut protected_has_unmatched_commit = false;
+    let mut protected_unmatched_commit = ProtectedUnmatchedCommit::Absent;
     let mut target_unmatched_commits = HashSet::new();
     for line in output.lines() {
         let mut characters = line.chars();
@@ -1344,7 +1354,7 @@ fn scoped_symmetric_difference(
             .parse()
             .map_err(GitError::InvalidObjectId)?;
         match commit_mark {
-            GIT_LEFT_COMMIT_MARK => protected_has_unmatched_commit = true,
+            GIT_LEFT_COMMIT_MARK => protected_unmatched_commit = ProtectedUnmatchedCommit::Present,
             GIT_RIGHT_COMMIT_MARK => {
                 target_unmatched_commits.insert(commit);
             },
@@ -1358,7 +1368,7 @@ fn scoped_symmetric_difference(
         }
     }
     Ok(ScopedSymmetricDifference {
-        protected_has_unmatched_commit,
+        protected_unmatched_commit,
         target_unmatched_commits,
     })
 }
@@ -2773,11 +2783,11 @@ mod tests {
     use crate::ids::GitObjectId;
     use crate::ledger::ProtectedPhaseStartHead;
     use crate::ledger::ReservationScope;
+    use crate::reservation;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
     use crate::reservation::PriorIntegrationStatus;
     use crate::reservation::ProtectedReservationTip;
-    use crate::reservation::integration_status;
     use crate::scope::ReservationScopeSet;
     use crate::scope::ScopeKind;
 
@@ -3061,7 +3071,7 @@ mod tests {
         fixture.write(PRIMARY_PATH, "amended reservation\n")?;
         let protected_tip = fixture.commit("protected identity")?;
         let target = fixture.amend("amended identity")?;
-        let status = integration_status(
+        let status = reservation::integration_status(
             fixture.root(),
             &ProtectedPhaseStartHead::from(fixture.phase_start_head.clone()),
             &file_scopes(&[PRIMARY_PATH])?,
@@ -3085,7 +3095,7 @@ mod tests {
         let fixture = PatchEquivalenceFixture::new()?;
         let unavailable_phase_start = UNAVAILABLE_OBJECT_ID.parse::<GitObjectId>()?;
         let protected_tip = ProtectedReservationTip::from(fixture.phase_start_head.clone());
-        let status = integration_status(
+        let status = reservation::integration_status(
             fixture.root(),
             &ProtectedPhaseStartHead::from(unavailable_phase_start),
             &file_scopes(&[PRIMARY_PATH])?,
@@ -3124,7 +3134,7 @@ mod tests {
             ScopedPatchComparison::Unavailable
         );
         assert_eq!(
-            integration_status(
+            reservation::integration_status(
                 fixture.root(),
                 &ProtectedPhaseStartHead::from(unavailable_phase_start),
                 &scopes,
