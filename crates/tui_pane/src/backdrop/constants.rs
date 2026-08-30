@@ -374,6 +374,18 @@ pub(super) const LANE_FRACTION_UNIT: u32 = 4096;
 /// temporarily busy window server while still recovering before one stalled completion handler
 /// disables capture for the rest of the process.
 pub(super) const CAPTURE_ATTEMPT_DEADLINE: Duration = Duration::from_secs(5);
+/// How long one window-server call may wait for an answer.
+///
+/// Measured warm shareable-content queries take 1.0--2.4 seconds, warm screenshots take
+/// 0.22--0.25 seconds, and a first or cold screenshot takes 0.66--3.0 seconds. Four seconds covers
+/// every measured legitimate call with margin while converting a request macOS never answers into
+/// a failed attempt that the monitor retries.
+///
+/// The two bounded calls can together outlast [`CAPTURE_ATTEMPT_DEADLINE`], so the monitor may
+/// record one slow attempt as stalled. Its late result still reaches the monitor and resets the
+/// worker's standing.
+#[cfg(target_os = "macos")]
+pub(crate) const CAPTURE_CALL_DEADLINE: Duration = Duration::from_secs(4);
 /// How often the worker takes a fresh capture.
 ///
 /// What a capture goes stale for is the desktop behind the window

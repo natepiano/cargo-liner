@@ -201,7 +201,7 @@ mod tests {
     use super::*;
 
     /// Capture failure stages exercised by the notice classifier.
-    const CAPTURE_FAILURES: [CaptureFailure; 13] = [
+    const CAPTURE_FAILURES: [CaptureFailure; 15] = [
         CaptureFailure::UnsupportedPlatform,
         CaptureFailure::AttemptStalled,
         CaptureFailure::CaptureWorkerReplaced,
@@ -210,9 +210,11 @@ mod tests {
         CaptureFailure::WorkerReplacementLimitReached,
         CaptureFailure::ScreenRecordingAccessNotGranted,
         CaptureFailure::ShareableContentQueryFailed,
+        CaptureFailure::ShareableContentQueryTimedOut,
         CaptureFailure::TerminalWindowNotFound,
         CaptureFailure::DisplayNotFound,
         CaptureFailure::ScreenshotFailed,
+        CaptureFailure::ScreenshotTimedOut,
         CaptureFailure::PixelExtractionFailed,
         CaptureFailure::ImageReductionFailed,
     ];
@@ -451,9 +453,11 @@ mod tests {
                 | CaptureFailure::WorkerDisconnected
                 | CaptureFailure::ScreenRecordingAccessNotGranted
                 | CaptureFailure::ShareableContentQueryFailed
+                | CaptureFailure::ShareableContentQueryTimedOut
                 | CaptureFailure::TerminalWindowNotFound
                 | CaptureFailure::DisplayNotFound
                 | CaptureFailure::ScreenshotFailed
+                | CaptureFailure::ScreenshotTimedOut
                 | CaptureFailure::PixelExtractionFailed
                 | CaptureFailure::ImageReductionFailed => BackdropNotice::None,
             };
@@ -502,9 +506,11 @@ mod tests {
                 | CaptureFailure::WorkerLaunchFailed
                 | CaptureFailure::WorkerDisconnected
                 | CaptureFailure::ShareableContentQueryFailed
+                | CaptureFailure::ShareableContentQueryTimedOut
                 | CaptureFailure::TerminalWindowNotFound
                 | CaptureFailure::DisplayNotFound
                 | CaptureFailure::ScreenshotFailed
+                | CaptureFailure::ScreenshotTimedOut
                 | CaptureFailure::PixelExtractionFailed
                 | CaptureFailure::ImageReductionFailed => BackdropNotice::CaptureUnavailable,
             };
@@ -548,9 +554,11 @@ mod tests {
                     | CaptureFailure::WorkerDisconnected
                     | CaptureFailure::ScreenRecordingAccessNotGranted
                     | CaptureFailure::ShareableContentQueryFailed
+                    | CaptureFailure::ShareableContentQueryTimedOut
                     | CaptureFailure::TerminalWindowNotFound
                     | CaptureFailure::DisplayNotFound
                     | CaptureFailure::ScreenshotFailed
+                    | CaptureFailure::ScreenshotTimedOut
                     | CaptureFailure::PixelExtractionFailed
                     | CaptureFailure::ImageReductionFailed => BackdropNotice::None,
                 };

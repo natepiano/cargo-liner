@@ -68,5 +68,6 @@ objc2-io-kit = { workspace = true, features = ["libc", "std"] }
 # Backs the `backdrop` feature. `macos_14_0` is what carries
 # `SCScreenshotManager`, the single-shot capture the backdrop takes.
 screencapturekit = { workspace = true, optional = true, features = [
+  "async",
   "macos_14_0",
 ] }

@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-tile"
-version = "0.2.74-dev"
+version = "0.2.75-dev"
 dependencies = [
  "chrono",
  "clap",
@@ -3299,6 +3299,7 @@ checksum = "9ddaa8d6b16a2762c9a97c9a6297f04cb8ded0487e5ef02dc98b4e2bee3a26c7"
 dependencies = [
  "apple-cf",
  "apple-metal",
+ "futures-core",
 ]
 
 [[package]]

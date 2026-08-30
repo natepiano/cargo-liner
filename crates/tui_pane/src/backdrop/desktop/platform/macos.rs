@@ -8,6 +8,15 @@
 use std::collections::HashSet;
 use std::env;
 use std::ffi::c_void;
+use std::future::Future;
+use std::sync::Arc;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
+use std::thread::Thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use objc2_core_foundation::CFArray;
 use objc2_core_foundation::CFDictionary;
@@ -30,13 +39,13 @@ use objc2_core_graphics::kCGWindowNumber;
 use objc2_core_graphics::kCGWindowOwnerName;
 use objc2_core_graphics::kCGWindowOwnerPID;
 use ratatui::style::Color;
+use screencapturekit::async_api::AsyncSCScreenshotManager;
+use screencapturekit::async_api::AsyncSCShareableContent;
 use screencapturekit::cg::CGPoint;
 use screencapturekit::cg::CGRect;
 use screencapturekit::cg::CGSize;
 use screencapturekit::screenshot_manager::CGImageExt;
-use screencapturekit::screenshot_manager::SCScreenshotManager;
 use screencapturekit::shareable_content::SCDisplay;
-use screencapturekit::shareable_content::SCShareableContent;
 use screencapturekit::shareable_content::SCWindow;
 use screencapturekit::stream::configuration::SCStreamConfiguration;
 use screencapturekit::stream::content_filter::SCContentFilter;
@@ -45,6 +54,7 @@ use sysinfo::ProcessRefreshKind;
 use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
 
+use crate::backdrop::constants::CAPTURE_CALL_DEADLINE;
 use crate::backdrop::constants::EMULATOR_NAME_FLOOR;
 use crate::backdrop::constants::POSITION_TOLERANCE;
 use crate::backdrop::constants::SAMPLES_PER_CELL;
@@ -76,6 +86,50 @@ const GREEN: usize = 1;
 /// Where the blue channel sits in the captured RGBA pixel.
 const BLUE: usize = 2;
 
+/// Outcome of driving a window-server future with a deadline.
+enum BoundedWait<T> {
+    /// The call answered within its deadline.
+    Answered(T),
+    /// The deadline elapsed with no answer; the request was abandoned.
+    TimedOut,
+}
+
+/// Wakes a future poll by unparking the thread driving it.
+struct ThreadUnparker {
+    /// The thread polling the future.
+    thread: Thread,
+}
+
+impl Wake for ThreadUnparker {
+    fn wake(self: Arc<Self>) { self.thread.unpark(); }
+}
+
+/// Drive a future to completion on the current thread until its deadline elapses.
+fn block_on_with_deadline<F: Future>(future: F, deadline: Duration) -> BoundedWait<F::Output> {
+    let started_at = Instant::now();
+    let mut future = std::pin::pin!(future);
+    let waker = Waker::from(Arc::new(ThreadUnparker {
+        thread: std::thread::current(),
+    }));
+    let mut context = Context::from_waker(&waker);
+
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => return BoundedWait::Answered(value),
+            Poll::Pending => {
+                let elapsed = started_at.elapsed();
+                if elapsed >= deadline {
+                    // `AsyncCompletionFuture` owns an `Arc`, and its FFI callback owns a separately
+                    // leaked strong reference. A late callback completes into the live allocation;
+                    // a callback that never fires leaks one small allocation, never a thread.
+                    return BoundedWait::TimedOut;
+                }
+                std::thread::park_timeout(deadline.saturating_sub(elapsed));
+            },
+        }
+    }
+}
+
 /// Whether macOS has granted this process Screen Recording access.
 fn screen_capture_access_is_granted() -> bool { CGPreflightScreenCaptureAccess() }
 
@@ -106,12 +160,22 @@ pub(in crate::backdrop::desktop) fn capture(
     capture_window_target: CaptureWindowTarget,
     sequence: CaptureAttemptSequence,
 ) -> CaptureAttemptResult {
-    let Ok(content) = SCShareableContent::get() else {
-        return candidate::capture_failure_before_window_selection(
-            sequence,
-            shareable_content_failure(screen_capture_access_is_granted()),
-        );
-    };
+    let content =
+        match block_on_with_deadline(AsyncSCShareableContent::get(), CAPTURE_CALL_DEADLINE) {
+            BoundedWait::Answered(Ok(content)) => content,
+            BoundedWait::Answered(Err(_)) => {
+                return candidate::capture_failure_before_window_selection(
+                    sequence,
+                    shareable_content_failure(screen_capture_access_is_granted()),
+                );
+            },
+            BoundedWait::TimedOut => {
+                return candidate::capture_failure_before_window_selection(
+                    sequence,
+                    CaptureFailure::ShareableContentQueryTimedOut,
+                );
+            },
+        };
     let windows = content.windows();
     let displays = content.displays();
     let terminal_window_candidates = terminal_windows(&windows);
@@ -232,8 +296,15 @@ fn capture_selected_window(
         .with_width(image.0)
         .with_height(image.1);
 
-    let captured = CaptureFailure::ScreenshotFailed
-        .classify_result(SCScreenshotManager::capture_image(&filter, &configuration))?;
+    let captured = match block_on_with_deadline(
+        AsyncSCScreenshotManager::capture_image(&filter, &configuration),
+        CAPTURE_CALL_DEADLINE,
+    ) {
+        BoundedWait::Answered(result) => {
+            CaptureFailure::ScreenshotFailed.classify_result(result)?
+        },
+        BoundedWait::TimedOut => return Err(CaptureFailure::ScreenshotTimedOut),
+    };
     let pixels = CaptureFailure::PixelExtractionFailed.classify_result(captured.rgba_data())?;
     let (columns, rows, colors) = reduce_capture(&pixels, image, cell)?;
     Ok(Desktop {
@@ -1043,8 +1114,16 @@ impl CaptureFailure {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::task::Poll;
+    use std::task::Waker;
+    use std::time::Duration;
+    use std::time::Instant;
+
     use ratatui::style::Color;
 
+    use super::BoundedWait;
     use super::CaptureFailure;
 
     /// The three names iTerm2 answers to, as
@@ -1056,6 +1135,60 @@ mod tests {
     const APPLICATION: &str = "iTerm2";
     /// iTerm2's bundle identifier.
     const BUNDLE: &str = "com.googlecode.iterm2";
+
+    #[test]
+    fn bounded_wait_times_out_after_the_deadline() {
+        let deadline = Duration::from_millis(50);
+        let started_at = Instant::now();
+
+        let outcome = super::block_on_with_deadline(std::future::pending::<()>(), deadline);
+
+        assert!(matches!(outcome, BoundedWait::TimedOut));
+        assert!(started_at.elapsed() >= deadline);
+    }
+
+    #[test]
+    fn bounded_wait_answers_when_another_thread_completes_the_future() {
+        let state: Arc<Mutex<(Option<u32>, Option<Waker>)>> = Arc::new(Mutex::new((None, None)));
+        let completion_state = Arc::clone(&state);
+        let completion_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut state = completion_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.0 = Some(7);
+            if let Some(waker) = state.1.take() {
+                waker.wake();
+            }
+        });
+        let future = std::future::poll_fn(|context| {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.0.take().map_or_else(
+                || {
+                    state.1 = Some(context.waker().clone());
+                    Poll::Pending
+                },
+                Poll::Ready,
+            )
+        });
+
+        let outcome = super::block_on_with_deadline(future, Duration::from_millis(100));
+
+        completion_thread
+            .join()
+            .expect("completion thread should finish");
+        assert!(matches!(outcome, BoundedWait::Answered(7)));
+    }
+
+    #[test]
+    fn bounded_wait_answers_an_immediately_ready_future_without_parking() {
+        let outcome =
+            super::block_on_with_deadline(std::future::ready(7), Duration::from_millis(50));
+
+        assert!(matches!(outcome, BoundedWait::Answered(7)));
+    }
 
     #[test]
     fn failed_shareable_content_query_with_access_reports_query_failure() {

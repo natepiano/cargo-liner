@@ -114,12 +114,18 @@ pub enum CaptureFailure {
     ScreenRecordingAccessNotGranted,
     /// `ScreenCaptureKit` could not list the shareable displays and windows.
     ShareableContentQueryFailed,
+    /// The shareable displays and windows were requested, but macOS did not answer within the call
+    /// deadline, so the request was abandoned.
+    ShareableContentQueryTimedOut,
     /// No window could be matched to the terminal running the app.
     TerminalWindowNotFound,
     /// No display could be matched to the selected terminal window.
     DisplayNotFound,
     /// `ScreenCaptureKit` could not capture the selected display.
     ScreenshotFailed,
+    /// The display capture was requested, but macOS did not answer within the call deadline, so the
+    /// request was abandoned.
+    ScreenshotTimedOut,
     /// The captured image could not expose its RGBA pixel bytes.
     PixelExtractionFailed,
     /// The captured pixels could not be reduced to terminal-cell colors.
