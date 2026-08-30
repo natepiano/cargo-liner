@@ -143,7 +143,7 @@ impl BackdropMonitorCaptureTestDriver {
             CaptureAttemptTestCase::PinnedWindow { window_id } => {
                 WindowIdentificationState::Identified { window_id }
             },
-            CaptureAttemptTestCase::ShareableContentQueryFails
+            CaptureAttemptTestCase::DisplayCaptureFails
             | CaptureAttemptTestCase::WindowOwnedByProcessAncestor { .. }
             | CaptureAttemptTestCase::WindowOwnedByTerminalProgram { .. }
             | CaptureAttemptTestCase::WindowOwnedByFrontmostApplication { .. } => {

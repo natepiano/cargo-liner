@@ -15,10 +15,9 @@ version              = "0.8.0-dev"
 workspace = true
 
 [features]
-# Capture of the desktop behind the terminal window, and the attract-mode
-# animation drawn from it. Off by default: it pulls in ScreenCaptureKit, and
-# only an app that draws an idle screen has any use for it.
-backdrop  = ["dep:objc2-core-graphics", "dep:screencapturekit"]
+# Capture of the desktop behind the terminal window, and the attract-mode animation drawn from it.
+# Off by default because only an app that draws an idle screen has any use for it.
+backdrop  = ["dep:objc2-core-graphics"]
 clipboard = ["crossterm/osc52"]
 default   = ["clipboard"]
 
@@ -54,20 +53,16 @@ objc2-core-foundation = { workspace = true, features = [
   "CFString",
   "std",
 ] }
-# Backs the `backdrop` feature alongside ScreenCaptureKit. Re-reading where the
-# window stands is the one window-server call made every frame, and asking
-# CoreGraphics about a single window by number is some five hundred times
-# cheaper than asking ScreenCaptureKit to describe every window on the machine.
+# Backs the `backdrop` feature. Re-reading where the window stands is the one window-server call
+# made every frame, and CoreGraphics also captures the display without the cross-process blocking
+# observed in ScreenCaptureKit.
 objc2-core-graphics = { workspace = true, optional = true, features = [
   "CGDirectDisplay",
+  "CGError",
+  "CGImage",
+  "CGDataProvider",
   "CGGeometry",
   "CGWindow",
   "std",
 ] }
 objc2-io-kit = { workspace = true, features = ["libc", "std"] }
-# Backs the `backdrop` feature. `macos_14_0` is what carries
-# `SCScreenshotManager`, the single-shot capture the backdrop takes.
-screencapturekit = { workspace = true, optional = true, features = [
-  "async",
-  "macos_14_0",
-] }

@@ -48,8 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report test progress, not just build progress. `cargo nextest run` counts its tests the way cargo counts units, and the working-directory heading names which count is on screen: `building`, then `testing`. Runs with no terminal report too -- nextest draws no bar there, so the count is read from its per-test lines instead.
 
 ### Fixed
-- Several instances no longer starve each other's desktop captures; each takes its turn at the screenshot.
-- Running several instances at once no longer kills the backdrop when macOS stops answering one instance's captures; bounded window-server calls prevent abandoned-request pile-ups and dead capture workers.
+- Running several instances at once no longer kills the desktop backdrop: the capture moved off ScreenCaptureKit, whose cross-process screenshot calls block one another, onto CoreGraphics, which does not.
 - An ordinary start no longer reports a stalled desktop capture: a display captured for the first time in a while can take seconds, so the screen waits for it. The stalled notice remains for a capture worker actually abandoned and replaced.
 - The attract screen's notice names the real cause. The Settings instruction now appears only when Screen Recording access is denied; every other capture failure gets a neutral line.
 - A favorites row the parser cannot read can now be deleted, and one that moved underneath you is refused with a message rather than deleted wrongly.

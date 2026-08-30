@@ -1,27 +1,12 @@
 //! The macOS capture backend.
 //!
-//! `ScreenCaptureKit` takes the screenshot with every window this
-//! terminal owns excluded, and CoreGraphics answers the cheap
-//! per-window questions -- where a window stands, what it is titled --
-//! that the drawing threads ask far more often.
+//! CoreGraphics captures the desktop below the selected terminal window and answers the
+//! per-window questions -- where a window stands, what it is titled -- that the drawing threads
+//! ask far more often.
 
 use std::collections::HashSet;
 use std::env;
 use std::ffi::c_void;
-use std::fs::File;
-use std::fs::OpenOptions;
-use std::fs::TryLockError;
-use std::future::Future;
-use std::path::Path;
-use std::sync::Arc;
-use std::task::Context;
-use std::task::Poll;
-use std::task::Wake;
-use std::task::Waker;
-use std::thread;
-use std::thread::Thread;
-use std::time::Duration;
-use std::time::Instant;
 
 use objc2_core_foundation::CFArray;
 use objc2_core_foundation::CFDictionary;
@@ -29,11 +14,15 @@ use objc2_core_foundation::CFNumber;
 use objc2_core_foundation::CFString;
 use objc2_core_foundation::CFType;
 use objc2_core_foundation::CGRect as CoreGraphicsRect;
+use objc2_core_graphics::CGDirectDisplayID;
 use objc2_core_graphics::CGDisplayBounds;
 use objc2_core_graphics::CGDisplayCopyDisplayMode;
 use objc2_core_graphics::CGDisplayMode;
+use objc2_core_graphics::CGError;
+use objc2_core_graphics::CGGetActiveDisplayList;
 use objc2_core_graphics::CGPreflightScreenCaptureAccess;
 use objc2_core_graphics::CGRectMakeWithDictionaryRepresentation;
+use objc2_core_graphics::CGWindowImageOption;
 use objc2_core_graphics::CGWindowListCopyWindowInfo;
 use objc2_core_graphics::CGWindowListOption;
 use objc2_core_graphics::kCGNullWindowID;
@@ -44,27 +33,14 @@ use objc2_core_graphics::kCGWindowNumber;
 use objc2_core_graphics::kCGWindowOwnerName;
 use objc2_core_graphics::kCGWindowOwnerPID;
 use ratatui::style::Color;
-use screencapturekit::async_api::AsyncSCScreenshotManager;
-use screencapturekit::async_api::AsyncSCShareableContent;
-use screencapturekit::cg::CGPoint;
-use screencapturekit::cg::CGRect;
-use screencapturekit::cg::CGSize;
-use screencapturekit::screenshot_manager::CGImageExt;
-use screencapturekit::shareable_content::SCDisplay;
-use screencapturekit::shareable_content::SCWindow;
-use screencapturekit::stream::configuration::SCStreamConfiguration;
-use screencapturekit::stream::content_filter::SCContentFilter;
 use sysinfo::Pid;
 use sysinfo::ProcessRefreshKind;
 use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
 
-use crate::backdrop::constants::CAPTURE_CALL_DEADLINE;
 use crate::backdrop::constants::EMULATOR_NAME_FLOOR;
 use crate::backdrop::constants::POSITION_TOLERANCE;
 use crate::backdrop::constants::SAMPLES_PER_CELL;
-use crate::backdrop::constants::SCREENSHOT_TURN_LOCK_FILE;
-use crate::backdrop::constants::SCREENSHOT_TURN_POLL;
 use crate::backdrop::constants::TERM_PROGRAM_ENV;
 use crate::backdrop::desktop;
 use crate::backdrop::desktop::CaptureAttemptResult;
@@ -86,6 +62,8 @@ use crate::process;
 
 /// How many bytes one pixel of the captured image occupies.
 const BYTES_PER_PIXEL: usize = 4;
+/// Where the alpha channel sits in the captured RGBA pixel.
+const ALPHA: usize = 3;
 /// Where the red channel sits in the captured RGBA pixel.
 const RED: usize = 0;
 /// Where the green channel sits in the captured RGBA pixel.
@@ -93,136 +71,66 @@ const GREEN: usize = 1;
 /// Where the blue channel sits in the captured RGBA pixel.
 const BLUE: usize = 2;
 
-/// Outcome of driving a window-server future with a deadline.
-enum BoundedWait<T> {
-    /// The call answered within its deadline.
-    Answered(T),
-    /// The deadline elapsed with no answer; the request was abandoned.
-    TimedOut,
+/// An active display, read from CoreGraphics. Replaces `SCDisplay` in the capture path so the
+/// capture makes no `ScreenCaptureKit` call.
+struct Display {
+    /// The window server's id for the display; every geometry query keys on it.
+    id:     CGDirectDisplayID,
+    /// Where the display stands, in the points `CGDisplayBounds` answers in.
+    bounds: CoreGraphicsRect,
 }
 
-/// This process's turn to have a screenshot request in flight, shared with every other process of
-/// this user that captures through this module.
-///
-/// Measured overlapping screenshot requests from different processes block one another until one
-/// process goes away, while a process alone succeeds; starting a fresh process does not escape the
-/// condition. The file lock keeps only one process inside the screenshot call at a time.
-enum ScreenshotTurn {
-    /// The lock is held; it is released when this value drops.
-    Exclusive {
-        /// The open lock file that holds this process's exclusive lock.
-        file: File,
-    },
-    /// The lock file could not be used, so the screenshot proceeds unserialized rather than every
-    /// attempt failing over a courtesy between instances.
-    Unguarded,
-}
-
-impl ScreenshotTurn {
-    /// Acquire this process's screenshot turn from the shared per-user lock file.
-    fn acquire(deadline: Duration) -> Result<Self, ScreenshotTurnTimedOut> {
-        Self::acquire_at(&env::temp_dir().join(SCREENSHOT_TURN_LOCK_FILE), deadline)
+/// Every display currently active in the window server.
+#[expect(
+    unsafe_code,
+    reason = "CGGetActiveDisplayList writes through caller-provided count and display pointers"
+)]
+fn active_displays() -> Vec<Display> {
+    let mut count = 0_u32;
+    // SAFETY: `active_displays` is null for the count-only query, and `display_count` points to a
+    // live local `u32` for the duration of the call.
+    let error =
+        unsafe { CGGetActiveDisplayList(0, std::ptr::null_mut(), std::ptr::from_mut(&mut count)) };
+    if error != CGError::Success || count == 0 {
+        return Vec::new();
     }
 
-    /// Acquire this process's screenshot turn from `path`.
-    fn acquire_at(path: &Path, deadline: Duration) -> Result<Self, ScreenshotTurnTimedOut> {
-        let started_at = Instant::now();
-        let Ok(file) = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-        else {
-            return Ok(Self::Unguarded);
-        };
-
-        loop {
-            match file.try_lock() {
-                Ok(()) => return Ok(Self::Exclusive { file }),
-                Err(TryLockError::WouldBlock) => {
-                    if started_at.elapsed() >= deadline {
-                        return Err(ScreenshotTurnTimedOut);
-                    }
-                    thread::sleep(SCREENSHOT_TURN_POLL);
-                },
-                Err(TryLockError::Error(_)) => return Ok(Self::Unguarded),
-            }
-        }
+    let max_displays = count;
+    let Ok(capacity) = usize::try_from(max_displays) else {
+        return Vec::new();
+    };
+    let mut display_ids = Vec::with_capacity(capacity);
+    // SAFETY: `display_ids` has spare capacity for `max_displays` ids, its pointer stays valid for
+    // the call, and `count` points to a live local `u32`. CoreGraphics writes at most
+    // `max_displays` initialized ids.
+    let error = unsafe {
+        CGGetActiveDisplayList(
+            max_displays,
+            display_ids.as_mut_ptr(),
+            std::ptr::from_mut(&mut count),
+        )
+    };
+    if error != CGError::Success || count > max_displays {
+        return Vec::new();
     }
-}
+    let Ok(length) = usize::try_from(count) else {
+        return Vec::new();
+    };
+    // SAFETY: the successful call initialized the first `count` entries, and `count` does not
+    // exceed the vector's `max_displays` capacity.
+    unsafe { display_ids.set_len(length) };
 
-impl Drop for ScreenshotTurn {
-    fn drop(&mut self) {
-        if let Self::Exclusive { file } = self {
-            let _ = file.unlock();
-        }
-    }
-}
-
-/// Another process's screenshot was still in flight when the deadline ran out.
-#[derive(Debug)]
-struct ScreenshotTurnTimedOut;
-
-/// Wakes a future poll by unparking the thread driving it.
-struct ThreadUnparker {
-    /// The thread polling the future.
-    thread: Thread,
-}
-
-impl Wake for ThreadUnparker {
-    fn wake(self: Arc<Self>) { self.thread.unpark(); }
-}
-
-/// Drive a future to completion on the current thread until its deadline elapses.
-fn block_on_with_deadline<F: Future>(future: F, deadline: Duration) -> BoundedWait<F::Output> {
-    let started_at = Instant::now();
-    let mut future = std::pin::pin!(future);
-    let waker = Waker::from(Arc::new(ThreadUnparker {
-        thread: std::thread::current(),
-    }));
-    let mut context = Context::from_waker(&waker);
-
-    loop {
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(value) => return BoundedWait::Answered(value),
-            Poll::Pending => {
-                let elapsed = started_at.elapsed();
-                if elapsed >= deadline {
-                    // `AsyncCompletionFuture` owns an `Arc`, and its FFI callback owns a separately
-                    // leaked strong reference. A late callback completes into the live allocation;
-                    // a callback that never fires leaks one small allocation, never a thread.
-                    return BoundedWait::TimedOut;
-                }
-                std::thread::park_timeout(deadline.saturating_sub(elapsed));
-            },
-        }
-    }
+    display_ids
+        .into_iter()
+        .map(|id| Display {
+            id,
+            bounds: CGDisplayBounds(id),
+        })
+        .collect()
 }
 
 /// Whether macOS has granted this process Screen Recording access.
 fn screen_capture_access_is_granted() -> bool { CGPreflightScreenCaptureAccess() }
-
-/// Classify a failed shareable-content query from the process's access state.
-const fn shareable_content_failure(access_granted: bool) -> CaptureFailure {
-    if access_granted {
-        CaptureFailure::ShareableContentQueryFailed
-    } else {
-        CaptureFailure::ScreenRecordingAccessNotGranted
-    }
-}
-
-/// Keep the first window for each id while preserving window-server order.
-fn deduplicate_windows_by_id<T>(
-    windows: impl IntoIterator<Item = T>,
-    mut window_id: impl FnMut(&T) -> u32,
-) -> Vec<T> {
-    let mut seen = HashSet::new();
-    windows
-        .into_iter()
-        .filter(|window| seen.insert(window_id(window)))
-        .collect()
-}
 
 /// See [`Desktop::capture`].
 pub(in crate::backdrop::desktop) fn capture(
@@ -230,24 +138,20 @@ pub(in crate::backdrop::desktop) fn capture(
     capture_window_target: CaptureWindowTarget,
     sequence: CaptureAttemptSequence,
 ) -> CaptureAttemptResult {
-    let content =
-        match block_on_with_deadline(AsyncSCShareableContent::get(), CAPTURE_CALL_DEADLINE) {
-            BoundedWait::Answered(Ok(content)) => content,
-            BoundedWait::Answered(Err(_)) => {
-                return candidate::capture_failure_before_window_selection(
-                    sequence,
-                    shareable_content_failure(screen_capture_access_is_granted()),
-                );
-            },
-            BoundedWait::TimedOut => {
-                return candidate::capture_failure_before_window_selection(
-                    sequence,
-                    CaptureFailure::ShareableContentQueryTimedOut,
-                );
-            },
-        };
-    let windows = content.windows();
-    let displays = content.displays();
+    let windows = Listed::on_screen();
+    let displays = active_displays();
+    if displays.is_empty() {
+        return candidate::capture_failure_before_window_selection(
+            sequence,
+            CaptureFailure::DisplayNotFound,
+        );
+    }
+    if windows.is_empty() {
+        return candidate::capture_failure_before_window_selection(
+            sequence,
+            CaptureFailure::TerminalWindowNotFound,
+        );
+    }
     let terminal_window_candidates = terminal_windows(&windows);
     // The number `identify` pinned to this app's own window is
     // looked for across every window on the machine, not inside the
@@ -267,7 +171,7 @@ pub(in crate::backdrop::desktop) fn capture(
         &windows,
         capture_window_target,
         &terminal_window_candidates,
-        SCWindow::window_id,
+        |window: &Listed| window.number,
         || {
             frontmost_window(
                 &terminal_window_candidates.windows,
@@ -283,103 +187,64 @@ pub(in crate::backdrop::desktop) fn capture(
             CaptureFailure::TerminalWindowNotFound,
         );
     };
-    let window_id = chosen.window_id();
+    let window_id = chosen.number;
     let window_selection = CaptureAttemptWindowSelection::Selected { window_id, method };
 
-    let desktop_result = capture_selected_window(metrics, chosen, &windows, &displays);
+    let desktop_result = capture_selected_window(metrics, chosen, &displays);
     CaptureAttemptResult::from_desktop_result(sequence, window_selection, desktop_result)
 }
 
 /// Capture the display behind the terminal window selected for this attempt.
+#[expect(
+    deprecated,
+    reason = "ScreenCaptureKit's cross-process screenshot calls block one another; CoreGraphics does not -- measured"
+)]
 fn capture_selected_window(
     metrics: Metrics,
-    chosen: &SCWindow,
-    windows: &[SCWindow],
-    displays: &[SCDisplay],
+    chosen: &Listed,
+    displays: &[Display],
 ) -> Result<Desktop, CaptureFailure> {
-    let window_id = chosen.window_id();
+    let window_id = chosen.number;
     let display =
-        CaptureFailure::DisplayNotFound.classify_option(display_under(displays, chosen.frame()))?;
+        CaptureFailure::DisplayNotFound.classify_option(display_under(displays, chosen.bounds))?;
     let display_frame = display_bounds(display);
     // The capture is asked for at the display's own point size and
     // comes back at it, so one cell in points serves both the grid
     // the capture is reduced against and the frame the window is
-    // placed by. `SCDisplay` measures in points as `CGDisplayBounds`
-    // does, which is why there is no second unit here to convert to.
+    // placed by. `Display::bounds` measures in points as the selected window's bounds do, which is
+    // why there is no second unit here to convert to.
     //
-    // What the terminal reports is the one thing here that is not in
-    // points -- it answers in the display's pixels -- so the scale
-    // divides it before a cell comes out of it. The scale is asked
-    // of the display rather than worked out from the window, so
-    // which window was matched cannot change the size of a cell.
-    // See [`Metrics::cell_points`].
+    // What the terminal reports is the one thing here that is not in points -- it answers in the
+    // display's pixels -- so the scale divides it before a cell comes out of it. See
+    // [`Metrics::cell_points`].
     let cell = metrics.cell_points(backing_scale(display));
-
-    // Every window the terminal owns comes out of the capture, and
-    // so does every window standing in front of the one the app is
-    // drawn in -- another application's window on top of this one
-    // is not something this one is drawn over, and a capture that
-    // keeps it shows the terminal whatever is covering it.
-    //
-    // What is left is what this window is drawn over. That is the
-    // whole reason the capture can outlive a move: excluding a
-    // window does not leave a hole where it stood, it composites
-    // the display as though the window were not there at all, and
-    // that answer does not depend on where the window is.
-    let above = windows_above(window_id);
-    // Asked of the application that owns the window this app is
-    // drawn in, rather than of whichever one is in front, for the
-    // same reason the window itself is.
-    let owned = chosen
-        .owning_application()
-        .map(|application| application.process_id())
-        .map_or_else(Vec::new, |owner| {
-            candidate::windows_owned_by(windows, |pid| pid == owner)
+    let Some(image) = objc2_core_graphics::CGWindowListCreateImage(
+        display_frame,
+        CGWindowListOption::OptionOnScreenBelowWindow,
+        window_id,
+        CGWindowImageOption::Default,
+    ) else {
+        return Err(if screen_capture_access_is_granted() {
+            CaptureFailure::DisplayCaptureFailed
+        } else {
+            CaptureFailure::ScreenRecordingAccessNotGranted
         });
-    let excluded = deduplicate_windows_by_id(
-        owned.into_iter().chain(
-            windows
-                .iter()
-                .filter(|window| above.contains(&window.window_id())),
-        ),
-        |window| window.window_id(),
-    );
-    let filter = SCContentFilter::create()
-        .with_display(display)
-        .with_excluding_windows(&excluded)
-        .build();
-    // The whole display, asked for at its own pixel size. Nothing is
-    // scaled on the way out, which is what keeps a cell's share of
-    // the image the same size in both axes -- ask for anything else
-    // and the window server has two aspect ratios to reconcile and
-    // reconciles them by pressing the capture into a corner of the
-    // canvas.
-    let image = (display.width(), display.height());
-    let configuration = SCStreamConfiguration::new()
-        .with_source_rect(CGRect {
-            origin: CGPoint { x: 0.0, y: 0.0 },
-            size:   CGSize {
-                width:  display_frame.size.width,
-                height: display_frame.size.height,
-            },
-        })
-        .with_width(image.0)
-        .with_height(image.1);
-
-    let turn = ScreenshotTurn::acquire(CAPTURE_CALL_DEADLINE)
-        .map_err(|ScreenshotTurnTimedOut| CaptureFailure::ScreenshotTurnTimedOut)?;
-    let captured = match block_on_with_deadline(
-        AsyncSCScreenshotManager::capture_image(&filter, &configuration),
-        CAPTURE_CALL_DEADLINE,
-    ) {
-        BoundedWait::Answered(result) => {
-            CaptureFailure::ScreenshotFailed.classify_result(result)?
-        },
-        BoundedWait::TimedOut => return Err(CaptureFailure::ScreenshotTimedOut),
     };
-    drop(turn);
-    let pixels = CaptureFailure::PixelExtractionFailed.classify_result(captured.rgba_data())?;
-    let (columns, rows, colors) = reduce_capture(&pixels, image, cell)?;
+    let width = objc2_core_graphics::CGImageGetWidth(Some(&image));
+    let height = objc2_core_graphics::CGImageGetHeight(Some(&image));
+    let stride = objc2_core_graphics::CGImageGetBytesPerRow(Some(&image));
+    let provider = CaptureFailure::PixelExtractionFailed
+        .classify_option(objc2_core_graphics::CGImageGetDataProvider(Some(&image)))?;
+    let data = CaptureFailure::PixelExtractionFailed
+        .classify_option(objc2_core_graphics::CGDataProviderCopyData(Some(&provider)))?;
+    let bytes = data.to_vec();
+    let rgba = CaptureFailure::PixelExtractionFailed
+        .classify_option(bgra_rows_to_rgba(&bytes, width, height, stride))?;
+    let image = (
+        u32::try_from(width).map_err(|_| CaptureFailure::DisplayCaptureFailed)?,
+        u32::try_from(height).map_err(|_| CaptureFailure::DisplayCaptureFailed)?,
+    );
+    let (columns, rows, colors) = reduce_capture(&rgba, image, cell)?;
     Ok(Desktop {
         window_id,
         metrics,
@@ -389,6 +254,26 @@ fn capture_selected_window(
         rows,
         colors,
     })
+}
+
+/// Convert padded BGRA rows from CoreGraphics into tightly packed RGBA pixels.
+fn bgra_rows_to_rgba(bytes: &[u8], width: usize, height: usize, stride: usize) -> Option<Vec<u8>> {
+    let row_bytes = width.checked_mul(BYTES_PER_PIXEL)?;
+    let required_bytes = height.checked_mul(stride)?;
+    let capacity = height.checked_mul(row_bytes)?;
+    if stride < row_bytes || bytes.len() < required_bytes {
+        return None;
+    }
+
+    let mut rgba = Vec::with_capacity(capacity);
+    for row in 0..height {
+        let start = row.checked_mul(stride)?;
+        let end = start.checked_add(row_bytes)?;
+        for pixel in bytes.get(start..end)?.as_chunks::<BYTES_PER_PIXEL>().0 {
+            rgba.extend_from_slice(&[pixel[BLUE], pixel[GREEN], pixel[RED], pixel[ALPHA]]);
+        }
+    }
+    Some(rgba)
 }
 
 /// See [`desktop::window_titles`].
@@ -471,29 +356,6 @@ pub(in crate::backdrop::desktop) fn window_frame(window: u32) -> Option<Frame> {
         origin: (rect.origin.x, rect.origin.y),
         size:   (rect.size.width, rect.size.height),
     })
-}
-
-/// Every window standing in front of `window` on screen, by
-/// number.
-///
-/// CoreGraphics for the same reason [`window_frame`] uses it, and
-/// for a second one: this is the question CoreGraphics answers
-/// directly. `SCShareableContent` describes every window on the
-/// machine and says nothing about which of them is in front of
-/// which, so the same answer taken from there would rest on the
-/// order its list happens to arrive in.
-fn windows_above(window: u32) -> Vec<u32> {
-    let Some(list) =
-        CGWindowListCopyWindowInfo(CGWindowListOption::OptionOnScreenAboveWindow, window)
-    else {
-        return Vec::new();
-    };
-    (0..list.count())
-        .filter_map(|index| match number(entry(&list, index)?) {
-            DescribedWindowNumber::Numbered { window_id } => Some(window_id),
-            DescribedWindowNumber::Unnumbered => None,
-        })
-        .collect()
 }
 
 /// The dictionary describing one window of a `CGWindowList` answer.
@@ -711,7 +573,7 @@ fn bounds(described: &CFDictionary) -> Option<CoreGraphicsRect> {
 /// screen it was not on. `CGDisplayBounds` is read in the space
 /// window frames already are, so the two can be compared, and the
 /// same rectangle is what the capture is placed by afterwards.
-fn display_bounds(display: &SCDisplay) -> CoreGraphicsRect { CGDisplayBounds(display.display_id()) }
+const fn display_bounds(display: &Display) -> CoreGraphicsRect { display.bounds }
 
 /// How many cells a grid needs to cover a span of that many cells.
 ///
@@ -806,34 +668,6 @@ fn reduce(pixels: &[u8], image: (u32, u32), grid: (u16, u16)) -> Option<Vec<Colo
 trait TerminalProgramWindowCandidate {
     /// Every folded name the owning application answers to.
     fn names(&self) -> Vec<String>;
-}
-
-impl TerminalWindowCandidate for SCWindow {
-    fn owner(&self) -> TerminalWindowOwner {
-        self.owning_application()
-            .map_or(TerminalWindowOwner::Unnamed, |application| {
-                TerminalWindowOwner::Application {
-                    pid: application.process_id(),
-                }
-            })
-    }
-
-    fn frontmost(&self) -> bool {
-        self.is_active() && self.is_on_screen() && self.window_layer() == 0
-    }
-}
-
-impl TerminalProgramWindowCandidate for SCWindow {
-    fn names(&self) -> Vec<String> {
-        self.owning_application()
-            .map(|application| {
-                vec![
-                    folded(&application.application_name()),
-                    folded(&application.bundle_identifier()),
-                ]
-            })
-            .unwrap_or_default()
-    }
 }
 
 /// One window of a `CGWindowList` answer, read out of the
@@ -1020,22 +854,21 @@ fn names_agree(wanted: &str, found: &str) -> bool {
 /// one. Both pick a sibling window as readily as this one, and what
 /// arrives then is the desktop behind something else.
 fn frontmost_window<'a>(
-    windows: &'a [&'a SCWindow],
-    displays: &[SCDisplay],
+    windows: &'a [&'a Listed],
+    displays: &[Display],
     text_pixels: (u16, u16),
-) -> Option<&'a SCWindow> {
+) -> Option<&'a Listed> {
     // Each candidate is scored against the scale of the display it
     // stands on rather than one scale for all of them, since a
     // machine with a Retina panel and an external monitor is
     // carrying both at once.
-    let score = |window: &SCWindow| {
-        let frame = window.frame();
+    let score = |window: &Listed| {
+        let frame = window.bounds;
         let scale = display_under(displays, frame).map_or(1, backing_scale);
         mismatch(frame, text_pixels, scale)
     };
     windows
         .iter()
-        .filter(|window| window.is_on_screen())
         .min_by(|left, right| score(left).total_cmp(&score(right)))
         .copied()
 }
@@ -1052,7 +885,7 @@ fn frontmost_window<'a>(
 /// reported, a text area on a Retina panel reads as twice the
 /// window holding it, and every candidate on that panel is judged
 /// short by the same doubled amount -- which is no ordering at all.
-fn mismatch(frame: CGRect, text_pixels: (u16, u16), scale: u32) -> f64 {
+fn mismatch(frame: CoreGraphicsRect, text_pixels: (u16, u16), scale: u32) -> f64 {
     let scale = f64::from(scale);
     let width = f64::from(text_pixels.0) / scale;
     let height = f64::from(text_pixels.1) / scale;
@@ -1110,8 +943,8 @@ fn ancestor_pids() -> HashSet<i32> {
 /// mode macOS offers, so the ratio is taken in whole numbers. A
 /// display that will not answer is read as one, which is what a
 /// panel carrying one pixel to the point would have answered.
-fn backing_scale(display: &SCDisplay) -> u32 {
-    let Some(mode) = CGDisplayCopyDisplayMode(display.display_id()) else {
+fn backing_scale(display: &Display) -> u32 {
+    let Some(mode) = CGDisplayCopyDisplayMode(display.id) else {
         return 1;
     };
     let points = CGDisplayMode::width(Some(&mode));
@@ -1124,7 +957,7 @@ fn backing_scale(display: &SCDisplay) -> u32 {
 
 /// The centre of `window_frame`, in the same points
 /// [`display_bounds`] answers in.
-fn window_center(window_frame: CGRect) -> (f64, f64) {
+fn window_center(window_frame: CoreGraphicsRect) -> (f64, f64) {
     (
         window_frame.origin.x + window_frame.size.width / 2.0,
         window_frame.origin.y + window_frame.size.height / 2.0,
@@ -1158,7 +991,7 @@ fn away_from(bounds: CoreGraphicsRect, center: (f64, f64)) -> f64 {
 /// window that is demonstrably somewhere else is least likely to be
 /// on; answering with it names a whole different desktop and leaves
 /// no sign that the containment test found nothing.
-fn display_under(displays: &[SCDisplay], window_frame: CGRect) -> Option<&SCDisplay> {
+fn display_under(displays: &[Display], window_frame: CoreGraphicsRect) -> Option<&Display> {
     let center = window_center(window_frame);
     displays
         .iter()
@@ -1172,11 +1005,6 @@ fn display_under(displays: &[SCDisplay], window_frame: CGRect) -> Option<&SCDisp
 }
 
 impl CaptureFailure {
-    /// Replace an underlying stage error with this compact classification.
-    fn classify_result<T, E>(self, result: Result<T, E>) -> Result<T, Self> {
-        result.map_err(|_| self)
-    }
-
     /// Require a stage to have produced its value, classifying absence as this failure.
     fn classify_option<T>(self, value: Option<T>) -> Result<T, Self> { value.ok_or(self) }
 }
@@ -1187,27 +1015,9 @@ impl CaptureFailure {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use std::fs::OpenOptions;
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::sync::Mutex;
-    use std::task::Poll;
-    use std::task::Waker;
-    use std::thread;
-    use std::time::Duration;
-    use std::time::Instant;
-
     use ratatui::style::Color;
 
-    use super::BoundedWait;
     use super::CaptureFailure;
-    use super::ScreenshotTurn;
-    use super::ScreenshotTurnTimedOut;
-
-    /// Return a process-local path unique to one screenshot-turn test.
-    fn screenshot_turn_test_path(test_name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("tui-pane-{test_name}-{}.lock", std::process::id()))
-    }
 
     /// The three names iTerm2 answers to, as
     /// [`named_emulator_windows`](super::named_emulator_windows)
@@ -1220,169 +1030,25 @@ mod tests {
     const BUNDLE: &str = "com.googlecode.iterm2";
 
     #[test]
-    fn a_free_turn_is_taken_at_once() {
-        let path = screenshot_turn_test_path("a-free-turn-is-taken-at-once");
-        let started_at = Instant::now();
+    fn bgra_rows_become_tight_rgba_without_padding() {
+        let bytes = [
+            3, 2, 1, 4, 7, 6, 5, 8, 101, 102, 103, 104, 105, 106, 107, 108, 11, 10, 9, 12, 15, 14,
+            13, 16, 109, 110, 111, 112, 113, 114, 115, 116,
+        ];
 
-        let turn = ScreenshotTurn::acquire_at(&path, Duration::from_millis(200))
-            .expect("a free screenshot turn should be acquired");
-        let elapsed = started_at.elapsed();
+        let rgba = super::bgra_rows_to_rgba(&bytes, 2, 2, 16);
 
-        assert!(matches!(turn, ScreenshotTurn::Exclusive { .. }));
-        assert!(elapsed < super::SCREENSHOT_TURN_POLL);
-        std::fs::remove_file(path).expect("the test lock file should be removable");
-    }
-
-    #[test]
-    fn a_held_turn_times_out_at_the_deadline() {
-        let path = screenshot_turn_test_path("a-held-turn-times-out-at-the-deadline");
-        let holder = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .expect("the test lock file should open");
-        holder.lock().expect("the holder should acquire the lock");
-        let deadline = Duration::from_millis(60);
-        let started_at = Instant::now();
-
-        let outcome = ScreenshotTurn::acquire_at(&path, deadline);
-
-        assert!(matches!(outcome, Err(ScreenshotTurnTimedOut)));
-        assert!(started_at.elapsed() >= deadline);
-        holder.unlock().expect("the holder should release the lock");
-        std::fs::remove_file(path).expect("the test lock file should be removable");
-    }
-
-    #[test]
-    fn a_released_turn_is_taken_by_the_waiter() {
-        let path = screenshot_turn_test_path("a-released-turn-is-taken-by-the-waiter");
-        let holder = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .expect("the test lock file should open");
-        holder.lock().expect("the holder should acquire the lock");
-        let hold = Duration::from_millis(40);
-        let started_at = Instant::now();
-        let holder_thread = thread::spawn(move || {
-            thread::sleep(hold);
-            holder.unlock().expect("the holder should release the lock");
-        });
-
-        let turn = ScreenshotTurn::acquire_at(&path, Duration::from_secs(1))
-            .expect("the waiter should acquire the released lock");
-
-        assert!(matches!(&turn, ScreenshotTurn::Exclusive { .. }));
-        assert!(started_at.elapsed() >= hold);
-        holder_thread
-            .join()
-            .expect("the holder thread should finish");
-        drop(turn);
-        std::fs::remove_file(path).expect("the test lock file should be removable");
-    }
-
-    #[test]
-    fn dropping_the_turn_releases_it() {
-        let path = screenshot_turn_test_path("dropping-the-turn-releases-it");
-        let turn = ScreenshotTurn::acquire_at(&path, Duration::from_millis(200))
-            .expect("a free screenshot turn should be acquired");
-        let second = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .expect("the second lock handle should open");
-        assert!(matches!(&turn, ScreenshotTurn::Exclusive { .. }));
-
-        drop(turn);
-
-        second
-            .try_lock()
-            .expect("dropping the turn should release its lock");
-        second
-            .unlock()
-            .expect("the second handle should release the lock");
-        std::fs::remove_file(path).expect("the test lock file should be removable");
-    }
-
-    #[test]
-    fn an_unusable_path_falls_back_to_unguarded() {
-        let outcome = ScreenshotTurn::acquire_at(&std::env::temp_dir(), Duration::from_millis(50));
-
-        assert!(matches!(outcome, Ok(ScreenshotTurn::Unguarded)));
-    }
-
-    #[test]
-    fn bounded_wait_times_out_after_the_deadline() {
-        let deadline = Duration::from_millis(50);
-        let started_at = Instant::now();
-
-        let outcome = super::block_on_with_deadline(std::future::pending::<()>(), deadline);
-
-        assert!(matches!(outcome, BoundedWait::TimedOut));
-        assert!(started_at.elapsed() >= deadline);
-    }
-
-    #[test]
-    fn bounded_wait_answers_when_another_thread_completes_the_future() {
-        let state: Arc<Mutex<(Option<u32>, Option<Waker>)>> = Arc::new(Mutex::new((None, None)));
-        let completion_state = Arc::clone(&state);
-        let completion_thread = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(10));
-            let mut state = completion_state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.0 = Some(7);
-            if let Some(waker) = state.1.take() {
-                waker.wake();
-            }
-        });
-        let future = std::future::poll_fn(|context| {
-            let mut state = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.0.take().map_or_else(
-                || {
-                    state.1 = Some(context.waker().clone());
-                    Poll::Pending
-                },
-                Poll::Ready,
-            )
-        });
-
-        let outcome = super::block_on_with_deadline(future, Duration::from_millis(100));
-
-        completion_thread
-            .join()
-            .expect("completion thread should finish");
-        assert!(matches!(outcome, BoundedWait::Answered(7)));
-    }
-
-    #[test]
-    fn bounded_wait_answers_an_immediately_ready_future_without_parking() {
-        let outcome =
-            super::block_on_with_deadline(std::future::ready(7), Duration::from_millis(50));
-
-        assert!(matches!(outcome, BoundedWait::Answered(7)));
-    }
-
-    #[test]
-    fn failed_shareable_content_query_with_access_reports_query_failure() {
         assert_eq!(
-            super::shareable_content_failure(true),
-            CaptureFailure::ShareableContentQueryFailed
+            rgba,
+            Some(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
         );
     }
 
     #[test]
-    fn failed_shareable_content_query_without_access_reports_permission_denial() {
-        assert_eq!(
-            super::shareable_content_failure(false),
-            CaptureFailure::ScreenRecordingAccessNotGranted
-        );
+    fn bgra_rows_reject_input_shorter_than_the_padded_image() {
+        let bytes = [0_u8; 31];
+
+        assert_eq!(super::bgra_rows_to_rgba(&bytes, 2, 2, 16), None);
     }
 
     #[test]
@@ -1400,28 +1066,6 @@ mod tests {
         assert_eq!(
             super::reduce_capture(&pixels, (2, 1), (1.0, 1.0)),
             Ok((2, 1, vec![Color::Rgb(1, 2, 3), Color::Rgb(4, 5, 6)]))
-        );
-    }
-
-    #[test]
-    fn exclusion_windows_are_deduplicated_by_id_in_original_order() {
-        let windows = [
-            (17, "terminal-owned"),
-            (23, "terminal-owned"),
-            (17, "above-selected"),
-            (41, "above-selected"),
-            (23, "above-selected"),
-        ];
-
-        let deduplicated = super::deduplicate_windows_by_id(windows, |window| window.0);
-
-        assert_eq!(
-            deduplicated,
-            vec![
-                (17, "terminal-owned"),
-                (23, "terminal-owned"),
-                (41, "above-selected"),
-            ]
         );
     }
 

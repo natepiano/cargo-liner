@@ -716,13 +716,13 @@ mod tests {
         assert_eq!(
             capture_test_driver.complete_capture_attempt(
                 &mut monitor,
-                CaptureAttemptTestCase::ShareableContentQueryFails,
+                CaptureAttemptTestCase::DisplayCaptureFails,
             ),
             Ok(()),
         );
         assert_eq!(
             monitor.status(),
-            BackdropStatus::Failed(CaptureFailure::ShareableContentQueryFailed),
+            BackdropStatus::Failed(CaptureFailure::DisplayCaptureFailed),
         );
         let following_attempt_diagnostics: Vec<_> = monitor
             .take_completed_capture_attempt_diagnostics()
@@ -747,7 +747,7 @@ mod tests {
             assert_eq!(
                 capture_test_driver.complete_capture_attempt(
                     &mut monitor,
-                    CaptureAttemptTestCase::ShareableContentQueryFails,
+                    CaptureAttemptTestCase::DisplayCaptureFails,
                 ),
                 Ok(()),
             );
@@ -789,7 +789,7 @@ mod tests {
             assert_eq!(
                 capture_test_driver.complete_capture_attempt(
                     &mut monitor,
-                    CaptureAttemptTestCase::ShareableContentQueryFails,
+                    CaptureAttemptTestCase::DisplayCaptureFails,
                 ),
                 Ok(()),
             );
@@ -828,7 +828,7 @@ mod tests {
         assert_eq!(
             capture_test_driver.complete_capture_attempt(
                 &mut monitor,
-                CaptureAttemptTestCase::ShareableContentQueryFails,
+                CaptureAttemptTestCase::DisplayCaptureFails,
             ),
             Ok(()),
         );
@@ -898,7 +898,7 @@ mod tests {
             assert_eq!(
                 capture_test_driver.complete_capture_attempt(
                     &mut monitor,
-                    CaptureAttemptTestCase::ShareableContentQueryFails,
+                    CaptureAttemptTestCase::DisplayCaptureFails,
                 ),
                 Ok(()),
             );

@@ -201,7 +201,7 @@ mod tests {
     use super::*;
 
     /// Capture failure stages exercised by the notice classifier.
-    const CAPTURE_FAILURES: [CaptureFailure; 16] = [
+    const CAPTURE_FAILURES: [CaptureFailure; 12] = [
         CaptureFailure::UnsupportedPlatform,
         CaptureFailure::AttemptStalled,
         CaptureFailure::CaptureWorkerReplaced,
@@ -209,13 +209,9 @@ mod tests {
         CaptureFailure::WorkerDisconnected,
         CaptureFailure::WorkerReplacementLimitReached,
         CaptureFailure::ScreenRecordingAccessNotGranted,
-        CaptureFailure::ShareableContentQueryFailed,
-        CaptureFailure::ShareableContentQueryTimedOut,
         CaptureFailure::TerminalWindowNotFound,
         CaptureFailure::DisplayNotFound,
-        CaptureFailure::ScreenshotTurnTimedOut,
-        CaptureFailure::ScreenshotFailed,
-        CaptureFailure::ScreenshotTimedOut,
+        CaptureFailure::DisplayCaptureFailed,
         CaptureFailure::PixelExtractionFailed,
         CaptureFailure::ImageReductionFailed,
     ];
@@ -258,7 +254,7 @@ mod tests {
         assert_eq!(
             capture_test_driver.complete_capture_attempt(
                 &mut monitor,
-                CaptureAttemptTestCase::ShareableContentQueryFails,
+                CaptureAttemptTestCase::DisplayCaptureFails,
             ),
             Ok(()),
         );
@@ -269,7 +265,7 @@ mod tests {
             records,
             ["backdrop_attempt: sequence=CaptureAttemptSequence(1) \
               window_selection=SelectionNotReached \
-              capture_status=Failed(ShareableContentQueryFailed)"],
+              capture_status=Failed(DisplayCaptureFailed)"],
         );
     }
 
@@ -350,7 +346,7 @@ mod tests {
             assert_eq!(
                 capture_test_driver.complete_capture_attempt(
                     &mut monitor,
-                    CaptureAttemptTestCase::ShareableContentQueryFails,
+                    CaptureAttemptTestCase::DisplayCaptureFails,
                 ),
                 Ok(()),
             );
@@ -367,10 +363,10 @@ mod tests {
             [
                 "backdrop_attempt: sequence=CaptureAttemptSequence(1) \
                  window_selection=SelectionNotReached \
-                 capture_status=Failed(ShareableContentQueryFailed)",
+                 capture_status=Failed(DisplayCaptureFailed)",
                 "backdrop_attempt: sequence=CaptureAttemptSequence(2) \
                  window_selection=SelectionNotReached \
-                 capture_status=Failed(ShareableContentQueryFailed)",
+                 capture_status=Failed(DisplayCaptureFailed)",
             ],
         );
         assert_ne!(
@@ -453,13 +449,9 @@ mod tests {
                 | CaptureFailure::WorkerLaunchFailed
                 | CaptureFailure::WorkerDisconnected
                 | CaptureFailure::ScreenRecordingAccessNotGranted
-                | CaptureFailure::ShareableContentQueryFailed
-                | CaptureFailure::ShareableContentQueryTimedOut
                 | CaptureFailure::TerminalWindowNotFound
                 | CaptureFailure::DisplayNotFound
-                | CaptureFailure::ScreenshotTurnTimedOut
-                | CaptureFailure::ScreenshotFailed
-                | CaptureFailure::ScreenshotTimedOut
+                | CaptureFailure::DisplayCaptureFailed
                 | CaptureFailure::PixelExtractionFailed
                 | CaptureFailure::ImageReductionFailed => BackdropNotice::None,
             };
@@ -507,13 +499,9 @@ mod tests {
                 | CaptureFailure::AttemptStalled
                 | CaptureFailure::WorkerLaunchFailed
                 | CaptureFailure::WorkerDisconnected
-                | CaptureFailure::ShareableContentQueryFailed
-                | CaptureFailure::ShareableContentQueryTimedOut
                 | CaptureFailure::TerminalWindowNotFound
                 | CaptureFailure::DisplayNotFound
-                | CaptureFailure::ScreenshotTurnTimedOut
-                | CaptureFailure::ScreenshotFailed
-                | CaptureFailure::ScreenshotTimedOut
+                | CaptureFailure::DisplayCaptureFailed
                 | CaptureFailure::PixelExtractionFailed
                 | CaptureFailure::ImageReductionFailed => BackdropNotice::CaptureUnavailable,
             };
@@ -556,13 +544,9 @@ mod tests {
                     | CaptureFailure::WorkerLaunchFailed
                     | CaptureFailure::WorkerDisconnected
                     | CaptureFailure::ScreenRecordingAccessNotGranted
-                    | CaptureFailure::ShareableContentQueryFailed
-                    | CaptureFailure::ShareableContentQueryTimedOut
                     | CaptureFailure::TerminalWindowNotFound
                     | CaptureFailure::DisplayNotFound
-                    | CaptureFailure::ScreenshotTurnTimedOut
-                    | CaptureFailure::ScreenshotFailed
-                    | CaptureFailure::ScreenshotTimedOut
+                    | CaptureFailure::DisplayCaptureFailed
                     | CaptureFailure::PixelExtractionFailed
                     | CaptureFailure::ImageReductionFailed => BackdropNotice::None,
                 };

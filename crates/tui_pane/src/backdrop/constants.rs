@@ -374,30 +374,6 @@ pub(super) const LANE_FRACTION_UNIT: u32 = 4096;
 /// temporarily busy window server while still recovering before one stalled completion handler
 /// disables capture for the rest of the process.
 pub(super) const CAPTURE_ATTEMPT_DEADLINE: Duration = Duration::from_secs(5);
-/// How long one window-server call may wait for an answer.
-///
-/// Measured warm shareable-content queries take 1.0--2.4 seconds, warm screenshots take
-/// 0.22--0.25 seconds, and a first or cold screenshot takes 0.66--3.0 seconds. Four seconds covers
-/// every measured legitimate call with margin while converting a request macOS never answers into
-/// a failed attempt that the monitor retries. Waiting for the screenshot turn is bounded by this
-/// same deadline because it waits on exactly one such call by another process.
-///
-/// The two bounded calls can together outlast [`CAPTURE_ATTEMPT_DEADLINE`], so the monitor may
-/// record one slow attempt as stalled. Its late result still reaches the monitor and resets the
-/// worker's standing.
-#[cfg(target_os = "macos")]
-pub(crate) const CAPTURE_CALL_DEADLINE: Duration = Duration::from_secs(4);
-/// Name of the lock file shared by every process of this user that uses the desktop capture module.
-///
-/// The per-user temporary directory is shared by every terminal session of one login.
-#[cfg(target_os = "macos")]
-pub(crate) const SCREENSHOT_TURN_LOCK_FILE: &str = "tui_pane-desktop-screenshot.lock";
-/// How often a process waiting for the screenshot turn retries the lock.
-///
-/// A turn is a 0.2--0.7 second screenshot, so 25 milliseconds bounds the wasted wait at a small
-/// fraction of one turn without spinning.
-#[cfg(target_os = "macos")]
-pub(crate) const SCREENSHOT_TURN_POLL: Duration = Duration::from_millis(25);
 /// How often the worker takes a fresh capture.
 ///
 /// What a capture goes stale for is the desktop behind the window

@@ -30,8 +30,8 @@ pub enum TerminalWindowCandidateSource {
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureAttemptTestCase {
-    /// The shareable-content query fails before any window can be selected.
-    ShareableContentQueryFails,
+    /// CoreGraphics fails to capture a display in a synthetic attempt.
+    DisplayCaptureFails,
     /// The monitor supplies an id that exists in the full window list.
     PinnedWindow { window_id: u32 },
     /// The closest-size candidate is owned by a process ancestor.
@@ -108,27 +108,16 @@ pub enum CaptureFailure {
     WorkerDisconnected,
     /// The monitor abandoned its maximum number of stalled or disconnected capture workers.
     WorkerReplacementLimitReached,
-    /// The shareable-content query failed while the Screen Recording access check reported that
-    /// access was not granted. The check gives the same answer when the process has never prompted
-    /// for access and when the user has refused it.
+    /// CoreGraphics could not capture the display while the Screen Recording access check reported
+    /// that access was not granted. The check gives the same answer when the process has never
+    /// prompted for access and when the user has refused it.
     ScreenRecordingAccessNotGranted,
-    /// `ScreenCaptureKit` could not list the shareable displays and windows.
-    ShareableContentQueryFailed,
-    /// The shareable displays and windows were requested, but macOS did not answer within the call
-    /// deadline, so the request was abandoned.
-    ShareableContentQueryTimedOut,
     /// No window could be matched to the terminal running the app.
     TerminalWindowNotFound,
     /// No display could be matched to the selected terminal window.
     DisplayNotFound,
-    /// Another process's display capture was still in flight when the call deadline ran out, so
-    /// this attempt never asked for one.
-    ScreenshotTurnTimedOut,
-    /// `ScreenCaptureKit` could not capture the selected display.
-    ScreenshotFailed,
-    /// The display capture was requested, but macOS did not answer within the call deadline, so the
-    /// request was abandoned.
-    ScreenshotTimedOut,
+    /// CoreGraphics returned no image for the display behind the terminal window.
+    DisplayCaptureFailed,
     /// The captured image could not expose its RGBA pixel bytes.
     PixelExtractionFailed,
     /// The captured pixels could not be reduced to terminal-cell colors.

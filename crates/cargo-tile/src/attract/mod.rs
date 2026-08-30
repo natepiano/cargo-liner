@@ -1281,7 +1281,7 @@ mod tests {
         assert_eq!(
             capture_test_driver.send_capture_attempt(
                 &mut attract.monitor,
-                CaptureAttemptTestCase::ShareableContentQueryFails,
+                CaptureAttemptTestCase::DisplayCaptureFails,
             ),
             Ok(()),
         );
@@ -1292,7 +1292,7 @@ mod tests {
             records,
             ["backdrop_attempt: sequence=CaptureAttemptSequence(1) \
               window_selection=SelectionNotReached \
-              capture_status=Failed(ShareableContentQueryFailed)"],
+              capture_status=Failed(DisplayCaptureFailed)"],
         );
     }
 

@@ -257,10 +257,10 @@ pub(in crate::backdrop) fn capture_attempt_for_test(
     capture_attempt_test_case: CaptureAttemptTestCase,
 ) -> CaptureAttemptResult {
     let capture_attempt_test_window = match capture_attempt_test_case {
-        CaptureAttemptTestCase::ShareableContentQueryFails => {
+        CaptureAttemptTestCase::DisplayCaptureFails => {
             return capture_failure_before_window_selection(
                 sequence,
-                CaptureFailure::ShareableContentQueryFailed,
+                CaptureFailure::DisplayCaptureFailed,
             );
         },
         CaptureAttemptTestCase::PinnedWindow { window_id }
