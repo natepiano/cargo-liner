@@ -122,7 +122,7 @@ use crate::probe;
 use crate::processes;
 use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
-use crate::processes::ManifestPath;
+use crate::processes::SummaryDetail;
 use crate::progress::Progress;
 use crate::progress::RunState;
 use crate::roster::Roster;
@@ -875,7 +875,7 @@ fn shortened(ancestor: &Ancestor) -> Ancestor {
 /// A command as the last step of its own cell's chain: its pid, and the
 /// whole line it was typed as.
 fn as_ancestor(process: &CargoProcess) -> Ancestor {
-    let arguments = process.command.line(ManifestPath::Shown);
+    let arguments = process.command.line(SummaryDetail::Full);
     let program = process.command.program.as_str();
     Ancestor {
         pid:            process.pid,
@@ -1226,13 +1226,14 @@ impl TableKind {
     /// the columns in [`SUMMARY_HIDDEN_COLUMNS`] have to say.
     const fn shows_invocation_detail(self) -> bool { matches!(self, Self::Command) }
 
-    /// Whether a row here needs its manifest path. A summary row already
-    /// sits under the working directory heading its group, so the path
-    /// says nothing new while costing the width the command line wants.
-    const fn manifest(self) -> ManifestPath {
+    /// How much command detail a row of this kind prints. A summary row
+    /// already sits under the working directory heading its group, so
+    /// the manifest path says nothing new while costing the width the
+    /// command line wants.
+    const fn detail(self) -> SummaryDetail {
         match self {
-            Self::Summary => ManifestPath::Hidden,
-            Self::Command => ManifestPath::Shown,
+            Self::Summary => SummaryDetail::Trimmed,
+            Self::Command => SummaryDetail::Full,
         }
     }
 }
@@ -1258,8 +1259,8 @@ struct TableLayout {
     /// Cells the `command` column absorbed, which is what a command
     /// line too long for it is wrapped to.
     command_width: u16,
-    /// Whether a row spells out `--manifest-path`.
-    manifest:      ManifestPath,
+    /// How much of each row's command line the cell prints.
+    detail:        SummaryDetail,
     /// Whether a row spells out its whole command line or only the
     /// name of what runs.
     tree:          ProcessTree,
@@ -1284,7 +1285,7 @@ impl TableLayout {
             command_width: command_column_width(indented(area).width, &constraints, &columns),
             constraints,
             columns,
-            manifest: kind.manifest(),
+            detail: kind.detail(),
             tree,
             ground,
         }
@@ -1577,7 +1578,7 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
             Span::styled(process.command.program.clone(), program),
             Span::styled(
                 match layout.tree {
-                    ProcessTree::Long => process.command.line(layout.manifest),
+                    ProcessTree::Long => process.command.line(layout.detail),
                     ProcessTree::Short => process.command.named(),
                 },
                 arguments,

@@ -141,7 +141,7 @@ pub(in crate::backdrop::desktop) fn terminal_window_candidates<W: TerminalWindow
 }
 
 /// Every window whose owning application's pid `wanted` accepts.
-pub(in crate::backdrop::desktop) fn windows_owned_by<W: TerminalWindowCandidate>(
+fn windows_owned_by<W: TerminalWindowCandidate>(
     windows: &[W],
     wanted: impl Fn(i32) -> bool,
 ) -> Vec<&W> {

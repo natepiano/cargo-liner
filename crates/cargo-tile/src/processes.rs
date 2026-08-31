@@ -142,17 +142,18 @@ pub(crate) struct CommandText {
     arguments:          Vec<String>,
 }
 
-/// Whether a cell shows the manifest path an invocation names.
+/// How much of an invocation's command line a cell prints.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ManifestPath {
-    /// Show it, the way a command's own cell shows the whole line.
-    Shown,
-    /// Leave it out, the way the summary does. Every row there already
-    /// sits under the working directory heading its group, and cargo is
-    /// handed the manifest as an absolute path -- long enough to push
-    /// the subcommand off the edge of a narrow cell to repeat what the
+pub(crate) enum SummaryDetail {
+    /// The whole line, the way a command's own cell shows it.
+    Full,
+    /// The manifest path and the summary's noise flags left out, the
+    /// way the summary shows it. Every row there already sits under the
+    /// working directory heading its group, and cargo is handed the
+    /// manifest as an absolute path -- long enough to push the
+    /// subcommand off the edge of a narrow cell to repeat what the
     /// header just said.
-    Hidden,
+    Trimmed,
 }
 
 impl CommandText {
@@ -211,8 +212,8 @@ impl CommandText {
     }
 
     /// The arguments as one line, the summary's own flags in or out.
-    pub(crate) fn line(&self, manifest: ManifestPath) -> String {
-        if manifest == ManifestPath::Shown {
+    pub(crate) fn line(&self, detail: SummaryDetail) -> String {
+        if detail == SummaryDetail::Full {
             return self.arguments.join(" ");
         }
         let mut kept: Vec<&str> = Vec::with_capacity(self.arguments.len());
@@ -1508,7 +1509,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
-        assert_eq!(text.line(ManifestPath::Shown), "build --release");
+        assert_eq!(text.line(SummaryDetail::Full), "build --release");
     }
 
     #[test]
@@ -1521,7 +1522,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
-        assert_eq!(text.line(ManifestPath::Shown), "check --all-targets");
+        assert_eq!(text.line(SummaryDetail::Full), "check --all-targets");
     }
 
     #[test]
@@ -1626,7 +1627,7 @@ mod tests {
             OsString::from("--all-targets"),
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
-        assert_eq!(text.line(ManifestPath::Hidden), "check --all-targets");
+        assert_eq!(text.line(SummaryDetail::Trimmed), "check --all-targets");
     }
 
     #[test]
@@ -1638,7 +1639,7 @@ mod tests {
             OsString::from("--all-targets"),
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
-        assert_eq!(text.line(ManifestPath::Hidden), "check --all-targets");
+        assert_eq!(text.line(SummaryDetail::Trimmed), "check --all-targets");
     }
 
     /// What is being built is what the row is there to say: which
@@ -1654,7 +1655,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(ManifestPath::Hidden),
+            text.line(SummaryDetail::Trimmed),
             "mend --all-targets -p hana_clerestory"
         );
     }
@@ -1673,7 +1674,7 @@ mod tests {
             OsString::from("json-render-diagnostics"),
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
-        assert_eq!(text.line(ManifestPath::Hidden), "test --no-run");
+        assert_eq!(text.line(SummaryDetail::Trimmed), "test --no-run");
     }
 
     /// Past a bare `--` the arguments are the other program's. It
@@ -1694,7 +1695,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(ManifestPath::Hidden),
+            text.line(SummaryDetail::Trimmed),
             "clippy -- -D warnings --color always"
         );
     }
@@ -1712,10 +1713,10 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(ManifestPath::Shown),
+            text.line(SummaryDetail::Full),
             "build --bin hana --message-format=json"
         );
-        assert_eq!(text.line(ManifestPath::Hidden), "build --bin hana");
+        assert_eq!(text.line(SummaryDetail::Trimmed), "build --bin hana");
     }
 
     /// The flag is matched whole: an argument that merely starts the
@@ -1729,7 +1730,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(ManifestPath::Hidden),
+            text.line(SummaryDetail::Trimmed),
             "check --manifest-path-of-record"
         );
     }
@@ -1745,7 +1746,7 @@ mod tests {
         ];
         let text = command_text(&argv, Some(&home)).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(ManifestPath::Shown),
+            text.line(SummaryDetail::Full),
             "check --manifest-path ~/rust/project/Cargo.toml"
         );
     }
@@ -1947,7 +1948,7 @@ mod tests {
 
         assert_eq!(mend.named(), "mend");
         assert!(
-            mend.line(ManifestPath::Shown).contains("--json"),
+            mend.line(SummaryDetail::Full).contains("--json"),
             "and the long line still carries every one of them",
         );
     }

@@ -60,11 +60,11 @@ objc2-core-graphics = { workspace = true, optional = true, features = [
   "CGBitmapContext",
   "CGColorSpace",
   "CGContext",
+  "CGDataProvider",
   "CGDirectDisplay",
   "CGError",
-  "CGImage",
-  "CGDataProvider",
   "CGGeometry",
+  "CGImage",
   "CGWindow",
   "std",
 ] }
