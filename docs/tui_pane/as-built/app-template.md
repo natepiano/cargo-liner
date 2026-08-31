@@ -8,9 +8,11 @@ nothing present is about cargo, tiles, or any particular domain. It is the
 recommended starting point for a new TUI app in this workspace.
 
 Everything below describes the tag, which does not move. `crates/cargo-tile` on
-`main` has since grown a running-cargo process table and the tests that come
-with it, so the working tree and this document are expected to diverge — take
-the template from `app-template-v1`, not from `main`.
+`main` has since grown into a full application — a running-cargo process table
+plus an attract screen with a live desktop backdrop and a favorites system (all
+covered by the sibling `as-built/` docs) — so the working tree and this document
+have diverged substantially; take the template from `app-template-v1`, not from
+`main`.
 
 This is an as-built record of what the tag contains, not a plan. The
 user-facing key list and the "how do I add X" table live in
