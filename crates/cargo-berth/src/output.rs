@@ -4,16 +4,19 @@
 //! typed `payload` field. Consumers can continue reading the original fields,
 //! while newer consumers use `payload` instead of scraping `message`.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 
 use schemars::JsonSchema;
-#[cfg(test)]
 use schemars::Schema;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Map;
+use serde_json::Value;
 
 use crate::alert::Alert;
+use crate::alert::RecoverabilityVerdict;
 use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::board::BoardModel;
@@ -48,12 +51,27 @@ use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
+use crate::ledger::CollisionPathSet;
+use crate::ledger::ForeignReservationIdSet;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerInitialization;
 use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::SkippedIntegrationHoldSet;
+use crate::presentation::EnvelopePresentation;
+use crate::presentation::actionable_board_notices_block;
+use crate::presentation::ambiguous_first_touch_block;
+use crate::presentation::automatic_widening_block;
+use crate::presentation::blocked_edit_refusal_block;
+use crate::presentation::coordination_identity_block;
+use crate::presentation::degraded_session_mapping_block;
+use crate::presentation::engine_message_block;
+use crate::presentation::lost_integration_evidence_block;
+use crate::presentation::orphaned_outstanding_block;
+use crate::presentation::outstanding_incursion_block;
+use crate::presentation::replay_failure_block;
+use crate::presentation::unverifiable_incursion_block;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::LifecycleTransitionError;
 use crate::reservation::ProtectedReservationTip;
@@ -73,30 +91,229 @@ const PROJECTION_REPAIRED_MESSAGE: &str =
     "Rebuilt reservations.json from journal truth without changing the journal.";
 const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
+const AMBIGUOUS_RESERVATION_RECOVERY_COMMAND: &str =
+    "cargo-berth check --reservation <reservation-id> <path>...";
 #[cfg(test)]
 const UNIMPLEMENTED_MESSAGE: &str = "The reservation engine is not implemented.";
+
+/// The generated-output contract version reported by every response envelope.
+pub(crate) const OUTPUT_CONTRACT_VERSION: u32 = 2;
+
+/// The JSON Schema extension that records a failed closed-value selector transform.
+pub(crate) const CLOSED_VALUE_SELECTOR_TRANSFORM_FAILURE_KEY: &str =
+    "x-cargo-berth-closed-value-selector-transform-failure";
+
+enum PropertySelectorValues<'schema> {
+    Open,
+    Closed(Vec<&'schema Value>),
+}
+
+impl<'schema> From<&'schema Value> for PropertySelectorValues<'schema> {
+    fn from(property_schema: &'schema Value) -> Self {
+        property_schema
+            .get("enum")
+            .and_then(Value::as_array)
+            .map(|values| values.iter().collect())
+            .or_else(|| {
+                property_schema
+                    .get("oneOf")
+                    .and_then(Value::as_array)
+                    .and_then(|alternatives| {
+                        alternatives
+                            .iter()
+                            .map(|alternative| alternative.get("const"))
+                            .collect()
+                    })
+            })
+            .map_or(Self::Open, Self::Closed)
+    }
+}
+
+enum ClosedValueSelectorTransformFailure {
+    ObjectSchemaUnavailable,
+    ObjectTypeRequired,
+    ObjectPropertiesUnavailable,
+    RequiredPropertiesUnavailable,
+    PropertyCardinality { actual: usize },
+    SelectorNotRequired { member: String },
+    NoKnownValues { member: String },
+    NonStringValue { member: String },
+    DuplicateKnownValue { member: String, value: String },
+}
+
+impl ClosedValueSelectorTransformFailure {
+    const fn kind(&self) -> &'static str {
+        match self {
+            Self::ObjectSchemaUnavailable => "object_schema_unavailable",
+            Self::ObjectTypeRequired => "object_type_required",
+            Self::ObjectPropertiesUnavailable => "object_properties_unavailable",
+            Self::RequiredPropertiesUnavailable => "required_properties_unavailable",
+            Self::PropertyCardinality { .. } => "property_cardinality",
+            Self::SelectorNotRequired { .. } => "selector_not_required",
+            Self::NoKnownValues { .. } => "no_known_values",
+            Self::NonStringValue { .. } => "non_string_value",
+            Self::DuplicateKnownValue { .. } => "duplicate_known_value",
+        }
+    }
+}
+
+impl From<ClosedValueSelectorTransformFailure> for Schema {
+    fn from(failure: ClosedValueSelectorTransformFailure) -> Self {
+        let mut details = Map::new();
+        details.insert("kind".to_owned(), Value::String(failure.kind().to_owned()));
+        match failure {
+            ClosedValueSelectorTransformFailure::ObjectSchemaUnavailable
+            | ClosedValueSelectorTransformFailure::ObjectTypeRequired
+            | ClosedValueSelectorTransformFailure::ObjectPropertiesUnavailable
+            | ClosedValueSelectorTransformFailure::RequiredPropertiesUnavailable => {},
+            ClosedValueSelectorTransformFailure::PropertyCardinality { actual } => {
+                details.insert("actual".to_owned(), Value::from(actual));
+            },
+            ClosedValueSelectorTransformFailure::SelectorNotRequired { member }
+            | ClosedValueSelectorTransformFailure::NoKnownValues { member }
+            | ClosedValueSelectorTransformFailure::NonStringValue { member } => {
+                details.insert("member".to_owned(), Value::String(member));
+            },
+            ClosedValueSelectorTransformFailure::DuplicateKnownValue { member, value } => {
+                details.insert("member".to_owned(), Value::String(member));
+                details.insert("value".to_owned(), Value::String(value));
+            },
+        }
+
+        let mut failed_schema = Map::new();
+        failed_schema.insert("not".to_owned(), Value::Object(Map::new()));
+        failed_schema.insert(
+            CLOSED_VALUE_SELECTOR_TRANSFORM_FAILURE_KEY.to_owned(),
+            Value::Object(details),
+        );
+        failed_schema.into()
+    }
+}
+
+/// Express that one inline closed scalar selects its containing object's schema.
+///
+/// The alternatives come from the scalar schema values, so a producer variant added to the
+/// selector enum becomes a schema branch without a separate output-contract inventory edit.
+pub(crate) fn closed_value_selects_object_shape(schema: &mut Schema) {
+    *schema = match closed_value_selector_object_schema(schema) {
+        Ok(transformed_schema) => transformed_schema,
+        Err(failure) => failure.into(),
+    };
+}
+
+fn closed_value_selector_object_schema(
+    schema: &Schema,
+) -> Result<Schema, ClosedValueSelectorTransformFailure> {
+    let schema_object = schema
+        .as_object()
+        .ok_or(ClosedValueSelectorTransformFailure::ObjectSchemaUnavailable)?;
+    match schema_object.get("type") {
+        Some(Value::String(schema_type)) if schema_type == "object" => {},
+        _ => return Err(ClosedValueSelectorTransformFailure::ObjectTypeRequired),
+    }
+    let properties = schema_object
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or(ClosedValueSelectorTransformFailure::ObjectPropertiesUnavailable)?;
+    let required_properties = schema_object
+        .get("required")
+        .and_then(Value::as_array)
+        .ok_or(ClosedValueSelectorTransformFailure::RequiredPropertiesUnavailable)?;
+    let selectors = properties
+        .iter()
+        .filter_map(|(member, property_schema)| {
+            match PropertySelectorValues::from(property_schema) {
+                PropertySelectorValues::Open => None,
+                PropertySelectorValues::Closed(values) => Some((member, values)),
+            }
+        })
+        .collect::<Vec<_>>();
+    let [(selector, known_values)] = selectors.as_slice() else {
+        return Err(ClosedValueSelectorTransformFailure::PropertyCardinality {
+            actual: selectors.len(),
+        });
+    };
+    if !required_properties
+        .iter()
+        .any(|required| required.as_str() == Some(selector.as_str()))
+    {
+        return Err(ClosedValueSelectorTransformFailure::SelectorNotRequired {
+            member: (*selector).clone(),
+        });
+    }
+    if known_values.is_empty() {
+        return Err(ClosedValueSelectorTransformFailure::NoKnownValues {
+            member: (*selector).clone(),
+        });
+    }
+    let known_values = known_values
+        .iter()
+        .map(|known_value| {
+            known_value.as_str().ok_or_else(|| {
+                ClosedValueSelectorTransformFailure::NonStringValue {
+                    member: (*selector).clone(),
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut unique_values = BTreeSet::new();
+    for known_value in &known_values {
+        if !unique_values.insert(*known_value) {
+            return Err(ClosedValueSelectorTransformFailure::DuplicateKnownValue {
+                member: (*selector).clone(),
+                value:  (*known_value).to_owned(),
+            });
+        }
+    }
+    let alternatives = known_values
+        .into_iter()
+        .map(|known_value| {
+            let mut alternative_properties = properties.clone();
+            alternative_properties.insert(
+                (*selector).clone(),
+                serde_json::json!({
+                    "type": "string",
+                    "const": known_value,
+                }),
+            );
+            let mut alternative = schema_object.clone();
+            alternative.insert(
+                "properties".to_owned(),
+                Value::Object(alternative_properties),
+            );
+            Value::Object(alternative)
+        })
+        .collect();
+    let mut transformed_schema = Map::new();
+    transformed_schema.insert("oneOf".to_owned(), Value::Array(alternatives));
+    Ok(transformed_schema.into())
+}
 
 /// One response from a `cargo-berth` verb.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(rename = "output_envelope")]
 pub(crate) struct OutputEnvelope {
+    /// The generated output contract generation that produced this response.
+    output_contract_version: u32,
     /// The verb that produced this response.
-    verb:                 CommandVerb,
+    verb:                    CommandVerb,
     /// The response's lifecycle status.
-    status:               OutputStatus,
+    status:                  OutputStatus,
     /// The process exit status for this response.
     #[schemars(with = "u8")]
-    pub(crate) exit_code: BerthExit,
+    pub(crate) exit_code:    BerthExit,
     /// Reservations relevant to this response.
     #[schemars(with = "Vec<String>")]
-    reservations:         Vec<ReservationId>,
+    reservations:            Vec<ReservationId>,
     /// Reservations that block this response.
     #[schemars(with = "Vec<String>")]
-    blocked_by:           Vec<ReservationId>,
+    blocked_by:              Vec<ReservationId>,
     /// A human-readable explanation of this response.
-    message:              String,
+    message:                 String,
+    /// Render-ready output supplied by the engine that decided this response.
+    presentation:            EnvelopePresentation,
     /// The verb-keyed facts consumers need without parsing prose.
-    payload:              OutputPayload,
+    payload:                 OutputPayload,
 }
 
 /// Trusted rendering produced inside the installed `PostToolUse` engine process.
@@ -136,39 +353,6 @@ pub(crate) enum CommandVerb {
     Renew,
     /// Manage the current process's disposable coordination identity.
     Identity,
-}
-
-#[cfg(test)]
-impl CommandVerb {
-    pub(crate) const ALL: [Self; 11] = [
-        Self::Init,
-        Self::Board,
-        Self::Check,
-        Self::Claim,
-        Self::Drift,
-        Self::Release,
-        Self::Sequence,
-        Self::Integrate,
-        Self::Resolve,
-        Self::Renew,
-        Self::Identity,
-    ];
-
-    pub(crate) const fn wire_name(self) -> &'static str {
-        match self {
-            Self::Init => "init",
-            Self::Board => "board",
-            Self::Check => "check",
-            Self::Claim => "claim",
-            Self::Drift => "drift",
-            Self::Release => "release",
-            Self::Sequence => "sequence",
-            Self::Integrate => "integrate",
-            Self::Resolve => "resolve",
-            Self::Renew => "renew",
-            Self::Identity => "identity",
-        }
-    }
 }
 
 /// Whether the post-commit hook should stay silent or print a warning.
@@ -213,12 +397,27 @@ pub(crate) struct ReplayFailurePayload {
     effect:  ReplayFailureEffect,
 }
 
-/// Fixed wire metadata for one `OutputStatus` variant.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(test)]
-pub(crate) struct OutputStatusMetadata {
-    pub(crate) wire_name: &'static str,
-    pub(crate) exit_code: BerthExit,
+impl ReplayFailurePayload {
+    fn rendered_reason(&self) -> String {
+        serde_json::to_string(&self.reason).map_or_else(
+            |_| "unknown_replay_failure".to_owned(),
+            |serialized| serialized.trim_matches('"').to_owned(),
+        )
+    }
+
+    fn rendered_subject(&self) -> String {
+        match self.subject {
+            ReplayFailureSubject::Reservation(reservation_id) => {
+                format!("reservation {reservation_id}")
+            },
+            ReplayFailureSubject::IncursionIncident(incident_id) => {
+                format!("incursion incident {incident_id}")
+            },
+            ReplayFailureSubject::ForcedIntegrationPermit(permit_id) => {
+                format!("forced-integration permit {permit_id}")
+            },
+        }
+    }
 }
 
 macro_rules! declare_output_contract_metadata {
@@ -258,28 +457,6 @@ macro_rules! declare_output_contract_metadata {
             $($(#[$status_meta])* $status_variant,)+
         }
 
-        #[cfg(test)]
-        impl OutputStatus {
-            pub(crate) const ALL: &'static [OutputStatusMetadata] = &[
-                $(OutputStatusMetadata {
-                    wire_name: $status_wire,
-                    exit_code: BerthExit::$status_exit,
-                },)+
-            ];
-
-            pub(crate) const fn wire_name(self) -> &'static str {
-                match self {
-                    $(Self::$status_variant => $status_wire,)+
-                }
-            }
-
-            pub(crate) const fn exit_code(self) -> BerthExit {
-                match self {
-                    $(Self::$status_variant => BerthExit::$status_exit,)+
-                }
-            }
-        }
-
         /// The exact invariant that stopped reservation replay.
         #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
         #[schemars(rename = "replay_failure_reason")]
@@ -289,16 +466,6 @@ macro_rules! declare_output_contract_metadata {
             $($incident_failure,)+
             $($lifecycle_transition_failure,)+
             $($permit_failure,)+
-        }
-
-        #[cfg(test)]
-        impl ReplayFailureReason {
-            pub(crate) const ALL: &'static [(&'static str, ReplayFailureSubjectKind)] = &[
-                $(($reservation_failure_wire, ReplayFailureSubjectKind::Reservation),)+
-                $(($incident_failure_wire, ReplayFailureSubjectKind::IncursionIncident),)+
-                $(($lifecycle_transition_failure_wire, ReplayFailureSubjectKind::Reservation),)+
-                $(($permit_failure_wire, ReplayFailureSubjectKind::ForcedIntegrationPermit),)+
-            ];
         }
 
         impl From<&ReservationReplayError> for ReplayFailurePayload {
@@ -356,18 +523,6 @@ macro_rules! declare_output_contract_metadata {
             }
         }
     };
-}
-
-/// The semantic category carried by one replay-failure subject.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(test)]
-pub(crate) enum ReplayFailureSubjectKind {
-    /// The failure identifies a reservation.
-    Reservation,
-    /// The failure identifies an incursion incident.
-    IncursionIncident,
-    /// The failure identifies a forced-integration permit.
-    ForcedIntegrationPermit,
 }
 
 declare_output_contract_metadata! {
@@ -496,7 +651,6 @@ struct OutputPayload {
     facts:  OutputFacts,
     /// Durable coordination alerts relevant to this response.
     #[serde(default)]
-    #[schemars(with = "Vec<serde_json::Value>")]
     alerts: Vec<Alert>,
 }
 
@@ -516,7 +670,7 @@ enum OutputFacts {
     /// Facts returned by confirmed journal reinitialization.
     Reinitialize(ReinitializationPayload),
     /// Facts returned by the headless reservation board.
-    Board(#[schemars(with = "serde_json::Value")] Box<BoardModel>),
+    Board(Box<BoardModel>),
     /// One reservation's lifecycle or a typed unknown-id rejection.
     Reservation(ReservationLifecycleQueryPayload),
     /// The locked first-touch reservation-selection result.
@@ -526,7 +680,7 @@ enum OutputFacts {
     /// Facts returned by `claim`.
     Claim(ClaimPayload),
     /// Facts returned by `drift`.
-    Drift(#[schemars(with = "serde_json::Value")] DriftReport),
+    Drift(DriftReport),
     /// Facts returned by `release`.
     Release(ReleasePayload),
     /// Facts returned by `sequence`.
@@ -724,7 +878,6 @@ pub(crate) enum IntegrationPayload {
         /// The journal generation validated under the decision lock.
         generation:     ProjectionGeneration,
         /// Every exact hold that prevented integration.
-        #[schemars(with = "Vec<serde_json::Value>")]
         violations:     Vec<IntegrationViolation>,
     },
     /// Caller identity named a coordination run that no longer owns active work.
@@ -744,7 +897,6 @@ pub(crate) enum IntegratedGateOutcome {
     /// Observe-only policy logged holds that enforcing mode would reject.
     Observed {
         /// The holds reported without rejecting the update.
-        #[schemars(with = "Vec<serde_json::Value>")]
         violations: Vec<IntegrationViolation>,
     },
     /// A one-use permit was issued and consumed by the update.
@@ -752,10 +904,8 @@ pub(crate) enum IntegratedGateOutcome {
         /// The durable permit identity.
         permit_id:           ForcedIntegrationPermitId,
         /// The exact holds the user chose to skip.
-        #[schemars(with = "serde_json::Value")]
         skipped_holds:       SkippedIntegrationHoldSet,
         /// Holds on other entering reservations reported by observe-only policy.
-        #[schemars(with = "Vec<serde_json::Value>")]
         observed_violations: Vec<IntegrationViolation>,
     },
 }
@@ -828,7 +978,6 @@ pub(crate) enum ResolvePayload {
         /// The recorded disposition or replacement disposition.
         disposition:                 ReleaseDisposition,
         /// Whether the harness session mapping retired this reservation.
-        #[schemars(with = "serde_json::Value")]
         session_mapping_publication: SessionIdentityMappingPublication,
     },
 }
@@ -878,25 +1027,21 @@ enum ClaimPayload {
         /// The coordination run that owns the appended reservation.
         coordination_run_id:         CoordinationRunId,
         /// The exact durable footprint.
-        #[schemars(with = "serde_json::Value")]
         scopes:                      ReservationScopeSet,
         /// Whether the worktree marker records `coordination_run_id`.
         marker_publication:          CoordinationRunMarkerPublication,
         /// Whether the harness session mapping reflects this claim.
-        #[schemars(with = "serde_json::Value")]
         session_mapping_publication: SessionIdentityMappingPublication,
     },
     /// Foreign holders prevented the append.
     Blocked {
         /// Every holder whose live scopes intersected the request.
-        #[schemars(with = "Vec<serde_json::Value>")]
         conflicts: Vec<ReservationConflict>,
     },
     /// A permissive answer was proposed but has not supplied the current exact token.
     NeedsUserAuthorization {
         /// The conflicts, proposed answer, reason, consequence, and proposal token.
         #[serde(flatten)]
-        #[schemars(with = "serde_json::Value")]
         escalation: Box<OverlapEscalationPayload>,
     },
     /// Repository policy rejected another live reservation.
@@ -919,10 +1064,8 @@ enum SequencePayload {
     /// One durable edge was appended by resolving a prior deferral.
     Sequenced {
         /// The complete replayable edge record.
-        #[schemars(with = "serde_json::Value")]
         edge:      OrderingEdge,
         /// The edge state derived from the preceding repository snapshot.
-        #[schemars(with = "serde_json::Value")]
         readiness: EdgeReadiness,
     },
     /// The locked graph rejected the requested relationship.
@@ -1048,6 +1191,7 @@ pub(crate) enum CoordinationRunMarkerPublication {
     /// The claim is durable, but the marker could not be updated.
     Unavailable {
         /// The marker publication failure.
+        #[schemars(length(min = 1))]
         diagnostic: String,
     },
 }
@@ -1060,19 +1204,15 @@ enum CheckPayload {
     /// No foreign live reservation overlaps the requested paths.
     Clear {
         /// The minimal exact-file antichain evaluated by the hook.
-        #[schemars(with = "serde_json::Value")]
         scopes:      ReservationScopeSet,
         /// The complete first-touch result that permits the edit.
-        #[schemars(with = "serde_json::Value")]
         acquisition: FirstTouchReservationAcquisition,
     },
     /// Foreign holders block one or more requested paths.
     Blocked {
         /// The minimal exact-file antichain evaluated by the hook.
-        #[schemars(with = "serde_json::Value")]
         scopes:    ReservationScopeSet,
         /// Every holder whose live scopes intersected the request.
-        #[schemars(with = "Vec<serde_json::Value>")]
         conflicts: Vec<ReservationConflict>,
     },
 }
@@ -1107,7 +1247,6 @@ pub(crate) enum ReleasePayload {
         /// What happened to the worktree coordination-run marker.
         marker:                      CoordinationRunMarkerRetirement,
         /// Whether the harness session mapping retired this reservation.
-        #[schemars(with = "serde_json::Value")]
         session_mapping_publication: SessionIdentityMappingPublication,
     },
     /// A rebased outstanding reservation replaced its protected checkpoint.
@@ -1140,7 +1279,6 @@ pub(crate) enum ReleasePayload {
         /// What happened to the worktree coordination-run marker.
         marker:                      CoordinationRunMarkerRetirement,
         /// Whether the harness session mapping retired this reservation.
-        #[schemars(with = "serde_json::Value")]
         session_mapping_publication: SessionIdentityMappingPublication,
     },
 }
@@ -1164,15 +1302,19 @@ impl ReleasePayload {
                 IntegrationEvidenceStatus::TrunkRewritten => OutputStatus::TrunkRewritten,
                 IntegrationEvidenceStatus::ObjectUnknown => OutputStatus::ObjectUnknown,
             },
-            Self::Released { disposition, .. } => match disposition {
-                ReleaseDisposition::Integrated | ReleaseDisposition::RewrittenIntegration(_) => {
-                    OutputStatus::Integrated
-                },
-                ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => {
-                    OutputStatus::Released
-                },
-            },
+            Self::Released { disposition, .. } => release_disposition_status(disposition),
         }
+    }
+}
+
+const fn release_disposition_status(disposition: &ReleaseDisposition) -> OutputStatus {
+    match disposition {
+        ReleaseDisposition::Integrated | ReleaseDisposition::RewrittenIntegration(_) => {
+            OutputStatus::Integrated
+        },
+        ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => {
+            OutputStatus::Released
+        },
     }
 }
 
@@ -1205,26 +1347,31 @@ impl OutputEnvelope {
     #[cfg(test)]
     fn unimplemented(command_verb: CommandVerb) -> Self {
         Self {
-            verb:         command_verb,
-            status:       OutputStatus::Unimplemented,
-            exit_code:    BerthExit::Clear,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      UNIMPLEMENTED_MESSAGE.to_owned(),
-            payload:      OutputPayload::pending(command_verb),
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    command_verb,
+            status:                  OutputStatus::Unimplemented,
+            exit_code:               BerthExit::Clear,
+            reservations:            Vec::new(),
+            blocked_by:              Vec::new(),
+            message:                 UNIMPLEMENTED_MESSAGE.to_owned(),
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::pending(command_verb),
         }
     }
 
     /// Build a successful headless board response without requiring a terminal.
     pub(crate) fn board(board: BoardModel) -> Self {
         let reservations = board.reservation_ids();
+        let presentation = board.envelope_presentation();
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Board,
             status: OutputStatus::BoardReady,
             exit_code: BerthExit::Clear,
             reservations,
             blocked_by: Vec::new(),
             message: BOARD_READY_MESSAGE.to_owned(),
+            presentation,
             payload: OutputPayload::from_facts(OutputFacts::Board(Box::new(board))),
         }
     }
@@ -1234,14 +1381,20 @@ impl OutputEnvelope {
         reservation_id: ReservationId,
         reservation_lifecycle_snapshot: ReservationLifecycleSnapshot,
     ) -> Self {
+        let presentation = crate::board::reservation_lifecycle_presentation(
+            reservation_id,
+            &reservation_lifecycle_snapshot,
+        );
         Self {
-            verb:         CommandVerb::Board,
-            status:       OutputStatus::BoardReady,
-            exit_code:    BerthExit::Clear,
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Board,
+            status: OutputStatus::BoardReady,
+            exit_code: BerthExit::Clear,
             reservations: vec![reservation_id],
-            blocked_by:   Vec::new(),
-            message:      format!("Reservation {reservation_id} lifecycle was read."),
-            payload:      OutputPayload::from_facts(OutputFacts::Reservation(
+            blocked_by: Vec::new(),
+            message: format!("Reservation {reservation_id} lifecycle was read."),
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::Reservation(
                 ReservationLifecycleQueryPayload::Snapshot {
                     reservation_id,
                     lifecycle: reservation_lifecycle_snapshot,
@@ -1256,13 +1409,15 @@ impl OutputEnvelope {
     ) -> Self {
         let reservation_id = rejection.reservation_id();
         Self {
-            verb:         CommandVerb::Board,
-            status:       OutputStatus::InvalidInput,
-            exit_code:    BerthExit::UsageError,
-            reservations: vec![reservation_id],
-            blocked_by:   Vec::new(),
-            message:      format!("Reservation {reservation_id} does not exist."),
-            payload:      OutputPayload::from_facts(OutputFacts::Reservation(
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    CommandVerb::Board,
+            status:                  OutputStatus::InvalidInput,
+            exit_code:               BerthExit::UsageError,
+            reservations:            vec![reservation_id],
+            blocked_by:              Vec::new(),
+            message:                 format!("Reservation {reservation_id} does not exist."),
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::from_facts(OutputFacts::Reservation(
                 ReservationLifecycleQueryPayload::Rejected(rejection),
             )),
         }
@@ -1287,15 +1442,17 @@ impl OutputEnvelope {
     /// Build an internal-failure response after the terminal board was visible.
     pub(crate) fn terminal_view_failed_after_board_opened(diagnostic: &str) -> Self {
         Self {
-            verb:         CommandVerb::Board,
-            status:       OutputStatus::TerminalViewFailed,
-            exit_code:    BerthExit::TerminalViewFailed,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      format!(
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    CommandVerb::Board,
+            status:                  OutputStatus::TerminalViewFailed,
+            exit_code:               BerthExit::TerminalViewFailed,
+            reservations:            Vec::new(),
+            blocked_by:              Vec::new(),
+            message:                 format!(
                 "The terminal view failed after it opened: {diagnostic}. Run `cargo-berth board --json` instead."
             ),
-            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -1310,12 +1467,14 @@ impl OutputEnvelope {
             .collect::<Vec<_>>();
         let message = initialization_message(&hooks);
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Init,
             status: OutputStatus::Initialized,
             exit_code: BerthExit::Clear,
             reservations: Vec::new(),
             blocked_by: Vec::new(),
             message,
+            presentation: EnvelopePresentation::NotProvided,
             payload: OutputPayload::from_facts(OutputFacts::Init(InitializationPayload {
                 ledger: initialization.ledger.into(),
                 configuration: initialization.configuration.into(),
@@ -1327,13 +1486,15 @@ impl OutputEnvelope {
     /// Build the successful response for an explicit projection-only repair.
     pub(crate) fn projection_repaired() -> Self {
         Self {
-            verb:         CommandVerb::Init,
-            status:       OutputStatus::ProjectionRepaired,
-            exit_code:    BerthExit::Clear,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      PROJECTION_REPAIRED_MESSAGE.to_owned(),
-            payload:      OutputPayload::from_facts(OutputFacts::ProjectionRepair(
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    CommandVerb::Init,
+            status:                  OutputStatus::ProjectionRepaired,
+            exit_code:               BerthExit::Clear,
+            reservations:            Vec::new(),
+            blocked_by:              Vec::new(),
+            message:                 PROJECTION_REPAIRED_MESSAGE.to_owned(),
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::from_facts(OutputFacts::ProjectionRepair(
                 ProjectionRepairPayload {
                     projection: RepairedProjection::ReservationsJsonRebuilt,
                     journal:    ProjectionRepairJournalEffect::Unchanged,
@@ -1361,29 +1522,37 @@ impl OutputEnvelope {
                 "observe-only policy reported an ordering hold"
             },
             IntegratedGateOutcome::Forced { permit_id, .. } => {
+                let message = format!(
+                    "Integrated reservation {reservation_id} using one-use permit {permit_id}."
+                );
+                let summary = format!("cargo-berth integrated reservation {reservation_id}.");
+                let presentation = engine_result_presentation(&summary, &message);
                 return Self {
-                    verb:         CommandVerb::Integrate,
-                    status:       OutputStatus::Integrated,
-                    exit_code:    BerthExit::Clear,
+                    output_contract_version: OUTPUT_CONTRACT_VERSION,
+                    verb: CommandVerb::Integrate,
+                    status: OutputStatus::Integrated,
+                    exit_code: BerthExit::Clear,
                     reservations: vec![*reservation_id],
-                    blocked_by:   Vec::new(),
-                    message:      format!(
-                        "Integrated reservation {reservation_id} using one-use permit {permit_id}."
-                    ),
-                    payload:      OutputPayload::from_facts(OutputFacts::Integrate(
-                        integration_payload,
-                    )),
+                    blocked_by: Vec::new(),
+                    message,
+                    presentation,
+                    payload: OutputPayload::from_facts(OutputFacts::Integrate(integration_payload)),
                 };
             },
         };
+        let message = format!("Integrated reservation {reservation_id}; {policy}.");
+        let summary = format!("cargo-berth integrated reservation {reservation_id}.");
+        let presentation = engine_result_presentation(&summary, &message);
         Self {
-            verb:         CommandVerb::Integrate,
-            status:       OutputStatus::Integrated,
-            exit_code:    BerthExit::Clear,
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Integrate,
+            status: OutputStatus::Integrated,
+            exit_code: BerthExit::Clear,
             reservations: vec![*reservation_id],
-            blocked_by:   Vec::new(),
-            message:      format!("Integrated reservation {reservation_id}; {policy}."),
-            payload:      OutputPayload::from_facts(OutputFacts::Integrate(integration_payload)),
+            blocked_by: Vec::new(),
+            message,
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::Integrate(integration_payload)),
         }
     }
 
@@ -1395,13 +1564,17 @@ impl OutputEnvelope {
     ) -> Self {
         let blocked_by = integration_blockers(&violations);
         let message = integration_blocked_message(reservation_id, &violations);
+        let summary = format!("cargo-berth refused integration for reservation {reservation_id}.");
+        let presentation = engine_result_presentation(&summary, &message);
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Integrate,
             status: OutputStatus::BlockedByOrdering,
             exit_code: BerthExit::BlockedByOrdering,
             reservations: vec![reservation_id],
             blocked_by,
             message,
+            presentation,
             payload: OutputPayload::from_facts(OutputFacts::Integrate(
                 IntegrationPayload::Blocked {
                     reservation_id,
@@ -1419,15 +1592,17 @@ impl OutputEnvelope {
         pending_environment_bypasses: u64,
     ) -> Self {
         Self {
-            verb:         CommandVerb::Init,
-            status:       OutputStatus::Reinitialized,
-            exit_code:    BerthExit::Clear,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      format!(
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    CommandVerb::Init,
+            status:                  OutputStatus::Reinitialized,
+            exit_code:               BerthExit::Clear,
+            reservations:            Vec::new(),
+            blocked_by:              Vec::new(),
+            message:                 format!(
                 "Reinitialized cargo-berth after confirmed order review; discarded {discarded_bytes} journal bytes across {discarded_complete_records} complete record(s). {pending_environment_bypasses} environment bypass marker(s) remain reportable."
             ),
-            payload:      OutputPayload::from_facts(OutputFacts::Reinitialize(
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::from_facts(OutputFacts::Reinitialize(
                 ReinitializationPayload {
                     discarded_bytes,
                     discarded_complete_records,
@@ -1440,13 +1615,17 @@ impl OutputEnvelope {
     /// Build a ledger-unreadable response without adding a new process outcome.
     pub(crate) fn ledger_unreadable(command_verb: CommandVerb, diagnostic: &str) -> Self {
         Self {
-            verb:         command_verb,
-            status:       OutputStatus::LedgerUnreadable,
-            exit_code:    BerthExit::LedgerUnreadable,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      format!("The reservation ledger could not be read: {diagnostic}"),
-            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    command_verb,
+            status:                  OutputStatus::LedgerUnreadable,
+            exit_code:               BerthExit::LedgerUnreadable,
+            reservations:            Vec::new(),
+            blocked_by:              Vec::new(),
+            message:                 format!(
+                "The reservation ledger could not be read: {diagnostic}"
+            ),
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -1455,47 +1634,59 @@ impl OutputEnvelope {
         command_verb: CommandVerb,
         error: &ReservationReplayError,
     ) -> Self {
-        Self {
-            verb:         command_verb,
-            status:       OutputStatus::LedgerUnreadable,
-            exit_code:    BerthExit::LedgerUnreadable,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      format!("The reservation ledger could not be replayed: {error}"),
-            payload:      OutputPayload::from_facts(OutputFacts::ReplayFailure(
+        let mut output_envelope = Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    command_verb,
+            status:                  OutputStatus::LedgerUnreadable,
+            exit_code:               BerthExit::LedgerUnreadable,
+            reservations:            Vec::new(),
+            blocked_by:              Vec::new(),
+            message:                 format!(
+                "The reservation ledger could not be replayed: {error}"
+            ),
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::from_facts(OutputFacts::ReplayFailure(
                 ReplayFailurePayload::from(error),
             )),
-        }
+        };
+        output_envelope.refresh_post_tool_use_presentation();
+        output_envelope
     }
 
     /// Build a typed hard-stop response for invalid forced-integration permit history.
     pub(crate) fn forced_integration_permit_replay_failure(
         error: &ForcedIntegrationPermitReplayError,
     ) -> Self {
-        Self {
-            verb:         CommandVerb::Integrate,
-            status:       OutputStatus::LedgerUnreadable,
-            exit_code:    BerthExit::LedgerUnreadable,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      format!(
+        let mut output_envelope = Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    CommandVerb::Integrate,
+            status:                  OutputStatus::LedgerUnreadable,
+            exit_code:               BerthExit::LedgerUnreadable,
+            reservations:            Vec::new(),
+            blocked_by:              Vec::new(),
+            message:                 format!(
                 "The forced-integration permit journal could not be replayed: {error}"
             ),
-            payload:      OutputPayload::from_facts(OutputFacts::ReplayFailure(
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::from_facts(OutputFacts::ReplayFailure(
                 ReplayFailurePayload::from(error),
             )),
-        }
+        };
+        output_envelope.refresh_post_tool_use_presentation();
+        output_envelope
     }
 
     /// Build the recovery response for a reference-transaction hook installed before v1.
     pub(crate) fn legacy_hook_outdated() -> Self {
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb:         CommandVerb::Integrate,
             status:       OutputStatus::LegacyHookOutdated,
             exit_code:    BerthExit::LedgerUnreadable,
             reservations: Vec::new(),
             blocked_by:   Vec::new(),
             message:      "The installed reference-transaction hook is out of date; run `cargo-berth init` to replace it, then retry integration.".to_owned(),
+            presentation: EnvelopePresentation::NotProvided,
             payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
@@ -1506,16 +1697,18 @@ impl OutputEnvelope {
         expected_configuration_path: &Path,
     ) -> Self {
         Self {
-            verb:         command_verb,
-            status:       OutputStatus::Unconfigured,
-            exit_code:    BerthExit::LedgerUnreadable,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      format!(
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    command_verb,
+            status:                  OutputStatus::Unconfigured,
+            exit_code:               BerthExit::LedgerUnreadable,
+            reservations:            Vec::new(),
+            blocked_by:              Vec::new(),
+            message:                 format!(
                 "this repository has no cargo-berth configuration at {}; run `cargo-berth init` to create it",
                 expected_configuration_path.display()
             ),
-            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -1548,6 +1741,22 @@ impl OutputEnvelope {
             ),
             (
                 CoordinationRunMarkerPublication::Published,
+                SessionIdentityMappingPublication::ExplicitSelectionAppliesOnlyToCurrentInvocation {
+                    ..
+                },
+            ) => format!(
+                "Claimed {scope_count} reservation scope(s) as {reservation_id}. The explicit reservation selection applies only to this invocation because no usable harness session id was supplied."
+            ),
+            (
+                CoordinationRunMarkerPublication::Unavailable { diagnostic },
+                SessionIdentityMappingPublication::ExplicitSelectionAppliesOnlyToCurrentInvocation {
+                    ..
+                },
+            ) => format!(
+                "Claimed {scope_count} reservation scope(s) as {reservation_id}, but the coordination-run marker could not be published: {diagnostic}. The explicit reservation selection applies only to this invocation because no usable harness session id was supplied. Restore coordination run {coordination_run_id} through the process environment before subsequent commands."
+            ),
+            (
+                CoordinationRunMarkerPublication::Published,
                 SessionIdentityMappingPublication::Unavailable { diagnostic },
             ) => format!(
                 "Claimed {scope_count} reservation scope(s) as {reservation_id}, but the harness session mapping could not be published: {diagnostic}. Later session-keyed drift checks may require an explicit coordination run and reservation."
@@ -1563,13 +1772,17 @@ impl OutputEnvelope {
                 "Claimed {scope_count} reservation scope(s) as {reservation_id}, but neither fallback identity publication completed. Coordination-run marker: {marker_diagnostic}. Harness session mapping: {session_diagnostic}. Restore coordination run {coordination_run_id} through the process environment and name reservation {reservation_id} explicitly for later drift checks."
             ),
         };
+        let presentation =
+            claimed_presentation(reservation_id, &message, &session_mapping_publication);
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Claim,
             status: OutputStatus::Claimed,
             exit_code: BerthExit::Clear,
             reservations: vec![reservation_id],
             blocked_by: Vec::new(),
             message,
+            presentation,
             payload: OutputPayload::from_facts(OutputFacts::Claim(ClaimPayload::Claimed {
                 reservation_id,
                 coordination_run_id,
@@ -1637,29 +1850,36 @@ impl OutputEnvelope {
         let reservations = report.reservation_ids();
         let blocked_by = report.blocking_reservation_ids();
         let message = drift_message(&report);
-        Self {
+        let mut output_envelope = Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Drift,
             status,
             exit_code,
             reservations,
             blocked_by,
             message,
+            presentation: EnvelopePresentation::NotProvided,
             payload: OutputPayload::from_facts(OutputFacts::Drift(report)),
-        }
+        };
+        output_envelope.refresh_post_tool_use_presentation();
+        output_envelope
     }
 
     /// Build a typed rejection when no additional live reservation is permitted.
     pub(crate) fn reservation_limit_reached(maximum: u32) -> Self {
+        let message =
+            format!("The configured maximum of {maximum} live reservations has been reached.");
+        let presentation = engine_result_presentation(&message, &message);
         Self {
-            verb:         CommandVerb::Claim,
-            status:       OutputStatus::ReservationLimitReached,
-            exit_code:    BerthExit::BlockedByOverlap,
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Claim,
+            status: OutputStatus::ReservationLimitReached,
+            exit_code: BerthExit::BlockedByOverlap,
             reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      format!(
-                "The configured maximum of {maximum} live reservations has been reached."
-            ),
-            payload:      OutputPayload::from_facts(OutputFacts::Claim(
+            blocked_by: Vec::new(),
+            message,
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::Claim(
                 ClaimPayload::ReservationLimitReached { maximum },
             )),
         }
@@ -1667,16 +1887,19 @@ impl OutputEnvelope {
 
     /// Build a typed claim rejection when no additional ordering edge is permitted.
     pub(crate) fn claim_ordering_edge_limit_reached(maximum: u32) -> Self {
+        let message =
+            format!("The configured maximum of {maximum} ordering edges has been reached.");
+        let presentation = engine_result_presentation(&message, &message);
         Self {
-            verb:         CommandVerb::Claim,
-            status:       OutputStatus::OrderingEdgeLimitReached,
-            exit_code:    BerthExit::BlockedByOrdering,
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Claim,
+            status: OutputStatus::OrderingEdgeLimitReached,
+            exit_code: BerthExit::BlockedByOrdering,
             reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      format!(
-                "The configured maximum of {maximum} ordering edges has been reached."
-            ),
-            payload:      OutputPayload::from_facts(OutputFacts::Claim(
+            blocked_by: Vec::new(),
+            message,
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::Claim(
                 ClaimPayload::OrderingEdgeLimitReached { maximum },
             )),
         }
@@ -1687,20 +1910,26 @@ impl OutputEnvelope {
         let edge_id = edge.edge_id;
         let before = edge.before;
         let after = edge.after;
+        let message = format!("Recorded ordering edge {edge_id}: {before} before {after}.");
+        let summary = format!("cargo-berth recorded ordering edge {edge_id}.");
+        let presentation = engine_result_presentation(&summary, &message);
         Self {
-            verb:         CommandVerb::Sequence,
-            status:       OutputStatus::Sequenced,
-            exit_code:    BerthExit::Clear,
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Sequence,
+            status: OutputStatus::Sequenced,
+            exit_code: BerthExit::Clear,
             reservations: vec![before, after],
-            blocked_by:   if readiness.holds_successor() {
+            blocked_by: if readiness.holds_successor() {
                 vec![before]
             } else {
                 Vec::new()
             },
-            message:      format!("Recorded ordering edge {edge_id}: {before} before {after}."),
-            payload:      OutputPayload::from_facts(OutputFacts::Sequence(
-                SequencePayload::Sequenced { edge, readiness },
-            )),
+            message,
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::Sequence(SequencePayload::Sequenced {
+                edge,
+                readiness,
+            })),
         }
     }
 
@@ -1712,13 +1941,19 @@ impl OutputEnvelope {
     ) -> Self {
         let (status, exit_code, message) = reason.response(first, then);
         let blocked_by = reason.blocked_by(first, then);
+        let presentation = engine_result_presentation(
+            "cargo-berth did not record the requested ordering edge.",
+            &message,
+        );
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Sequence,
             status,
             exit_code,
             reservations: vec![first, then],
             blocked_by,
             message,
+            presentation,
             payload: OutputPayload::from_facts(OutputFacts::Sequence(SequencePayload::Rejected {
                 first,
                 then,
@@ -1733,13 +1968,17 @@ impl OutputEnvelope {
         reason: CoordinationIdentityRejection,
     ) -> Self {
         let message = reason.to_string();
+        let summary = format!("cargo-berth rejected integration for reservation {reservation_id}.");
+        let presentation = engine_result_presentation(&summary, &message);
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Integrate,
             status: OutputStatus::InvalidInput,
             exit_code: BerthExit::UsageError,
             reservations: vec![reservation_id],
             blocked_by: Vec::new(),
             message,
+            presentation,
             payload: OutputPayload::from_facts(OutputFacts::Integrate(
                 IntegrationPayload::Rejected { reason },
             )),
@@ -1753,15 +1992,19 @@ impl OutputEnvelope {
     ) -> Self {
         let reservations = reason.reservation_ids();
         let message = reason.to_string();
-        Self {
+        let mut output_envelope = Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: command_verb,
             status: OutputStatus::InvalidInput,
             exit_code: BerthExit::UsageError,
             reservations,
             blocked_by: Vec::new(),
             message,
+            presentation: EnvelopePresentation::NotProvided,
             payload: OutputPayload::from_facts(OutputFacts::CoordinationIdentity(reason)),
-        }
+        };
+        output_envelope.refresh_post_tool_use_presentation();
+        output_envelope
     }
 
     /// Build the result of removing only the current harness-session mapping.
@@ -1784,12 +2027,14 @@ impl OutputEnvelope {
             ),
         };
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Identity,
             status,
             exit_code,
             reservations: Vec::new(),
             blocked_by: Vec::new(),
             message: message.to_owned(),
+            presentation: EnvelopePresentation::NotProvided,
             payload: OutputPayload::from_facts(OutputFacts::Identity(removal.into())),
         }
     }
@@ -1800,13 +2045,18 @@ impl OutputEnvelope {
             .iter()
             .map(|conflict| conflict.reservation_id)
             .collect();
+        let message = blocked_message(&conflicts);
+        let refusal_detail = blocked_claim_refusal_detail(&conflicts);
+        let presentation = blocked_edit_refusal_block(&refusal_detail).into();
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Claim,
             status: OutputStatus::BlockedByOverlap,
             exit_code: BerthExit::BlockedByOverlap,
             reservations: Vec::new(),
             blocked_by,
-            message: blocked_message(&conflicts),
+            message,
+            presentation,
             payload: OutputPayload::from_facts(OutputFacts::Claim(ClaimPayload::Blocked {
                 conflicts,
             })),
@@ -1858,13 +2108,16 @@ impl OutputEnvelope {
             message.push('\n');
             message.push_str(&holder_material);
         }
+        let presentation = claim_authorization_presentation(&escalation);
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Claim,
             status: OutputStatus::NeedsUserAuthorization,
             exit_code: BerthExit::NeedsUserAuthorization,
             reservations: Vec::new(),
             blocked_by,
             message,
+            presentation,
             payload: OutputPayload::from_facts(OutputFacts::Claim(
                 ClaimPayload::NeedsUserAuthorization {
                     escalation: Box::new(escalation),
@@ -1889,15 +2142,25 @@ impl OutputEnvelope {
                 "No foreign reservation overlaps the requested paths; the acting run already holds them."
             },
         };
+        let message = message_with_session_mapping_publication(
+            message.to_owned(),
+            &acquisition.session_mapping_publication,
+        );
+        let presentation = session_mapping_publication_presentation(
+            &message,
+            &acquisition.session_mapping_publication,
+        );
         let reservation_id = acquisition.reservation_id;
         Self {
-            verb:         CommandVerb::Check,
-            status:       OutputStatus::Clear,
-            exit_code:    BerthExit::Clear,
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Check,
+            status: OutputStatus::Clear,
+            exit_code: BerthExit::Clear,
             reservations: vec![reservation_id],
-            blocked_by:   Vec::new(),
-            message:      message.to_owned(),
-            payload:      OutputPayload::from_facts(OutputFacts::Check(CheckPayload::Clear {
+            blocked_by: Vec::new(),
+            message,
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::Check(CheckPayload::Clear {
                 scopes,
                 acquisition,
             })),
@@ -1914,16 +2177,25 @@ impl OutputEnvelope {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
+        let message = format!(
+            "No usable harness-session mapping selects one active reservation among {rendered_candidates}. Run `{AMBIGUOUS_RESERVATION_RECOVERY_COMMAND}` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published."
+        );
+        let candidate_reservation_id_strings = candidate_reservation_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let presentation =
+            ambiguous_first_touch_block(&message, &candidate_reservation_id_strings).into();
         Self {
-            verb:         command_verb,
-            status:       OutputStatus::AmbiguousActiveRunReservations,
-            exit_code:    BerthExit::BlockedByOverlap,
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: command_verb,
+            status: OutputStatus::AmbiguousActiveRunReservations,
+            exit_code: BerthExit::BlockedByOverlap,
             reservations: candidate_reservation_ids.clone(),
-            blocked_by:   Vec::new(),
-            message:      format!(
-                "No usable harness-session mapping selects one active reservation among {rendered_candidates}. No reservation was appended or widened, and no harness-session mapping was published."
-            ),
-            payload:      OutputPayload::from_facts(OutputFacts::FirstTouchReservationSelection(
+            blocked_by: Vec::new(),
+            message,
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::FirstTouchReservationSelection(
                 FirstTouchReservationSelectionPayload::AmbiguousActiveRunReservations {
                     candidate_reservation_ids,
                 },
@@ -1940,13 +2212,18 @@ impl OutputEnvelope {
             .iter()
             .map(|conflict| conflict.reservation_id)
             .collect();
+        let message = blocked_message(&conflicts);
+        let refusal_detail = blocked_edit_refusal_detail(&scopes, &conflicts);
+        let presentation = blocked_edit_refusal_block(&refusal_detail).into();
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Check,
             status: OutputStatus::BlockedByOverlap,
             exit_code: BerthExit::BlockedByOverlap,
             reservations: Vec::new(),
             blocked_by,
-            message: blocked_message(&conflicts),
+            message,
+            presentation,
             payload: OutputPayload::from_facts(OutputFacts::Check(CheckPayload::Blocked {
                 scopes,
                 conflicts,
@@ -1957,13 +2234,15 @@ impl OutputEnvelope {
     /// Build a caller-correctable request rejection.
     pub(crate) fn invalid_input(command_verb: CommandVerb, diagnostic: &str) -> Self {
         Self {
-            verb:         command_verb,
-            status:       OutputStatus::InvalidInput,
-            exit_code:    BerthExit::UsageError,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      diagnostic.to_owned(),
-            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    command_verb,
+            status:                  OutputStatus::InvalidInput,
+            exit_code:               BerthExit::UsageError,
+            reservations:            Vec::new(),
+            blocked_by:              Vec::new(),
+            message:                 diagnostic.to_owned(),
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -2021,13 +2300,15 @@ impl OutputEnvelope {
     /// Build a bounded lock-contention result with retry guidance.
     pub(crate) fn contention(command_verb: CommandVerb, diagnostic: &str) -> Self {
         Self {
-            verb:         command_verb,
-            status:       OutputStatus::Contention,
-            exit_code:    BerthExit::BlockedByContention,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      diagnostic.to_owned(),
-            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    command_verb,
+            status:                  OutputStatus::Contention,
+            exit_code:               BerthExit::BlockedByContention,
+            reservations:            Vec::new(),
+            blocked_by:              Vec::new(),
+            message:                 diagnostic.to_owned(),
+            presentation:            EnvelopePresentation::NotProvided,
+            payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -2072,13 +2353,17 @@ impl OutputEnvelope {
                 session_mapping_publication,
             ),
         };
+        let summary = format!("cargo-berth updated reservation {reservation_id}.");
+        let presentation = engine_result_presentation(&summary, &message);
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Release,
             status,
             exit_code: BerthExit::Clear,
             reservations: vec![reservation_id],
             blocked_by: Vec::new(),
             message,
+            presentation,
             payload: OutputPayload::from_facts(OutputFacts::Release(release_payload)),
         }
     }
@@ -2158,26 +2443,24 @@ impl OutputEnvelope {
                 session_mapping_publication,
             } => (
                 *reservation_id,
-                match disposition {
-                    ReleaseDisposition::Integrated
-                    | ReleaseDisposition::RewrittenIntegration(_) => OutputStatus::Integrated,
-                    ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => {
-                        OutputStatus::Released
-                    },
-                },
+                release_disposition_status(disposition),
                 message_with_session_mapping_publication(
                     format!("Reservation {reservation_id} recorded disposition {disposition:?}."),
                     session_mapping_publication,
                 ),
             ),
         };
+        let summary = format!("cargo-berth resolved reservation {reservation_id}.");
+        let presentation = engine_result_presentation(&summary, &message);
         Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Resolve,
             status,
             exit_code: BerthExit::Clear,
             reservations: vec![reservation_id],
             blocked_by: Vec::new(),
             message,
+            presentation,
             payload: OutputPayload::from_facts(OutputFacts::Resolve(resolve_payload)),
         }
     }
@@ -2191,16 +2474,23 @@ impl OutputEnvelope {
         resolution_event_id: EventId,
         resolved_at: RecordedAt,
     ) -> Self {
+        let message = format!(
+            "Incursion incident {incident_id} was already resolved by worktree {resolving_worktree_id} in coordination run {resolving_coordination_run_id}, event {resolution_event_id} at {resolved_at}."
+        );
+        let presentation = engine_result_presentation(
+            "cargo-berth rejected a duplicate incursion resolution.",
+            &message,
+        );
         Self {
-            verb:         CommandVerb::Resolve,
-            status:       OutputStatus::InvalidInput,
-            exit_code:    BerthExit::UsageError,
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Resolve,
+            status: OutputStatus::InvalidInput,
+            exit_code: BerthExit::UsageError,
             reservations: vec![reservation_id],
-            blocked_by:   Vec::new(),
-            message:      format!(
-                "Incursion incident {incident_id} was already resolved by worktree {resolving_worktree_id} in coordination run {resolving_coordination_run_id}, event {resolution_event_id} at {resolved_at}."
-            ),
-            payload:      OutputPayload::from_facts(OutputFacts::Resolve(
+            blocked_by: Vec::new(),
+            message,
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::Resolve(
                 ResolvePayload::AlreadyRecordedByDifferentCoordinationActor {
                     reservation_id,
                     incident_id,
@@ -2216,13 +2506,15 @@ impl OutputEnvelope {
     /// Build a successful activity-renewal response.
     pub(crate) fn renewed(reservation_id: ReservationId) -> Self {
         Self {
-            verb:         CommandVerb::Renew,
-            status:       OutputStatus::Renewed,
-            exit_code:    BerthExit::Clear,
-            reservations: vec![reservation_id],
-            blocked_by:   Vec::new(),
-            message:      format!("Reservation {reservation_id} activity was renewed."),
-            payload:      OutputPayload::from_facts(OutputFacts::Renew(RenewPayload {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    CommandVerb::Renew,
+            status:                  OutputStatus::Renewed,
+            exit_code:               BerthExit::Clear,
+            reservations:            vec![reservation_id],
+            blocked_by:              Vec::new(),
+            message:                 format!("Reservation {reservation_id} activity was renewed."),
+            presentation:            EnvelopePresentation::nothing_to_show(),
+            payload:                 OutputPayload::from_facts(OutputFacts::Renew(RenewPayload {
                 reservation_id,
             })),
         }
@@ -2231,7 +2523,52 @@ impl OutputEnvelope {
     /// Attach alerts derived by the reconciliation that preceded this command.
     pub(crate) fn with_alerts(mut self, alerts: Vec<Alert>) -> Self {
         self.payload.alerts = alerts;
+        if matches!(self.payload.facts, OutputFacts::Drift(_)) {
+            self.refresh_post_tool_use_presentation();
+        }
+        if matches!(self.verb, CommandVerb::Board) {
+            self.presentation = presentation_from_actionable_alerts(&self.payload.alerts);
+        }
         self
+    }
+
+    fn refresh_post_tool_use_presentation(&mut self) {
+        match self.post_tool_use_rendering() {
+            PostToolUseRendering::NoFeedback => {
+                self.presentation = EnvelopePresentation::nothing_to_show();
+            },
+            PostToolUseRendering::Feedback { summary, detail } => {
+                self.presentation
+                    .replace_with(engine_message_block(&summary, &detail));
+            },
+            PostToolUseRendering::RequiresLiveIncursionBoard => {
+                self.presentation = match &self.payload.facts {
+                    OutputFacts::Drift(report) => {
+                        drift_non_incursion_presentation(report, &self.payload.alerts)
+                    },
+                    OutputFacts::NoFacts
+                    | OutputFacts::Init(_)
+                    | OutputFacts::ProjectionRepair(_)
+                    | OutputFacts::Reinitialize(_)
+                    | OutputFacts::Board(_)
+                    | OutputFacts::Reservation(_)
+                    | OutputFacts::ReplayFailure(_)
+                    | OutputFacts::FirstTouchReservationSelection(_)
+                    | OutputFacts::Check(_)
+                    | OutputFacts::Claim(_)
+                    | OutputFacts::Release(_)
+                    | OutputFacts::Sequence(_)
+                    | OutputFacts::Integrate(_)
+                    | OutputFacts::Resolve(_)
+                    | OutputFacts::Renew(_)
+                    | OutputFacts::CoordinationIdentity(_)
+                    | OutputFacts::Identity(_) => engine_result_presentation(
+                        "cargo-berth rejected an unexpected live-board presentation request.",
+                        &self.message,
+                    ),
+                };
+            },
+        }
     }
 
     /// Render the primary result followed by every durable alert as its own line.
@@ -2257,26 +2594,48 @@ impl OutputEnvelope {
         match &self.payload.facts {
             OutputFacts::Drift(report) => self.post_tool_use_drift_rendering(report),
             OutputFacts::ReplayFailure(failure) => {
-                let reason = serde_json::to_string(&failure.reason).map_or_else(
-                    |_| "unknown_replay_failure".to_owned(),
-                    |serialized| serialized.trim_matches('"').to_owned(),
+                let summary = match self.verb {
+                    CommandVerb::Check => {
+                        "cargo-berth could not establish edit safety; editing is allowed because ledger loss fails open."
+                    },
+                    CommandVerb::Board => {
+                        "cargo-berth stopped on invalid reservation history at SessionStart."
+                    },
+                    CommandVerb::Drift => {
+                        "cargo-berth stopped on invalid reservation history after Bash."
+                    },
+                    CommandVerb::Init
+                    | CommandVerb::Claim
+                    | CommandVerb::Release
+                    | CommandVerb::Sequence
+                    | CommandVerb::Integrate
+                    | CommandVerb::Resolve
+                    | CommandVerb::Renew
+                    | CommandVerb::Identity => {
+                        "cargo-berth stopped on invalid reservation history."
+                    },
+                };
+                let block = replay_failure_block(
+                    summary,
+                    &failure.rendered_reason(),
+                    &failure.rendered_subject(),
                 );
                 PostToolUseRendering::Feedback {
-                    summary: "cargo-berth stopped on invalid reservation history after Bash."
-                        .to_owned(),
-                    detail:  format!(
-                        "REPLAY HARD STOP: {reason}. {} Review the cargo-berth journal. If the retained order is invalid and may be discarded, run `cargo-berth init --reinitialize-after-review --json`.",
-                        self.message
-                    ),
+                    summary: block.summary,
+                    detail:  block.detail,
                 }
             },
-            OutputFacts::CoordinationIdentity(rejection) => PostToolUseRendering::Feedback {
-                summary: "cargo-berth rejected drift under the current coordination identity."
-                    .to_owned(),
-                detail:  format!(
-                    "COORDINATION IDENTITY: {} requires one recovery action before continuing. {rejection}",
-                    rejection.wire_kind()
-                ),
+            OutputFacts::CoordinationIdentity(rejection) => {
+                let recovery_actions = rejection.rendered_recovery_actions();
+                let block = coordination_identity_block(
+                    "cargo-berth rejected drift under the current coordination identity.",
+                    rejection.wire_kind(),
+                    &recovery_actions,
+                );
+                PostToolUseRendering::Feedback {
+                    summary: block.summary,
+                    detail:  block.detail,
+                }
             },
             OutputFacts::FirstTouchReservationSelection(
                 FirstTouchReservationSelectionPayload::AmbiguousActiveRunReservations { .. },
@@ -2344,53 +2703,48 @@ impl OutputEnvelope {
                         paths,
                         commits,
                     } => match board.live_incursion_membership(*incident_id) {
-                        LiveIncursionMembership::Outstanding => immediate_stop_messages.push(format!(
-                            "INCURSION: reservation {reservation_id} entered {}, held by {}; incident {incident_id}.{} STOP. Resolve with `cargo-berth resolve {reservation_id} --incursion {incident_id}` before making more changes.",
-                            paths
+                        LiveIncursionMembership::Outstanding => {
+                            let entered_paths = paths
                                 .as_slice()
                                 .iter()
                                 .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            foreign_reservation_ids
+                                .collect::<Vec<_>>();
+                            let foreign_reservation_ids = foreign_reservation_ids
                                 .as_slice()
                                 .iter()
                                 .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            render_incursion_commits(commits),
-                        )),
+                                .collect::<Vec<_>>();
+                            immediate_stop_messages.push(outstanding_incursion_block(
+                                &reservation_id.to_string(),
+                                &entered_paths,
+                                &foreign_reservation_ids,
+                                &incident_id.to_string(),
+                                &render_incursion_commits(commits),
+                            ));
+                        },
                         LiveIncursionMembership::Recorded => {},
                         LiveIncursionMembership::Unverifiable => {
                             return unverifiable_live_incursion_rendering();
                         },
                     },
-                    DriftEffect::Widened { added_scopes } => notice_messages.push(format!(
-                        "AUTO-WIDEN: reservation {reservation_id} now covers {}",
-                        added_scopes
+                    DriftEffect::Widened { added_scopes } => {
+                        let added_scopes = added_scopes
                             .as_slice()
                             .iter()
                             .map(|scope| format!("file:{}", scope.path))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )),
+                            .collect::<Vec<_>>();
+                        notice_messages.push(
+                            automatic_widening_block(&reservation_id.to_string(), &added_scopes)
+                                .detail,
+                        );
+                    },
                     DriftEffect::Collision {
                         foreign_reservation_ids,
                         paths,
-                    } => immediate_stop_messages.push(format!(
-                        "COLLISION: reservation {reservation_id} could not widen to {} because {} now holds the path. STOP and resolve the overlap before making more changes.",
-                        paths
-                            .as_slice()
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        foreign_reservation_ids
-                            .as_slice()
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                    } => immediate_stop_messages.push(collision_detail(
+                        *reservation_id,
+                        foreign_reservation_ids,
+                        paths,
                     )),
                 }
             }
@@ -2463,23 +2817,38 @@ impl OutputEnvelope {
             DriftPathAttributionOutcome::NotNeeded
             | DriftPathAttributionOutcome::Attributed { .. } => ("", false),
         };
-        let mut messages = Vec::new();
-        if !prefix.is_empty() || report.has_reportable_effect() {
-            messages.push(format!("{prefix}{}", self.message));
-        }
+        let mut messages = match prefix {
+            "COLLISION: " => {
+                let mut details = automatic_widening_details(report);
+                details.extend(collision_details(report));
+                details
+            },
+            "AUTO-WIDEN: " => automatic_widening_details(report),
+            _ if !prefix.is_empty() || report.has_reportable_effect() => {
+                vec![format!("{prefix}{}", self.message)]
+            },
+            _ => Vec::new(),
+        };
         messages.extend(lost_evidence);
         if messages.is_empty() {
             return PostToolUseRendering::NoFeedback;
         }
+        if !immediate_stop
+            && !has_collision
+            && self
+                .payload
+                .alerts
+                .iter()
+                .any(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
+        {
+            let block = lost_integration_evidence_block(&messages.join("\n"));
+            return PostToolUseRendering::Feedback {
+                summary: block.summary,
+                detail:  block.detail,
+            };
+        }
         let summary = if immediate_stop || has_collision {
             "cargo-berth detected drift that requires an immediate stop."
-        } else if self
-            .payload
-            .alerts
-            .iter()
-            .any(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
-        {
-            "cargo-berth detected lost integration evidence for released work."
         } else {
             "cargo-berth widened this worktree reservation footprint."
         };
@@ -2491,11 +2860,151 @@ impl OutputEnvelope {
 }
 
 fn unverifiable_live_incursion_rendering() -> PostToolUseRendering {
+    let block = unverifiable_incursion_block();
     PostToolUseRendering::Feedback {
-        summary: "cargo-berth could not verify the live incursion state.".to_owned(),
-        detail: "STOP: the PostToolUse drift response named an incursion, but a current board read could not verify whether it still needs resolution."
-            .to_owned(),
+        summary: block.summary,
+        detail:  block.detail,
     }
+}
+
+fn presentation_from_actionable_alerts(alerts: &[Alert]) -> EnvelopePresentation {
+    let details = alerts
+        .iter()
+        .map(|alert| match alert {
+            Alert::LostIntegrationEvidence(_) => alert.to_string(),
+            Alert::OrphanedOutstanding(orphan) => {
+                let reservation_id = orphan.reservation_id().to_string();
+                let (recoverability, recovery_commands) = match orphan.recoverability() {
+                    RecoverabilityVerdict::RecoverableFromBranch => (
+                        "recoverable_from_branch",
+                        vec![format!("resolve {reservation_id} --recovered")],
+                    ),
+                    RecoverabilityVerdict::RecoverableFromProtectedTip => (
+                        "recoverable_from_protected_tip",
+                        vec![format!("resolve {reservation_id} --recovered")],
+                    ),
+                    RecoverabilityVerdict::CommitUnavailable => (
+                        "commit_unavailable",
+                        vec![
+                            format!("resolve {reservation_id} --retire-orphan --why <reason>"),
+                            format!("resolve {reservation_id} --abandon --why <reason>"),
+                        ],
+                    ),
+                };
+                orphaned_outstanding_block(
+                    &reservation_id,
+                    &orphan.protected_tip().to_string(),
+                    recoverability,
+                    &recovery_commands,
+                )
+            },
+        })
+        .collect::<Vec<_>>();
+    match details.as_slice() {
+        [] => EnvelopePresentation::nothing_to_show(),
+        [_, ..] => actionable_board_notices_block(&details).into(),
+    }
+}
+
+fn drift_non_incursion_presentation(
+    report: &DriftReport,
+    alerts: &[Alert],
+) -> EnvelopePresentation {
+    let mut widening_details = automatic_widening_details(report);
+    let lost_evidence_details = alerts
+        .iter()
+        .filter(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    match (
+        widening_details.as_slice(),
+        lost_evidence_details.as_slice(),
+    ) {
+        ([], []) => EnvelopePresentation::nothing_to_show(),
+        (_, [_, ..]) => {
+            widening_details.extend(lost_evidence_details);
+            lost_integration_evidence_block(&widening_details.join("\n")).into()
+        },
+        ([_, ..], []) => engine_message_block(
+            "cargo-berth widened this worktree reservation footprint.",
+            &widening_details.join("\n"),
+        )
+        .into(),
+    }
+}
+
+fn automatic_widening_details(report: &DriftReport) -> Vec<String> {
+    report
+        .results
+        .iter()
+        .filter_map(|result| match result {
+            ReservationDriftResult::Changed {
+                reservation_id,
+                effects,
+            } => effects.as_slice().iter().find_map(|effect| match effect {
+                DriftEffect::Widened { added_scopes } => {
+                    let added_scopes = added_scopes
+                        .as_slice()
+                        .iter()
+                        .map(|scope| format!("file:{}", scope.path))
+                        .collect::<Vec<_>>();
+                    Some(
+                        automatic_widening_block(&reservation_id.to_string(), &added_scopes).detail,
+                    )
+                },
+                DriftEffect::Incursion { .. } | DriftEffect::Collision { .. } => None,
+            }),
+            ReservationDriftResult::Unchanged { .. }
+            | ReservationDriftResult::PhaseStartObjectUnknown { .. } => None,
+        })
+        .collect()
+}
+
+fn collision_details(report: &DriftReport) -> Vec<String> {
+    report
+        .results
+        .iter()
+        .filter_map(|result| match result {
+            ReservationDriftResult::Changed {
+                reservation_id,
+                effects,
+            } => effects.as_slice().iter().find_map(|effect| match effect {
+                DriftEffect::Collision {
+                    foreign_reservation_ids,
+                    paths,
+                } => Some(collision_detail(
+                    *reservation_id,
+                    foreign_reservation_ids,
+                    paths,
+                )),
+                DriftEffect::Widened { .. } | DriftEffect::Incursion { .. } => None,
+            }),
+            ReservationDriftResult::Unchanged { .. }
+            | ReservationDriftResult::PhaseStartObjectUnknown { .. } => None,
+        })
+        .collect()
+}
+
+fn collision_detail(
+    reservation_id: ReservationId,
+    foreign_reservation_ids: &ForeignReservationIdSet,
+    paths: &CollisionPathSet,
+) -> String {
+    format!(
+        "COLLISION: reservation {reservation_id} could not widen to {} because {} now holds the path. STOP and resolve the overlap before making more changes.",
+        paths
+            .as_slice()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        foreign_reservation_ids
+            .as_slice()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 impl OutputPayload {
@@ -2535,6 +3044,183 @@ fn blocked_message(conflicts: &[ReservationConflict]) -> String {
         },
     }
     message
+}
+
+fn claimed_presentation(
+    reservation_id: ReservationId,
+    message: &str,
+    session_mapping_publication: &SessionIdentityMappingPublication,
+) -> EnvelopePresentation {
+    let summary = format!("cargo-berth claimed reservation {reservation_id}.");
+    let claimed_detail = format!("Reservation id: `{reservation_id}`.\n\n{message}");
+    let detail = match session_mapping_publication {
+        SessionIdentityMappingPublication::Published
+        | SessionIdentityMappingPublication::ExplicitSelectionAppliesOnlyToCurrentInvocation {
+            ..
+        } => claimed_detail,
+        SessionIdentityMappingPublication::Unavailable { diagnostic } => format!(
+            "{claimed_detail}\n\nThe journal append and reservation `{reservation_id}` are durable, but the harness session mapping is unavailable: {diagnostic}. Name reservation `{reservation_id}` explicitly on subsequent commands."
+        ),
+    };
+    engine_message_block(&summary, &detail).into()
+}
+
+fn engine_result_presentation(summary: &str, detail: &str) -> EnvelopePresentation {
+    engine_message_block(summary, detail).into()
+}
+
+fn blocked_claim_refusal_detail(conflicts: &[ReservationConflict]) -> String {
+    let mut sections = vec![claim_holder_facts(conflicts)];
+    sections.push(blocked_edit_answer_guidance().to_owned());
+    append_first_touch_holder_recovery_guidance(
+        &mut sections,
+        conflicts,
+        FirstTouchHolderRecoveryContext::Refusal,
+    );
+    if conflicts.len() > 1 {
+        sections.push(
+            "More than one holder remains. Narrow the requested scopes before asking for a proposal, because one proposal binds exactly one blocker."
+                .to_owned(),
+        );
+    }
+    sections.join("\n\n")
+}
+
+fn claim_authorization_presentation(escalation: &OverlapEscalationPayload) -> EnvelopePresentation {
+    let direction = overlap_direction_description(&escalation.answer);
+    let proposal_token = escalation.proposal_token.to_string();
+    let mut sections = vec![
+        claim_holder_facts(&escalation.conflicts),
+        format!(
+            "- selected direction: {direction}.\n- authorization reason: {}.\n- consequence: {}.\n- proposal: after explicit approval, repeat the claim with the selected answer and supply the exact transient token through `--proposal`.\n- transient token:\n\n`{proposal_token}`",
+            escalation.authorization_reason, escalation.consequence,
+        ),
+    ];
+    append_first_touch_holder_recovery_guidance(
+        &mut sections,
+        &escalation.conflicts,
+        FirstTouchHolderRecoveryContext::Proposal,
+    );
+    engine_message_block(
+        "cargo-berth prepared an overlap proposal that awaits explicit approval.",
+        &sections.join("\n\n"),
+    )
+    .into()
+}
+
+fn blocked_edit_refusal_detail(
+    requested_scopes: &ReservationScopeSet,
+    conflicts: &[ReservationConflict],
+) -> String {
+    let mut sections = vec![blocked_edit_holder_facts(requested_scopes, conflicts)];
+    sections.push(blocked_edit_answer_guidance().to_owned());
+    append_first_touch_holder_recovery_guidance(
+        &mut sections,
+        conflicts,
+        FirstTouchHolderRecoveryContext::Refusal,
+    );
+    if conflicts.len() > 1 {
+        sections.push(
+            "More than one holder remains. Narrow the requested scopes before asking for a proposal, because one proposal binds exactly one blocker."
+                .to_owned(),
+        );
+    }
+    sections.join("\n\n")
+}
+
+fn blocked_edit_holder_facts(
+    requested_scopes: &ReservationScopeSet,
+    conflicts: &[ReservationConflict],
+) -> String {
+    format!(
+        "The requested edit is blocked for these scopes: {}.\n\n{}",
+        render_scopes(requested_scopes),
+        claim_holder_facts(conflicts),
+    )
+}
+
+fn claim_holder_facts(conflicts: &[ReservationConflict]) -> String {
+    conflicts
+        .iter()
+        .map(|conflict| {
+            format!(
+                "Holder `{}`:\n- coordination run id: `{}`\n- worktree: `{}`\n- branch or detached head: `{}`\n- claimed at: `{}`\n- activity: {}\n- acquisition source: {}\n- reservation purpose: {}\n- exact shared scopes: {}",
+                conflict.reservation_id,
+                conflict.holder_run_id,
+                conflict.holder_worktree_id(),
+                conflict.holder_branch(),
+                conflict.claimed_at(),
+                conflict.holder_activity_description(),
+                source_description(&conflict.source),
+                purpose_description(&conflict.purpose),
+                render_scopes(&conflict.overlapping_scopes),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+const fn blocked_edit_answer_guidance() -> &'static str {
+    r#"Choose exactly one answer for one named holder. The first four are reasoned coordinator answers on `claim`, and each requires a non-empty reason. Run the coordinator invocation shown for each answer:
+
+1. **Land before the holder** — `PYTHONPATH="$HOME/.claude/scripts" python3 -m berth.claim_state claim --cwd "$PWD" <paths...> --answer before --blocker <holder-reservation-id> --overlap-reason "<reason>"`. The requester takes the paths and integrates first; the holder remains held until the requester is on trunk. Use this when the holder will build on the requester's change.
+2. **Land after the holder** — `PYTHONPATH="$HOME/.claude/scripts" python3 -m berth.claim_state claim --cwd "$PWD" <paths...> --answer after --blocker <holder-reservation-id> --overlap-reason "<reason>"`. The requester takes the paths and integrates second; it remains held until the holder's protected tip is on trunk and is an ancestor of the requester's `HEAD`. Use this when the requester will build on the holder.
+3. **Defer the order** — `PYTHONPATH="$HOME/.claude/scripts" python3 -m berth.claim_state claim --cwd "$PWD" <paths...> --answer defer --blocker <holder-reservation-id> --overlap-reason "<reason>"`. The requester takes the paths, no ordering edge is added, and the unresolved overlap remains visible on the board until someone later sequences it.
+4. **Override** — `PYTHONPATH="$HOME/.claude/scripts" python3 -m berth.claim_state claim --cwd "$PWD" <paths...> --answer override --blocker <holder-reservation-id> --overlap-reason "<reason>"`. The requester takes the paths, no ordering edge is added, and the override plus its reason remains visible on the board.
+5. **Leave it alone.** Run no engine command, append nothing, and work elsewhere.
+
+Only **Land before the holder** and **Land after the holder** add an ordering edge. Defer and override add no edge; their recorded overlap remains visible on the board.
+
+An answered claim only produces a proposal at exit 3. Show that proposal and wait for explicit approval in a later turn before submitting its exact `--proposal` token. Never produce and submit a token in the same turn.
+
+The trunk-gate bypass is not an edit answer and cannot permit this edit."#
+}
+
+fn first_touch_holder_recovery_guidance(
+    conflicts: &[ReservationConflict],
+    context: FirstTouchHolderRecoveryContext,
+) -> FirstTouchHolderRecoveryDescription {
+    let dispositions = conflicts
+        .iter()
+        .filter(|conflict| matches!(conflict.source, ClaimSource::FirstTouch))
+        .map(|conflict| {
+            let reservation_id = conflict.reservation_id;
+            format!(
+                "- Reservation `{reservation_id}`: `cargo-berth release {reservation_id}` once the work is on trunk, `cargo-berth resolve {reservation_id} --integrated-as <TRUNK_OID>` after that release when git cannot prove the integration, or `cargo-berth resolve {reservation_id} --abandon --why <WHY>` when the work was discarded."
+            )
+        })
+        .collect::<Vec<_>>();
+    let clearing_relationship = match context {
+        FirstTouchHolderRecoveryContext::Refusal => "An overlap answer does not clear one",
+        FirstTouchHolderRecoveryContext::Proposal => "The proposal does not clear one",
+    };
+    match dispositions.as_slice() {
+        [] => FirstTouchHolderRecoveryDescription::NotApplicable,
+        [_, ..] => FirstTouchHolderRecoveryDescription::Described(format!(
+            "A first-touch holder was acquired by whichever edit reached the paths first, so it may protect no work at all. {clearing_relationship}; these commands do, and they belong to the holder:\n\n{}\n\n`release` records the protected checkpoint and must run from the holder's own worktree. Both `resolve` dispositions run from anywhere but assert facts about the holder's work, so ask the holder before recording one.",
+            dispositions.join("\n")
+        )),
+    }
+}
+
+fn append_first_touch_holder_recovery_guidance(
+    sections: &mut Vec<String>,
+    conflicts: &[ReservationConflict],
+    context: FirstTouchHolderRecoveryContext,
+) {
+    match first_touch_holder_recovery_guidance(conflicts, context) {
+        FirstTouchHolderRecoveryDescription::NotApplicable => {},
+        FirstTouchHolderRecoveryDescription::Described(guidance) => sections.push(guidance),
+    }
+}
+
+/// Which claim document explains how a first-touch holder is cleared.
+#[derive(Clone, Copy)]
+enum FirstTouchHolderRecoveryContext {
+    /// A refusal presents overlap answers and holder recovery separately.
+    Refusal,
+    /// A proposal presents the selected answer without the refusal's answer menu.
+    Proposal,
 }
 
 /// Whether blocked first-touch holders need a disposition description.
@@ -2611,9 +3297,29 @@ fn message_with_session_mapping_publication(
 ) -> String {
     match publication {
         SessionIdentityMappingPublication::Published => message,
+        SessionIdentityMappingPublication::ExplicitSelectionAppliesOnlyToCurrentInvocation {
+            ..
+        } => format!(
+            "{message} The explicit reservation selection applies only to this invocation because no usable harness session id was supplied; name the reservation again on a later check."
+        ),
         SessionIdentityMappingPublication::Unavailable { diagnostic } => format!(
             "{message} The harness session mapping could not be published: {diagnostic}. Name the coordination run and reservation explicitly for later drift checks."
         ),
+    }
+}
+
+fn session_mapping_publication_presentation(
+    message: &str,
+    publication: &SessionIdentityMappingPublication,
+) -> EnvelopePresentation {
+    match publication {
+        SessionIdentityMappingPublication::Published => EnvelopePresentation::nothing_to_show(),
+        SessionIdentityMappingPublication::ExplicitSelectionAppliesOnlyToCurrentInvocation {
+            ..
+        }
+        | SessionIdentityMappingPublication::Unavailable { .. } => {
+            degraded_session_mapping_block(message).into()
+        },
     }
 }
 

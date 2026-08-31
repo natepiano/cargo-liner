@@ -14,6 +14,7 @@ use std::str::Utf8Error;
 #[cfg(not(unix))]
 use std::string::FromUtf8Error;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -41,7 +42,7 @@ use crate::ledger::WorktreeContext;
 use crate::reservation::Reservation;
 
 /// Whether the worktree that owns a retained reservation can be validated now.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorktreeLiveness {
     /// Git and the opaque identity validate the recorded holder.

@@ -15,18 +15,6 @@ macro_rules! declare_wire_enum {
             $($(#[$variant_metadata])* $variant,)+
         }
 
-        #[cfg(test)]
-        impl $name {
-            pub(crate) const ALL: &'static [Self] = &[
-                $(Self::$variant,)+
-            ];
-
-            pub(crate) const fn wire_name(self) -> &'static str {
-                match self {
-                    $(Self::$variant => $wire_name,)+
-                }
-            }
-        }
     };
 }
 
@@ -47,6 +35,7 @@ mod ledger;
 mod output;
 #[cfg(test)]
 mod output_contract;
+mod presentation;
 mod reconcile;
 mod recovery;
 mod reservation;

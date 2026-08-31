@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use permit::ForcedIntegrationPermitReplayError;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -184,7 +185,7 @@ pub(crate) enum IntegrationRequest {
 }
 
 /// A violation identifies the entering reservation and every hold that blocks it.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct IntegrationViolation {
     /// Facts needed to identify the reservation, plan, phase, and footprint.
     pub(crate) reservation:           IntegrationReservationFacts,

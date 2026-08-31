@@ -114,7 +114,7 @@ impl JournalEvent {
 }
 
 /// The durable identity of the actor that made a journal mutation.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct JournalActor {
     /// The clone-wide opaque repository identity.
     pub(crate) repository: RepoInstanceId,
@@ -262,8 +262,9 @@ fn recorded_json_string_contents_bytes(value: &str) -> usize {
 }
 
 /// The opaque UUID-v7 identity of one incursion incident.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct IncursionIncidentId(Uuid);
+#[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, PartialEq)]
+#[schemars(transparent)]
+pub(crate) struct IncursionIncidentId(#[schemars(with = "String")] Uuid);
 
 impl IncursionIncidentId {
     /// Create a new non-recyclable incident identity.
@@ -317,30 +318,9 @@ macro_rules! declare_journal_operations {
     (
         $(#[$enum_metadata:meta])*
         $visibility:vis enum $name:ident { $($variants:tt)* }
-        wire_names {
-            $($variant:ident => $wire_name:literal;)+
-        }
     ) => {
         $(#[$enum_metadata])*
         $visibility enum $name { $($variants)* }
-
-        #[cfg(test)]
-        impl $name {
-            pub(crate) const WIRE_VARIANTS: &'static [&'static str] = &[
-                $($wire_name,)+
-            ];
-
-            /// Return the operation's stable journal tag.
-            #[expect(
-                dead_code,
-                reason = "the generated-contract inventory keeps this exhaustive match as its drift gate"
-            )]
-            pub(crate) const fn wire_name(&self) -> &'static str {
-                match self {
-                    $(Self::$variant { .. } => $wire_name,)+
-                }
-            }
-        }
     };
 }
 
@@ -559,39 +539,19 @@ pub(crate) enum JournalOperation {
         current_root:   CanonicalWorktreeRoot,
     },
 }
-wire_names {
-    Claim => "claim";
-    Widen => "widen";
-    Checkpoint => "checkpoint";
-    Resnapshot => "resnapshot";
-    Renew => "renew";
-    Release => "release";
-    ReplaceReleaseDisposition => "replace_release_disposition";
-    EvidenceRevalidated => "evidence_revalidated";
-    ScopedPatchEquivalenceChecked => "scoped_patch_equivalence_checked";
-    ScopedPatchComparisonAttempted => "scoped_patch_comparison_attempted";
-    SuccessorScopedPatchEquivalenceChecked => "successor_scoped_patch_equivalence_checked";
-    SuccessorScopedPatchComparisonAttempted => "successor_scoped_patch_comparison_attempted";
-    ResolveDefer => "resolve_defer";
-    Incursion => "incursion";
-    ResolveIncursion => "resolve_incursion";
-    ForcedIntegrationPermit => "forced_integration_permit";
-    ConsumeForcedIntegrationPermit => "consume_forced_integration_permit";
-    Bypass => "bypass";
-    RebindWorktree => "rebind_worktree";
-    RelocateWorktree => "relocate_worktree";
-}
 }
 
 /// How a claim named the work it reserves.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ClaimSource {
     /// A reservation supplied by an external work-plan integration.
     WorkPlan {
         /// The plan's identifying path.
+        #[schemars(with = "String", length(min = 1))]
         plan:  WorkPlanReference,
         /// The plan-local opaque phase label.
+        #[schemars(with = "String", length(min = 1))]
         phase: WorkPlanPhase,
     },
     /// A reservation acquired atomically when an edit first touched its paths.
@@ -716,8 +676,9 @@ macro_rules! nonempty_claim_text {
         $error_message:literal
     ) => {
         #[doc = $documentation]
-        #[derive(Clone, Debug, Eq, PartialEq)]
-        pub(crate) struct $name(String);
+        #[derive(Clone, Debug, Eq, JsonSchema, PartialEq)]
+        #[schemars(transparent)]
+        pub(crate) struct $name(#[schemars(length(min = 1))] String);
 
         impl fmt::Display for $name {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -806,36 +767,40 @@ nonempty_claim_text!(
 );
 
 /// Whether the caller supplied an explanation for the protected work.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "explanation", rename_all = "snake_case")]
 pub(crate) enum ReservationPurpose {
     /// The caller supplied a non-empty explanation.
-    Explained(NonEmptyReservationPurpose),
+    Explained(#[schemars(with = "String", length(min = 1))] NonEmptyReservationPurpose),
     /// The caller omitted `--why`.
     NotProvidedByCaller,
 }
 
 /// The full branch reference and commit, or detached commit, observed at claim time.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ClaimHeadSnapshot {
     /// The worktree was attached to a branch.
     Branch {
         /// The full `refs/...` name, retained without short-name ambiguity.
+        #[schemars(with = "String", length(min = 1))]
         full_ref: FullRefName,
         /// The commit to which the branch resolved.
+        #[schemars(with = "String", length(min = 1))]
         head:     ClaimHeadCommit,
     },
     /// The worktree had a detached HEAD.
     Detached {
         /// The detached commit.
+        #[schemars(with = "String", length(min = 1))]
         head: ClaimHeadCommit,
     },
 }
 
 /// A non-empty full git reference name.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FullRefName(String);
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq)]
+#[schemars(transparent)]
+pub(crate) struct FullRefName(#[schemars(length(min = 1))] String);
 
 impl Display for FullRefName {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
@@ -910,7 +875,10 @@ impl Display for InvalidFullRefName {
 impl std::error::Error for InvalidFullRefName {}
 
 /// The declared file-versus-tree meaning of one reserved repository path.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[schemars(inline)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ScopeKind {
     /// Reserve exactly one path.
@@ -920,9 +888,11 @@ pub(crate) enum ScopeKind {
 }
 
 /// One repository path paired with its declared reservation semantics.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(transform = crate::output::closed_value_selects_object_shape)]
 pub(crate) struct ReservationScope {
     /// The normalized repository-relative path.
+    #[schemars(with = "String", length(min = 1))]
     pub(crate) path: ReservationScopePath,
     /// Whether the path denotes one file or a whole tree.
     pub(crate) kind: ScopeKind,
@@ -966,9 +936,9 @@ impl ReservationScope {
 }
 
 /// The non-empty atomic footprint protected by one reservation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
-pub(crate) struct ReservationScopeSet(Vec<ReservationScope>);
+pub(crate) struct ReservationScopeSet(#[schemars(length(min = 1))] Vec<ReservationScope>);
 
 impl ReservationScopeSet {
     /// Borrow the scopes without weakening the non-empty construction boundary.
@@ -1021,9 +991,9 @@ impl std::error::Error for EmptyReservationScopeSet {}
 macro_rules! nonempty_journal_set {
     ($name:ident, $item:ty, $error:ident, $documentation:literal, $error_message:literal) => {
         #[doc = $documentation]
-        #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+        #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
         #[serde(transparent)]
-        pub(crate) struct $name(Vec<$item>);
+        pub(crate) struct $name(#[schemars(length(min = 1))] Vec<$item>);
 
         impl $name {
             #[doc = concat!("Borrow the values in this `", stringify!($name), "`.")]
@@ -1238,7 +1208,7 @@ impl Display for InvalidWorktreeAdministrativeLocator {
 impl std::error::Error for InvalidWorktreeAdministrativeLocator {}
 
 /// Why an existing reservation received more scopes.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum WidenCause {
     /// Reconciliation observed paths not covered by the claim.
@@ -1251,7 +1221,7 @@ pub(crate) enum WidenCause {
 }
 
 /// The ordering direction selected for two conflicting reservations.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum OrderingDirection {
     /// The requesting reservation must integrate before the holder.
@@ -1407,9 +1377,9 @@ pub(crate) enum BypassRecording {
 }
 
 /// A stable pending-bypass identity derived from its unique filename.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
-pub(crate) struct PendingBypassMarkerId(String);
+pub(crate) struct PendingBypassMarkerId(#[schemars(length(min = 1))] String);
 
 impl PendingBypassMarkerId {
     /// Retain a marker filename as its non-recycled import identity.
@@ -1420,7 +1390,7 @@ impl PendingBypassMarkerId {
 }
 
 /// One ordering relationship deliberately skipped by a forced integration.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct SkippedOrderingEdge {
     /// The durable relationship that remained holding when the permit was issued.
     pub(crate) edge_id:     EdgeId,
@@ -1429,7 +1399,7 @@ pub(crate) struct SkippedOrderingEdge {
 }
 
 /// One unresolved symmetric deferral deliberately skipped by a forced integration.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct SkippedDeferral {
     /// The claim event that first recorded the unresolved deferral.
     pub(crate) declaration_event_id: EventId,
@@ -1440,7 +1410,7 @@ pub(crate) struct SkippedDeferral {
 }
 
 /// A non-empty set of integration holds authorized for one forced update.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum SkippedIntegrationHoldSet {
     /// One or more ordering edges, with no unresolved deferral.

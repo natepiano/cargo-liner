@@ -14,6 +14,7 @@ pub(crate) use graph::EdgeDeclarationRejection;
 pub(crate) use graph::EdgeReplayError;
 pub(crate) use graph::OrderingGraph;
 pub(crate) use graph::PreparedOrderingEdge;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 pub(crate) use snapshot::MissingReadinessFact;
@@ -41,9 +42,10 @@ use crate::scope::ReservationScope;
 use crate::scope::ReservationScopeSet;
 
 /// Why one reservation was declared to precede another.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(transparent)]
 #[serde(transparent)]
-pub(crate) struct OrderingReason(String);
+pub(crate) struct OrderingReason(#[schemars(length(min = 1))] String);
 
 impl FromStr for OrderingReason {
     type Err = EmptyOrderingReason;
@@ -80,7 +82,7 @@ impl From<&OverlapAuthorizationReason> for OrderingReason {
 }
 
 /// A validated non-empty set of paths covered by one ordering edge.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
 struct OrderingOverlapScopeSet(ReservationScopeSet);
 
@@ -120,7 +122,7 @@ impl OrderingOverlapScopeSet {
 }
 
 /// Whether an edge was born with an acquisition or resolved a prior deferral.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EdgeDeclaration {
     /// A claim or widen carried the ordering decision itself.
@@ -130,7 +132,7 @@ pub(crate) enum EdgeDeclaration {
 }
 
 /// One persistent ordering relationship reconstructed from journal truth.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct OrderingEdge {
     /// The stable relationship identity rendered and referenced by later facts.
     pub(crate) edge_id:   EdgeId,
@@ -212,7 +214,7 @@ pub(crate) enum IntegrationDeferralStatus {
 }
 
 /// Reservation material shared by the trunk gate and the later board renderer.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct IntegrationReservationFacts {
     /// The reservation these facts describe.
     pub(crate) reservation_id: ReservationId,
@@ -231,7 +233,7 @@ pub(crate) struct IntegrationReservationFacts {
 }
 
 /// The commit identity available for matching a reservation to a proposed ref update.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum IntegrationSubject {
     /// This commit is the reservation's current integration subject.
@@ -243,7 +245,7 @@ pub(crate) enum IntegrationSubject {
 }
 
 /// A directed edge or symmetric deferral that currently prevents integration.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum IntegrationHold {
     /// A derived ordering edge still holds its successor.
@@ -392,7 +394,7 @@ impl OrderingEdge {
 }
 
 /// The derived state of one ordering edge at a repository snapshot.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(crate) enum EdgeReadiness {
     /// The edge still prevents its successor from integrating.
@@ -407,7 +409,7 @@ pub(crate) enum EdgeReadiness {
 }
 
 /// Why an ordering edge still holds its successor back.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub(crate) enum EdgeHold {
     /// The predecessor has no protected checkpoint to be reachable from.
@@ -422,7 +424,7 @@ pub(crate) enum EdgeHold {
 }
 
 /// Why current trunk does not prove a predecessor's protected evidence.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum UnintegratedPredecessorEvidence {
     /// Trunk does not contain the protected tip yet; wait for it to land.

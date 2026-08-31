@@ -25,7 +25,7 @@ macro_rules! uuid_identifier {
         #[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, PartialEq)]
         #[schemars(rename = "uuid_v7_identifier")]
         #[schemars(transparent)]
-        pub(crate) struct $name(#[schemars(with = "String")] Uuid);
+        pub(crate) struct $name(#[schemars(with = "String", length(min = 1))] Uuid);
 
         impl fmt::Display for $name {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -178,8 +178,9 @@ const SHA1_OBJECT_ID_CHARACTERS: usize = 40;
 const SHA256_OBJECT_ID_CHARACTERS: usize = 64;
 
 /// A full lowercase hexadecimal git object identifier in either object format.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct GitObjectId(String);
+#[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq)]
+#[schemars(transparent)]
+pub(crate) struct GitObjectId(#[schemars(length(min = 1))] String);
 
 impl Display for GitObjectId {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
@@ -228,8 +229,9 @@ impl<'de> Deserialize<'de> for GitObjectId {
 }
 
 /// A non-empty path whose components remain within the repository root.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct ReservationScopePath(String);
+#[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq)]
+#[schemars(transparent)]
+pub(crate) struct ReservationScopePath(#[schemars(length(min = 1))] String);
 
 impl Display for ReservationScopePath {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
@@ -335,8 +337,9 @@ impl<'de> Deserialize<'de> for WorkPlanPhase {
 }
 
 /// An RFC 3339 UTC timestamp with millisecond precision.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RecordedAt(String);
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq)]
+#[schemars(transparent)]
+pub(crate) struct RecordedAt(#[schemars(length(min = 1))] String);
 
 impl RecordedAt {
     /// Capture the current UTC time in the journal's stable wire representation.

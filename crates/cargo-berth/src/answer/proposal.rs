@@ -5,6 +5,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::str::FromStr;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -40,7 +41,7 @@ pub(crate) struct PermissiveOverlapAuthorizationRequest {
 }
 
 /// One of the three overlap answers that permits concurrent editing.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum PermissiveOverlapAnswer {
     /// Declare an integration order between requester and named blocker.
@@ -72,12 +73,12 @@ pub(crate) enum OverlapProposalSubmission {
 }
 
 /// Why a user approved one specific overlap answer.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
-pub(crate) struct OverlapAuthorizationReason(String);
+pub(crate) struct OverlapAuthorizationReason(#[schemars(length(min = 1))] String);
 
 /// The requester's coordination identity included in an overlap proposal.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(
     tag = "status",
     content = "coordination_run_id",
@@ -91,7 +92,7 @@ pub(crate) enum RequesterCoordinationIdentity {
 }
 
 /// The requester identity included in a proposal but not repeated in the journal answer.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct OverlapRequester {
     /// The coordination identity the caller actually presented.
     coordination_identity: RequesterCoordinationIdentity,
@@ -104,7 +105,7 @@ pub(crate) struct OverlapRequester {
 }
 
 /// The complete locked conflict observation to which an answer is bound.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct OverlapProposal {
     /// The actor whose candidate reservation does not exist yet.
     requester:            OverlapRequester,
@@ -123,9 +124,10 @@ pub(crate) struct OverlapProposal {
 pub(crate) struct OverlapProposalToken(OverlapProposal);
 
 /// The complete material returned before a permissive answer can be applied.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct OverlapEscalationPayload {
     /// Every holder and provenance record involved in the conflict.
+    #[schemars(length(min = 1))]
     pub(crate) conflicts:            Vec<ReservationConflict>,
     /// The requested answer and ordering direction, if any.
     pub(crate) answer:               PermissiveOverlapAnswer,
@@ -136,11 +138,12 @@ pub(crate) struct OverlapEscalationPayload {
     /// The exact current proposal material.
     proposal:                        OverlapProposal,
     /// The token required on the applying invocation.
+    #[schemars(with = "String", length(min = 1))]
     pub(crate) proposal_token:       OverlapProposalToken,
 }
 
 /// The integration effect attached to an overlap escalation.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum OverlapAnswerConsequence {
     /// Editing proceeds and the declared requester/holder order constrains integration.

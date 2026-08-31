@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use super::claim;
+use super::claim::CheckReservationSelection;
 use super::claim::ClaimError;
 use super::claim::FirstTouchClaimExecution;
 use super::claim::FirstTouchClaimRequest;
@@ -32,7 +33,9 @@ use crate::scope::ReservationScopeSet;
 /// A parsed edit check with lexically valid requested paths.
 pub(crate) struct CheckRequest {
     /// The exact paths the edit operation proposes to modify.
-    pub(crate) declared_scopes: DeclaredReservationScopeSet,
+    pub(crate) declared_scopes:       DeclaredReservationScopeSet,
+    /// How locked first-touch validation selects the reservation to continue.
+    pub(crate) reservation_selection: CheckReservationSelection,
 }
 
 struct CheckDecision {
@@ -96,6 +99,7 @@ pub(crate) fn execute(
     if first_decision.conflicts.is_empty() {
         return match acquire_first_touch(
             check_request.declared_scopes.clone(),
+            check_request.reservation_selection,
             recovery_command_line,
         ) {
             Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { conflicts, .. })) => {
@@ -104,6 +108,7 @@ pub(crate) fn execute(
                     check_request.declared_scopes,
                     first_decision.scopes,
                     conflicts,
+                    check_request.reservation_selection,
                     recovery_command_line,
                 )
             },
@@ -115,6 +120,7 @@ pub(crate) fn execute(
         check_request.declared_scopes,
         first_decision.scopes,
         first_decision.conflicts,
+        check_request.reservation_selection,
         recovery_command_line,
     )
 }
@@ -124,6 +130,7 @@ fn reconcile_and_retry(
     declared_scopes: DeclaredReservationScopeSet,
     fallback_scopes: ReservationScopeSet,
     fallback_conflicts: Vec<ReservationConflict>,
+    reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
 ) -> OutputEnvelope {
     let reconciliation_report =
@@ -160,8 +167,12 @@ fn reconcile_and_retry(
         },
     };
     if retried_decision.conflicts.is_empty() {
-        render_acquisition(acquire_first_touch(declared_scopes, recovery_command_line))
-            .with_alerts(reconciliation_report.alerts)
+        render_acquisition(acquire_first_touch(
+            declared_scopes,
+            reservation_selection,
+            recovery_command_line,
+        ))
+        .with_alerts(reconciliation_report.alerts)
     } else {
         OutputEnvelope::blocked_check(retried_decision.scopes, retried_decision.conflicts)
             .with_alerts(reconciliation_report.alerts)
@@ -170,13 +181,15 @@ fn reconcile_and_retry(
 
 fn acquire_first_touch(
     declared_scopes: DeclaredReservationScopeSet,
+    reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
-    claim::acquire_first_touch(
+    claim::acquire_first_touch_for_check(
         FirstTouchClaimRequest {
             declared_scopes,
             conflict_handling: FirstTouchConflictHandling::RefuseRequest,
         },
+        reservation_selection,
         recovery_command_line,
     )
 }

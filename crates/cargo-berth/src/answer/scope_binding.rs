@@ -5,6 +5,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -15,17 +16,17 @@ use crate::scope::ReservationScope;
 use crate::scope::ReservationScopeSet;
 
 /// A deterministic revision that changes only when a reservation's scopes change.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
-pub(crate) struct OverlapScopeRevision(Vec<ReservationScope>);
+pub(crate) struct OverlapScopeRevision(#[schemars(length(min = 1))] Vec<ReservationScope>);
 
 /// The non-empty normalized scopes covered for one holder.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct AuthorizedOverlapScopeSet(ReservationScopeSet);
 
 /// One exact holder and scope revision covered by an authorization.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct AuthorizedOverlap {
     /// The existing holder named by the authorization.
     pub(crate) reservation_id: ReservationId,
@@ -36,9 +37,9 @@ pub(crate) struct AuthorizedOverlap {
 }
 
 /// A non-empty set of holder-specific overlap bindings.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
-pub(crate) struct AuthorizedOverlapSet(Vec<AuthorizedOverlap>);
+pub(crate) struct AuthorizedOverlapSet(#[schemars(length(min = 1))] Vec<AuthorizedOverlap>);
 
 impl From<&ReservationScopeSet> for OverlapScopeRevision {
     fn from(scopes: &ReservationScopeSet) -> Self {

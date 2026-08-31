@@ -5,6 +5,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -22,7 +23,7 @@ use crate::scope::ReservationScopeSet;
 use crate::verb::claim::FirstTouchReservationAcquisition;
 
 /// The comparison algorithm that actually produced one report.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum DriftComparisonMode {
     /// A valid cache enabled the two-command delta.
@@ -34,7 +35,7 @@ pub(super) enum DriftComparisonMode {
 }
 
 /// One complete drift report, possibly covering several commit-hook subjects.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct DriftReport {
     /// The comparison that actually ran.
     pub(super) comparison:       DriftComparisonMode,
@@ -112,7 +113,7 @@ impl DriftReport {
 }
 
 /// The outcome of attributing changed paths outside the acting run's reservations.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum DriftPathAttributionOutcome {
     /// This observation found no unclaimed path requiring attribution.
@@ -155,7 +156,7 @@ pub(crate) enum DriftPathAttributionOutcome {
 }
 
 /// The protection result for free paths observed alongside a post-write incursion.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum PostWriteFreePathProtection {
     /// Every observed path had a foreign holder, so no reservation changed.
@@ -170,7 +171,7 @@ pub(crate) enum PostWriteFreePathProtection {
 }
 
 /// The drift result for one selected reservation.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ReservationDriftResult {
     /// No path requires a consequence because every changed path is already
@@ -240,7 +241,7 @@ impl ReservationDriftResult {
 }
 
 /// One non-empty consequence of classifying observed paths.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum DriftEffect {
     /// Unreserved file paths were added to the reservation.
@@ -272,7 +273,7 @@ pub(crate) enum DriftEffect {
 }
 
 /// One commit in a reservation's phase range that introduced entered paths.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct IncursionCommit {
     /// The commit that introduced the paths below.
     pub(crate) commit:  GitObjectId,
@@ -286,7 +287,7 @@ pub(crate) struct IncursionCommit {
 
 declare_wire_enum! {
     /// Where a commit behind an entered path came from.
-    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
     #[serde(rename_all = "snake_case")]
     pub(crate) enum IncursionCommitOrigin {
         /// Trunk does not carry the commit, so this phase authored it.
@@ -299,9 +300,9 @@ declare_wire_enum! {
 }
 
 /// A non-empty set of consequences for one reservation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
-pub(crate) struct DriftEffectSet(Vec<DriftEffect>);
+pub(crate) struct DriftEffectSet(#[schemars(length(min = 1))] Vec<DriftEffect>);
 
 impl DriftEffectSet {
     /// Borrow the effects without weakening the non-empty construction boundary.
@@ -350,9 +351,9 @@ impl Error for EmptyDriftEffectSet {}
 macro_rules! nonempty_drift_set {
     ($name:ident, $item:ty, $error:ident, $documentation:literal, $message:literal) => {
         #[doc = $documentation]
-        #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+        #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
         #[serde(transparent)]
-        pub(crate) struct $name(Vec<$item>);
+        pub(crate) struct $name(#[schemars(length(min = 1))] Vec<$item>);
 
         impl $name {
             #[doc = concat!("Borrow the values in this `", stringify!($name), "`.")]

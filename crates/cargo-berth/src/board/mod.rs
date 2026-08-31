@@ -10,6 +10,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -68,6 +69,14 @@ use crate::ledger::SkippedDeferral;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::ledger::SkippedOrderingEdge;
 use crate::ledger::WidenCause;
+use crate::presentation::EnvelopePresentation;
+use crate::presentation::IncursionResolutionGuidance;
+use crate::presentation::RenderedOutputBlock;
+use crate::presentation::actionable_board_notices_block;
+use crate::presentation::engine_message_block;
+use crate::presentation::orphaned_outstanding_block;
+use crate::presentation::outstanding_board_incursion_block;
+use crate::presentation::recovered_bypass_block;
 use crate::reconcile::ReconciliationGitCost;
 use crate::reconcile::ReconciliationReport;
 use crate::reservation::EditBlockingStatus;
@@ -87,7 +96,7 @@ use crate::worktree::WorktreeHead;
 use crate::worktree::WorktreeLiveness;
 
 /// One complete, terminal-independent board assembled from a coherent locked replay.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct BoardModel {
     journal_position:                   BoardJournalPosition,
     recovered_bypasses_this_invocation: RecoveredBypassesThisInvocation,
@@ -107,6 +116,82 @@ pub(crate) struct BoardModel {
     git_cost:                           BoardGitCost,
 }
 
+/// Whether the complete board has retained facts beyond its journal position and read cost.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoardReportContent {
+    Empty,
+    Populated,
+}
+
+/// User-facing complete-board sections, named as the text report presents them.
+#[derive(Serialize)]
+struct CompleteBoardReport<'board> {
+    #[serde(rename = "Journal position")]
+    journal_position:                   &'board BoardJournalPosition,
+    #[serde(rename = "Recovered bypasses this invocation")]
+    recovered_bypasses_this_invocation: &'board RecoveredBypassesThisInvocation,
+    #[serde(rename = "Integration order")]
+    integration_order:                  &'board IntegrationOrderDeclaration,
+    #[serde(rename = "Ready now")]
+    ready_now:                          &'board BoardSection<ReadyReservation>,
+    #[serde(rename = "Waiting")]
+    waiting:                            &'board BoardSection<WaitingConstraint>,
+    #[serde(rename = "Settled ordering constraints")]
+    settled_ordering_constraints:       &'board BoardSection<SettledOrderingConstraint>,
+    #[serde(rename = "Unresolved overlaps")]
+    unresolved_overlaps:                &'board BoardSection<UnresolvedOverlap>,
+    #[serde(rename = "Recorded overlap answers")]
+    recorded_overlap_answers:           &'board BoardSection<RecordedAnswer>,
+    #[serde(rename = "Unconstrained reservations")]
+    unconstrained_reservations:         &'board BoardSection<BoardReservationSnapshot>,
+    #[serde(rename = "Resolved reservations")]
+    resolved_reservations:              &'board BoardSection<BoardReservationSnapshot>,
+    #[serde(rename = "Available forced permits")]
+    available_forced_permits:           &'board BoardSection<AvailableForcedPermit>,
+    #[serde(rename = "Bypass audit")]
+    bypass_audit:                       &'board BoardSection<BypassAuditEntry>,
+    #[serde(rename = "Outstanding incursions")]
+    outstanding_incursions:             &'board BoardSection<OutstandingIncursion>,
+    #[serde(rename = "Recorded incursion answers")]
+    recorded_incursion_answers:         &'board BoardSection<RecordedIncursionAnswer>,
+    #[serde(rename = "Alerts")]
+    alerts:                             &'board BoardSection<BoardAlert>,
+    #[serde(rename = "Git cost")]
+    git_cost:                           &'board BoardGitCost,
+}
+
+impl<'board> From<&'board BoardModel> for CompleteBoardReport<'board> {
+    fn from(board: &'board BoardModel) -> Self {
+        Self {
+            journal_position:                   &board.journal_position,
+            recovered_bypasses_this_invocation: &board.recovered_bypasses_this_invocation,
+            integration_order:                  &board.integration_order,
+            ready_now:                          &board.ready_now,
+            waiting:                            &board.waiting,
+            settled_ordering_constraints:       &board.settled_ordering_constraints,
+            unresolved_overlaps:                &board.unresolved_overlaps,
+            recorded_overlap_answers:           &board.recorded_overlap_answers,
+            unconstrained_reservations:         &board.unconstrained_reservations,
+            resolved_reservations:              &board.resolved,
+            available_forced_permits:           &board.available_forced_permits,
+            bypass_audit:                       &board.bypass_audit,
+            outstanding_incursions:             &board.outstanding_incursions,
+            recorded_incursion_answers:         &board.recorded_incursion_answers,
+            alerts:                             &board.alerts,
+            git_cost:                           &board.git_cost,
+        }
+    }
+}
+
+/// One reservation's placement-independent lifecycle report.
+#[derive(Serialize)]
+struct ReservationLifecycleReport<'lifecycle> {
+    #[serde(rename = "Reservation")]
+    reservation_id: ReservationId,
+    #[serde(rename = "Lifecycle")]
+    lifecycle:      &'lifecycle ReservationLifecycleSnapshot,
+}
+
 /// Exclusive live-board membership for one drift-reported incursion incident.
 pub(crate) enum LiveIncursionMembership {
     /// The incident remains outstanding and still requires feedback.
@@ -117,31 +202,31 @@ pub(crate) enum LiveIncursionMembership {
     Unverifiable,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct BoardJournalPosition {
     generation:          ProjectionGeneration,
     journal_byte_offset: JournalByteOffset,
 }
 
 /// Pending bypass markers whose durable recovery completed during this board invocation.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
 struct RecoveredBypassesThisInvocation(Vec<PendingBypassMarkerId>);
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct BoardSection<Entry> {
     journal_position: BoardJournalPosition,
     entries:          Vec<Entry>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum IntegrationOrderDeclaration {
     Undeclared,
     ConstraintsRecorded,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct BoardReservationSnapshot {
     reservation_id:       ReservationId,
     holder:               ReservationHolder,
@@ -156,7 +241,7 @@ struct BoardReservationSnapshot {
     ahead_behind_main:    AheadBehind,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct ReservationHolder {
     worktree_id:   WorktreeId,
     worktree_root: CanonicalWorktreeRoot,
@@ -164,14 +249,14 @@ struct ReservationHolder {
     liveness:      WorktreeLiveness,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum HolderBranch {
     Attached { reference: FullRefName },
     Detached { head: GitObjectId },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum BoardIntegrationEvidence {
     ActiveWork,
@@ -180,7 +265,7 @@ enum BoardIntegrationEvidence {
 }
 
 /// Where one retained reservation belongs on the board.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum BoardReservationVisibility {
     /// Live or outstanding work still participates in active constraints.
@@ -191,19 +276,19 @@ enum BoardReservationVisibility {
     ResolvedAudit,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct ReadyReservation {
     relation:    ReadinessTie,
     reservation: BoardReservationSnapshot,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ReadinessTie {
     Unordered,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct WaitingConstraint {
     edge_id:              EdgeId,
     predecessor:          ReservationId,
@@ -215,7 +300,7 @@ struct WaitingConstraint {
     declaration_event_id: EventId,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 enum WaitingAction {
     PredecessorCheckpoint {
@@ -236,7 +321,7 @@ enum WaitingAction {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct SettledOrderingConstraint {
     edge_id:              EdgeId,
     predecessor:          ReservationId,
@@ -248,7 +333,7 @@ struct SettledOrderingConstraint {
     declaration_event_id: EventId,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum EdgeSettlement {
     CancelledConstraintEnded,
@@ -256,7 +341,7 @@ enum EdgeSettlement {
     SuccessorNoLongerActive,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct UnresolvedOverlap {
     declaration_event_id: EventId,
     deferred:             ReservationId,
@@ -266,13 +351,13 @@ struct UnresolvedOverlap {
     consequence:          SymmetricDeferralConsequence,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum SymmetricDeferralConsequence {
     BothIntegrationsHeldUntilSequence,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "answer", rename_all = "snake_case")]
 enum RecordedAnswer {
     Sequence {
@@ -326,7 +411,7 @@ enum RecordedAnswer {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "origin", rename_all = "snake_case")]
 enum AnswerAcquisition {
     Claim,
@@ -337,7 +422,7 @@ enum AnswerAcquisition {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum OrderingConsequence {
     Holding { action: WaitingAction },
@@ -345,19 +430,19 @@ enum OrderingConsequence {
     Fulfilled,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum OverrideConsequence {
     EditingAuthorizedWithoutIntegrationOrder,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum RevalidationConsequence {
     ExistingAnswersStillCoverWidenedScopesNoNewEdge,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct AvailableForcedPermit {
     permit_id:      ForcedIntegrationPermitId,
     reservation_id: ReservationId,
@@ -366,7 +451,7 @@ struct AvailableForcedPermit {
     instruction:    String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum BypassAuditEntry {
     ForcedOrderingEdges {
@@ -396,20 +481,20 @@ enum BypassAuditEntry {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum BoardBypassTime {
     Known { at: RecordedAt },
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum UnrecordedSkippedHolds {
     OverridePrecededLedgerRead,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct OutstandingIncursion {
     incident_id:             IncursionIncidentId,
     straying_reservation_id: ReservationId,
@@ -423,7 +508,7 @@ struct OutstandingIncursion {
     resolution:              IncursionResolutionAction,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct IncursionResolutionAction {
     reservation_id: ReservationId,
     incident_id:    IncursionIncidentId,
@@ -432,7 +517,7 @@ struct IncursionResolutionAction {
     every_flag:     String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct RecordedIncursionAnswer {
     incident_id:             IncursionIncidentId,
     straying_reservation_id: ReservationId,
@@ -442,7 +527,7 @@ struct RecordedIncursionAnswer {
     resolved_at:             RecordedAt,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum BoardAlert {
     LostIntegrationEvidence {
@@ -473,7 +558,7 @@ enum BoardAlert {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum BoardBranchRefStatus {
     Present {
@@ -486,11 +571,11 @@ enum BoardBranchRefStatus {
     Detached,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
-struct ReservationRetentionRef(String);
+struct ReservationRetentionRef(#[schemars(length(min = 1))] String);
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum BoardRetentionRefStatus {
     Present {
@@ -505,27 +590,27 @@ enum BoardRetentionRefStatus {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum OrphanResolutionAction {
     Recover { flag: String },
     RetireOrAbandon { flags: Vec<String> },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum StaleReservationResolutionAction {
     Renew { reservation_id: ReservationId },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum OrphanRecoveryConsequence {
     WorkRecoverable,
     CommitsLost,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct BoardGitCost {
     trunk_resolution_calls:                 u64,
     worktree_list_calls:                    u64,
@@ -556,6 +641,84 @@ impl BoardModel {
             (false, true) => LiveIncursionMembership::Recorded,
             (false, false) | (true, true) => LiveIncursionMembership::Unverifiable,
         }
+    }
+
+    /// Render the complete board and every actionable notice without payload interpretation.
+    pub(crate) fn envelope_presentation(&self) -> EnvelopePresentation {
+        let mut blocks = self.actionable_notice_blocks();
+        match self.report_content() {
+            BoardReportContent::Empty => {},
+            BoardReportContent::Populated => blocks.push(self.complete_report_block()),
+        }
+        EnvelopePresentation::RenderedBlocks { blocks }
+    }
+
+    fn actionable_notice_blocks(&self) -> Vec<RenderedOutputBlock> {
+        let mut immediate_stop_details = self
+            .outstanding_incursions
+            .entries
+            .iter()
+            .map(outstanding_incursion_detail)
+            .collect::<Vec<_>>();
+        let actionable_notice_details = self
+            .recovered_bypasses_this_invocation
+            .0
+            .iter()
+            .map(PendingBypassMarkerId::file_name)
+            .map(recovered_bypass_block)
+            .chain(self.alerts.entries.iter().map(board_alert_detail))
+            .collect::<Vec<_>>();
+        if immediate_stop_details.is_empty() {
+            return match actionable_notice_details.as_slice() {
+                [] => Vec::new(),
+                [_, ..] => vec![actionable_board_notices_block(&actionable_notice_details)],
+            };
+        }
+        immediate_stop_details.extend(actionable_notice_details);
+        vec![engine_message_block(
+            "cargo-berth detected drift that requires an immediate stop.",
+            &immediate_stop_details.join("\n"),
+        )]
+    }
+
+    fn report_content(&self) -> BoardReportContent {
+        if self.recovered_bypasses_this_invocation.0.is_empty()
+            && self.integration_order == IntegrationOrderDeclaration::Undeclared
+            && self.ready_now.entries.is_empty()
+            && self.waiting.entries.is_empty()
+            && self.settled_ordering_constraints.entries.is_empty()
+            && self.unresolved_overlaps.entries.is_empty()
+            && self.recorded_overlap_answers.entries.is_empty()
+            && self.unconstrained_reservations.entries.is_empty()
+            && self.resolved.entries.is_empty()
+            && self.available_forced_permits.entries.is_empty()
+            && self.bypass_audit.entries.is_empty()
+            && self.outstanding_incursions.entries.is_empty()
+            && self.recorded_incursion_answers.entries.is_empty()
+            && self.alerts.entries.is_empty()
+        {
+            BoardReportContent::Empty
+        } else {
+            BoardReportContent::Populated
+        }
+    }
+
+    fn complete_report_block(&self) -> RenderedOutputBlock {
+        let complete_board_report = CompleteBoardReport::from(self);
+        serde_json::to_string_pretty(&complete_board_report).map_or_else(
+            |error| {
+                engine_message_block(
+                    "cargo-berth could not render the reservation board report.",
+                    &format!("BOARD REPORT SERIALIZATION FAILED: {error}"),
+                )
+            },
+            |detail| {
+                engine_message_block(
+                    "cargo-berth read the complete reservation board report.",
+                    &detail,
+                )
+            },
+        )
     }
 
     /// Project the reconciled repository observation and its exact locked journal replay.
@@ -783,6 +946,139 @@ impl BoardModel {
             .iter()
             .map(PendingBypassMarkerId::file_name)
     }
+}
+
+fn outstanding_incursion_detail(incursion: &OutstandingIncursion) -> String {
+    let entered_paths = incursion
+        .entered_paths
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let foreign_reservation_ids = incursion
+        .foreign_reservation_ids
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    outstanding_board_incursion_block(
+        &incursion.straying_reservation_id.to_string(),
+        &entered_paths,
+        &foreign_reservation_ids,
+        &incursion.incident_id.to_string(),
+        &IncursionResolutionGuidance {
+            outstanding_count: incursion.outstanding_count,
+            incident_action:   &incursion.resolution.flag,
+            every_action:      &incursion.resolution.every_flag,
+        },
+    )
+}
+
+fn board_alert_detail(alert: &BoardAlert) -> String {
+    match alert {
+        BoardAlert::LostIntegrationEvidence {
+            reservation_id,
+            protected_tip,
+            recovery,
+            ..
+        } => lost_integration_evidence_detail(*reservation_id, protected_tip, recovery),
+        BoardAlert::OrphanedOutstanding {
+            reservation_id,
+            protected_tip,
+            recoverability,
+            resolution,
+            ..
+        } => {
+            orphaned_outstanding_detail(*reservation_id, protected_tip, *recoverability, resolution)
+        },
+        BoardAlert::StaleReservation {
+            reservation_id,
+            freshness,
+            ..
+        } => format!(
+            "STALE RESERVATION: reservation {reservation_id} has freshness {freshness:?}. Renew it with `cargo-berth renew {reservation_id}` after confirming its work is active."
+        ),
+        BoardAlert::UnrecordedBypasses {
+            count, instruction, ..
+        } => format!(
+            "UNRECORDED BYPASSES: {count} bypass occurrence(s) still await durable journal audit; {instruction}."
+        ),
+    }
+}
+
+fn lost_integration_evidence_detail(
+    reservation_id: ReservationId,
+    protected_tip: &ProtectedReservationTip,
+    recovery: &LostEvidenceRecovery,
+) -> String {
+    match recovery {
+        LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. } => format!(
+            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but trunk {trunk_oid} no longer proves protected tip {protected_tip}. If trunk {trunk_oid} contains the released work, run `cargo-berth resolve {reservation_id} --integrated-as {trunk_oid}`. Otherwise restore the work first. Inspect `cargo-berth board --json`."
+        ),
+        LostEvidenceRecovery::ResolveTrunkFirst { .. } => format!(
+            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, and trunk does not currently resolve to a known object, so protected tip {protected_tip} cannot be proved either way. Resolve trunk first, then rerun. Inspect `cargo-berth board --json`."
+        ),
+    }
+}
+
+fn orphaned_outstanding_detail(
+    reservation_id: ReservationId,
+    protected_tip: &ProtectedReservationTip,
+    recoverability: RecoverabilityVerdict,
+    resolution: &OrphanResolutionAction,
+) -> String {
+    let recoverability = match recoverability {
+        RecoverabilityVerdict::RecoverableFromBranch => "recoverable_from_branch",
+        RecoverabilityVerdict::RecoverableFromProtectedTip => "recoverable_from_protected_tip",
+        RecoverabilityVerdict::CommitUnavailable => "commit_unavailable",
+    };
+    let recovery_commands = match resolution {
+        OrphanResolutionAction::Recover { flag } => {
+            vec![reservation_resolution_command(flag, reservation_id)]
+        },
+        OrphanResolutionAction::RetireOrAbandon { flags } => flags
+            .iter()
+            .map(|flag| reservation_resolution_command(flag, reservation_id))
+            .collect(),
+    };
+    orphaned_outstanding_block(
+        &reservation_id.to_string(),
+        &protected_tip.to_string(),
+        recoverability,
+        &recovery_commands,
+    )
+}
+
+fn reservation_resolution_command(flag: &str, reservation_id: ReservationId) -> String {
+    flag.strip_prefix("resolve").map_or_else(
+        || format!("resolve {reservation_id} {flag}"),
+        |arguments| format!("resolve {reservation_id}{arguments}"),
+    )
+}
+
+/// Render one retained reservation's lifecycle without restating the complete board.
+pub(crate) fn reservation_lifecycle_presentation(
+    reservation_id: ReservationId,
+    reservation_lifecycle_snapshot: &ReservationLifecycleSnapshot,
+) -> EnvelopePresentation {
+    let reservation_lifecycle_report = ReservationLifecycleReport {
+        reservation_id,
+        lifecycle: reservation_lifecycle_snapshot,
+    };
+    serde_json::to_string_pretty(&reservation_lifecycle_report).map_or_else(
+        |error| {
+            engine_message_block(
+                "cargo-berth could not render the reservation lifecycle report.",
+                &format!("RESERVATION LIFECYCLE SERIALIZATION FAILED: {error}"),
+            )
+            .into()
+        },
+        |detail| {
+            engine_message_block(
+                &format!("cargo-berth read reservation {reservation_id} lifecycle."),
+                &detail,
+            )
+            .into()
+        },
+    )
 }
 
 /// Read one retained reservation independently of its complete-board placement.

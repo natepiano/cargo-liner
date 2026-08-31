@@ -374,7 +374,7 @@ pub(crate) struct Reservation {
 }
 
 /// Whether a holder has explicitly demonstrated recent reservation activity.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ReservationFreshness {
     /// A claim, widen, renew, or checkpoint occurred inside the freshness window.
@@ -384,13 +384,19 @@ pub(crate) enum ReservationFreshness {
 }
 
 /// Whether a conflicting holder is still recording coordination activity.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum ReservationHolderActivity {
     /// The holder recorded a claim, widen, renew, or checkpoint inside the freshness window.
-    Active { last_activity_at: RecordedAt },
+    Active {
+        #[schemars(with = "String", length(min = 1))]
+        last_activity_at: RecordedAt,
+    },
     /// The holder has gone quiet beyond the freshness window.
-    Quiet { last_activity_at: RecordedAt },
+    Quiet {
+        #[schemars(with = "String", length(min = 1))]
+        last_activity_at: RecordedAt,
+    },
 }
 
 impl From<ReservationFreshness> for ReservationHolderActivity {
@@ -577,13 +583,14 @@ impl From<ReservationEvidenceState> for ReservationLifecycleSnapshot {
 }
 
 /// One foreign holder whose retained reservation intersects requested scopes.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct ReservationConflict {
     /// The durable reservation that holds the overlapping paths.
     pub(crate) reservation_id:         ReservationId,
     /// The holder revision against which the overlap was evaluated.
     reservation_revision:              ReservationRevision,
     /// The holder revision that changes only when its scopes change.
+    #[schemars(with = "Vec<ReservationScope>", length(min = 1))]
     pub(crate) overlap_scope_revision: OverlapScopeRevision,
     /// The worktree identity that acquired the reservation.
     holder_worktree_id:                WorktreeId,
@@ -598,6 +605,7 @@ pub(crate) struct ReservationConflict {
     /// The holder scopes that intersect the requested scopes.
     pub(crate) overlapping_scopes:     ReservationScopeSet,
     /// When the holder acquired the reservation.
+    #[schemars(with = "String", length(min = 1))]
     claimed_at:                        RecordedAt,
     /// Whether the holder has recorded activity inside the freshness window.
     activity:                          ReservationHolderActivity,
@@ -1990,6 +1998,24 @@ impl ReservationConflict {
         match &self.head_snapshot {
             ClaimHeadSnapshot::Branch { full_ref, .. } => full_ref.to_string(),
             ClaimHeadSnapshot::Detached { head } => format!("detached at {}", head.as_ref()),
+        }
+    }
+
+    /// Return the worktree that owns the conflicting reservation.
+    pub(crate) const fn holder_worktree_id(&self) -> WorktreeId { self.holder_worktree_id }
+
+    /// Return when the holder acquired the conflicting reservation.
+    pub(crate) const fn claimed_at(&self) -> &RecordedAt { &self.claimed_at }
+
+    /// Describe whether the holder remains active and when it last recorded activity.
+    pub(crate) fn holder_activity_description(&self) -> String {
+        match &self.activity {
+            ReservationHolderActivity::Active { last_activity_at } => {
+                format!("active; last activity at {last_activity_at}")
+            },
+            ReservationHolderActivity::Quiet { last_activity_at } => {
+                format!("gone quiet; last activity at {last_activity_at}")
+            },
         }
     }
 }

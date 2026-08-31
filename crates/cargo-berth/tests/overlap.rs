@@ -455,6 +455,227 @@ fn missing_mapping_with_two_eligible_reservations_reports_ambiguity_without_muta
     assert!(!repository.path().join(SESSION_MAPPING_PATH).exists());
 }
 
+#[test]
+fn explicit_check_selection_republishes_mapping_for_subsequent_checks() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let session_id = "explicit-overlapping-selection-session";
+    let reservations = claim_overlapping_reservations(repository.path(), session_id);
+    fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
+        .expect("session mapping should be removed before explicit selection");
+    let journal_before = fs::read(repository.path().join(JOURNAL_PATH))
+        .expect("journal should read before explicit selection");
+    let projection_before = fs::read(repository.path().join(PROJECTION_PATH))
+        .expect("projection should read before explicit selection");
+
+    let selected = run_berth_with_session(
+        repository.path(),
+        &[
+            "check",
+            "file:shared/child.rs",
+            "--reservation",
+            reservations.older.as_str(),
+            "--json",
+        ],
+        session_id,
+    );
+    let selected_envelope = json_output(&selected);
+    let selected_acquisition = &selected_envelope["payload"]["data"]["acquisition"];
+
+    assert!(selected.status.success());
+    assert_eq!(selected_envelope["status"], "clear");
+    assert_eq!(selected_acquisition["kind"], "already_held");
+    assert_eq!(selected_acquisition["reservation_id"], reservations.older);
+    assert_eq!(
+        selected_acquisition["session_mapping_publication"]["status"],
+        "published"
+    );
+    assert_session_mapping(
+        repository.path(),
+        session_id,
+        FIRST_RUN,
+        &reservations.older,
+    );
+
+    let ordinary = run_berth_with_session(
+        repository.path(),
+        &["check", "file:shared/child.rs", "--json"],
+        session_id,
+    );
+    let ordinary_envelope = json_output(&ordinary);
+    let ordinary_acquisition = &ordinary_envelope["payload"]["data"]["acquisition"];
+
+    assert!(ordinary.status.success());
+    assert_eq!(ordinary_envelope["status"], "clear");
+    assert_eq!(ordinary_acquisition["kind"], "already_held");
+    assert_eq!(ordinary_acquisition["reservation_id"], reservations.older);
+    assert_eq!(
+        fs::read(repository.path().join(JOURNAL_PATH))
+            .expect("journal should reread after selected and ordinary checks"),
+        journal_before
+    );
+    assert_eq!(
+        fs::read(repository.path().join(PROJECTION_PATH))
+            .expect("projection should reread after selected and ordinary checks"),
+        projection_before
+    );
+    assert_session_mapping(
+        repository.path(),
+        session_id,
+        FIRST_RUN,
+        &reservations.older,
+    );
+}
+
+#[test]
+fn explicit_check_without_harness_session_reports_invocation_only_selection() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let reservations =
+        claim_overlapping_reservations(repository.path(), "explicit-selection-setup-session");
+    fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
+        .expect("setup session mapping should be removed before explicit selection");
+
+    let selected = run_berth(
+        repository.path(),
+        &[
+            "check",
+            "file:shared/child.rs",
+            "--reservation",
+            reservations.older.as_str(),
+            "--json",
+        ],
+    );
+    let selected_envelope = json_output(&selected);
+    let selected_acquisition = &selected_envelope["payload"]["data"]["acquisition"];
+    let expected_session_mapping_publication = serde_json::json!({
+        "status": "explicit_selection_applies_only_to_current_invocation",
+        "reason": "harness_session_unavailable"
+    });
+
+    assert!(selected.status.success());
+    assert_eq!(selected_envelope["status"], "clear");
+    assert_eq!(selected_acquisition["kind"], "already_held");
+    assert_eq!(selected_acquisition["reservation_id"], reservations.older);
+    assert_eq!(
+        selected_acquisition["session_mapping_publication"],
+        expected_session_mapping_publication
+    );
+    assert!(!repository.path().join(SESSION_MAPPING_PATH).exists());
+
+    let widened = run_berth(
+        repository.path(),
+        &[
+            "check",
+            "file:later.rs",
+            "--reservation",
+            reservations.older.as_str(),
+            "--json",
+        ],
+    );
+    let widened_envelope = json_output(&widened);
+    let widened_acquisition = &widened_envelope["payload"]["data"]["acquisition"];
+    assert!(widened.status.success());
+    assert_eq!(widened_acquisition["kind"], "widened");
+    assert_eq!(widened_acquisition["reservation_id"], reservations.older);
+    assert_eq!(
+        widened_acquisition["session_mapping_publication"],
+        expected_session_mapping_publication
+    );
+    assert!(!repository.path().join(SESSION_MAPPING_PATH).exists());
+
+    let ordinary = run_berth(
+        repository.path(),
+        &["check", "file:shared/child.rs", "--json"],
+    );
+    let ordinary_envelope = json_output(&ordinary);
+    assert_eq!(ordinary.status.code(), Some(1));
+    assert_eq!(
+        ordinary_envelope["status"],
+        "ambiguous_active_run_reservations"
+    );
+    assert!(!repository.path().join(SESSION_MAPPING_PATH).exists());
+}
+
+#[test]
+fn explicit_check_selection_rejects_a_foreign_reservation_without_mutation() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let session_id = "explicit-foreign-selection-session";
+    let own_claim = run_berth_with_session(
+        repository.path(),
+        &["claim", "tree:owned", "--run", FIRST_RUN, "--json"],
+        session_id,
+    );
+    assert!(own_claim.status.success());
+
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "foreign-selection");
+    let foreign_claim = run_berth_with_session(
+        &foreign_root,
+        &["claim", "tree:foreign", "--run", SECOND_RUN, "--json"],
+        "foreign-selection-session",
+    );
+    assert!(foreign_claim.status.success());
+    let foreign_reservation_id = json_output(&foreign_claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("foreign claim should report its reservation")
+        .to_owned();
+    fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
+        .expect("session mappings should be removed before foreign selection");
+    let journal_before = fs::read(repository.path().join(JOURNAL_PATH))
+        .expect("journal should read before foreign selection");
+    let projection_before = fs::read(repository.path().join(PROJECTION_PATH))
+        .expect("projection should read before foreign selection");
+
+    let rejected = run_berth_with_session(
+        repository.path(),
+        &[
+            "check",
+            "file:unclaimed.rs",
+            "--reservation",
+            foreign_reservation_id.as_str(),
+            "--json",
+        ],
+        session_id,
+    );
+    let rejected_envelope = json_output(&rejected);
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_eq!(rejected_envelope["exit_code"], 5);
+    assert_eq!(rejected_envelope["status"], "invalid_input");
+    assert_eq!(rejected_envelope["payload"]["kind"], "no_facts");
+    assert_eq!(
+        fs::read(repository.path().join(JOURNAL_PATH))
+            .expect("journal should reread after foreign selection"),
+        journal_before
+    );
+    assert_eq!(
+        fs::read(repository.path().join(PROJECTION_PATH))
+            .expect("projection should reread after foreign selection"),
+        projection_before
+    );
+    assert!(!repository.path().join(SESSION_MAPPING_PATH).exists());
+}
+
+#[test]
+fn engine_envelope_carries_output_contract_version() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let check = run_berth(
+        repository.path(),
+        &["check", "file:engine-version.rs", "--json"],
+    );
+    let envelope = json_output(&check);
+    let contract = checked_output_contract();
+
+    assert!(check.status.success());
+    assert_eq!(
+        envelope["output_contract_version"], contract["version"],
+        "an engine-produced envelope should report OUTPUT_CONTRACT_VERSION"
+    );
+}
+
+fn checked_output_contract() -> serde_json::Value {
+    let serialized_contract =
+        include_str!("../../../docs/cargo-berth/generated/output-contract.json");
+    serde_json::from_str(serialized_contract).expect("checked-in output contract should decode")
+}
 fn assert_first_touch_claim_event(event: &serde_json::Value, coordination_run_id: &str) {
     assert_eq!(event["schema_version"], 2);
     assert_eq!(event["op"], "claim");

@@ -8,6 +8,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -267,7 +268,8 @@ enum ClaimExecution {
 }
 
 /// How one successful first-touch transaction established reservation coverage.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(inline)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FirstTouchReservationAcquisitionKind {
     /// The transaction appended a new first-touch reservation.
@@ -279,20 +281,22 @@ pub(crate) enum FirstTouchReservationAcquisitionKind {
 }
 
 /// The complete durable identity and publication result of first-touch protection.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(transform = crate::output::closed_value_selects_object_shape)]
 pub(crate) struct FirstTouchReservationAcquisition {
     /// How the transaction established coverage.
-    pub(crate) kind:             FirstTouchReservationAcquisitionKind,
+    pub(crate) kind:                        FirstTouchReservationAcquisitionKind,
     /// The reservation that protects the paths.
-    pub(crate) reservation_id:   ReservationId,
+    pub(crate) reservation_id:              ReservationId,
     /// The coordination run that owns the reservation.
-    coordination_run_id:         CoordinationRunId,
+    coordination_run_id:                    CoordinationRunId,
     /// The original phase-start commit retained by the reservation.
-    phase_start_head:            ProtectedPhaseStartHead,
+    #[schemars(with = "String", length(min = 1))]
+    phase_start_head:                       ProtectedPhaseStartHead,
     /// Whether the worktree marker records the coordination run.
-    marker_publication:          CoordinationRunMarkerPublication,
+    marker_publication:                     CoordinationRunMarkerPublication,
     /// Whether the harness session mapping records the reservation.
-    session_mapping_publication: SessionIdentityMappingPublication,
+    pub(crate) session_mapping_publication: SessionIdentityMappingPublication,
 }
 
 /// Whether a first-touch transaction may protect the nonconflicting part of a post-write request.
@@ -302,6 +306,15 @@ pub(crate) enum FirstTouchConflictHandling {
     RefuseRequest,
     /// Protect every free path and return the foreign-held subset for reporting.
     ProtectFreePaths,
+}
+
+/// How a `check` invocation selects an active reservation during locked first-touch validation.
+#[derive(Clone, Copy)]
+pub(crate) enum CheckReservationSelection {
+    /// Use a valid harness-session mapping or the acting run's only active reservation.
+    SessionMappingOrSingleActive,
+    /// Continue the named active reservation held by the acting run and worktree.
+    Explicit(ReservationId),
 }
 
 /// A first-touch request whose fixed source and authorization rule exclude permissive answers.
@@ -349,6 +362,10 @@ pub(crate) enum FirstTouchClaimExecution {
 
 /// The reservation identity chosen for one locked first-touch validation.
 enum FirstTouchReservationSelection<'reservation> {
+    /// The `check --reservation` selector names this eligible active reservation.
+    ExplicitReservation(&'reservation Reservation),
+    /// The `check --reservation` selector does not name eligible active work.
+    IneligibleExplicitReservation(ReservationId),
     /// The current harness-session mapping names this active reservation.
     SessionMappedReservation(&'reservation Reservation),
     /// No usable mapping exists, and this is the run's only active reservation.
@@ -363,6 +380,28 @@ enum FirstTouchReservationSelection<'reservation> {
 }
 
 impl<'reservation> FirstTouchReservationSelection<'reservation> {
+    /// Resolve an explicit id only within the acting coordination run and worktree.
+    fn from_explicit_selection(
+        reservations: &'reservation RetainedReservationSet,
+        reservation_id: ReservationId,
+        coordination_run_id: CoordinationRunId,
+        worktree_id: WorktreeId,
+    ) -> Self {
+        reservations
+            .iter()
+            .find(|reservation| {
+                reservation.id() == reservation_id
+                    && reservation.is_active_for_coordination_run_and_worktree(
+                        coordination_run_id,
+                        worktree_id,
+                    )
+            })
+            .map_or(
+                Self::IneligibleExplicitReservation(reservation_id),
+                Self::ExplicitReservation,
+            )
+    }
+
     /// Choose the reservation named by the harness-session mapping read under the ledger lock.
     ///
     /// The mapping is read inside the transaction, so it cannot move between that read and this
@@ -436,12 +475,14 @@ struct FirstTouchValidationContext {
     worktree_id:           WorktreeId,
     path_case:             PathCase,
     conflict_handling:     FirstTouchConflictHandling,
+    reservation_selection: CheckReservationSelection,
     maximum_reservations:  u32,
 }
 
 #[derive(Clone, Copy)]
 struct FirstTouchReservationReuseContext {
     first_touch_session_reservation_mapping: FirstTouchSessionReservationMapping,
+    check_reservation_selection:             CheckReservationSelection,
     coordination_run_id:                     CoordinationRunId,
     worktree_id:                             WorktreeId,
     path_case:                               PathCase,
@@ -457,6 +498,7 @@ enum FirstTouchClaimRejection {
     CoordinationIdentity(CoordinationIdentityRejection),
     InvalidCanonicalWorktreeRoot,
     ReservationLimitReached(u32),
+    IneligibleExplicitReservation(ReservationId),
     AmbiguousActiveRunReservations {
         candidate_reservation_ids: Vec<ReservationId>,
     },
@@ -556,6 +598,31 @@ pub(crate) fn acquire_first_touch(
     request: FirstTouchClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
+    acquire_first_touch_with_reservation_selection(
+        request,
+        CheckReservationSelection::SessionMappingOrSingleActive,
+        recovery_command_line,
+    )
+}
+
+/// Acquire first-touch protection using the reservation selection parsed by `check`.
+pub(crate) fn acquire_first_touch_for_check(
+    request: FirstTouchClaimRequest,
+    reservation_selection: CheckReservationSelection,
+    recovery_command_line: &RecoveryCommandLine,
+) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
+    acquire_first_touch_with_reservation_selection(
+        request,
+        reservation_selection,
+        recovery_command_line,
+    )
+}
+
+fn acquire_first_touch_with_reservation_selection(
+    request: FirstTouchClaimRequest,
+    reservation_selection: CheckReservationSelection,
+    recovery_command_line: &RecoveryCommandLine,
+) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     let FirstTouchClaimRequest {
         declared_scopes,
         conflict_handling,
@@ -611,13 +678,19 @@ pub(crate) fn acquire_first_touch(
                     worktree_id: journal_mutation_actor.worktree_id,
                     path_case,
                     conflict_handling,
+                    reservation_selection,
                     maximum_reservations: berth_config.maximum_reservations,
                 },
             )
         },
         Ok::<_, Infallible>,
         |outcome| {
-            first_touch_execution_from_outcome(outcome, coordination_run_id, &worktree_context)
+            first_touch_execution_from_outcome(
+                outcome,
+                coordination_run_id,
+                reservation_selection,
+                &worktree_context,
+            )
         },
     );
     let execution = match execution {
@@ -633,6 +706,7 @@ pub(crate) fn acquire_first_touch(
 fn first_touch_execution_from_outcome(
     outcome: LedgerCommittedActionOutcome<FirstTouchClaimRejection, CommittedFirstTouchAcquisition>,
     coordination_run_id: CoordinationRunId,
+    reservation_selection: CheckReservationSelection,
     worktree_context: &WorktreeContext,
 ) -> Result<FirstTouchClaimExecution, ClaimError> {
     match outcome {
@@ -643,14 +717,15 @@ fn first_touch_execution_from_outcome(
             output,
             coordination_run_id,
             publish_coordination_run_marker(worktree_context, coordination_run_id),
-            session_mapping_publication,
+            reservation_selection.reported_session_mapping_publication(session_mapping_publication),
         )),
         LedgerCommittedActionOutcome::Rejected(FirstTouchClaimRejection::AlreadyHeld(output)) => {
-            let session_mapping_publication = session::publish_reservation_identity(
-                &worktree_context.ledger_directory(),
-                coordination_run_id,
-                output.reservation_id,
-            );
+            let session_mapping_publication = reservation_selection
+                .reported_session_mapping_publication(session::publish_reservation_identity(
+                    &worktree_context.ledger_directory(),
+                    coordination_run_id,
+                    output.reservation_id,
+                ));
             Ok(first_touch_acquired_execution(
                 output,
                 coordination_run_id,
@@ -662,6 +737,9 @@ fn first_touch_execution_from_outcome(
             scopes,
             conflicts,
         }) => Ok(FirstTouchClaimExecution::Blocked { scopes, conflicts }),
+        LedgerCommittedActionOutcome::Rejected(
+            FirstTouchClaimRejection::IneligibleExplicitReservation(reservation_id),
+        ) => Err(ClaimError::IneligibleExplicitReservation(reservation_id)),
         LedgerCommittedActionOutcome::Rejected(
             FirstTouchClaimRejection::AmbiguousActiveRunReservations {
                 candidate_reservation_ids,
@@ -681,6 +759,18 @@ fn first_touch_execution_from_outcome(
         LedgerCommittedActionOutcome::Rejected(
             FirstTouchClaimRejection::ReservationLimitReached(maximum),
         ) => Ok(FirstTouchClaimExecution::ReservationLimitReached(maximum)),
+    }
+}
+
+impl CheckReservationSelection {
+    fn reported_session_mapping_publication(
+        self,
+        publication: SessionIdentityMappingPublication,
+    ) -> SessionIdentityMappingPublication {
+        match self {
+            Self::SessionMappingOrSingleActive => publication,
+            Self::Explicit(_) => publication.for_explicit_reservation_selection(),
+        }
     }
 }
 
@@ -845,6 +935,7 @@ fn validate_first_touch_transaction(
         worktree_id,
         path_case,
         conflict_handling,
+        reservation_selection,
         maximum_reservations,
     } = context;
     let reservations = match RetainedReservationSet::replay(state.events()) {
@@ -891,6 +982,7 @@ fn validate_first_touch_transaction(
         conflict_outcome,
         FirstTouchReservationReuseContext {
             first_touch_session_reservation_mapping: first_touch_session_mapping,
+            check_reservation_selection: reservation_selection,
             coordination_run_id,
             worktree_id,
             path_case,
@@ -928,10 +1020,26 @@ fn select_first_touch_reservation_reuse(
 ) -> FirstTouchReservationReuse {
     let FirstTouchReservationReuseContext {
         first_touch_session_reservation_mapping,
+        check_reservation_selection,
         coordination_run_id,
         worktree_id,
         path_case,
     } = context;
+    if let CheckReservationSelection::Explicit(reservation_id) = check_reservation_selection {
+        return reuse_first_touch_reservation(
+            reservations,
+            requested_scopes,
+            protected_scopes,
+            conflicts,
+            FirstTouchReservationSelection::from_explicit_selection(
+                reservations,
+                reservation_id,
+                coordination_run_id,
+                worktree_id,
+            ),
+            path_case,
+        );
+    }
     match first_touch_session_reservation_mapping {
         FirstTouchSessionReservationMapping::Mapped(session_reservation_identity) => {
             reuse_first_touch_reservation(
@@ -988,8 +1096,14 @@ fn reuse_first_touch_reservation(
     path_case: PathCase,
 ) -> FirstTouchReservationReuse {
     let reservation = match first_touch_reservation_selection {
-        FirstTouchReservationSelection::SessionMappedReservation(reservation)
+        FirstTouchReservationSelection::ExplicitReservation(reservation)
+        | FirstTouchReservationSelection::SessionMappedReservation(reservation)
         | FirstTouchReservationSelection::SingleActiveRunReservation(reservation) => reservation,
+        FirstTouchReservationSelection::IneligibleExplicitReservation(reservation_id) => {
+            return FirstTouchReservationReuse::Complete(CommittedActionValidation::Reject(
+                FirstTouchClaimRejection::IneligibleExplicitReservation(reservation_id),
+            ));
+        },
         FirstTouchReservationSelection::NoActiveRunReservation => {
             return FirstTouchReservationReuse::AppendRequired {
                 scopes: protected_scopes,
@@ -1616,6 +1730,7 @@ pub(crate) enum ClaimError {
     },
     NonUtf8WorktreeRoot,
     InvalidCanonicalWorktreeRoot,
+    IneligibleExplicitReservation(ReservationId),
     AmbiguousActiveRunReservations {
         candidate_reservation_ids: Vec<ReservationId>,
     },
@@ -1661,6 +1776,10 @@ impl Display for ClaimError {
             Self::InvalidCanonicalWorktreeRoot => {
                 formatter.write_str("the worktree root is not a canonical absolute path")
             },
+            Self::IneligibleExplicitReservation(reservation_id) => write!(
+                formatter,
+                "reservation {reservation_id} is not active work held by the acting coordination run and worktree"
+            ),
             Self::AmbiguousActiveRunReservations {
                 candidate_reservation_ids,
             } => write!(
@@ -1700,6 +1819,12 @@ impl ClaimError {
             },
             Self::Ledger(error) => OutputEnvelope::ledger_error(command_verb, &error),
             Self::ReservationReplay(error) => OutputEnvelope::replay_failure(command_verb, &error),
+            Self::IneligibleExplicitReservation(reservation_id) => OutputEnvelope::invalid_input(
+                command_verb,
+                &format!(
+                    "reservation {reservation_id} is not active work held by the acting coordination run and worktree"
+                ),
+            ),
             Self::AmbiguousActiveRunReservations {
                 candidate_reservation_ids,
             } => OutputEnvelope::ambiguous_active_run_reservations(

@@ -27,7 +27,8 @@ use crate::reservation::ReservationReplayError;
 use crate::worktree::WorktreeLiveness;
 
 /// A persistent coordination condition that remains until journal state resolves it.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "alert")]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub(crate) enum Alert {
     /// A released reservation no longer has affirmative integration evidence.
@@ -147,6 +148,7 @@ pub(crate) enum LostEvidenceRecovery {
     VerifyResolvedTrunk {
         /// The current configured trunk commit.
         #[schemars(with = "String")]
+        #[schemars(length(min = 1))]
         trunk_oid: GitObjectId,
         /// The typed resolution available after the operator verifies the work.
         action:    LostEvidenceRecoveryCommand,
@@ -171,7 +173,7 @@ pub(crate) enum LostEvidenceRecoveryCommand {
 }
 
 /// Recovery evidence for an outstanding reservation whose worktree was pruned.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct OrphanedOutstandingAlert {
     /// The reservation that still retains scopes and ordering edges.
     reservation_id:      ReservationId,
@@ -210,7 +212,7 @@ impl OrphanedOutstandingAlert {
 }
 
 /// Current status of the branch reference recorded at claim time.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum BranchRefStatus {
     /// The full branch reference still resolves.
@@ -237,7 +239,7 @@ impl Display for BranchRefStatus {
 }
 
 /// Whether git can read the protected checkpoint commit.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ObjectAvailability {
     /// Git can read the commit.
@@ -256,7 +258,7 @@ impl Display for ObjectAvailability {
 }
 
 /// Current status of the reservation's private retention reference.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum RetentionRefStatus {
     /// The retention ref points to the protected tip.
@@ -285,7 +287,7 @@ impl Display for RetentionRefStatus {
 }
 
 /// The recovery conclusion current git evidence supports.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RecoverabilityVerdict {
     /// The acquisition-time branch remains available.

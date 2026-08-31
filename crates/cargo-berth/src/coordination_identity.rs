@@ -420,6 +420,19 @@ impl CoordinationIdentityRejection {
             Self::SessionWorktreeMismatch(rejection) => vec![rejection.reservation_id],
         }
     }
+
+    /// Render only the executable recovery actions selected for this rejection.
+    pub(crate) fn rendered_recovery_actions(&self) -> String {
+        match self {
+            Self::StaleSessionMapping {
+                recovery_actions, ..
+            }
+            | Self::StaleMarkerRun {
+                recovery_actions, ..
+            } => recovery_actions.render(),
+            Self::SessionWorktreeMismatch(rejection) => rejection.recovery_actions.render(),
+        }
+    }
 }
 
 impl Display for CoordinationIdentityRejection {

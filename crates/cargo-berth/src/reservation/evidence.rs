@@ -27,7 +27,11 @@ use crate::scope::ReservationScopeSet;
 #[schemars(rename = "protected_reservation_tip")]
 #[schemars(transparent)]
 #[serde(transparent)]
-pub(crate) struct ProtectedReservationTip(#[schemars(with = "String")] GitObjectId);
+pub(crate) struct ProtectedReservationTip(
+    #[schemars(with = "String")]
+    #[schemars(length(min = 1))]
+    GitObjectId,
+);
 
 impl Display for ProtectedReservationTip {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }

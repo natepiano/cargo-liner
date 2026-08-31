@@ -12,6 +12,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
@@ -147,16 +148,30 @@ pub(crate) enum FirstTouchSessionReservationMapping {
 }
 
 /// Whether the current command's harness-session identity was published.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum SessionIdentityMappingPublication {
     /// The mapping reflects the reservation, including when no harness session required an entry.
     Published,
+    /// An explicit selection affected this command but could not become session state.
+    ExplicitSelectionAppliesOnlyToCurrentInvocation {
+        /// Why a later command cannot reuse the explicit selection.
+        reason: ExplicitSelectionPersistenceReason,
+    },
     /// The reservation is durable, but its disposable mapping update failed.
     Unavailable {
         /// The mapping publication failure.
+        #[schemars(length(min = 1))]
         diagnostic: String,
     },
+}
+
+/// Why an explicit reservation selection cannot become reusable harness-session state.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ExplicitSelectionPersistenceReason {
+    /// The command supplied no usable harness session identifier.
+    HarnessSessionUnavailable,
 }
 
 /// The result of removing only the mapping selected by this process's harness session.
@@ -174,8 +189,28 @@ impl SessionIdentityMappingPublication {
     /// Retain an unavailable result across a transaction with several appends.
     pub(crate) fn merge(self, next: Self) -> Self {
         match (self, next) {
-            (unavailable @ Self::Unavailable { .. }, _) => unavailable,
+            (unavailable @ Self::Unavailable { .. }, _)
+            | (_, unavailable @ Self::Unavailable { .. }) => unavailable,
             (Self::Published, next) => next,
+            (
+                current_invocation @ Self::ExplicitSelectionAppliesOnlyToCurrentInvocation {
+                    ..
+                },
+                _,
+            ) => current_invocation,
+        }
+    }
+
+    /// Report whether an explicit selection can persist for a later invocation.
+    pub(crate) fn for_explicit_reservation_selection(self) -> Self {
+        match (self, HarnessSessionId::from_current_process()) {
+            (unavailable @ Self::Unavailable { .. }, _) => unavailable,
+            (publication, HarnessSessionIdentity::Available(_)) => publication,
+            (_, HarnessSessionIdentity::Unavailable) => {
+                Self::ExplicitSelectionAppliesOnlyToCurrentInvocation {
+                    reason: ExplicitSelectionPersistenceReason::HarnessSessionUnavailable,
+                }
+            },
         }
     }
 }

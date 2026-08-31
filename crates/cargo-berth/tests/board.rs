@@ -62,11 +62,20 @@ fn empty_board_is_headless_and_declares_no_integration_order() {
     let json = run_berth(repository.path(), &["board", "--json"]);
     assert!(json.status.success());
     let envelope = json_output(&json);
+    assert_preserved_board_envelope_fields(&envelope, &[], "board", BOARD_READY_MESSAGE);
+    assert_complete_board_payload_shape(&envelope["payload"]["data"]);
     assert_eq!(envelope["status"], "board_ready");
     assert_eq!(envelope["payload"]["kind"], "board");
     assert_eq!(
         envelope["payload"]["data"]["integration_order"],
         "undeclared"
+    );
+    assert_eq!(
+        envelope["presentation"],
+        serde_json::json!({
+            "kind": "rendered_blocks",
+            "blocks": [],
+        })
     );
     assert_eq!(envelope["message"], BOARD_READY_MESSAGE);
     assert!(!envelope.to_string().contains("unimplemented"));
@@ -81,6 +90,62 @@ fn empty_board_is_headless_and_declares_no_integration_order() {
     assert!(String::from_utf8_lossy(&text.stdout).contains("--json"));
     assert!(!String::from_utf8_lossy(&text.stdout).contains(ENTER_ALTERNATE_SCREEN));
     assert!(!String::from_utf8_lossy(&text.stdout).contains("BoardReservationSnapshot"));
+}
+
+#[test]
+fn populated_board_presentation_carries_the_complete_board_report() {
+    let fixture = ordered_fixture();
+    let output = run_berth(fixture.repository.path(), &["board", "--json"]);
+    assert!(
+        output.status.success(),
+        "board failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = json_output(&output);
+    assert_preserved_board_envelope_fields(
+        &envelope,
+        &[&fixture.predecessor_id, &fixture.successor_id],
+        "board",
+        BOARD_READY_MESSAGE,
+    );
+    assert_complete_board_payload_shape(&envelope["payload"]["data"]);
+
+    let report = rendered_board_report(&envelope, "complete board");
+    let report_object = report
+        .as_object()
+        .expect("complete board report should be a JSON object");
+    assert_eq!(report_object.len(), 16);
+    let board_data = &envelope["payload"]["data"];
+    for (report_property, payload_field) in [
+        ("Journal position", "journal_position"),
+        (
+            "Recovered bypasses this invocation",
+            "recovered_bypasses_this_invocation",
+        ),
+        ("Integration order", "integration_order"),
+        ("Ready now", "ready_now"),
+        ("Waiting", "waiting"),
+        (
+            "Settled ordering constraints",
+            "settled_ordering_constraints",
+        ),
+        ("Unresolved overlaps", "unresolved_overlaps"),
+        ("Recorded overlap answers", "recorded_overlap_answers"),
+        ("Unconstrained reservations", "unconstrained_reservations"),
+        ("Resolved reservations", "resolved"),
+        ("Available forced permits", "available_forced_permits"),
+        ("Bypass audit", "bypass_audit"),
+        ("Outstanding incursions", "outstanding_incursions"),
+        ("Recorded incursion answers", "recorded_incursion_answers"),
+        ("Alerts", "alerts"),
+        ("Git cost", "git_cost"),
+    ] {
+        assert_eq!(
+            report[report_property], board_data[payload_field],
+            "complete board report property {report_property:?} diverged from payload field {payload_field:?}"
+        );
+    }
 }
 
 #[test]
@@ -1198,6 +1263,13 @@ fn reservation_lifecycle(repository_root: &Path, reservation_id: &str) -> serde_
         String::from_utf8_lossy(&output.stderr)
     );
     let envelope = json_output(&output);
+    let expected_message = format!("Reservation {reservation_id} lifecycle was read.");
+    assert_preserved_board_envelope_fields(
+        &envelope,
+        &[reservation_id],
+        "reservation",
+        &expected_message,
+    );
     assert_eq!(envelope["verb"], "board");
     assert_eq!(envelope["status"], "board_ready");
     assert_eq!(envelope["exit_code"], 0);
@@ -1210,8 +1282,161 @@ fn reservation_lifecycle(repository_root: &Path, reservation_id: &str) -> serde_
         envelope["payload"]["data"]["reservation_id"],
         reservation_id
     );
+    let lifecycle = &envelope["payload"]["data"]["lifecycle"];
+    let report = rendered_board_report(&envelope, "reservation lifecycle");
+    assert_eq!(
+        report,
+        serde_json::json!({
+            "Reservation": reservation_id,
+            "Lifecycle": lifecycle,
+        })
+    );
     assert!(!String::from_utf8_lossy(&output.stdout).contains(ENTER_ALTERNATE_SCREEN));
-    envelope["payload"]["data"]["lifecycle"].clone()
+    lifecycle.clone()
+}
+
+fn assert_preserved_board_envelope_fields(
+    envelope: &serde_json::Value,
+    expected_reservations: &[&str],
+    expected_payload_kind: &str,
+    expected_message: &str,
+) {
+    let object = envelope
+        .as_object()
+        .expect("board response should be a JSON object");
+    let mut field_names = object.keys().map(String::as_str).collect::<Vec<_>>();
+    field_names.sort_unstable();
+    assert_eq!(
+        field_names,
+        [
+            "blocked_by",
+            "exit_code",
+            "message",
+            "output_contract_version",
+            "payload",
+            "presentation",
+            "reservations",
+            "status",
+            "verb",
+        ]
+    );
+    assert_eq!(envelope["output_contract_version"], 2);
+    assert_eq!(envelope["verb"], "board");
+    assert_eq!(envelope["status"], "board_ready");
+    assert_eq!(envelope["exit_code"], 0);
+    let mut sorted_expected_reservations = expected_reservations.to_vec();
+    sorted_expected_reservations.sort_unstable();
+    assert_eq!(
+        envelope["reservations"],
+        serde_json::json!(sorted_expected_reservations)
+    );
+    assert_eq!(envelope["blocked_by"], serde_json::json!([]));
+    assert_eq!(envelope["message"], expected_message);
+    let payload = envelope["payload"]
+        .as_object()
+        .expect("board payload should remain an object");
+    let mut payload_field_names = payload.keys().map(String::as_str).collect::<Vec<_>>();
+    payload_field_names.sort_unstable();
+    assert_eq!(payload_field_names, ["alerts", "data", "kind"]);
+    assert_eq!(envelope["payload"]["kind"], expected_payload_kind);
+    assert_eq!(envelope["payload"]["alerts"], serde_json::json!([]));
+}
+
+fn assert_complete_board_payload_shape(data: &serde_json::Value) {
+    let object = data
+        .as_object()
+        .expect("complete board payload should be a JSON object");
+    let mut field_names = object.keys().map(String::as_str).collect::<Vec<_>>();
+    field_names.sort_unstable();
+    assert_eq!(
+        field_names,
+        [
+            "alerts",
+            "available_forced_permits",
+            "bypass_audit",
+            "git_cost",
+            "integration_order",
+            "journal_position",
+            "outstanding_incursions",
+            "ready_now",
+            "recorded_incursion_answers",
+            "recorded_overlap_answers",
+            "recovered_bypasses_this_invocation",
+            "resolved",
+            "settled_ordering_constraints",
+            "unconstrained_reservations",
+            "unresolved_overlaps",
+            "waiting",
+        ]
+    );
+    let journal_position = &data["journal_position"];
+    for section_name in [
+        "ready_now",
+        "waiting",
+        "settled_ordering_constraints",
+        "unresolved_overlaps",
+        "recorded_overlap_answers",
+        "unconstrained_reservations",
+        "resolved",
+        "available_forced_permits",
+        "bypass_audit",
+        "outstanding_incursions",
+        "recorded_incursion_answers",
+        "alerts",
+    ] {
+        assert_eq!(
+            data[section_name]["journal_position"], *journal_position,
+            "{section_name} moved off the complete board's locked journal position"
+        );
+        assert!(
+            data[section_name]["entries"].is_array(),
+            "{section_name} entries changed wire shape"
+        );
+    }
+    let git_cost = data["git_cost"]
+        .as_object()
+        .expect("board git cost should remain an object");
+    let mut git_cost_fields = git_cost.keys().map(String::as_str).collect::<Vec<_>>();
+    git_cost_fields.sort_unstable();
+    assert_eq!(
+        git_cost_fields,
+        [
+            "orphan_recovery_evidence_queries",
+            "protected_predecessor_ancestry_queries",
+            "reservation_evidence_revalidations",
+            "trunk_resolution_calls",
+            "worktree_ahead_behind_computations",
+            "worktree_list_calls",
+        ]
+    );
+}
+
+fn rendered_board_report(envelope: &serde_json::Value, report_kind: &str) -> serde_json::Value {
+    assert_eq!(
+        envelope["presentation"]["kind"], "rendered_blocks",
+        "{report_kind} presentation was not provided"
+    );
+    let blocks = envelope["presentation"]["blocks"]
+        .as_array()
+        .expect("rendered board presentation should carry blocks");
+    assert_eq!(
+        blocks.len(),
+        1,
+        "{report_kind} presentation should carry exactly one block"
+    );
+    let block = blocks
+        .first()
+        .expect("one rendered board presentation block should exist");
+    let summary = block["summary"]
+        .as_str()
+        .expect("rendered board summary should be text");
+    assert!(!summary.is_empty());
+    assert!(!summary.contains('\n'));
+    let detail = block["detail"]
+        .as_str()
+        .expect("rendered board detail should be text");
+    assert!(!detail.is_empty());
+    serde_json::from_str(detail).expect("rendered board detail should be valid JSON")
 }
 
 fn assert_integration_statuses(

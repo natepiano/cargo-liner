@@ -91,6 +91,7 @@ use constants::GIT_UPDATE_REF_COMMAND;
 use constants::GIT_WORKTREE_COMMAND;
 use constants::GIT_WORKTREE_LIST_ARG;
 use constants::GIT_WRITE_TREE_ARG;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -109,7 +110,7 @@ const GIT_SHOW_REF_COMMAND: &str = "show-ref";
 const GIT_SHOW_REF_EXISTS_ARG: &str = "--exists";
 
 /// A worktree's live relationship to the configured trunk.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum AheadBehind {
     /// Both histories share ancestry and have these independent commit counts.

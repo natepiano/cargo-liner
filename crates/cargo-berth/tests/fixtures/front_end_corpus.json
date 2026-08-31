@@ -1,0 +1,3361 @@
+{
+  "contract": "cargo-berth-front-end-corpus/v1",
+  "entries": [
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "The engine had nothing to report.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [],
+            "status": "clear",
+            "verb": "drift"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.g2v6slcj/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_a_named_widening_with_nothing_to_report_still_says_nothing"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "A drift outcome carrying one tag this installation predates.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [],
+                "widening": {
+                  "scopes": [
+                    {
+                      "kind": "file",
+                      "path": "first-touch.rs"
+                    }
+                  ],
+                  "status": "a_widening_status_no_installed_table_names"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [
+              "reservation-first-touch"
+            ],
+            "status": "widened",
+            "verb": "drift"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth reported a state this installation does not yet render.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"A drift outcome carrying one tag this installation predates.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.4ge1nr2e/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_a_nested_tag_no_table_names_still_reaches_the_advisory_route"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 4,
+            "message": "An outcome this installation has never been told about.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "check"
+          },
+          "exit_code": 4
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth could not establish edit safety; editing is allowed because ledger loss fails open.\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"An outcome this installation has never been told about.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 5,
+            "message": "An outcome this installation has never been told about.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "check"
+          },
+          "exit_code": 5
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "An outcome this installation has never been told about.\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#2"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "An outcome this installation has never been told about.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "board"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth reported on this session in its own words.\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"An outcome this installation has never been told about.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository",
+        "session_id": "fixture-session"
+      },
+      "hook": "berth_session_start.sh",
+      "name": "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#3"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 4,
+            "message": "An outcome this installation has never been told about.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "board"
+          },
+          "exit_code": 4
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth could not establish coordination state at SessionStart.\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"An outcome this installation has never been told about.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository",
+        "session_id": "fixture-session"
+      },
+      "hook": "berth_session_start.sh",
+      "name": "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#4"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 6,
+            "message": "An outcome this installation has never been told about.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "board"
+          },
+          "exit_code": 6
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth could not reach the reservation ledger at SessionStart.\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"An outcome this installation has never been told about.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository",
+        "session_id": "fixture-session"
+      },
+      "hook": "berth_session_start.sh",
+      "name": "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#5"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 7,
+            "message": "An outcome this installation has never been told about.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "board"
+          },
+          "exit_code": 7
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth reported on this session in its own words.\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"An outcome this installation has never been told about.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository",
+        "session_id": "fixture-session"
+      },
+      "hook": "berth_session_start.sh",
+      "name": "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#6"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 4,
+            "message": "An outcome this installation has never been told about.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "drift"
+          },
+          "exit_code": 4
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth could not establish coordination state after Bash.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"An outcome this installation has never been told about.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#7"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 5,
+            "message": "An outcome this installation has never been told about.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "drift"
+          },
+          "exit_code": 5
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth could not select or validate the drift reservation.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"An outcome this installation has never been told about.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#8"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 6,
+            "message": "An outcome this installation has never been told about.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "drift"
+          },
+          "exit_code": 6
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth could not reach the reservation ledger after Bash.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"An outcome this installation has never been told about.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.rb0n_yn6/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#9"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [
+                {
+                  "data": {
+                    "evidence_status": {
+                      "status": "trunk_rewritten"
+                    },
+                    "kind": "lost_integration_evidence",
+                    "protected_tip": "1111111111111111111111111111111111111111",
+                    "recovery": {
+                      "action": {
+                        "action": "resolve_integrated_as",
+                        "reservation_id": "reservation-lost-evidence"
+                      },
+                      "kind": "verify_resolved_trunk",
+                      "trunk_oid": "2222222222222222222222222222222222222222"
+                    },
+                    "reservation_id": "reservation-lost-evidence"
+                  },
+                  "kind": "lost_integration_evidence"
+                }
+              ],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [],
+            "status": "clear",
+            "verb": "drift"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth detected lost integration evidence for released work.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, but trunk 2222222222222222222222222222222222222222 no longer proves protected tip 1111111111111111111111111111111111111111. If trunk 2222222222222222222222222222222222222222 contains the released work, run `cargo-berth resolve reservation-lost-evidence --integrated-as 2222222222222222222222222222222222222222`. Otherwise restore the work first. Inspect `cargo-berth board --json`.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.nzvvypx7/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_hooks_render_both_lost_evidence_recoveries"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "alerts": {
+                  "entries": [
+                    {
+                      "evidence_status": {
+                        "status": "trunk_rewritten"
+                      },
+                      "kind": "lost_integration_evidence",
+                      "protected_tip": "1111111111111111111111111111111111111111",
+                      "recovery": {
+                        "action": {
+                          "action": "resolve_integrated_as",
+                          "reservation_id": "reservation-lost-evidence"
+                        },
+                        "kind": "verify_resolved_trunk",
+                        "trunk_oid": "2222222222222222222222222222222222222222"
+                      },
+                      "reservation_id": "reservation-lost-evidence"
+                    }
+                  ]
+                },
+                "outstanding_incursions": {
+                  "entries": []
+                },
+                "recovered_bypasses_this_invocation": []
+              },
+              "kind": "board"
+            },
+            "reservations": [],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth found 1 actionable coordination notice(s).\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, but trunk 2222222222222222222222222222222222222222 no longer proves protected tip 1111111111111111111111111111111111111111. If trunk 2222222222222222222222222222222222222222 contains the released work, run `cargo-berth resolve reservation-lost-evidence --integrated-as 2222222222222222222222222222222222222222`. Otherwise restore the work first. Inspect `cargo-berth board --json`.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.nzvvypx7/repository",
+        "session_id": "fixture-session"
+      },
+      "hook": "berth_session_start.sh",
+      "name": "test_hooks_render_both_lost_evidence_recoveries#2"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [
+                {
+                  "data": {
+                    "evidence_status": {
+                      "status": "object_unknown"
+                    },
+                    "kind": "lost_integration_evidence",
+                    "protected_tip": "1111111111111111111111111111111111111111",
+                    "recovery": {
+                      "action": {
+                        "action": "resolve_integrated_as",
+                        "reservation_id": "reservation-lost-evidence"
+                      },
+                      "kind": "resolve_trunk_first"
+                    },
+                    "reservation_id": "reservation-lost-evidence"
+                  },
+                  "kind": "lost_integration_evidence"
+                }
+              ],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [],
+            "status": "clear",
+            "verb": "drift"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth detected lost integration evidence for released work.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, and trunk does not currently resolve to a known object, so protected tip 1111111111111111111111111111111111111111 cannot be proved either way. Resolve trunk first, then rerun. Inspect `cargo-berth board --json`.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.nzvvypx7/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_hooks_render_both_lost_evidence_recoveries#3"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "alerts": {
+                  "entries": [
+                    {
+                      "evidence_status": {
+                        "status": "object_unknown"
+                      },
+                      "kind": "lost_integration_evidence",
+                      "protected_tip": "1111111111111111111111111111111111111111",
+                      "recovery": {
+                        "action": {
+                          "action": "resolve_integrated_as",
+                          "reservation_id": "reservation-lost-evidence"
+                        },
+                        "kind": "resolve_trunk_first"
+                      },
+                      "reservation_id": "reservation-lost-evidence"
+                    }
+                  ]
+                },
+                "outstanding_incursions": {
+                  "entries": []
+                },
+                "recovered_bypasses_this_invocation": []
+              },
+              "kind": "board"
+            },
+            "reservations": [],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth found 1 actionable coordination notice(s).\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, and trunk does not currently resolve to a known object, so protected tip 1111111111111111111111111111111111111111 cannot be proved either way. Resolve trunk first, then rerun. Inspect `cargo-berth board --json`.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.nzvvypx7/repository",
+        "session_id": "fixture-session"
+      },
+      "hook": "berth_session_start.sh",
+      "name": "test_hooks_render_both_lost_evidence_recoveries#4"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 5,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "coordination_run_id": "run-stale-session",
+                "kind": "stale_session_mapping",
+                "recovery_actions": [
+                  {
+                    "argv": [
+                      "cargo-berth",
+                      "identity",
+                      "clear-session",
+                      "--json"
+                    ],
+                    "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                    "kind": "clear_session_mapping"
+                  }
+                ],
+                "reservation_id": "reservation-stale-session"
+              },
+              "kind": "coordination_identity"
+            },
+            "reservations": [],
+            "status": "invalid_input",
+            "verb": "check"
+          },
+          "exit_code": 5
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "cargo-berth refused this edit hook request: coordination identity stale_session_mapping requires one recovery action before retrying this edit: `cd '{FIXTURE_ROOT}/repository' && 'cargo-berth' 'identity' 'clear-session' '--json'`\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_hooks_render_coordination_identity_recovery_actions_without_message"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 5,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "coordination_run_id": "run-stale-session",
+                "kind": "stale_session_mapping",
+                "recovery_actions": [
+                  {
+                    "argv": [
+                      "cargo-berth",
+                      "identity",
+                      "clear-session",
+                      "--json"
+                    ],
+                    "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                    "kind": "clear_session_mapping"
+                  }
+                ],
+                "reservation_id": "reservation-stale-session"
+              },
+              "kind": "coordination_identity"
+            },
+            "reservations": [],
+            "status": "invalid_input",
+            "verb": "drift"
+          },
+          "exit_code": 5
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth rejected drift under the current coordination identity.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"COORDINATION IDENTITY: stale_session_mapping requires one recovery action before continuing: `cd '{FIXTURE_ROOT}/repository' && 'cargo-berth' 'identity' 'clear-session' '--json'`\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_hooks_render_coordination_identity_recovery_actions_without_message#2"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 5,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "coordination_run_id": "run-stale-marker",
+                "issuing_root": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                "issuing_worktree_id": "worktree-stale-marker",
+                "kind": "stale_marker_run",
+                "recovery_actions": [
+                  {
+                    "argv": [
+                      "cargo-berth",
+                      "board",
+                      "--json"
+                    ],
+                    "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                    "kind": "reconcile_and_sweep_marker"
+                  }
+                ]
+              },
+              "kind": "coordination_identity"
+            },
+            "reservations": [],
+            "status": "invalid_input",
+            "verb": "check"
+          },
+          "exit_code": 5
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "cargo-berth refused this edit hook request: coordination identity stale_marker_run requires one recovery action before retrying this edit: `cd '{FIXTURE_ROOT}/repository' && 'cargo-berth' 'board' '--json'`\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_hooks_render_coordination_identity_recovery_actions_without_message#3"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 5,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "coordination_run_id": "run-stale-marker",
+                "issuing_root": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                "issuing_worktree_id": "worktree-stale-marker",
+                "kind": "stale_marker_run",
+                "recovery_actions": [
+                  {
+                    "argv": [
+                      "cargo-berth",
+                      "board",
+                      "--json"
+                    ],
+                    "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                    "kind": "reconcile_and_sweep_marker"
+                  }
+                ]
+              },
+              "kind": "coordination_identity"
+            },
+            "reservations": [],
+            "status": "invalid_input",
+            "verb": "drift"
+          },
+          "exit_code": 5
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth rejected drift under the current coordination identity.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"COORDINATION IDENTITY: stale_marker_run requires one recovery action before continuing: `cd '{FIXTURE_ROOT}/repository' && 'cargo-berth' 'board' '--json'`\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_hooks_render_coordination_identity_recovery_actions_without_message#4"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 5,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "coordination_run_id": "run-mismatch",
+                "holding_root": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/holding worktree",
+                "holding_worktree_id": "worktree-holder",
+                "issuing_root": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                "issuing_worktree_id": "worktree-issuer",
+                "kind": "session_worktree_mismatch",
+                "recovery_actions": [
+                  {
+                    "argv": [
+                      "cargo-berth",
+                      "check",
+                      "--json",
+                      "--",
+                      "file:source file.rs"
+                    ],
+                    "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/holding worktree",
+                    "kind": "rerun_from_holding_worktree"
+                  },
+                  {
+                    "argv": [
+                      "cargo-berth",
+                      "identity",
+                      "clear-session",
+                      "--json"
+                    ],
+                    "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                    "kind": "claim_separately_here"
+                  }
+                ],
+                "reservation_id": "reservation-mismatch"
+              },
+              "kind": "coordination_identity"
+            },
+            "reservations": [],
+            "status": "invalid_input",
+            "verb": "check"
+          },
+          "exit_code": 5
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "cargo-berth refused this edit hook request: coordination identity session_worktree_mismatch requires one recovery action before retrying this edit: `cd '{FIXTURE_ROOT}/holding worktree' && 'cargo-berth' 'check' '--json' '--' 'file:source file.rs'` or `cd '{FIXTURE_ROOT}/repository' && 'cargo-berth' 'identity' 'clear-session' '--json'`\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_hooks_render_coordination_identity_recovery_actions_without_message#5"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 5,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "coordination_run_id": "run-mismatch",
+                "holding_root": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/holding worktree",
+                "holding_worktree_id": "worktree-holder",
+                "issuing_root": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                "issuing_worktree_id": "worktree-issuer",
+                "kind": "session_worktree_mismatch",
+                "recovery_actions": [
+                  {
+                    "argv": [
+                      "cargo-berth",
+                      "check",
+                      "--json",
+                      "--",
+                      "file:source file.rs"
+                    ],
+                    "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/holding worktree",
+                    "kind": "rerun_from_holding_worktree"
+                  },
+                  {
+                    "argv": [
+                      "cargo-berth",
+                      "identity",
+                      "clear-session",
+                      "--json"
+                    ],
+                    "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                    "kind": "claim_separately_here"
+                  }
+                ],
+                "reservation_id": "reservation-mismatch"
+              },
+              "kind": "coordination_identity"
+            },
+            "reservations": [],
+            "status": "invalid_input",
+            "verb": "drift"
+          },
+          "exit_code": 5
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth rejected drift under the current coordination identity.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"COORDINATION IDENTITY: session_worktree_mismatch requires one recovery action before continuing: `cd '{FIXTURE_ROOT}/holding worktree' && 'cargo-berth' 'check' '--json' '--' 'file:source file.rs'` or `cd '{FIXTURE_ROOT}/repository' && 'cargo-berth' 'identity' 'clear-session' '--json'`\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_hooks_render_coordination_identity_recovery_actions_without_message#6"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 5,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "coordination_run_id": "run-mismatch",
+                "holding_root": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/holding worktree",
+                "holding_worktree_id": "worktree-holder",
+                "issuing_root": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                "issuing_worktree_id": "worktree-issuer",
+                "kind": "session_worktree_mismatch",
+                "recovery_actions": [
+                  {
+                    "argv": [
+                      "cargo-berth",
+                      "identity",
+                      "clear-session",
+                      "--json"
+                    ],
+                    "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                    "kind": "claim_separately_here"
+                  }
+                ],
+                "reservation_id": "reservation-mismatch"
+              },
+              "kind": "coordination_identity"
+            },
+            "reservations": [],
+            "status": "invalid_input",
+            "verb": "check"
+          },
+          "exit_code": 5
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "cargo-berth refused this edit hook request: coordination identity session_worktree_mismatch requires one recovery action before retrying this edit: `cd '{FIXTURE_ROOT}/repository' && 'cargo-berth' 'identity' 'clear-session' '--json'`\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_hooks_render_coordination_identity_recovery_actions_without_message#7"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 5,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "coordination_run_id": "run-mismatch",
+                "holding_root": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/holding worktree",
+                "holding_worktree_id": "worktree-holder",
+                "issuing_root": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                "issuing_worktree_id": "worktree-issuer",
+                "kind": "session_worktree_mismatch",
+                "recovery_actions": [
+                  {
+                    "argv": [
+                      "cargo-berth",
+                      "identity",
+                      "clear-session",
+                      "--json"
+                    ],
+                    "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+                    "kind": "claim_separately_here"
+                  }
+                ],
+                "reservation_id": "reservation-mismatch"
+              },
+              "kind": "coordination_identity"
+            },
+            "reservations": [],
+            "status": "invalid_input",
+            "verb": "drift"
+          },
+          "exit_code": 5
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth rejected drift under the current coordination identity.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"COORDINATION IDENTITY: session_worktree_mismatch requires one recovery action before continuing: `cd '{FIXTURE_ROOT}/repository' && 'cargo-berth' 'identity' 'clear-session' '--json'`\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.mqvgfehd/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_hooks_render_coordination_identity_recovery_actions_without_message#8"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "outstanding_incursions": {
+                  "entries": [
+                    {
+                      "incident_id": "incident-0"
+                    }
+                  ]
+                },
+                "recorded_incursion_answers": {
+                  "entries": []
+                }
+              },
+              "kind": "board"
+            },
+            "reservations": [],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        },
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [
+                  {
+                    "effects": [
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-0"
+                        ],
+                        "incident_id": "incident-0",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-0.rs"
+                        ]
+                      }
+                    ],
+                    "reservation_id": "reservation-straying",
+                    "status": "changed"
+                  }
+                ],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [
+              "reservation-straying"
+            ],
+            "status": "incursion",
+            "verb": "drift"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n  \"continue\": true,\n  \"systemMessage\": \"cargo-berth detected drift that requires an immediate stop.\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PostToolUse\",\n    \"additionalContext\": \"INCURSION: reservation reservation-straying entered path-0.rs, held by foreign-0; incident incident-0. STOP. Resolve with `cargo-berth resolve reservation-straying --incursion incident-0` before making more changes.\"\n  }\n}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ],
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.0ucevtao/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_incursion_board_read_cost_is_constant"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "outstanding_incursions": {
+                  "entries": [
+                    {
+                      "incident_id": "incident-0"
+                    },
+                    {
+                      "incident_id": "incident-1"
+                    },
+                    {
+                      "incident_id": "incident-2"
+                    },
+                    {
+                      "incident_id": "incident-3"
+                    }
+                  ]
+                },
+                "recorded_incursion_answers": {
+                  "entries": []
+                }
+              },
+              "kind": "board"
+            },
+            "reservations": [],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        },
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [
+                  {
+                    "effects": [
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-0"
+                        ],
+                        "incident_id": "incident-0",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-0.rs"
+                        ]
+                      },
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-1"
+                        ],
+                        "incident_id": "incident-1",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-1.rs"
+                        ]
+                      },
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-2"
+                        ],
+                        "incident_id": "incident-2",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-2.rs"
+                        ]
+                      },
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-3"
+                        ],
+                        "incident_id": "incident-3",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-3.rs"
+                        ]
+                      }
+                    ],
+                    "reservation_id": "reservation-straying",
+                    "status": "changed"
+                  }
+                ],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [
+              "reservation-straying"
+            ],
+            "status": "incursion",
+            "verb": "drift"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n  \"continue\": true,\n  \"systemMessage\": \"cargo-berth detected drift that requires an immediate stop.\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PostToolUse\",\n    \"additionalContext\": \"INCURSION: reservation reservation-straying entered path-0.rs, held by foreign-0; incident incident-0. STOP. Resolve with `cargo-berth resolve reservation-straying --incursion incident-0` before making more changes.\\nINCURSION: reservation reservation-straying entered path-1.rs, held by foreign-1; incident incident-1. STOP. Resolve with `cargo-berth resolve reservation-straying --incursion incident-1` before making more changes.\\nINCURSION: reservation reservation-straying entered path-2.rs, held by foreign-2; incident incident-2. STOP. Resolve with `cargo-berth resolve reservation-straying --incursion incident-2` before making more changes.\\nINCURSION: reservation reservation-straying entered path-3.rs, held by foreign-3; incident incident-3. STOP. Resolve with `cargo-berth resolve reservation-straying --incursion incident-3` before making more changes.\"\n  }\n}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ],
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.0ucevtao/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_incursion_board_read_cost_is_constant#2"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [],
+            "status": "clear",
+            "verb": "drift"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.0ucevtao/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_incursion_board_read_cost_is_constant#3"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [
+                  {
+                    "effects": [
+                      {
+                        "added_scopes": [
+                          {
+                            "kind": "file",
+                            "path": "widened.rs"
+                          }
+                        ],
+                        "kind": "widened"
+                      }
+                    ],
+                    "reservation_id": "reservation-widened",
+                    "status": "changed"
+                  }
+                ],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [
+              "reservation-widened"
+            ],
+            "status": "widened",
+            "verb": "drift"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth widened this worktree reservation footprint.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"AUTO-WIDEN: reservation reservation-widened now covers file:widened.rs\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.0ucevtao/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_incursion_board_read_cost_is_constant#4"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "outstanding_incursions": {
+                  "entries": [
+                    {
+                      "incident_id": "incident-0"
+                    }
+                  ]
+                },
+                "recorded_incursion_answers": {
+                  "entries": [
+                    {
+                      "incident_id": "incident-0"
+                    }
+                  ]
+                }
+              },
+              "kind": "board"
+            },
+            "reservations": [],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        },
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [
+                  {
+                    "effects": [
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-0"
+                        ],
+                        "incident_id": "incident-0",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-0.rs"
+                        ]
+                      }
+                    ],
+                    "reservation_id": "reservation-straying",
+                    "status": "changed"
+                  }
+                ],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [
+              "reservation-straying"
+            ],
+            "status": "incursion",
+            "verb": "drift"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth could not verify the live incursion state.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"STOP: the PostToolUse drift response named an incursion, but a current board read could not confirm whether it still needs resolution.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ],
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.ko1sgh0i/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_incursion_in_both_board_sections_fails_closed"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "malformed": true
+          },
+          "exit_code": 0
+        },
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [
+                  {
+                    "effects": [
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-0"
+                        ],
+                        "incident_id": "incident-0",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-0.rs"
+                        ]
+                      }
+                    ],
+                    "reservation_id": "reservation-straying",
+                    "status": "changed"
+                  }
+                ],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [
+              "reservation-straying"
+            ],
+            "status": "incursion",
+            "verb": "drift"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth could not verify the live incursion state.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"STOP: the PostToolUse drift response named an incursion, but a current board read could not confirm whether it still needs resolution.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ],
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.z5b3jf9_/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_invalid_live_board_fails_closed"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "outstanding_incursions": {
+                  "entries": [
+                    {
+                      "incident_id": "incident-0"
+                    }
+                  ]
+                },
+                "recorded_incursion_answers": {
+                  "entries": []
+                }
+              },
+              "kind": "board"
+            },
+            "reservations": [],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        },
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [
+                  {
+                    "effects": [
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-0"
+                        ],
+                        "incident_id": "incident-0",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-0.rs"
+                        ]
+                      }
+                    ],
+                    "reservation_id": "reservation-straying",
+                    "status": "changed"
+                  }
+                ],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [
+              "reservation-straying"
+            ],
+            "status": "incursion",
+            "verb": "drift"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n  \"continue\": true,\n  \"systemMessage\": \"cargo-berth detected drift that requires an immediate stop.\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PostToolUse\",\n    \"additionalContext\": \"INCURSION: reservation reservation-straying entered path-0.rs, held by foreign-0; incident incident-0. STOP. Resolve with `cargo-berth resolve reservation-straying --incursion incident-0` before making more changes.\"\n  }\n}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ],
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.hp4eh7lt/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_outstanding_incursion_emits_stop_text"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "A future drift outcome this installation has never heard of.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "drift"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth reported a state this installation does not yet render.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"A future drift outcome this installation has never heard of.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.8zwjubl8/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_post_bash_reports_an_unnamed_drift_status_in_the_engine_words"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 7,
+            "message": "A future drift outcome this installation has never heard of.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "drift"
+          },
+          "exit_code": 7
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth reported a state this installation does not yet render.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"A future drift outcome this installation has never heard of.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.8zwjubl8/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_post_bash_reports_an_unnamed_drift_status_in_the_engine_words#2"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "Cleared under an acquisition shape this installation predates.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_clear_status_no_installed_table_names",
+            "verb": "check"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth authorized this edit and stated the detail below itself.\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"Cleared under an acquisition shape this installation predates.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.o09mh9zd/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.o09mh9zd/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_pre_edit_allows_an_unfamiliar_clear_response"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "A future outcome this installation has never heard of.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "check"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "A future outcome this installation has never heard of.\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.1aed0sxt/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.1aed0sxt/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_pre_edit_blocks_an_unnamed_status_on_its_exit_code"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 2,
+            "message": "A future outcome this installation has never heard of.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "anything": "the hook must not read this"
+              },
+              "kind": "a_payload_kind_no_installed_table_names"
+            },
+            "reservations": [],
+            "status": "a_status_no_installed_table_names",
+            "verb": "check"
+          },
+          "exit_code": 2
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "A future outcome this installation has never heard of.\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.1aed0sxt/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.1aed0sxt/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_pre_edit_blocks_an_unnamed_status_on_its_exit_code#2"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "No usable harness-session mapping selects one active reservation among 01a054d8-6797-7ec2-8907-07a71169d947, 01a054d8-67f0-7d73-b6af-1c5016b1e9ef. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published.",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "candidate_reservation_ids": [
+                  "01a054d8-6797-7ec2-8907-07a71169d947",
+                  "01a054d8-67f0-7d73-b6af-1c5016b1e9ef"
+                ],
+                "status": "ambiguous_active_run_reservations"
+              },
+              "kind": "first_touch_reservation_selection"
+            },
+            "reservations": [
+              "01a054d8-6797-7ec2-8907-07a71169d947",
+              "01a054d8-67f0-7d73-b6af-1c5016b1e9ef"
+            ],
+            "status": "ambiguous_active_run_reservations",
+            "verb": "check"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "No usable harness-session mapping selects one active reservation among 01a054d8-6797-7ec2-8907-07a71169d947, 01a054d8-67f0-7d73-b6af-1c5016b1e9ef. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published.\n\nReservations named by this response:\n\n- `01a054d8-6797-7ec2-8907-07a71169d947`\n- `01a054d8-67f0-7d73-b6af-1c5016b1e9ef`\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.6pjyyrj3/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.6pjyyrj3/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_pre_edit_renders_an_ambiguous_first_touch_from_the_engine_message"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "x",
+            "payload": {
+              "alerts": [],
+              "data": {},
+              "kind": "claim"
+            },
+            "reservations": [],
+            "status": "clear",
+            "verb": "claim"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "cargo-berth refused this edit hook request: check exited 1 without a readable response envelope\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.k_wzwe_l/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.k_wzwe_l/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_pre_edit_still_refuses_output_that_cannot_speak_for_itself"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "",
+            "payload": {
+              "alerts": [],
+              "data": {},
+              "kind": "check"
+            },
+            "reservations": [],
+            "status": "clear",
+            "verb": "check"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "cargo-berth refused this edit hook request: check exited 1 without a readable response envelope\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.k_wzwe_l/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.k_wzwe_l/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_pre_edit_still_refuses_output_that_cannot_speak_for_itself#2"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 3,
+            "message": "x",
+            "payload": {
+              "alerts": [],
+              "data": {},
+              "kind": "check"
+            },
+            "reservations": [],
+            "status": "clear",
+            "verb": "check"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 2,
+        "stderr": "cargo-berth refused this edit hook request: check exited 1 without a readable response envelope\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.k_wzwe_l/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.k_wzwe_l/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_pre_edit_still_refuses_output_that_cannot_speak_for_itself#3"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "outstanding_incursions": {
+                  "entries": []
+                },
+                "recorded_incursion_answers": {
+                  "entries": [
+                    {
+                      "incident_id": "incident-0"
+                    }
+                  ]
+                }
+              },
+              "kind": "board"
+            },
+            "reservations": [],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        },
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [
+                  {
+                    "effects": [
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-0"
+                        ],
+                        "incident_id": "incident-0",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-0.rs"
+                        ]
+                      }
+                    ],
+                    "reservation_id": "reservation-straying",
+                    "status": "changed"
+                  }
+                ],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [
+              "reservation-straying"
+            ],
+            "status": "incursion",
+            "verb": "drift"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ],
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.kcmpbaw2/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_recorded_incursion_emits_no_stop_text"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "outstanding_incursions": {
+                  "entries": []
+                },
+                "recorded_incursion_answers": {
+                  "entries": [
+                    {
+                      "incident_id": "incident-0"
+                    }
+                  ]
+                }
+              },
+              "kind": "board"
+            },
+            "reservations": [],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        },
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [
+                  {
+                    "effects": [
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-0"
+                        ],
+                        "incident_id": "incident-0",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-0.rs"
+                        ]
+                      },
+                      {
+                        "added_scopes": [
+                          {
+                            "kind": "file",
+                            "path": "widened.rs"
+                          }
+                        ],
+                        "kind": "widened"
+                      }
+                    ],
+                    "reservation_id": "reservation-straying",
+                    "status": "changed"
+                  }
+                ],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [
+              "reservation-straying"
+            ],
+            "status": "incursion",
+            "verb": "drift"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n  \"continue\": true,\n  \"systemMessage\": \"cargo-berth widened this worktree reservation footprint.\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PostToolUse\",\n    \"additionalContext\": \"AUTO-WIDEN: reservation reservation-straying now covers file:widened.rs\"\n  }\n}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ],
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.5cajvnb3/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_recorded_incursion_preserves_concurrent_widening_feedback"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "outstanding_incursions": {
+                  "entries": []
+                },
+                "recorded_incursion_answers": {
+                  "entries": [
+                    {
+                      "incident_id": "incident-0"
+                    }
+                  ]
+                }
+              },
+              "kind": "board"
+            },
+            "reservations": [],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        },
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 1,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [
+                {
+                  "data": {
+                    "evidence_status": {
+                      "status": "trunk_rewritten"
+                    },
+                    "kind": "lost_integration_evidence",
+                    "protected_tip": "1111111111111111111111111111111111111111",
+                    "recovery": {
+                      "action": {
+                        "action": "resolve_integrated_as",
+                        "reservation_id": "reservation-lost-evidence"
+                      },
+                      "kind": "verify_resolved_trunk",
+                      "trunk_oid": "2222222222222222222222222222222222222222"
+                    },
+                    "reservation_id": "reservation-lost-evidence"
+                  },
+                  "kind": "lost_integration_evidence"
+                }
+              ],
+              "data": {
+                "comparison": "cheap_delta",
+                "results": [
+                  {
+                    "effects": [
+                      {
+                        "commits": [],
+                        "foreign_reservation_ids": [
+                          "foreign-0"
+                        ],
+                        "incident_id": "incident-0",
+                        "kind": "incursion",
+                        "paths": [
+                          "path-0.rs"
+                        ]
+                      }
+                    ],
+                    "reservation_id": "reservation-straying",
+                    "status": "changed"
+                  }
+                ],
+                "widening": {
+                  "status": "not_needed"
+                }
+              },
+              "kind": "drift"
+            },
+            "reservations": [
+              "reservation-straying"
+            ],
+            "status": "incursion",
+            "verb": "drift"
+          },
+          "exit_code": 1
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n  \"continue\": true,\n  \"systemMessage\": \"cargo-berth detected lost integration evidence for released work.\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PostToolUse\",\n    \"additionalContext\": \"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, but trunk 2222222222222222222222222222222222222222 no longer proves protected tip 1111111111111111111111111111111111111111. If trunk 2222222222222222222222222222222222222222 contains the released work, run `cargo-berth resolve reservation-lost-evidence --integrated-as 2222222222222222222222222222222222222222`. Otherwise restore the work first. Inspect `cargo-berth board --json`.\"\n  }\n}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ],
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.879qj_r_/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_recorded_incursion_preserves_lost_evidence_feedback"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "The reservation board was read. Use `cargo-berth board --json` to inspect it.",
+            "output_contract_version": 2,
+            "payload": {
+              "alerts": [],
+              "data": {
+                "alerts": {
+                  "entries": [
+                    {
+                      "branch": {
+                        "reference": "refs/heads/orphan-0",
+                        "status": "present",
+                        "tip": "c13950fb8e8eb52e6ecdd9e0e2d70da8e358ab1d"
+                      },
+                      "kind": "orphaned_outstanding",
+                      "object_availability": "available",
+                      "protected_tip": "c13950fb8e8eb52e6ecdd9e0e2d70da8e358ab1d",
+                      "recoverability": "recoverable_from_branch",
+                      "recovery_consequence": "work_recoverable",
+                      "reservation_id": "01a057cf-550b-7e81-a469-a0dc171c82af",
+                      "resolution": {
+                        "action": "recover",
+                        "flag": "resolve --recovered"
+                      },
+                      "retention_ref": {
+                        "reference": "refs/cargo-berth/reservations/01a057cf-550b-7e81-a469-a0dc171c82af",
+                        "status": "present"
+                      }
+                    },
+                    {
+                      "branch": {
+                        "reference": "refs/heads/orphan-1",
+                        "status": "present",
+                        "tip": "812d1b215ec9a351334cff53148a69e4ee4a0fb2"
+                      },
+                      "kind": "orphaned_outstanding",
+                      "object_availability": "available",
+                      "protected_tip": "812d1b215ec9a351334cff53148a69e4ee4a0fb2",
+                      "recoverability": "recoverable_from_branch",
+                      "recovery_consequence": "work_recoverable",
+                      "reservation_id": "01a057cf-576a-79b2-b292-c29fd9d77620",
+                      "resolution": {
+                        "action": "recover",
+                        "flag": "resolve --recovered"
+                      },
+                      "retention_ref": {
+                        "reference": "refs/cargo-berth/reservations/01a057cf-576a-79b2-b292-c29fd9d77620",
+                        "status": "present"
+                      }
+                    }
+                  ],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "available_forced_permits": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "bypass_audit": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "git_cost": {
+                  "orphan_recovery_evidence_queries": 8,
+                  "protected_predecessor_ancestry_queries": 0,
+                  "reservation_evidence_revalidations": 2,
+                  "trunk_resolution_calls": 1,
+                  "worktree_ahead_behind_computations": 0,
+                  "worktree_list_calls": 1
+                },
+                "integration_order": "undeclared",
+                "journal_position": {
+                  "generation": 6,
+                  "journal_byte_offset": 5550
+                },
+                "outstanding_incursions": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "ready_now": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "recorded_incursion_answers": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "recorded_overlap_answers": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "recovered_bypasses_this_invocation": [],
+                "resolved": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "settled_ordering_constraints": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "unconstrained_reservations": {
+                  "entries": [
+                    {
+                      "ahead_behind_main": {
+                        "status": "unavailable"
+                      },
+                      "edit_blocking_status": "blocking",
+                      "freshness": {
+                        "last_activity_at": "2026-08-31T12:33:20.754Z",
+                        "status": "fresh"
+                      },
+                      "holder": {
+                        "branch": {
+                          "kind": "attached",
+                          "reference": "refs/heads/orphan-0"
+                        },
+                        "liveness": "orphaned",
+                        "worktree_id": "01a057cf-54e6-7a63-99ff-d6dc8cdea099",
+                        "worktree_root": "/private/tmp/claude/cargo-berth-post-tool-use.98356x6u/orphan-0"
+                      },
+                      "integration_evidence": {
+                        "kind": "current",
+                        "status": {
+                          "status": "not_integrated"
+                        }
+                      },
+                      "lifecycle": {
+                        "protected_tip": "c13950fb8e8eb52e6ecdd9e0e2d70da8e358ab1d",
+                        "stage": "outstanding"
+                      },
+                      "purpose": {
+                        "explanation": "PostToolUse timing fixture",
+                        "kind": "explained"
+                      },
+                      "reservation_id": "01a057cf-550b-7e81-a469-a0dc171c82af",
+                      "scopes": [
+                        {
+                          "kind": "file",
+                          "path": "orphan-0.txt"
+                        }
+                      ],
+                      "source": {
+                        "kind": "explicit"
+                      },
+                      "visibility": "active_constraint"
+                    },
+                    {
+                      "ahead_behind_main": {
+                        "status": "unavailable"
+                      },
+                      "edit_blocking_status": "blocking",
+                      "freshness": {
+                        "last_activity_at": "2026-08-31T12:33:21.372Z",
+                        "status": "fresh"
+                      },
+                      "holder": {
+                        "branch": {
+                          "kind": "attached",
+                          "reference": "refs/heads/orphan-1"
+                        },
+                        "liveness": "orphaned",
+                        "worktree_id": "01a057cf-571b-7f91-9bbb-ce07addbb6cb",
+                        "worktree_root": "/private/tmp/claude/cargo-berth-post-tool-use.98356x6u/orphan-1"
+                      },
+                      "integration_evidence": {
+                        "kind": "current",
+                        "status": {
+                          "status": "not_integrated"
+                        }
+                      },
+                      "lifecycle": {
+                        "protected_tip": "812d1b215ec9a351334cff53148a69e4ee4a0fb2",
+                        "stage": "outstanding"
+                      },
+                      "purpose": {
+                        "explanation": "PostToolUse timing fixture",
+                        "kind": "explained"
+                      },
+                      "reservation_id": "01a057cf-576a-79b2-b292-c29fd9d77620",
+                      "scopes": [
+                        {
+                          "kind": "file",
+                          "path": "orphan-1.txt"
+                        }
+                      ],
+                      "source": {
+                        "kind": "explicit"
+                      },
+                      "visibility": "active_constraint"
+                    }
+                  ],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "unresolved_overlaps": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "waiting": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                }
+              },
+              "kind": "board"
+            },
+            "reservations": [
+              "01a057cf-550b-7e81-a469-a0dc171c82af",
+              "01a057cf-576a-79b2-b292-c29fd9d77620"
+            ],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth found 2 actionable coordination notice(s).\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"ORPHANED OUTSTANDING: reservation 01a057cf-550b-7e81-a469-a0dc171c82af at protected tip c13950fb8e8eb52e6ecdd9e0e2d70da8e358ab1d is recoverable_from_branch. Answer it with `cargo-berth resolve 01a057cf-550b-7e81-a469-a0dc171c82af --recovered` after reviewing the work.\\nORPHANED OUTSTANDING: reservation 01a057cf-576a-79b2-b292-c29fd9d77620 at protected tip 812d1b215ec9a351334cff53148a69e4ee4a0fb2 is recoverable_from_branch. Answer it with `cargo-berth resolve 01a057cf-576a-79b2-b292-c29fd9d77620 --recovered` after reviewing the work.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.2spx2ucs/repository",
+        "session_id": "fixture-session"
+      },
+      "hook": "berth_session_start.sh",
+      "name": "test_session_start_renders_real_orphan_recovery_actions"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 0,
+            "message": "The reservation board was read. Use `cargo-berth board --json` to inspect it.",
+            "output_contract_version": 2,
+            "payload": {
+              "alerts": [],
+              "data": {
+                "alerts": {
+                  "entries": [
+                    {
+                      "branch": {
+                        "reference": "refs/heads/orphan-0",
+                        "status": "missing"
+                      },
+                      "kind": "orphaned_outstanding",
+                      "object_availability": "unavailable",
+                      "protected_tip": "c13950fb8e8eb52e6ecdd9e0e2d70da8e358ab1d",
+                      "recoverability": "commit_unavailable",
+                      "recovery_consequence": "commits_lost",
+                      "reservation_id": "01a057cf-550b-7e81-a469-a0dc171c82af",
+                      "resolution": {
+                        "action": "retire_or_abandon",
+                        "flags": [
+                          "resolve --retire-orphan --why <reason>",
+                          "resolve --abandon --why <reason>"
+                        ]
+                      },
+                      "retention_ref": {
+                        "reference": "refs/cargo-berth/reservations/01a057cf-550b-7e81-a469-a0dc171c82af",
+                        "status": "missing"
+                      }
+                    },
+                    {
+                      "branch": {
+                        "reference": "refs/heads/orphan-1",
+                        "status": "missing"
+                      },
+                      "kind": "orphaned_outstanding",
+                      "object_availability": "unavailable",
+                      "protected_tip": "812d1b215ec9a351334cff53148a69e4ee4a0fb2",
+                      "recoverability": "commit_unavailable",
+                      "recovery_consequence": "commits_lost",
+                      "reservation_id": "01a057cf-576a-79b2-b292-c29fd9d77620",
+                      "resolution": {
+                        "action": "retire_or_abandon",
+                        "flags": [
+                          "resolve --retire-orphan --why <reason>",
+                          "resolve --abandon --why <reason>"
+                        ]
+                      },
+                      "retention_ref": {
+                        "reference": "refs/cargo-berth/reservations/01a057cf-576a-79b2-b292-c29fd9d77620",
+                        "status": "missing"
+                      }
+                    }
+                  ],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "available_forced_permits": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "bypass_audit": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "git_cost": {
+                  "orphan_recovery_evidence_queries": 6,
+                  "protected_predecessor_ancestry_queries": 0,
+                  "reservation_evidence_revalidations": 2,
+                  "trunk_resolution_calls": 1,
+                  "worktree_ahead_behind_computations": 0,
+                  "worktree_list_calls": 1
+                },
+                "integration_order": "undeclared",
+                "journal_position": {
+                  "generation": 6,
+                  "journal_byte_offset": 5550
+                },
+                "outstanding_incursions": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "ready_now": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "recorded_incursion_answers": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "recorded_overlap_answers": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "recovered_bypasses_this_invocation": [],
+                "resolved": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "settled_ordering_constraints": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "unconstrained_reservations": {
+                  "entries": [
+                    {
+                      "ahead_behind_main": {
+                        "status": "unavailable"
+                      },
+                      "edit_blocking_status": "blocking",
+                      "freshness": {
+                        "last_activity_at": "2026-08-31T12:33:20.754Z",
+                        "status": "fresh"
+                      },
+                      "holder": {
+                        "branch": {
+                          "kind": "attached",
+                          "reference": "refs/heads/orphan-0"
+                        },
+                        "liveness": "orphaned",
+                        "worktree_id": "01a057cf-54e6-7a63-99ff-d6dc8cdea099",
+                        "worktree_root": "/private/tmp/claude/cargo-berth-post-tool-use.98356x6u/orphan-0"
+                      },
+                      "integration_evidence": {
+                        "kind": "current",
+                        "status": {
+                          "status": "not_integrated"
+                        }
+                      },
+                      "lifecycle": {
+                        "protected_tip": "c13950fb8e8eb52e6ecdd9e0e2d70da8e358ab1d",
+                        "stage": "outstanding"
+                      },
+                      "purpose": {
+                        "explanation": "PostToolUse timing fixture",
+                        "kind": "explained"
+                      },
+                      "reservation_id": "01a057cf-550b-7e81-a469-a0dc171c82af",
+                      "scopes": [
+                        {
+                          "kind": "file",
+                          "path": "orphan-0.txt"
+                        }
+                      ],
+                      "source": {
+                        "kind": "explicit"
+                      },
+                      "visibility": "active_constraint"
+                    },
+                    {
+                      "ahead_behind_main": {
+                        "status": "unavailable"
+                      },
+                      "edit_blocking_status": "blocking",
+                      "freshness": {
+                        "last_activity_at": "2026-08-31T12:33:21.372Z",
+                        "status": "fresh"
+                      },
+                      "holder": {
+                        "branch": {
+                          "kind": "attached",
+                          "reference": "refs/heads/orphan-1"
+                        },
+                        "liveness": "orphaned",
+                        "worktree_id": "01a057cf-571b-7f91-9bbb-ce07addbb6cb",
+                        "worktree_root": "/private/tmp/claude/cargo-berth-post-tool-use.98356x6u/orphan-1"
+                      },
+                      "integration_evidence": {
+                        "kind": "current",
+                        "status": {
+                          "status": "not_integrated"
+                        }
+                      },
+                      "lifecycle": {
+                        "protected_tip": "812d1b215ec9a351334cff53148a69e4ee4a0fb2",
+                        "stage": "outstanding"
+                      },
+                      "purpose": {
+                        "explanation": "PostToolUse timing fixture",
+                        "kind": "explained"
+                      },
+                      "reservation_id": "01a057cf-576a-79b2-b292-c29fd9d77620",
+                      "scopes": [
+                        {
+                          "kind": "file",
+                          "path": "orphan-1.txt"
+                        }
+                      ],
+                      "source": {
+                        "kind": "explicit"
+                      },
+                      "visibility": "active_constraint"
+                    }
+                  ],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "unresolved_overlaps": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                },
+                "waiting": {
+                  "entries": [],
+                  "journal_position": {
+                    "generation": 6,
+                    "journal_byte_offset": 5550
+                  }
+                }
+              },
+              "kind": "board"
+            },
+            "reservations": [
+              "01a057cf-550b-7e81-a469-a0dc171c82af",
+              "01a057cf-576a-79b2-b292-c29fd9d77620"
+            ],
+            "status": "board_ready",
+            "verb": "board"
+          },
+          "exit_code": 0
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth found 2 actionable coordination notice(s).\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"ORPHANED OUTSTANDING: reservation 01a057cf-550b-7e81-a469-a0dc171c82af at protected tip c13950fb8e8eb52e6ecdd9e0e2d70da8e358ab1d is commit_unavailable. Answer it with `cargo-berth resolve 01a057cf-550b-7e81-a469-a0dc171c82af --retire-orphan --why <reason>` or `cargo-berth resolve 01a057cf-550b-7e81-a469-a0dc171c82af --abandon --why <reason>` after reviewing the work.\\nORPHANED OUTSTANDING: reservation 01a057cf-576a-79b2-b292-c29fd9d77620 at protected tip 812d1b215ec9a351334cff53148a69e4ee4a0fb2 is commit_unavailable. Answer it with `cargo-berth resolve 01a057cf-576a-79b2-b292-c29fd9d77620 --retire-orphan --why <reason>` or `cargo-berth resolve 01a057cf-576a-79b2-b292-c29fd9d77620 --abandon --why <reason>` after reviewing the work.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.2spx2ucs/repository",
+        "session_id": "fixture-session"
+      },
+      "hook": "berth_session_start.sh",
+      "name": "test_session_start_renders_real_orphan_recovery_actions#2"
+    },
+    {
+      "engine_responses": {
+        "check": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 4,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "effect": "hard_stop",
+                "reason": "unknown_reservation",
+                "subject": {
+                  "id": "01991f4d-77d8-7f5f-9a1f-000000000001",
+                  "kind": "reservation"
+                }
+              },
+              "kind": "replay_failure"
+            },
+            "reservations": [],
+            "status": "ledger_unreadable",
+            "verb": "check"
+          },
+          "exit_code": 4
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth could not establish edit safety; editing is allowed because ledger loss fails open.\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"REPLAY HARD STOP: unknown_reservation for reservation 01991f4d-77d8-7f5f-9a1f-000000000001. Review the cargo-berth journal. If the retained order is invalid and may be discarded, run `cargo-berth init --reinitialize-after-review --json`.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "check",
+          "--json",
+          "--",
+          "file:source file.rs"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.a5e6ckwk/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.a5e6ckwk/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit.sh",
+      "name": "test_typed_replay_failure_routes_without_message_in_every_consumer"
+    },
+    {
+      "engine_responses": {
+        "drift": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 4,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "effect": "hard_stop",
+                "reason": "unknown_reservation",
+                "subject": {
+                  "id": "01991f4d-77d8-7f5f-9a1f-000000000001",
+                  "kind": "reservation"
+                }
+              },
+              "kind": "replay_failure"
+            },
+            "reservations": [],
+            "status": "ledger_unreadable",
+            "verb": "drift"
+          },
+          "exit_code": 4
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth stopped on invalid reservation history after Bash.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"REPLAY HARD STOP: unknown_reservation for reservation 01991f4d-77d8-7f5f-9a1f-000000000001. Review the cargo-berth journal. If the retained order is invalid and may be discarded, run `cargo-berth init --reinitialize-after-review --json`.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "drift",
+          "--json",
+          "--post-tool-use-payload"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.a5e6ckwk/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash.sh",
+      "name": "test_typed_replay_failure_routes_without_message_in_every_consumer#2"
+    },
+    {
+      "engine_responses": {
+        "board": {
+          "body": {
+            "blocked_by": [],
+            "exit_code": 4,
+            "message": "MESSAGE_MUST_REMAIN_UNREAD",
+            "payload": {
+              "alerts": [],
+              "data": {
+                "effect": "hard_stop",
+                "reason": "unknown_reservation",
+                "subject": {
+                  "id": "01991f4d-77d8-7f5f-9a1f-000000000001",
+                  "kind": "reservation"
+                }
+              },
+              "kind": "replay_failure"
+            },
+            "reservations": [],
+            "status": "ledger_unreadable",
+            "verb": "board"
+          },
+          "exit_code": 4
+        }
+      },
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth stopped on invalid reservation history at SessionStart.\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"REPLAY HARD STOP: unknown_reservation for reservation 01991f4d-77d8-7f5f-9a1f-000000000001. Review the cargo-berth journal. If the retained order is invalid and may be discarded, run `cargo-berth init --reinitialize-after-review --json`.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [
+        [
+          "board",
+          "--json"
+        ]
+      ],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.a5e6ckwk/repository",
+        "session_id": "fixture-session"
+      },
+      "hook": "berth_session_start.sh",
+      "name": "test_typed_replay_failure_routes_without_message_in_every_consumer#3"
+    },
+    {
+      "engine_responses": {},
+      "expected": {
+        "exit_code": 2,
+        "stderr": "cargo-berth refused this edit hook request: generated envelope validator {FIXTURE_ROOT}/berth_pre_edit-missing-envelope-validation.jq is missing or unreadable; repair the cargo-berth hook installation\n",
+        "stdout": ""
+      },
+      "expected_cargo_berth_calls": [],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.1w08kxm5/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "file_path": "/tmp/claude/cargo-berth-hook-rendering.1w08kxm5/repository/source file.rs"
+        },
+        "tool_name": "Edit"
+      },
+      "hook": "berth_pre_edit-missing-validator.sh",
+      "name": "test_unreadable_generated_validator_names_broken_installation"
+    },
+    {
+      "engine_responses": {},
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth hook installation needs repair.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"STOP: generated envelope validator {FIXTURE_ROOT}/berth_post_bash-missing-envelope-validation.jq is missing or unreadable. Repair the cargo-berth hook installation before relying on drift validation.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.1w08kxm5/repository",
+        "session_id": "fixture-session",
+        "tool_input": {
+          "command": "true"
+        },
+        "tool_name": "Bash"
+      },
+      "hook": "berth_post_bash-missing-validator.sh",
+      "name": "test_unreadable_generated_validator_names_broken_installation#2"
+    },
+    {
+      "engine_responses": {},
+      "expected": {
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"systemMessage\":\"cargo-berth hook installation needs repair.\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"Generated envelope validator {FIXTURE_ROOT}/berth_session_start-missing-envelope-validation.jq is missing or unreadable. Repair the cargo-berth hook installation before relying on SessionStart reconciliation.\"}}\n"
+      },
+      "expected_cargo_berth_calls": [],
+      "harness_payload": {
+        "cwd": "/tmp/claude/cargo-berth-hook-rendering.1w08kxm5/repository",
+        "session_id": "fixture-session"
+      },
+      "hook": "berth_session_start-missing-validator.sh",
+      "name": "test_unreadable_generated_validator_names_broken_installation#3"
+    }
+  ],
+  "normalization": "{FIXTURE_ROOT} replaces the per-run temporary directory.",
+  "purpose": "Real engine envelopes and the exact front-end rendering each one must produce. Captured from the installed hook layer while it was green; the contract generator produced no part of this file and must never write to it. Amending an expected result is a reviewed edit, not a regeneration."
+}

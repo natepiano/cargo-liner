@@ -203,7 +203,7 @@ enum Command {
     Board(BoardArguments),
     /// Check exact files or explicitly prefixed trees for foreign reservations.
     #[command(long_about = CHECK_LONG_ABOUT)]
-    Check(PathArguments),
+    Check(CheckArguments),
     /// Claim paths for a reservation.
     Claim(ClaimArguments),
     /// Compare observed worktree changes with an active reservation.
@@ -405,6 +405,17 @@ struct PathArguments {
     /// The output representation requested for this command.
     #[command(flatten)]
     json_output: JsonOutput,
+}
+
+/// Edit-check paths and the reservation the caller intends to continue.
+#[derive(Debug, Args)]
+struct CheckArguments {
+    /// The paths and output representation for this check.
+    #[command(flatten)]
+    path_arguments: PathArguments,
+    /// Continue the named active reservation held by the acting run and worktree.
+    #[arg(long = RESERVATION_ARGUMENT, value_name = RESERVATION_VALUE_NAME)]
+    reservation:    Option<ReservationId>,
 }
 
 /// Arguments that answer an overlap while claiming paths.
@@ -721,7 +732,7 @@ impl Command {
                     },
                 };
             },
-            Self::Check(path_arguments) => match path_arguments.into_check_request() {
+            Self::Check(check_arguments) => match check_arguments.into_check_request() {
                 Ok(check_request) => check::execute(check_request, recovery_command_line),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Check, &error),
             },
@@ -776,7 +787,9 @@ impl Command {
         match self {
             Self::Init(init_arguments) => init_arguments.json_output.output_format(),
             Self::Board(board_arguments) => board_arguments.json_output.output_format(),
-            Self::Check(path_arguments) => path_arguments.json_output.output_format(),
+            Self::Check(check_arguments) => {
+                check_arguments.path_arguments.json_output.output_format()
+            },
             Self::Claim(claim_arguments) => claim_arguments.json_output.output_format(),
             Self::Drift(drift_arguments) => drift_arguments.json_output.output_format(),
             Self::Release(reservation_arguments) | Self::Renew(reservation_arguments) => {
@@ -823,10 +836,17 @@ enum CommandOutputOwnership {
     BoardPresentedAndTerminalRestored,
 }
 
-impl PathArguments {
+impl CheckArguments {
     fn into_check_request(self) -> Result<CheckRequest, String> {
-        DeclaredReservationScopeSet::parse(self.paths, ScopeKind::File)
-            .map(|declared_scopes| CheckRequest { declared_scopes })
+        let reservation_selection = self.reservation.map_or(
+            claim::CheckReservationSelection::SessionMappingOrSingleActive,
+            claim::CheckReservationSelection::Explicit,
+        );
+        DeclaredReservationScopeSet::parse(self.path_arguments.paths, ScopeKind::File)
+            .map(|declared_scopes| CheckRequest {
+                declared_scopes,
+                reservation_selection,
+            })
             .map_err(|error| error.to_string())
     }
 }

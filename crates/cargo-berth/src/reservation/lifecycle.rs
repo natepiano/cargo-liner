@@ -29,7 +29,7 @@ declare_wire_enum! {
 }
 
 /// How far a reservation has progressed through the coordination protocol.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "stage", rename_all = "snake_case")]
 pub(crate) enum ReservationLifecycle {
     /// The holder may still change the reserved paths.
@@ -146,6 +146,7 @@ pub(crate) enum IntegrationEvidenceStatus {
     Integrated {
         /// The current trunk commit that was checked.
         #[schemars(with = "String")]
+        #[schemars(length(min = 1))]
         trunk_oid: GitObjectId,
         /// The git fact that established integration.
         #[serde(default)]
@@ -171,7 +172,7 @@ impl IntegrationEvidenceStatus {
 
 declare_wire_enum! {
     /// The effective edit decision derived from reservation lifecycle and integration evidence.
-    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
     #[serde(rename_all = "snake_case")]
     pub(crate) enum EditBlockingStatus {
         /// The reservation still blocks foreign edits.
@@ -189,11 +190,23 @@ pub(crate) enum ReleaseDisposition {
     /// Git proved the protected work reached trunk.
     Integrated,
     /// The user supplied a verified alternate trunk commit.
-    RewrittenIntegration(#[schemars(with = "String")] RewrittenIntegrationTrunkCommit),
+    RewrittenIntegration(
+        #[schemars(with = "String")]
+        #[schemars(length(min = 1))]
+        RewrittenIntegrationTrunkCommit,
+    ),
     /// The user deliberately discarded the reservation's work.
-    Abandoned(#[schemars(with = "String")] AbandonmentReason),
+    Abandoned(
+        #[schemars(with = "String")]
+        #[schemars(length(min = 1))]
+        AbandonmentReason,
+    ),
     /// The user confirmed an orphaned reservation can retire.
-    RetiredOrphan(#[schemars(with = "String")] OrphanRetirementReason),
+    RetiredOrphan(
+        #[schemars(with = "String")]
+        #[schemars(length(min = 1))]
+        OrphanRetirementReason,
+    ),
 }
 
 impl ReleaseDisposition {
