@@ -17,7 +17,7 @@ workspace = true
 [features]
 # Capture of the desktop behind the terminal window, and the attract-mode animation drawn from it.
 # Off by default because only an app that draws an idle screen has any use for it.
-backdrop  = ["dep:objc2-core-graphics"]
+backdrop  = ["dep:objc2-core-graphics", "dep:screencapturekit"]
 clipboard = ["crossterm/osc52"]
 default   = ["clipboard"]
 
@@ -53,10 +53,13 @@ objc2-core-foundation = { workspace = true, features = [
   "CFString",
   "std",
 ] }
-# Backs the `backdrop` feature. Re-reading where the window stands is the one window-server call
-# made every frame, and CoreGraphics also captures the display without the cross-process blocking
-# observed in ScreenCaptureKit.
+# Backs the `backdrop` feature. CoreGraphics answers the cheap per-frame window-position and title
+# queries; the display capture itself runs through a persistent ScreenCaptureKit stream (see
+# `backdrop/desktop/platform/macos/stream.rs`).
 objc2-core-graphics = { workspace = true, optional = true, features = [
+  "CGBitmapContext",
+  "CGColorSpace",
+  "CGContext",
   "CGDirectDisplay",
   "CGError",
   "CGImage",
@@ -66,3 +69,7 @@ objc2-core-graphics = { workspace = true, optional = true, features = [
   "std",
 ] }
 objc2-io-kit = { workspace = true, features = ["libc", "std"] }
+# Backs the `backdrop` feature's display capture: one persistent, multi-client ScreenCaptureKit
+# stream per display (see `backdrop/desktop/platform/macos/stream.rs`), which several instances
+# share without the cross-process stall a fresh per-frame screenshot hits on macOS 26.
+screencapturekit = { workspace = true, optional = true, features = ["async"] }

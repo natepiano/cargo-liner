@@ -1,8 +1,11 @@
 //! The macOS capture backend.
 //!
-//! CoreGraphics captures the desktop below the selected terminal window and answers the
-//! per-window questions -- where a window stands, what it is titled -- that the drawing threads
-//! ask far more often.
+//! A persistent `ScreenCaptureKit` stream -- one per display, in the [`stream`] submodule --
+//! captures the desktop on the selected terminal window's display, and `CoreGraphics` answers the
+//! per-window questions -- where a window stands, what it is titled -- that the drawing threads ask
+//! far more often.
+
+mod stream;
 
 use std::collections::HashSet;
 use std::env;
@@ -22,7 +25,6 @@ use objc2_core_graphics::CGError;
 use objc2_core_graphics::CGGetActiveDisplayList;
 use objc2_core_graphics::CGPreflightScreenCaptureAccess;
 use objc2_core_graphics::CGRectMakeWithDictionaryRepresentation;
-use objc2_core_graphics::CGWindowImageOption;
 use objc2_core_graphics::CGWindowListCopyWindowInfo;
 use objc2_core_graphics::CGWindowListOption;
 use objc2_core_graphics::kCGNullWindowID;
@@ -190,18 +192,15 @@ pub(in crate::backdrop::desktop) fn capture(
     let window_id = chosen.number;
     let window_selection = CaptureAttemptWindowSelection::Selected { window_id, method };
 
-    let desktop_result = capture_selected_window(metrics, chosen, &displays);
+    let desktop_result = capture_selected_window(metrics, chosen, &windows, &displays);
     CaptureAttemptResult::from_desktop_result(sequence, window_selection, desktop_result)
 }
 
 /// Capture the display behind the terminal window selected for this attempt.
-#[expect(
-    deprecated,
-    reason = "ScreenCaptureKit's cross-process screenshot calls block one another; CoreGraphics does not -- measured"
-)]
 fn capture_selected_window(
     metrics: Metrics,
     chosen: &Listed,
+    windows: &[Listed],
     displays: &[Display],
 ) -> Result<Desktop, CaptureFailure> {
     let window_id = chosen.number;
@@ -218,26 +217,36 @@ fn capture_selected_window(
     // display's pixels -- so the scale divides it before a cell comes out of it. See
     // [`Metrics::cell_points`].
     let cell = metrics.cell_points(backing_scale(display));
-    let Some(image) = objc2_core_graphics::CGWindowListCreateImage(
-        display_frame,
-        CGWindowListOption::OptionOnScreenBelowWindow,
-        window_id,
-        CGWindowImageOption::Default,
-    ) else {
-        return Err(if screen_capture_access_is_granted() {
-            CaptureFailure::DisplayCaptureFailed
-        } else {
-            CaptureFailure::ScreenRecordingAccessNotGranted
-        });
+    let output_size = (
+        CaptureFailure::DisplayCaptureFailed
+            .classify_option(points_to_u32(display_frame.size.width))?,
+        CaptureFailure::DisplayCaptureFailed
+            .classify_option(points_to_u32(display_frame.size.height))?,
+    );
+    // The display is captured through a persistent ScreenCaptureKit stream -- one per display,
+    // opened once and shared -- rather than a fresh in-process screenshot each refresh, which
+    // wedges process-to-process on macOS 26 the moment several instances overlap on the window
+    // server. The stream's content filter leaves out every window the emulator owns, so what comes
+    // back is the desktop the terminal is drawn over rather than the terminal itself. See the
+    // [`stream`] submodule.
+    let excluded = match chosen.owner {
+        TerminalWindowOwner::Application { pid } => windows
+            .iter()
+            .filter_map(|window| match window.owner {
+                TerminalWindowOwner::Application { pid: owner_pid } if owner_pid == pid => {
+                    Some(window.number)
+                },
+                _ => None,
+            })
+            .collect::<Vec<u32>>(),
+        TerminalWindowOwner::Unnamed => vec![chosen.number],
     };
-    let width = objc2_core_graphics::CGImageGetWidth(Some(&image));
-    let height = objc2_core_graphics::CGImageGetHeight(Some(&image));
-    let stride = objc2_core_graphics::CGImageGetBytesPerRow(Some(&image));
-    let provider = CaptureFailure::PixelExtractionFailed
-        .classify_option(objc2_core_graphics::CGImageGetDataProvider(Some(&image)))?;
-    let data = CaptureFailure::PixelExtractionFailed
-        .classify_option(objc2_core_graphics::CGDataProviderCopyData(Some(&provider)))?;
-    let bytes = data.to_vec();
+    let (bytes, width, height, stride) = stream::capture_display_bgra(
+        display.id,
+        output_size,
+        &excluded,
+        screen_capture_access_is_granted(),
+    )?;
     let rgba = CaptureFailure::PixelExtractionFailed
         .classify_option(bgra_rows_to_rgba(&bytes, width, height, stride))?;
     let image = (
@@ -254,6 +263,24 @@ fn capture_selected_window(
         rows,
         colors,
     })
+}
+
+/// Round a display's point dimension to the `u32` the capture stream configures its output size
+/// in.
+///
+/// [`None`] for a dimension no `u32` can hold, or one that is not a finite, non-negative length --
+/// neither is a size a capture could be asked for.
+fn points_to_u32(value: f64) -> Option<u32> {
+    if !(value.is_finite() && value >= 0.0 && value <= f64::from(u32::MAX)) {
+        return None;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bounds-checked, rounded point dimension"
+    )]
+    let rounded = value.round() as u32;
+    Some(rounded)
 }
 
 /// Convert padded BGRA rows from CoreGraphics into tightly packed RGBA pixels.

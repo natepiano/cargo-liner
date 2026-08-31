@@ -108,15 +108,15 @@ pub enum CaptureFailure {
     WorkerDisconnected,
     /// The monitor abandoned its maximum number of stalled or disconnected capture workers.
     WorkerReplacementLimitReached,
-    /// CoreGraphics could not capture the display while the Screen Recording access check reported
-    /// that access was not granted. The check gives the same answer when the process has never
-    /// prompted for access and when the user has refused it.
+    /// The capture stream could not open for the display while the Screen Recording access check
+    /// reported that access was not granted. The check gives the same answer when the process has
+    /// never prompted for access and when the user has refused it.
     ScreenRecordingAccessNotGranted,
     /// No window could be matched to the terminal running the app.
     TerminalWindowNotFound,
     /// No display could be matched to the selected terminal window.
     DisplayNotFound,
-    /// CoreGraphics returned no image for the display behind the terminal window.
+    /// The capture stream delivered no frame for the display behind the terminal window.
     DisplayCaptureFailed,
     /// The captured image could not expose its RGBA pixel bytes.
     PixelExtractionFailed,
