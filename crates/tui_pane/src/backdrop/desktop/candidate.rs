@@ -34,10 +34,10 @@ pub(in crate::backdrop) enum TerminalWindowSearchOutcome {
     NotFound,
     /// The lookup found this window-server id.
     #[cfg_attr(
-        not(target_os = "macos"),
+        all(not(target_os = "macos"), not(test)),
         expect(
             dead_code,
-            reason = "only the macOS backend finds windows because other platforms have no window server"
+            reason = "only the macOS backend constructs this outcome, because other platforms have no window server to find a window with; the unit tests construct it on every platform, so the expectation would go unfulfilled under cfg(test)"
         )
     )]
     Found { window_id: u32 },
