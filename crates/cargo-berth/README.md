@@ -251,7 +251,7 @@ every incursion, leaves each scope unchanged when it cannot select a widening
 subject, and points at the explicit command:
 
 ```text
-cargo-berth could not complete the post-commit drift check. Changed paths outside.txt were not widened because attribution is ambiguous among reservations 01a036fd-c494-73c3-8999-9682008496f1, 01a036fd-c539-76f2-9121-2b4d79bf3075. Run drift --reservation <id> with one listed reservation. Run `cargo-berth drift --full` by hand; this commit remains in place.
+cargo-berth could not complete the post-commit drift check. Changed paths outside.txt were not widened because attribution is ambiguous among reservations 01a036fd-c494-73c3-8999-9682008496f1, 01a036fd-c539-76f2-9121-2b4d79bf3075. Run `cargo-berth drift --reservation <id>` with one listed reservation. Run `cargo-berth drift --full` by hand; this commit remains in place.
 ```
 
 That is the intended non-mutating outcome: the commit exists, no reservation
@@ -259,9 +259,9 @@ changed, and the paths can be attributed by hand. An unidentified coordination
 run is reported only by the command, because there is no identity to journal:
 
 ```text
-Changed paths outside.txt were not widened because no coordination run was identified. Set CARGO_BERTH_RUN to the run that owns the target reservation, then run drift --reservation <id>.
-Incursion 01a036fe-2b98-7e11-8ebb-af53d83640bf: reservation 01a036fd-cbbc-7ce3-8a72-6f1ee19c4693 entered shared/entered.txt held by foreign reservation(s) 01a036fd-cd09-7c10-b121-354321926b1b. Stop and resolve the overlap with `resolve 01a036fd-cbbc-7ce3-8a72-6f1ee19c4693 --incursion 01a036fe-2b98-7e11-8ebb-af53d83640bf` before making more changes.
-Incursion 01a036fe-2b98-7e11-8ebb-af664b883b7c: reservation 01a036fd-cc5e-7b12-bcf8-e4f18ca90755 entered shared/entered.txt held by foreign reservation(s) 01a036fd-cd09-7c10-b121-354321926b1b. Stop and resolve the overlap with `resolve 01a036fd-cc5e-7b12-bcf8-e4f18ca90755 --incursion 01a036fe-2b98-7e11-8ebb-af664b883b7c` before making more changes.
+Changed paths outside.txt were not widened because no coordination run was identified. Set CARGO_BERTH_RUN to the run that owns the target reservation, then run `cargo-berth drift --reservation <id>`.
+Incursion 01a036fe-2b98-7e11-8ebb-af53d83640bf: reservation 01a036fd-cbbc-7ce3-8a72-6f1ee19c4693 entered shared/entered.txt held by foreign reservation(s) 01a036fd-cd09-7c10-b121-354321926b1b. Stop and resolve the overlap with `cargo-berth resolve 01a036fd-cbbc-7ce3-8a72-6f1ee19c4693 --incursion 01a036fe-2b98-7e11-8ebb-af53d83640bf` before making more changes.
+Incursion 01a036fe-2b98-7e11-8ebb-af664b883b7c: reservation 01a036fd-cc5e-7b12-bcf8-e4f18ca90755 entered shared/entered.txt held by foreign reservation(s) 01a036fd-cd09-7c10-b121-354321926b1b. Stop and resolve the overlap with `cargo-berth resolve 01a036fd-cc5e-7b12-bcf8-e4f18ca90755 --incursion 01a036fe-2b98-7e11-8ebb-af664b883b7c` before making more changes.
 ```
 
 `CARGO_BERTH_BYPASS=1` skips the whole post-commit check.

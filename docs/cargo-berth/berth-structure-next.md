@@ -69,16 +69,17 @@ pending-bypass marker still recorded for the audit.
 
 ## 6. `--integrated-as` requires a prior `release`, unreachable for an orphan
 
-**Target:** `crates/cargo-berth/src/verb/` resolve handling.
+**Target:** `crates/cargo-berth/src/recovery.rs` (`recovery_operation`) and
+`crates/cargo-berth/tests/liveness.rs`.
 
-`cargo-berth resolve <id> --integrated-as <commit>` refuses unless the
-reservation was released first, but an orphaned reservation — one whose worktree
-is gone — cannot be released, because `release` must run from the holder's
-worktree. The disposition that exists for exactly this case cannot be reached in
-it.
+`cargo-berth resolve <id> --integrated-as <commit>` maps an active reservation to
+`CheckpointRequired`. An orphaned reservation — one whose worktree is gone —
+cannot run `release` from its holder worktree, so the disposition intended to
+record rewritten integration cannot be reached.
 
-Satisfied by: `--integrated-as` accepting an orphaned reservation directly, or a
-refusal naming the command that does dispose of one.
+Satisfied by: a liveness test creating an active orphan and a reachable trunk
+commit, then either `--integrated-as` recording rewritten integration directly or
+its refusal naming the command that can actually dispose of that orphan.
 
 ## 7. Neither `check` nor `claim` refuses a foreign same-worktree reservation
 
@@ -91,3 +92,50 @@ engine exists to prevent.
 
 Satisfied by: same-worktree foreign reservations entering the refusal path with
 their holder facts, and a test covering two runs in one worktree.
+
+## 8. README engine-output quotes are checked against real engine renderings
+
+**Target:** `crates/cargo-berth/README.md` and
+`crates/cargo-berth/tests/engine_instructions.rs`.
+
+The README presents engine output as verbatim `text` blocks, but no test ties
+those blocks to the Rust renderings that produce them. Phase 3 changed drift and
+resolve instructions and required four manual documentation corrections, and
+every remaining phase that changes printed output can reintroduce the same drift.
+
+Satisfied by: each README block presented as observed engine output being sourced
+from a named real-binary scenario or frozen fixture, with a test that fails when
+the quoted block differs from that rendering.
+
+## 9. Drift attribution stays ambiguous between two reservations in one worktree
+
+**Target:** `crates/cargo-berth/src/drift/` attribution and
+`crates/cargo-berth/tests/liveness.rs`.
+
+When one worktree holds two active reservations, drift cannot attribute a changed
+path to either and refuses to widen, printing `DRIFT ATTRIBUTION REQUIRED … run
+drift --reservation <id> with one listed reservation`. Because nothing resolves
+the ambiguity, the notice fires again on the very next tool call, and it fired on
+essentially every call across a full working session. The engine names the fix but
+never applies it, so the paths stay unwidened indefinitely.
+
+This is the drift-side companion to item 7: that item is about `check` and `claim`
+not refusing a foreign same-worktree reservation, this one is about drift being
+unable to choose between two of them.
+
+Satisfied by: drift attributing a changed path to the reservation that already
+covers it or that the session identity selects, refusing only when that genuinely
+cannot be decided — and, when it does refuse, not repeating the same
+unactionable notice on every subsequent invocation.
+
+## 10. A post-commit drift check named an unmodified file as changed
+
+**Target:** `crates/cargo-berth/src/drift/` change detection.
+
+A post-commit drift check reported `Cargo.lock` as a changed path with ambiguous
+attribution when that file was neither modified in the working tree nor part of
+the commit. Observed once, at a checkpoint; not yet reduced to a repeatable case.
+
+Satisfied by: a reproduction that pins what made an untouched path appear in the
+changed set — a stale index read, a comparison against the wrong tree, or a
+generation boundary — and a test covering it.

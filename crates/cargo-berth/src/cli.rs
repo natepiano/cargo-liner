@@ -2049,8 +2049,10 @@ mod tests {
 
     use super::BINARY_NAME;
     use super::CARGO_SUBCOMMAND_NAME;
+    use super::ClaimArguments;
     use super::Cli;
     use super::CliOutputFormat;
+    use super::Command;
     use super::CommandResponseRendering;
     use super::CommandVerb;
     use super::PostCommitHookRequest;
@@ -2060,11 +2062,74 @@ mod tests {
     use super::exit_for_parser_error;
     use super::without_subcommand_name;
     use crate::exit::BerthExit;
+    use crate::output::blocked_edit_answer_guidance;
     use crate::session::HarnessSessionId;
     use crate::verb::board::BoardOutputSelection;
     use crate::verb::claim::ClaimRequest;
 
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+
+    #[derive(Clone, Copy)]
+    enum ExpectedClaimResolution {
+        Before,
+        After,
+        Defer,
+        Override,
+    }
+
+    impl ExpectedClaimResolution {
+        const ALL: [Self; 4] = [Self::Before, Self::After, Self::Defer, Self::Override];
+
+        const fn flag(self) -> &'static str {
+            match self {
+                Self::Before => "--before",
+                Self::After => "--after",
+                Self::Defer => "--defer",
+                Self::Override => "--override",
+            }
+        }
+
+        fn is_the_only_selected_resolution(self, claim_arguments: &ClaimArguments) -> bool {
+            let before_is_selected = claim_arguments.before.is_some();
+            let after_is_selected = claim_arguments.after.is_some();
+            let defer_is_selected = claim_arguments.defer.is_some();
+            let override_is_selected = claim_arguments.override_reservation.is_some();
+
+            match self {
+                Self::Before => {
+                    before_is_selected
+                        && !after_is_selected
+                        && !defer_is_selected
+                        && !override_is_selected
+                },
+                Self::After => {
+                    !before_is_selected
+                        && after_is_selected
+                        && !defer_is_selected
+                        && !override_is_selected
+                },
+                Self::Defer => {
+                    !before_is_selected
+                        && !after_is_selected
+                        && defer_is_selected
+                        && !override_is_selected
+                },
+                Self::Override => {
+                    !before_is_selected
+                        && !after_is_selected
+                        && !defer_is_selected
+                        && override_is_selected
+                },
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    enum ShellQuoteState {
+        Unquoted,
+        SingleQuoted,
+        DoubleQuoted,
+    }
 
     #[test]
     fn post_commit_request_renders_text_as_warning_and_json_as_envelope() {
@@ -2366,6 +2431,55 @@ mod tests {
     }
 
     #[test]
+    fn rendered_overlap_answer_commands_select_the_documented_resolution() -> Result<(), String> {
+        let mut rendered_commands = blocked_edit_answer_guidance()
+            .lines()
+            .filter(|line| {
+                line.chars()
+                    .next()
+                    .is_some_and(|character| character.is_ascii_digit())
+            })
+            .filter_map(|line| line.split('`').nth(1))
+            .filter(|command| command.split_whitespace().nth(1) == Some("claim"));
+
+        for expected_resolution in ExpectedClaimResolution::ALL {
+            let rendered_command = rendered_commands.next().ok_or_else(|| {
+                format!(
+                    "rendered guidance omitted the `{}` overlap answer command",
+                    expected_resolution.flag()
+                )
+            })?;
+            let claim_arguments = parse_rendered_claim_command(rendered_command)?;
+
+            assert!(
+                claim_arguments
+                    .overlap_why
+                    .as_deref()
+                    .is_some_and(|reason| !reason.trim().is_empty()),
+                "rendered overlap answer command `{rendered_command}` does not contain a non-empty \
+                 `--overlap-why` value"
+            );
+            assert!(
+                expected_resolution.is_the_only_selected_resolution(&claim_arguments),
+                "rendered overlap answer command `{rendered_command}` must select only `{}`; found \
+                 --before={}, --after={}, --defer={}, --override={}",
+                expected_resolution.flag(),
+                claim_arguments.before.is_some(),
+                claim_arguments.after.is_some(),
+                claim_arguments.defer.is_some(),
+                claim_arguments.override_reservation.is_some()
+            );
+        }
+
+        if let Some(extra_command) = rendered_commands.next() {
+            return Err(format!(
+                "rendered guidance contains an extra overlap answer command `{extra_command}`"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn proposal_tokens_are_parsed_at_the_cli_boundary() {
         assert!(
             claim_request(&[
@@ -2429,6 +2543,84 @@ mod tests {
             super::Command::Claim(claim_arguments) => claim_arguments.into_claim_request(),
             _ => Err("expected claim command".to_owned()),
         }
+    }
+
+    fn parse_rendered_claim_command(rendered_command: &str) -> Result<ClaimArguments, String> {
+        let arguments = split_shell_arguments(rendered_command)?;
+        let Some(executable) = arguments.first() else {
+            return Err(format!(
+                "rendered overlap answer command `{rendered_command}` has no executable"
+            ));
+        };
+        if executable != BINARY_NAME {
+            return Err(format!(
+                "rendered overlap answer command `{rendered_command}` invokes executable \
+                 `{executable}`, expected `{BINARY_NAME}`"
+            ));
+        }
+
+        let arguments = arguments
+            .into_iter()
+            .map(|argument| match argument.as_str() {
+                "<paths...>" => "src/lib.rs".to_owned(),
+                "<holder-reservation-id>" => RESERVATION_ID.to_owned(),
+                "<reason>" => "the overlap is coordinated".to_owned(),
+                _ => argument,
+            })
+            .collect::<Vec<_>>();
+        let cli = Cli::try_parse_from(arguments).map_err(|error| {
+            format!("rendered overlap answer command `{rendered_command}` did not parse: {error}")
+        })?;
+        match cli.command {
+            Command::Claim(claim_arguments) => Ok(claim_arguments),
+            _ => Err(format!(
+                "rendered overlap answer command `{rendered_command}` did not select `claim`"
+            )),
+        }
+    }
+
+    fn split_shell_arguments(rendered_command: &str) -> Result<Vec<String>, String> {
+        let mut arguments = Vec::new();
+        let mut current_argument = String::new();
+        let mut argument_started = false;
+        let mut quote_state = ShellQuoteState::Unquoted;
+
+        for character in rendered_command.chars() {
+            match (quote_state, character) {
+                (ShellQuoteState::Unquoted, character) if character.is_whitespace() => {
+                    if argument_started {
+                        arguments.push(std::mem::take(&mut current_argument));
+                        argument_started = false;
+                    }
+                },
+                (ShellQuoteState::Unquoted, '\'') => {
+                    quote_state = ShellQuoteState::SingleQuoted;
+                    argument_started = true;
+                },
+                (ShellQuoteState::Unquoted, '"') => {
+                    quote_state = ShellQuoteState::DoubleQuoted;
+                    argument_started = true;
+                },
+                (ShellQuoteState::SingleQuoted, '\'') | (ShellQuoteState::DoubleQuoted, '"') => {
+                    quote_state = ShellQuoteState::Unquoted;
+                },
+                (_, character) => {
+                    current_argument.push(character);
+                    argument_started = true;
+                },
+            }
+        }
+
+        if quote_state != ShellQuoteState::Unquoted {
+            return Err(format!(
+                "rendered overlap answer command `{rendered_command}` has an unterminated quote"
+            ));
+        }
+        if argument_started {
+            arguments.push(current_argument);
+        }
+
+        Ok(arguments)
     }
 
     fn board_output_selection(arguments: &[&str]) -> Result<BoardOutputSelection, Error> {

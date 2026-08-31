@@ -231,70 +231,49 @@ installs and deletes them together.
 
 ---
 
-### Phase 3 — Every instruction the engine prints names the engine · status: todo
+### Phase 3 — Every instruction the engine prints names the engine · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** No string the engine emits tells a reader to run the Python
-coordinator. Every executable instruction in engine output names a `cargo-berth`
-verb and flags that verb really accepts, and a test holds it that way.
-
-**Spec:** `blocked_edit_answer_guidance`
-(`crates/cargo-berth/src/output.rs:3163`) renders the four reasoned overlap
-answers as `PYTHONPATH="$HOME/.claude/scripts" python3 -m berth.claim_state claim
---cwd "$PWD" <paths...> --answer before --blocker <id> --overlap-reason
-"<reason>"`. The engine already accepts each answer directly: `ClaimArguments`
-(`crates/cargo-berth/src/cli.rs:433`) exposes `--before`, `--after`, `--defer`
-and `--override`, each taking the blocking `ReservationId`, each `requires`
-`--overlap-why`, and `--proposal` carrying the second-turn token. The engine has
-no `--cwd` — it uses the process working directory — so the rewritten instruction
-is stated as run from the repository and drops that flag. The mapping is
-`--answer before --blocker X --overlap-reason R` becomes `--before X
---overlap-why R`, and likewise for after, defer and override.
-
-Rewrite that guidance to the engine's own command lines, then sweep the crate for
-every other emitted string naming the coordinator — recovery routes, replay
-failure routes, first-touch proposal guidance, board notices — and rewrite each
-the same way. A string that names no command at all is left alone; this phase
-changes instructions, not prose.
-
-The durable half is the test. Assert the rendered answer lines against the clap
-parser rather than against literal expected text: parse each rendered command
-line with the crate's own argument parser and require that it parses, that it
-selects the intended member of the claim resolution group, and that it carries a
-reason. A literal-text assertion goes stale the moment a flag is renamed, which
-is exactly how the guidance drifted from the CLI in the first place.
-
-**The assertion cannot live in `tests/`.** This binary crate has no `lib.rs`, and
-`ClaimArguments` is private to `cli.rs`, so an integration test cannot reach the
-parser. Put it in a `#[cfg(test)]` module inside `cli.rs` (or `output.rs`,
-whichever ends up owning the rendered text), reached by
-`cargo nextest run -p cargo-berth --bin cargo-berth`.
+Every shell command the engine renders into a presentation block names
+`cargo-berth`. The four reasoned overlap answers print as `cargo-berth claim
+<paths...> --before|--after|--defer|--override <holder-reservation-id>
+--overlap-why "<reason>"` — no `--cwd`, `PYTHONPATH` or `python3` remains in the
+crate — and `drift_message` and `drift_path_attribution_message` carry the binary
+name on what were a bare `resolve` and two bare `drift --reservation`.
+`blocked_edit_answer_guidance` is a `pub(crate) const fn`, the narrowest widening
+that reaches the sibling `cli.rs` test module in a binary crate with no `lib.rs`.
+Two guards hold this: `rendered_overlap_answer_commands_select_the_documented_resolution`
+reparses each rendered answer through `Cli::try_parse_from` and asserts exactly one
+of the four resolutions is selected; `rendered_shell_instructions_invoke_the_engine`
+runs the real binary over three scenarios, rejects any recognized shell command in a
+rendered block's summary or detail that does not begin with `cargo-berth`, and counts
+coverage per scenario so a scenario contributing no command fails.
 
 **Files:**
-- `crates/cargo-berth/src/output.rs`
-- `crates/cargo-berth/src/cli.rs`
+- `crates/cargo-berth/src/output.rs` — the four overlap answers, `drift_message`, `drift_path_attribution_message`; `blocked_edit_answer_guidance` is `pub(crate)`
+- `crates/cargo-berth/src/cli.rs` — the parser-backed unit test
+- `crates/cargo-berth/tests/engine_instructions.rs` — real-binary guard over rendered blocks
+- `crates/cargo-berth/README.md` — quoted engine output, corrected
 
-**Acceptance gate:**
-1. `rg -n 'claim_state|PYTHONPATH|python3 -m berth' crates/cargo-berth/src/`
-   returns nothing.
-2. A crate-unit test renders every reasoned overlap answer, parses each rendered
-   command line with the crate's parser, and asserts the resolution-group member
-   and the presence of an overlap reason. It does not compare against literal
-   text.
-3. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
+**Binds later work:** The README quotes engine output verbatim with nothing binding
+the two and no test detecting the drift, so any later change to printed text needs a
+manual README sweep. Moving or deleting `blocked_edit_answer_guidance` — as the phase
+that retires the coordinator may — moves its parser-backed `cli.rs` test with it. The
+block guard's shell vocabulary is `bash`, `cargo`, `git`, `sh`, all rejected inside a
+rendered block, so a phase legitimately printing a non-engine instruction fails it with
+a message implying the instruction is wrong; the binary-absent wrapper notices from the
+phase that retires the coordinator are produced without an engine, fall outside the
+guard, and are asserted directly.
 
-**Constraints from prior phases:** phase 2 made the engine's presentation the
-single source of the text a user reads and gave `EnvelopePresentation` its three
-states. This phase changes what those blocks *say*, never who renders them: do
-not reintroduce a second rendering path, and do not let a rewritten instruction
-escape the presentation. The installed front end still calls the coordinator
-after this phase — that is expected, and phases 4 through 6 remove it.
-This phase does **not** touch the generated output contract: that artifact holds
-schemas and generic consumer artifacts, not rendered guidance strings, so no
-doc comment reachable from it changes here and no regeneration is required.
+**Gotchas:**
+- `Cli::try_parse_from` discards `argv[0]`, so a test reparsing a rendered command must check the executable token itself or a rendered `python3 claim …` parses clean and passes.
+- `split_whitespace` keeps quote characters, so `--overlap-why ""` reconstructs as the two-character non-empty value `""`; the unit test splits on a three-state shell-quote machine instead.
+- A block guard passing when *any* command names the engine lets a bare verb ride beside a good one, and coverage summed across scenarios hides a scenario contributing nothing.
+- The block guard matches the rendered executable with `starts_with("cargo-berth")`, not an exact first-token comparison, so a future `cargo-berthx` would pass it.
 
----
+**Ruled out:**
+- Exempting a rendered block from the instruction guard for a later non-engine command — the composite recovery command starts `cd … && cargo-berth …`, which the vocabulary already ignores; extend the guard's coverage instead.
 
 ### Phase 4 — `cargo-berth hook pre-tool-use` decides the edit · status: todo
 
@@ -302,8 +281,9 @@ doc comment reachable from it changes here and no regeneration is required.
 
 **Goal:** The engine consumes a raw Claude `PreToolUse` payload on stdin and
 returns the hook's complete answer — silent allow, the allow notice, or a refusal
-on stderr with the blocking exit code. `berth_pre_edit.sh` keeps only the binary
-presence check and an `exec`.
+on stderr with the blocking exit code. The installed `berth_pre_edit.sh` is not
+touched: phase 6 reduces it to a binary presence check and an `exec`, and every
+wrapper edit and installation belongs to that atomic cutover.
 
 **Spec:** `berth_pre_edit.sh` is roughly six hundred lines and every decision in
 it is engine knowledge. Its function list names the work directly:
@@ -333,7 +313,9 @@ letter of "its own named type" and none of its purpose. The payload carries an
 edit-authorization request, the repository edit target it names, the
 working-directory selection it was invoked under, and the availability of a
 harness session id — each of those is a domain state with its own absent case,
-and each gets a type whose variants say what absence means. `serde` will hand
+and each gets a type whose variants say what absence means:
+`PreToolUseEditAuthorizationRequest`, `RepositoryEditTarget`,
+`HookWorkingDirectorySelection`, and `HarnessSessionIdentityAvailability`. `serde` will hand
 some fields up as `Option<T>`; convert every one of them at the input boundary
 and let nothing optional past it. The existing `Claim` and `Resolve` argument
 types are the precedent: Clap owns their raw flags and they convert immediately
@@ -356,7 +338,19 @@ user may run by hand to see what the pre-edit gate would decide.
 - `crates/cargo-berth/src/hook/mod.rs`
 - `crates/cargo-berth/src/hook/pre_tool_use.rs`
 - `crates/cargo-berth/src/main.rs`
+- `crates/cargo-berth/src/presentation.rs`
 - `crates/cargo-berth/tests/hooks.rs`
+- `crates/cargo-berth/tests/presentation.rs`
+- `crates/cargo-berth/tests/engine_instructions.rs`
+- `crates/cargo-berth/README.md`
+
+**Seats:** 2 writers + 1 tester — the engine verb and its payload types split
+cleanly from the tests, and the presentation change is a third file group.
+- `impl` — `cli.rs`, `main.rs`, `presentation.rs`, and `hook/**`; hub:
+  `hook/mod.rs` (the hook protocol and dispatch every writer reads)
+- `test` — `tests/hooks.rs`, `tests/presentation.rs`, and
+  `tests/engine_instructions.rs`
+- `review` — opens as `impl`; `README.md`
 
 **Acceptance gate:**
 1. `cargo-berth hook pre-tool-use` reads a `PreToolUse` payload on stdin and
@@ -375,7 +369,19 @@ user may run by hand to see what the pre-edit gate would decide.
    engine text only.
 5. Each parsed payload field is a domain type, not a bare `Option<T>`; the only
    optionals are inside the serde boundary type.
-6. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
+6. The deliberate-silence presentation state serializes byte-for-byte as the
+   existing `{"kind":"rendered_blocks","blocks":[]}` wire object, proven by a
+   `tests/presentation.rs` case that asserts the exact serialized form. Phase 6
+   removes the first-party validators but keeps the public envelope for
+   independent consumers, so this wire shape outlives them.
+7. A test drives the raw `PreToolUse` payload — not a constructed inner type —
+   through the verb for the overlap-answer refusal this phase publishes, and
+   asserts the answer commands the user sees.
+8. Every quoted engine-output block and hook description in
+   `crates/cargo-berth/README.md` still matches what this phase's code emits.
+9. `tests/engine_instructions.rs` covers the rendered blocks this phase adds, and
+   its guard passes over them unchanged.
+10. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
 
 **Constraints from prior phases:** phase 3 made every instruction in that
 presentation name the engine, so a refusal rendered by this verb is directly
@@ -384,10 +390,31 @@ runnable. Phase 2's three presentation states are the contract this verb reads:
 second renderer. The installed `berth_post_bash.sh` still drives the hidden
 `--post-tool-use-payload` round trip, so **nothing in this phase may remove those
 compatibility paths** — phase 6 is the single atomic cutover that installs the
-wrappers and deletes the legacy paths together. **This phase changes the installed hook layer under
-`~/.claude/scripts/berth/`, which the checkpoint commit cannot carry — say so in
-the summary and leave the installed hook in place.** The reduced wrapper is
-installed in phase 6, once all three verbs exist.
+wrappers and deletes the legacy paths together.
+
+**This phase does not touch the installed hook layer at all.** It builds and
+tests the engine verb against the current hooks read-only; every wrapper edit and
+installation is phase 6's. Nothing here needs the summary caveat about work the
+checkpoint cannot carry, because nothing here lands outside the repository.
+
+Phase 3 shipped two guards this phase inherits. `tests/engine_instructions.rs`
+walks every rendered block and rejects any shell command whose executable is not
+`cargo-berth`; a block this phase adds must satisfy it, and extending the guard's
+coverage is cheaper than exempting a block from it. `crates/cargo-berth/src/cli.rs`
+carries a parser-backed test that feeds each rendered overlap-answer command back
+through the real command-line surface — a new answer form must parse there too.
+
+Phase 3 also proved the test suite does not detect stale README text: it quotes
+engine output verbatim with nothing tying the two together. Any change to what
+this phase prints requires a sweep of every quoted block in
+`crates/cargo-berth/README.md`.
+
+**This phase owns the overlap-answer surface.** When `PreToolUse` publishes the
+refusal, the answer commands a user can run are this phase's user-actionable
+consequence, and gate item 7 is its acceptance test.
+`blocked_edit_answer_guidance` stays implementation-only: this is a binary crate
+with no library surface, so it has no consumer outside the crate to expose it
+to.
 
 **Pending decision: where the explicit nothing-to-show presentation state lands**
 
@@ -409,7 +436,16 @@ What exists now:
 What should change:
 - A third variant naming the deliberate-silence case, and a non-empty guarantee
   on the rendered-blocks payload so an empty vector becomes unconstructible.
-- The wire tag stays compatible until phase 6 removes the old consumers.
+- The wire tag stays compatible **permanently, not until phase 6**. Phase 6
+  removes the first-party validators but explicitly keeps the public envelope for
+  any independent consumer that appears later, so the deliberate-silence variant
+  must go on serializing as `{"kind":"rendered_blocks","blocks":[]}` after the
+  cutover. This is an internal semantic split with a frozen wire form, not a
+  wire change with a compatibility window.
+- The work lands in `crates/cargo-berth/src/presentation.rs` with its own
+  `crates/cargo-berth/tests/presentation.rs` case asserting the exact serialized
+  object — both are now in this phase's **Files**, and the exact-wire assertion
+  is acceptance gate item 6.
 
 Recommendation:
 Do it in this phase, before the pre-tool-use verb reads the state — this verb's
@@ -457,6 +493,15 @@ verbs, and **Delegation Context** forbids opening surface without a consumer.
 - `crates/cargo-berth/src/hook/session_start.rs`
 - `crates/cargo-berth/src/cli.rs`
 - `crates/cargo-berth/tests/hooks.rs`
+- `crates/cargo-berth/tests/engine_instructions.rs`
+- `crates/cargo-berth/README.md`
+
+**Seats:** 2 writers + 1 tester — the two verbs are independent files over a
+shared protocol module, and the tests are their own lane.
+- `impl` — `cli.rs`, `hook/mod.rs`, and `hook/post_tool_use.rs`; hub:
+  `hook/mod.rs` (the shared event protocol phase 4 established)
+- `test` — `tests/hooks.rs` and `tests/engine_instructions.rs`
+- `review` — opens as `impl`; `hook/session_start.rs` and `README.md`
 
 **Acceptance gate:**
 1. `cargo-berth hook post-tool-use` performs drift and any required live
@@ -469,7 +514,14 @@ verbs, and **Delegation Context** forbids opening surface without a consumer.
    covered by a test driving the raw hook payload through the new verb and
    comparing user-visible output. The fixture's `payload.data` classifiers are
    not ported.
-4. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
+4. A test drives a raw `PostToolUse` payload and a raw `SessionStart` payload —
+   not a constructed inner type — through their verbs and asserts the drift and
+   resolve instructions the user is told to run.
+5. Every quoted engine-output block and hook description in
+   `crates/cargo-berth/README.md` still matches what this phase's code emits.
+6. `tests/engine_instructions.rs` covers the rendered blocks this phase adds, and
+   its guard passes over them unchanged.
+7. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
 
 **Constraints from prior phases:** phase 4 established the `Hook` verb, its
 stdin payload types and the `hook/` module layout — extend them rather than
@@ -480,8 +532,28 @@ still drives it** — `cargo-berth drift --json --post-tool-use-payload` at `:43
 and `cargo-berth board --json --post-tool-use-payload` at `:450`. Move the round
 trip inside the verb and leave the `--post-tool-use-payload` plumbing in place;
 deleting it here would break the installed hook before its wrapper exists. Phase
-6 installs the wrappers and deletes that plumbing in one atomic cutover. **This phase changes the installed
-hook layer, which the checkpoint commit cannot carry — say so in the summary.**
+6 installs the wrappers and deletes that plumbing in one atomic cutover.
+
+**This phase does not touch the installed hook layer at all.** Like phase 4, it
+builds and tests engine verbs against the current hooks read-only; nothing here
+lands outside the repository, so the checkpoint carries the whole phase.
+
+Name the session-start payload's parts the way phase 4 named the pre-tool-use
+payload: a `SessionStartReconciliationRequest` for the request itself, reusing
+phase 4's `HookWorkingDirectorySelection` rather than introducing a second
+working-directory type.
+
+**This phase owns the drift and resolve instruction surface.** The commands a
+user is told to run after an edit (`PostToolUse`) or at session start
+(`SessionStart`) are this phase's user-actionable consequence, and gate item 4 is
+its acceptance test.
+
+Phase 3's two guards bind here as they do in phase 4:
+`tests/engine_instructions.rs` rejects any rendered-block shell command whose
+executable is not `cargo-berth`, and the parser-backed `cli.rs` test feeds each
+rendered answer command back through the real command-line surface. Phase 3 also
+proved stale README quotes go undetected by the suite, so any change to printed
+text requires a sweep of every quoted block in `crates/cargo-berth/README.md`.
 
 ---
 
@@ -568,10 +640,23 @@ installed front end and an installed binary disagree, and that is the defect thi
 plan exists to close.
 
 **Files:**
+- `crates/cargo-berth/src/cli.rs`
+- `crates/cargo-berth/src/output.rs`
 - `crates/cargo-berth/src/output_contract.rs`
 - `crates/cargo-berth/tests/front_end_corpus.rs`
 - `crates/cargo-berth/tests/hooks.rs`
+- `crates/cargo-berth/README.md`
 - `docs/cargo-berth/generated/output-contract.json`
+
+**Seats:** 2 writers + 1 tester — the in-repository deletions and the
+outside-the-repository front end are disjoint, and the Rust and Python test
+lanes are a third group.
+- `impl` — `cli.rs`, `output.rs`, `output_contract.rs`, and the generated output
+  contract; hub: `cli.rs` (where the legacy dispatch is removed)
+- `test` — the Rust hook, corpus, and instruction tests, and
+  `tests/test_hook_rendering.py`
+- `review` — opens as `impl`; the installed hooks, the installer, the
+  coordinator, the command documents, and `README.md`; hub: `install/install.sh`
 
 **Acceptance gate:**
 1. `grep -rl 'claim_state' ~/.claude/` returns nothing, and both generated
@@ -595,8 +680,16 @@ plan exists to close.
    generated artifact, and publishes a remeasured bound.
 7. Every behavior assertion removed from `test_hook_rendering.py` is named
    alongside the Rust test that now covers it.
-8. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass, and
-   the surviving Python suite passes.
+8. The hidden `--post-tool-use-payload` flags,
+   `PostToolUseLiveIncursionBoardInput` in `src/cli.rs`, and
+   `PostToolUseRendering::RequiresLiveIncursionBoard` in `src/output.rs` are all
+   gone, and `blocked_edit_answer_guidance` either stays put or moves with its
+   parser-backed `cli.rs` test.
+9. Every quoted engine-output block and hook description in
+   `crates/cargo-berth/README.md` still matches what the code emits after the
+   cutover.
+10. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass, and
+    the surviving Python suite passes.
 
 **Constraints from prior phases:** phases 4 and 5 must both have landed and been
 installed — deleting the coordinator before all three verbs work leaves three
@@ -605,6 +698,30 @@ scratch repository under `/tmp/claude/` before deleting anything, and keep the
 existing rollback copies until the installed path is green. **The whole of this
 phase's front-end half lives outside the repository and cannot be committed —
 say so in the summary.**
+
+**This phase owns every wrapper edit and installation in the plan.** Phases 4 and
+5 deliberately left the installed hooks untouched, so nothing is half-cut over
+when this phase starts.
+
+The compatibility plumbing this phase deletes lives in two source files the
+original Files list omitted: the hidden `--post-tool-use-payload` flags and
+`PostToolUseLiveIncursionBoardInput` are in `src/cli.rs`, and
+`PostToolUseRendering::RequiresLiveIncursionBoard` is in `src/output.rs`. Phase 3
+added a parser-backed test in `src/cli.rs` that feeds each rendered
+overlap-answer command back through the real command-line surface; if
+`blocked_edit_answer_guidance` moves, that test moves with it rather than being
+dropped.
+
+**This phase owns byte-for-byte wrapper pass-through.** Each reduced wrapper must
+deliver the engine's `PreToolUse`, `PostToolUse`, and `SessionStart` output
+unchanged — that is the user-actionable consequence of the cutover, and gate
+items 3 and 5 are its acceptance tests. The wrappers' binary-absent notices are
+the one text produced without an engine, so `tests/engine_instructions.rs` does
+not govern them; assert them directly instead.
+
+Phase 3 proved stale README quotes go undetected by the suite. This phase changes
+what every hook prints, so sweep every quoted block and hook description in
+`crates/cargo-berth/README.md`.
 
 ---
 
@@ -622,7 +739,8 @@ follow cannot consolidate them because neither belongs to a single module root.
 The eligibility predicate exists as
 `Reservation::is_active_for_coordination_run_and_worktree`
 (`crates/cargo-berth/src/reservation/mod.rs:1855`), which phase 1 added and
-`verb/claim.rs:394,422,442,453` calls, while the same `actor.run == …
+`verb/claim.rs:394`, `:422`, and `:442` call — `:453` is the reservation-id sort
+the next paragraph owns, not a fourth eligibility call — while the same `actor.run == …
 && actor.worktree == …` comparison is still written out inline at
 `reservation/mod.rs:826`, `:839`, and `:1006`. Route every site that means
 "active for this run and worktree" through the method. Where a site means
@@ -651,6 +769,14 @@ ordering the wire already emits does not change.
 - `crates/cargo-berth/src/output.rs`
 - `crates/cargo-berth/src/board/mod.rs`
 - `crates/cargo-berth/src/gate/mod.rs`
+
+**Seats:** 2 writers + 0 testers + reserve — the ordering type and the
+eligibility consolidation are independent, and the phase changes no behavior, so
+there is no lane to write tests against ahead of the code.
+- `impl` — `ids.rs` and every ordering caller; hub: `ids.rs`
+  (`WireOrderedReservationIds` and its unit test)
+- `test` — opens as `impl`; the `reservation/mod.rs` eligibility consolidation
+- `review` — reserve
 
 **Acceptance gate:**
 1. A crate-wide sweep finds one implementation of the run-and-worktree
@@ -697,6 +823,14 @@ one owner rather than copied into each extracted function.
 **Files:**
 - `crates/cargo-berth/src/reconcile.rs`
 
+**Seats:** 1 writer + 1 tester + reserve — nothing splits. The whole phase is one
+file, and the single-admission budget must stay threaded through one owner, so a
+second writer would contend on every extraction.
+- `impl` — `reconcile.rs`; hub: `reconcile.rs`
+- `test` — verification only, against the existing reconciliation lane; owns no
+  source
+- `review` — reserve
+
 **Acceptance gate:**
 1. No `too_many_lines` suppression remains in `reconcile.rs`.
 2. The existing reconciliation tests pass unmodified — this phase changes no
@@ -741,6 +875,15 @@ the ones the split is expected to create.
 - `crates/cargo-berth/src/git/refs.rs`
 - `crates/cargo-berth/src/git/discovery.rs`
 
+**Seats:** 3 writers + 0 testers — the split is by type ownership and the
+clusters do not appear in each other's field lists, so three writers can carve
+disjoint submodules out of one root. Tests move with the types, so there is no
+separate test lane.
+- `impl` — `git/mod.rs` and `reachability.rs`; hub: `git/mod.rs` (the root every
+  writer re-exports through)
+- `test` — opens as `impl`; `patch.rs` and `conflict.rs`
+- `review` — opens as `impl`; `refs.rs` and `discovery.rs`
+
 **Acceptance gate:**
 1. `git/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
    documentation.
@@ -779,6 +922,12 @@ appear in each other's field lists. Tests move with the type each one covers.
 - `crates/cargo-berth/src/reservation/partition.rs`
 - `crates/cargo-berth/src/reservation/record.rs`
 - `crates/cargo-berth/src/reservation/conflict.rs`
+
+**Seats:** 3 writers + 0 testers — same shape as phase 9: disjoint type clusters
+out of one root, tests moving with their types.
+- `impl` — `reservation/mod.rs` and `record.rs`; hub: `reservation/mod.rs`
+- `test` — opens as `impl`; `retention.rs` and `partition.rs`
+- `review` — opens as `impl`; `conflict.rs`
 
 **Acceptance gate:**
 1. `reservation/mod.rs` contains only `mod` declarations, `use`/`pub use`, and
@@ -820,6 +969,12 @@ coordination-run marker handling.
 - `crates/cargo-berth/src/ledger/identity.rs`
 - `crates/cargo-berth/src/ledger/session.rs`
 
+**Seats:** 3 writers + 0 testers — a pure move with four independent clusters and
+no suppression to remove, so tests travel with their types.
+- `impl` — `ledger/mod.rs`, `handle.rs`, and `session.rs`; hub: `ledger/mod.rs`
+- `test` — opens as `impl`; `worktree_context.rs`
+- `review` — opens as `impl`; `identity.rs`
+
 **Acceptance gate:**
 1. `ledger/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
    documentation.
@@ -860,7 +1015,8 @@ Split along row assembly, visibility and omission policy, the
 answer/disposition rendering, and the report-and-presentation cluster.
 `append_authorization_answer` sits in the answer-rendering cluster: its six
 parameters are the audit row's complete input, so give that cluster a semantic
-projection type carrying the recorded authorization and its current consequence
+projection type — name it `RecordedAuthorizationConsequenceProjection` —
+carrying the recorded authorization and its current consequence
 rather than suppressing the count — the type says what the row is, where the
 parameter list only says how many pieces it has. `board/tests.rs` is an existing
 sibling test module; move each test to sit with the type it covers rather than
@@ -873,6 +1029,13 @@ leaving a catch-all.
 - `crates/cargo-berth/src/board/visibility.rs`
 - `crates/cargo-berth/src/board/answers.rs`
 - `crates/cargo-berth/src/board/report.rs`
+
+**Seats:** 3 writers + 0 testers — four clusters split cleanly, and
+`board/tests.rs` is redistributed rather than owned by a test lane.
+- `impl` — `board/mod.rs`, `tests.rs`, `rows.rs`, and `visibility.rs`; hub:
+  `board/mod.rs`
+- `test` — opens as `impl`; `answers.rs`
+- `review` — opens as `impl`; `report.rs`
 
 **Acceptance gate:**
 1. `board/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
@@ -912,6 +1075,12 @@ each one covers.
 - `crates/cargo-berth/src/gate/rewrite.rs`
 - `crates/cargo-berth/src/gate/audit.rs`
 
+**Seats:** 3 writers + 0 testers — a pure move along three independent
+boundaries, tests travelling with their types.
+- `impl` — `gate/mod.rs` and `reference_transaction.rs`; hub: `gate/mod.rs`
+- `test` — opens as `impl`; `rewrite.rs`
+- `review` — opens as `impl`; `audit.rs`
+
 **Acceptance gate:**
 1. `gate/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
    documentation.
@@ -946,7 +1115,10 @@ per-disposition assertions; the helper takes its payload by reference.
 resolve arguments, whose flags are one mutually exclusive disposition each and
 are already grouped by `RESOLVE_DISPOSITION_GROUP`. Replace the flag set with
 semantic groups that convert immediately into `ResolveDecision` at the Clap
-boundary, so the boolean count disappears rather than being excused.
+boundary, so the boolean count disappears rather than being excused. Confine the
+raw optionals to one explicitly boundary-owned type —
+`UnvalidatedResolveDispositionSelection` — that Clap fills and that converts into
+the existing `ResolveDecision` at once, so nothing optional reaches the verb.
 
 `crates/cargo-berth/src/ids.rs:132` carries a
 `cfg_attr(not(test), expect(dead_code, …))` on the `uuid_identifier!` macro's
@@ -969,6 +1141,12 @@ attributes left name `clippy::expect_used` or `clippy::panic` on a
 - `crates/cargo-berth/tests/board.rs`
 - `crates/cargo-berth/src/cli.rs`
 - `crates/cargo-berth/src/ids.rs`
+
+**Seats:** 2 writers + 1 tester — the three sites are in three files, and two of
+them are the test suite, so a real test lane exists.
+- `impl` — `cli.rs`
+- `test` — `tests/board.rs`
+- `review` — opens as `impl`; `ids.rs`
 
 **Acceptance gate:**
 1. A crate-wide sweep, covering both `#[allow]`/`#[expect]` and `cfg_attr`-wrapped

@@ -3160,13 +3160,13 @@ fn claim_holder_facts(conflicts: &[ReservationConflict]) -> String {
         .join("\n\n")
 }
 
-const fn blocked_edit_answer_guidance() -> &'static str {
-    r#"Choose exactly one answer for one named holder. The first four are reasoned coordinator answers on `claim`, and each requires a non-empty reason. Run the coordinator invocation shown for each answer:
+pub(crate) const fn blocked_edit_answer_guidance() -> &'static str {
+    r#"Choose exactly one answer for one named holder. The first four are reasoned `cargo-berth claim` answers, and each requires a non-empty reason. Run the `cargo-berth` invocation shown for each answer from the repository:
 
-1. **Land before the holder** — `PYTHONPATH="$HOME/.claude/scripts" python3 -m berth.claim_state claim --cwd "$PWD" <paths...> --answer before --blocker <holder-reservation-id> --overlap-reason "<reason>"`. The requester takes the paths and integrates first; the holder remains held until the requester is on trunk. Use this when the holder will build on the requester's change.
-2. **Land after the holder** — `PYTHONPATH="$HOME/.claude/scripts" python3 -m berth.claim_state claim --cwd "$PWD" <paths...> --answer after --blocker <holder-reservation-id> --overlap-reason "<reason>"`. The requester takes the paths and integrates second; it remains held until the holder's protected tip is on trunk and is an ancestor of the requester's `HEAD`. Use this when the requester will build on the holder.
-3. **Defer the order** — `PYTHONPATH="$HOME/.claude/scripts" python3 -m berth.claim_state claim --cwd "$PWD" <paths...> --answer defer --blocker <holder-reservation-id> --overlap-reason "<reason>"`. The requester takes the paths, no ordering edge is added, and the unresolved overlap remains visible on the board until someone later sequences it.
-4. **Override** — `PYTHONPATH="$HOME/.claude/scripts" python3 -m berth.claim_state claim --cwd "$PWD" <paths...> --answer override --blocker <holder-reservation-id> --overlap-reason "<reason>"`. The requester takes the paths, no ordering edge is added, and the override plus its reason remains visible on the board.
+1. **Land before the holder** — `cargo-berth claim <paths...> --before <holder-reservation-id> --overlap-why "<reason>"`. The requester takes the paths and integrates first; the holder remains held until the requester is on trunk. Use this when the holder will build on the requester's change.
+2. **Land after the holder** — `cargo-berth claim <paths...> --after <holder-reservation-id> --overlap-why "<reason>"`. The requester takes the paths and integrates second; it remains held until the holder's protected tip is on trunk and is an ancestor of the requester's `HEAD`. Use this when the requester will build on the holder.
+3. **Defer the order** — `cargo-berth claim <paths...> --defer <holder-reservation-id> --overlap-why "<reason>"`. The requester takes the paths, no ordering edge is added, and the unresolved overlap remains visible on the board until someone later sequences it.
+4. **Override** — `cargo-berth claim <paths...> --override <holder-reservation-id> --overlap-why "<reason>"`. The requester takes the paths, no ordering edge is added, and the override plus its reason remains visible on the board.
 5. **Leave it alone.** Run no engine command, append nothing, and work elsewhere.
 
 Only **Land before the holder** and **Land after the holder** add an ordering edge. Defer and override add no edge; their recorded overlap remains visible on the board.
@@ -3434,7 +3434,7 @@ fn drift_message(report: &DriftReport) -> String {
                 } => {
                     let _ = write!(
                         message,
-                        "Incursion {incident_id}: reservation {reservation_id} entered {} held by foreign reservation(s) {}.{} Stop and resolve the overlap with `resolve {reservation_id} --incursion {incident_id}` before making more changes. If no coordination run was identified before first-touch attribution, CARGO_BERTH_RUN can select an existing run for later invocations.",
+                        "Incursion {incident_id}: reservation {reservation_id} entered {} held by foreign reservation(s) {}.{} Stop and resolve the overlap with `cargo-berth resolve {reservation_id} --incursion {incident_id}` before making more changes. If no coordination run was identified before first-touch attribution, CARGO_BERTH_RUN can select an existing run for later invocations.",
                         paths
                             .as_slice()
                             .iter()
@@ -3573,7 +3573,7 @@ fn drift_path_attribution_message(attribution: &DriftPathAttributionOutcome) -> 
             }
         },
         DriftPathAttributionOutcome::Ambiguous { candidates, paths } => format!(
-            "Changed paths {} were not widened because attribution is ambiguous among reservations {}. Run drift --reservation <id> with one listed reservation.",
+            "Changed paths {} were not widened because attribution is ambiguous among reservations {}. Run `cargo-berth drift --reservation <id>` with one listed reservation.",
             paths
                 .as_slice()
                 .iter()
@@ -3588,7 +3588,7 @@ fn drift_path_attribution_message(attribution: &DriftPathAttributionOutcome) -> 
                 .join(", ")
         ),
         DriftPathAttributionOutcome::CoordinationRunRequired { paths } => format!(
-            "Changed paths {} were not widened because no coordination run was identified. Set CARGO_BERTH_RUN to the run that owns the target reservation, then run drift --reservation <id>.",
+            "Changed paths {} were not widened because no coordination run was identified. Set CARGO_BERTH_RUN to the run that owns the target reservation, then run `cargo-berth drift --reservation <id>`.",
             paths
                 .as_slice()
                 .iter()
