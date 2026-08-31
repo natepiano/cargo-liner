@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Keep a `pub(in path)` whose only caller sits behind an inactive `#[cfg]`. The guard added in 0.21.0 covered `pub(crate)` alone, so `forbidden-pub-in-crate` still advised removing an annotation the excluded configuration needs.
+
 ## [0.21.0] - 2026-08-27
 
 ### Fixed

@@ -277,27 +277,36 @@ pub(super) fn record_forbidden_visibility_annotation(
         return Ok(false);
     }
     match annotation.syntax() {
-        VisibilitySyntax::Crate | VisibilitySyntax::InCrate => {
-            if cfg_excluded_source_names_item(ctx, item) {
-                // `true` is "this annotation is handled", not "a finding was
-                // recorded". `record_overbroad_pub_crate` answers `true` on
-                // every path that reaches a decision, and both callers stop
-                // there. Answering `false` instead would hand a `pub(crate)
-                // mod` on to `record_review_pub_mod`, which reports every
-                // module it is handed, so suppressing one diagnostic would
-                // raise another on the same line.
-                return Ok(true);
-            }
-            record_overbroad_pub_crate(
-                ctx,
-                item,
-                annotation,
-                finding_context,
-                parent_facade_analysis,
-                signature_exposure,
-                sink,
-            )
+        // `true` is "this annotation is handled", not "a finding was
+        // recorded". `record_overbroad_pub_crate` and
+        // `record_forbidden_pub_in_crate` answer `true` on every path that
+        // reaches a decision, and both callers stop there. Answering `false`
+        // instead would hand a `pub(crate) mod` on to `record_review_pub_mod`,
+        // which reports every module it is handed, so suppressing one
+        // diagnostic would raise another on the same line.
+        //
+        // Both narrowing diagnostics need the guard. `overbroad-pub-crate`
+        // advises a narrower spelling and `forbidden-pub-in-crate` advises
+        // removing the annotation outright; either one stops the excluded
+        // configuration compiling.
+        VisibilitySyntax::Crate
+        | VisibilitySyntax::InCrate
+        | VisibilitySyntax::InParent
+        | VisibilitySyntax::InCurrent
+        | VisibilitySyntax::InPath(_)
+            if cfg_excluded_source_names_item(ctx, item) =>
+        {
+            Ok(true)
         },
+        VisibilitySyntax::Crate | VisibilitySyntax::InCrate => record_overbroad_pub_crate(
+            ctx,
+            item,
+            annotation,
+            finding_context,
+            parent_facade_analysis,
+            signature_exposure,
+            sink,
+        ),
         VisibilitySyntax::InParent | VisibilitySyntax::InCurrent | VisibilitySyntax::InPath(_) => {
             record_forbidden_pub_in_crate(
                 ctx,

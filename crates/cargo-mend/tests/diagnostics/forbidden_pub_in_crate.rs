@@ -2224,3 +2224,62 @@ pub struct Handle {
     );
     temp
 }
+
+#[test]
+fn cfg_excluded_caller_keeps_pub_in_path() {
+    let temp = tempdir().expect("create cfg fixture dir");
+    // Three `pub(in crate::desktop)` items on three lines of `candidate.rs`,
+    // one per outcome. `gated_only` is called only from a `#[cfg]`-excluded
+    // module, so the post-expansion HIR reports no caller outside `candidate`
+    // and the boundary looks removable — taking that advice would stop the
+    // excluded configuration compiling, so nothing is reported. `local_only`
+    // is the control: it is named nowhere excluded and really is used only
+    // inside `candidate`, so it must still be reported. `caller` is used from
+    // `crate::desktop`, which is exactly the boundary it spells.
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                r#"[package]
+name = "cfg_excluded_pub_in_path_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+            ),
+            (
+                "src/lib.rs",
+                "mod desktop;\n\npub fn entry() -> u32 { desktop::entry() }\n",
+            ),
+            (
+                "src/desktop.rs",
+                "mod candidate;\n\n#[cfg(target_os = \"solaris\")]\nmod platform;\n\npub(crate) fn entry() -> u32 { candidate::caller() }\n",
+            ),
+            (
+                "src/desktop/platform.rs",
+                "pub(super) fn use_it() -> u32 { super::candidate::gated_only() }\n",
+            ),
+            (
+                "src/desktop/candidate.rs",
+                "pub(in crate::desktop) fn gated_only() -> u32 { 1 }\npub(in crate::desktop) fn local_only() -> u32 { 2 }\npub(in crate::desktop) fn caller() -> u32 { local_only() }\n",
+            ),
+        ],
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let reported_lines: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.code == DiagnosticCode::ForbiddenPubInCrate
+                && finding.path.ends_with("src/desktop/candidate.rs")
+        })
+        .map(|finding| finding.line_start)
+        .collect();
+    assert_eq!(
+        reported_lines,
+        vec![2],
+        "line 1's only caller is `#[cfg]`-excluded and line 3 spells the boundary its caller \
+         needs, so only line 2 is reported: {report:#?}",
+    );
+}
