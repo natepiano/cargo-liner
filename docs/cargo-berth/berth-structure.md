@@ -313,172 +313,76 @@ guard, and are asserted directly.
 - A refusal prefix on any arm of `render_refusal` — all four blocking arms self-frame, so a blanket prefix double-frames.
 - Widening `assert_no_parent_component_was_claimed` to scan stdout — unreachable by construction until the helper is reused on an allow-with-notice arm.
 
-### Phase 5 — `cargo-berth hook post-tool-use` and `hook session-start` · status: todo
+### Phase 5 — `cargo-berth hook post-tool-use` and `hook session-start` · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** The two remaining hook events are decided inside the engine.
-
-**Spec:** Two verbs.
-
-`hook post-tool-use` is the closest to done of the three. The engine already
-parses the raw payload (`PostToolUseDriftInvocation::from_value`,
-`crates/cargo-berth/src/cli.rs:1214`, its struct at `:1180`) and already emits
-the exact hook response
-object — `continue`, `systemMessage`, and `hookSpecificOutput` with
-`hookEventName` and `additionalContext` — in `emit_post_tool_use_rendering`
-(`crates/cargo-berth/src/cli.rs:2008`). What lives in the shell is the
-orchestration: `PostToolUseRendering::RequiresLiveIncursionBoard` currently
-returns the drift envelope to `berth_post_bash.sh`, which feeds it back to a
-second invocation as `PostToolUseLiveIncursionBoardInput`. Move that round trip
-inside the verb so one process performs drift, decides whether a live incursion
-board is required, assembles it, and emits one response.
-
-That decision needs a name. `PostToolUseRendering::RequiresLiveIncursionBoard`
-(`crates/cargo-berth/src/output.rs:331`) is today a wire-return marker meaning
-"hand this back to the shell"; once the round trip is internal it is a domain
-decision about what the response must carry, and leaving it as a marker variant
-read by one `match` misnames it.
-
-`hook session-start` reads the `SessionStart` payload, runs the board, and emits
-the session response carrying the engine's actionable presentation.
-`berth_session_start.sh`'s `session_notices`, `engine_stated_board_message` and
-`render_replay_failure_route` describe what it must produce.
-
-The board's complete report is **already done**: phase 2 gave
-`BoardModel::envelope_presentation` a `rendered_blocks` presentation carrying the
-serialized complete report for a populated board, held by
-`tests/board.rs::populated_board_presentation_carries_the_complete_board_report`.
-`hook session-start` reads that presentation; it does not add one. Do not add a
-machine-readable action list either: no consumer needs one once the hooks are
-verbs, and **Delegation Context** forbids opening surface without a consumer.
+- `hook post-tool-use` performs drift and, when the response depends on it, assembles the
+  live incursion board in the same process, emitting one response object and its exit code.
+  `PostToolUseRendering::FeedbackDecidedByLiveIncursionState` (formerly
+  `RequiresLiveIncursionBoard`) is the domain decision that verb reads to decide whether to
+  call `live_incursion_state()`, not a wire-return marker.
+- `hook session-start` reads `BoardModel::envelope_presentation` and branches on
+  `RenderedBlocks` / `NothingToShow` / `NotProvided`; the board verb's no-facts constructors
+  carry a real presentation, so an unconfigured repository and an unreadable ledger are
+  distinguishable without classifying envelope facts.
+- An absent or invalid payload session id publishes a no-session selection that cannot fall
+  through to an ambient `CARGO_BERTH_SESSION_ID`. Both verbs bind through one helper, pinned
+  by `post_tool_use_runs_drift_under_the_payload_session_not_the_ambient_one`;
+  session-start's own output cannot observe it, since `journal_mutation_actor_for` discards
+  the `EditAuthorization` and keeps only the worktree.
+- `hook/mod.rs` is a shared protocol across three events: payload types,
+  `HookWorkingDirectorySelection` (into which `PostToolUseWorkingDirectory` collapsed),
+  harness session identity, rendering helpers.
+- The pre-tool-use edit target reaches `canonicalize_through_nearest_existing_ancestor`
+  uncollapsed, and `WorktreeRelativeEditName` rebuilds the worktree-relative name from
+  `Component::Normal` alone, so a surviving `..` answers `OutsideCoordinationDomain`.
+- Fail-open causes stay distinct: invalid payload and unavailable working directory emit
+  different messages under `continue: true`; a rejected request exits 5, a contended ledger 6.
+- `tests/front_end_corpus.rs` covers the corpus lane by asserted partition —
+  `HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES` and `HOOK_CORPUS_ENTRIES_WITHOUT_A_TEST` disjoint,
+  together exhausting the fixture's `PostToolUse`/`SessionStart` entries — not by count.
 
 **Files:**
-- `crates/cargo-berth/src/hook/mod.rs`
-- `crates/cargo-berth/src/hook/pre_tool_use.rs`
-- `crates/cargo-berth/src/hook/post_tool_use.rs`
-- `crates/cargo-berth/src/hook/session_start.rs`
-- `crates/cargo-berth/src/cli.rs`
-- `crates/cargo-berth/tests/hooks.rs`
-- `crates/cargo-berth/tests/engine_instructions.rs`
-- `crates/cargo-berth/tests/front_end_corpus.rs`
-- `crates/cargo-berth/README.md`
+- `crates/cargo-berth/src/hook/mod.rs` — shared hook event protocol.
+- `crates/cargo-berth/src/hook/post_tool_use.rs` — the verb, its two fail-open texts, `INVALID_PAYLOAD_DETAIL`.
+- `crates/cargo-berth/src/hook/session_start.rs` — the verb and its presentation branch.
+- `crates/cargo-berth/src/hook/pre_tool_use.rs` — the edit decision, filesystem-resolved parents.
+- `crates/cargo-berth/src/cli.rs`, `crates/cargo-berth/src/output.rs` — dispatch and rendering; both still carry `--post-tool-use-payload`.
+- `crates/cargo-berth/tests/hooks.rs` — acceptance suite for all three hook verbs.
+- `crates/cargo-berth/tests/front_end_corpus.rs` — corpus partition and citation guard.
+- `crates/cargo-berth/tests/engine_instructions.rs` — real-binary scenarios for both verbs.
 
-**Seats:** 2 writers + 1 tester — the two verbs are independent files over a
-protocol module phase 4 left PreToolUse-specific, and the tests are their own lane.
-- `impl` — `cli.rs`, `hook/mod.rs`, `hook/pre_tool_use.rs`, and
-  `hook/post_tool_use.rs`; hub: `hook/mod.rs` (where phase 4's PreToolUse-specific
-  protocol is generalized and the shared payload types land)
-- `test` — `tests/hooks.rs`, `tests/engine_instructions.rs`, and
-  `tests/front_end_corpus.rs`
-- `review` — opens as `impl`; `hook/session_start.rs` and `README.md`; hub:
-  `hook/session_start.rs`
+**Binds later work:** the installed `berth_post_bash.sh` still drives the two-step
+live-incursion round trip, so the `--post-tool-use-payload` plumbing in `cli.rs` and
+`output.rs` is live on purpose until the cutover that installs the hook wrappers deletes
+both halves together. The engine's invalid-payload sentence and that shell hook's
+`INVALID_PAYLOAD_DETAIL` are the same text in two places and must change in one step or
+front-end parity breaks. `hook/mod.rs` is shared across three events, so a new hook event
+extends it; `tests/front_end_corpus.rs` is a partition assertion, so whatever retires the
+fixture retires that structure with it.
 
-**Acceptance gate:**
-1. `cargo-berth hook post-tool-use` performs drift and any required live
-   incursion board in one process and emits the same response object and exit
-   code the installed hook produces today, including the no-feedback exit.
-2. `cargo-berth hook session-start` emits the same session response the installed
-   hook produces today, with one deliberate difference the test states
-   explicitly: an absent or invalid payload session id publishes a no-session
-   selection and cannot fall through to an ambient `CARGO_BERTH_SESSION_ID`. A
-   test asserts that an ambient value set in the environment does not reach the
-   verb's identity selection.
-3. Every `PostToolUse` and `SessionStart` case in
-   `tests/fixtures/front_end_corpus.json` — feedback and silence alike — is
-   covered by a test driving the raw hook payload through the new verb and
-   comparing user-visible output. The fixture's `payload.data` classifiers are
-   not ported. Phase 4 established the mechanism: add entries to
-   `HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES` and lower
-   `EXPECTED_UNCOVERED_CORPUS_ENTRIES` (`tests/front_end_corpus.rs:15`, now 45)
-   to match, which is why that file is in **Files** and in the test lane.
-4. A test drives a raw `PostToolUse` payload and a raw `SessionStart` payload —
-   not a constructed inner type — through their verbs and asserts the drift and
-   resolve instructions the user is told to run.
-5. Every quoted engine-output block and hook description in
-   `crates/cargo-berth/README.md` still matches what this phase's code emits.
-6. `tests/engine_instructions.rs` covers the rendered blocks this phase adds, and
-   its guard passes over them unchanged.
-7. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
+**Gotchas:**
+- A coverage table that counts can go green while lying:
+  `every_cited_acceptance_test_exists_in_the_suite` `include_str!`s `tests/hooks.rs` and
+  fails on a cited name that file does not define — a test moved elsewhere loses the guard.
+- The `normalize_absolute_path` collapse is textual, sound only when every component left of
+  a `..` is a real directory: it applies to a working directory the harness reports itself
+  sitting in, never to a path a payload names as an edit target.
+- Corpus entry `without_message#4` is unreachable — `reconcile.rs:669` sweeps coordination
+  run markers with a predicate byte-for-byte identical to `validate_marker`'s acceptance
+  predicate at `coordination_identity.rs:670`, deleting exactly what validation would reject.
+- The invalid-payload sentence names valid JSON, `tool_name` Bash and a 1-to-256 character
+  `session_id`, but not `cwd` — and a non-string `cwd` is what produces it.
 
-**Constraints from prior phases:** phase 4 established the `Hook` verb, its
-stdin payload types and the `hook/` module layout — extend them rather than
-opening a parallel shape. Two facts about what it actually left, both verified
-against the tree:
-
-- `hook/mod.rs` is **not** a shared event protocol yet. `PreToolUseAllowNotice`,
-  `PreToolUseAllowNoticeDetail`, `render_pre_tool_use_answer`,
-  `AUTHORIZED_SYSTEM_MESSAGE` and `FAIL_OPEN_SYSTEM_MESSAGE` are all
-  PreToolUse-specific; only `render_blocks`, `write_allow_notice`,
-  `refuse_hook_request` and `write_stderr_line` generalize. Generalizing the rest
-  is this phase's work, not a precondition it inherits.
-- `HookWorkingDirectorySelection` and `HarnessSessionIdentityAvailability` are
-  **private** to `hook/pre_tool_use.rs` — no `pub(super)`. Reusing them means
-  moving them to `hook/mod.rs`, which is why `hook/pre_tool_use.rs` is in this
-  phase's **Files** and owned by `impl`.
-
-`normalize_absolute_path` and `canonicalize_through_nearest_existing_ancestor`
-now live in `crates/cargo-berth/src/ledger/mod.rs`. This phase's only use is
-`normalize_absolute_path` on a payload `cwd`, which is the sound case — a
-directory the harness reports itself sitting in. The rule that makes it sound:
-the collapse is textual, so it holds only when every component left of a `..` is
-a real directory; anything an edit payload names as a target goes to
-`canonicalize_through_nearest_existing_ancestor` uncollapsed instead. Phase 4
-shipped a defect from getting this backwards.
-
-Phase 4 also changed `BoardModel::envelope_presentation`
-(`crates/cargo-berth/src/board/mod.rs:652-660`) to route its empty case to
-`EnvelopePresentation::NothingToShow` rather than an empty vector. That is
-`hook session-start`'s silence path: the board presentation it reads now has
-three states to branch on, not two. The two-step live-incursion round trip exists because
-the shell was the only place that could hold intermediate state, and it has no
-reason to survive inside one process. **But the installed `berth_post_bash.sh`
-still drives it** — `cargo-berth drift --json --post-tool-use-payload` at `:431`
-and `cargo-berth board --json --post-tool-use-payload` at `:450`. Move the round
-trip inside the verb and leave the `--post-tool-use-payload` plumbing in place;
-deleting it here would break the installed hook before its wrapper exists. Phase
-6 installs the wrappers and deletes that plumbing in one atomic cutover.
-
-**This phase does not touch the installed hook layer at all.** Like phase 4, it
-builds and tests engine verbs against the current hooks read-only; nothing here
-lands outside the repository, so the checkpoint carries the whole phase.
-
-Name the session-start payload's parts the way phase 4 named the pre-tool-use
-payload: a `SessionStartReconciliationRequest` for the request itself, reusing
-phase 4's `HookWorkingDirectorySelection` rather than introducing a second
-working-directory type.
-
-A second one already exists and this phase owns its verb:
-`PostToolUseWorkingDirectory::{CurrentProcess, Supplied(PathBuf)}`
-(`crates/cargo-berth/src/cli.rs:1174`). Moving post-tool-use into
-`hook/post_tool_use.rs` without collapsing it into `HookWorkingDirectorySelection`
-ships exactly the duplication the sentence above exists to prevent, so collapse
-it as part of the move.
-
-**The harness session identity fails closed here too.** Phase 4 found that an
-absent or invalid payload session id fell through to the ambient
-`CARGO_BERTH_SESSION_ID`, and closed that by having the hook publish a no-session
-selection that blocks the fallback. `berth_session_start.sh` reads no `session_id`
-and sets no `CARGO_BERTH_SESSION_ID` at all, so a session-start verb that
-publishes a no-session selection is a **deliberate behavior change**, not parity
-with the installed hook — gate item 2 is written accordingly. Make the change:
-an engine verb that can silently borrow another session's identity is the defect
-phase 4 closed for one event, and leaving it open for another would reintroduce
-it by a different door.
-
-**This phase owns the drift and resolve instruction surface.** The commands a
-user is told to run after an edit (`PostToolUse`) or at session start
-(`SessionStart`) are this phase's user-actionable consequence, and gate item 4 is
-its acceptance test.
-
-Phase 3's two guards bind here as they do in phase 4:
-`tests/engine_instructions.rs` rejects any rendered-block shell command whose
-executable is not `cargo-berth`, and the parser-backed `cli.rs` test feeds each
-rendered answer command back through the real command-line surface. Phase 3 also
-proved stale README quotes go undetected by the suite, so any change to printed
-text requires a sweep of every quoted block in `crates/cargo-berth/README.md`.
-
----
+**Ruled out:**
+- Satisfying the corpus gate by lowering a count — fourteen of fifteen uncovered entries are
+  unproducible by any real binary.
+- Deleting `PostToolUseRendering::FeedbackDecidedByLiveIncursionState` at the cutover — it is
+  the internal round trip now, not the shell handoff.
+- Routing the invalid-payload sentence to next-items — the shell half disappears with the
+  cutover, leaving one sentence and one edit.
+- Adding a machine-readable action list to the session-start response — no consumer.
 
 ### Phase 6 — Retire the coordinator and the generated validators · status: todo
 
@@ -566,6 +470,8 @@ plan exists to close.
 - `crates/cargo-berth/src/cli.rs`
 - `crates/cargo-berth/src/output.rs`
 - `crates/cargo-berth/src/output_contract.rs`
+- `crates/cargo-berth/src/hook/mod.rs`
+- `crates/cargo-berth/src/hook/post_tool_use.rs`
 - `crates/cargo-berth/tests/front_end_corpus.rs`
 - `crates/cargo-berth/tests/hooks.rs`
 - `crates/cargo-berth/README.md`
@@ -574,18 +480,32 @@ plan exists to close.
 **Seats:** 2 writers + 1 tester — the in-repository deletions and the
 outside-the-repository front end are disjoint, and the Rust and Python test
 lanes are a third group.
-- `impl` — `cli.rs`, `output.rs`, `output_contract.rs`, and the generated output
-  contract; hub: `cli.rs` (where the legacy dispatch is removed)
+- `impl` — `cli.rs`, `output.rs`, `output_contract.rs`, `hook/mod.rs`,
+  `hook/post_tool_use.rs`, the generated output contract, and `README.md`;
+  hub: `cli.rs` (where the legacy dispatch is removed)
 - `test` — the Rust hook, corpus, and instruction tests, and
   `tests/test_hook_rendering.py`
 - `review` — opens as `impl`; the installed hooks, the installer, the
-  coordinator, the command documents, and `README.md`; hub: `install/install.sh`
+  coordinator, and the command documents; hub: `install/install.sh`
+
+`README.md` moves to `impl` rather than staying with the front-end seat. Gate
+item 9's sweep can only be done against text `impl` is still deleting from
+`cli.rs` and `output.rs`, so a reader holding it has to wait on a writer — the
+shape that let phase 5 book a coverage row against a test another seat had
+already deleted. A file a writer and a reader both need has one owner for the
+whole phase, and it is the writer.
 
 **Acceptance gate:**
 1. `grep -rl 'claim_state' ~/.claude/` returns nothing, and both generated
    artifacts are gone along with the builders that emitted them. Use `grep -r`,
    not `rg`: an ignore file under `~/.claude/` silently hides these matches
-   from `rg`, which is how the callers above went unnoticed.
+   from `rg`, which is how the callers above went unnoticed. There is a **fourth**
+   caller beyond the three command documents:
+   `~/.claude/scripts/berth/tests/test_hook_rendering.py:5701` invokes
+   `python3 -m berth.claim_state`, with coordinator behavior tests around it
+   inside `HookRenderingTests` (for instance
+   `test_the_coordinator_reports_a_nested_tag_its_tables_do_not_name` at `:5709`).
+   That block is subject to the Spec's rule above and to gate item 7.
 2. `/sync`, `/plan:delegate`, and `/plan:delegate_checkpoint` invoke
    `cargo-berth` directly and still resolve the repository root from a
    subdirectory, propagate the harness session id, invoke once, and print the
@@ -601,23 +521,70 @@ lanes are a third group.
    `CommandOutputOwnership::HookRendered(ExitCode)`; the test asserts that
    exception holds rather than skipping those commands.
 5. Every wrapper and binary-absence case in
-   `tests/fixtures/front_end_corpus.json` is covered by a Rust or wrapper test;
-   the validator-compatibility lane is removed and the frozen text oracle is
+   `tests/fixtures/front_end_corpus.json` is accounted for by a **partition, not
+   a count**: each entry either names the test that drives it or carries a row
+   naming the reason it has none, the two sets are disjoint, and together they
+   exhaust the wrapper and binary-absence entries counted from the fixture
+   itself. `tests/front_end_corpus.rs` still carries the bare totals
+   `EXPECTED_CORPUS_ENTRIES` (`:14`) and `EXPECTED_UNCOVERED_CORPUS_ENTRIES`
+   (`:17`), asserted by `every_corpus_entry_is_text_compared_or_reported_uncovered`
+   — a gate phrased over those numbers is satisfiable by lowering one, which is
+   the exact failure that forced phase 5 to rewrite its own gate item 3
+   mid-phase. Follow the shape phase 5 established with
+   `HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES` and
+   `HOOK_CORPUS_ENTRIES_WITHOUT_A_TEST`, which covers only the `PostToolUse` and
+   `SessionStart` lane. Note that `every_cited_acceptance_test_exists_in_the_suite`
+   (`:1047`) `include_str!`s `tests/hooks.rs` alone, so a wrapper test placed in
+   any other file gets no citation guard unless this phase widens it.
+   The validator-compatibility lane is removed and the frozen text oracle is
    retained.
 6. `HookTimingTests` is re-keyed to binary/wrapper availability, names no
-   generated artifact, and publishes a remeasured bound.
+   generated artifact, and publishes a remeasured bound. The remeasurement is
+   taken with the wrapper and binary installed and **no concurrent seat
+   building** — the delegate build token has never engaged, so seats share one
+   `target/`, and phase 5 watched the same wall-clock test read 52.7s under a
+   peer's build and 74.456s serialized. A number a seat measures under load
+   describes the load, not the hook. Either serialize the measurement or defer
+   the published number to the checkpoint.
 7. Every behavior assertion removed from `test_hook_rendering.py` is named
    alongside the Rust test that now covers it.
-8. The hidden `--post-tool-use-payload` flags,
-   `PostToolUseLiveIncursionBoardInput` in `src/cli.rs`, and
-   `PostToolUseRendering::RequiresLiveIncursionBoard` in `src/output.rs` are all
-   gone, and `blocked_edit_answer_guidance` either stays put or moves with its
+8. The `cli.rs` residue of the two-step route is gone: the hidden
+   `--post-tool-use-payload` flags (`:274` and `:549`),
+   `PostToolUseLiveIncursionBoardInput` (`:1195`), `PostToolUseInvocation` and
+   `PostToolUseInvocationKind`, `prepare_post_tool_use_invocation`,
+   `post_tool_use_invocation_exit_code`, and `emit_post_tool_use_rendering`
+   (`:1963`). `blocked_edit_answer_guidance` either stays put or moves with its
    parser-backed `cli.rs` test.
+   **`PostToolUseRendering::FeedbackDecidedByLiveIncursionState`
+   (`src/output.rs:353`) survives the cutover.** Phase 5 renamed it from
+   `RequiresLiveIncursionBoard` and turned it from a wire-return marker into the
+   domain decision the verb itself reads at `src/hook/post_tool_use.rs:237` to
+   decide whether to call `live_incursion_state()`. Deleting it deletes the
+   internal round trip phase 5 built.
+   Each item the deletion strands narrows or goes with it: `ObservedBashCall::from_value`,
+   `ObservedBashCall::enter_current_process` and `PostToolUseObservationError` are
+   `pub(crate)` only so `cli.rs` can drive the legacy route, and
+   `POST_TOOL_USE_NO_FEEDBACK_EXIT_CODE`, `POST_TOOL_USE_FEEDBACK_EXIT_CODE`,
+   `POST_TOOL_USE_LIVE_BOARD_REQUIRED_EXIT_CODE` (`src/cli.rs:158-160`) plus the
+   two invalid-payload exit-code constants lose their only readers. Narrow each to
+   `hook`-private or delete it: a `dead_code` warning cannot be suppressed under
+   this plan's binding constraint.
 9. Every quoted engine-output block and hook description in
    `crates/cargo-berth/README.md` still matches what the code emits after the
    cutover.
 10. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass, and
     the surviving Python suite passes.
+11. The engine's invalid-payload sentence names `cwd`. `INVALID_PAYLOAD_DETAIL`
+    (`crates/cargo-berth/src/hook/post_tool_use.rs:39`) states that the verb
+    requires "valid JSON, tool_name Bash, and a session_id of 1 to 256 characters
+    with no control characters" — but a non-string `cwd` is rejected at `:126`
+    and is covered by `a_non_string_working_directory_is_an_invalid_payload`, so
+    the sentence under-describes what it refuses. Add a `cwd` clause and delete
+    the assertion at `~/.claude/scripts/berth/tests/test_hook_rendering.py:1630-1631`
+    that quotes the shell's own differing wording. This is a single edit in this
+    phase, not a two-sided change: the shell half
+    (`install/hooks/berth_post_bash.sh:503`) disappears when that hook becomes a
+    wrapper, leaving the engine constant as the only sentence.
 
 **Constraints from prior phases:** phases 4 and 5 must both have landed and been
 installed — deleting the coordinator before all three verbs work leaves three
@@ -631,10 +598,16 @@ say so in the summary.**
 5 deliberately left the installed hooks untouched, so nothing is half-cut over
 when this phase starts.
 
-The compatibility plumbing this phase deletes lives in two source files the
-original Files list omitted: the hidden `--post-tool-use-payload` flags and
-`PostToolUseLiveIncursionBoardInput` are in `src/cli.rs`, and
-`PostToolUseRendering::RequiresLiveIncursionBoard` is in `src/output.rs`. Phase 3
+The compatibility plumbing this phase deletes reaches four source files. The
+hidden `--post-tool-use-payload` flags and `PostToolUseLiveIncursionBoardInput`
+are in `src/cli.rs`. It is also **documented as a live route in two `hook/`
+files** phase 5 wrote: `src/hook/mod.rs:93` and
+`src/hook/post_tool_use.rs:130-134` both describe `--post-tool-use-payload` as
+something the installed hook still drives, and both statements stop being true at
+the cutover. `src/hook/post_tool_use.rs` additionally holds the engine's
+`INVALID_PAYLOAD_DETAIL` at `:39`, which gate item 11 edits. `src/output.rs`
+holds `PostToolUseRendering::FeedbackDecidedByLiveIncursionState`, which gate
+item 8 keeps rather than deletes. Phase 3
 added a parser-backed test in `src/cli.rs` that feeds each rendered
 overlap-answer command back through the real command-line surface; if
 `blocked_edit_answer_guidance` moves, that test moves with it rather than being
@@ -676,7 +649,7 @@ something narrower, say so at that site rather than widening the method.
 
 Reservation-id ordering by rendered string appears five times:
 `verb/claim.rs:453` (`sort_by_cached_key`), `drift/ordering.rs:12`,
-`output.rs:3677`, `board/mod.rs:945`, and `gate/mod.rs:962`. `drift::ordering` is
+`output.rs:3883`, `board/mod.rs:945`, and `gate/mod.rs:962`. `drift::ordering` is
 `pub(super)` to `drift`, so no other caller can reach it. Give the ordering one
 home with `ReservationId` in `crates/cargo-berth/src/ids.rs`, and encode the
 guarantee in the type rather than in a comment: a `Vec<ReservationId>` that four
@@ -709,7 +682,12 @@ there is no lane to write tests against ahead of the code.
 **Acceptance gate:**
 1. A crate-wide sweep finds one implementation of the run-and-worktree
    eligibility predicate and one of the reservation-id ordering, with no inline
-   restatement of either.
+   restatement of either. The sweep will also reach `board/mod.rs:1181`, which
+   sorts `worktree_heads` by `worktree_id.to_string()` — the same rendered-string
+   ordering idiom over `WorktreeId` rather than `ReservationId`. **That site is
+   out of scope**: this phase gives `ReservationId` one ordering home, and
+   widening to a second id type is a different consolidation. Leave it, and do
+   not let the sweep stall on it.
 2. The ordered collection cannot be constructed unsorted, and that is proven by
    a test rather than asserted in a comment.
 3. The existing suite passes unmodified — this phase changes no behavior.
@@ -719,9 +697,10 @@ there is no lane to write tests against ahead of the code.
 
 **Constraints from prior phases:** phase 2 **did** add a third call to the
 eligibility method — the `check --reservation` selector's explicit reservation
-selection (`crates/cargo-berth/src/verb/claim.rs:365-368`) — so this phase
-consolidates three call sites, not two, and that selector uses the single home
-this phase establishes. This consolidation runs before the module phases deliberately:
+selection — so this phase consolidates three call sites, not two, and that
+selector uses the single home this phase establishes. The three are
+`crates/cargo-berth/src/verb/claim.rs:394`, `:422`, and `:442`; `:365` is the
+`FirstTouchReservationSelection` enum declaration, not a call. This consolidation runs before the module phases deliberately:
 the ordering must not land in `reservation/mod.rs`, whose own phase reduces it to
 a table of contents, and the predicate stays with the `Reservation` type so it
 moves with that type when that phase runs.
@@ -1033,9 +1012,11 @@ boundaries, tests travelling with their types.
 
 **Constraints from prior phases:** phase 7 placed reservation-id ordering with
 `ReservationId` in `ids.rs`; `gate/mod.rs` calls it at `:962` and does not
-re-implement it. `gate/permit.rs` carries its own `#[allow]` at `:473`, which
-belongs to this phase's directory sweep only if this phase moves it; otherwise it
-is the final suppression phase's item.
+re-implement it. `gate/permit.rs` carries an `#[allow]` at `:473`, but it is
+`clippy::expect_used` on a `mod tests` with the reason "tests should panic on
+unexpected values" — pre-authorized test boilerplate, which is why the final
+suppression phase counts four surviving sites and does not list it. It is
+nobody's item; leave it.
 
 ---
 
@@ -1054,7 +1035,7 @@ pre-authorized test-module boilerplate — `clippy::expect_used`, and
 `needless_pass_by_value` at `:4385`. The test splits into its arrangement and its
 per-disposition assertions; the helper takes its payload by reference.
 
-`crates/cargo-berth/src/cli.rs:584` suppresses `struct_excessive_bools` on the
+`crates/cargo-berth/src/cli.rs:587` suppresses `struct_excessive_bools` on the
 resolve arguments, whose flags are one mutually exclusive disposition each and
 are already grouped by `RESOLVE_DISPOSITION_GROUP`. Replace the flag set with
 semantic groups that convert immediately into `ResolveDecision` at the Clap

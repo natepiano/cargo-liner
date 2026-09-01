@@ -27,7 +27,7 @@ use constants::JOURNAL_FILE_NAME;
 use constants::LEDGER_DIRECTORY_NAME;
 use constants::LOCK_FILE_NAME;
 use constants::MAXIMUM_JOURNAL_RECORD_BYTES;
-use constants::MUTATING_VERB_CONTENTION_TOLERANCE;
+pub(crate) use constants::MUTATING_VERB_CONTENTION_TOLERANCE;
 use constants::PROJECTION_FILE_NAME;
 use constants::REPO_INSTANCE_ID_FILE_NAME;
 use constants::WORKTREE_ID_FILE_NAME;

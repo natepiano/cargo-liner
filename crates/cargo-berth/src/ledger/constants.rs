@@ -19,7 +19,7 @@ pub(super) const GIT_DIRECTORY_ENVIRONMENT: &str = "GIT_DIR";
 pub(crate) const HARNESS_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 
 // lock acquisition
-pub(super) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(10);
+pub(crate) const MUTATING_VERB_CONTENTION_TOLERANCE: Duration = Duration::from_secs(10);
 pub(super) const MUTATION_LOCK_INITIAL_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 pub(super) const MUTATION_LOCK_MAXIMUM_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// Test-only signal path that makes a waiting `MutationLock::acquire` observable.

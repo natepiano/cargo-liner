@@ -12,13 +12,21 @@ use tempfile::TempDir;
 
 const CARGO_BERTH_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const EXPECTED_CORPUS_ENTRIES: usize = 50;
-const EXPECTED_UNCOVERED_CORPUS_ENTRIES: usize = 45;
+/// The `PostToolUse` and `SessionStart` entries acceptance gate item 3 accounts for.
+const EXPECTED_HOOK_CORPUS_ENTRIES: usize = 33;
+const EXPECTED_UNCOVERED_CORPUS_ENTRIES: usize = 27;
+const POST_BASH_HOOK: &str = "berth_post_bash.sh";
+const SESSION_START_HOOK: &str = "berth_session_start.sh";
 /// Corpus entries whose frozen text `tests/hooks.rs` compares against the real
 /// binary, each named beside the test that drives it.
-const HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 4] = [
+const HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 22] = [
     (
         "test_hooks_render_coordination_identity_recovery_actions_without_message",
         "session_identity_recoveries_preserve_the_frozen_corpus_text",
+    ),
+    (
+        "test_hooks_render_coordination_identity_recovery_actions_without_message#2",
+        "post_tool_use_states_its_coordination_identity_recovery",
     ),
     (
         "test_hooks_render_coordination_identity_recovery_actions_without_message#3",
@@ -32,9 +40,169 @@ const HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 4] = [
         "test_typed_replay_failure_routes_without_message_in_every_consumer",
         "replay_failure_emits_a_fail_open_object",
     ),
+    (
+        "test_typed_replay_failure_routes_without_message_in_every_consumer#2",
+        "post_tool_use_states_the_replay_failure_route",
+    ),
+    (
+        "test_typed_replay_failure_routes_without_message_in_every_consumer#3",
+        "session_start_states_the_replay_failure_route",
+    ),
+    (
+        "test_a_named_widening_with_nothing_to_report_still_says_nothing",
+        "post_tool_use_with_nothing_to_report_emits_nothing",
+    ),
+    (
+        "test_incursion_board_read_cost_is_constant",
+        "post_tool_use_states_the_incursion_resolve_instruction",
+    ),
+    (
+        "test_incursion_board_read_cost_is_constant#2",
+        "post_tool_use_states_every_incursion_of_one_bash_call",
+    ),
+    (
+        "test_incursion_board_read_cost_is_constant#3",
+        "post_tool_use_with_nothing_to_report_emits_nothing",
+    ),
+    (
+        "test_incursion_board_read_cost_is_constant#4",
+        "post_tool_use_states_the_auto_widen_notice",
+    ),
+    (
+        "test_outstanding_incursion_emits_stop_text",
+        "post_tool_use_states_the_incursion_resolve_instruction",
+    ),
+    (
+        "test_recorded_incursion_emits_no_stop_text",
+        "post_tool_use_stops_repeating_an_answered_incursion",
+    ),
+    (
+        "test_recorded_incursion_preserves_concurrent_widening_feedback",
+        "post_tool_use_states_a_widening_after_the_incursion_was_answered",
+    ),
+    (
+        "test_recorded_incursion_preserves_lost_evidence_feedback",
+        "post_tool_use_states_lost_evidence_after_the_incursion_was_answered",
+    ),
+    (
+        "test_hooks_render_both_lost_evidence_recoveries",
+        "post_tool_use_states_the_rewritten_trunk_evidence_recovery",
+    ),
+    (
+        "test_hooks_render_both_lost_evidence_recoveries#2",
+        "session_start_states_the_rewritten_trunk_evidence_recovery",
+    ),
+    (
+        "test_hooks_render_both_lost_evidence_recoveries#3",
+        "post_tool_use_states_the_unresolvable_trunk_evidence_recovery",
+    ),
+    (
+        "test_hooks_render_both_lost_evidence_recoveries#4",
+        "session_start_states_the_unresolvable_trunk_evidence_recovery",
+    ),
+    (
+        "test_session_start_renders_real_orphan_recovery_actions#2",
+        "session_start_states_the_unavailable_orphan_recovery_actions",
+    ),
+    (
+        "test_session_start_renders_real_orphan_recovery_actions",
+        "session_start_publishes_the_engine_board_report",
+    ),
+];
+/// Every `PostToolUse` and `SessionStart` corpus entry no test drives, and why.
+///
+/// Acceptance gate item 3 asks for a test behind every entry of these two events. The
+/// rows below are the ones that have none, each stating whether that is a fact about
+/// this engine or work still outstanding, so a reader meets a decided list rather than
+/// a residue. `every_hook_corpus_entry_is_text_compared_or_named_unproven` holds the
+/// list to the corpus: a row for an entry a test now drives fails, and so does an entry
+/// this list forgets.
+const HOOK_CORPUS_ENTRIES_WITHOUT_A_TEST: [UnprovenHookCorpusEntry; 15] = [
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_hooks_render_coordination_identity_recovery_actions_without_message#4",
+        because: "drift sweeps this worktree's coordination run marker before validating it, on \
+                  the same predicate the marker validation rejects on, so a post-Bash process \
+                  never presents a stale marker; the pre-edit route reaches it because check \
+                  runs no such preflight",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_a_nested_tag_no_table_names_still_reaches_the_advisory_route",
+        because: "the frozen heading is the retired shell's fallback for a status absent from its \
+                  installed table, which no engine constant states, and the payload needs a \
+                  widening tag this binary's enum does not carry",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#3",
+        because: "board serializes its status from its own enum, so no board response carries a \
+                  status this installation cannot name, nor the frozen message that goes with it",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#4",
+        because: "the frozen heading names coordination state, which the retired shell keyed on \
+                  exit 4; board now answers an unreadable ledger in its own words at SessionStart",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#5",
+        because: "the frozen heading names reaching the ledger, which the retired shell keyed on \
+                  exit 6; board now answers an exhausted lock deadline in its own words",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#6",
+        because: "the frozen response is a terminal-view failure reaching the reader, and session \
+                  start reads the board as JSON, which opens no terminal to fail",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#7",
+        because: "the post-Bash twin of the coordination-state heading: drift answers an \
+                  unreadable ledger in its own words after Bash",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#8",
+        because: "the heading matches, but drift's rejected-selection detail always appends the \
+                  command to rerun by hand, which the frozen detail does not carry",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_every_hook_route_states_the_engines_words_for_an_unfamiliar_response#9",
+        because: "the post-Bash twin of the reach-the-ledger heading: drift answers an exhausted \
+                  lock deadline in its own words after Bash",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_hooks_render_coordination_identity_recovery_actions_without_message#6",
+        because: "the frozen first action reruns a check command line, and post-tool-use supplies \
+                  its own drift command as the original command of every rejection it reports",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_hooks_render_coordination_identity_recovery_actions_without_message#8",
+        because: "the frozen single-action shape is rendered only for an original command holding \
+                  an argument that is not text, and post-tool-use supplies three text arguments",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_incursion_in_both_board_sections_fails_closed",
+        because: "the board partitions one incident list by a two-variant status, so no board \
+                  response places one incident in both the outstanding and the answered section",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_post_bash_reports_an_unnamed_drift_status_in_the_engine_words",
+        because: "the frozen heading is the retired shell's fallback for a status absent from its \
+                  installed table, which no engine constant states",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_post_bash_reports_an_unnamed_drift_status_in_the_engine_words#2",
+        because: "the same retired fallback heading, reached in the corpus through a terminal-view \
+                  exit this binary never returns from a drift comparison",
+    },
+    UnprovenHookCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_invalid_live_board_fails_closed",
+        because: "the retired shell front end parsed the board's JSON from a separate process, so a \
+                  malformed board body was a real failure it could report; post-tool-use now calls \
+                  board in process and receives a typed envelope, and that envelope's exit is \
+                  always clear, so no board this engine builds can be unreadable",
+    },
 ];
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const FRONT_END_CORPUS_JSON: &str = include_str!("fixtures/front_end_corpus.json");
+/// The acceptance suite whose test names this file's coverage table cites.
+const HOOK_ACCEPTANCE_SUITE: &str = include_str!("hooks.rs");
 const GENERATED_CONTRACT_JSON: &str =
     include_str!("../../../docs/cargo-berth/generated/output-contract.json");
 const SCRATCH_ROOT: &str = "/tmp/claude";
@@ -60,6 +228,36 @@ enum CorpusEntryCoverage {
 struct UncoveredCorpusEntry {
     name:       String,
     diagnostic: String,
+}
+
+/// Why one `PostToolUse` or `SessionStart` corpus entry has no test driving it.
+///
+/// The two answers are different obligations, not two shades of the same one. An entry
+/// this engine cannot produce is closed, and the acceptance gate cannot ask for it. An
+/// entry a repository state does produce is open work, and naming that state keeps it
+/// open: nothing may be moved into the closed answer because reaching it is laborious.
+enum UnprovenHookCorpusEntry {
+    /// No real `cargo-berth` binary can produce this entry's frozen text.
+    UnproducibleByThisEngine {
+        /// The corpus entry this row accounts for.
+        name:    &'static str,
+        /// What in the engine makes the frozen text unproducible.
+        because: &'static str,
+    },
+}
+
+impl UnprovenHookCorpusEntry {
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::UnproducibleByThisEngine { name, .. } => name,
+        }
+    }
+
+    const fn account(&self) -> &'static str {
+        match self {
+            Self::UnproducibleByThisEngine { because, .. } => because,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -142,6 +340,88 @@ fn every_corpus_entry_is_text_compared_or_reported_uncovered() -> ShellOracleRes
         return Err(failure(format!(
             "front-end corpus uncovered count changed: expected {EXPECTED_UNCOVERED_CORPUS_ENTRIES}, found {}",
             uncovered.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Account for every `PostToolUse` and `SessionStart` entry acceptance gate item 3 names.
+///
+/// The gate is an identity rather than a total: each entry of these two events is either
+/// driven by a test in `tests/hooks.rs` or named in `HOOK_CORPUS_ENTRIES_WITHOUT_A_TEST`
+/// with the reason it is not, and the two halves account for all of them. Asserting the
+/// identity is the point. A bare total is what a later edit drifts past, and this suite
+/// exists because that gap went unnoticed once already: a test landing without its row
+/// retiring, or a row retiring without its test, fails here.
+#[test]
+fn every_hook_corpus_entry_is_text_compared_or_named_unproven() -> ShellOracleResult<()> {
+    let corpus: Value = serde_json::from_str(FRONT_END_CORPUS_JSON)?;
+    let entries = corpus
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| failure("front-end corpus should carry an entries array"))?;
+    let mut hook_entry_names = Vec::new();
+    for entry in entries {
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| failure("every front-end corpus entry should carry a name"))?;
+        let hook = entry
+            .get("hook")
+            .and_then(Value::as_str)
+            .ok_or_else(|| failure(format!("corpus entry {name} should name the hook it froze")))?;
+        if matches!(hook, POST_BASH_HOOK | SESSION_START_HOOK) {
+            hook_entry_names.push(name);
+        }
+    }
+    if hook_entry_names.len() != EXPECTED_HOOK_CORPUS_ENTRIES {
+        return Err(failure(format!(
+            "the corpus froze {} PostToolUse and SessionStart entries, not {EXPECTED_HOOK_CORPUS_ENTRIES}",
+            hook_entry_names.len()
+        )));
+    }
+
+    let mut text_compared = 0_usize;
+    let mut without_a_test = 0_usize;
+    for name in &hook_entry_names {
+        let compared = HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES
+            .iter()
+            .any(|(compared_name, _)| *compared_name == *name);
+        let named_without_a_test = HOOK_CORPUS_ENTRIES_WITHOUT_A_TEST
+            .iter()
+            .any(|entry| entry.name() == *name);
+        match (compared, named_without_a_test) {
+            (true, true) => {
+                return Err(failure(format!(
+                    "{name} is driven by a test and also named as having none"
+                )));
+            },
+            (false, false) => {
+                return Err(failure(format!(
+                    "{name} has no test and no row in HOOK_CORPUS_ENTRIES_WITHOUT_A_TEST saying why"
+                )));
+            },
+            (true, false) => text_compared += 1,
+            (false, true) => without_a_test += 1,
+        }
+    }
+    for entry in &HOOK_CORPUS_ENTRIES_WITHOUT_A_TEST {
+        if !hook_entry_names.contains(&entry.name()) {
+            return Err(failure(format!(
+                "{} is named as having no test but is not a PostToolUse or SessionStart corpus entry",
+                entry.name()
+            )));
+        }
+        if entry.account().is_empty() {
+            return Err(failure(format!(
+                "{} should state why it has no test",
+                entry.name()
+            )));
+        }
+    }
+    if text_compared + without_a_test != EXPECTED_HOOK_CORPUS_ENTRIES {
+        return Err(failure(format!(
+            "{text_compared} compared plus {without_a_test} without a test should account for all {EXPECTED_HOOK_CORPUS_ENTRIES} hook entries"
         )));
     }
     Ok(())
@@ -754,4 +1034,23 @@ fn required_string_member<'a>(
 
 fn failure(message: impl Into<String>) -> Box<dyn Error> {
     std::io::Error::other(message.into()).into()
+}
+
+/// Every test this file names as covering a corpus entry has to exist in the suite.
+///
+/// The coverage table pairs a corpus entry with the test that drives it, but the entry half
+/// is the only half anything checked: a test could be deleted and its row left behind, and
+/// the count would stay consistent while the entry was covered by nothing. This reads the
+/// suite and requires each cited name to be defined there, so a deleted test fails the gate
+/// instead of leaving a coverage claim standing on its own.
+#[test]
+fn every_cited_acceptance_test_exists_in_the_suite() -> ShellOracleResult<()> {
+    for (entry_name, test_name) in &HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES {
+        if !HOOK_ACCEPTANCE_SUITE.contains(&format!("fn {test_name}(")) {
+            return Err(failure(format!(
+                "{entry_name} is booked as text-compared by {test_name}, which tests/hooks.rs does not define"
+            )));
+        }
+    }
+    Ok(())
 }

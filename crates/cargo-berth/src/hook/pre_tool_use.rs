@@ -6,31 +6,43 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
 use std::io::Read;
+use std::io::Write;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 
 use super::BLOCKING_EXIT_CODE;
+use super::HarnessSessionIdentityAvailability;
+use super::HookWorkingDirectorySelection;
 use super::refuse_hook_request;
-use super::render_pre_tool_use_answer;
+use super::render_blocks;
+use super::write_stderr_line;
 use crate::coordination_identity::RecoveryCommandLine;
+use crate::exit::BerthExit;
 use crate::ledger::AncestorCanonicalizationError;
 use crate::ledger::LedgerError;
 use crate::ledger::WorktreeContext;
 use crate::ledger::canonicalize_through_nearest_existing_ancestor;
 use crate::ledger::normalize_absolute_path;
+use crate::output::LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE;
+use crate::output::OutputEnvelope;
+use crate::presentation::EnvelopePresentation;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::ScopeKind;
-use crate::session;
-use crate::session::HarnessSessionId;
-use crate::session::HookHarnessSessionSelection;
 use crate::verb::check;
 use crate::verb::check::CheckRequest;
 use crate::verb::claim::CheckReservationSelection;
+
+const HOOK_EVENT_NAME: &str = "PreToolUse";
+const AUTHORIZED_SYSTEM_MESSAGE: &str =
+    "cargo-berth authorized this edit and stated the detail below itself.";
+const FAIL_OPEN_SYSTEM_MESSAGE: &str =
+    "cargo-berth could not establish edit safety and stated the detail below itself.";
 
 /// Serde-only representation of one raw harness payload.
 #[derive(Deserialize)]
@@ -82,22 +94,6 @@ enum ResolvedEditTarget {
     OutsideCoordinationDomain,
     /// The hook could not establish where the named path sits, so it refuses the edit.
     Unresolved { reason: String },
-}
-
-/// How the hook chooses the directory whose repository owns authorization.
-enum HookWorkingDirectorySelection {
-    /// The payload supplied a non-empty working directory.
-    PayloadSupplied(PathBuf),
-    /// The payload omitted its working directory, so the process directory applies.
-    CurrentProcess,
-}
-
-/// Whether the hook can select a disposable harness-session mapping.
-enum HarnessSessionIdentityAvailability {
-    /// The payload supplied a valid bounded session identifier.
-    Available(HarnessSessionId),
-    /// The payload supplied no identifier, or one unsuitable for durable lookup.
-    Unusable,
 }
 
 /// A raw payload could not be converted into the semantic hook request.
@@ -186,54 +182,6 @@ impl PayloadEditTarget {
             Self::NotNamed { reason } => ResolvedEditTarget::Unresolved { reason },
         }
     }
-}
-
-impl HookWorkingDirectorySelection {
-    fn from_boundary(working_directory: Option<String>) -> Self {
-        working_directory
-            .filter(|working_directory| !working_directory.is_empty())
-            .map_or(Self::CurrentProcess, |working_directory| {
-                Self::PayloadSupplied(PathBuf::from(working_directory))
-            })
-    }
-
-    fn resolve(&self) -> Result<PathBuf, HookWorkingDirectoryResolutionError> {
-        match self {
-            Self::PayloadSupplied(working_directory) => Ok(working_directory.clone()),
-            Self::CurrentProcess => std::env::current_dir()
-                .map_err(|_| HookWorkingDirectoryResolutionError::CurrentProcessUnavailable),
-        }
-    }
-}
-
-impl HarnessSessionIdentityAvailability {
-    fn from_boundary(harness_session_id: Option<String>) -> Self {
-        harness_session_id
-            .filter(|harness_session_id| !harness_session_id.is_empty())
-            .map_or(Self::Unusable, |harness_session_id| {
-                harness_session_id
-                    .parse()
-                    .map_or(Self::Unusable, Self::Available)
-            })
-    }
-
-    /// Bind this process to the payload's session identity, or to no session at all.
-    ///
-    /// An absent or unusable payload identity must not fall through to an ambient
-    /// `CARGO_BERTH_SESSION_ID`. That variable belongs to whichever session launched this
-    /// hook process, so adopting it would map the edit onto another session's reservation.
-    fn select_for_current_process(self) {
-        session::select_current_process_harness_session(match self {
-            Self::Available(harness_session_id) => {
-                HookHarnessSessionSelection::Session(harness_session_id)
-            },
-            Self::Unusable => HookHarnessSessionSelection::NoSession,
-        });
-    }
-}
-
-enum HookWorkingDirectoryResolutionError {
-    CurrentProcessUnavailable,
 }
 
 /// Read and execute one raw `PreToolUse` edit-authorization payload.
@@ -517,4 +465,90 @@ fn check_recovery_command_line(
 fn refuse(reason: &str) -> ExitCode {
     refuse_hook_request(reason);
     ExitCode::from(BLOCKING_EXIT_CODE)
+}
+
+/// The stdout object returned when a `PreToolUse` request remains allowed with a notice.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreToolUseAllowNotice<'detail> {
+    system_message:       &'static str,
+    hook_specific_output: PreToolUseAllowNoticeDetail<'detail>,
+}
+
+/// The event-specific authorization carried by a `PreToolUse` allow notice.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreToolUseAllowNoticeDetail<'detail> {
+    hook_event_name:            &'static str,
+    permission_decision:        &'static str,
+    permission_decision_reason: &'detail str,
+}
+
+/// Map one engine check answer onto the Claude `PreToolUse` hook protocol.
+fn render_pre_tool_use_answer(output_envelope: &OutputEnvelope) -> ExitCode {
+    match output_envelope.exit_code() {
+        BerthExit::Clear => render_authorized(output_envelope.presentation()),
+        BerthExit::LedgerUnreadable => render_fail_open(output_envelope),
+        BerthExit::BlockedByOverlap
+        | BerthExit::BlockedByOrdering
+        | BerthExit::NeedsUserAuthorization
+        | BerthExit::UsageError
+        | BerthExit::BlockedByContention
+        | BerthExit::TerminalViewFailed => render_refusal(output_envelope.presentation()),
+    }
+}
+
+fn render_authorized(presentation: &EnvelopePresentation) -> ExitCode {
+    match presentation {
+        EnvelopePresentation::RenderedBlocks { blocks } => {
+            write_allow_notice(AUTHORIZED_SYSTEM_MESSAGE, &render_blocks(blocks.as_slice()))
+        },
+        EnvelopePresentation::NothingToShow | EnvelopePresentation::NotProvided => {
+            ExitCode::SUCCESS
+        },
+    }
+}
+
+fn render_fail_open(output_envelope: &OutputEnvelope) -> ExitCode {
+    match output_envelope.presentation() {
+        EnvelopePresentation::NothingToShow => ExitCode::SUCCESS,
+        EnvelopePresentation::RenderedBlocks { blocks } => {
+            write_allow_notice(FAIL_OPEN_SYSTEM_MESSAGE, &render_blocks(blocks.as_slice()))
+        },
+        EnvelopePresentation::NotProvided => write_allow_notice(
+            LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE,
+            &output_envelope.render_text(),
+        ),
+    }
+}
+
+fn render_refusal(presentation: &EnvelopePresentation) -> ExitCode {
+    match presentation {
+        EnvelopePresentation::RenderedBlocks { blocks } => {
+            write_stderr_line(&render_blocks(blocks.as_slice()));
+        },
+        EnvelopePresentation::NothingToShow => refuse_hook_request(
+            "the engine returned a blocking check answer marked as deliberate silence",
+        ),
+        EnvelopePresentation::NotProvided => refuse_hook_request(
+            "the engine returned a blocking check answer without a presentation",
+        ),
+    }
+    ExitCode::from(BLOCKING_EXIT_CODE)
+}
+
+fn write_allow_notice(system_message: &'static str, detail: &str) -> ExitCode {
+    let notice = PreToolUseAllowNotice {
+        system_message,
+        hook_specific_output: PreToolUseAllowNoticeDetail {
+            hook_event_name:            HOOK_EVENT_NAME,
+            permission_decision:        "allow",
+            permission_decision_reason: detail,
+        },
+    };
+    let mut standard_output = std::io::stdout().lock();
+    if serde_json::to_writer(&mut standard_output, &notice).is_ok() {
+        std::mem::drop(standard_output.write_all(b"\n"));
+    }
+    ExitCode::SUCCESS
 }

@@ -64,6 +64,8 @@ use crate::gate::permit::EnvironmentBypassRetentionOutcome;
 use crate::git;
 use crate::git::LocalBranchRenameTargetResolution;
 use crate::hook;
+use crate::hook::post_tool_use::ObservedBashCall;
+use crate::hook::post_tool_use::PostToolUseObservationError;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
@@ -95,9 +97,6 @@ use crate::reservation::OrphanRetirementReason;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::ScopeKind;
-use crate::session;
-use crate::session::HarnessSessionId;
-use crate::session::HookHarnessSessionSelection;
 use crate::verb::board;
 use crate::verb::board::BoardDisplayOutcome;
 use crate::verb::board::BoardOutputSelection;
@@ -246,6 +245,10 @@ struct HookArguments {
 enum HookCommand {
     /// Authorize one file-writing tool request read from standard input.
     PreToolUse,
+    /// Report working-tree drift for one completed Bash call read from standard input.
+    PostToolUse,
+    /// Publish current coordination state for one session opening read from standard input.
+    SessionStart,
 }
 
 /// The `--json` flag shared by every verb.
@@ -671,7 +674,7 @@ impl Cli {
         };
         let post_tool_use_invocation = match prepare_post_tool_use_invocation(&command) {
             Ok(invocation) => invocation,
-            Err(error) => return error.exit_code(),
+            Err(error) => return post_tool_use_invocation_exit_code(&error),
         };
         let output_format = command.output_format();
         let recovery_command_line = RecoveryCommandLine::current_process();
@@ -759,6 +762,16 @@ impl Command {
                 command: HookCommand::PreToolUse,
             }) => {
                 return CommandOutputOwnership::HookRendered(hook::pre_tool_use::execute());
+            },
+            Self::Hook(HookArguments {
+                command: HookCommand::PostToolUse,
+            }) => {
+                return CommandOutputOwnership::HookRendered(hook::post_tool_use::execute());
+            },
+            Self::Hook(HookArguments {
+                command: HookCommand::SessionStart,
+            }) => {
+                return CommandOutputOwnership::HookRendered(hook::session_start::execute());
             },
             Self::Claim(claim_arguments) => match claim_arguments.into_claim_request() {
                 Ok(claim_request) => claim::execute(claim_request, recovery_command_line),
@@ -1172,16 +1185,6 @@ impl DriftArguments {
     }
 }
 
-enum PostToolUseWorkingDirectory {
-    CurrentProcess,
-    Supplied(PathBuf),
-}
-
-struct PostToolUseDriftInvocation {
-    harness_session_id: HarnessSessionId,
-    working_directory:  PostToolUseWorkingDirectory,
-}
-
 enum PostToolUseInvocation {
     NotRequested,
     Drift,
@@ -1194,70 +1197,21 @@ struct PostToolUseLiveIncursionBoardInput {
     drift_envelope:        Box<OutputEnvelope>,
 }
 
-enum PostToolUseDriftInvocationError {
-    InvalidPayload,
-    WorkingDirectoryUnavailable,
-}
-
-impl PostToolUseDriftInvocationError {
-    fn exit_code(self) -> ExitCode {
-        match self {
-            Self::InvalidPayload => ExitCode::from(INVALID_POST_TOOL_USE_PAYLOAD_EXIT_CODE),
-            Self::WorkingDirectoryUnavailable => {
-                ExitCode::from(UNAVAILABLE_POST_TOOL_USE_WORKING_DIRECTORY_EXIT_CODE)
-            },
-        }
-    }
-}
-
-impl PostToolUseDriftInvocation {
-    fn from_value(value: &Value) -> Result<Self, PostToolUseDriftInvocationError> {
-        let object = value
-            .as_object()
-            .ok_or(PostToolUseDriftInvocationError::InvalidPayload)?;
-        if object.get("tool_name").and_then(serde_json::Value::as_str) != Some("Bash") {
-            return Err(PostToolUseDriftInvocationError::InvalidPayload);
-        }
-        let harness_session_id = object
-            .get("session_id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(PostToolUseDriftInvocationError::InvalidPayload)?
-            .parse::<HarnessSessionId>()
-            .map_err(|_| PostToolUseDriftInvocationError::InvalidPayload)?;
-        let working_directory = object
-            .get("cwd")
-            .and_then(serde_json::Value::as_str)
-            .filter(|working_directory| !working_directory.is_empty())
-            .map_or(
-                PostToolUseWorkingDirectory::CurrentProcess,
-                |working_directory| {
-                    PostToolUseWorkingDirectory::Supplied(PathBuf::from(working_directory))
-                },
-            );
-        Ok(Self {
-            harness_session_id,
-            working_directory,
-        })
-    }
-
-    fn apply(self) -> Result<(), PostToolUseDriftInvocationError> {
-        match self.working_directory {
-            PostToolUseWorkingDirectory::CurrentProcess => {},
-            PostToolUseWorkingDirectory::Supplied(working_directory) => {
-                env::set_current_dir(working_directory)
-                    .map_err(|_| PostToolUseDriftInvocationError::WorkingDirectoryUnavailable)?;
-            },
-        }
-        session::select_current_process_harness_session(HookHarnessSessionSelection::Session(
-            self.harness_session_id,
-        ));
-        Ok(())
+/// The process exit status the installed post-Bash hook reads for a rejected payload.
+fn post_tool_use_invocation_exit_code(error: &PostToolUseObservationError) -> ExitCode {
+    match error {
+        PostToolUseObservationError::InvalidPayload => {
+            ExitCode::from(INVALID_POST_TOOL_USE_PAYLOAD_EXIT_CODE)
+        },
+        PostToolUseObservationError::WorkingDirectoryUnavailable => {
+            ExitCode::from(UNAVAILABLE_POST_TOOL_USE_WORKING_DIRECTORY_EXIT_CODE)
+        },
     }
 }
 
 fn prepare_post_tool_use_invocation(
     command: &Command,
-) -> Result<PostToolUseInvocation, PostToolUseDriftInvocationError> {
+) -> Result<PostToolUseInvocation, PostToolUseObservationError> {
     let requested = match command {
         Command::Drift(DriftArguments {
             post_tool_use_payload: true,
@@ -1287,18 +1241,19 @@ fn prepare_post_tool_use_invocation(
     let mut input = String::new();
     std::io::stdin()
         .read_to_string(&mut input)
-        .map_err(|_| PostToolUseDriftInvocationError::InvalidPayload)?;
+        .map_err(|_| PostToolUseObservationError::InvalidPayload)?;
     match requested {
         PostToolUseInvocationKind::Drift => {
             let value = serde_json::from_str::<serde_json::Value>(&input)
-                .map_err(|_| PostToolUseDriftInvocationError::InvalidPayload)?;
-            PostToolUseDriftInvocation::from_value(&value)?.apply()?;
+                .map_err(|_| PostToolUseObservationError::InvalidPayload)?;
+            ObservedBashCall::from_value(&value)?.enter_current_process()?;
             Ok(PostToolUseInvocation::Drift)
         },
         PostToolUseInvocationKind::LiveIncursionBoard => {
             let board_input = serde_json::from_str::<PostToolUseLiveIncursionBoardInput>(&input)
-                .map_err(|_| PostToolUseDriftInvocationError::InvalidPayload)?;
-            PostToolUseDriftInvocation::from_value(&board_input.post_tool_use_payload)?.apply()?;
+                .map_err(|_| PostToolUseObservationError::InvalidPayload)?;
+            ObservedBashCall::from_value(&board_input.post_tool_use_payload)?
+                .enter_current_process()?;
             Ok(PostToolUseInvocation::LiveIncursionBoard {
                 drift_envelope: board_input.drift_envelope,
             })
@@ -2025,7 +1980,7 @@ fn emit_post_tool_use_rendering(
             );
             ExitCode::from(POST_TOOL_USE_FEEDBACK_EXIT_CODE)
         },
-        PostToolUseRendering::RequiresLiveIncursionBoard => {
+        PostToolUseRendering::FeedbackDecidedByLiveIncursionState => {
             emit_response(CliOutputFormat::Json, source_envelope);
             ExitCode::from(POST_TOOL_USE_LIVE_BOARD_REQUIRED_EXIT_CODE)
         },
@@ -2096,14 +2051,11 @@ mod tests {
     use super::CommandResultReporting;
     use super::CommandVerb;
     use super::PostCommitHookRequest;
-    use super::PostToolUseDriftInvocation;
-    use super::PostToolUseDriftInvocationError;
     use super::command_response_rendering;
     use super::exit_for_parser_error;
     use super::without_subcommand_name;
     use crate::exit::BerthExit;
     use crate::output::blocked_edit_answer_guidance;
-    use crate::session::HarnessSessionId;
     use crate::verb::board::BoardOutputSelection;
     use crate::verb::claim::ClaimRequest;
 
@@ -2181,67 +2133,6 @@ mod tests {
             command_response_rendering(CliOutputFormat::Json, PostCommitHookRequest::Requested,),
             CommandResponseRendering::OutputEnvelope(CliOutputFormat::Json),
         );
-    }
-
-    #[test]
-    fn multibyte_harness_session_id_uses_character_limit() {
-        let accepted_session_id = "é".repeat(HarnessSessionId::MAXIMUM_CHARACTERS);
-        let accepted_payload = serde_json::json!({
-            "tool_name": "Bash",
-            "session_id": accepted_session_id,
-        });
-        let expected_harness_session_id = accepted_session_id.parse::<HarnessSessionId>();
-
-        assert!(matches!(
-            (
-                PostToolUseDriftInvocation::from_value(&accepted_payload),
-                expected_harness_session_id,
-            ),
-            (
-                Ok(PostToolUseDriftInvocation {
-                    harness_session_id,
-                    ..
-                }),
-                Ok(expected_harness_session_id),
-            ) if harness_session_id == expected_harness_session_id
-        ));
-
-        let rejected_session_id = "é".repeat(HarnessSessionId::MAXIMUM_CHARACTERS + 1);
-        let rejected_payload = serde_json::json!({
-            "tool_name": "Bash",
-            "session_id": rejected_session_id,
-        });
-
-        assert!(matches!(
-            PostToolUseDriftInvocation::from_value(&rejected_payload),
-            Err(PostToolUseDriftInvocationError::InvalidPayload)
-        ));
-    }
-
-    #[test]
-    fn overlong_harness_session_id_is_an_invalid_payload() {
-        let payload = serde_json::json!({
-            "tool_name": "Bash",
-            "session_id": "a".repeat(HarnessSessionId::MAXIMUM_CHARACTERS + 1),
-        });
-
-        assert!(matches!(
-            PostToolUseDriftInvocation::from_value(&payload),
-            Err(PostToolUseDriftInvocationError::InvalidPayload)
-        ));
-    }
-
-    #[test]
-    fn control_character_harness_session_id_is_an_invalid_payload() {
-        let payload = serde_json::json!({
-            "tool_name": "Bash",
-            "session_id": "session\u{0000}",
-        });
-
-        assert!(matches!(
-            PostToolUseDriftInvocation::from_value(&payload),
-            Err(PostToolUseDriftInvocationError::InvalidPayload)
-        ));
     }
 
     #[test]

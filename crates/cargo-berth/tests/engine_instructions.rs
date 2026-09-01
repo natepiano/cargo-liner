@@ -8,6 +8,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
+use std::process::Stdio;
 
 use serde_json::Value;
 use tempfile::TempDir;
@@ -19,9 +20,11 @@ const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const CORRUPT_JOURNAL_RECORD: &[u8] = b"this journal record is not JSON\n";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
+const POST_TOOL_USE_SCENARIO: &str = "post-tool-use coordination identity recovery";
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const SCRATCH_ROOT: &str = "/tmp/claude";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
+const SESSION_START_SCENARIO: &str = "session-start board report";
 const STALE_CLAIM_TIME: &str = "2020-01-01T00:00:00.000Z";
 const UNKNOWN_RESERVATION_ID: &str = "01991f4d-77d8-7f5f-9a1f-000000000001";
 
@@ -32,11 +35,15 @@ fn rendered_shell_instructions_invoke_the_engine() -> TestResult {
     let (blocked_claim, board) = blocked_claim_and_board_envelopes()?;
     let ambiguous_first_touch = ambiguous_first_touch_envelope()?;
     let replay_failure = replay_failure_envelope()?;
+    let post_tool_use = post_tool_use_identity_recovery_envelope()?;
+    let session_start = session_start_board_envelope()?;
     let scenarios = [
         ("blocked claim", &blocked_claim),
         ("populated board", &board),
         ("ambiguous first touch", &ambiguous_first_touch),
         ("pre-tool-use replay failure", &replay_failure),
+        (POST_TOOL_USE_SCENARIO, &post_tool_use),
+        (SESSION_START_SCENARIO, &session_start),
     ];
 
     for (scenario, envelope) in scenarios {
@@ -269,6 +276,100 @@ fn append_unknown_release(repository_root: &Path) -> TestResult {
     serde_json::to_writer(&mut journal, &event)?;
     journal.write_all(b"\n")?;
     Ok(())
+}
+
+/// The recovery text `hook post-tool-use` publishes when drift cannot attribute a session.
+///
+/// Two claims share one harness session and the mapping that separated them is gone, so the
+/// Bash call this payload reports cannot be attributed to a single reservation and the
+/// engine answers with the commands that re-establish the session's identity.
+fn post_tool_use_identity_recovery_envelope() -> TestResult<Value> {
+    let repository = initialized_repository()?;
+    for scope in ["tree:shared", "file:other.rs"] {
+        let candidate = run_berth(
+            repository.path(),
+            &["claim", scope, "--json"],
+            "engine-instructions-post-tool-use",
+        )?;
+        require_success(&candidate, "post-tool-use attribution candidate")?;
+    }
+    fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))?;
+    fs::create_dir_all(repository.path().join("shared"))?;
+    fs::write(repository.path().join("shared/child.rs"), "// changed\n")?;
+
+    let payload = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "cwd": working_directory_argument(repository.path())?,
+        "session_id": "engine-instructions-post-tool-use",
+    });
+    let answered = run_hook_verb(repository.path(), "post-tool-use", &payload)?;
+    require_success(&answered, POST_TOOL_USE_SCENARIO)?;
+    hook_response_envelope(&answered, POST_TOOL_USE_SCENARIO)
+}
+
+/// The board report `hook session-start` publishes to a session that has one stale claim.
+fn session_start_board_envelope() -> TestResult<Value> {
+    let repository = initialized_repository()?;
+    let claim = run_berth(
+        repository.path(),
+        &["claim", "file:stale.rs", "--run", FIRST_RUN, "--json"],
+        "engine-instructions-session-start",
+    )?;
+    require_success(&claim, "session-start stale claim")?;
+    age_only_journal_event(repository.path())?;
+
+    let payload = serde_json::json!({
+        "hook_event_name": "SessionStart",
+        "cwd": working_directory_argument(repository.path())?,
+        "session_id": "engine-instructions-session-start",
+    });
+    let reconciled = run_hook_verb(repository.path(), "session-start", &payload)?;
+    require_success(&reconciled, SESSION_START_SCENARIO)?;
+    hook_response_envelope(&reconciled, SESSION_START_SCENARIO)
+}
+
+/// Read one hook response as the rendered block whose text the harness shows its reader.
+///
+/// A hook publishes the text it rendered rather than the envelope it rendered from, so the
+/// response's heading and context are restored to the block shape this suite inspects.
+fn hook_response_envelope(output: &Output, scenario: &str) -> TestResult<Value> {
+    let response = json_output(output, scenario)?;
+    let summary = required_string(&response, "/systemMessage", scenario)?;
+    let detail = required_string(&response, "/hookSpecificOutput/additionalContext", scenario)?;
+    Ok(serde_json::json!({
+        "presentation": {
+            "kind": "rendered_blocks",
+            "blocks": [{"summary": summary, "detail": detail}],
+        },
+    }))
+}
+
+/// Run one public hook verb the way the harness runs it: raw payload on standard input.
+fn run_hook_verb(repository: &Path, hook_event: &str, payload: &Value) -> TestResult<Output> {
+    let mut hook = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["hook", hook_event])
+        .current_dir(repository)
+        .env_remove(CARGO_BERTH_RUN_ENVIRONMENT)
+        .env_remove(CARGO_BERTH_SESSION_ENVIRONMENT)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut standard_input = hook
+        .stdin
+        .take()
+        .ok_or_else(|| failure(format!("{hook_event} hook should accept standard input")))?;
+    standard_input.write_all(&serde_json::to_vec(payload)?)?;
+    drop(standard_input);
+    Ok(hook.wait_with_output()?)
+}
+
+fn working_directory_argument(repository: &Path) -> TestResult<String> {
+    repository
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| failure("scratch repository path should be valid UTF-8"))
 }
 
 fn inspect_rendered_blocks(scenario: &str, envelope: &Value) -> TestResult<usize> {

@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use schemars::JsonSchema;
 use schemars::Schema;
@@ -56,6 +57,7 @@ use crate::ledger::ForeignReservationIdSet;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerInitialization;
+use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
 use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::SkippedIntegrationHoldSet;
@@ -98,6 +100,22 @@ pub(crate) const LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE: &str = "cargo-berth could 
 const CHECK_INVALID_INPUT_SUMMARY: &str =
     "cargo-berth rejected this edit because it could not accept the request.";
 const CHECK_CONTENTION_SUMMARY: &str = "cargo-berth rejected this edit because another cargo-berth operation still holds the ledger lock.";
+/// The clause a hook-facing response states when the ledger could not be read at all.
+const LEDGER_UNREADABLE_CONDITION: &str = "cargo-berth could not read the reservation ledger";
+/// The clause a hook-facing response states when the bounded lock wait ran out.
+const LEDGER_LOCK_DEADLINE_CONDITION: &str = "cargo-berth exhausted its ledger-lock deadline";
+/// The summary a drift response states when it could not settle which reservation to compare.
+const DRIFT_SELECTION_SUMMARY: &str =
+    "cargo-berth could not select or validate the drift reservation.";
+/// The command a rejected drift selection tells the reader to run by hand.
+const DRIFT_SELECTION_RECOVERY: &str = "Run `cargo-berth drift --reservation <id> --json` by hand.";
+/// The command an unreadable board ledger tells the reader to run once it is repaired.
+const BOARD_LEDGER_RECOVERY: &str =
+    "Run `cargo-berth board --json` again after repairing the ledger.";
+/// The command an exhausted board lock deadline tells the reader to run once it is free.
+const BOARD_CONTENTION_RECOVERY: &str = "Run `cargo-berth board --json` when the ledger is free.";
+/// The summary a post-Bash response falls back to when no verb stated its condition.
+const UNSTATED_CONDITION_SUMMARY: &str = "cargo-berth could not inspect this Bash call.";
 #[cfg(test)]
 const UNIMPLEMENTED_MESSAGE: &str = "The reservation engine is not implemented.";
 
@@ -327,8 +345,12 @@ pub(crate) enum PostToolUseRendering {
     NoFeedback,
     /// The hook can publish this complete typed feedback without another validator process.
     Feedback { summary: String, detail: String },
-    /// Incursion feedback still needs the post-drift live-board check.
-    RequiresLiveIncursionBoard,
+    /// What the response carries is decided by the live state of the reported incursions.
+    ///
+    /// A drift answer alone cannot say whether an incursion it observed still needs an
+    /// answer, because the incident may already have been resolved. The engine reads the
+    /// board and renders again against that live state before it states anything.
+    FeedbackDecidedByLiveIncursionState,
 }
 
 /// A verb named in a JSON response.
@@ -1626,9 +1648,9 @@ impl OutputEnvelope {
     /// Build a ledger-unreadable response without adding a new process outcome.
     pub(crate) fn ledger_unreadable(command_verb: CommandVerb, diagnostic: &str) -> Self {
         let message = format!("The reservation ledger could not be read: {diagnostic}");
-        let presentation = pre_edit_check_presentation(
+        let presentation = hook_facing_presentation(
             command_verb,
-            engine_message_block(LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE, &message).into(),
+            &HookFacingCondition::LedgerUnreadable { message: &message },
         );
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
@@ -1711,7 +1733,7 @@ impl OutputEnvelope {
         expected_configuration_path: &Path,
     ) -> Self {
         let presentation =
-            pre_edit_check_presentation(command_verb, EnvelopePresentation::nothing_to_show());
+            hook_facing_presentation(command_verb, &HookFacingCondition::Unconfigured);
 
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
@@ -2258,9 +2280,9 @@ impl OutputEnvelope {
             reservations:            Vec::new(),
             blocked_by:              Vec::new(),
             message:                 diagnostic.to_owned(),
-            presentation:            pre_edit_check_presentation(
+            presentation:            hook_facing_presentation(
                 command_verb,
-                engine_message_block(CHECK_INVALID_INPUT_SUMMARY, diagnostic).into(),
+                &HookFacingCondition::InvalidInput { diagnostic },
             ),
             payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
         }
@@ -2327,9 +2349,9 @@ impl OutputEnvelope {
             reservations:            Vec::new(),
             blocked_by:              Vec::new(),
             message:                 diagnostic.to_owned(),
-            presentation:            pre_edit_check_presentation(
+            presentation:            hook_facing_presentation(
                 command_verb,
-                engine_message_block(CHECK_CONTENTION_SUMMARY, diagnostic).into(),
+                &HookFacingCondition::Contention { diagnostic },
             ),
             payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
         }
@@ -2564,7 +2586,7 @@ impl OutputEnvelope {
                 self.presentation
                     .replace_with(engine_message_block(&summary, &detail));
             },
-            PostToolUseRendering::RequiresLiveIncursionBoard => {
+            PostToolUseRendering::FeedbackDecidedByLiveIncursionState => {
                 self.presentation = match &self.payload.facts {
                     OutputFacts::Drift(report) => {
                         drift_non_incursion_presentation(report, &self.payload.alerts)
@@ -2693,10 +2715,7 @@ impl OutputEnvelope {
             OutputFacts::NoFacts if matches!(self.status, OutputStatus::Unconfigured) => {
                 PostToolUseRendering::NoFeedback
             },
-            OutputFacts::NoFacts => PostToolUseRendering::Feedback {
-                summary: "cargo-berth could not inspect this Bash call.".to_owned(),
-                detail:  self.message.clone(),
-            },
+            OutputFacts::NoFacts => self.stated_condition_rendering(),
             OutputFacts::Init(_)
             | OutputFacts::ProjectionRepair(_)
             | OutputFacts::Reinitialize(_)
@@ -2711,6 +2730,34 @@ impl OutputEnvelope {
             | OutputFacts::Renew(_)
             | OutputFacts::Identity(_) => PostToolUseRendering::Feedback {
                 summary: "cargo-berth rejected an unexpected PostToolUse response.".to_owned(),
+                detail:  self.message.clone(),
+            },
+        }
+    }
+
+    /// State a response that carries no facts in the words the deciding verb chose.
+    ///
+    /// An unreadable ledger, a rejected reservation selection and an exhausted lock
+    /// deadline are three different answers, and [`drift_presentation`] already renders
+    /// each one for this event. Reading that presentation keeps them three answers here
+    /// instead of collapsing them into a single report that no drift comparison ran.
+    /// Only a response with no presentation at all reaches the generic wording, which is
+    /// the working-directory answer it was written for.
+    fn stated_condition_rendering(&self) -> PostToolUseRendering {
+        match &self.presentation {
+            EnvelopePresentation::NothingToShow => PostToolUseRendering::NoFeedback,
+            EnvelopePresentation::RenderedBlocks { blocks } => {
+                let stated_block = blocks.as_slice().first().map_or_else(
+                    || engine_message_block(UNSTATED_CONDITION_SUMMARY, &self.message),
+                    Clone::clone,
+                );
+                PostToolUseRendering::Feedback {
+                    summary: stated_block.summary,
+                    detail:  stated_block.detail,
+                }
+            },
+            EnvelopePresentation::NotProvided => PostToolUseRendering::Feedback {
+                summary: UNSTATED_CONDITION_SUMMARY.to_owned(),
                 detail:  self.message.clone(),
             },
         }
@@ -2815,7 +2862,7 @@ impl OutputEnvelope {
                 matches!(effect, DriftEffect::Incursion { .. })
             })
         }) {
-            return PostToolUseRendering::RequiresLiveIncursionBoard;
+            return PostToolUseRendering::FeedbackDecidedByLiveIncursionState;
         }
         let has_collision = report.results.iter().any(|result| {
             result_has_effect(result, |effect| {
@@ -3111,26 +3158,185 @@ fn claimed_presentation(
     engine_message_block(&summary, &detail).into()
 }
 
-/// Carry a presentation only for the verb the pre-edit check hook renders.
+/// The occasion an engine response is produced on, for the text that names it.
 ///
-/// Every other verb reaches its user through the engine `message`, so naming
+/// A response that says *when* the engine met a condition — `after Bash`, `at
+/// SessionStart` — is true only while the harness hook for that event is what invoked
+/// the verb. Every verb these events drive is also a verb a person runs by hand, so
+/// naming the occasion after the verb would put a harness event in front of a reader no
+/// harness event ever reached. The hook process that owns the answer records the
+/// occasion instead, once, before the verb runs.
+#[derive(Clone, Copy)]
+pub(crate) enum EngineAnswerOccasion {
+    /// No harness hook drives this process, so the response names no event.
+    DirectInvocation,
+    /// A `PostToolUse` hook owns this answer, taken after one Bash call completed.
+    CompletedBashCall,
+    /// A `SessionStart` hook owns this answer, taken while one session opened.
+    OpeningSession,
+}
+
+/// The occasion the current process answers on, recorded once by the hook that owns it.
+static ENGINE_ANSWER_OCCASION: OnceLock<EngineAnswerOccasion> = OnceLock::new();
+
+impl EngineAnswerOccasion {
+    /// Record this occasion for every response the current process goes on to build.
+    ///
+    /// A process answers exactly one harness event, so the first record stands and a
+    /// later one is ignored rather than allowed to re-date an answer already given.
+    pub(crate) fn own_this_process(self) { ENGINE_ANSWER_OCCASION.get_or_init(|| self); }
+
+    /// The occasion this process answers on, which is none until a hook records one.
+    fn current() -> Self {
+        ENGINE_ANSWER_OCCASION
+            .get()
+            .copied()
+            .unwrap_or(Self::DirectInvocation)
+    }
+
+    /// Complete one condition clause with the occasion the engine met it on.
+    fn summary_for(self, condition: &str) -> String {
+        let occasion = match self {
+            Self::DirectInvocation => "",
+            Self::CompletedBashCall => " after Bash",
+            Self::OpeningSession => " at SessionStart",
+        };
+        format!("{condition}{occasion}.")
+    }
+}
+
+/// The engine conditions a harness hook reads, in the words the deciding verb states.
+enum HookFacingCondition<'condition> {
+    /// This repository is not participating in coordination.
+    Unconfigured,
+    /// The reservation ledger could not be read.
+    LedgerUnreadable { message: &'condition str },
+    /// The bounded ledger-lock deadline was exhausted before the ledger came free.
+    Contention { diagnostic: &'condition str },
+    /// The request itself could not be accepted.
+    InvalidInput { diagnostic: &'condition str },
+}
+
+/// Carry a presentation only for the verbs a harness hook reads.
+///
+/// `check` reaches its user through `hook pre-tool-use`, `board` through
+/// `hook session-start`, and `drift` through `hook post-tool-use`, so all three state
+/// these conditions in their own words rather than leave a hook to classify a wire
+/// status. Every other verb reaches its user through the engine `message`, so naming
 /// them here once keeps a new verb from being forgotten in four constructors.
-fn pre_edit_check_presentation(
+///
+/// The verb decides which words a condition gets; it does not decide which occasion
+/// those words name. Each of these verbs is shared between its hook and a person
+/// running it by hand, so the occasion comes from
+/// [`EngineAnswerOccasion::current`] instead.
+fn hook_facing_presentation(
     command_verb: CommandVerb,
-    check_presentation: EnvelopePresentation,
+    condition: &HookFacingCondition<'_>,
 ) -> EnvelopePresentation {
     match command_verb {
-        CommandVerb::Check => check_presentation,
+        CommandVerb::Check => pre_tool_use_check_presentation(condition),
+        CommandVerb::Board => board_presentation(condition),
+        CommandVerb::Drift => drift_presentation(condition),
         CommandVerb::Init
-        | CommandVerb::Board
         | CommandVerb::Claim
         | CommandVerb::Release
         | CommandVerb::Sequence
         | CommandVerb::Integrate
         | CommandVerb::Resolve
         | CommandVerb::Renew
-        | CommandVerb::Drift
         | CommandVerb::Identity => EnvelopePresentation::NotProvided,
+    }
+}
+
+/// State one condition in the words `hook pre-tool-use` publishes about a pending edit.
+fn pre_tool_use_check_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentation {
+    match condition {
+        HookFacingCondition::Unconfigured => EnvelopePresentation::nothing_to_show(),
+        HookFacingCondition::LedgerUnreadable { message } => {
+            engine_message_block(LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE, message).into()
+        },
+        HookFacingCondition::Contention { diagnostic } => {
+            engine_message_block(CHECK_CONTENTION_SUMMARY, diagnostic).into()
+        },
+        HookFacingCondition::InvalidInput { diagnostic } => {
+            engine_message_block(CHECK_INVALID_INPUT_SUMMARY, diagnostic).into()
+        },
+    }
+}
+
+/// State one condition in the words a `board` reader is owed, hook or terminal alike.
+///
+/// A repository outside coordination is not a condition to raise, so an unconfigured
+/// board is deliberate silence rather than a notice at every session start. An
+/// unreadable ledger and an exhausted lock deadline are both reported, and they are
+/// distinguished here so a session-start hook branches on presentation alone: both
+/// arrive as the same exit status, and a consumer that had to tell them apart would be
+/// classifying a wire status the engine already understands. A rejected request is the
+/// caller's own, and a caller reading its own rejection is already reading `message`.
+fn board_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentation {
+    let occasion = EngineAnswerOccasion::current();
+    match condition {
+        HookFacingCondition::Unconfigured => EnvelopePresentation::nothing_to_show(),
+        HookFacingCondition::LedgerUnreadable { message } => engine_message_block(
+            &occasion.summary_for(LEDGER_UNREADABLE_CONDITION),
+            &format!("{message} {BOARD_LEDGER_RECOVERY}"),
+        )
+        .into(),
+        HookFacingCondition::Contention { diagnostic } => engine_message_block(
+            &occasion.summary_for(LEDGER_LOCK_DEADLINE_CONDITION),
+            &format!(
+                "{diagnostic} {} {BOARD_CONTENTION_RECOVERY}",
+                spent_retry_budget_sentence(occasion, "the hook did not invoke board again")
+            ),
+        )
+        .into(),
+        HookFacingCondition::InvalidInput { .. } => EnvelopePresentation::NotProvided,
+    }
+}
+
+/// State one condition in the words a `drift` reader is owed, hook or terminal alike.
+///
+/// The Bash call a `hook post-tool-use` process reports on has already run, so none of
+/// these conditions blocks anything; what is at stake is only that the reader learns no
+/// drift comparison covered it, and learns which of the three reasons applies. An
+/// unconfigured repository is not one of them, so it stays silent.
+fn drift_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentation {
+    let occasion = EngineAnswerOccasion::current();
+    match condition {
+        HookFacingCondition::Unconfigured => EnvelopePresentation::nothing_to_show(),
+        HookFacingCondition::LedgerUnreadable { message } => {
+            engine_message_block(&occasion.summary_for(LEDGER_UNREADABLE_CONDITION), message).into()
+        },
+        HookFacingCondition::Contention { diagnostic } => engine_message_block(
+            &occasion.summary_for(LEDGER_LOCK_DEADLINE_CONDITION),
+            &format!(
+                "{diagnostic} {}",
+                spent_retry_budget_sentence(occasion, "it was not invoked again")
+            ),
+        )
+        .into(),
+        HookFacingCondition::InvalidInput { diagnostic } => engine_message_block(
+            DRIFT_SELECTION_SUMMARY,
+            &format!("{diagnostic} {DRIFT_SELECTION_RECOVERY}"),
+        )
+        .into(),
+    }
+}
+
+/// State that the bounded ledger-lock wait is already spent, and who did not spend it twice.
+///
+/// The wait itself is [`MUTATING_VERB_CONTENTION_TOLERANCE`], so the figure is taken from
+/// the tolerance the engine actually applies rather than restated beside it. A caller
+/// running the verb by hand is free to run it again immediately and is told nothing about
+/// a hook that did not.
+fn spent_retry_budget_sentence(occasion: EngineAnswerOccasion, unretried: &str) -> String {
+    let budget_seconds = MUTATING_VERB_CONTENTION_TOLERANCE.as_secs();
+    let spent = format!("The engine already spent its single {budget_seconds}-second retry budget");
+    match occasion {
+        EngineAnswerOccasion::DirectInvocation => format!("{spent}."),
+        EngineAnswerOccasion::CompletedBashCall | EngineAnswerOccasion::OpeningSession => {
+            format!("{spent}; {unretried}.")
+        },
     }
 }
 
@@ -4112,7 +4318,7 @@ mod tests {
 
         assert_eq!(
             output_envelope.presentation,
-            EnvelopePresentation::NotProvided
+            EnvelopePresentation::NothingToShow
         );
         assert!(matches!(
             output_envelope.post_commit_rendering(),

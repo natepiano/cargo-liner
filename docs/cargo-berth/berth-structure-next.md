@@ -59,17 +59,23 @@ worktree leaves a hook pointing at a path that no longer exists.
 Satisfied by: a hook that resolves its own repository and worktree at run time,
 with a test that installs from one worktree and exercises the gate from another.
 
-## 5. `CARGO_BERTH_BYPASS=1` still shells out to the engine
+## 5. The edit gate honors no bypass at all
 
 **Target:** `~/.claude/scripts/berth/install/hooks/berth_pre_edit.sh` (and, after
-phase 6, the wrapper that replaces it).
+phase 6, the wrapper that replaces it) and
+`crates/cargo-berth/src/hook/pre_tool_use.rs`.
 
-The bypass is meant to be the escape hatch when the engine is the problem, but
-the hook still invokes `cargo-berth` before honoring it. A binary that hangs or
-crashes therefore cannot be bypassed, which is exactly when the bypass is needed.
+`CARGO_BERTH_BYPASS` is read in exactly one place —
+`gate::permit::environment_bypass_requested` (`src/gate/permit.rs:166`), called
+from `src/cli.rs:1496` on the `reference-transaction` trunk gate — and
+`berth_pre_edit.sh` never mentions it. So an engine that hangs or crashes blocks
+every write with no escape hatch, which is exactly when one is needed, and the
+wrapper that replaces the hook inherits that unless it is built in.
 
-Satisfied by: the bypass short-circuiting before any engine invocation, with the
-pending-bypass marker still recorded for the audit.
+Satisfied by: the pre-edit path short-circuiting to an allow on
+`CARGO_BERTH_BYPASS=1` before any engine invocation, with the pending-bypass
+marker still recorded for the audit, and a test that sets the variable against an
+absent or hanging binary and asserts the write proceeds.
 
 ## 6. `--integrated-as` requires a prior `release`, unreachable for an orphan
 
@@ -103,9 +109,15 @@ their holder facts, and a test covering two runs in one worktree.
 `crates/cargo-berth/tests/engine_instructions.rs`.
 
 The README presents engine output as verbatim `text` blocks, but no test ties
-those blocks to the Rust renderings that produce them. Phase 3 changed drift and
-resolve instructions and required four manual documentation corrections, and
-every remaining phase that changes printed output can reintroduce the same drift.
+those blocks to the Rust renderings that produce them. The scenario machinery now
+exists — `tests/engine_instructions.rs` carries named real-binary scenarios
+(`POST_TOOL_USE_SCENARIO`, `SESSION_START_SCENARIO`, `run_hook_verb`,
+`hook_response_envelope`) — so the remaining work is binding README blocks to
+those scenarios rather than building the harness. The drift is recurring, not
+hypothetical: the instruction-naming phase required four manual documentation
+corrections, the hook-verb phase swept the README by hand again, and the cutover
+that retires the coordinator carries a third hand sweep over text it changes
+wholesale.
 
 Satisfied by: each README block presented as observed engine output being sourced
 from a named real-binary scenario or frozen fixture, with a test that fails when
@@ -149,8 +161,8 @@ or a generation boundary — and a test covering it.
 ## 11. The `--reservation` recovery command cannot resolve the refusal that prints it
 
 **Target:** `crates/cargo-berth/src/output.rs` —
-`AMBIGUOUS_RESERVATION_RECOVERY_COMMAND` (`:94`) and the explicit-selection
-response text (`:3372`).
+`AMBIGUOUS_RESERVATION_RECOVERY_COMMAND` (`:96`) and the explicit-selection
+response text (`:3578`).
 
 An ambiguous first touch prints `cargo-berth check --reservation
 <reservation-id> <path>...`. Running exactly that widens the scopes and then

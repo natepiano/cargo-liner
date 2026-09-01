@@ -75,6 +75,12 @@ The full verb set is:
 - `check`: ask whether proposed file paths collide with a foreign reservation.
 - `hook pre-tool-use`: read a raw Claude Code `PreToolUse` payload from standard
   input and emit the complete edit-authorization hook response.
+- `hook post-tool-use`: read a raw Claude Code `PostToolUse` payload from
+  standard input, run the drift comparison and any live incursion board that
+  answer needs, and emit the complete post-Bash hook response.
+- `hook session-start`: read a raw Claude Code `SessionStart` payload from
+  standard input, reconcile the repository once, and emit the complete session
+  response.
 - `drift`: compare changed paths with reservation scopes.
 - `board`: inspect current constraints, answers, incidents, and audit history.
 - `sequence`: turn a deferred overlap into a directed ordering edge.
@@ -105,9 +111,31 @@ and writes the engine-rendered refusal to standard error with exit code 2 when
 the edit is blocked. At check exit code 4, an unconfigured repository carries
 deliberate silence, while an unreadable configured ledger carries a rendered
 fail-open notice. A missing blocking presentation fails closed with a hook
-diagnostic instead. A Claude Code hook can execute this command before a write,
-but that harness hook is not installed by this crate. A general Git user
-instead gets the managed `post-commit` warning. It runs after the commit already
+diagnostic instead.
+
+Two further harness events are answered by the engine, one process each.
+`cargo berth hook post-tool-use` reads a `PostToolUse` payload for a Bash call
+that has already finished, performs the drift comparison, and reads the live
+incursion board only when the drift answer depends on it. `cargo berth hook
+session-start` reads a `SessionStart` payload and reconciles the repository
+once. Neither can stop anything — the Bash call is already done, and a session
+start begins no work — so both always exit 0 and speak only through their
+response object, emitting nothing at all when the engine has nothing to raise.
+Both publish the text the engine rendered, word for word; neither reclassifies
+the facts beside it.
+
+`hook session-start` differs in one deliberate way from the shell hook it
+replaces. It takes its harness session identity from the payload alone: a
+payload carrying no `session_id`, or one this engine cannot read, binds the
+process to no session at all rather than falling back to the ambient
+`CARGO_BERTH_SESSION_ID`. That variable belongs to whichever session launched
+the hook process, so adopting it would let one session report on, and later
+attach itself to, another session's reservation. Having no session is an
+answer; borrowing one is a guess.
+
+A Claude Code hook can execute these commands, but those harness hooks are not
+installed by this crate. A general Git user instead gets the managed
+`post-commit` warning. It runs after the commit already
 exists, never rejects the commit, names the paths that strayed and the foreign
 holders they reached, and leaves the decision with the user. Run `cargo berth
 drift` for the same check on demand. `CARGO_BERTH_BYPASS=1` skips the post-commit
@@ -355,6 +383,10 @@ The meanings in this table are the executable's public contract:
 | 5 | The command line is invalid. |
 | 6 | Another mutation holds the ledger lock; retry the command. |
 | 7 | The board was handed a terminal and the terminal failed. |
+
+`hook post-tool-use` and `hook session-start` always exit 0. They report on work
+that is already finished and block nothing, so their whole answer is in the
+response object and never in the process status.
 
 Every JSON response has the common envelope fields `output_contract_version`,
 `verb`, `status`, `exit_code`, `reservations`, `blocked_by`, `message`, and
