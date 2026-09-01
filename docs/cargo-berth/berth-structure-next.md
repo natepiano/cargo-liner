@@ -338,9 +338,11 @@ the foreign claim predates the commit.
 `PendingScopedPatchCandidateContext.target_histories` (`:630`), and its
 `candidate` conversion (`:648`).
 
-`git::PhaseStartTargetFirstParentHistories` (`src/git/mod.rs:176`) already wraps
-exactly `HashMap<GitObjectId, Vec<GitObjectId>>` and converts a missing key into
-`ScopedPatchTargetHistory::NeedsGitQueries` through `after_phase_start` (`:180`).
+`git::PhaseStartTargetFirstParentHistories` (`src/git/reachability.rs:106`) already
+wraps exactly `HashMap<GitObjectId, Vec<GitObjectId>>` and converts a missing key
+into `ScopedPatchTargetHistory::NeedsGitQueries` through `after_phase_start`
+(`:110`); phase 9 moved both out of `git/mod.rs`, which is now declarations and
+re-exports only.
 The reconciliation path lowers the same shape back to a bare map and
 re-implements that conversion by hand at `:648`, against
 `SuccessorScopedPatchTargetHistory` instead — a second home for a lookup the

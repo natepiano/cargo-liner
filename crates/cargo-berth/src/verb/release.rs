@@ -422,11 +422,12 @@ fn checkpoint_operation(
     if release_repository_context.holder_worktree == HolderWorktree::Different {
         return Err(ReleaseRejection::ForeignActiveReservation);
     }
-    let checkpoint_commits = git::reservation_checkpoint_commits(
-        release_repository_context.repository_root,
-        release_repository_context.trunk_branch,
-    )
-    .map_err(ReleaseRejection::Git)?;
+    let checkpoint_commits: git::ReservationCheckpointCommits =
+        git::reservation_checkpoint_commits(
+            release_repository_context.repository_root,
+            release_repository_context.trunk_branch,
+        )
+        .map_err(ReleaseRejection::Git)?;
     let protected_tip = ProtectedReservationTip::from(checkpoint_commits.protected_tip);
     let trunk_oid = checkpoint_commits.trunk;
     Ok(ReleaseAppend::new(

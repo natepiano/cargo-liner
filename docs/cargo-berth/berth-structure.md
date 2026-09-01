@@ -539,74 +539,53 @@ that move.
   the pre-split code did; computing it inside the `Classified` branch is
   behavior-identical and skips it for a case that discarded the result anyway.
 
-### Phase 9 — `git/mod.rs` becomes a table of contents · status: todo
+### Phase 9 — `git/mod.rs` becomes a table of contents · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `git/mod.rs` declares submodules and re-exports, and carries no logic
-and no `too_many_lines` suppression.
-
-**Spec:** The root holds roughly 3,610 lines past its declarations (file 3,716,
-imports end `:104`) — the largest offender in the crate — beside existing `command.rs`, `constants.rs`, and
-`refs.rs` submodules. Split by type ownership, not by code category: each new
-submodule is named after the anchor type or the git concept it owns, and its
-tests move with it. Candidate boundaries visible today, to be confirmed against the
-code rather than taken as given: reachability and ancestry queries (including
-`commit_target_reachability` at `:1884`, 151 lines, which is also a
-`too_many_lines` site and must be split rather than moved intact); scoped patch
-comparison and the symmetric-difference reader that
-`ProtectedUnmatchedCommit` now types; merge-conflict coverage classification
-(`ScopedMergeConflictCoverage`); branch and retention-ref updates; worktree and
-administrative-directory discovery.
-
-The root keeps only `mod` declarations followed by re-exports. Anything a sibling
-module needs becomes `pub(super)` in its new home and is re-exported from the
-root under the name callers already use, so no call site outside `git/` changes.
-Name each new submodule explicitly in the summary; the Files list below carries
-the ones the split is expected to create.
+`git/mod.rs` holds module documentation, `mod` declarations, and one `pub(crate) use`
+block; nothing else. Every git query and the types describing its answers live in a
+sibling named for the git concept it owns, and each module's tests moved with it.
+`commit_target_reachability` is split into five helpers with three new state types —
+`SoleCommitTarget`, `UnusableCommitTarget`, `TargetHistoryRead` — that name states
+rather than representations, with control flow preserved exactly, including the
+target-history join happening before the candidate join. `refs::name` is now
+`reservation_retention_ref_name`; `apply_transaction` and `ReservationRetentionRef`
+narrowed from `pub(super)` to private. No `#[allow]`, `#[expect]`, or `reason` string
+exists anywhere under `git/`, and the existing suite passes unmodified: every name
+outside `git/` and all observable behavior are unchanged.
 
 **Files:**
-- `crates/cargo-berth/src/git/mod.rs`
-- `crates/cargo-berth/src/git/reachability.rs`
-- `crates/cargo-berth/src/git/patch.rs`
-- `crates/cargo-berth/src/git/conflict.rs`
-- `crates/cargo-berth/src/git/refs.rs`
-- `crates/cargo-berth/src/git/discovery.rs`
+- `crates/cargo-berth/src/git/mod.rs` — module declarations and the crate-facing re-export block
+- `crates/cargo-berth/src/git/error.rs` — `GitError`, the single failure type every git query returns
+- `crates/cargo-berth/src/git/object.rs` — object identity and commit availability
+- `crates/cargo-berth/src/git/reachability.rs` — one target commit, a batch of candidates, a typed answer each
+- `crates/cargo-berth/src/git/paths.rs` — which paths a batch of commits touched, returned raw for parsing
+- `crates/cargo-berth/src/git/patch.rs` — scoped patch comparison and rebased-phase anchor location
+- `crates/cargo-berth/src/git/conflict.rs` — merge-conflict coverage classification
+- `crates/cargo-berth/src/git/refs.rs` — reservation retention refs
+- `crates/cargo-berth/src/git/discovery.rs` — repository root and shared administrative directory
+- `crates/cargo-berth/src/git/fixture.rs` — the shared `#[cfg(test)]` `PatchEquivalenceFixture`
 
-**Seats:** 3 writers + 0 testers — the split is by type ownership and the
-clusters do not appear in each other's field lists, so three writers can carve
-disjoint submodules out of one root. Tests move with the types, so there is no
-separate test lane.
-- `impl` — `git/mod.rs` and `reachability.rs`; hub: `git/mod.rs` (the root, which
-  `impl` alone writes)
-- `test` — opens as `impl`; `patch.rs` and `conflict.rs`
-- `review` — opens as `impl`; `refs.rs` and `discovery.rs`
+**Gotchas:**
+- A `pub(crate)` re-export the crate never names is an unused import and fails
+  `-D warnings`, and no suppression may silence it. The remedy is an explicit type
+  annotation at the call site, which makes the re-export used and documents the
+  binding; `verb/release.rs` and `drift/provenance.rs` each carry one for this reason.
+- A module named for a git concept owns only that concept. Two path-attribution
+  readers living in the reachability module made its documentation false, which is
+  why `paths.rs` exists.
+- A root file's inline `#[cfg(test)]` module dies with the root. Shared test support
+  becomes its own module rather than being duplicated across the new siblings.
+- `gate::committed_hook_persists_one_scoped_patch_evaluation_record` is bounded by a
+  10-second wall clock: it fails under a contended tree and passes in 1.7s on a quiet
+  one. Its own message names the deadline, which is what tells contention from a defect.
 
-**No seat writes another seat's file.** The pre-edit hook claims paths per
-session, so an edit into a peer's claimed file is blocked rather than merged —
-which makes a partition where three seats each delete their own cluster from one
-root unexecutable. `impl` therefore owns the **entire** root transformation:
-every `mod` declaration, every re-export, and every deletion. The other seats
-create only their own submodule files, reading the code they move from the root
-at `HEAD` (`git show HEAD:<root path>`) rather than from the file `impl` is
-rewriting. Nothing serializes and no seat waits for a skeleton, because no seat
-outside `impl` ever touches the root. Phase 7 paid for the older arrangement:
-two seats converting callers of the same item at once produced a red where each
-seat's own files were clean and neither error was its own.
-
-**Acceptance gate:**
-1. `git/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
-   documentation.
-2. No `too_many_lines` suppression remains anywhere under `crates/cargo-berth/src/git/`.
-3. The existing suite passes unmodified.
-4. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
-
-**Constraints from prior phases:** none — no earlier phase added a call into
-`git/`. The submodule names in **Files** are the expected split; if the code
-argues for a different boundary, take it and say so, but every new file must be
-named in the summary.
-
----
+**Ruled out:**
+- Widening a module to `pub(crate) mod` to make a moved type nameable — it compiles,
+  but lets callers name items around the root and changes the paths callers write.
+- Rewording the reachability module's documentation to cover the two path readers
+  instead of moving them out.
 
 ### Phase 10 — `reservation/mod.rs` becomes a table of contents · status: todo
 
@@ -624,8 +603,25 @@ dispatch.
 
 Split by type ownership: the retained-reservation set and its incursion
 observation, the scope-partition logic, the reservation record, the replay
-machinery, and the conflict/holder evaluation are separate clusters that do not
-appear in each other's field lists. Tests move with the type each one covers.
+machinery, the conflict/holder evaluation, and the scoped-patch evaluation
+surface are separate clusters that do not appear in each other's field lists.
+Tests move with the type each one covers.
+
+The scoped-patch evaluation cluster runs `:77`-`:342`, roughly 265 lines:
+`IntegrationProofSubjectRevision`, `DurableScopedPatchComparison`,
+`RetainedScopedPatchTargetVerdicts`,
+`RetainedSuccessorScopedPatchTargetVerdicts`, `ScopedPatchEvaluationPriority`,
+`ScopedPatchComparisonAttempt`, `ScopedPatchTargetEvaluationSchedule`,
+`SuccessorScopedPatchTargetEvaluationSchedule` and their impls. None of them is
+the retained set, the scope partition, the record, the replay machinery, or the
+conflict/holder evaluation, so they get
+`reservation/scoped_patch_evaluation.rs`.
+
+The root carries an inline `#[cfg(test)] mod tests` at `:2225`-`:3125` — 901
+lines, 29% of the file, in the very file the hub owner rewrites. Each test moves
+to sit with the type it covers. The peers read the tests they take from the root
+at `HEAD` (`git show HEAD:crates/cargo-berth/src/reservation/mod.rs`) and never
+edit the root; `impl` empties the module as part of its own pass.
 
 **`apply` stays with its type; only the error moves.** `apply` (`:1018`) is an
 inherent method on `RetainedReservationSet`, whose two `impl` blocks are `:656`
@@ -639,10 +635,11 @@ force its private fields to `pub(super)` — a widening bought for nothing, sinc
 So `apply` and every `apply_*` helper travel with `RetainedReservationSet` into
 the retention cluster, both `impl` blocks together.
 
-`reservation/replay.rs` still exists, and holds `ReservationReplayError` and its
-103-line `Display` (`:2113`) — which are in no other cluster and are where the
-`fmt` split lands. The hub owner takes `retention.rs` and `replay.rs` together,
-so gates 2 and 3 still turn on one seat rather than two.
+`reservation/replay.rs` is a file this phase creates. `ReservationReplayError`
+(`:2068`) and its 103-line `Display` (`impl` at `:2113`) live in `mod.rs` today,
+belong to no other cluster, and are where the `fmt` split lands. The hub owner
+takes `retention.rs` and `replay.rs` together, so gates 2 and 3 still turn on one
+seat rather than two.
 
 **Files:**
 - `crates/cargo-berth/src/reservation/mod.rs`
@@ -651,13 +648,13 @@ so gates 2 and 3 still turn on one seat rather than two.
 - `crates/cargo-berth/src/reservation/record.rs`
 - `crates/cargo-berth/src/reservation/replay.rs`
 - `crates/cargo-berth/src/reservation/conflict.rs`
+- `crates/cargo-berth/src/reservation/scoped_patch_evaluation.rs`
 
-**Seats:** 3 writers + 0 testers — same shape as phase 9: disjoint type clusters
-out of one root, tests moving with their types.
+**Seats:** 3 writers + 0 testers
 - `impl` — `reservation/mod.rs`, `retention.rs`, and `replay.rs`; hub:
   `reservation/mod.rs` (the root, which `impl` alone writes)
-- `test` — opens as `impl`; `partition.rs` and `record.rs`
-- `review` — opens as `impl`; `conflict.rs`
+- `test` — opens as `impl`; `record.rs` and `partition.rs`
+- `review` — opens as `impl`; `conflict.rs` and `scoped_patch_evaluation.rs`
 
 Retention and replay go to the hub owner together because between them they hold
 both suppressions, so gates 2 and 3 turn on one seat rather than two.
@@ -677,7 +674,12 @@ seat's own files were clean and neither error was its own.
 **Acceptance gate:**
 1. `reservation/mod.rs` contains only `mod` declarations, `use`/`pub use`, and
    module documentation.
-2. No `too_many_lines` suppression remains under `crates/cargo-berth/src/reservation/`.
+2. No `too_many_lines` suppression remains under
+   `crates/cargo-berth/src/reservation/`. The two sites are spelled differently
+   and the sweep names both: `#[allow(clippy::too_many_lines, …)]` at
+   `reservation/mod.rs:1014`, on `apply` (`:1018`), and
+   `#[expect(clippy::too_many_lines, …)]` at `:2114`, on `fmt` (`:2118`). A
+   sweep for `#[allow` alone satisfies this gate while missing half of it.
 3. The existing suite passes unmodified.
 4. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
 5. `~/.claude/scripts/lint/lint doc` passes. This split moves items that carry
@@ -710,6 +712,18 @@ precisely so this phase does not have to find a home for it here; do not move it
 back. Every anchor above was confirmed against the tree after phase 8; re-confirm
 before relying on one, since phases 9 and 10 both edit files this plan cites.
 
+The submodule names in **Files** are the expected split; if the code argues
+for a different boundary, take it and say so, but every new file must be named
+in the summary.
+
+A `pub(crate)` re-export the crate does not name is an unused import and fails
+`-D warnings`, and this plan forbids the suppression that would silence it. The
+remedy is an explicit type annotation at the call site, which makes the re-export
+used and documents the binding; that annotation may live in a file outside
+this phase's own **Files** list, and doing so is licensed. Widening the module to
+`pub(crate) mod` also compiles, but it lets callers name items around the root
+and changes the path shape — it is ruled out.
+
 ---
 
 ### Phase 11 — `ledger/mod.rs` becomes a table of contents · status: todo
@@ -735,6 +749,19 @@ marker types — `DetachedCoordinationRunMarker` (`:202`),
 `AbsolutePathNormalizationError` and `AncestorCanonicalizationError` — which
 belongs in a new `ledger/path.rs`.
 
+The error family is a cluster of its own and gets `ledger/error.rs`:
+`LedgerError` (`:1572`) with its `Display` (`:1621`), its `Error` impl (`:1684`)
+and its six `From` impls (`:1686`-`:1709`), plus `LedgerTransactionError`
+(`:1831`-`:1867`), `LedgerCommittedActionError` (`:1871`) and
+`CorrectableTransactionInput` (`:1896`-`:1920`) — roughly 230 lines that match
+none of the clusters above.
+
+The root carries an inline `#[cfg(test)] mod tests` at `:1922`-`:2559`, 638
+lines. Each test moves to sit with the type it covers. The peers read the tests
+they take from the root at `HEAD`
+(`git show HEAD:crates/cargo-berth/src/ledger/mod.rs`) and never edit the root;
+`impl` empties the module as part of its own pass.
+
 The marker module is named for what it owns, not for how it is reached. `session`
 would be the wrong name twice over: it describes the caller rather than the
 contents, and `crate::session` already means harness-session identity, a
@@ -754,13 +781,14 @@ uncollapsed. Losing that comment in the move would delete the only warning.
 - `crates/cargo-berth/src/ledger/identity.rs`
 - `crates/cargo-berth/src/ledger/coordination_run_marker.rs`
 - `crates/cargo-berth/src/ledger/path.rs`
+- `crates/cargo-berth/src/ledger/error.rs`
 
-**Seats:** 3 writers + 0 testers — a pure move with five independent clusters and
+**Seats:** 3 writers + 0 testers — a pure move with six independent clusters and
 no suppression to remove, so tests travel with their types.
 - `impl` — `ledger/mod.rs` and `handle.rs`; hub: `ledger/mod.rs` (the root, which
   `impl` alone writes)
 - `test` — opens as `impl`; `coordination_run_marker.rs` and `worktree_context.rs`
-- `review` — opens as `impl`; `identity.rs` and `path.rs`
+- `review` — opens as `impl`; `identity.rs`, `path.rs`, and `error.rs`
 
 **No seat writes another seat's file.** The pre-edit hook claims paths per
 session, so an edit into a peer's claimed file is blocked rather than merged —
@@ -800,6 +828,18 @@ rule and links `[canonicalize_through_nearest_existing_ancestor]`, which keeps
 resolving only because both helpers land in `path.rs` together. Splitting those
 two helpers across modules breaks the link and deletes the warning.
 
+The submodule names in **Files** are the expected split; if the code argues
+for a different boundary, take it and say so, but every new file must be named
+in the summary.
+
+A `pub(crate)` re-export the crate does not name is an unused import and fails
+`-D warnings`, and this plan forbids the suppression that would silence it. The
+remedy is an explicit type annotation at the call site, which makes the re-export
+used and documents the binding; that annotation may live in a file outside
+this phase's own **Files** list, and doing so is licensed. Widening the module to
+`pub(crate) mod` also compiles, but it lets callers name items around the root
+and changes the path shape — it is ruled out.
+
 ---
 
 ### Phase 12 — `board/mod.rs` becomes a table of contents · status: todo
@@ -811,7 +851,8 @@ two helpers across modules breaks the link and deletes the warning.
 
 **Spec:** `board/mod.rs` is 1,886 lines beside `tests.rs` and `tui.rs`, with
 three suppressions: `build` (`fn` at `:737`, its `#[allow]` at `:733`,
-`too_many_lines`), `recorded_answers` (`:1269`, `too_many_lines`), and
+`too_many_lines`), `recorded_answers` (`fn` at `:1269`, its `#[allow(` at `:1265`,
+`too_many_lines`), and
 `append_authorization_answer` (`fn` at `:1404`, its `#[allow]` at `:1400`,
 `too_many_arguments`, six parameters).
 
@@ -826,9 +867,11 @@ say so.
 Phase 2 gave this file two more owners than the original split anticipated:
 `CompleteBoardReport` and `ReservationLifecycleReport`, plus
 `envelope_presentation` and `reservation_lifecycle_presentation`, which render
-the complete report as presentation blocks. Each report type and its rendering
-belong together in one module; do not leave the report types in the root while
-their presentation moves.
+the complete report as presentation blocks. `reservation_lifecycle_presentation`
+(`:1065`) is a free function and travels with the report types: do not leave the
+report types in the root while their presentation moves.
+`envelope_presentation` (`:650`) is an inherent method on `BoardModel` and
+travels with that type instead, as the rows paragraph below sets out.
 
 Split along row assembly, visibility and omission policy, the
 answer/disposition rendering, the report-and-presentation cluster, and a fifth
@@ -840,9 +883,13 @@ cluster is `AvailableForcedPermit` (`:449`), `BypassAuditEntry` (`:459`),
 `available_forced_permits` (`:1468`), `bypass_audit` (`:1487`),
 `incursion_sections` (`:1578`), `board_alerts` (`:1631`) and `board_git_cost`
 (`:1756`) — roughly 550 lines that belong to none of the other four. It gets
-`board/alerts.rs`. Without it gate 1 is unreachable: this phase, unlike phase 9,
-carries no clause licensing a different boundary, so a seat with nowhere to put
+`board/alerts.rs`. Without it gate 1 is unreachable: a seat with nowhere to put
 these would have to leave them in the root.
+
+The error family is a cluster of its own and gets `board/error.rs`: `BoardError`
+(`:1819`) with its `Display` (`:1841`), its `Error` impl (`:1871`) and its three
+`From` impls (`:1873`, `:1877`, `:1881`) — which belong to none of the clusters
+above.
 `append_authorization_answer` sits in the answer-rendering cluster. Its six
 parameters are **not** one thing: `answers: &mut Vec<RecordedAnswer>` is an
 output sink the function appends to, and `resolved_pairs` and `constraints` are
@@ -853,9 +900,13 @@ and `acquisition`, and leave the sink and the two lookups as ordinary
 parameters. The type says what the row is, where the parameter list only says how
 many pieces it has.
 
-`BoardModel` (`:103`) and its `build` constructor (`:736`) go to the **rows**
+`BoardModel` (`:103`) and its `build` constructor (`:737`) go to the **rows**
 cluster: `build` assembles the model the row logic then reads, and no other
-cluster names the type. Gate 2 turns on this, so it cannot be left implicit.
+cluster names the type. `impl BoardModel` is a single block spanning `:626`-`:957`
+and holds four methods — `envelope_presentation` (`:650`), `build` (`:737`),
+`reservation_ids` (`:918`) and `recovered_bypass_marker_names` (`:948`) — all of
+which travel with `BoardModel` rather than splitting one inherent impl across two
+modules. Gate 2 turns on this, so it cannot be left implicit.
 
 `board/tests.rs` is an existing sibling test module; move each test to sit with
 the type it covers rather than leaving a catch-all. Like the root, it is written
@@ -871,12 +922,13 @@ part of its own pass. No seat waits for another.
 - `crates/cargo-berth/src/board/answers.rs`
 - `crates/cargo-berth/src/board/report.rs`
 - `crates/cargo-berth/src/board/alerts.rs`
+- `crates/cargo-berth/src/board/error.rs`
 
-**Seats:** 3 writers + 0 testers — five clusters split cleanly, and
+**Seats:** 3 writers + 0 testers — six clusters split cleanly, and
 `board/tests.rs` is redistributed rather than owned by a test lane.
 - `impl` — `board/mod.rs`, `tests.rs`, and `rows.rs`; hub: `board/mod.rs` and
   `tests.rs`, both of which `impl` alone writes
-- `test` — opens as `impl`; `visibility.rs` and `answers.rs`
+- `test` — opens as `impl`; `visibility.rs`, `answers.rs`, and `error.rs`
 - `review` — opens as `impl`; `report.rs` and `alerts.rs`
 
 **No seat writes another seat's file.** The pre-edit hook claims paths per
@@ -917,9 +969,11 @@ they are the reason it no longer fits in a shared phase with `gate/`. Phase 7 pl
 `board/mod.rs` calls it and does not re-implement it. Two consequences for this
 split:
 
-- `CompleteBoardReport::reservation_ids()` (`:918`) now **returns**
-  `WireOrderedReservationIds` and builds it at `:946`, so that signature moves
-  with the report cluster.
+- `BoardModel::reservation_ids()` (`:918`) now **returns**
+  `WireOrderedReservationIds` and builds it at `:946`, and `output.rs:1398`
+  calls it as `board.reservation_ids()`. It is an inherent method on
+  `BoardModel`, not on `CompleteBoardReport`, so that signature moves with the
+  rows cluster.
 - `BoardGitCost` (`:617`) and `board_git_cost` (`:1756`) carry
   `trunk_resolution_calls` onto the wire: it appears twice in
   `docs/cargo-berth/generated/output-contract.json`, reaches users as
@@ -935,6 +989,18 @@ split:
   missed consolidation, and retyping it would widen a type phase 7 scoped on
   purpose.
 
+The submodule names in **Files** are the expected split; if the code argues
+for a different boundary, take it and say so, but every new file must be named
+in the summary.
+
+A `pub(crate)` re-export the crate does not name is an unused import and fails
+`-D warnings`, and this plan forbids the suppression that would silence it. The
+remedy is an explicit type annotation at the call site, which makes the re-export
+used and documents the binding; that annotation may live in a file outside this
+phase's own **Files** list, and doing so is licensed. Widening the module to
+`pub(crate) mod` also compiles, but it lets callers name items around the root
+and changes the path shape — it is ruled out.
+
 ---
 
 ### Phase 13 — `gate/mod.rs` becomes a table of contents · status: todo
@@ -949,15 +1015,21 @@ rewrites and re-anchoring, forced-permit auditing, and the gate *decision*
 machinery. Tests move with the type each one covers.
 
 The decision cluster is the largest and the original split had no home for it:
-`evaluate_integration` (`:691`), `evaluate_locked` (`:765`), `decide` (`:886`),
-`blocking_reservations` (`:948`), `decide_hook` (`:977`), `decide_integration`
-(`:1050`), `skipped_holds` (`:1123`), `skipped_set_covers` (`:1154`) and
-`GatePurpose` (`:1178`) — roughly 530 of the 1,404 lines. `decide` is reached
-from the reference-transaction path (`:438`→`:831`), from `evaluate_integration`
+`evaluate_integration` (`:691`), `evaluate_locked` (`:765`),
+`entering_reservations` (`:866`), `decide` (`:886`), `newly_reachable_commits`
+(`:936`), `blocking_reservations` (`:948`), `decide_hook` (`:977`),
+`decide_integration` (`:1050`), `skipped_holds` (`:1123`), `skipped_set_covers`
+(`:1154`), and `GatePurpose` — the enum declared at `:249` and its `impl` at
+`:1178`, both of which move together — roughly 530 of the 1,404 lines. `decide`
+is reached from the reference-transaction path (`:438`→`:831`), from `evaluate_integration`
 (`:715`) and from `commit_forced_permit_audits` (`:661`), so it belongs to none
 of the other three and cannot be folded into one of them without giving that
 module two owners. It gets `gate/decision.rs`. The root's inline `mod tests` is
 28 lines (`:1376`-`:1404`) and moves with the types it covers.
+
+The error family is a cluster of its own and gets `gate/error.rs`:
+`GateTransactionRejection` (`:1276`) and `GateError` (`:1290`-`:1375`), which
+belong to none of the four boundaries above.
 
 **Files:**
 - `crates/cargo-berth/src/gate/mod.rs`
@@ -965,14 +1037,15 @@ module two owners. It gets `gate/decision.rs`. The root's inline `mod tests` is
 - `crates/cargo-berth/src/gate/rewrite.rs`
 - `crates/cargo-berth/src/gate/audit.rs`
 - `crates/cargo-berth/src/gate/decision.rs`
+- `crates/cargo-berth/src/gate/error.rs`
 
-**Seats:** 3 writers + 0 testers — a pure move along four independent
+**Seats:** 3 writers + 0 testers — a pure move along five independent
 boundaries, tests travelling with their types. The decision cluster gets its own
 seat because it is the largest and every other cluster calls into it.
 - `impl` — `gate/mod.rs` and `reference_transaction.rs`; hub: `gate/mod.rs` (the
   root, which `impl` alone writes)
 - `test` — opens as `impl`; `decision.rs`
-- `review` — opens as `impl`; `rewrite.rs` and `audit.rs`
+- `review` — opens as `impl`; `rewrite.rs`, `audit.rs`, and `error.rs`
 
 **No seat writes another seat's file.** The pre-edit hook claims paths per
 session, so an edit into a peer's claimed file is blocked rather than merged —
@@ -1006,6 +1079,18 @@ unexpected values" — pre-authorized test boilerplate, which is why the final
 suppression phase counts four surviving sites and does not list it. It is
 nobody's item; leave it.
 
+The submodule names in **Files** are the expected split; if the code argues
+for a different boundary, take it and say so, but every new file must be named
+in the summary.
+
+A `pub(crate)` re-export the crate does not name is an unused import and fails
+`-D warnings`, and this plan forbids the suppression that would silence it. The
+remedy is an explicit type annotation at the call site, which makes the re-export
+used and documents the binding; that annotation may live in a file outside this
+phase's own **Files** list, and doing so is licensed. Widening the module to
+`pub(crate) mod` also compiles, but it lets callers name items around the root
+and changes the path shape — it is ruled out.
+
 ---
 
 ### Phase 14 — Remove the remaining suppressions · status: todo
@@ -1034,10 +1119,11 @@ the existing `ResolveDecision` at once, so nothing optional reaches the verb.
 
 `ResolveArguments.why` (`crates/cargo-berth/src/cli.rs:647`) is a bare
 `Option<String>` carrying a domain fact — the justification for a deliberate
-abandonment or an orphan retirement — so name what it converts into rather than
-letting a `String` reach `ResolveDecision`. The converted form belongs beside the
-disposition it justifies, since a justification with no disposition is not a
-state this command line can reach.
+abandonment or an orphan retirement — so it converts into
+`ResolveJustification`, an enum that distinguishes a stated justification from an
+unstated one, rather than letting a `String` reach `ResolveDecision`. The
+converted form belongs beside the disposition it justifies, since a justification
+with no disposition is not a state this command line can reach.
 
 **The resolve route is now a wire fact, not only a parser fact.** Phase 6 added
 `CommandLineRoute::Resolve.arguments()` (`crates/cargo-berth/src/cli.rs:2070`),
