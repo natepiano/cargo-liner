@@ -201,6 +201,30 @@ struct TargetIntegrationEvidenceContext<'context> {
     scoped_patch_evaluation_budget: &'context mut ReconciliationScopedPatchEvaluationBudget,
 }
 
+/// Identifies the checkout whose recorded worktree roots a reconciliation classifies against.
+#[derive(Clone, Copy)]
+struct LedgerCheckoutIdentity<'directory> {
+    repository:           RepoInstanceId,
+    common_git_directory: &'directory Path,
+}
+
+/// Repository facts read once, before any retained reservation is judged against them.
+struct ObservedRepositoryFacts {
+    worktree_registry:                WorktreeRegistry,
+    repository_trunk:                 RepositoryTrunk,
+    integration_reachability:         BatchedIntegrationReachability,
+    repository_evidence_observations: Vec<RepositoryEvidenceObservation>,
+    /// How many times resolving the trunk queried git, reported as this reconciliation's cost.
+    trunk_resolution_calls:           u64,
+}
+
+/// What every retained reservation contributed once the observed facts were applied to it.
+struct ReconciledReservations {
+    changes:        ReconciliationChanges,
+    alert_subjects: Vec<AlertSubject>,
+    snapshots:      Vec<RepositoryReservationSnapshot>,
+}
+
 #[derive(Clone)]
 struct RepositoryEvidenceObservation {
     evidence:                RepositoryReservationEvidence,
@@ -524,6 +548,125 @@ impl SuccessorScopedPatchTargetHistory {
             Self::NeedsGitQueries => ScopedPatchTargetHistory::NeedsGitQueries,
         }
     }
+}
+
+/// What a predecessor's own recorded evidence says before any successor is consulted.
+enum PredecessorEvidenceStanding {
+    /// The predecessor holds a protected tip its successors can be measured against.
+    Measurable {
+        protected_reservation_tip: ProtectedReservationTip,
+        prior_integration_status:  PriorIntegrationStatus,
+    },
+    /// The predecessor never reached a checkpoint, so no successor evidence applies to it.
+    NoProtectedTip,
+}
+
+impl PredecessorEvidenceStanding {
+    fn of(evidence: &RepositoryReservationEvidence) -> Self {
+        match evidence {
+            RepositoryReservationEvidence::Outstanding {
+                protected_tip,
+                integration_status,
+            }
+            | RepositoryReservationEvidence::Released {
+                protected_tip,
+                integration_status,
+                ..
+            } => Self::Measurable {
+                protected_reservation_tip: protected_tip.clone(),
+                prior_integration_status:  if matches!(
+                    integration_status,
+                    IntegrationEvidenceStatus::Integrated { .. }
+                ) {
+                    PriorIntegrationStatus::Proven
+                } else {
+                    PriorIntegrationStatus::Unproven
+                },
+            },
+            RepositoryReservationEvidence::Active
+            | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => {
+                Self::NoProtectedTip
+            },
+        }
+    }
+}
+
+/// The two grouped ancestry answers one predecessor contributes: which successors its protected
+/// tip already reaches, and what history each successor gained since the predecessor's phase start.
+#[derive(Clone, Copy)]
+struct PredecessorSuccessorReachability<'classification> {
+    from_protected_tip: &'classification ProtectedTipSuccessorHeadClassification,
+    from_phase_start:   &'classification ProtectedTipSuccessorHeadClassification,
+}
+
+impl PredecessorSuccessorReachability<'_> {
+    /// First-parent commits each successor head gained since the predecessor's phase start.
+    fn phase_start_target_histories(&self) -> HashMap<GitObjectId, Vec<GitObjectId>> {
+        match self.from_phase_start {
+            ProtectedTipSuccessorHeadClassification::AncestorObjectUnknown => HashMap::new(),
+            ProtectedTipSuccessorHeadClassification::Classified(classified_heads) => {
+                classified_heads
+                    .iter()
+                    .filter_map(|classified_head| match classified_head {
+                        CandidateHeadReachability::Descendant {
+                            head,
+                            first_parent_commits_after_ancestor,
+                        } => Some((head.clone(), first_parent_commits_after_ancestor.clone())),
+                        CandidateHeadReachability::NotDescendant(_)
+                        | CandidateHeadReachability::ObjectUnknown(_) => None,
+                    })
+                    .collect()
+            },
+        }
+    }
+}
+
+/// Everything a pending scoped-patch candidate takes from its predecessor, fixed for the whole
+/// classification of that predecessor's successor heads.
+struct PendingScopedPatchCandidateContext<'subject> {
+    evidence_subject:  &'subject PredecessorSuccessorEvidenceSubject<'subject>,
+    predecessor_index: usize,
+    subject_revision:  IntegrationProofSubjectRevision,
+    target_histories:  HashMap<GitObjectId, Vec<GitObjectId>>,
+}
+
+impl PendingScopedPatchCandidateContext<'_> {
+    fn candidate(&self, successor_head: &GitObjectId) -> SuccessorScopedPatchEvaluationCandidate {
+        let predecessor = self.evidence_subject.reservation;
+        SuccessorScopedPatchEvaluationCandidate {
+            predecessor_index:          self.predecessor_index,
+            predecessor_reservation_id: predecessor.id(),
+            subject:                    self.subject_revision,
+            phase_start_head:           predecessor.phase_start_head().as_ref().clone(),
+            scopes:                     predecessor.scopes().clone(),
+            protected_tip:              self
+                .evidence_subject
+                .protected_reservation_tip
+                .as_ref()
+                .clone(),
+            successor_head:             successor_head.clone(),
+            target_history:             self.target_histories.get(successor_head).map_or(
+                SuccessorScopedPatchTargetHistory::NeedsGitQueries,
+                |commits| SuccessorScopedPatchTargetHistory::ProvenFirstParentInterval {
+                    commits: commits.clone(),
+                },
+            ),
+            priority:                   predecessor
+                .successor_scoped_patch_evaluation_priority(successor_head),
+        }
+    }
+}
+
+/// Incorporation verdicts reachability alone settled, plus the targets still awaiting one scoped
+/// comparison.
+///
+/// The two fields are positionally coupled: every pending candidate's `predecessor_index` is a
+/// position in `by_predecessor`, resolved by indexing when its comparison settles. Filtering,
+/// reordering, or deduplicating `by_predecessor` between construction and settlement misaddresses
+/// every later candidate, so rebuild the indices with it or do neither.
+struct SuccessorIncorporationClassification {
+    by_predecessor:      Vec<(ReservationId, PredecessorSuccessorIncorporation)>,
+    pending_comparisons: Vec<SuccessorScopedPatchEvaluationCandidate>,
 }
 
 struct SuccessorIncorporationObservation {
@@ -861,10 +1004,6 @@ fn prepare_reconciliation_transaction(
     })
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one locked observation keeps repository facts and their journal updates coherent"
-)]
 fn build_plan(
     reservations: &RetainedReservationSet,
     ordering_graph: &OrderingGraph,
@@ -875,79 +1014,32 @@ fn build_plan(
 ) -> Result<ReconciliationPlan, ReconciliationBuildError> {
     let common_git_directory = worktree_context.common_git_directory();
     let repository_root = worktree_context.repository_root();
-    let (worktree_registry, repository_trunk, integration_reachability, mut indexed_evidence) =
-        thread::scope(|scope| {
-            let worktree_registry = scope.spawn(|| WorktreeRegistry::read(worktree_context));
-            let (repository_trunk, integration_reachability) =
-                BatchedIntegrationReachability::observe_configured_trunk(
-                    repository_root,
-                    reservations,
-                    ordering_graph,
-                    &reconciliation_evidence_context.berth_config.trunk,
-                )?;
-            let mut target_evidence_context = TargetIntegrationEvidenceContext {
-                repository_root,
-                repository_trunk: &repository_trunk,
-                integration_reachability: &integration_reachability,
-                scoped_patch_evaluation_budget: reconciliation_evidence_context
-                    .scoped_patch_evaluation_budget,
-            };
-            let indexed_evidence = scoped_patch_evaluation_order(reservations, &repository_trunk)
-                .into_iter()
-                .map(|(index, reservation)| {
-                    repository_evidence(reservation, &mut target_evidence_context)
-                        .map(|observation| (index, observation))
-                })
-                .collect::<Result<Vec<_>, ReservationReplayError>>()?;
-            let worktree_registry = worktree_registry
-                .join()
-                .map_err(|_| WorktreeRegistryError::ObservationWorkerPanicked)??;
-            Ok::<_, ReconciliationBuildError>((
-                worktree_registry,
-                repository_trunk,
-                integration_reachability,
-                indexed_evidence,
-            ))
-        })?;
-    let mut changes = ReconciliationChanges::default();
-    let mut alert_subjects = Vec::new();
-    let trunk_resolution_calls = 1;
-    indexed_evidence.sort_by_key(|(index, _)| *index);
-    let repository_evidence_observations = indexed_evidence
-        .into_iter()
-        .map(|indexed_observation| indexed_observation.1);
-    let mut reservation_snapshots = Vec::new();
-    for (reservation, repository_evidence_observation) in
-        reservations.iter().zip(repository_evidence_observations)
-    {
-        let observation =
-            worktree_registry.classify(ledger_repository, common_git_directory, reservation);
-        if let WorktreeRelocation::Relocated { current_root } = &observation.relocation {
-            changes.operations.push(JournalOperation::RelocateWorktree {
-                reservation_id: reservation.id(),
-                worktree_id:    reservation.actor().worktree,
-                previous_root:  reservation.worktree_root().clone(),
-                current_root:   current_root.clone(),
-            });
-        }
-        alert_subjects.push(AlertSubject {
-            reservation:       reservation.clone(),
-            worktree_liveness: observation.liveness,
-        });
-        append_evidence_and_retention(
-            reservation,
-            &repository_evidence_observation,
-            reservations,
-            ordering_graph,
-            &mut changes,
-        )?;
-        reservation_snapshots.push(RepositoryReservationSnapshot {
-            reservation_id:    reservation.id(),
-            worktree_liveness: observation.liveness,
-            worktree_head:     observation.head,
-            evidence:          repository_evidence_observation.evidence,
-        });
-    }
+    let ObservedRepositoryFacts {
+        worktree_registry,
+        repository_trunk,
+        integration_reachability,
+        repository_evidence_observations,
+        trunk_resolution_calls,
+    } = observe_repository_facts(
+        reservations,
+        ordering_graph,
+        worktree_context,
+        reconciliation_evidence_context,
+    )?;
+    let ReconciledReservations {
+        mut changes,
+        alert_subjects,
+        snapshots: reservation_snapshots,
+    } = reconcile_observed_reservations(
+        reservations,
+        ordering_graph,
+        LedgerCheckoutIdentity {
+            repository: ledger_repository,
+            common_git_directory,
+        },
+        &worktree_registry,
+        repository_evidence_observations,
+    )?;
     let successor_incorporation = successor_incorporation_evidence(
         repository_root,
         reservations,
@@ -990,6 +1082,108 @@ fn build_plan(
             unrecorded_bypass_occurrences: Vec::new(),
             trunk_resolution_calls,
         },
+    })
+}
+
+/// Read the worktree registry, trunk reachability, and per-reservation repository evidence in one
+/// pass, so every judgement the plan then makes is measured against the same repository.
+fn observe_repository_facts(
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    worktree_context: &WorktreeContext,
+    reconciliation_evidence_context: &mut ReconciliationEvidenceContext<'_>,
+) -> Result<ObservedRepositoryFacts, ReconciliationBuildError> {
+    let repository_root = worktree_context.repository_root();
+    thread::scope(|scope| {
+        let worktree_registry = scope.spawn(|| WorktreeRegistry::read(worktree_context));
+        let (repository_trunk, integration_reachability) =
+            BatchedIntegrationReachability::observe_configured_trunk(
+                repository_root,
+                reservations,
+                ordering_graph,
+                &reconciliation_evidence_context.berth_config.trunk,
+            )?;
+        let mut target_evidence_context = TargetIntegrationEvidenceContext {
+            repository_root,
+            repository_trunk: &repository_trunk,
+            integration_reachability: &integration_reachability,
+            scoped_patch_evaluation_budget: reconciliation_evidence_context
+                .scoped_patch_evaluation_budget,
+        };
+        let mut indexed_evidence = scoped_patch_evaluation_order(reservations, &repository_trunk)
+            .into_iter()
+            .map(|(index, reservation)| {
+                repository_evidence(reservation, &mut target_evidence_context)
+                    .map(|observation| (index, observation))
+            })
+            .collect::<Result<Vec<_>, ReservationReplayError>>()?;
+        let worktree_registry = worktree_registry
+            .join()
+            .map_err(|_| WorktreeRegistryError::ObservationWorkerPanicked)??;
+        indexed_evidence.sort_by_key(|(index, _)| *index);
+        Ok::<_, ReconciliationBuildError>(ObservedRepositoryFacts {
+            worktree_registry,
+            repository_trunk,
+            integration_reachability,
+            repository_evidence_observations: indexed_evidence
+                .into_iter()
+                .map(|indexed_observation| indexed_observation.1)
+                .collect(),
+            trunk_resolution_calls: 1,
+        })
+    })
+}
+
+/// Apply the observed repository facts to every retained reservation, collecting the journal
+/// updates, alert subjects, and snapshot rows the plan is assembled from.
+fn reconcile_observed_reservations(
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    ledger_checkout: LedgerCheckoutIdentity<'_>,
+    worktree_registry: &WorktreeRegistry,
+    repository_evidence_observations: Vec<RepositoryEvidenceObservation>,
+) -> Result<ReconciledReservations, ReservationReplayError> {
+    let mut changes = ReconciliationChanges::default();
+    let mut alert_subjects = Vec::new();
+    let mut snapshots = Vec::new();
+    for (reservation, repository_evidence_observation) in
+        reservations.iter().zip(repository_evidence_observations)
+    {
+        let observation = worktree_registry.classify(
+            ledger_checkout.repository,
+            ledger_checkout.common_git_directory,
+            reservation,
+        );
+        if let WorktreeRelocation::Relocated { current_root } = &observation.relocation {
+            changes.operations.push(JournalOperation::RelocateWorktree {
+                reservation_id: reservation.id(),
+                worktree_id:    reservation.actor().worktree,
+                previous_root:  reservation.worktree_root().clone(),
+                current_root:   current_root.clone(),
+            });
+        }
+        alert_subjects.push(AlertSubject {
+            reservation:       reservation.clone(),
+            worktree_liveness: observation.liveness,
+        });
+        append_evidence_and_retention(
+            reservation,
+            &repository_evidence_observation,
+            reservations,
+            ordering_graph,
+            &mut changes,
+        )?;
+        snapshots.push(RepositoryReservationSnapshot {
+            reservation_id:    reservation.id(),
+            worktree_liveness: observation.liveness,
+            worktree_head:     observation.head,
+            evidence:          repository_evidence_observation.evidence,
+        });
+    }
+    Ok(ReconciledReservations {
+        changes,
+        alert_subjects,
+        snapshots,
     })
 }
 
@@ -1678,10 +1872,10 @@ enum EvidenceRevalidation<'evidence> {
     NotApplicable,
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one grouped pass keeps reachability, retained verdict lookup, scheduling, and snapshot facts coherent"
-)]
+/// Prove which successors already carry each predecessor's work.
+///
+/// Reachability is classified for every predecessor at once; only the successors reachability
+/// leaves undecided reach the scoped-patch budget, which admits one comparison per reconciliation.
 fn successor_incorporation_evidence(
     repository_root: &Path,
     reservations: &RetainedReservationSet,
@@ -1690,6 +1884,30 @@ fn successor_incorporation_evidence(
     reservation_snapshots: &[RepositoryReservationSnapshot],
     evaluation_budget: &mut ReconciliationSuccessorScopedPatchEvaluationBudget,
 ) -> Result<SuccessorIncorporationObservation, ReservationReplayError> {
+    let evidence_subjects = predecessor_successor_evidence_subjects(
+        reservations,
+        ordering_graph,
+        repository_observation_scope,
+        reservation_snapshots,
+    )?;
+    let classification = classify_successor_incorporation(repository_root, evidence_subjects);
+    Ok(settle_pending_scoped_patch_comparisons(
+        repository_root,
+        classification,
+        evaluation_budget,
+    ))
+}
+
+/// Collect every predecessor holding a protected tip whose successors have resolvable heads.
+///
+/// Predecessors are visited in wire order so the candidates a later pass ranks are built in a
+/// stable sequence regardless of how the ordering graph enumerated them.
+fn predecessor_successor_evidence_subjects<'reservation>(
+    reservations: &'reservation RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    repository_observation_scope: RepositoryObservationScope,
+    reservation_snapshots: &[RepositoryReservationSnapshot],
+) -> Result<Vec<PredecessorSuccessorEvidenceSubject<'reservation>>, ReservationReplayError> {
     let snapshots_by_reservation = reservation_snapshots
         .iter()
         .map(|snapshot| (snapshot.reservation_id, snapshot))
@@ -1719,53 +1937,54 @@ fn successor_incorporation_evidence(
         let Some(predecessor_snapshot) = snapshots_by_reservation.get(&predecessor_id) else {
             continue;
         };
-        let (protected_reservation_tip, prior_integration_status) =
-            match &predecessor_snapshot.evidence {
-                RepositoryReservationEvidence::Outstanding {
-                    protected_tip,
-                    integration_status,
-                }
-                | RepositoryReservationEvidence::Released {
-                    protected_tip,
-                    integration_status,
-                    ..
-                } => {
-                    let prior_integration_status = if matches!(
-                        integration_status,
-                        IntegrationEvidenceStatus::Integrated { .. }
-                    ) {
-                        PriorIntegrationStatus::Proven
-                    } else {
-                        PriorIntegrationStatus::Unproven
-                    };
-                    (protected_tip.clone(), prior_integration_status)
-                },
-                RepositoryReservationEvidence::Active
-                | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => continue,
-            };
-        let mut candidate_heads = Vec::new();
-        for successor in &successors {
-            let Some(successor_snapshot) = snapshots_by_reservation.get(successor) else {
-                continue;
-            };
-            let WorktreeHead::Resolved(head) = &successor_snapshot.worktree_head else {
-                continue;
-            };
-            if !candidate_heads.contains(head) {
-                candidate_heads.push(head.clone());
-            }
-        }
-        if candidate_heads.is_empty() {
+        let PredecessorEvidenceStanding::Measurable {
+            protected_reservation_tip,
+            prior_integration_status,
+        } = PredecessorEvidenceStanding::of(&predecessor_snapshot.evidence)
+        else {
+            continue;
+        };
+        let successor_heads = resolved_successor_heads(&successors, &snapshots_by_reservation);
+        if successor_heads.is_empty() {
             continue;
         }
-        let predecessor = reservations.reservation(predecessor_id)?;
         evidence_subjects.push(PredecessorSuccessorEvidenceSubject {
-            reservation: predecessor,
+            reservation: reservations.reservation(predecessor_id)?,
             prior_integration_status,
             protected_reservation_tip,
-            successor_heads: candidate_heads,
+            successor_heads,
         });
     }
+    Ok(evidence_subjects)
+}
+
+/// The distinct resolved worktree heads of one predecessor's successors, in the order the
+/// successors were supplied.
+fn resolved_successor_heads(
+    successors: &[ReservationId],
+    snapshots_by_reservation: &HashMap<ReservationId, &RepositoryReservationSnapshot>,
+) -> Vec<GitObjectId> {
+    let mut successor_heads = Vec::new();
+    for successor in successors {
+        let Some(successor_snapshot) = snapshots_by_reservation.get(successor) else {
+            continue;
+        };
+        let WorktreeHead::Resolved(head) = &successor_snapshot.worktree_head else {
+            continue;
+        };
+        if !successor_heads.contains(head) {
+            successor_heads.push(head.clone());
+        }
+    }
+    successor_heads
+}
+
+/// Decide every successor head reachability can settle, queueing the rest for one scoped
+/// comparison apiece.
+fn classify_successor_incorporation(
+    repository_root: &Path,
+    evidence_subjects: Vec<PredecessorSuccessorEvidenceSubject<'_>>,
+) -> SuccessorIncorporationClassification {
     let protected_tip_successor_heads = evidence_subjects
         .iter()
         .flat_map(|subject| {
@@ -1781,145 +2000,138 @@ fn successor_incorporation_evidence(
             ]
         })
         .collect::<Vec<_>>();
-    let descendant_commit_results =
-        git::descendant_commits(repository_root, &protected_tip_successor_heads);
+    let Ok(protected_tip_successor_head_classifications) =
+        git::descendant_commits(repository_root, &protected_tip_successor_heads)
+    else {
+        return SuccessorIncorporationClassification {
+            by_predecessor:      evidence_subjects
+                .into_iter()
+                .map(|subject| {
+                    (
+                        subject.reservation.id(),
+                        PredecessorSuccessorIncorporation::QueryFailed,
+                    )
+                })
+                .collect(),
+            pending_comparisons: Vec::new(),
+        };
+    };
+    let protected_tip_classifications = protected_tip_successor_head_classifications
+        .iter()
+        .step_by(2);
+    let phase_start_classifications = protected_tip_successor_head_classifications
+        .iter()
+        .skip(1)
+        .step_by(2);
     let mut by_predecessor = Vec::new();
     let mut pending_comparisons = Vec::new();
-    match descendant_commit_results {
-        Err(_) => {
-            by_predecessor.extend(evidence_subjects.into_iter().map(|subject| {
-                (
-                    subject.reservation.id(),
-                    PredecessorSuccessorIncorporation::QueryFailed,
-                )
-            }));
-        },
-        Ok(protected_tip_successor_head_classifications) => {
-            let protected_tip_classifications = protected_tip_successor_head_classifications
-                .iter()
-                .step_by(2);
-            let phase_start_classifications = protected_tip_successor_head_classifications
-                .iter()
-                .skip(1)
-                .step_by(2);
-            for ((evidence_subject, successor_head_classification), phase_start_classification) in
-                evidence_subjects
-                    .into_iter()
-                    .zip(protected_tip_classifications)
-                    .zip(phase_start_classifications)
-            {
-                let phase_start_target_histories = match phase_start_classification {
-                    ProtectedTipSuccessorHeadClassification::AncestorObjectUnknown => {
-                        HashMap::new()
-                    },
-                    ProtectedTipSuccessorHeadClassification::Classified(classified_heads) => {
-                        classified_heads
-                            .iter()
-                            .filter_map(|classified_head| match classified_head {
-                                CandidateHeadReachability::Descendant {
-                                    head,
-                                    first_parent_commits_after_ancestor,
-                                } => Some((
-                                    head.clone(),
-                                    first_parent_commits_after_ancestor.clone(),
-                                )),
-                                CandidateHeadReachability::NotDescendant(_)
-                                | CandidateHeadReachability::ObjectUnknown(_) => None,
-                            })
-                            .collect()
-                    },
-                };
-                let predecessor = evidence_subject.reservation;
-                let predecessor_id = predecessor.id();
-                let subject = predecessor.integration_proof_subject_revision();
-                let predecessor_index = by_predecessor.len();
-                let incorporation = match successor_head_classification {
-                    ProtectedTipSuccessorHeadClassification::AncestorObjectUnknown => {
-                        PredecessorSuccessorIncorporation::PredecessorObjectUnknown
-                    },
-                    ProtectedTipSuccessorHeadClassification::Classified(classified_heads) => {
-                        let mut evidence_by_head = HashMap::new();
-                        for classified_head in classified_heads {
-                            match classified_head {
-                                CandidateHeadReachability::Descendant { head, .. } => {
-                                    evidence_by_head.insert(
-                                        head.clone(),
-                                        SuccessorIncorporationEvidence::ProtectedTipAncestor,
-                                    );
-                                },
-                                CandidateHeadReachability::ObjectUnknown(head) => {
-                                    evidence_by_head.insert(
-                                        head.clone(),
-                                        SuccessorIncorporationEvidence::ObjectUnknown,
-                                    );
-                                },
-                                CandidateHeadReachability::NotDescendant(head) => {
-                                    let evidence = if matches!(
-                                        evidence_subject.prior_integration_status,
-                                        PriorIntegrationStatus::Proven
-                                    ) {
-                                        match predecessor
-                                            .retained_successor_scoped_patch_target_verdicts()
-                                            .lookup(subject, head)
-                                        {
-                                            SuccessorScopedPatchTargetVerdictAvailability::Hit(
-                                                SuccessorScopedPatchEquivalenceVerdict::Equivalent,
-                                            ) => {
-                                                SuccessorIncorporationEvidence::ScopedPatchEquivalent
-                                            },
-                                            SuccessorScopedPatchTargetVerdictAvailability::Hit(
-                                                SuccessorScopedPatchEquivalenceVerdict::Different,
-                                            ) => {
-                                                SuccessorIncorporationEvidence::NotIncorporated
-                                            },
-                                            SuccessorScopedPatchTargetVerdictAvailability::Miss => {
-                                                pending_comparisons.push(
-                                                    SuccessorScopedPatchEvaluationCandidate {
-                                                        predecessor_index,
-                                                        predecessor_reservation_id: predecessor_id,
-                                                        subject,
-                                                        phase_start_head: predecessor
-                                                            .phase_start_head()
-                                                            .as_ref()
-                                                            .clone(),
-                                                        scopes: predecessor.scopes().clone(),
-                                                        protected_tip: evidence_subject
-                                                            .protected_reservation_tip
-                                                            .as_ref()
-                                                            .clone(),
-                                                        successor_head: head.clone(),
-                                                        target_history: phase_start_target_histories
-                                                            .get(head)
-                                                            .map_or(
-                                                                SuccessorScopedPatchTargetHistory::NeedsGitQueries,
-                                                                |commits| SuccessorScopedPatchTargetHistory::ProvenFirstParentInterval {
-                                                                    commits: commits.clone(),
-                                                                },
-                                                            ),
-                                                        priority: predecessor
-                                                            .successor_scoped_patch_evaluation_priority(
-                                                                head,
-                                                            ),
-                                                    },
-                                                );
-                                                SuccessorIncorporationEvidence::NotIncorporated
-                                            },
-                                        }
-                                    } else {
-                                        SuccessorIncorporationEvidence::NotIncorporated
-                                    };
-                                    evidence_by_head.insert(head.clone(), evidence);
-                                },
-                            }
-                        }
-                        PredecessorSuccessorIncorporation::Classified(evidence_by_head)
-                    },
-                };
-                by_predecessor.push((predecessor_id, incorporation));
-            }
+    for ((evidence_subject, from_protected_tip), from_phase_start) in evidence_subjects
+        .into_iter()
+        .zip(protected_tip_classifications)
+        .zip(phase_start_classifications)
+    {
+        let predecessor_id = evidence_subject.reservation.id();
+        let incorporation = predecessor_successor_incorporation(
+            &evidence_subject,
+            PredecessorSuccessorReachability {
+                from_protected_tip,
+                from_phase_start,
+            },
+            by_predecessor.len(),
+            &mut pending_comparisons,
+        );
+        by_predecessor.push((predecessor_id, incorporation));
+    }
+    SuccessorIncorporationClassification {
+        by_predecessor,
+        pending_comparisons,
+    }
+}
+
+/// Classify one predecessor's successor heads against its protected tip.
+fn predecessor_successor_incorporation(
+    evidence_subject: &PredecessorSuccessorEvidenceSubject<'_>,
+    reachability: PredecessorSuccessorReachability<'_>,
+    predecessor_index: usize,
+    pending_comparisons: &mut Vec<SuccessorScopedPatchEvaluationCandidate>,
+) -> PredecessorSuccessorIncorporation {
+    let ProtectedTipSuccessorHeadClassification::Classified(classified_heads) =
+        reachability.from_protected_tip
+    else {
+        return PredecessorSuccessorIncorporation::PredecessorObjectUnknown;
+    };
+    let candidate_context = PendingScopedPatchCandidateContext {
+        evidence_subject,
+        predecessor_index,
+        subject_revision: evidence_subject
+            .reservation
+            .integration_proof_subject_revision(),
+        target_histories: reachability.phase_start_target_histories(),
+    };
+    let mut evidence_by_head = HashMap::new();
+    for classified_head in classified_heads {
+        let (head, evidence) = match classified_head {
+            CandidateHeadReachability::Descendant { head, .. } => {
+                (head, SuccessorIncorporationEvidence::ProtectedTipAncestor)
+            },
+            CandidateHeadReachability::ObjectUnknown(head) => {
+                (head, SuccessorIncorporationEvidence::ObjectUnknown)
+            },
+            CandidateHeadReachability::NotDescendant(head) => (
+                head,
+                unreached_successor_evidence(&candidate_context, head, pending_comparisons),
+            ),
+        };
+        evidence_by_head.insert(head.clone(), evidence);
+    }
+    PredecessorSuccessorIncorporation::Classified(evidence_by_head)
+}
+
+/// Decide a successor head the predecessor's protected tip does not reach.
+///
+/// A retained verdict settles it outright; otherwise it joins the queue competing for the one
+/// scoped comparison this reconciliation admits.
+fn unreached_successor_evidence(
+    candidate_context: &PendingScopedPatchCandidateContext<'_>,
+    successor_head: &GitObjectId,
+    pending_comparisons: &mut Vec<SuccessorScopedPatchEvaluationCandidate>,
+) -> SuccessorIncorporationEvidence {
+    let evidence_subject = candidate_context.evidence_subject;
+    if !matches!(
+        evidence_subject.prior_integration_status,
+        PriorIntegrationStatus::Proven
+    ) {
+        return SuccessorIncorporationEvidence::NotIncorporated;
+    }
+    match evidence_subject
+        .reservation
+        .retained_successor_scoped_patch_target_verdicts()
+        .lookup(candidate_context.subject_revision, successor_head)
+    {
+        SuccessorScopedPatchTargetVerdictAvailability::Hit(
+            SuccessorScopedPatchEquivalenceVerdict::Equivalent,
+        ) => SuccessorIncorporationEvidence::ScopedPatchEquivalent,
+        SuccessorScopedPatchTargetVerdictAvailability::Hit(
+            SuccessorScopedPatchEquivalenceVerdict::Different,
+        ) => SuccessorIncorporationEvidence::NotIncorporated,
+        SuccessorScopedPatchTargetVerdictAvailability::Miss => {
+            pending_comparisons.push(candidate_context.candidate(successor_head));
+            SuccessorIncorporationEvidence::NotIncorporated
         },
     }
+}
 
+/// Spend the one admitted scoped comparison on the highest-priority pending target and record
+/// every verdict it settles.
+fn settle_pending_scoped_patch_comparisons(
+    repository_root: &Path,
+    classification: SuccessorIncorporationClassification,
+    evaluation_budget: &mut ReconciliationSuccessorScopedPatchEvaluationBudget,
+) -> SuccessorIncorporationObservation {
+    let SuccessorIncorporationClassification {
+        mut by_predecessor,
+        mut pending_comparisons,
+    } = classification;
     pending_comparisons.sort_by_key(|candidate| {
         (
             candidate.priority,
@@ -1948,44 +2160,59 @@ fn successor_incorporation_evidence(
         else {
             continue;
         };
-        match comparison {
-            ScopedPatchComparison::Equivalent => {
-                evidence_by_head.insert(
-                    candidate.successor_head.clone(),
-                    SuccessorIncorporationEvidence::ScopedPatchEquivalent,
-                );
-                operations.push(JournalOperation::SuccessorScopedPatchEquivalenceChecked {
-                    predecessor_reservation_id: candidate.predecessor_reservation_id,
-                    subject:                    candidate.subject,
-                    successor_head:             candidate.successor_head,
-                    verdict:                    SuccessorScopedPatchEquivalenceVerdict::Equivalent,
-                });
-            },
-            ScopedPatchComparison::Different => {
-                operations.push(JournalOperation::SuccessorScopedPatchEquivalenceChecked {
-                    predecessor_reservation_id: candidate.predecessor_reservation_id,
-                    subject:                    candidate.subject,
-                    successor_head:             candidate.successor_head,
-                    verdict:                    SuccessorScopedPatchEquivalenceVerdict::Different,
-                });
-            },
-            ScopedPatchComparison::Unavailable => {
-                evidence_by_head.insert(
-                    candidate.successor_head.clone(),
-                    SuccessorIncorporationEvidence::ObjectUnknown,
-                );
-                operations.push(JournalOperation::SuccessorScopedPatchComparisonAttempted {
-                    predecessor_reservation_id: candidate.predecessor_reservation_id,
-                    subject:                    candidate.subject,
-                    successor_head:             candidate.successor_head,
-                });
-            },
-        }
+        record_successor_scoped_patch_verdict(
+            candidate,
+            comparison,
+            evidence_by_head,
+            &mut operations,
+        );
     }
-    Ok(SuccessorIncorporationObservation {
+    SuccessorIncorporationObservation {
         by_predecessor,
         operations,
-    })
+    }
+}
+
+/// Journal one settled scoped comparison and update the head's evidence where it changed.
+fn record_successor_scoped_patch_verdict(
+    candidate: SuccessorScopedPatchEvaluationCandidate,
+    comparison: ScopedPatchComparison,
+    evidence_by_head: &mut HashMap<GitObjectId, SuccessorIncorporationEvidence>,
+    operations: &mut Vec<JournalOperation>,
+) {
+    match comparison {
+        ScopedPatchComparison::Equivalent => {
+            evidence_by_head.insert(
+                candidate.successor_head.clone(),
+                SuccessorIncorporationEvidence::ScopedPatchEquivalent,
+            );
+            operations.push(JournalOperation::SuccessorScopedPatchEquivalenceChecked {
+                predecessor_reservation_id: candidate.predecessor_reservation_id,
+                subject:                    candidate.subject,
+                successor_head:             candidate.successor_head,
+                verdict:                    SuccessorScopedPatchEquivalenceVerdict::Equivalent,
+            });
+        },
+        ScopedPatchComparison::Different => {
+            operations.push(JournalOperation::SuccessorScopedPatchEquivalenceChecked {
+                predecessor_reservation_id: candidate.predecessor_reservation_id,
+                subject:                    candidate.subject,
+                successor_head:             candidate.successor_head,
+                verdict:                    SuccessorScopedPatchEquivalenceVerdict::Different,
+            });
+        },
+        ScopedPatchComparison::Unavailable => {
+            evidence_by_head.insert(
+                candidate.successor_head.clone(),
+                SuccessorIncorporationEvidence::ObjectUnknown,
+            );
+            operations.push(JournalOperation::SuccessorScopedPatchComparisonAttempted {
+                predecessor_reservation_id: candidate.predecessor_reservation_id,
+                subject:                    candidate.subject,
+                successor_head:             candidate.successor_head,
+            });
+        },
+    }
 }
 
 impl ReconciliationAction {

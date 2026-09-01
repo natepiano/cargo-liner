@@ -112,10 +112,14 @@ not block a `check` or a `claim` from this run. Two sessions sharing a worktree
 can therefore both believe they hold the same paths, which is the condition the
 engine exists to prevent.
 
-The consolidation of run eligibility makes
-`Reservation::is_active_for_coordination_run_and_worktree` the one home for that
-predicate, and this item changes what the predicate means, so schedule this after
-that consolidation or the two rewrite the same lines.
+Phase 7 landed the consolidation: eligibility is now two methods on `Reservation`,
+`is_active_for_coordination_run` (`reservation/mod.rs:1867`), which holds the
+`Active` lifecycle test, and `is_active_for_coordination_run_and_worktree`
+(`:1880`), which adds the worktree term. This item changes what the two-field form
+means for `check` and `claim`, so it is unblocked — but the change belongs in the
+two-field form or at its call sites, never in the run-only base, whose callers
+(`RetainedReservationSet::has_other_active_reservation`, `:1003`) deliberately
+reach across worktrees.
 
 Satisfied by: same-worktree foreign reservations entering the refusal path with
 their holder facts, and a test covering two runs in one worktree.
@@ -181,8 +185,8 @@ or a generation boundary — and a test covering it.
 ## 11. The `--reservation` recovery command cannot resolve the refusal that prints it
 
 **Target:** `crates/cargo-berth/src/output.rs` —
-`AMBIGUOUS_RESERVATION_RECOVERY_COMMAND` (`:96`) and the explicit-selection
-response text (`:3578`).
+`AMBIGUOUS_RESERVATION_RECOVERY_COMMAND` (`:97`) and the explicit-selection
+response text (`:3585`).
 
 An ambiguous first touch prints `cargo-berth check --reservation
 <reservation-id> <path>...`. Running exactly that widens the scopes and then
@@ -201,8 +205,8 @@ and asserts the following check is no longer ambiguous.
 
 ## 12. `board` prints a pointer to its own JSON while holding the rendered report
 
-**Target:** `crates/cargo-berth/src/output.rs` — `render_text` (`:2624`) and
-`BOARD_READ_SUMMARY` (`:95`).
+**Target:** `crates/cargo-berth/src/output.rs` — `render_text` (`:2627`) and
+`BOARD_READY_MESSAGE` (`:95`).
 
 `render_text` renders `self.message`, the recovered-bypass markers and the
 alerts, and never reads `self.payload.presentation`. So `cargo-berth board`
@@ -218,7 +222,7 @@ reservation and asserts the reservation appears on stdout.
 ## 13. Two different conditions print the same summary sentence
 
 **Target:** `crates/cargo-berth/src/output.rs` (`UNSTATED_CONDITION_SUMMARY`,
-`:118`) and `crates/cargo-berth/src/hook/post_tool_use.rs`
+`:119`) and `crates/cargo-berth/src/hook/post_tool_use.rs`
 (`UNAVAILABLE_WORKING_DIRECTORY_SUMMARY`, `:40`).
 
 Both constants are the string "cargo-berth could not inspect this Bash call." One
@@ -234,7 +238,7 @@ asserting the two texts differ.
 
 **Target:** `crates/cargo-berth/tests/lifecycle.rs` against
 `ReservationReplayError::DuplicateIncursionIncident`
-(`crates/cargo-berth/src/reservation/mod.rs:2048`).
+(`crates/cargo-berth/src/reservation/mod.rs:2072`).
 
 Journal replay refuses a duplicated incursion record with the status
 `duplicate_incursion_incident` and names the command that recovers from it. The
@@ -283,3 +287,75 @@ every timing cell from `attribution` onward corrected to its measured process
 counts, and the bound republished. Do not widen the bound to make the run green,
 and do not loosen `COLD_PAGE_INVALIDATION_ATTEMPTS` or accept a non-zero
 resident-page count: both convert a refusal to measure into a false measurement.
+
+## 17. Nothing regression-tests the reservation-id ordering two surfaces now promise
+
+**Target:** `crates/cargo-berth/tests/drift.rs` against
+`DriftSelectionError::AmbiguousActiveReservations`
+(`crates/cargo-berth/src/drift/selection.rs:254`) and `ResolvedDriftSubjects.reporting`
+(`:228`).
+
+Phase 7 routed both through `WireOrderedReservationIds`, so the operator message
+`drift is ambiguous; choose one active reservation with --reservation: …` and the
+multi-subject reporting list in `drift --json` now print in a stable ascending
+order. `reservation_selection_requires_an_explicit_choice_only_when_ambiguous`
+(`tests/drift.rs:2020`) asserts only that both identifiers appear, and no test
+exercises a multi-element reporting list at all, so the guarantee rests on the
+collection type alone. The equivalent surface for `check` is covered —
+`tests/overlap.rs:440` compares `candidate_reservation_ids` against a sorted
+expectation.
+
+Satisfied by: a drift case with three or more active reservations in one worktree
+asserting the ambiguity message names them in ascending rendered order, and a
+post-commit case asserting the same for the reporting list.
+
+## 18. An incursion is computed against current holders, so a new claim accuses old commits
+
+**Target:** the incursion detection path in `crates/cargo-berth/` that produces
+`Incursion <id>: reservation <id> entered <path> held by foreign reservation(s) <id>`.
+
+Observed 2026-09-01: commit `fd7c9a19` touched `Cargo.lock` on 2026-08-28
+12:22:59. A foreign reservation created on 2026-09-01 15:58:50 — four days later
+— was reported as the holder that commit "entered", and the incursion record
+itself was created at 17:17:02 on a later, unrelated checkpoint that touched no
+lockfile. A commit cannot enter a claim that did not exist when it landed.
+
+The comparison must be against the claims in force at the commit's own time, not
+against the claims in force at detection time. As written, any new claim over a
+long-lived shared file retroactively manufactures an incursion against every
+reservation that has ever committed to it, and the operator is told to stop and
+resolve an overlap that never happened.
+
+Satisfied by: a test that claims a path, commits to it, releases, then takes a
+fresh foreign claim over the same path and asserts no incursion is reported for
+the earlier commit; and a second asserting an incursion IS still reported when
+the foreign claim predates the commit.
+
+## 19. A proven first-parent interval is carried as a bare map whose missing key means "unproven"
+
+**Target:** `crates/cargo-berth/src/reconcile.rs` —
+`PredecessorSuccessorReachability::phase_start_target_histories` (`:604`),
+`PendingScopedPatchCandidateContext.target_histories` (`:630`), and its
+`candidate` conversion (`:648`).
+
+`git::PhaseStartTargetFirstParentHistories` (`src/git/mod.rs:176`) already wraps
+exactly `HashMap<GitObjectId, Vec<GitObjectId>>` and converts a missing key into
+`ScopedPatchTargetHistory::NeedsGitQueries` through `after_phase_start` (`:180`).
+The reconciliation path lowers the same shape back to a bare map and
+re-implements that conversion by hand at `:648`, against
+`SuccessorScopedPatchTargetHistory` instead — a second home for a lookup the
+crate already names once.
+
+A reader of `:630` has to reach the call site to learn that a missing key means
+"no proven interval — query git", not "not computed", and the same empty map is
+produced both by `AncestorObjectUnknown` and by a classified head that is
+`NotDescendant`. Phase 8's split made the contract visible without changing it;
+the module phases are behavior-preserving and cannot own it.
+
+Satisfied by: the pending-candidate context carrying a named type whose absence
+case states the meaning — reusing `PhaseStartTargetFirstParentHistories` with a
+successor-head accessor, or a sibling that returns
+`SuccessorScopedPatchTargetHistory` directly — so `candidate` performs no
+`map_or` and no bare `HashMap` crosses a struct field.
+
+Revealed by: Phase 8.
