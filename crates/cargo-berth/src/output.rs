@@ -50,6 +50,7 @@ use crate::ids::GitObjectId;
 use crate::ids::ProjectionGeneration;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
+use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
 use crate::ledger::CollisionPathSet;
@@ -1253,7 +1254,7 @@ enum FirstTouchReservationSelectionPayload {
     AmbiguousActiveRunReservations {
         /// Every eligible reservation id in ascending deterministic order.
         #[schemars(with = "Vec<String>")]
-        candidate_reservation_ids: Vec<ReservationId>,
+        candidate_reservation_ids: WireOrderedReservationIds,
     },
 }
 
@@ -1394,7 +1395,7 @@ impl OutputEnvelope {
 
     /// Build a successful headless board response without requiring a terminal.
     pub(crate) fn board(board: BoardModel) -> Self {
-        let reservations = board.reservation_ids();
+        let reservations = board.reservation_ids().into_vec();
         let presentation = board.envelope_presentation();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
@@ -1595,7 +1596,7 @@ impl OutputEnvelope {
         generation: ProjectionGeneration,
         violations: Vec<IntegrationViolation>,
     ) -> Self {
-        let blocked_by = integration_blockers(&violations);
+        let blocked_by = integration_blockers(&violations).into_vec();
         let message = integration_blocked_message(reservation_id, &violations);
         let summary = format!("cargo-berth refused integration for reservation {reservation_id}.");
         let presentation = engine_result_presentation(&summary, &message);
@@ -1887,7 +1888,7 @@ impl OutputEnvelope {
             BerthExit::Clear
         };
         let reservations = report.reservation_ids();
-        let blocked_by = report.blocking_reservation_ids();
+        let blocked_by = report.blocking_reservation_ids().into_vec();
         let message = drift_message(&report);
         let mut output_envelope = Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
@@ -2209,9 +2210,10 @@ impl OutputEnvelope {
     /// Build a mutation-free rejection when no mapping selects one active reservation.
     pub(crate) fn ambiguous_active_run_reservations(
         command_verb: CommandVerb,
-        candidate_reservation_ids: Vec<ReservationId>,
+        candidate_reservation_ids: WireOrderedReservationIds,
     ) -> Self {
         let rendered_candidates = candidate_reservation_ids
+            .as_slice()
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
@@ -2220,6 +2222,7 @@ impl OutputEnvelope {
             "No usable harness-session mapping selects one active reservation among {rendered_candidates}. Run `{AMBIGUOUS_RESERVATION_RECOVERY_COMMAND}` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published."
         );
         let candidate_reservation_id_strings = candidate_reservation_ids
+            .as_slice()
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
@@ -2230,7 +2233,7 @@ impl OutputEnvelope {
             verb: command_verb,
             status: OutputStatus::AmbiguousActiveRunReservations,
             exit_code: BerthExit::BlockedByOverlap,
-            reservations: candidate_reservation_ids.clone(),
+            reservations: candidate_reservation_ids.as_slice().to_vec(),
             blocked_by: Vec::new(),
             message,
             presentation,
@@ -3878,15 +3881,14 @@ fn drift_path_attribution_message(attribution: &DriftPathAttributionOutcome) -> 
     }
 }
 
-fn integration_blockers(violations: &[IntegrationViolation]) -> Vec<ReservationId> {
-    let mut blockers = violations
-        .iter()
-        .flat_map(|violation| violation.blocking_reservations.iter())
-        .map(|reservation| reservation.reservation_id)
-        .collect::<Vec<_>>();
-    blockers.sort_by_key(ToString::to_string);
-    blockers.dedup();
-    blockers
+fn integration_blockers(violations: &[IntegrationViolation]) -> WireOrderedReservationIds {
+    WireOrderedReservationIds::sorted_and_deduplicated(
+        violations
+            .iter()
+            .flat_map(|violation| violation.blocking_reservations.iter())
+            .map(|reservation| reservation.reservation_id)
+            .collect(),
+    )
 }
 
 fn integration_blocked_message(

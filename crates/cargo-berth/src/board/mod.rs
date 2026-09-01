@@ -50,6 +50,7 @@ use crate::ids::ProjectionGeneration;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
+use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::ledger::BypassCause;
 use crate::ledger::BypassOccurrenceTime;
@@ -914,8 +915,8 @@ impl BoardModel {
     }
 
     /// Return every retained reservation represented by this board.
-    pub(crate) fn reservation_ids(&self) -> Vec<ReservationId> {
-        let mut reservation_ids = self
+    pub(crate) fn reservation_ids(&self) -> WireOrderedReservationIds {
+        let reservation_ids = self
             .ready_now
             .entries
             .iter()
@@ -941,9 +942,8 @@ impl BoardModel {
             )
             .collect::<HashSet<_>>()
             .into_iter()
-            .collect::<Vec<_>>();
-        reservation_ids.sort_by_key(ToString::to_string);
-        reservation_ids
+            .collect();
+        WireOrderedReservationIds::sorted(reservation_ids)
     }
 
     /// Borrow marker filenames claimed for one-time reporting by this board.

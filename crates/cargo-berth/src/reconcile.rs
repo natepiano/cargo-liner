@@ -49,6 +49,7 @@ use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
+use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::BypassOccurrenceTime;
@@ -682,9 +683,10 @@ fn drift_observation_events_after_current_marker_sweep(
                     worktree_context
                         .sweep_coordination_run_marker(|coordination_run_id| {
                             reservations.iter().any(|reservation| {
-                                matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-                                    && reservation.actor().worktree == worktree_identity.id
-                                    && reservation.actor().run == coordination_run_id
+                                reservation.is_active_for_coordination_run_and_worktree(
+                                    coordination_run_id,
+                                    worktree_identity.id,
+                                )
                             })
                         })
                         .map_err(ReconcileError::Ledger)?;
@@ -1704,10 +1706,16 @@ fn successor_incorporation_evidence(
             successors.push(after);
         }
     }
-    let mut predecessor_groups = successors_by_predecessor.into_iter().collect::<Vec<_>>();
-    predecessor_groups.sort_by_key(|(predecessor_id, _)| predecessor_id.to_string());
+    let ordered_predecessor_ids =
+        WireOrderedReservationIds::sorted(successors_by_predecessor.keys().copied().collect());
     let mut evidence_subjects = Vec::new();
-    for (predecessor_id, successors) in predecessor_groups {
+    for &predecessor_id in ordered_predecessor_ids.as_slice() {
+        // Every ordered identifier is a key of the map the ordering was built from, so this
+        // takes each predecessor's successors once rather than looking one up and reading a
+        // miss as a skip condition it can never be.
+        let successors = successors_by_predecessor
+            .remove(&predecessor_id)
+            .unwrap_or_default();
         let Some(predecessor_snapshot) = snapshots_by_reservation.get(&predecessor_id) else {
             continue;
         };
@@ -1736,8 +1744,8 @@ fn successor_incorporation_evidence(
                 | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => continue,
             };
         let mut candidate_heads = Vec::new();
-        for successor in successors {
-            let Some(successor_snapshot) = snapshots_by_reservation.get(&successor) else {
+        for successor in &successors {
+            let Some(successor_snapshot) = snapshots_by_reservation.get(successor) else {
                 continue;
             };
             let WorktreeHead::Resolved(head) = &successor_snapshot.worktree_head else {
@@ -1915,7 +1923,7 @@ fn successor_incorporation_evidence(
     pending_comparisons.sort_by_key(|candidate| {
         (
             candidate.priority,
-            candidate.predecessor_reservation_id.to_string(),
+            candidate.predecessor_reservation_id.wire_ordering_key(),
             candidate.successor_head.to_string(),
         )
     });

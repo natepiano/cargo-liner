@@ -822,9 +822,10 @@ impl RetainedReservationSet {
                 worktree_id,
             } => self.reservations.iter().any(|reservation| {
                 reservation.id == reservation_id
-                    && matches!(reservation.lifecycle, ReservationLifecycle::Active)
-                    && reservation.actor.run == coordination_run_id
-                    && reservation.actor.worktree == worktree_id
+                    && reservation.is_active_for_coordination_run_and_worktree(
+                        coordination_run_id,
+                        worktree_id,
+                    )
             }),
             EditAuthorization::Environment { .. }
             | EditAuthorization::Marker { .. }
@@ -835,9 +836,8 @@ impl RetainedReservationSet {
                 coordination_run_id,
                 worktree_id,
             } => self.reservations.iter().any(|reservation| {
-                matches!(reservation.lifecycle, ReservationLifecycle::Active)
-                    && reservation.actor.run == coordination_run_id
-                    && reservation.actor.worktree == worktree_id
+                reservation
+                    .is_active_for_coordination_run_and_worktree(coordination_run_id, worktree_id)
             }),
             EditAuthorization::Session { .. }
             | EditAuthorization::Environment { .. }
@@ -995,7 +995,11 @@ impl RetainedReservationSet {
         self.incursion_incidents.iter()
     }
 
-    /// Return whether the run still has another reservation in `Active`.
+    /// Return whether the run still has another reservation in `Active`, in any worktree.
+    ///
+    /// The run, not the run and the worktree: this deliberately calls
+    /// [`Reservation::is_active_for_coordination_run`] rather than the two-field eligibility
+    /// predicate, because the caller is asking whether the run itself still owns live work.
     pub(crate) fn has_other_active_reservation(
         &self,
         coordination_run_id: CoordinationRunId,
@@ -1003,8 +1007,7 @@ impl RetainedReservationSet {
     ) -> bool {
         self.reservations.iter().any(|reservation| {
             reservation.id != excluded_reservation_id
-                && reservation.actor.run == coordination_run_id
-                && matches!(reservation.lifecycle, ReservationLifecycle::Active)
+                && reservation.is_active_for_coordination_run(coordination_run_id)
         })
     }
 
@@ -1851,15 +1854,36 @@ impl Reservation {
     /// Return the reservation's owning actor.
     pub(crate) const fn actor(&self) -> &JournalActor { &self.actor }
 
+    /// Return whether this active reservation belongs to the named run, in any worktree.
+    ///
+    /// This is the base of the two eligibility predicates: within them the `Active` lifecycle
+    /// test is written here and nowhere else, and
+    /// [`Self::is_active_for_coordination_run_and_worktree`] is this question plus a worktree
+    /// term, taking the lifecycle test by delegating here. Lifecycle tests that carry no run
+    /// term ask a different question and live on their own. Constraining the run and not the
+    /// worktree is deliberate, so a run holding live work in a second worktree still answers
+    /// `true`. Callers deciding the fate of a run-scoped record want that reach; callers
+    /// deciding what one worktree may edit want the two-field form.
+    pub(crate) fn is_active_for_coordination_run(
+        &self,
+        coordination_run_id: CoordinationRunId,
+    ) -> bool {
+        self.actor.run == coordination_run_id
+            && matches!(self.lifecycle, ReservationLifecycle::Active)
+    }
+
     /// Return whether this active reservation belongs to the named run and worktree.
+    ///
+    /// Delegates to [`Self::is_active_for_coordination_run`] and adds the worktree term, so the
+    /// narrower predicate is structurally a subset of this one and the `Active` lifecycle test
+    /// is written once.
     pub(crate) fn is_active_for_coordination_run_and_worktree(
         &self,
         coordination_run_id: CoordinationRunId,
         worktree_id: WorktreeId,
     ) -> bool {
-        self.actor.run == coordination_run_id
+        self.is_active_for_coordination_run(coordination_run_id)
             && self.actor.worktree == worktree_id
-            && matches!(self.lifecycle, ReservationLifecycle::Active)
     }
 
     /// Borrow the normalized scopes this reservation currently protects.

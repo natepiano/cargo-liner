@@ -41,6 +41,7 @@ use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
 use crate::ids::ProjectionGeneration;
 use crate::ids::ReservationId;
+use crate::ids::WireOrderedReservationIds;
 use crate::ledger;
 use crate::ledger::BypassCause;
 use crate::ledger::BypassOccurrenceTime;
@@ -949,19 +950,20 @@ fn blocking_reservations(
     subject: ReservationId,
     holds: &[IntegrationHold],
 ) -> Result<Vec<IntegrationReservationFacts>, GateTransactionRejection> {
-    let mut blocker_ids = holds
-        .iter()
-        .map(|hold| match hold {
-            IntegrationHold::OrderingEdge { predecessor, .. } => *predecessor,
-            IntegrationHold::DeferredOverlap {
-                deferred, blocker, ..
-            } if *deferred == subject => *blocker,
-            IntegrationHold::DeferredOverlap { deferred, .. } => *deferred,
-        })
-        .collect::<Vec<_>>();
-    blocker_ids.sort_by_key(ToString::to_string);
-    blocker_ids.dedup();
+    let blocker_ids = WireOrderedReservationIds::sorted_and_deduplicated(
+        holds
+            .iter()
+            .map(|hold| match hold {
+                IntegrationHold::OrderingEdge { predecessor, .. } => *predecessor,
+                IntegrationHold::DeferredOverlap {
+                    deferred, blocker, ..
+                } if *deferred == subject => *blocker,
+                IntegrationHold::DeferredOverlap { deferred, .. } => *deferred,
+            })
+            .collect(),
+    );
     blocker_ids
+        .into_vec()
         .into_iter()
         .map(|blocker_id| {
             constraints

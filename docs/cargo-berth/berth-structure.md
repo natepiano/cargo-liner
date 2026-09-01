@@ -36,15 +36,16 @@
   phase 4's `hooks.rs`, and the frozen fixture
   `tests/fixtures/front_end_corpus.json`.
 - **Front-end and hook layer:** lives outside this repository under
-  `~/.claude/scripts/berth/` — `install/install.sh` (installs the binary and
-  regenerates `generated/status_payload_tables.py` and
-  `generated/envelope_validation.jq` from it, with staging, validation, and
-  rollback), the hand-written `install/hooks/berth_pre_edit.sh`,
-  `install/hooks/berth_post_bash.sh`, and `install/hooks/berth_session_start.sh`,
-  plus `claim_state.py`, `work_order.py`, and `tests/test_hook_rendering.py`. The
-  hooks invoke `cargo-berth` from `PATH`, so an installed binary and an installed
-  hook can disagree. A phase that changes this layer says so in its summary: the
-  checkpoint commit cannot carry files outside the repository.
+  `~/.claude/scripts/berth/` — `install/install.sh` (builds and publishes the
+  binary, restoring the preceding one if publication fails), the three wrappers
+  `install/hooks/berth_pre_edit.sh`, `install/hooks/berth_post_bash.sh`, and
+  `install/hooks/berth_session_start.sh`, plus `work_order.py` and the Python
+  suite under `tests/`. Each wrapper checks that `cargo-berth` is on `PATH` and
+  then `exec`s `cargo-berth hook <event>`, so the engine writes every byte a user
+  reads and the two cannot disagree about an outcome. The coordinator
+  `claim_state.py`, the generated Python status tables, and the generated jq
+  validator no longer exist. A phase that changes this layer says so in its
+  summary: the checkpoint commit cannot carry files outside the repository.
 - **Presentation contract (phase 2, binds phases 3-6):** every verb states its
   own user-facing text as `presentation` on the envelope.
   `crates/cargo-berth/src/presentation.rs` defines `EnvelopePresentation`, a
@@ -68,6 +69,19 @@
   `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth`. Run each with the
   sandbox disabled. Tests are the only testing — a passing `test` run proves the
   build, so never add a `check` pass around a `test` that is going to run anyway.
+
+  **Point `CARGO_TARGET_DIR` at a private scratch directory before every gate
+  run.** Most phases open three concurrent writers against one `target/`, and a
+  shared one has produced four distinct false signals: a clippy exiting 0 with no
+  `Checking` line (a cache hit, and `cargo clean -p` does not reliably bust it —
+  a peer repopulates it between the clean and the run); a `check` that is blind to
+  `cfg(test)` code because it builds `--bins`; a test binary deleted by a peer
+  mid-run, reading as every test failing in seconds; and a wall-clock timing test
+  that fails under contention and passes alone. A private target directory
+  insulates against all four, and it is the only way a green result is provably a
+  compile of the seat's own bytes. Report the captured exit code, the test counts,
+  and whether a real `Compiling` / `Checking cargo-berth` line appeared — an exit
+  0 with no such line is not a pass.
 - **Regenerating the output contract:** `output_contract.rs` derives
   `docs/cargo-berth/generated/output-contract.json` from Rust doc comments. Any
   phase that edits a doc comment reachable from the contract must regenerate with
@@ -418,106 +432,37 @@ fixture retires that structure with it.
 - Amending `berth-fix.md`'s `claim_state` references — that is a prior plan's as-built record, and correcting it belongs to that plan's closeout.
 - Giving both git-invoked commands a `HookRendered(ExitCode)` return to collapse the reporting enum to two states — the `HookOwnsItsResponse` restructure reaches the same end.
 
-### Phase 7 — One home for run eligibility and reservation-id ordering · status: todo
+### Phase 7 — One home for run eligibility and reservation-id ordering · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** The active-for-this-run predicate and the deterministic ordering of
-reservation ids each have exactly one implementation, placed so the later module
-phases move code without carrying a duplicate with them.
+Run eligibility is two inherent methods on `Reservation` in `reservation/mod.rs`. `is_active_for_coordination_run(CoordinationRunId)` holds the `Active` lifecycle test and the run term; `is_active_for_coordination_run_and_worktree(CoordinationRunId, WorktreeId)` delegates to it and adds the worktree term, so the narrower predicate is structurally a subset and the lifecycle test is written once. Every site in the crate that means "active for this run (and worktree)" calls one of the two.
 
-**Spec:** Two idioms are spread across the crate, and the module phases that
-follow cannot consolidate them because neither belongs to a single module root.
+Reservation-id ordering is one type, `WireOrderedReservationIds` in `ids.rs`. Its `sorted` and `sorted_and_deduplicated` constructors key on `ReservationId::wire_ordering_key()`, its hand-written `Deserialize` sorts on the way in, and its `Serialize` forwards to the inner `Vec`; readers go through `as_slice`, `const fn is_empty`, and `into_vec`. The type cannot be constructed unsorted, and a test in `ids.rs` proves it. **Seven** call sites route through it, not six: the seventh is a composite sort in `reconcile.rs` keyed on `predecessor_reservation_id.wire_ordering_key()`. `ResolvedDriftSubjects.reporting`, `DriftSelectionError::AmbiguousActiveReservations`, `CompleteBoardReport::reservation_ids()`, and `FirstTouchReservationSelectionPayload.candidate_reservation_ids` hold the type rather than a bare `Vec`.
 
-The eligibility predicate exists as
-`Reservation::is_active_for_coordination_run_and_worktree`
-(`crates/cargo-berth/src/reservation/mod.rs:1855`), which phase 1 added and
-`verb/claim.rs:394`, `:422`, and `:442` call — `:453` is the reservation-id sort
-the next paragraph owns, not a fourth eligibility call — while the same `actor.run == …
-&& actor.worktree == …` comparison is still written out inline at
-`reservation/mod.rs:826`, `:839`, and `:1006`. Route every site that means
-"active for this run and worktree" through the method. Where a site means
-something narrower, say so at that site rather than widening the method.
-
-Reservation-id ordering by rendered string appears six times:
-`verb/claim.rs:453` (`sort_by_cached_key`), `drift/ordering.rs:12`,
-`output.rs:3887`, `board/mod.rs:945`, `gate/mod.rs:962`, and `reconcile.rs:1708`,
-which sorts by `predecessor_id.to_string()` where `GraphPredecessor::reservation_id`
-is a `ReservationId` (`edge/mod.rs:220`). `drift::ordering` is `pub(super)` to
-`drift`, so no other caller can reach it. Give the ordering one home with
-`ReservationId` in `crates/cargo-berth/src/ids.rs`, and encode the guarantee in
-the type rather than in a comment: a `Vec<ReservationId>` that four call sites
-promise to have sorted is not a guarantee, and phase 1's candidate list documents
-its determinism only in prose. Introduce a named ordered collection —
-`WireOrderedReservationIds` or an equally explicit name — that can only be
-constructed sorted, and have the wire-facing producers hold it.
-
-**The ordering has two guarantees, not one, and the type must express both.**
-`drift/ordering.rs` exposes `sort_reservation_ids` (`:12`) and
-`sort_and_deduplicate_reservation_ids` (`:17`). Four callers require the
-deduplicating form — `drift/report.rs:110`, `drift/classification.rs:96`, `:123`,
-and `:161` — and four require only the sort: `verb/claim.rs:453`,
-`output.rs:3887`, `board/mod.rs:945`, and `gate/mod.rs:962`. A single sorted-only
-collection leaves `drift` holding a wrapper, which is the duplicate this phase
-exists to remove. Decide the shape here rather than mid-phase: the collection
-carries both constructions, and each one names the guarantee it makes.
-
-This is behavior-preserving. Every existing test passes unmodified, and the
-ordering the wire already emits does not change.
+Two printed surfaces order ascending rather than by ledger order: the ambiguity message naming candidate reservations, and the reporting list in `drift --json`. Nothing asserts either order — `tests/drift.rs:2020` checks only that both identifiers appear.
 
 **Files:**
-- `crates/cargo-berth/src/ids.rs`
-- `crates/cargo-berth/src/reservation/mod.rs`
-- `crates/cargo-berth/src/verb/claim.rs`
-- `crates/cargo-berth/src/drift/ordering.rs`
-- `crates/cargo-berth/src/drift/selection.rs`
-- `crates/cargo-berth/src/drift/report.rs`
-- `crates/cargo-berth/src/drift/classification.rs`
-- `crates/cargo-berth/src/output.rs`
-- `crates/cargo-berth/src/board/mod.rs`
-- `crates/cargo-berth/src/gate/mod.rs`
-- `crates/cargo-berth/src/reconcile.rs`
+- `crates/cargo-berth/src/ids.rs` — `WireOrderedReservationIds`, its two constructors, accessors, hand-written `Serialize`/`Deserialize`, and `ReservationId::wire_ordering_key`.
+- `crates/cargo-berth/src/reservation/mod.rs` — the two eligibility predicates.
+- `crates/cargo-berth/src/drift/selection.rs` — both drift carriers hold the ordered type; `drift/execution.rs`, `drift/classification.rs`, `drift/ordering.rs`, `drift/report.rs` read through `as_slice()` / `is_empty()`.
+- `crates/cargo-berth/src/reconcile.rs` — an ordered build inside `successor_incorporation_evidence`, and the composite sort keyed on `wire_ordering_key`.
+- `crates/cargo-berth/src/output.rs`, `board/mod.rs`, `gate/mod.rs`, `verb/claim.rs` — ordered producers and consumers.
+- `crates/cargo-berth/src/verb/release.rs`, `coordination_identity.rs` — eligibility call sites.
 
-**Seats:** 3 writers + 0 testers — no caller can convert until
-`WireOrderedReservationIds` exists, so every seat waits on `impl`'s first commit
-of the type before its own edits compile. Plan for that: `impl` lands the type
-first and says so on the board, and the other two read the tree before starting.
-- `impl` — `ids.rs`, `verb/claim.rs`, `output.rs`, `board/mod.rs`,
-  `gate/mod.rs`; hub: `ids.rs` (the type lands first; its callers convert behind it)
-- `test` — the drift lane: `drift/ordering.rs`, `drift/selection.rs`,
-  `drift/report.rs`, `drift/classification.rs`
-- `review` — the `reservation/mod.rs` eligibility consolidation, and
-  `reconcile.rs:1708`
+**Binds later work:** The ordering idiom has exactly one implementation, `WireOrderedReservationIds::sorted`; any later phase that moves a sort routes it there rather than adding a second. `WireOrderedReservationIds` reaches the generated output contract through `FirstTouchReservationSelectionPayload`, so an edit to that field, its attribute, or the type's `Serialize` moves the wire (see Gotchas). Both eligibility methods must travel together when `Reservation` moves out of `reservation/mod.rs`, and their intra-doc links must still resolve — moved intra-doc links fail as rustdoc errors that the test and lint gates do not surface, so that move needs a doc lint. Both `reconcile.rs` edits sit inside `successor_incorporation_evidence`, and the split of that function carries them intact rather than re-deriving them. `CompleteBoardReport::reservation_ids()` returns the ordered type, and that signature moves with the report cluster when `board/mod.rs` splits. `gate/mod.rs:953`, inside `blocking_reservations`, calls `sorted_and_deduplicated`; dropping the deduplication changes what the gate reports. Line anchors in `ids.rs`, `reservation/mod.rs`, `reconcile.rs`, `output.rs`, `board/mod.rs`, and `gate/mod.rs` all moved.
 
-**Acceptance gate:**
-1. A crate-wide sweep finds one implementation of the run-and-worktree
-   eligibility predicate and one of the reservation-id ordering, with no inline
-   restatement of either. The sweep will also reach `board/mod.rs:1181`, which
-   sorts `worktree_heads` by `worktree_id.to_string()` — the same rendered-string
-   ordering idiom over `WorktreeId` rather than `ReservationId`. **That site is
-   out of scope**: this phase gives `ReservationId` one ordering home, and
-   widening to a second id type is a different consolidation. Leave it, and do
-   not let the sweep stall on it. `reconcile.rs:1708` is **in** scope by the same
-   test — it orders `ReservationId` — and is routed through the new collection
-   like every other site.
-2. The ordered collection cannot be constructed unsorted, and that is proven by
-   a test rather than asserted in a comment.
-3. The existing suite passes unmodified — this phase changes no behavior.
-4. `generated_artifacts_are_reproducible_from_the_checked_in_contract` passes
-   without the regenerate environment variable, proving the wire did not move.
-5. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
+**Gotchas:**
+- `WireOrderedReservationIds` is `pub(crate)` but is **not** crate-internal: it is the type of `FirstTouchReservationSelectionPayload.candidate_reservation_ids` in `output.rs`, which appears in `docs/cargo-berth/generated/output-contract.json`. The serialized bytes are unchanged **only** because that field carries `#[schemars(with = "Vec<String>")]` and the type serializes transparently to its inner `Vec`. Both halves are required — dropping either moves the wire. The same pairing is why the type needs no `JsonSchema` derive of its own.
+- `OutputEnvelope.reservations` and `OutputEnvelope.blocked_by` keep `Vec<ReservationId>`: they also receive the unsorted `DriftReport::reservation_ids()`, so converting them would change the wire.
+- A crate-wide sweep for a boolean predicate must cover its negated spelling. The eligibility sweep keyed on the `==` comparison, and one site writing the same condition in De Morgan form with `!=` survived it.
+- `drift/selection.rs:147-149` is worktree-only with no run term, and `board/mod.rs:1181` sorts `WorktreeId` rather than `ReservationId`. Neither restates what lives here; both are correct as they stand.
 
-**Constraints from prior phases:** phase 2 **did** add a third call to the
-eligibility method — the `check --reservation` selector's explicit reservation
-selection — so this phase consolidates three call sites, not two, and that
-selector uses the single home this phase establishes. The three are
-`crates/cargo-berth/src/verb/claim.rs:394`, `:422`, and `:442`; `:365` is the
-`FirstTouchReservationSelection` enum declaration, not a call. This consolidation runs before the module phases deliberately:
-the ordering must not land in `reservation/mod.rs`, whose own phase reduces it to
-a table of contents, and the predicate stays with the `Reservation` type so it
-moves with that type when that phase runs.
-
----
+**Ruled out:**
+- Converting `OutputEnvelope.reservations` / `blocked_by` to the ordered type — they also carry unsorted input, so it would move the wire.
+- Widening the two-field predicate to cover `drift/selection.rs:147-149` — that site asks a worktree question with no run term.
+- Retyping `board/mod.rs:1181`'s `WorktreeId` sort — a different id type, scoped out on purpose.
+- Leaving `drift` a sorted-only wrapper — the collection carries both the sorting and the deduplicating construction, each naming its guarantee.
 
 ### Phase 8 — Split the reconciliation planners · status: todo
 
@@ -525,8 +470,8 @@ moves with that type when that phase runs.
 
 **Goal:** `reconcile.rs` carries no `too_many_lines` suppression.
 
-**Spec:** `build_plan` (`:866`, 127 lines) and `successor_incorporation_evidence`
-(`:1683`, 299 lines) are the two sites. `successor_incorporation_evidence` walks
+**Spec:** `build_plan` (`:868`, 127 lines) and `successor_incorporation_evidence`
+(`:1685`, 305 lines) are the two sites. `successor_incorporation_evidence` walks
 predecessor subjects, evaluates scoped patch equivalence under the shared
 per-reconciliation budget, and assembles verdicts; each of those is a separate
 function on the same data. Extract them so the parent states the sequence and
@@ -542,13 +487,16 @@ one owner rather than copied into each extracted function.
 **Files:**
 - `crates/cargo-berth/src/reconcile.rs`
 
-**Seats:** 1 writer + 1 tester + reserve — nothing splits. The whole phase is one
-file, and the single-admission budget must stay threaded through one owner, so a
-second writer would contend on every extraction.
+**Seats:** 1 writer + 0 testers + reserve — nothing splits. The whole phase is
+one file, and the single-admission budget must stay threaded through one owner,
+so a second writer would contend on every extraction. There is no test lane
+because gate 2 requires the existing tests pass *unmodified*: a behavior-
+preserving extraction has no test work to give a tester, and a seat named `test`
+with nothing to test writes production code instead.
 - `impl` — `reconcile.rs`; hub: `reconcile.rs`
-- `test` — verification only, against the existing reconciliation lane; owns no
-  source
-- `review` — reserve
+- `test` — not opened
+- `review` — reserve; opens only if threading the single-admission budget through
+  the extracted functions blocks the split
 
 **Acceptance gate:**
 1. No `too_many_lines` suppression remains in `reconcile.rs`.
@@ -556,7 +504,19 @@ second writer would contend on every extraction.
    behavior.
 3. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
 
-**Constraints from prior phases:** none — no earlier phase touched this file.
+**Constraints from prior phases:** phase 7 edited this file, and both of its
+edits sit *inside* `successor_incorporation_evidence`, the function this phase
+splits:
+
+- `:1710` builds a `WireOrderedReservationIds` via `WireOrderedReservationIds::sorted`.
+- `:1923-1926` runs a composite sort keyed on
+  `predecessor_reservation_id.wire_ordering_key()`.
+
+Both must cross the split intact. `WireOrderedReservationIds` (`ids.rs`) is the
+crate's one home for ordering reservation identifiers, and phase 7 removed every
+other one; an extracted helper that reintroduces a local
+`sort_by_key(ToString::to_string)` silently recreates the second home. Keep the
+calls where they are, or move them whole — never re-derive them.
 
 ---
 
@@ -567,8 +527,8 @@ second writer would contend on every extraction.
 **Goal:** `git/mod.rs` declares submodules and re-exports, and carries no logic
 and no `too_many_lines` suppression.
 
-**Spec:** The root holds roughly 3,100 lines past its declarations — the largest
-offender in the crate — beside existing `command.rs`, `constants.rs`, and
+**Spec:** The root holds roughly 3,610 lines past its declarations (file 3,716,
+imports end `:104`) — the largest offender in the crate — beside existing `command.rs`, `constants.rs`, and
 `refs.rs` submodules. Split by type ownership, not by code category: each new
 submodule is named after the anchor type or the git concept it owns, and its
 tests move with it. Candidate boundaries visible today, to be confirmed against the
@@ -603,6 +563,12 @@ separate test lane.
 - `test` — opens as `impl`; `patch.rs` and `conflict.rs`
 - `review` — opens as `impl`; `refs.rs` and `discovery.rs`
 
+**The hub owner goes first.** `impl` lands the complete root skeleton — every
+`mod` declaration and re-export stub for all six submodules — and posts `done`
+for it on the board before the other two seats begin. Phase 7 skipped this and
+paid for it: two seats converting callers of the same item at once produced a
+red where each seat's own files were clean and neither error was its own.
+
 **Acceptance gate:**
 1. `git/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
    documentation.
@@ -624,29 +590,49 @@ named in the summary.
 **Goal:** `reservation/mod.rs` declares submodules and re-exports, and carries no
 `too_many_lines` suppression.
 
-**Spec:** Roughly 2,500 lines past its declarations, beside existing
-`constants.rs`, `evidence.rs`, and `lifecycle.rs`. Two suppressions live here:
-`apply` (`:1015`, 150 lines) and a `Display::fmt` (`:2094`, 103 lines). The
-`fmt` is an exhaustive match over a large enum — split it by giving each variant
-family its own renderer, keeping the outer match as the dispatch.
+**Spec:** Roughly 3,050 lines past its declarations (file 3,123, imports end
+`:72`), beside existing `constants.rs`, `evidence.rs`, and `lifecycle.rs`. Two
+suppressions live here: `apply` (`:1019`, 150 lines) and a `Display::fmt`
+(`:2116`, 103 lines). The `fmt` is an exhaustive match over a large enum — split
+it by giving each variant family its own renderer, keeping the outer match as the
+dispatch.
 
 Split by type ownership: the retained-reservation set and its incursion
-observation, the scope-partition logic, the reservation record and its replay
-`apply`, and the conflict/holder evaluation are separate clusters that do not
+observation, the scope-partition logic, the reservation record, the replay
+machinery, and the conflict/holder evaluation are separate clusters that do not
 appear in each other's field lists. Tests move with the type each one covers.
+
+**Replay is its own cluster, and both suppressions belong to it.** `apply` is a
+method on `RetainedReservationSet` (its `impl` block opens at `:656` and runs
+past `:1711`), not on `Reservation`, so type ownership alone would drag it into
+the retention cluster and separate it from the `apply_*` helpers (`:1195`-`:1560`)
+it exists to sequence. `ReservationReplayError` and its 103-line `Display`
+(`:2116`) belong with it and are in no other cluster. Give all four a fifth
+module, `reservation/replay.rs`, so one owner holds both suppressions and the
+`fmt` split lands beside the code it renders errors for.
 
 **Files:**
 - `crates/cargo-berth/src/reservation/mod.rs`
 - `crates/cargo-berth/src/reservation/retention.rs`
 - `crates/cargo-berth/src/reservation/partition.rs`
 - `crates/cargo-berth/src/reservation/record.rs`
+- `crates/cargo-berth/src/reservation/replay.rs`
 - `crates/cargo-berth/src/reservation/conflict.rs`
 
 **Seats:** 3 writers + 0 testers — same shape as phase 9: disjoint type clusters
 out of one root, tests moving with their types.
-- `impl` — `reservation/mod.rs` and `record.rs`; hub: `reservation/mod.rs`
+- `impl` — `reservation/mod.rs` and `replay.rs`; hub: `reservation/mod.rs`
 - `test` — opens as `impl`; `retention.rs` and `partition.rs`
-- `review` — opens as `impl`; `conflict.rs`
+- `review` — opens as `impl`; `record.rs` and `conflict.rs`
+
+Replay goes to the hub owner because it is the heaviest cluster and holds both
+suppressions, so gates 2 and 3 turn on one seat rather than two.
+
+**The hub owner goes first.** `impl` lands the complete root skeleton — every
+`mod` declaration and re-export stub for all five submodules — and posts `done`
+for it on the board before the other two seats begin. Phase 7 skipped this and
+paid for it: two seats converting callers of the same item at once produced a
+red where each seat's own files were clean and neither error was its own.
 
 **Acceptance gate:**
 1. `reservation/mod.rs` contains only `mod` declarations, `use`/`pub use`, and
@@ -654,16 +640,34 @@ out of one root, tests moving with their types.
 2. No `too_many_lines` suppression remains under `crates/cargo-berth/src/reservation/`.
 3. The existing suite passes unmodified.
 4. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
+5. `~/.claude/scripts/lint/lint doc` passes. This split moves items that carry
+   intra-doc links across module boundaries, and a link that stops resolving is a
+   rustdoc error rather than a compile error — so it is invisible to gates 3 and
+   4. Catch it here rather than leaving it for the final phase.
 
-**Constraints from prior phases:** phase 1 added
-`Reservation::is_active_for_coordination_run_and_worktree` and phase 7 made it
-the single home for that predicate. It is an inherent method on `Reservation`,
-so it moves with that type into the record cluster and needs no separate
-re-export — re-exporting `Reservation` from the root keeps every caller's path
-intact. Phase 7 also placed reservation-id ordering with `ReservationId` in
-`ids.rs` precisely so this phase does not have to find a home for it here; do not
-move it back. Both anchors moved again after phase 2; confirm them in the
-current file before splitting.
+**Constraints from prior phases:** phase 7 made run eligibility **two** methods
+on `Reservation`, and they must travel together into the same module:
+
+- `is_active_for_coordination_run` (`:1865`) holds the `Active` lifecycle test
+  and constrains the run without the worktree, deliberately, so a run holding
+  live work in a second worktree still answers `true`.
+- `is_active_for_coordination_run_and_worktree` (`:1878`) delegates to it and
+  adds the worktree term.
+
+Splitting them across modules re-creates the duplicate lifecycle test phase 7
+removed. Both are inherent methods on `Reservation`, so they move with that type
+into the record cluster and need no separate re-export — re-exporting
+`Reservation` from the root keeps every caller's path intact. Their callers reach
+outside `reservation/` (`coordination_identity.rs`, `verb/release.rs`,
+`drift/selection.rs`, `verb/claim.rs`), so the re-export is what keeps those
+paths working. Their intra-doc links to each other, and
+`RetainedReservationSet::has_other_active_reservation`'s link to the run-only
+form (`:1003`), must all still resolve after the move — that is what gate 5
+checks.
+
+Phase 7 also placed reservation-id ordering with `ReservationId` in `ids.rs`
+precisely so this phase does not have to find a home for it here; do not move it
+back. Every anchor above was confirmed against the tree at the end of phase 7.
 
 ---
 
@@ -705,6 +709,12 @@ no suppression to remove, so tests travel with their types.
 - `test` — opens as `impl`; `worktree_context.rs`
 - `review` — opens as `impl`; `identity.rs`
 
+**The hub owner goes first.** `impl` lands the complete root skeleton — every
+`mod` declaration and re-export stub for all submodules — and posts `done` for it
+on the board before the other two seats begin. Phase 7 skipped this and paid for
+it: two seats converting callers of the same item at once produced a red where
+each seat's own files were clean and neither error was its own.
+
 **Acceptance gate:**
 1. `ledger/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
    documentation.
@@ -731,8 +741,16 @@ for any phase to remove.
 
 **Spec:** `board/mod.rs` is 1,886 lines beside `tests.rs` and `tui.rs`, with
 three suppressions: `build` (`:736`, `too_many_lines`), `recorded_answers`
-(`:1269`, `too_many_lines`), and `append_authorization_answer` (`:1404`,
+(`:1269`, `too_many_lines`), and `append_authorization_answer` (`:1400`,
 `too_many_arguments`, six parameters).
+
+That third suppression is **inert**. There is no `clippy.toml` anywhere in the
+workspace, so the lint keeps its default threshold of seven, and six parameters
+never fire it — `OrderingGraph::apply_resolution` (`edge/graph.rs:401`) carries
+seven under the same deny-pedantic configuration with no suppression at all.
+Deleting it is free and changes nothing. The projection type below is therefore a
+design requirement in its own right, not lint relief, and gate 3 is written to
+say so.
 
 Phase 2 gave this file two more owners than the original split anticipated:
 `CompleteBoardReport` and `ReservationLifecycleReport`, plus
@@ -743,14 +761,25 @@ their presentation moves.
 
 Split along row assembly, visibility and omission policy, the
 answer/disposition rendering, and the report-and-presentation cluster.
-`append_authorization_answer` sits in the answer-rendering cluster: its six
-parameters are the audit row's complete input, so give that cluster a semantic
-projection type — name it `RecordedAuthorizationConsequence` —
-carrying the recorded authorization and its current consequence
-rather than suppressing the count — the type says what the row is, where the
-parameter list only says how many pieces it has. `board/tests.rs` is an existing
-sibling test module; move each test to sit with the type it covers rather than
-leaving a catch-all.
+`append_authorization_answer` sits in the answer-rendering cluster. Its six
+parameters are **not** one thing: `answers: &mut Vec<RecordedAnswer>` is an
+output sink the function appends to, and `resolved_pairs` and `constraints` are
+lookup projections it reads through. Only three describe the row being recorded.
+Give that cluster a semantic projection type — name it
+`RecordedAuthorizationConsequence` — carrying `reservation_id`, `authorization`,
+and `acquisition`, and leave the sink and the two lookups as ordinary
+parameters. The type says what the row is, where the parameter list only says how
+many pieces it has.
+
+`BoardModel` (`:103`) and its `build` constructor (`:736`) go to the **rows**
+cluster: `build` assembles the model the row logic then reads, and no other
+cluster names the type. Gate 2 turns on this, so it cannot be left implicit.
+
+`board/tests.rs` is an existing sibling test module; move each test to sit with
+the type it covers rather than leaving a catch-all. It is a **second hub**: every
+seat removes tests from it while `impl` owns the file, so `impl` empties it
+*last*, after the other seats have landed their tests in their own modules, and
+says so on the board.
 
 **Files:**
 - `crates/cargo-berth/src/board/mod.rs`
@@ -763,17 +792,24 @@ leaving a catch-all.
 **Seats:** 3 writers + 0 testers — four clusters split cleanly, and
 `board/tests.rs` is redistributed rather than owned by a test lane.
 - `impl` — `board/mod.rs`, `tests.rs`, `rows.rs`, and `visibility.rs`; hub:
-  `board/mod.rs`
+  `board/mod.rs` and `tests.rs` (two hubs — see the Spec)
 - `test` — opens as `impl`; `answers.rs`
 - `review` — opens as `impl`; `report.rs`
+
+**The hub owner goes first.** `impl` lands the complete root skeleton — every
+`mod` declaration and re-export stub for all submodules — and posts `done` for it
+on the board before the other two seats begin. Phase 7 skipped this and paid for
+it: two seats converting callers of the same item at once produced a red where
+each seat's own files were clean and neither error was its own.
 
 **Acceptance gate:**
 1. `board/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
    documentation.
 2. No `too_many_lines` or `too_many_arguments` suppression remains under
    `crates/cargo-berth/src/board/`.
-3. `append_authorization_answer` takes one semantic projection type, not a
-   parameter list.
+3. The `too_many_arguments` allow is deleted, `lint` stays green, and the audit
+   row's own inputs travel as one named type — `RecordedAuthorizationConsequence`
+   — with the output sink and the two lookup projections left as parameters.
 4. The existing suite passes unmodified, including
    `tests/board.rs::populated_board_presentation_carries_the_complete_board_report`.
 5. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
@@ -786,9 +822,18 @@ the ambiguity outcome in
 top-level `output.rs`, not in `board/mod.rs`, so no phase-1 rendering moves here.
 Phase 2 added `CompleteBoardReport`, `ReservationLifecycleReport`,
 `envelope_presentation`, and `reservation_lifecycle_presentation` to this file;
-they are the reason it no longer fits in a shared phase with `gate/`. Phase 7
-placed reservation-id ordering with `ReservationId` in `ids.rs`; `board/mod.rs`
-calls it and does not re-implement it.
+they are the reason it no longer fits in a shared phase with `gate/`. Phase 7 placed reservation-id ordering with `ReservationId` in `ids.rs`;
+`board/mod.rs` calls it and does not re-implement it. Two consequences for this
+split:
+
+- `CompleteBoardReport::reservation_ids()` (`:918`) now **returns**
+  `WireOrderedReservationIds` and builds it at `:946`, so that signature moves
+  with the report cluster.
+- `board/mod.rs:1181` still sorts `worktree_heads` inline by
+  `worktree_id.to_string()`. That orders `WorktreeId`, not `ReservationId`, and
+  phase 7 ruled it out of scope deliberately. Leave it as it is — it is not a
+  missed consolidation, and retyping it would widen a type phase 7 scoped on
+  purpose.
 
 ---
 
@@ -798,7 +843,7 @@ calls it and does not re-implement it.
 
 **Goal:** `gate/mod.rs` declares submodules and re-exports and carries no logic.
 
-**Spec:** 1,402 lines beside `install.rs` and `permit.rs`, with no suppression of
+**Spec:** 1,404 lines beside `install.rs` and `permit.rs`, with no suppression of
 its own — a pure move. Split along reference-transaction evaluation, branch
 rewrites and re-anchoring, and forced-permit auditing. Tests move with the type
 each one covers.
@@ -815,6 +860,12 @@ boundaries, tests travelling with their types.
 - `test` — opens as `impl`; `rewrite.rs`
 - `review` — opens as `impl`; `audit.rs`
 
+**The hub owner goes first.** `impl` lands the complete root skeleton — every
+`mod` declaration and re-export stub for all submodules — and posts `done` for it
+on the board before the other two seats begin. Phase 7 skipped this and paid for
+it: two seats converting callers of the same item at once produced a red where
+each seat's own files were clean and neither error was its own.
+
 **Acceptance gate:**
 1. `gate/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
    documentation.
@@ -823,8 +874,11 @@ boundaries, tests travelling with their types.
 4. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
 
 **Constraints from prior phases:** phase 7 placed reservation-id ordering with
-`ReservationId` in `ids.rs`; `gate/mod.rs` calls it at `:962` and does not
-re-implement it. `gate/permit.rs` carries an `#[allow]` at `:473`, but it is
+`ReservationId` in `ids.rs`; `gate/mod.rs` calls it at `:953`, inside
+`blocking_reservations`, and does not re-implement it. That call is
+`WireOrderedReservationIds::sorted_and_deduplicated`, not a plain sort — the
+site had a pre-existing `dedup` and phase 7 kept it. Move the call intact; an
+extracted helper that drops the deduplication changes what the gate reports. `gate/permit.rs` carries an `#[allow]` at `:473`, but it is
 `clippy::expect_used` on a `mod tests` with the reason "tests should panic on
 unexpected values" — pre-authorized test boilerplate, which is why the final
 suppression phase counts four surviving sites and does not list it. It is
@@ -856,7 +910,7 @@ raw optionals to one explicitly boundary-owned type —
 `UnvalidatedResolveDispositionSelection` — that Clap fills and that converts into
 the existing `ResolveDecision` at once, so nothing optional reaches the verb.
 
-`ResolveArguments.why` (`crates/cargo-berth/src/cli.rs:645`) is a bare
+`ResolveArguments.why` (`crates/cargo-berth/src/cli.rs:647`) is a bare
 `Option<String>` carrying a domain fact — the justification for a deliberate
 abandonment or an orphan retirement — so name what it converts into rather than
 letting a `String` reach `ResolveDecision`. The converted form belongs beside the
@@ -872,9 +926,14 @@ the route table is part of this phase's surface and its acceptance gate.
 `crates/cargo-berth/src/ids.rs:132` carries a
 `cfg_attr(not(test), expect(dead_code, …))` on the `uuid_identifier!` macro's
 `future` constructor arm — an unused-outside-tests suppression that authors a
-reason string, which this plan's binding constraint forbids. Give the constructor
-a real consumer, or delete the arm that has none. It is a multi-line attribute:
-a single-line `rg 'cfg_attr.*expect'` does not match it.
+reason string, which this plan's binding constraint forbids. **Delete the arm.**
+All seven `uuid_identifier!` invocations (`:150-156`) select the plain arm, so
+the `(future $name:ident)` arm at `:129` is never expanded, its suppression
+compiles to nothing, and every `new()` in the crate already has real consumers —
+"give the constructor a real consumer" is not an option that exists here.
+Deleting an arm nothing invokes is precisely gate 2's "no speculative allows".
+It is a multi-line attribute: a single-line `rg 'cfg_attr.*expect'` does not
+match it.
 
 `crates/cargo-berth/src/ledger/journal.rs` is **no longer a site.** Its
 `dead_code` suppression on the macro-generated `wire_name` is already gone — the
@@ -898,16 +957,24 @@ them are the test suite, so a real test lane exists.
 - `review` — opens as `impl`; `ids.rs`
 
 **Acceptance gate:**
-1. A crate-wide sweep, covering both `#[allow]`/`#[expect]` and `cfg_attr`-wrapped
-   forms, shows no `too_many_lines`, `too_many_arguments`, `dead_code`,
+1. Within this phase's three files — `cli.rs`, `ids.rs`, and `tests/board.rs` —
+   a sweep covering both `#[allow]`/`#[expect]` and `cfg_attr`-wrapped forms shows
+   no `too_many_lines`, `too_many_arguments`, `dead_code`,
    `needless_pass_by_value`, or `struct_excessive_bools` suppression.
-2. Every surviving allow names only pre-authorized test lints, and each one's
+2. `review` additionally runs the same sweep crate-wide, as a verification rather
+   than as work. A survivor outside the three files above is the defect of the
+   module phase that owned it — name that phase and stop; do not repair it here.
+   The gate is scoped this way deliberately: phase 7 wrote a crate-wide sweep as a
+   gate while seating by file, and instances of the swept concern turned up in a
+   peer's file and in files no seat held, so no seat could satisfy the gate from
+   inside its own boundary.
+3. Every surviving allow names only pre-authorized test lints, and each one's
    module actually uses the lint's pattern — no speculative allows.
-3. `CommandLineRoute::Resolve.arguments()` still builds a runnable resolve
+4. `CommandLineRoute::Resolve.arguments()` still builds a runnable resolve
    command line, and the three `cli.rs` route tests phase 6 added still pass
    unmodified.
-4. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
-5. `bash ~/.claude/scripts/delegate/verify.sh final` passes, and
+5. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
+6. `bash ~/.claude/scripts/delegate/verify.sh final` passes, and
    `~/.claude/scripts/lint/lint mend`, `lint clippy --workspace`, and `lint doc`
    are all clean.
 
@@ -915,7 +982,7 @@ them are the test suite, so a real test lane exists.
 `crates/cargo-berth/src/cli.rs` that this phase must keep compiling and true:
 `only_the_hook_routes_answer_a_protocol_instead_of_an_envelope`,
 `every_command_line_route_answers_through_the_output_ownership_it_declares`
-(`:2593`), and the `ALL: [Self; 16]` route table they iterate. The resolve route
+(`:2594`), and the `ALL: [Self; 16]` route table they iterate. The resolve route
 must still report `CommandResultReporting::Envelope(CommandVerb::Resolve)` after
 the flag set is replaced. The module phases own every other
 non-boilerplate suppression in the crate — phase 8 the two `too_many_lines` sites

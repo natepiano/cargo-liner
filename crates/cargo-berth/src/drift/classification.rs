@@ -16,6 +16,7 @@ use super::selection::DriftWideningSelection;
 use super::selection::ResolvedDriftSubjects;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
+use crate::ids::WireOrderedReservationIds;
 use crate::ledger::ClaimSource;
 use crate::ledger::CollisionPathSet;
 use crate::ledger::ForeignReservationIdSet;
@@ -90,10 +91,10 @@ struct DriftEffectBuilder {
 /// an unrelated path added a holder, and the answered path was raised again.
 fn group_incursions_by_holders(
     incursions: Vec<(ReservationScopePath, Vec<ReservationId>)>,
-) -> Vec<(Vec<ReservationId>, Vec<ReservationScopePath>)> {
-    let mut groups: Vec<(Vec<ReservationId>, Vec<ReservationScopePath>)> = Vec::new();
-    for (path, mut holders) in incursions {
-        ordering::sort_and_deduplicate_reservation_ids(&mut holders);
+) -> Vec<(WireOrderedReservationIds, Vec<ReservationScopePath>)> {
+    let mut groups: Vec<(WireOrderedReservationIds, Vec<ReservationScopePath>)> = Vec::new();
+    for (path, holders) in incursions {
+        let holders = WireOrderedReservationIds::sorted_and_deduplicated(holders);
         match groups.iter_mut().find(|(grouped, _)| *grouped == holders) {
             Some((_, paths)) => paths.push(path),
             None => groups.push((holders, vec![path])),
@@ -120,7 +121,6 @@ impl DriftEffectBuilder {
         let reservation_id = reservation.id();
         ordering::normalize_paths(&mut self.widened_paths);
         ordering::normalize_paths(&mut self.collision_paths);
-        ordering::sort_and_deduplicate_reservation_ids(&mut self.collision_reservations);
         let mut operations = Vec::new();
         let mut effects = Vec::new();
         let widening_attempt = if self.widened_paths.is_empty() {
@@ -158,15 +158,12 @@ impl DriftEffectBuilder {
                     self.collision_reservations
                         .extend(conflicts.iter().map(|conflict| conflict.reservation_id));
                     ordering::normalize_paths(&mut self.collision_paths);
-                    ordering::sort_and_deduplicate_reservation_ids(
-                        &mut self.collision_reservations,
-                    );
                 },
             }
         }
         for (holders, group_paths) in group_incursions_by_holders(self.incursions) {
             let (Ok(foreign_reservation_ids), Ok(paths)) = (
-                ForeignReservationIdSet::try_from(holders),
+                ForeignReservationIdSet::try_from(holders.into_vec()),
                 IncursionPathSet::try_from(group_paths),
             ) else {
                 continue;
@@ -200,7 +197,10 @@ impl DriftEffectBuilder {
             }
         }
         if let (Ok(foreign_reservation_ids), Ok(paths)) = (
-            ForeignReservationIdSet::try_from(self.collision_reservations),
+            ForeignReservationIdSet::try_from(
+                WireOrderedReservationIds::sorted_and_deduplicated(self.collision_reservations)
+                    .into_vec(),
+            ),
             CollisionPathSet::try_from(self.collision_paths),
         ) {
             effects.push(DriftEffect::Collision {
@@ -236,7 +236,7 @@ pub(super) fn classify_locked(
     let mut results = Vec::new();
     let mut unattributed_paths = Vec::new();
     let mut widening_attempt = WideningAttempt::NotNeeded;
-    for reservation_id in &subjects.reporting {
+    for reservation_id in subjects.reporting.as_slice() {
         if let ReservationPhaseHistory::PhaseStartObjectUnknown(phase_start) =
             changes.reservation_phase_history(*reservation_id)
         {
@@ -288,7 +288,7 @@ pub(super) fn classify_locked(
                         || matches!(reservation.source(), ClaimSource::FirstTouch)
                             && outstanding_incursion_covers(
                                 reservations,
-                                &subjects.reporting,
+                                subjects.reporting.as_slice(),
                                 *reservation_id,
                                 path,
                                 &blockers,
@@ -438,7 +438,11 @@ mod tests {
             .iter()
             .map(|(holders, paths)| {
                 (
-                    holders.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    holders
+                        .as_slice()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>(),
                     paths.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 )
             })

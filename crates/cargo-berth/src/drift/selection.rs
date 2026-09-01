@@ -8,11 +8,11 @@ use std::fmt::Formatter;
 use super::identity::DriftActingIdentity;
 use super::identity::DriftActingRun;
 use super::identity::DriftSessionReservation;
-use super::ordering;
 use super::report::DriftAttributionCandidateSet;
 use super::report::DriftComparisonMode;
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
+use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationLifecycle;
@@ -64,20 +64,19 @@ impl DriftReservationSelection {
             DriftActingRun::Identified(run) => run,
             DriftActingRun::Unidentified => return Err(DriftSelectionError::UnidentifiedActingRun),
         };
-        let mut candidates = reservations
-            .iter()
-            .filter(|reservation| {
-                matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-                    && reservation.actor().run == run
-                    && reservation.actor().worktree == worktree
-            })
-            .map(Reservation::id)
-            .collect::<Vec<_>>();
-        ordering::sort_reservation_ids(&mut candidates);
+        let candidates = WireOrderedReservationIds::sorted(
+            reservations
+                .iter()
+                .filter(|reservation| {
+                    reservation.is_active_for_coordination_run_and_worktree(run, worktree)
+                })
+                .map(Reservation::id)
+                .collect(),
+        );
         match self {
-            Self::Explicit(reservation_id) if candidates.contains(&reservation_id) => {
+            Self::Explicit(reservation_id) if candidates.as_slice().contains(&reservation_id) => {
                 Ok(ResolvedDriftSubjects {
-                    reporting:              vec![reservation_id],
+                    reporting:              WireOrderedReservationIds::sorted(vec![reservation_id]),
                     widening:               DriftWideningSelection::Selected(reservation_id),
                     post_write_first_touch: PostWriteFirstTouchRequirement::NotRequired,
                 })
@@ -90,7 +89,7 @@ impl DriftReservationSelection {
             Self::SessionMappingOrSingleActive => {
                 let selected = match acting_identity.session_reservation() {
                     DriftSessionReservation::Mapped(reservation_id)
-                        if candidates.contains(&reservation_id) =>
+                        if candidates.as_slice().contains(&reservation_id) =>
                     {
                         reservation_id
                     },
@@ -112,7 +111,7 @@ impl DriftReservationSelection {
                     },
                 };
                 Ok(ResolvedDriftSubjects {
-                    reporting:              vec![selected],
+                    reporting:              WireOrderedReservationIds::sorted(vec![selected]),
                     widening:               DriftWideningSelection::Selected(selected),
                     post_write_first_touch: PostWriteFirstTouchRequirement::NotRequired,
                 })
@@ -140,29 +139,33 @@ impl PostCommitWideningSelection {
         acting_identity: DriftActingIdentity,
     ) -> Result<ResolvedDriftSubjects, DriftSelectionError> {
         let worktree = acting_identity.worktree();
-        let mut reporting = reservations
-            .iter()
-            .filter(|reservation| {
-                matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-                    && reservation.actor().worktree == worktree
-            })
-            .map(Reservation::id)
-            .collect::<Vec<_>>();
-        ordering::sort_reservation_ids(&mut reporting);
-        let acting_run = acting_identity.acting_run();
-        let mut candidates = match acting_run {
-            DriftActingRun::Identified(run) => reservations
+        // A post-commit observation reports on the whole worktree, so the acting run is
+        // deliberately unconstrained here. This asks less than
+        // `Reservation::is_active_for_coordination_run_and_worktree`: dropping the run term
+        // matches a superset of what that method matches, so the method cannot stand in for
+        // this filter. The filter stays inline on purpose — widening the method to cover both
+        // would hide which of the two a site actually means.
+        let reporting = WireOrderedReservationIds::sorted(
+            reservations
                 .iter()
                 .filter(|reservation| {
                     matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-                        && reservation.actor().run == run
                         && reservation.actor().worktree == worktree
                 })
                 .map(Reservation::id)
-                .collect::<Vec<_>>(),
+                .collect(),
+        );
+        let acting_run = acting_identity.acting_run();
+        let candidates = WireOrderedReservationIds::sorted(match acting_run {
+            DriftActingRun::Identified(run) => reservations
+                .iter()
+                .filter(|reservation| {
+                    reservation.is_active_for_coordination_run_and_worktree(run, worktree)
+                })
+                .map(Reservation::id)
+                .collect(),
             DriftActingRun::Unidentified => Vec::new(),
-        };
-        ordering::sort_reservation_ids(&mut candidates);
+        });
         let post_write_first_touch = match candidates.as_slice() {
             [] => PostWriteFirstTouchRequirement::Required,
             [_, ..] => PostWriteFirstTouchRequirement::NotRequired,
@@ -172,7 +175,7 @@ impl PostCommitWideningSelection {
                 let DriftActingRun::Identified(run) = acting_run else {
                     return Err(DriftSelectionError::UnidentifiedActingRun);
                 };
-                if !candidates.contains(&reservation_id) {
+                if !candidates.as_slice().contains(&reservation_id) {
                     return Err(DriftSelectionError::ExplicitNotActive {
                         reservation_id,
                         run,
@@ -188,7 +191,7 @@ impl PostCommitWideningSelection {
             },
             Self::SessionMappingOrSingleCandidate => match acting_identity.session_reservation() {
                 DriftSessionReservation::Mapped(reservation_id)
-                    if candidates.contains(&reservation_id) =>
+                    if candidates.as_slice().contains(&reservation_id) =>
                 {
                     DriftWideningSelection::Selected(reservation_id)
                 },
@@ -197,7 +200,7 @@ impl PostCommitWideningSelection {
                         [] => DriftWideningSelection::NotNeeded,
                         [reservation_id] => DriftWideningSelection::Selected(*reservation_id),
                         _ => DriftWideningSelection::Ambiguous(
-                            DriftAttributionCandidateSet::try_from(candidates)
+                            DriftAttributionCandidateSet::try_from(candidates.into_vec())
                                 .map_err(|_| DriftSelectionError::NoPostCommitCandidate)?,
                         ),
                     }
@@ -222,7 +225,7 @@ pub(crate) struct DriftRequest {
 }
 
 pub(super) struct ResolvedDriftSubjects {
-    pub(super) reporting:              Vec<ReservationId>,
+    pub(super) reporting:              WireOrderedReservationIds,
     pub(super) widening:               DriftWideningSelection,
     pub(super) post_write_first_touch: PostWriteFirstTouchRequirement,
 }
@@ -248,7 +251,7 @@ pub(super) enum DriftSelectionError {
         run:      CoordinationRunId,
         worktree: WorktreeId,
     },
-    AmbiguousActiveReservations(Vec<ReservationId>),
+    AmbiguousActiveReservations(WireOrderedReservationIds),
     ExplicitNotActive {
         reservation_id: ReservationId,
         run:            CoordinationRunId,
@@ -271,6 +274,7 @@ impl Display for DriftSelectionError {
                 formatter,
                 "drift is ambiguous; choose one active reservation with --reservation: {}",
                 candidates
+                    .as_slice()
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()

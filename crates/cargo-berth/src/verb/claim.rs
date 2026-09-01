@@ -39,6 +39,7 @@ use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::ReservationId;
+use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
@@ -375,7 +376,7 @@ enum FirstTouchReservationSelection<'reservation> {
     /// No usable mapping exists, and several active reservations are eligible.
     AmbiguousActiveRunReservations {
         /// Every eligible reservation id in deterministic order.
-        candidate_reservation_ids: Vec<ReservationId>,
+        candidate_reservation_ids: WireOrderedReservationIds,
     },
 }
 
@@ -446,11 +447,12 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
             [] => Self::NoActiveRunReservation,
             [reservation] => Self::SingleActiveRunReservation(reservation),
             [_, _, ..] => {
-                let mut candidate_reservation_ids = active_run_reservations
-                    .iter()
-                    .map(|reservation| reservation.id())
-                    .collect::<Vec<_>>();
-                candidate_reservation_ids.sort_by_cached_key(ToString::to_string);
+                let candidate_reservation_ids = WireOrderedReservationIds::sorted(
+                    active_run_reservations
+                        .iter()
+                        .map(|reservation| reservation.id())
+                        .collect(),
+                );
                 Self::AmbiguousActiveRunReservations {
                     candidate_reservation_ids,
                 }
@@ -500,7 +502,7 @@ enum FirstTouchClaimRejection {
     ReservationLimitReached(u32),
     IneligibleExplicitReservation(ReservationId),
     AmbiguousActiveRunReservations {
-        candidate_reservation_ids: Vec<ReservationId>,
+        candidate_reservation_ids: WireOrderedReservationIds,
     },
 }
 
@@ -1732,7 +1734,7 @@ pub(crate) enum ClaimError {
     InvalidCanonicalWorktreeRoot,
     IneligibleExplicitReservation(ReservationId),
     AmbiguousActiveRunReservations {
-        candidate_reservation_ids: Vec<ReservationId>,
+        candidate_reservation_ids: WireOrderedReservationIds,
     },
 }
 
@@ -1786,6 +1788,7 @@ impl Display for ClaimError {
                 formatter,
                 "first-touch reservation selection is ambiguous among active reservations {}",
                 candidate_reservation_ids
+                    .as_slice()
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()

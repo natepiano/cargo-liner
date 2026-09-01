@@ -229,7 +229,7 @@ fn prepare_drift_execution(
         request.comparison,
         worktree_context.repository_root(),
         &initial_reservations,
-        &initial_subjects.reporting,
+        initial_subjects.reporting.as_slice(),
         &cache_path,
     )?;
     Ok(PreparedDriftExecution::Observed(Box::new(
@@ -288,12 +288,15 @@ fn execute_inner(
     };
     if !observation
         .changes
-        .has_changes_for(&initial_subjects.reporting)
+        .has_changes_for(initial_subjects.reporting.as_slice())
     {
         if !initial_subjects.reporting.is_empty() {
             fingerprint::publish_fingerprint(&cache_path, &observation.cache_value);
         }
-        let report = DriftReport::unchanged(observation.comparison, &initial_subjects.reporting);
+        let report = DriftReport::unchanged(
+            observation.comparison,
+            initial_subjects.reporting.as_slice(),
+        );
         return Ok(Enrollment::Enrolled(report));
     }
     if initial_subjects.reporting.is_empty()
@@ -316,7 +319,7 @@ fn execute_inner(
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let pre_lock_foreign_path_classification = PreLockForeignPathClassification::build(
         &initial_reservations,
-        &initial_subjects.reporting,
+        initial_subjects.reporting.as_slice(),
         &observation.changes,
         path_case,
     )?;

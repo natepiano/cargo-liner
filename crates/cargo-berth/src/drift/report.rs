@@ -9,10 +9,10 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::ordering;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
+use crate::ids::WireOrderedReservationIds;
 use crate::ledger::CollisionPathSet;
 use crate::ledger::ForeignReservationIdSet;
 use crate::ledger::IncursionIncidentId;
@@ -95,8 +95,8 @@ impl DriftReport {
             .collect()
     }
 
-    /// Return every foreign reservation that blocked classification.
-    pub(crate) fn blocking_reservation_ids(&self) -> Vec<ReservationId> {
+    /// Return every foreign reservation that blocked classification, once each.
+    pub(crate) fn blocking_reservation_ids(&self) -> WireOrderedReservationIds {
         let mut blocking = self
             .results
             .iter()
@@ -107,8 +107,7 @@ impl DriftReport {
         {
             blocking.extend(conflicts.iter().map(|conflict| conflict.reservation_id));
         }
-        ordering::sort_and_deduplicate_reservation_ids(&mut blocking);
-        blocking
+        WireOrderedReservationIds::sorted_and_deduplicated(blocking)
     }
 }
 

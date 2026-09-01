@@ -267,11 +267,10 @@ fn sweep_current_marker_against_active_reservations(
                 worktree_context
                     .sweep_coordination_run_marker(|marker_run_id| {
                         reservations.iter().any(|reservation| {
-                            matches!(
-                                reservation.lifecycle(),
-                                reservation::ReservationLifecycle::Active
-                            ) && reservation.actor().worktree == worktree_id
-                                && reservation.actor().run == marker_run_id
+                            reservation.is_active_for_coordination_run_and_worktree(
+                                marker_run_id,
+                                worktree_id,
+                            )
                         })
                     })
                     .map_err(ReleaseError::Ledger)

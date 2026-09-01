@@ -172,6 +172,83 @@ numeric_identifier!(
     "A journal or projection schema version."
 );
 
+impl ReservationId {
+    /// The key placing this identifier in the ordering [`WireOrderedReservationIds`] holds.
+    ///
+    /// [`ReservationId`] derives no [`Ord`], so ordering a list of them needs a key rather
+    /// than the identifiers themselves; the rendered text is that key. A caller ordering a
+    /// keyed collection sorts on this key so its result interleaves with the collection's.
+    pub(crate) fn wire_ordering_key(&self) -> String { self.to_string() }
+}
+
+/// Reservation identifiers a producer hands out in one ordering, whatever order it found them in.
+///
+/// The order is a property of the collection rather than a promise its producers keep: the
+/// only ways to build one sort what they are given, including the deserializing path, so no
+/// caller can put an unordered list inside one. A reader comparing two invocations of a
+/// producer that returns this type therefore sees a difference only where the identities
+/// differ, never where an iteration order moved.
+///
+/// The guarantee covers the collection and the producers typed with it, and reaches no
+/// further. It is not a property of the wire: both reservation-id fields on
+/// [`OutputEnvelope`](crate::output::OutputEnvelope) are plain `Vec<ReservationId>` and are
+/// populated unordered — `sequenced` emits its pair in declaration order, `blocked_check`
+/// emits `blocked_by` in conflict-detection order. Retyping either field as this collection
+/// would reorder bytes a reader already receives, which is a wire change and not a refactor.
+///
+/// Two constructions carry two different guarantees. [`Self::sorted`] keeps every entry it
+/// is given, so a repeated identity stays repeated; [`Self::sorted_and_deduplicated`] keeps
+/// one entry per distinct identity. A caller picks the one whose guarantee it needs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WireOrderedReservationIds(Vec<ReservationId>);
+
+impl WireOrderedReservationIds {
+    /// Order every identifier, keeping each occurrence of a repeated one.
+    pub(crate) fn sorted(mut reservation_ids: Vec<ReservationId>) -> Self {
+        reservation_ids.sort_by_cached_key(ReservationId::wire_ordering_key);
+        Self(reservation_ids)
+    }
+
+    /// Order the identifiers and keep one entry per distinct identity.
+    pub(crate) fn sorted_and_deduplicated(reservation_ids: Vec<ReservationId>) -> Self {
+        let mut ordered = Self::sorted(reservation_ids);
+        ordered.0.dedup();
+        ordered
+    }
+
+    /// Borrow the ordered identifiers.
+    pub(crate) fn as_slice(&self) -> &[ReservationId] { &self.0 }
+
+    /// Report whether the ordering holds no identifier at all.
+    pub(crate) const fn is_empty(&self) -> bool { self.0.is_empty() }
+
+    /// Surrender the ordering to a caller that needs an owned list.
+    pub(crate) fn into_vec(self) -> Vec<ReservationId> { self.0 }
+}
+
+impl Serialize for WireOrderedReservationIds {
+    fn serialize<SerializerType>(
+        &self,
+        serializer: SerializerType,
+    ) -> Result<SerializerType::Ok, SerializerType::Error>
+    where
+        SerializerType: Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for WireOrderedReservationIds {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: Deserializer<'de>,
+    {
+        Vec::<ReservationId>::deserialize(deserializer).map(Self::sorted)
+    }
+}
+
 /// The character count of a full SHA-1 object identifier.
 const SHA1_OBJECT_ID_CHARACTERS: usize = 40;
 /// The character count of a full SHA-256 object identifier.
@@ -658,6 +735,7 @@ mod tests {
     use super::ReservationRevision;
     use super::ReservationScopePath;
     use super::SchemaVersion;
+    use super::WireOrderedReservationIds;
     use super::WorkPlanPhase;
     use super::WorktreeId;
 
@@ -750,6 +828,54 @@ mod tests {
             serde_json::from_str::<ReservationId>("\"01900a1b-2c3d-7e4f-0a5b-6c7d8e9f0a1b\"")
                 .is_err()
         );
+    }
+
+    /// Three reservation identities whose rendered forms ascend in this order.
+    const ASCENDING_RENDERED_IDS: [&str; 3] = [
+        "01900a1b-0000-7000-8000-000000000001",
+        "01900a1b-0000-7000-8000-000000000002",
+        "01900a1b-0000-7000-8000-000000000003",
+    ];
+
+    #[test]
+    fn wire_ordered_reservation_ids_cannot_hold_an_unsorted_list() {
+        let [first, second, third] = ascending_reservation_ids();
+        let unsorted = vec![third, first, second, first];
+
+        let keeping_repeats = WireOrderedReservationIds::sorted(unsorted.clone());
+        let one_per_identity = WireOrderedReservationIds::sorted_and_deduplicated(unsorted.clone());
+        let deserialized = serde_json::to_string(&unsorted)
+            .and_then(|rendered| serde_json::from_str::<WireOrderedReservationIds>(&rendered))
+            .expect("an unsorted wire list should deserialize");
+
+        assert_eq!(keeping_repeats.as_slice(), [first, first, second, third]);
+        assert_eq!(one_per_identity.as_slice(), [first, second, third]);
+        assert_eq!(deserialized, keeping_repeats);
+        for ordered in [&keeping_repeats, &one_per_identity, &deserialized] {
+            assert!(
+                ordered
+                    .as_slice()
+                    .is_sorted_by_key(ReservationId::wire_ordering_key)
+            );
+        }
+    }
+
+    #[test]
+    fn wire_ordered_reservation_ids_serialize_as_the_bare_identifier_array() {
+        let [first, second, _] = ascending_reservation_ids();
+
+        let rendered =
+            serde_json::to_string(&WireOrderedReservationIds::sorted(vec![second, first]));
+
+        assert!(rendered.is_ok_and(|rendered| rendered == format!("[\"{first}\",\"{second}\"]")));
+    }
+
+    fn ascending_reservation_ids() -> [ReservationId; 3] {
+        ASCENDING_RENDERED_IDS.map(|rendered| {
+            rendered
+                .parse::<ReservationId>()
+                .expect("reservation identifier should parse")
+        })
     }
 
     /// How an identifier is expected to appear in JSON.

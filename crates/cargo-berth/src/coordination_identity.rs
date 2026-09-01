@@ -19,7 +19,6 @@ use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::EditAuthorization;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::WorktreeContext;
-use crate::reservation::ReservationLifecycle;
 use crate::reservation::RetainedReservationSet;
 
 /// A complete process argument vector that always contains an executable.
@@ -571,9 +570,7 @@ fn validate_session_mapping(
         )?;
         return Err(CoordinationIdentityValidationError::Rejected(rejection));
     };
-    if !matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-        || reservation.actor().run != coordination_run_id
-    {
+    if !reservation.is_active_for_coordination_run(coordination_run_id) {
         let rejection = build_stale_session_mapping(
             coordination_run_id,
             reservation_id,
@@ -675,9 +672,8 @@ fn validate_marker(
     recovery_commands: &CoordinationIdentityRecoveryCommands,
 ) -> Result<(), CoordinationIdentityValidationError> {
     if reservations.iter().any(|reservation| {
-        matches!(reservation.lifecycle(), ReservationLifecycle::Active)
-            && reservation.actor().run == coordination_run_id
-            && reservation.actor().worktree == issuing_worktree_id
+        reservation
+            .is_active_for_coordination_run_and_worktree(coordination_run_id, issuing_worktree_id)
     }) {
         return Ok(());
     }
