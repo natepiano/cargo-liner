@@ -750,6 +750,7 @@ mod tests {
     use super::RecoveryCommandLine;
     use super::RunnableRecoveryCommandLine;
     use super::SessionWorktreeMismatchRejection;
+    use super::shell_quote;
     use super::user_command_mismatch_recovery_actions;
     use crate::ids::CoordinationRunId;
     use crate::ids::ReservationId;
@@ -764,17 +765,21 @@ mod tests {
 
     #[test]
     fn recovery_action_serializes_complete_argv_and_canonical_cwd() {
-        let cwd = std::env::current_dir()
+        let cwd: crate::ledger::CanonicalWorktreeRoot = std::env::current_dir()
             .expect("current directory should resolve")
             .to_str()
             .expect("current directory should be UTF-8")
             .parse()
             .expect("current directory should be canonical");
+        let expected_rendering = format!(
+            "cd {} && cargo-berth identity clear-session --json",
+            shell_quote(&cwd.to_string())
+        );
         let action = CoordinationIdentityRecoveryAction::ClearSessionMapping {
             argv: RunnableRecoveryCommandLine::clear_session_mapping(),
             cwd,
         };
-        let serialized = serde_json::to_value(action).expect("recovery action should serialize");
+        let serialized = serde_json::to_value(&action).expect("recovery action should serialize");
 
         assert_eq!(serialized["kind"], "clear_session_mapping");
         assert_eq!(
@@ -786,6 +791,15 @@ mod tests {
                 .as_str()
                 .is_some_and(|cwd| cwd.starts_with('/'))
         );
+        assert_eq!(action.to_string(), expected_rendering);
+    }
+
+    #[test]
+    fn recovery_shell_tokens_leave_safe_text_bare_and_escape_apostrophes() {
+        assert_eq!(shell_quote("cargo-berth"), "cargo-berth");
+        assert_eq!(shell_quote("--json"), "--json");
+        assert_eq!(shell_quote("holder's checkout"), "'holder'\\''s checkout'");
+        assert_eq!(shell_quote(""), "''");
     }
 
     #[test]

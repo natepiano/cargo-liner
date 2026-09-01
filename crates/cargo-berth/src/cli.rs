@@ -63,6 +63,7 @@ use crate::gate::TrunkReferencePresence;
 use crate::gate::permit::EnvironmentBypassRetentionOutcome;
 use crate::git;
 use crate::git::LocalBranchRenameTargetResolution;
+use crate::hook;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
@@ -95,8 +96,8 @@ use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::session;
-use crate::session::CurrentProcessHarnessSessionSelection;
 use crate::session::HarnessSessionId;
+use crate::session::HookHarnessSessionSelection;
 use crate::verb::board;
 use crate::verb::board::BoardDisplayOutcome;
 use crate::verb::board::BoardOutputSelection;
@@ -204,6 +205,8 @@ enum Command {
     /// Check exact files or explicitly prefixed trees for foreign reservations.
     #[command(long_about = CHECK_LONG_ABOUT)]
     Check(CheckArguments),
+    /// Run one public harness hook entry point.
+    Hook(HookArguments),
     /// Claim paths for a reservation.
     Claim(ClaimArguments),
     /// Compare observed worktree changes with an active reservation.
@@ -228,6 +231,21 @@ enum Command {
     /// Private refresh worker scheduled after a committed trunk-ref deletion.
     #[command(name = "__refresh-managed-hook-after-trunk-deletion", hide = true)]
     RefreshManagedHookAfterTrunkDeletion(ManagedHookRefreshArguments),
+}
+
+/// Public harness-hook commands.
+#[derive(Debug, Args)]
+struct HookArguments {
+    /// The hook entry point to run.
+    #[command(subcommand)]
+    command: HookCommand,
+}
+
+/// Harness hook entry points implemented by the engine.
+#[derive(Debug, Subcommand)]
+enum HookCommand {
+    /// Authorize one file-writing tool request read from standard input.
+    PreToolUse,
 }
 
 /// The `--json` flag shared by every verb.
@@ -687,6 +705,7 @@ impl Cli {
                 berth_exit.into()
             },
             CommandOutputOwnership::BoardPresentedAndTerminalRestored => BerthExit::Clear.into(),
+            CommandOutputOwnership::HookRendered(exit_code) => exit_code,
         }
     }
 }
@@ -735,6 +754,11 @@ impl Command {
             Self::Check(check_arguments) => match check_arguments.into_check_request() {
                 Ok(check_request) => check::execute(check_request, recovery_command_line),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Check, &error),
+            },
+            Self::Hook(HookArguments {
+                command: HookCommand::PreToolUse,
+            }) => {
+                return CommandOutputOwnership::HookRendered(hook::pre_tool_use::execute());
             },
             Self::Claim(claim_arguments) => match claim_arguments.into_claim_request() {
                 Ok(claim_request) => claim::execute(claim_request, recovery_command_line),
@@ -790,6 +814,7 @@ impl Command {
             Self::Check(check_arguments) => {
                 check_arguments.path_arguments.json_output.output_format()
             },
+            Self::Hook(_) => CliOutputFormat::Text,
             Self::Claim(claim_arguments) => claim_arguments.json_output.output_format(),
             Self::Drift(drift_arguments) => drift_arguments.json_output.output_format(),
             Self::Release(reservation_arguments) | Self::Renew(reservation_arguments) => {
@@ -807,25 +832,38 @@ impl Command {
         }
     }
 
-    /// Return this command's envelope verb without executing its engine.
+    /// Report how this command publishes its result, without executing its engine.
     #[cfg(test)]
-    const fn verb(&self) -> CommandVerb {
+    const fn result_reporting(&self) -> CommandResultReporting {
         match self {
-            Self::Init(_) => CommandVerb::Init,
-            Self::Board(_) => CommandVerb::Board,
-            Self::Check(_) => CommandVerb::Check,
-            Self::Claim(_) => CommandVerb::Claim,
-            Self::Drift(_) => CommandVerb::Drift,
-            Self::Release(_) => CommandVerb::Release,
-            Self::Sequence(_) => CommandVerb::Sequence,
+            Self::Init(_) => CommandResultReporting::Envelope(CommandVerb::Init),
+            Self::Board(_) => CommandResultReporting::Envelope(CommandVerb::Board),
+            Self::Check(_) => CommandResultReporting::Envelope(CommandVerb::Check),
+            Self::Hook(_) => CommandResultReporting::HookProtocol,
+            Self::Claim(_) => CommandResultReporting::Envelope(CommandVerb::Claim),
+            Self::Drift(_) => CommandResultReporting::Envelope(CommandVerb::Drift),
+            Self::Release(_) => CommandResultReporting::Envelope(CommandVerb::Release),
+            Self::Sequence(_) => CommandResultReporting::Envelope(CommandVerb::Sequence),
             Self::Integrate(_)
             | Self::ReferenceTransaction(_)
-            | Self::RefreshManagedHookAfterTrunkDeletion(_) => CommandVerb::Integrate,
-            Self::Resolve(_) => CommandVerb::Resolve,
-            Self::Renew(_) => CommandVerb::Renew,
-            Self::Identity(_) => CommandVerb::Identity,
+            | Self::RefreshManagedHookAfterTrunkDeletion(_) => {
+                CommandResultReporting::Envelope(CommandVerb::Integrate)
+            },
+            Self::Resolve(_) => CommandResultReporting::Envelope(CommandVerb::Resolve),
+            Self::Renew(_) => CommandResultReporting::Envelope(CommandVerb::Renew),
+            Self::Identity(_) => CommandResultReporting::Envelope(CommandVerb::Identity),
         }
     }
+}
+
+/// Where one parsed command's result reaches the caller.
+#[cfg(test)]
+#[derive(Debug, Eq, PartialEq)]
+enum CommandResultReporting {
+    /// The command renders one response envelope recorded under this verb.
+    Envelope(CommandVerb),
+    /// The command writes its own harness hook protocol response instead of an envelope.
+    HookProtocol,
 }
 
 /// Who owns presenting a command's result once the command has run.
@@ -834,6 +872,8 @@ enum CommandOutputOwnership {
     CallerRendersResponse(Box<OutputEnvelope>),
     /// The board TUI presented itself and restored the terminal before returning.
     BoardPresentedAndTerminalRestored,
+    /// A public hook command already wrote its protocol response.
+    HookRendered(ExitCode),
 }
 
 impl CheckArguments {
@@ -1208,12 +1248,10 @@ impl PostToolUseDriftInvocation {
                     .map_err(|_| PostToolUseDriftInvocationError::WorkingDirectoryUnavailable)?;
             },
         }
-        match session::select_current_process_harness_session(self.harness_session_id) {
-            CurrentProcessHarnessSessionSelection::Selected => Ok(()),
-            CurrentProcessHarnessSessionSelection::AlreadySelected => {
-                Err(PostToolUseDriftInvocationError::InvalidPayload)
-            },
-        }
+        session::select_current_process_harness_session(HookHarnessSessionSelection::Session(
+            self.harness_session_id,
+        ));
+        Ok(())
     }
 }
 
@@ -1232,6 +1270,7 @@ fn prepare_post_tool_use_invocation(
         Command::Init(_)
         | Command::Board(_)
         | Command::Check(_)
+        | Command::Hook(_)
         | Command::Claim(_)
         | Command::Drift(_)
         | Command::Release(_)
@@ -2054,6 +2093,7 @@ mod tests {
     use super::CliOutputFormat;
     use super::Command;
     use super::CommandResponseRendering;
+    use super::CommandResultReporting;
     use super::CommandVerb;
     use super::PostCommitHookRequest;
     use super::PostToolUseDriftInvocation;
@@ -2523,15 +2563,23 @@ mod tests {
         cargo_arguments: &[&str],
         command_verb: CommandVerb,
     ) {
-        assert!(parsed_verb(direct_arguments).is_ok_and(|parsed_verb| parsed_verb == command_verb));
-        assert!(parsed_verb(cargo_arguments).is_ok_and(|parsed_verb| parsed_verb == command_verb));
+        assert!(
+            parsed_verb(direct_arguments).is_ok_and(
+                |parsed_verb| parsed_verb == CommandResultReporting::Envelope(command_verb)
+            )
+        );
+        assert!(
+            parsed_verb(cargo_arguments).is_ok_and(
+                |parsed_verb| parsed_verb == CommandResultReporting::Envelope(command_verb)
+            )
+        );
     }
 
-    fn parsed_verb(arguments: &[&str]) -> Result<CommandVerb, Error> {
+    fn parsed_verb(arguments: &[&str]) -> Result<CommandResultReporting, Error> {
         Cli::try_parse_from(without_subcommand_name(
             arguments.iter().map(OsString::from).collect(),
         ))
-        .map(|cli| cli.command.verb())
+        .map(|cli| cli.command.result_reporting())
     }
 
     fn claim_request(arguments: &[&str]) -> Result<ClaimRequest, String> {

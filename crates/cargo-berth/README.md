@@ -73,6 +73,8 @@ The full verb set is:
   confirmed reinitialization.
 - `claim`: reserve paths and, when needed, propose one answer for an overlap.
 - `check`: ask whether proposed file paths collide with a foreign reservation.
+- `hook pre-tool-use`: read a raw Claude Code `PreToolUse` payload from standard
+  input and emit the complete edit-authorization hook response.
 - `drift`: compare changed paths with reservation scopes.
 - `board`: inspect current constraints, answers, incidents, and audit history.
 - `sequence`: turn a deferred overlap into a directed ordering edge.
@@ -95,13 +97,21 @@ satisfied. A caller does not need an editor integration for that protection.
 The shipped configuration uses `gate_mode = "observe"`: violations are reported
 and the update is permitted. Set `gate_mode = "enforce"` to reject them.
 
-Editing has a different boundary. `cargo-berth` does not block a keystroke. A
-Claude Code `PreToolUse` hook can call `cargo-berth check` before a write, but
-that harness hook is not installed by this crate. A general Git user instead
-gets the managed `post-commit` warning. It runs after the commit already exists,
-never rejects the commit, names the paths that strayed and the foreign holders
-they reached, and leaves the decision with the user. Run `cargo berth drift` for
-the same check on demand. `CARGO_BERTH_BYPASS=1` skips the post-commit check.
+Editing has a different boundary. `cargo-berth hook pre-tool-use` reads a raw
+Claude Code `PreToolUse` payload from standard input, resolves its edit target,
+and runs the reservation check. It emits nothing for an ordinary allow, emits
+an allow notice on standard output when the engine supplied rendered blocks,
+and writes the engine-rendered refusal to standard error with exit code 2 when
+the edit is blocked. At check exit code 4, an unconfigured repository carries
+deliberate silence, while an unreadable configured ledger carries a rendered
+fail-open notice. A missing blocking presentation fails closed with a hook
+diagnostic instead. A Claude Code hook can execute this command before a write,
+but that harness hook is not installed by this crate. A general Git user
+instead gets the managed `post-commit` warning. It runs after the commit already
+exists, never rejects the commit, names the paths that strayed and the foreign
+holders they reached, and leaves the decision with the user. Run `cargo berth
+drift` for the same check on demand. `CARGO_BERTH_BYPASS=1` skips the post-commit
+check.
 
 Permissive overlap answers also have a stated limit. An answer takes two
 deliberate invocations: the first returns a scoped proposal at exit 3, and a
@@ -339,16 +349,16 @@ The meanings in this table are the executable's public contract:
 | ---: | --- |
 | 0 | The command may proceed. |
 | 1 | A reservation overlap blocks the command. |
-| 2 | An unsatisfied ordering edge blocks the command. |
+| 2 | An unsatisfied ordering edge blocks the command, or `hook pre-tool-use` refuses the edit. |
 | 3 | The command needs user authorization. |
 | 4 | The ledger cannot be read. Edit paths fail open; `integrate` fails closed. |
 | 5 | The command line is invalid. |
 | 6 | Another mutation holds the ledger lock; retry the command. |
 | 7 | The board was handed a terminal and the terminal failed. |
 
-Every JSON response has the six common envelope fields `verb`, `status`,
-`exit_code`, `reservations`, `blocked_by`, and `message`, followed by a typed
-`payload`. The payload variants are in
+Every JSON response has the common envelope fields `output_contract_version`,
+`verb`, `status`, `exit_code`, `reservations`, `blocked_by`, `message`, and
+`presentation`, followed by a typed `payload`. The payload variants are in
 [JSON and journal contract](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/json-contract.md).
 
 ## Where the rest of the documentation lives

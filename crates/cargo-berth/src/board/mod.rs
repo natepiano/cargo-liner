@@ -69,8 +69,10 @@ use crate::ledger::SkippedDeferral;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::ledger::SkippedOrderingEdge;
 use crate::ledger::WidenCause;
+use crate::presentation::EmptyRenderedBlocks;
 use crate::presentation::EnvelopePresentation;
 use crate::presentation::IncursionResolutionGuidance;
+use crate::presentation::NonEmptyRenderedBlocks;
 use crate::presentation::RenderedOutputBlock;
 use crate::presentation::actionable_board_notices_block;
 use crate::presentation::engine_message_block;
@@ -650,7 +652,12 @@ impl BoardModel {
             BoardReportContent::Empty => {},
             BoardReportContent::Populated => blocks.push(self.complete_report_block()),
         }
-        EnvelopePresentation::RenderedBlocks { blocks }
+        match NonEmptyRenderedBlocks::try_from(blocks) {
+            Ok(non_empty_rendered_blocks) => EnvelopePresentation::RenderedBlocks {
+                blocks: non_empty_rendered_blocks,
+            },
+            Err(EmptyRenderedBlocks) => EnvelopePresentation::nothing_to_show(),
+        }
     }
 
     fn actionable_notice_blocks(&self) -> Vec<RenderedOutputBlock> {

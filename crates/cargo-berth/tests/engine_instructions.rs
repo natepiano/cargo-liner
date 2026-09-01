@@ -2,6 +2,8 @@
 
 use std::error::Error;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -12,13 +14,16 @@ use tempfile::TempDir;
 
 const CARGO_BERTH_RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const CARGO_BERTH_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+const CHECK_LEDGER_UNREADABLE_SCENARIO: &str = "check ledger-unreadable";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
+const CORRUPT_JOURNAL_RECORD: &[u8] = b"this journal record is not JSON\n";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const SCRATCH_ROOT: &str = "/tmp/claude";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const STALE_CLAIM_TIME: &str = "2020-01-01T00:00:00.000Z";
+const UNKNOWN_RESERVATION_ID: &str = "01991f4d-77d8-7f5f-9a1f-000000000001";
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -26,10 +31,12 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 fn rendered_shell_instructions_invoke_the_engine() -> TestResult {
     let (blocked_claim, board) = blocked_claim_and_board_envelopes()?;
     let ambiguous_first_touch = ambiguous_first_touch_envelope()?;
+    let replay_failure = replay_failure_envelope()?;
     let scenarios = [
         ("blocked claim", &blocked_claim),
         ("populated board", &board),
         ("ambiguous first touch", &ambiguous_first_touch),
+        ("pre-tool-use replay failure", &replay_failure),
     ];
 
     for (scenario, envelope) in scenarios {
@@ -41,6 +48,77 @@ fn rendered_shell_instructions_invoke_the_engine() -> TestResult {
         }
     }
     Ok(())
+}
+
+#[test]
+fn the_check_verb_states_its_own_ledger_unreadable_instructions() -> TestResult {
+    let envelope = check_ledger_unreadable_envelope()?;
+    let scenario = CHECK_LEDGER_UNREADABLE_SCENARIO;
+    let presentation_kind = required_string(&envelope, "/presentation/kind", scenario)?;
+    if presentation_kind != "rendered_blocks" {
+        return Err(failure(format!(
+            "{scenario} should return rendered blocks, found presentation kind {presentation_kind:?}"
+        )));
+    }
+    let blocks = required_array(&envelope, "/presentation/blocks", scenario)?;
+    let [block] = blocks else {
+        return Err(failure(format!(
+            "{scenario} should render exactly one block, rendered {}",
+            blocks.len()
+        )));
+    };
+    inspect_rendered_block(scenario, 0, block)?;
+    assert_ledger_unreadable_instruction(&envelope, block)
+}
+
+/// The check verb's ledger-unreadable block must state the engine's own words.
+fn assert_ledger_unreadable_instruction(envelope: &Value, block: &Value) -> TestResult {
+    let scenario = CHECK_LEDGER_UNREADABLE_SCENARIO;
+    let summary = required_string(block, "/summary", scenario)?;
+    let detail = required_string(block, "/detail", scenario)?;
+    let message = required_string(envelope, "/message", scenario)?;
+    if detail != message {
+        return Err(failure(format!(
+            "{scenario} should state the engine's own message as its detail: message={message:?} detail={detail:?}"
+        )));
+    }
+    if summary.is_empty() || summary == detail {
+        return Err(failure(format!(
+            "{scenario} should head its detail with a separate summary: summary={summary:?} detail={detail:?}"
+        )));
+    }
+    if detail.contains("The reservation ledger could not be read") {
+        return Ok(());
+    }
+    Err(failure(format!(
+        "{scenario} should tell the reader the ledger could not be read: {detail:?}"
+    )))
+}
+
+fn check_ledger_unreadable_envelope() -> TestResult<Value> {
+    let repository = initialized_repository()?;
+    let seed = run_berth(
+        repository.path(),
+        &["claim", "file:seed.rs", "--run", FIRST_RUN, "--json"],
+        "engine-instructions-unreadable",
+    )?;
+    require_success(&seed, "unreadable ledger seed")?;
+    let mut journal = OpenOptions::new()
+        .append(true)
+        .open(repository.path().join(JOURNAL_PATH))?;
+    journal.write_all(CORRUPT_JOURNAL_RECORD)?;
+    let projection_path = repository.path().join(PROJECTION_PATH);
+    if projection_path.exists() {
+        fs::remove_file(projection_path)?;
+    }
+
+    let unreadable = run_berth(
+        repository.path(),
+        &["check", "file:unreadable.rs", "--json"],
+        "engine-instructions-unreadable",
+    )?;
+    require_exit_code(&unreadable, 4, CHECK_LEDGER_UNREADABLE_SCENARIO)?;
+    json_output(&unreadable, CHECK_LEDGER_UNREADABLE_SCENARIO)
 }
 
 fn blocked_claim_and_board_envelopes() -> TestResult<(Value, Value)> {
@@ -139,6 +217,58 @@ fn ambiguous_first_touch_envelope() -> TestResult<Value> {
     )?;
     require_exit_code(&ambiguous, 1, "ambiguous first-touch check")?;
     json_output(&ambiguous, "ambiguous first-touch check")
+}
+
+fn replay_failure_envelope() -> TestResult<Value> {
+    let repository = initialized_repository()?;
+    let seed = run_berth(
+        repository.path(),
+        &["claim", "file:seed.rs", "--run", FIRST_RUN, "--json"],
+        "engine-instructions-replay",
+    )?;
+    require_success(&seed, "replay fixture seed")?;
+    append_unknown_release(repository.path())?;
+    let projection_path = repository.path().join(PROJECTION_PATH);
+    if projection_path.exists() {
+        fs::remove_file(projection_path)?;
+    }
+
+    let replay_failure = run_berth(
+        repository.path(),
+        &["check", "file:replay.rs", "--json"],
+        "engine-instructions-replay",
+    )?;
+    require_exit_code(&replay_failure, 4, "pre-tool-use replay failure")?;
+    json_output(&replay_failure, "pre-tool-use replay failure")
+}
+
+fn append_unknown_release(repository_root: &Path) -> TestResult {
+    let journal_path = repository_root.join(JOURNAL_PATH);
+    let journal = fs::read_to_string(&journal_path)?;
+    let previous: Value = serde_json::from_str(
+        journal
+            .lines()
+            .last()
+            .ok_or_else(|| failure("replay fixture should have one journal event"))?,
+    )?;
+    let generation = previous["projection_generation"]
+        .as_u64()
+        .ok_or_else(|| failure("journal generation should be numeric"))?
+        + 1;
+    let event = serde_json::json!({
+        "schema_version": 1,
+        "event_id": uuid::Uuid::now_v7().to_string(),
+        "actor": previous["actor"],
+        "at": previous["at"],
+        "projection_generation": generation,
+        "op": "release",
+        "reservation_id": UNKNOWN_RESERVATION_ID,
+        "disposition": {"kind": "integrated"},
+    });
+    let mut journal = OpenOptions::new().append(true).open(journal_path)?;
+    serde_json::to_writer(&mut journal, &event)?;
+    journal.write_all(b"\n")?;
+    Ok(())
 }
 
 fn inspect_rendered_blocks(scenario: &str, envelope: &Value) -> TestResult<usize> {

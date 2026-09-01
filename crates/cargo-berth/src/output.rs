@@ -93,6 +93,11 @@ const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
 const AMBIGUOUS_RESERVATION_RECOVERY_COMMAND: &str =
     "cargo-berth check --reservation <reservation-id> <path>...";
+/// The one sentence a fail-open edit decision states, wherever it is rendered.
+pub(crate) const LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE: &str = "cargo-berth could not establish edit safety; editing is allowed because ledger loss fails open.";
+const CHECK_INVALID_INPUT_SUMMARY: &str =
+    "cargo-berth rejected this edit because it could not accept the request.";
+const CHECK_CONTENTION_SUMMARY: &str = "cargo-berth rejected this edit because another cargo-berth operation still holds the ledger lock.";
 #[cfg(test)]
 const UNIMPLEMENTED_MESSAGE: &str = "The reservation engine is not implemented.";
 
@@ -1343,6 +1348,12 @@ pub(crate) enum CoordinationRunMarkerRetirement {
 }
 
 impl OutputEnvelope {
+    /// Return the process exit status selected by the engine.
+    pub(crate) const fn exit_code(&self) -> BerthExit { self.exit_code }
+
+    /// Borrow the render-ready output selected by the engine.
+    pub(crate) const fn presentation(&self) -> &EnvelopePresentation { &self.presentation }
+
     /// Build the response for a verb that has no engine behind it yet.
     #[cfg(test)]
     fn unimplemented(command_verb: CommandVerb) -> Self {
@@ -1614,18 +1625,21 @@ impl OutputEnvelope {
 
     /// Build a ledger-unreadable response without adding a new process outcome.
     pub(crate) fn ledger_unreadable(command_verb: CommandVerb, diagnostic: &str) -> Self {
+        let message = format!("The reservation ledger could not be read: {diagnostic}");
+        let presentation = pre_edit_check_presentation(
+            command_verb,
+            engine_message_block(LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE, &message).into(),
+        );
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
-            verb:                    command_verb,
-            status:                  OutputStatus::LedgerUnreadable,
-            exit_code:               BerthExit::LedgerUnreadable,
-            reservations:            Vec::new(),
-            blocked_by:              Vec::new(),
-            message:                 format!(
-                "The reservation ledger could not be read: {diagnostic}"
-            ),
-            presentation:            EnvelopePresentation::NotProvided,
-            payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
+            verb: command_verb,
+            status: OutputStatus::LedgerUnreadable,
+            exit_code: BerthExit::LedgerUnreadable,
+            reservations: Vec::new(),
+            blocked_by: Vec::new(),
+            message,
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -1696,19 +1710,22 @@ impl OutputEnvelope {
         command_verb: CommandVerb,
         expected_configuration_path: &Path,
     ) -> Self {
+        let presentation =
+            pre_edit_check_presentation(command_verb, EnvelopePresentation::nothing_to_show());
+
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
-            verb:                    command_verb,
-            status:                  OutputStatus::Unconfigured,
-            exit_code:               BerthExit::LedgerUnreadable,
-            reservations:            Vec::new(),
-            blocked_by:              Vec::new(),
-            message:                 format!(
+            verb: command_verb,
+            status: OutputStatus::Unconfigured,
+            exit_code: BerthExit::LedgerUnreadable,
+            reservations: Vec::new(),
+            blocked_by: Vec::new(),
+            message: format!(
                 "this repository has no cargo-berth configuration at {}; run `cargo-berth init` to create it",
                 expected_configuration_path.display()
             ),
-            presentation:            EnvelopePresentation::NotProvided,
-            payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
 
@@ -2241,7 +2258,10 @@ impl OutputEnvelope {
             reservations:            Vec::new(),
             blocked_by:              Vec::new(),
             message:                 diagnostic.to_owned(),
-            presentation:            EnvelopePresentation::NotProvided,
+            presentation:            pre_edit_check_presentation(
+                command_verb,
+                engine_message_block(CHECK_INVALID_INPUT_SUMMARY, diagnostic).into(),
+            ),
             payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
@@ -2307,7 +2327,10 @@ impl OutputEnvelope {
             reservations:            Vec::new(),
             blocked_by:              Vec::new(),
             message:                 diagnostic.to_owned(),
-            presentation:            EnvelopePresentation::NotProvided,
+            presentation:            pre_edit_check_presentation(
+                command_verb,
+                engine_message_block(CHECK_CONTENTION_SUMMARY, diagnostic).into(),
+            ),
             payload:                 OutputPayload::from_facts(OutputFacts::NoFacts),
         }
     }
@@ -2589,15 +2612,38 @@ impl OutputEnvelope {
         rendered
     }
 
+    /// State a coordination-identity rejection in the terms of the verb that hit it.
+    const fn coordination_identity_summary(&self) -> &'static str {
+        match self.verb {
+            CommandVerb::Check => {
+                "cargo-berth rejected this edit under the current coordination identity."
+            },
+            CommandVerb::Board => {
+                "cargo-berth rejected this SessionStart read under the current coordination identity."
+            },
+            CommandVerb::Drift => {
+                "cargo-berth rejected drift under the current coordination identity."
+            },
+            CommandVerb::Init
+            | CommandVerb::Claim
+            | CommandVerb::Release
+            | CommandVerb::Sequence
+            | CommandVerb::Integrate
+            | CommandVerb::Resolve
+            | CommandVerb::Renew
+            | CommandVerb::Identity => {
+                "cargo-berth rejected this command under the current coordination identity."
+            },
+        }
+    }
+
     /// Render an installed-engine `PostToolUse` result without reparsing its serialized envelope.
     pub(crate) fn post_tool_use_rendering(&self) -> PostToolUseRendering {
         match &self.payload.facts {
             OutputFacts::Drift(report) => self.post_tool_use_drift_rendering(report),
             OutputFacts::ReplayFailure(failure) => {
                 let summary = match self.verb {
-                    CommandVerb::Check => {
-                        "cargo-berth could not establish edit safety; editing is allowed because ledger loss fails open."
-                    },
+                    CommandVerb::Check => LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE,
                     CommandVerb::Board => {
                         "cargo-berth stopped on invalid reservation history at SessionStart."
                     },
@@ -2628,7 +2674,7 @@ impl OutputEnvelope {
             OutputFacts::CoordinationIdentity(rejection) => {
                 let recovery_actions = rejection.rendered_recovery_actions();
                 let block = coordination_identity_block(
-                    "cargo-berth rejected drift under the current coordination identity.",
+                    self.coordination_identity_summary(),
                     rejection.wire_kind(),
                     &recovery_actions,
                 );
@@ -3063,6 +3109,29 @@ fn claimed_presentation(
         ),
     };
     engine_message_block(&summary, &detail).into()
+}
+
+/// Carry a presentation only for the verb the pre-edit check hook renders.
+///
+/// Every other verb reaches its user through the engine `message`, so naming
+/// them here once keeps a new verb from being forgotten in four constructors.
+fn pre_edit_check_presentation(
+    command_verb: CommandVerb,
+    check_presentation: EnvelopePresentation,
+) -> EnvelopePresentation {
+    match command_verb {
+        CommandVerb::Check => check_presentation,
+        CommandVerb::Init
+        | CommandVerb::Board
+        | CommandVerb::Claim
+        | CommandVerb::Release
+        | CommandVerb::Sequence
+        | CommandVerb::Integrate
+        | CommandVerb::Resolve
+        | CommandVerb::Renew
+        | CommandVerb::Drift
+        | CommandVerb::Identity => EnvelopePresentation::NotProvided,
+    }
 }
 
 fn engine_result_presentation(summary: &str, detail: &str) -> EnvelopePresentation {
@@ -3860,6 +3929,7 @@ mod tests {
     use serde_json::json;
 
     use super::CommandVerb;
+    use super::LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE;
     use super::OutputEnvelope;
     use super::OutputStatus;
     use super::PostCommitRendering;
@@ -3867,6 +3937,7 @@ mod tests {
     use crate::config::InitializationState;
     use crate::ledger::LedgerError;
     use crate::ledger::LedgerInitialization;
+    use crate::presentation::EnvelopePresentation;
     use crate::reservation::LifecycleTransitionError;
     use crate::reservation::ReservationReplayError;
 
@@ -3977,13 +4048,13 @@ mod tests {
     }
 
     #[test]
-    fn unconfigured_and_unreadable_configuration_have_distinct_statuses_at_exit_four() {
+    fn unconfigured_and_unreadable_checks_have_distinct_presentations_at_exit_four() {
         let expected_configuration_path = PathBuf::from(".claude/config/berth.toml");
         let malformed = LedgerError::Config(ConfigError::UnknownKey("porthole".to_owned()));
 
         let unconfigured =
-            OutputEnvelope::unconfigured(CommandVerb::Drift, &expected_configuration_path);
-        let ledger_unreadable = OutputEnvelope::ledger_error(CommandVerb::Drift, &malformed);
+            OutputEnvelope::unconfigured(CommandVerb::Check, &expected_configuration_path);
+        let ledger_unreadable = OutputEnvelope::ledger_error(CommandVerb::Check, &malformed);
 
         assert_eq!(unconfigured.status, OutputStatus::Unconfigured);
         assert_eq!(ledger_unreadable.status, OutputStatus::LedgerUnreadable);
@@ -3995,6 +4066,20 @@ mod tests {
             ledger_unreadable.exit_code,
             crate::exit::BerthExit::LedgerUnreadable
         );
+        assert_eq!(
+            unconfigured.presentation,
+            EnvelopePresentation::NothingToShow
+        );
+        assert!(matches!(
+            &ledger_unreadable.presentation,
+            EnvelopePresentation::RenderedBlocks { blocks }
+                if matches!(
+                    blocks.as_slice(),
+                    [block]
+                        if block.summary == LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE
+                            && block.detail == ledger_unreadable.message
+                )
+        ));
         assert!(
             unconfigured
                 .message
@@ -4009,6 +4094,7 @@ mod tests {
         let unreadable = OutputEnvelope::ledger_error(CommandVerb::Init, &malformed);
 
         assert_eq!(unreadable.status, OutputStatus::LedgerUnreadable);
+        assert_eq!(unreadable.presentation, EnvelopePresentation::NotProvided);
         assert!(unreadable.message.ends_with(&malformed.to_string()));
         assert!(
             unreadable
@@ -4024,6 +4110,10 @@ mod tests {
             &PathBuf::from(".claude/config/berth.toml"),
         );
 
+        assert_eq!(
+            output_envelope.presentation,
+            EnvelopePresentation::NotProvided
+        );
         assert!(matches!(
             output_envelope.post_commit_rendering(),
             PostCommitRendering::Silent

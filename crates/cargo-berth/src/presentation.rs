@@ -1,26 +1,32 @@
 //! Render-ready text carried by response envelopes.
 
+use std::borrow::Cow;
+
 use schemars::JsonSchema;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
 
 /// Whether an envelope supplies render-ready output blocks.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[schemars(rename = "envelope_presentation")]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EnvelopePresentation {
     /// The constructor has no presentation contract for this response.
     NotProvided,
+    /// The engine considered this response and deliberately supplied no output blocks.
+    NothingToShow,
     /// The engine explicitly rendered every block the front end should show.
     RenderedBlocks {
         /// Ordered, self-contained blocks for the front end to publish.
-        blocks: Vec<RenderedOutputBlock>,
+        blocks: NonEmptyRenderedBlocks,
     },
 }
 
 impl EnvelopePresentation {
     /// State that the engine considered this response and found nothing to show.
-    pub(crate) const fn nothing_to_show() -> Self { Self::RenderedBlocks { blocks: Vec::new() } }
+    pub(crate) const fn nothing_to_show() -> Self { Self::NothingToShow }
 
     /// Replace the current presentation with one rendered block.
     pub(crate) fn replace_with(&mut self, rendered_output_block: RenderedOutputBlock) {
@@ -31,7 +37,108 @@ impl EnvelopePresentation {
 impl From<RenderedOutputBlock> for EnvelopePresentation {
     fn from(rendered_output_block: RenderedOutputBlock) -> Self {
         Self::RenderedBlocks {
-            blocks: vec![rendered_output_block],
+            blocks: rendered_output_block.into(),
+        }
+    }
+}
+
+impl Serialize for EnvelopePresentation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        EnvelopePresentationWire::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for EnvelopePresentation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        EnvelopePresentationWire::deserialize(deserializer).map(Into::into)
+    }
+}
+
+impl JsonSchema for EnvelopePresentation {
+    fn schema_name() -> Cow<'static, str> { EnvelopePresentationWire::schema_name() }
+
+    fn schema_id() -> Cow<'static, str> { EnvelopePresentationWire::schema_id() }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        EnvelopePresentationWire::json_schema(generator)
+    }
+}
+
+/// A rendered-block payload that contains at least one block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NonEmptyRenderedBlocks(Vec<RenderedOutputBlock>);
+
+impl NonEmptyRenderedBlocks {
+    /// Borrow the blocks while preserving the non-empty construction guarantee.
+    pub(crate) fn as_slice(&self) -> &[RenderedOutputBlock] { &self.0 }
+}
+
+impl From<RenderedOutputBlock> for NonEmptyRenderedBlocks {
+    fn from(rendered_output_block: RenderedOutputBlock) -> Self {
+        Self(vec![rendered_output_block])
+    }
+}
+
+impl TryFrom<Vec<RenderedOutputBlock>> for NonEmptyRenderedBlocks {
+    type Error = EmptyRenderedBlocks;
+
+    fn try_from(blocks: Vec<RenderedOutputBlock>) -> Result<Self, Self::Error> {
+        if blocks.is_empty() {
+            Err(EmptyRenderedBlocks)
+        } else {
+            Ok(Self(blocks))
+        }
+    }
+}
+
+/// The construction error returned for an empty rendered-block payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EmptyRenderedBlocks;
+
+/// Whether an envelope supplies render-ready output blocks.
+#[derive(Deserialize, JsonSchema, Serialize)]
+#[schemars(rename = "envelope_presentation")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum EnvelopePresentationWire {
+    /// The constructor has no presentation contract for this response.
+    NotProvided,
+    /// The engine explicitly rendered every block the front end should show.
+    RenderedBlocks {
+        /// Ordered, self-contained blocks for the front end to publish.
+        blocks: Vec<RenderedOutputBlock>,
+    },
+}
+
+impl From<&EnvelopePresentation> for EnvelopePresentationWire {
+    fn from(presentation: &EnvelopePresentation) -> Self {
+        match presentation {
+            EnvelopePresentation::NotProvided => Self::NotProvided,
+            EnvelopePresentation::NothingToShow => Self::RenderedBlocks { blocks: Vec::new() },
+            EnvelopePresentation::RenderedBlocks { blocks } => Self::RenderedBlocks {
+                blocks: blocks.as_slice().to_vec(),
+            },
+        }
+    }
+}
+
+impl From<EnvelopePresentationWire> for EnvelopePresentation {
+    fn from(presentation: EnvelopePresentationWire) -> Self {
+        match presentation {
+            EnvelopePresentationWire::NotProvided => Self::NotProvided,
+            EnvelopePresentationWire::RenderedBlocks { blocks } => {
+                match NonEmptyRenderedBlocks::try_from(blocks) {
+                    Ok(non_empty_rendered_blocks) => Self::RenderedBlocks {
+                        blocks: non_empty_rendered_blocks,
+                    },
+                    Err(EmptyRenderedBlocks) => Self::NothingToShow,
+                }
+            },
         }
     }
 }
@@ -236,7 +343,9 @@ pub(crate) fn orphaned_outstanding_block(
 mod tests {
     use serde_json::Value;
 
+    use super::EmptyRenderedBlocks;
     use super::EnvelopePresentation;
+    use super::NonEmptyRenderedBlocks;
     use super::actionable_board_notices_block;
     use super::ambiguous_first_touch_block;
     use super::automatic_widening_block;
@@ -255,6 +364,27 @@ mod tests {
         assert_ne!(
             EnvelopePresentation::nothing_to_show(),
             EnvelopePresentation::NotProvided
+        );
+    }
+
+    #[test]
+    fn explicit_nothing_keeps_the_frozen_wire_object() -> Result<(), serde_json::Error> {
+        const NOTHING_TO_SHOW_JSON: &str = r#"{"kind":"rendered_blocks","blocks":[]}"#;
+
+        let presentation = EnvelopePresentation::NothingToShow;
+        assert_eq!(serde_json::to_string(&presentation)?, NOTHING_TO_SHOW_JSON);
+        assert_eq!(
+            serde_json::from_str::<EnvelopePresentation>(NOTHING_TO_SHOW_JSON)?,
+            presentation
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_rendered_blocks_cannot_be_constructed() {
+        assert_eq!(
+            NonEmptyRenderedBlocks::try_from(Vec::new()),
+            Err(EmptyRenderedBlocks)
         );
     }
 

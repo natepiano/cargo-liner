@@ -23,7 +23,7 @@ use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 
-static CURRENT_PROCESS_HARNESS_SESSION: OnceLock<HarnessSessionId> = OnceLock::new();
+static CURRENT_PROCESS_HARNESS_SESSION: OnceLock<HookHarnessSessionSelection> = OnceLock::new();
 
 /// One harness session identifier supplied to a single command invocation.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -35,40 +35,39 @@ impl HarnessSessionId {
     pub(crate) const MAXIMUM_CHARACTERS: usize = 256;
 
     fn from_current_process() -> HarnessSessionIdentity {
-        if let Some(harness_session_id) = CURRENT_PROCESS_HARNESS_SESSION.get().cloned() {
-            return HarnessSessionIdentity::Available(harness_session_id);
+        match CURRENT_PROCESS_HARNESS_SESSION.get() {
+            Some(HookHarnessSessionSelection::Session(harness_session_id)) => {
+                HarnessSessionIdentity::Available(harness_session_id.clone())
+            },
+            Some(HookHarnessSessionSelection::NoSession) => HarnessSessionIdentity::Unavailable,
+            None => std::env::var_os(HARNESS_SESSION_ENVIRONMENT)
+                .and_then(|value| value.into_string().ok())
+                .and_then(|value| value.parse().ok())
+                .map_or(
+                    HarnessSessionIdentity::Unavailable,
+                    HarnessSessionIdentity::Available,
+                ),
         }
-        std::env::var_os(HARNESS_SESSION_ENVIRONMENT)
-            .and_then(|value| value.into_string().ok())
-            .and_then(|value| value.parse().ok())
-            .map_or(
-                HarnessSessionIdentity::Unavailable,
-                HarnessSessionIdentity::Available,
-            )
     }
 }
 
-/// Whether a private hook boundary selected its harness session for this process.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CurrentProcessHarnessSessionSelection {
-    /// This process will resolve and publish mappings for the selected session.
-    Selected,
-    /// Another private boundary had already selected a session in this process.
-    AlreadySelected,
+/// The harness session identity a private hook boundary established for this process.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum HookHarnessSessionSelection {
+    /// The boundary parsed one valid harness session identifier from its payload.
+    Session(HarnessSessionId),
+    /// The boundary supplied no usable identifier, so this process has no session at all.
+    NoSession,
 }
 
-/// Select the harness session parsed by a private hook boundary.
-pub(crate) fn select_current_process_harness_session(
-    harness_session_id: HarnessSessionId,
-) -> CurrentProcessHarnessSessionSelection {
-    if CURRENT_PROCESS_HARNESS_SESSION
-        .set(harness_session_id)
-        .is_ok()
-    {
-        CurrentProcessHarnessSessionSelection::Selected
-    } else {
-        CurrentProcessHarnessSessionSelection::AlreadySelected
-    }
+/// Establish the harness session identity a private hook boundary read from its payload.
+///
+/// `NoSession` is a decision, not an absence: it stops `HARNESS_SESSION_ENVIRONMENT` being
+/// consulted, so a payload without a session identity cannot adopt the session identity of
+/// whichever process launched the hook. The first selection in a process wins, and a hook
+/// binary makes exactly one before any reservation lookup.
+pub(crate) fn select_current_process_harness_session(selection: HookHarnessSessionSelection) {
+    std::mem::drop(CURRENT_PROCESS_HARNESS_SESSION.set(selection));
 }
 
 impl FromStr for HarnessSessionId {

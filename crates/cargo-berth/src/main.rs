@@ -30,6 +30,7 @@ mod edge;
 mod exit;
 mod gate;
 mod git;
+mod hook;
 mod ids;
 mod ledger;
 mod output;

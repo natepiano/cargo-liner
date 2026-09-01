@@ -37,7 +37,11 @@ token carried and the answer that was requested — as its own presentation bloc
 `.claude/config/berth.toml` is untracked and per-worktree, so a `git worktree
 add` performed after `init` produces a worktree the engine calls `unconfigured`.
 Every verb then stops at a terminal outcome, which reads as a broken install
-rather than as a new worktree.
+rather than as a new worktree — and `hook pre-tool-use` is worse than that: an
+unconfigured repository answers check exit 4 carrying deliberate silence, so the
+edit gate allows every write with no output at all, held by
+`tests/hooks.rs::unconfigured_no_facts_allows_silently`. A worktree added after
+`init` is therefore uncoordinated and says nothing about it.
 
 Satisfied by: a new worktree of an initialized repository resolving the existing
 configuration, or refusing with a diagnostic that names the real cause and the
@@ -132,10 +136,33 @@ unactionable notice on every subsequent invocation.
 
 **Target:** `crates/cargo-berth/src/drift/` change detection.
 
-A post-commit drift check reported `Cargo.lock` as a changed path with ambiguous
-attribution when that file was neither modified in the working tree nor part of
-the commit. Observed once, at a checkpoint; not yet reduced to a repeatable case.
+The post-commit drift check reports `Cargo.lock` as a changed path with ambiguous
+attribution when that file is neither modified in the working tree nor part of the
+commit. It reproduces at every checkpoint commit in this worktree, and `Cargo.lock`
+appears only in the post-commit check — the same worktree's pre-edit checks name
+only the files actually touched.
 
-Satisfied by: a reproduction that pins what made an untouched path appear in the
-changed set — a stale index read, a comparison against the wrong tree, or a
-generation boundary — and a test covering it.
+Satisfied by: a reproduction that pins what makes an untouched path appear in the
+post-commit changed set — a stale index read, a comparison against the wrong tree,
+or a generation boundary — and a test covering it.
+
+## 11. The `--reservation` recovery command cannot resolve the refusal that prints it
+
+**Target:** `crates/cargo-berth/src/output.rs` —
+`AMBIGUOUS_RESERVATION_RECOVERY_COMMAND` (`:94`) and the explicit-selection
+response text (`:3372`).
+
+An ambiguous first touch prints `cargo-berth check --reservation
+<reservation-id> <path>...`. Running exactly that widens the scopes and then
+answers "The explicit reservation selection applies only to this invocation
+because no usable harness session id was supplied; name the reservation again on
+a later check" — it publishes no mapping, so the next edit is refused
+identically. `CARGO_BERTH_SESSION_ID` is unset in an ordinary Bash tool
+environment and only the pre-edit hook ever sets it, per invocation, from the
+payload, so the printed instruction is unusable by hand in exactly the situation
+that prints it. Reproduced three times during phase 4; prefixing the same
+command with `CARGO_BERTH_SESSION_ID=<session uuid>` is what worked.
+
+Satisfied by: the printed recovery command succeeding when run verbatim from a
+non-hook environment — proven by a test that runs the rendered command as text
+and asserts the following check is no longer ambiguous.

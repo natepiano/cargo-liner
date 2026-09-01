@@ -12,7 +12,27 @@ use tempfile::TempDir;
 
 const CARGO_BERTH_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const EXPECTED_CORPUS_ENTRIES: usize = 50;
-const EXPECTED_UNCOVERED_CORPUS_ENTRIES: usize = 49;
+const EXPECTED_UNCOVERED_CORPUS_ENTRIES: usize = 45;
+/// Corpus entries whose frozen text `tests/hooks.rs` compares against the real
+/// binary, each named beside the test that drives it.
+const HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 4] = [
+    (
+        "test_hooks_render_coordination_identity_recovery_actions_without_message",
+        "session_identity_recoveries_preserve_the_frozen_corpus_text",
+    ),
+    (
+        "test_hooks_render_coordination_identity_recovery_actions_without_message#3",
+        "stale_marker_recovery_preserves_the_frozen_corpus_text",
+    ),
+    (
+        "test_hooks_render_coordination_identity_recovery_actions_without_message#5",
+        "session_identity_recoveries_preserve_the_frozen_corpus_text",
+    ),
+    (
+        "test_typed_replay_failure_routes_without_message_in_every_consumer",
+        "replay_failure_emits_a_fail_open_object",
+    ),
+];
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const FRONT_END_CORPUS_JSON: &str = include_str!("fixtures/front_end_corpus.json");
 const GENERATED_CONTRACT_JSON: &str =
@@ -29,7 +49,11 @@ struct RenderedOutputBlockEvidence<'a> {
 }
 
 enum CorpusEntryCoverage {
+    /// This suite compares the entry's frozen text against real engine output.
     TextCompared,
+    /// `tests/hooks.rs` compares the entry's frozen text against the real binary.
+    TextComparedByHookAcceptance,
+    /// No suite compares this entry's frozen text against anything the engine emits.
     Uncovered(UncoveredCorpusEntry),
 }
 
@@ -89,13 +113,25 @@ fn every_corpus_entry_is_text_compared_or_reported_uncovered() -> ShellOracleRes
         )));
     }
 
-    let uncovered = entries
+    let coverage = entries
         .iter()
         .map(|entry| classify_corpus_entry(entry, &real_envelope, &rendered_output_blocks))
-        .collect::<ShellOracleResult<Vec<_>>>()?
+        .collect::<ShellOracleResult<Vec<_>>>()?;
+    let compared_by_hook_acceptance = coverage
+        .iter()
+        .filter(|coverage| matches!(coverage, CorpusEntryCoverage::TextComparedByHookAcceptance))
+        .count();
+    if compared_by_hook_acceptance != HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES.len() {
+        return Err(failure(format!(
+            "the hook acceptance suite names {} corpus entries but {compared_by_hook_acceptance} of them exist",
+            HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES.len()
+        )));
+    }
+    let uncovered = coverage
         .into_iter()
         .filter_map(|coverage| match coverage {
-            CorpusEntryCoverage::TextCompared => None,
+            CorpusEntryCoverage::TextCompared
+            | CorpusEntryCoverage::TextComparedByHookAcceptance => None,
             CorpusEntryCoverage::Uncovered(entry) => Some(entry),
         })
         .collect::<Vec<_>>();
@@ -123,6 +159,12 @@ fn classify_corpus_entry(
     if name == "test_pre_edit_renders_an_ambiguous_first_touch_from_the_engine_message" {
         compare_ambiguous_first_touch_text(entry, real_envelope, rendered_output_blocks)?;
         return Ok(CorpusEntryCoverage::TextCompared);
+    }
+    if HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES
+        .iter()
+        .any(|(compared_name, _)| *compared_name == name)
+    {
+        return Ok(CorpusEntryCoverage::TextComparedByHookAcceptance);
     }
     Ok(CorpusEntryCoverage::Uncovered(UncoveredCorpusEntry {
         name:       name.to_owned(),

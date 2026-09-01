@@ -311,7 +311,7 @@ fn release_resolve_and_renew_presentations_are_engine_considered() -> TestResult
 
     let renewed = run_berth(repository.path(), &["renew", renewable_id, "--json"])?;
     require_success(&renewed, "renew")?;
-    assert_renew_nothing_to_show(&json_output(&renewed)?)?;
+    assert_renew_nothing_to_show(&renewed)?;
 
     let resolved = run_berth(
         repository.path(),
@@ -333,6 +333,29 @@ fn release_resolve_and_renew_presentations_are_engine_considered() -> TestResult
     let released = run_berth(repository.path(), &["release", releasable_id, "--json"])?;
     require_success(&released, "release")?;
     assert_nonempty_rendered_blocks(&json_output(&released)?, "release")
+}
+
+#[test]
+fn nothing_to_show_wire_object_has_exact_binary_bytes() -> TestResult {
+    let repository = initialized_repository()?;
+    let renewable = claim(repository.path(), "file:renewable.rs", FIRST_RUN)?;
+    let renewable_envelope = json_output(&renewable)?;
+    let renewable_id = required_string(&renewable_envelope, "/payload/data/reservation_id")?;
+    let renewed = run_berth(repository.path(), &["renew", renewable_id, "--json"])?;
+    require_success(&renewed, "renew for NothingToShow wire bytes")?;
+
+    assert_nothing_to_show_wire_bytes(&renewed)
+}
+
+#[test]
+fn empty_board_report_uses_nothing_to_show_wire_state() -> TestResult {
+    let repository = initialized_repository()?;
+    let board = run_berth(repository.path(), &["board", "--json"])?;
+    require_success(&board, "empty board")?;
+    let envelope = json_output(&board)?;
+
+    assert_eq!(required_string(&envelope, "/payload/kind")?, "board");
+    assert_nothing_to_show_wire_bytes(&board)
 }
 
 #[test]
@@ -647,15 +670,26 @@ fn assert_nonempty_rendered_blocks(envelope: &Value, expected_payload_kind: &str
     Ok(())
 }
 
-fn assert_renew_nothing_to_show(envelope: &Value) -> TestResult {
-    assert_eq!(required_string(envelope, "/payload/kind")?, "renew");
-    let blocks = rendered_blocks(envelope)?;
-    if blocks.is_empty() {
+fn assert_renew_nothing_to_show(output: &Output) -> TestResult {
+    let envelope = json_output(output)?;
+    assert_eq!(required_string(&envelope, "/payload/kind")?, "renew");
+    assert_nothing_to_show_wire_bytes(output)
+}
+
+fn assert_nothing_to_show_wire_bytes(output: &Output) -> TestResult {
+    const NOTHING_TO_SHOW_MEMBER: &[u8] =
+        br#""presentation":{"kind":"rendered_blocks","blocks":[]}"#;
+
+    if output
+        .stdout
+        .windows(NOTHING_TO_SHOW_MEMBER.len())
+        .any(|window| window == NOTHING_TO_SHOW_MEMBER)
+    {
         Ok(())
     } else {
         Err(failure(format!(
-            "renew should have no user action, found {} rendered blocks",
-            blocks.len()
+            "binary did not serialize the exact NothingToShow wire member: {}",
+            String::from_utf8_lossy(&output.stdout)
         )))
     }
 }

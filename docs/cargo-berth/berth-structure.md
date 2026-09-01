@@ -25,14 +25,15 @@
   **No `lib.rs`** — `main.rs` declares all modules as a binary crate, so
   `cargo nextest run -p cargo-berth --lib` fails; use `--bin cargo-berth`.
 - **Layout:** `crates/cargo-berth/src/` — `reservation/`, `verb/`, `edge/`,
-  `drift/`, `gate/`, `git/`, `ledger/`, `board/`, `scope/`, `session/`,
+  `drift/`, `gate/`, `git/`, `hook/`, `ledger/`, `board/`, `scope/`, `session/`,
   `worktree/`, `answer/`, plus top-level `alert.rs`, `cli.rs`, `config.rs`,
   `constants.rs`, `coordination_identity.rs`, `exit.rs`, `ids.rs`, `output.rs`,
   `output_contract.rs`, `presentation.rs`, `reconcile.rs`, `recovery.rs`.
   `crates/cargo-berth/tests/` holds the integration suites: `answers.rs`,
   `board.rs`, `drift.rs`, `edges.rs`, `gate.rs`, `ledger.rs`, `lifecycle.rs`,
   `liveness.rs`, `overlap.rs`, plus the phase-2 suites `front_end_corpus.rs`,
-  `presentation.rs`, and `output_contract.rs`, and the frozen fixture
+  `presentation.rs`, and `output_contract.rs`, phase 3's `engine_instructions.rs`,
+  phase 4's `hooks.rs`, and the frozen fixture
   `tests/fixtures/front_end_corpus.json`.
 - **Front-end and hook layer:** lives outside this repository under
   `~/.claude/scripts/berth/` — `install/install.sh` (installs the binary and
@@ -48,10 +49,15 @@
   own user-facing text as `presentation` on the envelope.
   `crates/cargo-berth/src/presentation.rs` defines `EnvelopePresentation`, a
   `#[serde(tag = "kind", rename_all = "snake_case")]` enum, so the field is never
-  absent from real engine output. It has two variants and three wire states:
-  `RenderedBlocks { blocks }` carrying `RenderedOutputBlock`s, `RenderedBlocks`
-  with an empty vector (the deliberate nothing-to-show case), and `NotProvided`.
-  Every consumer prints the rendered text verbatim and classifies nothing.
+  absent from real engine output. Phase 4 gave it three variants over the same
+  three wire states: `RenderedBlocks { blocks }` carrying a
+  `NonEmptyRenderedBlocks` (private field, fallible constructor, so an empty
+  rendered-blocks payload is unconstructible), `NothingToShow` for the deliberate
+  nothing-to-show case, and `NotProvided`. `NothingToShow` serializes as the
+  frozen `{"kind":"rendered_blocks","blocks":[]}` and that object deserializes
+  back to it, through a private serde boundary type — two variants under one wire
+  tag, which a derived internally-tagged enum cannot express. Every consumer
+  prints the rendered text verbatim and classifies nothing.
 - **Lints:** the workspace denies `clippy::all`/`cargo`/`nursery`/`pedantic` as
   groups plus per-rule `expect_used`, `panic`, `unwrap_used`, `unreachable`,
   `self_named_module_files`, `undocumented_unsafe_blocks`, and rustc
@@ -275,184 +281,37 @@ guard, and are asserted directly.
 **Ruled out:**
 - Exempting a rendered block from the instruction guard for a later non-engine command — the composite recovery command starts `cd … && cargo-berth …`, which the vocabulary already ignores; extend the guard's coverage instead.
 
-### Phase 4 — `cargo-berth hook pre-tool-use` decides the edit · status: todo
+### Phase 4 — `cargo-berth hook pre-tool-use` decides the edit · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** The engine consumes a raw Claude `PreToolUse` payload on stdin and
-returns the hook's complete answer — silent allow, the allow notice, or a refusal
-on stderr with the blocking exit code. The installed `berth_pre_edit.sh` is not
-touched: phase 6 reduces it to a binary presence check and an `exec`, and every
-wrapper edit and installation belongs to that atomic cutover.
-
-**Spec:** `berth_pre_edit.sh` is roughly six hundred lines and every decision in
-it is engine knowledge. Its function list names the work directly:
-`presentation_state` and `presentation_markdown` read the presentation the engine
-already emits; `valid_common_envelope`, `valid_clear_check`, `valid_blocked_check`,
-`valid_no_facts_response`, `valid_replay_failure_response` and
-`valid_engine_stated_response` re-validate the engine's own output in jq;
-`lexically_normalize_absolute_path` and `find_repository_root_without_git`
-resolve the edit target; `run_check_once` invokes the verb;
-`block_with_engine_stated_message` and `allow_with_engine_stated_message` map an
-outcome to an exit code; `render_replay_failure_route`,
-`valid_coordination_identity_rejection` and
-`render_coordination_identity_recovery_actions` render recovery.
-
-Add a `Hook` verb to `Command` (`crates/cargo-berth/src/cli.rs:198`) with a
-`pre-tool-use` subcommand that reads the payload from stdin. The precedent for
-consuming a raw harness payload is already in the crate:
-`PostToolUseDriftInvocation::from_value` (`crates/cargo-berth/src/cli.rs:1176`)
-parses `tool_name`, `session_id` and `cwd` out of a raw `PostToolUse` object, and
-the hidden `--post-tool-use-payload` flag threads it in. Follow that shape rather
-than inventing a second payload reader, and give the pre-tool-use payload its own
-named type with its own parse errors.
-
-**Name the payload's parts for what they mean, not for how they arrive.** A type
-called `PreToolUsePayload` holding four bare optional strings satisfies the
-letter of "its own named type" and none of its purpose. The payload carries an
-edit-authorization request, the repository edit target it names, the
-working-directory selection it was invoked under, and the availability of a
-harness session id — each of those is a domain state with its own absent case,
-and each gets a type whose variants say what absence means:
-`PreToolUseEditAuthorizationRequest`, `RepositoryEditTarget`,
-`HookWorkingDirectorySelection`, and `HarnessSessionIdentityAvailability`. `serde` will hand
-some fields up as `Option<T>`; convert every one of them at the input boundary
-and let nothing optional past it. The existing `Claim` and `Resolve` argument
-types are the precedent: Clap owns their raw flags and they convert immediately
-into semantic domain enums.
-
-The verb resolves the edit paths and the repository from the payload, runs the
-same check the `check` verb runs, and renders the result into the hook's own
-protocol: nothing on a silent allow, the allow-notice object on stdout when the
-presentation carries blocks, and the refusal detail on stderr with the blocking
-exit code. Path normalization and repository discovery move into the crate beside
-the worktree code that already does this work; do not reimplement them in the
-hook module.
-
-The verb is public, not hidden. The two hidden dispatches in `Command` are for a
-git hook and an internal refresh worker; this is a documented entry point that a
-user may run by hand to see what the pre-edit gate would decide.
+- `Command::Hook` is a public verb whose `pre-tool-use` subcommand reads a raw `PreToolUse` payload on stdin and answers the hook's own protocol: nothing on a silent allow, the allow-notice object on stdout when the presentation carries blocks, the refusal detail on stderr with the blocking exit code.
+- Every payload part is a domain type with its own absent case, never a bare `Option<T>`: `PreToolUseEditAuthorizationRequest`, `HookWorkingDirectorySelection`, `HarnessSessionIdentityAvailability` (`Available | Unusable`), and a two-type edit-target split — `PayloadEditTarget { Named | NotNamed { reason } }` resolving into `ResolvedEditTarget { WithinRepository | OutsideCoordinationDomain | Unresolved { reason } }`, so `execute()` carries no impossible arm. Optionals live only inside the private serde boundary types.
+- `EnvelopePresentation` has three variants, the third being `NothingToShow`; its rendered-blocks payload is `NonEmptyRenderedBlocks` — private field, fallible constructor, so an empty rendered-blocks payload is unconstructible. The board's empty report routes to `NothingToShow`, so the hook's silent-allow path and `ReservationBoardReport::envelope_presentation` read one state. `NothingToShow` serializes as the frozen `{"kind":"rendered_blocks","blocks":[]}` and deserializes back, through a private serde boundary type; that wire object outlives the first-party validators.
+- An absent or invalid payload session id publishes a no-session selection that blocks the ambient `CARGO_BERTH_SESSION_ID` fallback. An unresolvable edit path refuses visibly on exit 2 instead of allowing silently. `WorktreeRelativeEditName` rebuilds the worktree-relative name from `Component::Normal` only, so no scope string the hook forms carries a parent component.
+- The installed hook layer is untouched; the verb is exercised against it read-only.
 
 **Files:**
-- `crates/cargo-berth/src/cli.rs`
-- `crates/cargo-berth/src/hook/mod.rs`
-- `crates/cargo-berth/src/hook/pre_tool_use.rs`
-- `crates/cargo-berth/src/main.rs`
-- `crates/cargo-berth/src/presentation.rs`
-- `crates/cargo-berth/tests/hooks.rs`
-- `crates/cargo-berth/tests/presentation.rs`
-- `crates/cargo-berth/tests/engine_instructions.rs`
-- `crates/cargo-berth/README.md`
+- `crates/cargo-berth/src/hook/mod.rs` — hook protocol helpers; PreToolUse-specific except `render_blocks`, `write_allow_notice`, `refuse_hook_request`, `write_stderr_line`.
+- `crates/cargo-berth/src/hook/pre_tool_use.rs` — the verb, its payload types, and edit-target resolution; `HookWorkingDirectorySelection` and `HarnessSessionIdentityAvailability` are private here.
+- `crates/cargo-berth/src/ledger/mod.rs` — `normalize_absolute_path` and `canonicalize_through_nearest_existing_ancestor`, beside `WorktreeContext`.
+- `crates/cargo-berth/src/presentation.rs` — `EnvelopePresentation`, `NonEmptyRenderedBlocks`.
+- `crates/cargo-berth/src/session/mod.rs` — `OnceLock<HookHarnessSessionSelection>`.
+- `crates/cargo-berth/src/cli.rs` — the `Hook` subcommand, `CommandResultReporting`.
+- `crates/cargo-berth/tests/hooks.rs` — 20 tests.
 
-**Seats:** 2 writers + 1 tester — the engine verb and its payload types split
-cleanly from the tests, and the presentation change is a third file group.
-- `impl` — `cli.rs`, `main.rs`, `presentation.rs`, and `hook/**`; hub:
-  `hook/mod.rs` (the hook protocol and dispatch every writer reads)
-- `test` — `tests/hooks.rs`, `tests/presentation.rs`, and
-  `tests/engine_instructions.rs`
-- `review` — opens as `impl`; `README.md`
+**Binds later work:** both path helpers live in `ledger/mod.rs` and are reused from there under the soundness rule below; `normalize_absolute_path`'s doc comment states that rule and must travel intact if the helper moves. The session-start verb must publish the same no-session selection this verb publishes, or an absent payload identity picks up an ambient `CARGO_BERTH_SESSION_ID` again. `EnvelopePresentation` has three variants, not two. The `HookProtocol` answer is the exception to envelope/exit agreement. Every installed-wrapper edit belongs to the wrapper cutover.
 
-**Acceptance gate:**
-1. `cargo-berth hook pre-tool-use` reads a `PreToolUse` payload on stdin and
-   reproduces, for every outcome the current hook handles, the same stdout,
-   stderr and exit code that hook produces today.
-2. A test drives each outcome — silent allow, allow with notice, blocked edit,
-   replay failure, coordination-identity rejection, no facts — from a fixture
-   payload through the verb, asserting the exit code and the emitted object.
-3. The refusal path renders from the engine's presentation. No outcome is
-   classified twice.
-4. Every `PreToolUse` allow, refusal, and recovery case in
-   `tests/fixtures/front_end_corpus.json` is covered by a test that drives the
-   raw hook payload through this verb and compares the user-visible output. The
-   fixture's `payload.data` classifiers are **not** ported — they are the second
-   renderer this plan exists to delete; the corpus is read as a frozen oracle of
-   engine text only.
-5. Each parsed payload field is a domain type, not a bare `Option<T>`; the only
-   optionals are inside the serde boundary type.
-6. The deliberate-silence presentation state serializes byte-for-byte as the
-   existing `{"kind":"rendered_blocks","blocks":[]}` wire object, proven by a
-   `tests/presentation.rs` case that asserts the exact serialized form. Phase 6
-   removes the first-party validators but keeps the public envelope for
-   independent consumers, so this wire shape outlives them.
-7. A test drives the raw `PreToolUse` payload — not a constructed inner type —
-   through the verb for the overlap-answer refusal this phase publishes, and
-   asserts the answer commands the user sees.
-8. Every quoted engine-output block and hook description in
-   `crates/cargo-berth/README.md` still matches what this phase's code emits.
-9. `tests/engine_instructions.rs` covers the rendered blocks this phase adds, and
-   its guard passes over them unchanged.
-10. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
+**Gotchas:**
+- `normalize_absolute_path` collapses `..` textually; POSIX resolves `..` after symlinks. The collapse is sound only when every component left of a `..` is a real directory — a payload-named edit target goes to `canonicalize_through_nearest_existing_ancestor` uncollapsed. Reversed, the hook coordinates a file the write never touches while the write lands outside the repository uncoordinated.
+- `Path::file_name()` is `None` for a path ending in `..`, so `<repo>/absent/../held.rs` reaches `NoExistingAncestor` and refuses visibly rather than resolving.
+- A linked git worktree does not inherit `.claude/config/berth.toml`, so an unenrolled requester answers exit 0 for every edit.
+- `hook/mod.rs` is not a shared event protocol; most of it is PreToolUse-specific.
+- The refusal names a recovery command that cannot resolve it: an explicit `--reservation` selection does not persist without `CARGO_BERTH_SESSION_ID`, and nothing but the hook sets it.
 
-**Constraints from prior phases:** phase 3 made every instruction in that
-presentation name the engine, so a refusal rendered by this verb is directly
-runnable. Phase 2's three presentation states are the contract this verb reads:
-`not_provided` must fail closed on the blocking path rather than fall back to a
-second renderer. The installed `berth_post_bash.sh` still drives the hidden
-`--post-tool-use-payload` round trip, so **nothing in this phase may remove those
-compatibility paths** — phase 6 is the single atomic cutover that installs the
-wrappers and deletes the legacy paths together.
-
-**This phase does not touch the installed hook layer at all.** It builds and
-tests the engine verb against the current hooks read-only; every wrapper edit and
-installation is phase 6's. Nothing here needs the summary caveat about work the
-checkpoint cannot carry, because nothing here lands outside the repository.
-
-Phase 3 shipped two guards this phase inherits. `tests/engine_instructions.rs`
-walks every rendered block and rejects any shell command whose executable is not
-`cargo-berth`; a block this phase adds must satisfy it, and extending the guard's
-coverage is cheaper than exempting a block from it. `crates/cargo-berth/src/cli.rs`
-carries a parser-backed test that feeds each rendered overlap-answer command back
-through the real command-line surface — a new answer form must parse there too.
-
-Phase 3 also proved the test suite does not detect stale README text: it quotes
-engine output verbatim with nothing tying the two together. Any change to what
-this phase prints requires a sweep of every quoted block in
-`crates/cargo-berth/README.md`.
-
-**This phase owns the overlap-answer surface.** When `PreToolUse` publishes the
-refusal, the answer commands a user can run are this phase's user-actionable
-consequence, and gate item 7 is its acceptance test.
-`blocked_edit_answer_guidance` stays implementation-only: this is a binary crate
-with no library surface, so it has no consumer outside the crate to expose it
-to.
-
-**Pending decision: where the explicit nothing-to-show presentation state lands**
-
-Actual problem:
-`EnvelopePresentation` (`crates/cargo-berth/src/presentation.rs`) has two
-variants, so "the engine ran and deliberately has nothing to show" is encoded as
-`RenderedBlocks` with an empty vector. Nothing in the type distinguishes it from
-a rendering bug that produced no blocks, and the two live consumers already
-disagree about it: the pre-edit hook treats an empty vector as silence, while the
-coordinator falls back to `message`. This phase is the first one that must decide
-the silent-allow path from that state.
-
-What exists now:
-- `EnvelopePresentation::{RenderedBlocks { Vec<RenderedOutputBlock> }, NotProvided}`.
-- `nothing_to_show()` constructs the empty-vector case; no type-level guarantee
-  that a `RenderedBlocks` payload is non-empty.
-- Three wire states, two variants.
-
-What should change:
-- A third variant naming the deliberate-silence case, and a non-empty guarantee
-  on the rendered-blocks payload so an empty vector becomes unconstructible.
-- The wire tag stays compatible **permanently, not until phase 6**. Phase 6
-  removes the first-party validators but explicitly keeps the public envelope for
-  any independent consumer that appears later, so the deliberate-silence variant
-  must go on serializing as `{"kind":"rendered_blocks","blocks":[]}` after the
-  cutover. This is an internal semantic split with a frozen wire form, not a
-  wire change with a compatibility window.
-- The work lands in `crates/cargo-berth/src/presentation.rs` with its own
-  `crates/cargo-berth/tests/presentation.rs` case asserting the exact serialized
-  object — both are now in this phase's **Files**, and the exact-wire assertion
-  is acceptance gate item 6.
-
-Recommendation:
-Do it in this phase, before the pre-tool-use verb reads the state — this verb's
-silent-allow path is exactly the consumer that must not confuse the two, and
-adding the variant afterwards means rewriting the branch that just shipped.
-
----
+**Ruled out:**
+- A refusal prefix on any arm of `render_refusal` — all four blocking arms self-frame, so a blanket prefix double-frames.
+- Widening `assert_no_parent_component_was_claimed` to scan stdout — unreachable by construction until the helper is reused on an allow-with-notice arm.
 
 ### Phase 5 — `cargo-berth hook post-tool-use` and `hook session-start` · status: todo
 
@@ -464,15 +323,22 @@ adding the variant afterwards means rewriting the branch that just shipped.
 
 `hook post-tool-use` is the closest to done of the three. The engine already
 parses the raw payload (`PostToolUseDriftInvocation::from_value`,
-`crates/cargo-berth/src/cli.rs:1176`) and already emits the exact hook response
+`crates/cargo-berth/src/cli.rs:1214`, its struct at `:1180`) and already emits
+the exact hook response
 object — `continue`, `systemMessage`, and `hookSpecificOutput` with
 `hookEventName` and `additionalContext` — in `emit_post_tool_use_rendering`
-(`crates/cargo-berth/src/cli.rs:1969`). What lives in the shell is the
+(`crates/cargo-berth/src/cli.rs:2008`). What lives in the shell is the
 orchestration: `PostToolUseRendering::RequiresLiveIncursionBoard` currently
 returns the drift envelope to `berth_post_bash.sh`, which feeds it back to a
 second invocation as `PostToolUseLiveIncursionBoardInput`. Move that round trip
 inside the verb so one process performs drift, decides whether a live incursion
 board is required, assembles it, and emits one response.
+
+That decision needs a name. `PostToolUseRendering::RequiresLiveIncursionBoard`
+(`crates/cargo-berth/src/output.rs:331`) is today a wire-return marker meaning
+"hand this back to the shell"; once the round trip is internal it is a domain
+decision about what the response must carry, and leaving it as a marker variant
+read by one `match` misnames it.
 
 `hook session-start` reads the `SessionStart` payload, runs the board, and emits
 the session response carrying the engine's actionable presentation.
@@ -489,31 +355,43 @@ verbs, and **Delegation Context** forbids opening surface without a consumer.
 
 **Files:**
 - `crates/cargo-berth/src/hook/mod.rs`
+- `crates/cargo-berth/src/hook/pre_tool_use.rs`
 - `crates/cargo-berth/src/hook/post_tool_use.rs`
 - `crates/cargo-berth/src/hook/session_start.rs`
 - `crates/cargo-berth/src/cli.rs`
 - `crates/cargo-berth/tests/hooks.rs`
 - `crates/cargo-berth/tests/engine_instructions.rs`
+- `crates/cargo-berth/tests/front_end_corpus.rs`
 - `crates/cargo-berth/README.md`
 
 **Seats:** 2 writers + 1 tester — the two verbs are independent files over a
-shared protocol module, and the tests are their own lane.
-- `impl` — `cli.rs`, `hook/mod.rs`, and `hook/post_tool_use.rs`; hub:
-  `hook/mod.rs` (the shared event protocol phase 4 established)
-- `test` — `tests/hooks.rs` and `tests/engine_instructions.rs`
-- `review` — opens as `impl`; `hook/session_start.rs` and `README.md`
+protocol module phase 4 left PreToolUse-specific, and the tests are their own lane.
+- `impl` — `cli.rs`, `hook/mod.rs`, `hook/pre_tool_use.rs`, and
+  `hook/post_tool_use.rs`; hub: `hook/mod.rs` (where phase 4's PreToolUse-specific
+  protocol is generalized and the shared payload types land)
+- `test` — `tests/hooks.rs`, `tests/engine_instructions.rs`, and
+  `tests/front_end_corpus.rs`
+- `review` — opens as `impl`; `hook/session_start.rs` and `README.md`; hub:
+  `hook/session_start.rs`
 
 **Acceptance gate:**
 1. `cargo-berth hook post-tool-use` performs drift and any required live
    incursion board in one process and emits the same response object and exit
    code the installed hook produces today, including the no-feedback exit.
 2. `cargo-berth hook session-start` emits the same session response the installed
-   hook produces today.
+   hook produces today, with one deliberate difference the test states
+   explicitly: an absent or invalid payload session id publishes a no-session
+   selection and cannot fall through to an ambient `CARGO_BERTH_SESSION_ID`. A
+   test asserts that an ambient value set in the environment does not reach the
+   verb's identity selection.
 3. Every `PostToolUse` and `SessionStart` case in
    `tests/fixtures/front_end_corpus.json` — feedback and silence alike — is
    covered by a test driving the raw hook payload through the new verb and
    comparing user-visible output. The fixture's `payload.data` classifiers are
-   not ported.
+   not ported. Phase 4 established the mechanism: add entries to
+   `HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES` and lower
+   `EXPECTED_UNCOVERED_CORPUS_ENTRIES` (`tests/front_end_corpus.rs:15`, now 45)
+   to match, which is why that file is in **Files** and in the test lane.
 4. A test drives a raw `PostToolUse` payload and a raw `SessionStart` payload —
    not a constructed inner type — through their verbs and asserts the drift and
    resolve instructions the user is told to run.
@@ -525,7 +403,34 @@ shared protocol module, and the tests are their own lane.
 
 **Constraints from prior phases:** phase 4 established the `Hook` verb, its
 stdin payload types and the `hook/` module layout — extend them rather than
-opening a parallel shape. The two-step live-incursion round trip exists because
+opening a parallel shape. Two facts about what it actually left, both verified
+against the tree:
+
+- `hook/mod.rs` is **not** a shared event protocol yet. `PreToolUseAllowNotice`,
+  `PreToolUseAllowNoticeDetail`, `render_pre_tool_use_answer`,
+  `AUTHORIZED_SYSTEM_MESSAGE` and `FAIL_OPEN_SYSTEM_MESSAGE` are all
+  PreToolUse-specific; only `render_blocks`, `write_allow_notice`,
+  `refuse_hook_request` and `write_stderr_line` generalize. Generalizing the rest
+  is this phase's work, not a precondition it inherits.
+- `HookWorkingDirectorySelection` and `HarnessSessionIdentityAvailability` are
+  **private** to `hook/pre_tool_use.rs` — no `pub(super)`. Reusing them means
+  moving them to `hook/mod.rs`, which is why `hook/pre_tool_use.rs` is in this
+  phase's **Files** and owned by `impl`.
+
+`normalize_absolute_path` and `canonicalize_through_nearest_existing_ancestor`
+now live in `crates/cargo-berth/src/ledger/mod.rs`. This phase's only use is
+`normalize_absolute_path` on a payload `cwd`, which is the sound case — a
+directory the harness reports itself sitting in. The rule that makes it sound:
+the collapse is textual, so it holds only when every component left of a `..` is
+a real directory; anything an edit payload names as a target goes to
+`canonicalize_through_nearest_existing_ancestor` uncollapsed instead. Phase 4
+shipped a defect from getting this backwards.
+
+Phase 4 also changed `BoardModel::envelope_presentation`
+(`crates/cargo-berth/src/board/mod.rs:652-660`) to route its empty case to
+`EnvelopePresentation::NothingToShow` rather than an empty vector. That is
+`hook session-start`'s silence path: the board presentation it reads now has
+three states to branch on, not two. The two-step live-incursion round trip exists because
 the shell was the only place that could hold intermediate state, and it has no
 reason to survive inside one process. **But the installed `berth_post_bash.sh`
 still drives it** — `cargo-berth drift --json --post-tool-use-payload` at `:431`
@@ -542,6 +447,24 @@ Name the session-start payload's parts the way phase 4 named the pre-tool-use
 payload: a `SessionStartReconciliationRequest` for the request itself, reusing
 phase 4's `HookWorkingDirectorySelection` rather than introducing a second
 working-directory type.
+
+A second one already exists and this phase owns its verb:
+`PostToolUseWorkingDirectory::{CurrentProcess, Supplied(PathBuf)}`
+(`crates/cargo-berth/src/cli.rs:1174`). Moving post-tool-use into
+`hook/post_tool_use.rs` without collapsing it into `HookWorkingDirectorySelection`
+ships exactly the duplication the sentence above exists to prevent, so collapse
+it as part of the move.
+
+**The harness session identity fails closed here too.** Phase 4 found that an
+absent or invalid payload session id fell through to the ambient
+`CARGO_BERTH_SESSION_ID`, and closed that by having the hook publish a no-session
+selection that blocks the fallback. `berth_session_start.sh` reads no `session_id`
+and sets no `CARGO_BERTH_SESSION_ID` at all, so a session-start verb that
+publishes a no-session selection is a **deliberate behavior change**, not parity
+with the installed hook — gate item 2 is written accordingly. Make the change:
+an engine verb that can silently borrow another session's identity is the defect
+phase 4 closed for one event, and leaving it open for another would reintroduce
+it by a different door.
 
 **This phase owns the drift and resolve instruction surface.** The commands a
 user is told to run after an edit (`PostToolUse`) or at session start
@@ -670,8 +593,13 @@ lanes are a third group.
 3. Each hook is a wrapper that execs the binary, and a test proves each one's
    binary-absent failure mode still holds.
 4. A Rust CLI test proves what the coordinator's verb and exit-code agreement
-   checks proved: each parsed command emits its own verb in the envelope and
-   returns the envelope's exit code as its process exit.
+   checks proved, with the exception phase 4 introduced: every command whose
+   `Command::result_reporting()` answers `CommandResultReporting::Envelope(verb)`
+   emits that verb in the envelope and returns the envelope's exit code as its
+   process exit. A command answering `CommandResultReporting::HookProtocol` emits
+   no envelope and owns its own exit code through
+   `CommandOutputOwnership::HookRendered(ExitCode)`; the test asserts that
+   exception holds rather than skipping those commands.
 5. Every wrapper and binary-absence case in
    `tests/fixtures/front_end_corpus.json` is covered by a Rust or wrapper test;
    the validator-compatibility lane is removed and the frozen text oracle is
@@ -748,7 +676,7 @@ something narrower, say so at that site rather than widening the method.
 
 Reservation-id ordering by rendered string appears five times:
 `verb/claim.rs:453` (`sort_by_cached_key`), `drift/ordering.rs:12`,
-`output.rs:3608`, `board/mod.rs:938`, and `gate/mod.rs:962`. `drift::ordering` is
+`output.rs:3677`, `board/mod.rs:945`, and `gate/mod.rs:962`. `drift::ordering` is
 `pub(super)` to `drift`, so no other caller can reach it. Give the ordering one
 home with `ReservationId` in `crates/cargo-berth/src/ids.rs`, and encode the
 guarantee in the type rather than in a comment: a `Vec<ReservationId>` that four
@@ -959,8 +887,18 @@ current file before splitting.
 `too_many_lines` suppression lives here, so this phase is purely a move. The
 clusters: the `Ledger` handle and its transaction driver; `WorktreeContext` and
 its discovery; the identity files (`read_or_create_repo_instance_id`,
-`create_or_read_worktree_id`, and the read-only variant); and the
-coordination-run marker handling.
+`create_or_read_worktree_id`, and the read-only variant); the coordination-run
+marker handling; and the path resolution phase 4 moved in —
+`normalize_absolute_path`, `canonicalize_through_nearest_existing_ancestor`,
+`AbsolutePathNormalizationError` and `AncestorCanonicalizationError` — which
+belongs in a new `ledger/path.rs`. The file is 2,559 lines as this phase begins.
+
+`normalize_absolute_path`'s doc comment moves **intact**. It is the only written
+record of the rule that separates the two helpers, and phase 4 shipped a defect
+from getting that rule backwards: the collapse is textual, so it is sound only
+when every component left of a `..` is a real directory. A path whose `..` must
+be resolved for real goes to `canonicalize_through_nearest_existing_ancestor`
+uncollapsed. Losing that comment in the move would delete the only warning.
 
 **Files:**
 - `crates/cargo-berth/src/ledger/mod.rs`
@@ -968,6 +906,7 @@ coordination-run marker handling.
 - `crates/cargo-berth/src/ledger/worktree_context.rs`
 - `crates/cargo-berth/src/ledger/identity.rs`
 - `crates/cargo-berth/src/ledger/session.rs`
+- `crates/cargo-berth/src/ledger/path.rs`
 
 **Seats:** 3 writers + 0 testers — a pure move with four independent clusters and
 no suppression to remove, so tests travel with their types.
@@ -999,9 +938,9 @@ for any phase to remove.
 **Goal:** `board/mod.rs` declares submodules and re-exports, and carries no
 `too_many_lines` or `too_many_arguments` suppression.
 
-**Spec:** `board/mod.rs` is 1,879 lines beside `tests.rs` and `tui.rs`, with
-three suppressions: `build` (`:725`, `too_many_lines`), `recorded_answers`
-(`:1258`, `too_many_lines`), and `append_authorization_answer` (`:1393`,
+**Spec:** `board/mod.rs` is 1,886 lines beside `tests.rs` and `tui.rs`, with
+three suppressions: `build` (`:736`, `too_many_lines`), `recorded_answers`
+(`:1269`, `too_many_lines`), and `append_authorization_answer` (`:1404`,
 `too_many_arguments`, six parameters).
 
 Phase 2 gave this file two more owners than the original split anticipated:
@@ -1048,7 +987,11 @@ leaving a catch-all.
    `tests/board.rs::populated_board_presentation_carries_the_complete_board_report`.
 5. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
 
-**Constraints from prior phases:** phase 1 rendered the ambiguity outcome in
+**Constraints from prior phases:** phase 4 made `envelope_presentation` route
+its empty case through `NonEmptyRenderedBlocks::try_from` to
+`EnvelopePresentation::NothingToShow` rather than returning an empty vector, so
+that conversion travels with the report cluster when it moves. Phase 1 rendered
+the ambiguity outcome in
 top-level `output.rs`, not in `board/mod.rs`, so no phase-1 rendering moves here.
 Phase 2 added `CompleteBoardReport`, `ReservationLifecycleReport`,
 `envelope_presentation`, and `reservation_lifecycle_presentation` to this file;
@@ -1111,7 +1054,7 @@ pre-authorized test-module boilerplate — `clippy::expect_used`, and
 `needless_pass_by_value` at `:4385`. The test splits into its arrangement and its
 per-disposition assertions; the helper takes its payload by reference.
 
-`crates/cargo-berth/src/cli.rs:566` suppresses `struct_excessive_bools` on the
+`crates/cargo-berth/src/cli.rs:584` suppresses `struct_excessive_bools` on the
 resolve arguments, whose flags are one mutually exclusive disposition each and
 are already grouped by `RESOLVE_DISPOSITION_GROUP`. Replace the flag set with
 semantic groups that convert immediately into `ResolveDecision` at the Clap
