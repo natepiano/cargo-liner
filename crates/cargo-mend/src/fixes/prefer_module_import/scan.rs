@@ -37,7 +37,7 @@ use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
-use crate::rust_syntax;
+use crate::rust_syntax::ModuleMap;
 use crate::selection::Selection;
 
 pub(crate) struct PreferModuleImportScan {
@@ -98,6 +98,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImport
         if !source_root.is_dir() {
             continue;
         }
+        let module_map = ModuleMap::resolve(&source_root);
         for entry in WalkDir::new(&source_root)
             .into_iter()
             .filter_map(Result::ok)
@@ -108,8 +109,12 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImport
             {
                 continue;
             }
-            let (findings, fixes) =
-                scan_file(selection.analysis_root.as_path(), &source_root, path)?;
+            let (findings, fixes) = scan_file(
+                selection.analysis_root.as_path(),
+                &source_root,
+                path,
+                &module_map,
+            )?;
             all_findings.extend(findings);
             all_fixes.extend(fixes);
         }
@@ -130,13 +135,15 @@ fn scan_file(
     analysis_root: &Path,
     source_root: &Path,
     path: &Path,
+    module_map: &ModuleMap,
 ) -> Result<(Vec<Finding>, Vec<UseFix>)> {
+    let Some(current_module_path) = module_map.scannable_module_path(source_root, path)? else {
+        return Ok((Vec::new(), Vec::new()));
+    };
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
         parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let current_module_path = rust_syntax::file_module_path(source_root, path)
-        .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = support::line_offsets(&text);
     let file_context = ScanFileContext {
         analysis_root,

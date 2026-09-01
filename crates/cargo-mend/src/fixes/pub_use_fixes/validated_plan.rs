@@ -19,9 +19,8 @@ use syn::visit::Visit;
 use super::parent_boundary::ParentBoundaryKey;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::fixes::imports::UseFix;
-use crate::rust_syntax;
+use crate::rust_syntax::ModuleMap;
 use crate::rust_syntax::PathAnchor;
-use crate::selection::Selection;
 
 pub(super) struct ValidatedPubUsePlan {
     pub(super) parent_boundary:    ParentBoundaryKey,
@@ -119,7 +118,6 @@ impl Visit<'_> for PubUseFixVisitor<'_> {
 }
 
 pub(super) fn rewrite_subtree_imports_for_plans(
-    selection: &Selection,
     plans: &[ValidatedPubUsePlan],
 ) -> Result<Vec<UseFix>> {
     let mut plan_groups: BTreeMap<PathBuf, Vec<&ValidatedPubUsePlan>> = BTreeMap::new();
@@ -135,6 +133,13 @@ pub(super) fn rewrite_subtree_imports_for_plans(
         let parent_dir = parent_module
             .parent()
             .context("candidate parent boundary had no parent directory")?;
+        let source_root = find_source_root(&parent_module).with_context(|| {
+            format!(
+                "failed to determine src root for parent boundary {}",
+                parent_module.display()
+            )
+        })?;
+        let module_map = ModuleMap::resolve(&source_root);
         for file in rust_source_files(parent_dir)? {
             if file == parent_module {
                 continue;
@@ -143,9 +148,10 @@ pub(super) fn rewrite_subtree_imports_for_plans(
                 continue;
             }
             fixes.extend(rewrite_in_subtree_imports(
-                &selection.analysis_root,
                 &file,
                 &parent_plans,
+                &source_root,
+                &module_map,
             )?);
         }
     }
@@ -155,23 +161,18 @@ pub(super) fn rewrite_subtree_imports_for_plans(
 }
 
 fn rewrite_in_subtree_imports(
-    analysis_root: &Path,
     file: &Path,
     plans: &[&ValidatedPubUsePlan],
+    source_root: &Path,
+    module_map: &ModuleMap,
 ) -> Result<Vec<UseFix>> {
+    let Some(base_module_path) = module_map.scannable_module_path(source_root, file)? else {
+        return Ok(Vec::new());
+    };
     let source =
         fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
     let syntax =
         parse_file(&source).with_context(|| format!("failed to parse {}", file.display()))?;
-    let source_root = find_source_root(file).with_context(|| {
-        format!(
-            "failed to determine src root for subtree file {} under {}",
-            file.display(),
-            analysis_root.display()
-        )
-    })?;
-    let base_module_path = rust_syntax::file_module_path(&source_root, file)
-        .with_context(|| format!("failed to determine module path for {}", file.display()))?;
     let offsets = line_offsets(&source);
     let mut visitor = PubUseFixVisitor {
         file,

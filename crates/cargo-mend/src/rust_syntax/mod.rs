@@ -1,9 +1,17 @@
 mod lexical_regions;
+mod module_map;
 
 use std::ffi::OsStr;
 use std::path::Path;
 
 pub(crate) use lexical_regions::LexicalRegions;
+pub(crate) use module_map::FileModulePath;
+pub(crate) use module_map::ModuleDirectories;
+pub(crate) use module_map::ModuleMap;
+use syn::Meta;
+use syn::MetaList;
+use syn::Token;
+use syn::punctuated::Punctuated;
 
 /// Whether `character` can appear inside a Rust identifier.
 pub(crate) fn identifier_character(character: char) -> bool {
@@ -48,6 +56,12 @@ impl From<&str> for PathAnchor {
 enum BoundaryModuleName<'a> {
     Root,
     Named(&'a str),
+}
+
+/// The comma-separated `Meta` items inside an attribute list such as
+/// `cfg(...)` or `cfg_attr(...)`.
+pub(crate) fn parse_meta_list(list: &MetaList) -> syn::Result<Punctuated<Meta, Token![,]>> {
+    list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
 }
 
 pub(crate) fn leading_super_count(segments: &[String]) -> usize {

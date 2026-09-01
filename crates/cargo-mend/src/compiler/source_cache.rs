@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
+#[cfg(test)]
 use std::ffi::OsStr;
 use std::fs;
 use std::hash::Hash;
@@ -19,21 +20,17 @@ use rayon::iter::ParallelIterator;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 use syn::Attribute;
-use syn::Expr;
 use syn::File;
 use syn::Item;
 use syn::ItemMod;
 use syn::ItemUse;
-use syn::Lit;
 use syn::Macro;
 use syn::Meta;
 use syn::MetaList;
 use syn::Path as SynPath;
-use syn::Token;
 use syn::UseTree;
 use syn::ext::IdentExt;
 use syn::parse_file;
-use syn::punctuated::Punctuated;
 use syn::visit;
 use syn::visit::Visit;
 
@@ -44,7 +41,9 @@ use super::constants::SOURCE_DIR_TESTS;
 use super::sweep_counters;
 use crate::reporting::AllFeaturesCoverage;
 use crate::rust_syntax::LexicalRegions;
+use crate::rust_syntax::ModuleDirectories;
 use crate::rust_syntax::PathAnchor;
+use crate::rust_syntax::parse_meta_list;
 #[cfg(test)]
 use crate::selection::CARGO_TARGET_KIND_LIB;
 #[cfg(test)]
@@ -253,9 +252,6 @@ impl SourceCache {
         let mut structural_parent_module_paths = FxHashMap::default();
         collect_declared_module_files(
             &crate_root_file,
-            crate_root_file
-                .parent()
-                .unwrap_or(crate_root_file.as_path()),
             &[],
             &mut visited,
             &mut source_files,
@@ -372,7 +368,6 @@ fn name_hash(name: &str) -> u64 {
 
 fn collect_declared_module_files(
     source_file: &Path,
-    module_directory: &Path,
     module_path: &[String],
     visited: &mut FxHashSet<PathBuf>,
     source_files: &mut Vec<PathBuf>,
@@ -393,7 +388,7 @@ fn collect_declared_module_files(
     };
     collect_module_items(
         &file.items,
-        module_directory,
+        &ModuleDirectories::for_file(&source_file),
         module_path,
         visited,
         source_files,
@@ -403,7 +398,7 @@ fn collect_declared_module_files(
 
 fn collect_module_items(
     items: &[Item],
-    module_directory: &Path,
+    directories: &ModuleDirectories,
     module_path: &[String],
     visited: &mut FxHashSet<PathBuf>,
     source_files: &mut Vec<PathBuf>,
@@ -419,7 +414,7 @@ fn collect_module_items(
         if let Some((_, child_items)) = &item_mod.content {
             collect_module_items(
                 child_items,
-                &module_directory.join(module_name),
+                &directories.inside_inline_module(&module_name),
                 &child_module_path,
                 visited,
                 source_files,
@@ -428,18 +423,10 @@ fn collect_module_items(
             continue;
         }
 
-        for module_file in external_module_files(item_mod, module_directory) {
+        for module_file in directories.declared_module_files(item_mod) {
             if !module_file.is_file() {
                 continue;
             }
-            let child_directory =
-                if module_file.file_name().and_then(OsStr::to_str) == Some("mod.rs") {
-                    module_file
-                        .parent()
-                        .map_or_else(|| module_directory.to_path_buf(), Path::to_path_buf)
-                } else {
-                    module_file.with_extension("")
-                };
             let canonical_module_file =
                 fs::canonicalize(&module_file).unwrap_or_else(|_| module_file.clone());
             let parent_paths = structural_parent_module_paths
@@ -450,7 +437,6 @@ fn collect_module_items(
             }
             collect_declared_module_files(
                 &canonical_module_file,
-                &child_directory,
                 &child_module_path,
                 visited,
                 source_files,
@@ -459,93 +445,6 @@ fn collect_module_items(
         }
     }
     Ok(())
-}
-
-fn external_module_files(item_mod: &ItemMod, module_directory: &Path) -> Vec<PathBuf> {
-    let module_name = item_mod.ident.unraw().to_string();
-    let direct_paths = item_mod
-        .attrs
-        .iter()
-        .filter_map(direct_path_attribute)
-        .map(|path| module_directory.join(path))
-        .collect::<Vec<_>>();
-    let mut candidates = if direct_paths.is_empty() {
-        vec![
-            module_directory.join(format!("{module_name}.rs")),
-            module_directory.join(module_name).join("mod.rs"),
-        ]
-    } else {
-        direct_paths
-    };
-    for path in item_mod.attrs.iter().flat_map(conditional_path_attributes) {
-        let candidate = module_directory.join(path);
-        if !candidates.contains(&candidate) {
-            candidates.push(candidate);
-        }
-    }
-    candidates
-}
-
-fn direct_path_attribute(attribute: &Attribute) -> Option<String> {
-    if !attribute.path().is_ident("path") {
-        return None;
-    }
-    path_from_meta(&attribute.meta)
-}
-
-fn conditional_path_attributes(attribute: &Attribute) -> Vec<String> {
-    if !attribute.path().is_ident("cfg_attr") {
-        return Vec::new();
-    }
-    let Meta::List(list) = &attribute.meta else {
-        return Vec::new();
-    };
-    let Ok(metas) = parse_meta_list(list) else {
-        return Vec::new();
-    };
-    let mut paths = Vec::new();
-    for meta in metas.iter().skip(1) {
-        collect_conditional_paths(meta, &mut paths);
-    }
-    paths
-}
-
-fn collect_conditional_paths(meta: &Meta, paths: &mut Vec<String>) {
-    if meta.path().is_ident("path") {
-        if let Some(path) = path_from_meta(meta) {
-            paths.push(path);
-        }
-        return;
-    }
-    if !meta.path().is_ident("cfg_attr") {
-        return;
-    }
-    let Meta::List(list) = meta else {
-        return;
-    };
-    let Ok(metas) = parse_meta_list(list) else {
-        return;
-    };
-    for nested in metas.iter().skip(1) {
-        collect_conditional_paths(nested, paths);
-    }
-}
-
-fn path_from_meta(meta: &Meta) -> Option<String> {
-    let Meta::NameValue(name_value) = meta else {
-        return None;
-    };
-    let Expr::Lit(expr_lit) = &name_value.value else {
-        return None;
-    };
-    let Lit::Str(path) = &expr_lit.lit else {
-        return None;
-    };
-    Some(path.value())
-}
-
-fn parse_meta_list(list: &MetaList) -> syn::Result<Punctuated<Meta, Token![,]>> {
-    list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
 }
 
 fn source_all_features_coverage(
