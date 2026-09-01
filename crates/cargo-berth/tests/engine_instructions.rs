@@ -20,6 +20,7 @@ const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const CORRUPT_JOURNAL_RECORD: &[u8] = b"this journal record is not JSON\n";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
+const POST_TOOL_USE_INVALID_PAYLOAD_SCENARIO: &str = "post-tool-use invalid payload";
 const POST_TOOL_USE_SCENARIO: &str = "post-tool-use coordination identity recovery";
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const SCRATCH_ROOT: &str = "/tmp/claude";
@@ -76,6 +77,43 @@ fn the_check_verb_states_its_own_ledger_unreadable_instructions() -> TestResult 
     };
     inspect_rendered_block(scenario, 0, block)?;
     assert_ledger_unreadable_instruction(&envelope, block)
+}
+
+/// The refusal for a payload this verb cannot read is the engine's own instruction.
+///
+/// This is the sentence a reader acts on when no drift check covered their Bash call, and the
+/// only text the engine prints on that path, so nothing else states it for them. It must name
+/// the engine, instruct only in `cargo-berth` commands, and name every part of the payload
+/// shape it refuses on: a clause the verb rejects but the sentence omits sends the reader
+/// hunting a fault the text never mentions.
+#[test]
+fn the_post_tool_use_verb_states_its_own_invalid_payload_instructions() -> TestResult {
+    let envelope = post_tool_use_invalid_payload_envelope()?;
+    let scenario = POST_TOOL_USE_INVALID_PAYLOAD_SCENARIO;
+
+    let shell_command_count = inspect_rendered_blocks(scenario, &envelope)?;
+    if shell_command_count == 0 {
+        return Err(failure(format!(
+            "{scenario} rendered no blocks containing shell commands"
+        )));
+    }
+
+    let summary = required_string(&envelope, "/presentation/blocks/0/summary", scenario)?;
+    if !summary.contains("cargo-berth") {
+        return Err(failure(format!(
+            "{scenario} should name the engine that refused the payload: {summary:?}"
+        )));
+    }
+
+    let detail = required_string(&envelope, "/presentation/blocks/0/detail", scenario)?;
+    for refused_part in ["valid JSON", "tool_name", "session_id", "cwd"] {
+        if !detail.contains(refused_part) {
+            return Err(failure(format!(
+                "{scenario} should name {refused_part:?} among the payload parts it refuses on: {detail:?}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The check verb's ledger-unreadable block must state the engine's own words.
@@ -276,6 +314,25 @@ fn append_unknown_release(repository_root: &Path) -> TestResult {
     serde_json::to_writer(&mut journal, &event)?;
     journal.write_all(b"\n")?;
     Ok(())
+}
+
+/// The refusal `hook post-tool-use` states for a payload that reports no Bash call.
+///
+/// The payload is well-formed JSON naming another tool, so the verb refuses it on the shape
+/// of the payload alone and never reaches the repository. That is the same refusal a
+/// malformed body reaches, and it is the one carrying the engine's instructions.
+fn post_tool_use_invalid_payload_envelope() -> TestResult<Value> {
+    let repository = initialized_repository()?;
+
+    let payload = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Read",
+        "cwd": working_directory_argument(repository.path())?,
+        "session_id": "engine-instructions-invalid-payload",
+    });
+    let refused = run_hook_verb(repository.path(), "post-tool-use", &payload)?;
+    require_success(&refused, POST_TOOL_USE_INVALID_PAYLOAD_SCENARIO)?;
+    hook_response_envelope(&refused, POST_TOOL_USE_INVALID_PAYLOAD_SCENARIO)
 }
 
 /// The recovery text `hook post-tool-use` publishes when drift cannot attribute a session.

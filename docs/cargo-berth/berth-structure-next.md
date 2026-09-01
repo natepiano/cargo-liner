@@ -43,9 +43,12 @@ edit gate allows every write with no output at all, held by
 `tests/hooks.rs::unconfigured_no_facts_allows_silently`. A worktree added after
 `init` is therefore uncoordinated and says nothing about it.
 
+The pre-edit wrapper is now a presence check plus `exec`, so no front end can add
+that diagnostic: it is the engine's to state or nobody's.
+
 Satisfied by: a new worktree of an initialized repository resolving the existing
-configuration, or refusing with a diagnostic that names the real cause and the
-command that fixes it.
+configuration, or the engine refusing with a diagnostic that names the real cause
+and the command that fixes it.
 
 ## 4. `reference-transaction` bakes an absolute worktree path into a shared hook
 
@@ -56,21 +59,30 @@ but the installed hook embeds the absolute path of the worktree that installed
 it. A second worktree then runs the first one's hook, and removing that first
 worktree leaves a hook pointing at a path that no longer exists.
 
+The baked value is the `__POLICY_WORKTREE__` substitution
+(`src/gate/install.rs:468`). The same install path owns
+`__refresh-managed-hook-after-trunk-deletion`, which carries
+`CommandResultReporting::GitHookProtocol` and which no test in this crate invokes
+as a command line — its `Cli::run` doc comment says so rather than claiming
+coverage it lacks.
+
 Satisfied by: a hook that resolves its own repository and worktree at run time,
-with a test that installs from one worktree and exercises the gate from another.
+with a test that installs from one worktree and exercises the gate from another,
+plus a command-line test for `__refresh-managed-hook-after-trunk-deletion`.
 
 ## 5. The edit gate honors no bypass at all
 
-**Target:** `~/.claude/scripts/berth/install/hooks/berth_pre_edit.sh` (and, after
-phase 6, the wrapper that replaces it) and
-`crates/cargo-berth/src/hook/pre_tool_use.rs`.
+**Target:** `~/.claude/scripts/berth/install/hooks/berth_pre_edit.sh` — now a
+presence check plus `exec` — and `crates/cargo-berth/src/hook/pre_tool_use.rs`.
 
 `CARGO_BERTH_BYPASS` is read in exactly one place —
 `gate::permit::environment_bypass_requested` (`src/gate/permit.rs:166`), called
-from `src/cli.rs:1496` on the `reference-transaction` trunk gate — and
-`berth_pre_edit.sh` never mentions it. So an engine that hangs or crashes blocks
-every write with no escape hatch, which is exactly when one is needed, and the
-wrapper that replaces the hook inherits that unless it is built in.
+from `src/cli.rs:1450` on the `reference-transaction` trunk gate — and the
+pre-edit wrapper never mentions it. The wrapper checks only whether
+`cargo-berth` is on `PATH` and then `exec`s it, so it cannot recover from a hang
+at all: after the `exec` there is no shell left to time out. An engine that hangs
+or crashes therefore blocks every write with no escape hatch, which is exactly
+when one is needed, and the short-circuit has to sit before the `exec`.
 
 Satisfied by: the pre-edit path short-circuiting to an allow on
 `CARGO_BERTH_BYPASS=1` before any engine invocation, with the pending-bypass
@@ -100,6 +112,11 @@ not block a `check` or a `claim` from this run. Two sessions sharing a worktree
 can therefore both believe they hold the same paths, which is the condition the
 engine exists to prevent.
 
+The consolidation of run eligibility makes
+`Reservation::is_active_for_coordination_run_and_worktree` the one home for that
+predicate, and this item changes what the predicate means, so schedule this after
+that consolidation or the two rewrite the same lines.
+
 Satisfied by: same-worktree foreign reservations entering the refusal path with
 their holder facts, and a test covering two runs in one worktree.
 
@@ -115,9 +132,12 @@ exists — `tests/engine_instructions.rs` carries named real-binary scenarios
 `hook_response_envelope`) — so the remaining work is binding README blocks to
 those scenarios rather than building the harness. The drift is recurring, not
 hypothetical: the instruction-naming phase required four manual documentation
-corrections, the hook-verb phase swept the README by hand again, and the cutover
-that retires the coordinator carries a third hand sweep over text it changes
-wholesale.
+corrections, the hook-verb phase swept the README by hand again, and the
+coordinator cutover carried a third hand sweep over text it changed wholesale.
+That cutover also removed the last obstacle — the three installed hooks are
+pass-throughs, so every quoted hook block is the engine's own rendering. The one
+exception is the wrappers' binary-absent notices, produced without an engine and
+asserted directly in `~/.claude/scripts/berth/tests/test_hook_rendering.py`.
 
 Satisfied by: each README block presented as observed engine output being sourced
 from a named real-binary scenario or frozen fixture, with a test that fails when
@@ -178,3 +198,88 @@ command with `CARGO_BERTH_SESSION_ID=<session uuid>` is what worked.
 Satisfied by: the printed recovery command succeeding when run verbatim from a
 non-hook environment — proven by a test that runs the rendered command as text
 and asserts the following check is no longer ambiguous.
+
+## 12. `board` prints a pointer to its own JSON while holding the rendered report
+
+**Target:** `crates/cargo-berth/src/output.rs` — `render_text` (`:2624`) and
+`BOARD_READ_SUMMARY` (`:95`).
+
+`render_text` renders `self.message`, the recovered-bypass markers and the
+alerts, and never reads `self.payload.presentation`. So `cargo-berth board`
+without `--json` prints "The reservation board was read. Use `cargo-berth board
+--json` to inspect it." while the same envelope carries the complete board report
+as presentation blocks. Every consumer that reads presentation sees the report;
+the one that reads text sees a pointer to it.
+
+Satisfied by: `render_text` rendering the presentation blocks when the envelope
+carries them, with a test that runs `cargo-berth board` in a repository holding a
+reservation and asserts the reservation appears on stdout.
+
+## 13. Two different conditions print the same summary sentence
+
+**Target:** `crates/cargo-berth/src/output.rs` (`UNSTATED_CONDITION_SUMMARY`,
+`:118`) and `crates/cargo-berth/src/hook/post_tool_use.rs`
+(`UNAVAILABLE_WORKING_DIRECTORY_SUMMARY`, `:40`).
+
+Both constants are the string "cargo-berth could not inspect this Bash call." One
+means the engine answered a condition it does not state in its own words; the
+other means the hook's working directory does not exist or is unavailable. A
+reader who sees the sentence cannot tell which happened, and the two have
+different repairs.
+
+Satisfied by: each condition carrying a summary that names it, with a test
+asserting the two texts differ.
+
+## 14. The duplicate-incursion hard stop is asserted nowhere in the crate
+
+**Target:** `crates/cargo-berth/tests/lifecycle.rs` against
+`ReservationReplayError::DuplicateIncursionIncident`
+(`crates/cargo-berth/src/reservation/mod.rs:2048`).
+
+Journal replay refuses a duplicated incursion record with the status
+`duplicate_incursion_incident` and names the command that recovers from it. The
+coordinator cutover surfaced the answer — the retired two-call front end had made
+the timing cell that reached it unreachable — but nothing under
+`crates/cargo-berth/tests/` asserts the status or the rendered text, and the only
+named surface is the timing matrix outside the repository.
+
+Satisfied by: a test building a journal with a duplicated incursion record and
+asserting the status `duplicate_incursion_incident` and its rendered recovery
+command.
+
+## 15. One reporting answer covers two git routes and cannot say which
+
+**Target:** `crates/cargo-berth/src/cli.rs` — `CommandResultReporting::GitHookProtocol`.
+
+`HookProtocol(HookCommand)` names the hook it selects, and the route test asserts
+that every harness hook route selects the hook it declares. `GitHookProtocol` is a
+unit variant covering both `__reference-transaction` and
+`__refresh-managed-hook-after-trunk-deletion`, so the same test can assert only
+that the two refuse with `UsageError` — not which route answered. The asymmetry
+is why one of the pair has its exit statuses proved end to end in `tests/gate.rs`
+while the other has no command-line test in the crate at all.
+
+Satisfied by: `GitHookProtocol` carrying the route it answers for, and the
+route test asserting each git route selects the one it declares.
+
+## 16. The published post-tool-use timing bound still describes the retired front end
+
+**Target:** `~/.claude/scripts/berth/tests/installed_front_end.py` —
+`POST_TOOL_USE_BOUND_SECONDS` (`:43`).
+
+The bound is `0.20`, measured when the installed hook parsed and validated JSON in
+bash and made more than one engine call. The wrappers are now a presence check plus
+`exec`, so the number describes a process topology that no longer exists. The
+re-key to binary and wrapper availability landed; the measurement did not, because
+the cold-page gate requires zero resident pages for `git` and any sibling session
+executing git faults them straight back in.
+
+The remaining structural phases are behavior-preserving moves that cannot change
+process topology, so nothing later in this plan will make the number wrong in a
+new way — but nothing later will fix it either.
+
+Satisfied by: a serialized measurement on a machine with no other active session,
+every timing cell from `attribution` onward corrected to its measured process
+counts, and the bound republished. Do not widen the bound to make the run green,
+and do not loosen `COLD_PAGE_INVALIDATION_ATTEMPTS` or accept a non-zero
+resident-page count: both convert a refusal to measure into a false measurement.

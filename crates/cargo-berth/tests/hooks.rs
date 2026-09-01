@@ -95,6 +95,17 @@ const LOCK_CONTENTION_SUMMARY: &str = "cargo-berth rejected this edit because an
 const MUTATION_LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const PAUSED_GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
+/// The summary `hook post-tool-use` states for a payload it cannot read.
+const POST_TOOL_USE_INVALID_PAYLOAD_SUMMARY: &str =
+    "cargo-berth rejected an invalid PostToolUse payload.";
+/// The detail `hook post-tool-use` states for a payload it cannot read.
+const POST_TOOL_USE_INVALID_PAYLOAD_DETAIL: &str = "STOP: `cargo-berth hook post-tool-use` requires valid JSON, tool_name Bash, a session_id of 1 to 256 characters with no control characters, and a cwd that is a string when it is present. Run `cargo-berth drift --reservation <id> --json` by hand.";
+/// The summary `hook post-tool-use` states for a working directory it cannot enter.
+const POST_TOOL_USE_UNAVAILABLE_WORKING_DIRECTORY_SUMMARY: &str =
+    "cargo-berth could not inspect this Bash call.";
+/// The detail `hook post-tool-use` states for a working directory it cannot enter.
+const POST_TOOL_USE_UNAVAILABLE_WORKING_DIRECTORY_DETAIL: &str =
+    "STOP: the hook working directory does not exist or is unavailable.";
 const REPOSITORY_FIXTURE_ROOT: &str = "{FIXTURE_ROOT}/repository";
 const RESERVATION_LIMIT_SUMMARY: &str =
     "cargo-berth rejected this edit because it could not accept the request.";
@@ -2641,6 +2652,14 @@ fn post_tool_use_on_an_unconfigured_repository_says_nothing() -> TestResult {
     assert_hook_output(&output, 0, b"", b"")
 }
 
+/// The two refusals this verb can state are different refusals, and the reader is told which.
+///
+/// Both conditions stop the reader, so the word `STOP` cannot tell them apart, and the
+/// working-directory summary is byte-identical to the unstated-condition summary a
+/// post-Bash response falls back to, so a summary alone cannot either. Each refusal is
+/// therefore asserted against the exact summary and detail its own condition states, which
+/// pins which condition produced the response rather than only that the two responses
+/// differ.
 #[test]
 fn post_tool_use_rejects_a_payload_it_cannot_read() -> TestResult {
     let repository = committed_configuration_repository()?;
@@ -2652,9 +2671,14 @@ fn post_tool_use_rejects_a_payload_it_cannot_read() -> TestResult {
         HookResponseEvent::PostToolUse,
         "malformed payload",
     )?;
-    assert!(
-        malformed_feedback.additional_context.contains("STOP"),
-        "a payload cargo-berth cannot read should stop the reader: {malformed_feedback:?}"
+    assert_eq!(
+        malformed_feedback.system_message, POST_TOOL_USE_INVALID_PAYLOAD_SUMMARY,
+        "a payload cargo-berth cannot read should state the invalid-payload summary"
+    );
+    assert_eq!(
+        malformed_feedback.additional_context, POST_TOOL_USE_INVALID_PAYLOAD_DETAIL,
+        "a payload cargo-berth cannot read should state the invalid-payload detail, which \
+         stops the reader and names the drift command to run by hand"
     );
 
     let absent_working_directory = run_post_tool_use(
@@ -2671,9 +2695,26 @@ fn post_tool_use_rejects_a_payload_it_cannot_read() -> TestResult {
         HookResponseEvent::PostToolUse,
         "absent working directory",
     )?;
-    assert!(
-        absent_feedback.additional_context.contains("STOP"),
-        "a working directory that does not exist should stop the reader: {absent_feedback:?}"
+    assert_eq!(
+        absent_feedback.system_message, POST_TOOL_USE_UNAVAILABLE_WORKING_DIRECTORY_SUMMARY,
+        "a working directory the hook cannot enter should state the unavailable-directory \
+         summary"
+    );
+    assert_eq!(
+        absent_feedback.additional_context, POST_TOOL_USE_UNAVAILABLE_WORKING_DIRECTORY_DETAIL,
+        "a working directory the hook cannot enter should state the unavailable-directory \
+         detail, which stops the reader and names the working directory"
+    );
+
+    assert_ne!(
+        malformed_feedback.system_message, absent_feedback.system_message,
+        "a payload the verb cannot read and a working directory it cannot enter are different \
+         conditions and must not share one summary"
+    );
+    assert_ne!(
+        malformed_feedback.additional_context, absent_feedback.additional_context,
+        "a payload the verb cannot read and a working directory it cannot enter are different \
+         conditions and must not share one detail"
     );
     Ok(())
 }
@@ -3196,4 +3237,34 @@ fn released_work_trunk_cannot_prove(
     let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
     let (evidence, trunk) = lose_integration_evidence(&repository, worktrees.path(), loss)?;
     Ok((evidence, trunk, repository, worktrees))
+}
+
+/// The retired two-step route is gone from the command line, not merely unused by the hook.
+///
+/// `hook post-tool-use` reads its payload from standard input and completes its answer in one
+/// process. The hidden `--post-tool-use-payload` flag on `drift` and `board` was the other half
+/// of the two-step route the front end drove before it became a pass-through, and a flag the
+/// parser still accepts is a route a later change can put back into service without deciding to.
+#[test]
+fn the_retired_post_tool_use_payload_flag_is_no_longer_a_command_line_argument() -> TestResult {
+    let repository = committed_configuration_repository()?;
+
+    for verb in ["drift", "board"] {
+        let refused = run_berth(
+            repository.path(),
+            &[verb, "--json", "--post-tool-use-payload"],
+        )?;
+
+        assert_ne!(
+            refused.status.code(),
+            Some(0),
+            "`cargo-berth {verb} --json --post-tool-use-payload` should no longer be accepted"
+        );
+        let refusal = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            refusal.contains("--post-tool-use-payload"),
+            "the parser should name the argument it does not recognise for {verb}: {refusal}"
+        );
+    }
+    Ok(())
 }

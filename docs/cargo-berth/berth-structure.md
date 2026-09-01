@@ -384,247 +384,39 @@ fixture retires that structure with it.
   cutover, leaving one sentence and one edit.
 - Adding a machine-readable action list to the session-start response — no consumer.
 
-### Phase 6 — Retire the coordinator and the generated validators · status: todo
+### Phase 6 — Retire the coordinator and the generated validators · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** The installed front end is three thin hook wrappers and an installer.
-`claim_state.py`, the generated Python status tables, and the generated jq
-validator are gone; every caller that reached the coordinator reaches the binary
-instead; and the behavior they covered is covered by Rust tests.
-
-**Spec:** Phase 2 already deleted the classification layer and the large
-generated tables. What is left to retire is smaller and different from what this
-Work Order originally described, so take this inventory as the scope:
-
-| Residual | Size | Disposition |
-| --- | --- | --- |
-| `~/.claude/scripts/berth/claim_state.py` | 331 lines | deleted, after its callers migrate |
-| `~/.claude/scripts/berth/generated/status_payload_tables.py` | 47 lines | deleted |
-| `~/.claude/scripts/berth/generated/envelope_validation.jq` | 34 lines | deleted |
-| `install/hooks/berth_pre_edit.sh` | 597 lines | reduced to a wrapper |
-| `install/hooks/berth_post_bash.sh` | 570 lines | reduced to a wrapper |
-| `install/hooks/berth_session_start.sh` | 378 lines | reduced to a wrapper |
-| `install/install.sh` | — | loses generated-artifact staging, validation, rollback |
-| `output_contract.rs` artifact constants and builders | — | lose the two consumer artifacts |
-
-The three generator functions this Work Order used to name —
-`render_python_tables`, `render_jq_validator`, and
-`generated_python_exports_wire_name_discriminators` — **no longer exist**;
-`output_contract.rs` is 393 lines and carries no suppression at all. What remains
-there is the artifact constants and the builder entries that publish
-`consumer_artifacts`. Remove only the two consumer artifacts and their builders;
-the contract's schemas stay.
-
-**The coordinator has callers outside the hooks, and the original gate could not
-see them.** The three hooks read envelope presentation directly and do not
-invoke `claim_state.py` at all. Its real consumers are command documents:
-`~/.claude/commands/sync.md`, `~/.claude/commands/plan/delegate.md`, and
-`~/.claude/commands/plan/delegate_checkpoint.md`. Deleting the module without
-migrating them leaves three commands calling something that is not there. Each
-must move to invoking `cargo-berth` directly while preserving what the
-coordinator did for them: repository-root resolution from any directory inside
-the repository, `CARGO_BERTH_SESSION_ID` propagation from
-`CLAUDE_CODE_SESSION_ID`, one invocation per command with no retry, access to the
-proposal token and envelope fields, and a `state.rendered_markdown` equivalent to
-print verbatim. Rewrite the command documents in the same phase that deletes the
-module.
-
-Reduce each hook to a binary presence check plus `exec cargo-berth hook <event>`,
-keeping each hook's existing failure mode when the binary is absent: fail closed
-for pre-edit, a static repair notice for post-bash, a static installation notice
-for session-start. That failure mode is the one piece of policy that must stay
-outside, because it is what the front end says when there is no engine to ask.
-
-**This phase is the atomic cutover.** Phases 4 and 5 deliberately left the hidden
-`--post-tool-use-payload` paths in place because the installed `berth_post_bash.sh`
-still drives them. Installing the wrappers and deleting those paths happens here,
-together, or the installed hook breaks between phases.
-
-`tests/front_end_corpus.rs` runs both generated validators — it extracts
-`consumer_artifacts` from the contract and calls `run_python_shell_consumer` and
-`run_jq_shell_consumer`, failing if either artifact is absent. Delete that
-validator-compatibility lane and keep the frozen text oracle: the fixture
-`tests/fixtures/front_end_corpus.json` records real engine renderings and stays.
-
-`tests/test_hook_rendering.py` keeps only what genuinely remains outside — that
-each installed wrapper execs the binary, and that each hook's binary-absent
-failure mode holds. Do not delete a behavior assertion without naming its Rust
-replacement. `HookTimingTests` **cannot simply stay**: it fingerprints both
-generated validators, requires the jq validator to exist, measures a
-`generated_validator_needs_repair` outcome that this phase removes, and borrows
-infrastructure from `HookRenderingTests`. Re-key its matrix to binary and wrapper
-availability, extract the infrastructure it still needs into its own module, and
-remeasure the published timing bound — the process topology changes, so the old
-number no longer describes anything.
-
-`work_order.py` is not berth runtime — it validates plan documents and does not
-touch the ledger. Leave it exactly where it is.
-
-The engine keeps a documented envelope shape for any independent consumer that
-appears later. A second-language validator on the first-party path is what let an
-installed front end and an installed binary disagree, and that is the defect this
-plan exists to close.
+- The installed front end is three hook wrappers: each checks that `cargo-berth` is on `PATH` and then `exec`s `cargo-berth hook <event>`, so the engine writes every byte of the harness protocol response — byte-identical on stdout, stderr and exit status to invoking the engine directly for all three events. The one policy each wrapper still states alone is its binary-absent failure mode: pre-edit refuses (exit 2, stderr notice), post-bash and session-start state it and exit 0, since neither can refuse what it reports on. Both notices are static JSON written with `printf`, so they hold when nothing else on the path does.
+- `Command::execute` returns which hook answers rather than running it — `CommandOutputOwnership::HookOwnsItsResponse(HookCommand)`, with `Cli::run` calling `HookCommand::write_response()` one frame later. All 16 entries of `cli.rs`'s `ALL: [Self; 16]` route table assert their real ownership from a unit test that reads no stdin.
+- `CommandResultReporting` has three answers: `Envelope`, `HookProtocol(HookCommand)`, and `GitHookProtocol` for `__reference-transaction` and `__refresh-managed-hook-after-trunk-deletion`, which return from `Cli::run` before any envelope exists.
+- The hidden `--post-tool-use-payload` two-step route is refused by the command line rather than merely unused; `PostToolUseRendering::FeedbackDecidedByLiveIncursionState` survives as the domain decision `hook/post_tool_use.rs:237` reads to choose whether to consult `live_incursion_state()`. `INVALID_PAYLOAD_DETAIL` now names `cwd` alongside JSON validity, `tool_name` and `session_id`.
+- `claim_state.py`, the generated Python status tables and the generated jq validator are deleted; `consumer_artifacts` is gone from `output_contract.rs` and from the generated contract, swept across four regions of `json-contract.md`. `/sync`, `/plan:delegate` and `/plan:delegate_checkpoint` invoke the binary directly, resolving the repository root from a subdirectory, propagating the harness session id, invoking once, and printing the engine's rendered text verbatim.
+- The Python suite is three modules — the fixture, the surviving wrapper tests, and the timing tests re-keyed to binary and wrapper availability. Its cells now build durable ledger states rather than mutating the journal between two front-end calls, which names two engine answers the retired two-call route had obscured: `could not read the reservation ledger` and `REPLAY HARD STOP: duplicate_incursion_incident`.
 
 **Files:**
-- `crates/cargo-berth/src/cli.rs`
-- `crates/cargo-berth/src/output.rs`
-- `crates/cargo-berth/src/output_contract.rs`
-- `crates/cargo-berth/src/hook/mod.rs`
-- `crates/cargo-berth/src/hook/post_tool_use.rs`
-- `crates/cargo-berth/tests/front_end_corpus.rs`
-- `crates/cargo-berth/tests/hooks.rs`
-- `crates/cargo-berth/README.md`
-- `docs/cargo-berth/generated/output-contract.json`
+- `crates/cargo-berth/src/cli.rs` — the command line, its three route tests, and the `ALL: [Self; 16]` route table
+- `crates/cargo-berth/src/output_contract.rs` — the wire contract without consumer artifacts
+- `crates/cargo-berth/tests/front_end_corpus.rs` — the frozen front-end oracle, its three coverage tables, and the `MINIMUM_FROZEN_CORPUS_ENTRIES = 50` ratchet
+- `docs/cargo-berth/json-contract.md` — the wire contract independent consumers read
+- `~/.claude/scripts/berth/install/hooks/*.sh` — the three wrappers (outside this repository)
+- `~/.claude/scripts/berth/install/install.sh` — build, publish, roll back; no generated-artifact staging, validation, or second rollback arm
+- `~/.claude/scripts/berth/tests/{installed_front_end,test_hook_rendering,test_hook_timing}.py` — the front-end suite (outside this repository)
 
-**Seats:** 2 writers + 1 tester — the in-repository deletions and the
-outside-the-repository front end are disjoint, and the Rust and Python test
-lanes are a third group.
-- `impl` — `cli.rs`, `output.rs`, `output_contract.rs`, `hook/mod.rs`,
-  `hook/post_tool_use.rs`, the generated output contract, and `README.md`;
-  hub: `cli.rs` (where the legacy dispatch is removed)
-- `test` — the Rust hook, corpus, and instruction tests, and
-  `tests/test_hook_rendering.py`
-- `review` — opens as `impl`; the installed hooks, the installer, the
-  coordinator, and the command documents; hub: `install/install.sh`
+**Binds later work:** `CommandOutputOwnership::HookRendered(ExitCode)` no longer exists anywhere. `cli.rs` changed substantially — the two-step route removed, the ownership enum restructured, three unit tests added. Nothing under `tests/` asserts over the generated output contract any more; the `GENERATED_CONTRACT_JSON` include is gone from `front_end_corpus.rs`. Because the wrappers are pass-throughs, changing a hook's rendered text changes what users see with no front-end edit and no front-end file to forget.
 
-`README.md` moves to `impl` rather than staying with the front-end seat. Gate
-item 9's sweep can only be done against text `impl` is still deleting from
-`cli.rs` and `output.rs`, so a reader holding it has to wait on a writer — the
-shape that let phase 5 book a coverage row against a test another seat had
-already deleted. A file a writer and a reader both need has one owner for the
-whole phase, and it is the writer.
+**Gotchas:**
+- `MINIMUM_FROZEN_CORPUS_ENTRIES = 50` is a ratchet: deleting a corpus entry fails `the_frozen_corpus_never_shrinks` by name, deliberately, because the coverage partition alone stays balanced when an entry and its row go together.
+- `POST_TOOL_USE_BOUND_SECONDS = 0.20` was not remeasured and still describes the retired two-call front end. The cold-page gate demands zero resident pages for `git`, and any other process on the machine executing git faults them back in. Neither widen the bound nor loosen the gate to make a run green — both turn a refusal to measure into a false measurement.
+- Break-and-restore is what busts the clippy cache correctly: a run that fails to compile leaves no cached success. `cargo clean -p` costs a full rebuild and wipes a `target/` other processes may be using.
+- `__refresh-managed-hook-after-trunk-deletion` has no command-line test in this crate, and the `Cli::run` doc comment says so rather than claiming coverage it lacks.
 
-**Acceptance gate:**
-1. `grep -rl 'claim_state' ~/.claude/` returns nothing, and both generated
-   artifacts are gone along with the builders that emitted them. Use `grep -r`,
-   not `rg`: an ignore file under `~/.claude/` silently hides these matches
-   from `rg`, which is how the callers above went unnoticed. There is a **fourth**
-   caller beyond the three command documents:
-   `~/.claude/scripts/berth/tests/test_hook_rendering.py:5701` invokes
-   `python3 -m berth.claim_state`, with coordinator behavior tests around it
-   inside `HookRenderingTests` (for instance
-   `test_the_coordinator_reports_a_nested_tag_its_tables_do_not_name` at `:5709`).
-   That block is subject to the Spec's rule above and to gate item 7.
-2. `/sync`, `/plan:delegate`, and `/plan:delegate_checkpoint` invoke
-   `cargo-berth` directly and still resolve the repository root from a
-   subdirectory, propagate the harness session id, invoke once, and print the
-   engine's rendered text verbatim.
-3. Each hook is a wrapper that execs the binary, and a test proves each one's
-   binary-absent failure mode still holds.
-4. A Rust CLI test proves what the coordinator's verb and exit-code agreement
-   checks proved, with the exception phase 4 introduced: every command whose
-   `Command::result_reporting()` answers `CommandResultReporting::Envelope(verb)`
-   emits that verb in the envelope and returns the envelope's exit code as its
-   process exit. A command answering `CommandResultReporting::HookProtocol` emits
-   no envelope and owns its own exit code through
-   `CommandOutputOwnership::HookRendered(ExitCode)`; the test asserts that
-   exception holds rather than skipping those commands.
-5. Every wrapper and binary-absence case in
-   `tests/fixtures/front_end_corpus.json` is accounted for by a **partition, not
-   a count**: each entry either names the test that drives it or carries a row
-   naming the reason it has none, the two sets are disjoint, and together they
-   exhaust the wrapper and binary-absence entries counted from the fixture
-   itself. `tests/front_end_corpus.rs` still carries the bare totals
-   `EXPECTED_CORPUS_ENTRIES` (`:14`) and `EXPECTED_UNCOVERED_CORPUS_ENTRIES`
-   (`:17`), asserted by `every_corpus_entry_is_text_compared_or_reported_uncovered`
-   — a gate phrased over those numbers is satisfiable by lowering one, which is
-   the exact failure that forced phase 5 to rewrite its own gate item 3
-   mid-phase. Follow the shape phase 5 established with
-   `HOOK_ACCEPTANCE_TEXT_COMPARED_ENTRIES` and
-   `HOOK_CORPUS_ENTRIES_WITHOUT_A_TEST`, which covers only the `PostToolUse` and
-   `SessionStart` lane. Note that `every_cited_acceptance_test_exists_in_the_suite`
-   (`:1047`) `include_str!`s `tests/hooks.rs` alone, so a wrapper test placed in
-   any other file gets no citation guard unless this phase widens it.
-   The validator-compatibility lane is removed and the frozen text oracle is
-   retained.
-6. `HookTimingTests` is re-keyed to binary/wrapper availability, names no
-   generated artifact, and publishes a remeasured bound. The remeasurement is
-   taken with the wrapper and binary installed and **no concurrent seat
-   building** — the delegate build token has never engaged, so seats share one
-   `target/`, and phase 5 watched the same wall-clock test read 52.7s under a
-   peer's build and 74.456s serialized. A number a seat measures under load
-   describes the load, not the hook. Either serialize the measurement or defer
-   the published number to the checkpoint.
-7. Every behavior assertion removed from `test_hook_rendering.py` is named
-   alongside the Rust test that now covers it.
-8. The `cli.rs` residue of the two-step route is gone: the hidden
-   `--post-tool-use-payload` flags (`:274` and `:549`),
-   `PostToolUseLiveIncursionBoardInput` (`:1195`), `PostToolUseInvocation` and
-   `PostToolUseInvocationKind`, `prepare_post_tool_use_invocation`,
-   `post_tool_use_invocation_exit_code`, and `emit_post_tool_use_rendering`
-   (`:1963`). `blocked_edit_answer_guidance` either stays put or moves with its
-   parser-backed `cli.rs` test.
-   **`PostToolUseRendering::FeedbackDecidedByLiveIncursionState`
-   (`src/output.rs:353`) survives the cutover.** Phase 5 renamed it from
-   `RequiresLiveIncursionBoard` and turned it from a wire-return marker into the
-   domain decision the verb itself reads at `src/hook/post_tool_use.rs:237` to
-   decide whether to call `live_incursion_state()`. Deleting it deletes the
-   internal round trip phase 5 built.
-   Each item the deletion strands narrows or goes with it: `ObservedBashCall::from_value`,
-   `ObservedBashCall::enter_current_process` and `PostToolUseObservationError` are
-   `pub(crate)` only so `cli.rs` can drive the legacy route, and
-   `POST_TOOL_USE_NO_FEEDBACK_EXIT_CODE`, `POST_TOOL_USE_FEEDBACK_EXIT_CODE`,
-   `POST_TOOL_USE_LIVE_BOARD_REQUIRED_EXIT_CODE` (`src/cli.rs:158-160`) plus the
-   two invalid-payload exit-code constants lose their only readers. Narrow each to
-   `hook`-private or delete it: a `dead_code` warning cannot be suppressed under
-   this plan's binding constraint.
-9. Every quoted engine-output block and hook description in
-   `crates/cargo-berth/README.md` still matches what the code emits after the
-   cutover.
-10. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass, and
-    the surviving Python suite passes.
-11. The engine's invalid-payload sentence names `cwd`. `INVALID_PAYLOAD_DETAIL`
-    (`crates/cargo-berth/src/hook/post_tool_use.rs:39`) states that the verb
-    requires "valid JSON, tool_name Bash, and a session_id of 1 to 256 characters
-    with no control characters" — but a non-string `cwd` is rejected at `:126`
-    and is covered by `a_non_string_working_directory_is_an_invalid_payload`, so
-    the sentence under-describes what it refuses. Add a `cwd` clause and delete
-    the assertion at `~/.claude/scripts/berth/tests/test_hook_rendering.py:1630-1631`
-    that quotes the shell's own differing wording. This is a single edit in this
-    phase, not a two-sided change: the shell half
-    (`install/hooks/berth_post_bash.sh:503`) disappears when that hook becomes a
-    wrapper, leaving the engine constant as the only sentence.
-
-**Constraints from prior phases:** phases 4 and 5 must both have landed and been
-installed — deleting the coordinator before all three verbs work leaves three
-worktrees with no edit gate. Install and exercise the new wrappers against a
-scratch repository under `/tmp/claude/` before deleting anything, and keep the
-existing rollback copies until the installed path is green. **The whole of this
-phase's front-end half lives outside the repository and cannot be committed —
-say so in the summary.**
-
-**This phase owns every wrapper edit and installation in the plan.** Phases 4 and
-5 deliberately left the installed hooks untouched, so nothing is half-cut over
-when this phase starts.
-
-The compatibility plumbing this phase deletes reaches four source files. The
-hidden `--post-tool-use-payload` flags and `PostToolUseLiveIncursionBoardInput`
-are in `src/cli.rs`. It is also **documented as a live route in two `hook/`
-files** phase 5 wrote: `src/hook/mod.rs:93` and
-`src/hook/post_tool_use.rs:130-134` both describe `--post-tool-use-payload` as
-something the installed hook still drives, and both statements stop being true at
-the cutover. `src/hook/post_tool_use.rs` additionally holds the engine's
-`INVALID_PAYLOAD_DETAIL` at `:39`, which gate item 11 edits. `src/output.rs`
-holds `PostToolUseRendering::FeedbackDecidedByLiveIncursionState`, which gate
-item 8 keeps rather than deletes. Phase 3
-added a parser-backed test in `src/cli.rs` that feeds each rendered
-overlap-answer command back through the real command-line surface; if
-`blocked_edit_answer_guidance` moves, that test moves with it rather than being
-dropped.
-
-**This phase owns byte-for-byte wrapper pass-through.** Each reduced wrapper must
-deliver the engine's `PreToolUse`, `PostToolUse`, and `SessionStart` output
-unchanged — that is the user-actionable consequence of the cutover, and gate
-items 3 and 5 are its acceptance tests. The wrappers' binary-absent notices are
-the one text produced without an engine, so `tests/engine_instructions.rs` does
-not govern them; assert them directly instead.
-
-Phase 3 proved stale README quotes go undetected by the suite. This phase changes
-what every hook prints, so sweep every quoted block and hook description in
-`crates/cargo-berth/README.md`.
-
----
+**Ruled out:**
+- Asserting the exit-code half through `Cli::run` — `ExitCode` has no `PartialEq`, so the comparison would run over `Debug` strings in an undocumented format and could go tautological; `tests/drift.rs` and `tests/overlap.rs` already pair process exit against the envelope field at four distinct non-zero codes.
+- Serializing the Rust suite against the working-directory hazard — nextest runs each test in its own process, `verify.sh` and CI use it exclusively, and the drop guard restores on panic.
+- Amending `berth-fix.md`'s `claim_state` references — that is a prior plan's as-built record, and correcting it belongs to that plan's closeout.
+- Giving both git-invoked commands a `HookRendered(ExitCode)` return to collapse the reporting enum to two states — the `HookOwnsItsResponse` restructure reaches the same end.
 
 ### Phase 7 — One home for run eligibility and reservation-id ordering · status: todo
 
@@ -647,16 +439,28 @@ the next paragraph owns, not a fourth eligibility call — while the same `actor
 "active for this run and worktree" through the method. Where a site means
 something narrower, say so at that site rather than widening the method.
 
-Reservation-id ordering by rendered string appears five times:
+Reservation-id ordering by rendered string appears six times:
 `verb/claim.rs:453` (`sort_by_cached_key`), `drift/ordering.rs:12`,
-`output.rs:3883`, `board/mod.rs:945`, and `gate/mod.rs:962`. `drift::ordering` is
-`pub(super)` to `drift`, so no other caller can reach it. Give the ordering one
-home with `ReservationId` in `crates/cargo-berth/src/ids.rs`, and encode the
-guarantee in the type rather than in a comment: a `Vec<ReservationId>` that four
-call sites promise to have sorted is not a guarantee, and phase 1's candidate
-list documents its determinism only in prose. Introduce a named ordered
-collection — `WireOrderedReservationIds` or an equally explicit name — that can
-only be constructed sorted, and have the wire-facing producers hold it.
+`output.rs:3887`, `board/mod.rs:945`, `gate/mod.rs:962`, and `reconcile.rs:1708`,
+which sorts by `predecessor_id.to_string()` where `GraphPredecessor::reservation_id`
+is a `ReservationId` (`edge/mod.rs:220`). `drift::ordering` is `pub(super)` to
+`drift`, so no other caller can reach it. Give the ordering one home with
+`ReservationId` in `crates/cargo-berth/src/ids.rs`, and encode the guarantee in
+the type rather than in a comment: a `Vec<ReservationId>` that four call sites
+promise to have sorted is not a guarantee, and phase 1's candidate list documents
+its determinism only in prose. Introduce a named ordered collection —
+`WireOrderedReservationIds` or an equally explicit name — that can only be
+constructed sorted, and have the wire-facing producers hold it.
+
+**The ordering has two guarantees, not one, and the type must express both.**
+`drift/ordering.rs` exposes `sort_reservation_ids` (`:12`) and
+`sort_and_deduplicate_reservation_ids` (`:17`). Four callers require the
+deduplicating form — `drift/report.rs:110`, `drift/classification.rs:96`, `:123`,
+and `:161` — and four require only the sort: `verb/claim.rs:453`,
+`output.rs:3887`, `board/mod.rs:945`, and `gate/mod.rs:962`. A single sorted-only
+collection leaves `drift` holding a wrapper, which is the duplicate this phase
+exists to remove. Decide the shape here rather than mid-phase: the collection
+carries both constructions, and each one names the guarantee it makes.
 
 This is behavior-preserving. Every existing test passes unmodified, and the
 ordering the wire already emits does not change.
@@ -667,17 +471,23 @@ ordering the wire already emits does not change.
 - `crates/cargo-berth/src/verb/claim.rs`
 - `crates/cargo-berth/src/drift/ordering.rs`
 - `crates/cargo-berth/src/drift/selection.rs`
+- `crates/cargo-berth/src/drift/report.rs`
+- `crates/cargo-berth/src/drift/classification.rs`
 - `crates/cargo-berth/src/output.rs`
 - `crates/cargo-berth/src/board/mod.rs`
 - `crates/cargo-berth/src/gate/mod.rs`
+- `crates/cargo-berth/src/reconcile.rs`
 
-**Seats:** 2 writers + 0 testers + reserve — the ordering type and the
-eligibility consolidation are independent, and the phase changes no behavior, so
-there is no lane to write tests against ahead of the code.
-- `impl` — `ids.rs` and every ordering caller; hub: `ids.rs`
-  (`WireOrderedReservationIds` and its unit test)
-- `test` — opens as `impl`; the `reservation/mod.rs` eligibility consolidation
-- `review` — reserve
+**Seats:** 3 writers + 0 testers — no caller can convert until
+`WireOrderedReservationIds` exists, so every seat waits on `impl`'s first commit
+of the type before its own edits compile. Plan for that: `impl` lands the type
+first and says so on the board, and the other two read the tree before starting.
+- `impl` — `ids.rs`, `verb/claim.rs`, `output.rs`, `board/mod.rs`,
+  `gate/mod.rs`; hub: `ids.rs` (the type lands first; its callers convert behind it)
+- `test` — the drift lane: `drift/ordering.rs`, `drift/selection.rs`,
+  `drift/report.rs`, `drift/classification.rs`
+- `review` — the `reservation/mod.rs` eligibility consolidation, and
+  `reconcile.rs:1708`
 
 **Acceptance gate:**
 1. A crate-wide sweep finds one implementation of the run-and-worktree
@@ -687,7 +497,9 @@ there is no lane to write tests against ahead of the code.
    ordering idiom over `WorktreeId` rather than `ReservationId`. **That site is
    out of scope**: this phase gives `ReservationId` one ordering home, and
    widening to a second id type is a different consolidation. Leave it, and do
-   not let the sweep stall on it.
+   not let the sweep stall on it. `reconcile.rs:1708` is **in** scope by the same
+   test — it orders `ReservationId` — and is routed through the new collection
+   like every other site.
 2. The ordered collection cannot be constructed unsorted, and that is proven by
    a test rather than asserted in a comment.
 3. The existing suite passes unmodified — this phase changes no behavior.
@@ -933,7 +745,7 @@ Split along row assembly, visibility and omission policy, the
 answer/disposition rendering, and the report-and-presentation cluster.
 `append_authorization_answer` sits in the answer-rendering cluster: its six
 parameters are the audit row's complete input, so give that cluster a semantic
-projection type — name it `RecordedAuthorizationConsequenceProjection` —
+projection type — name it `RecordedAuthorizationConsequence` —
 carrying the recorded authorization and its current consequence
 rather than suppressing the count — the type says what the row is, where the
 parameter list only says how many pieces it has. `board/tests.rs` is an existing
@@ -1035,7 +847,7 @@ pre-authorized test-module boilerplate — `clippy::expect_used`, and
 `needless_pass_by_value` at `:4385`. The test splits into its arrangement and its
 per-disposition assertions; the helper takes its payload by reference.
 
-`crates/cargo-berth/src/cli.rs:587` suppresses `struct_excessive_bools` on the
+`crates/cargo-berth/src/cli.rs:585` suppresses `struct_excessive_bools` on the
 resolve arguments, whose flags are one mutually exclusive disposition each and
 are already grouped by `RESOLVE_DISPOSITION_GROUP`. Replace the flag set with
 semantic groups that convert immediately into `ResolveDecision` at the Clap
@@ -1043,6 +855,19 @@ boundary, so the boolean count disappears rather than being excused. Confine the
 raw optionals to one explicitly boundary-owned type —
 `UnvalidatedResolveDispositionSelection` — that Clap fills and that converts into
 the existing `ResolveDecision` at once, so nothing optional reaches the verb.
+
+`ResolveArguments.why` (`crates/cargo-berth/src/cli.rs:645`) is a bare
+`Option<String>` carrying a domain fact — the justification for a deliberate
+abandonment or an orphan retirement — so name what it converts into rather than
+letting a `String` reach `ResolveDecision`. The converted form belongs beside the
+disposition it justifies, since a justification with no disposition is not a
+state this command line can reach.
+
+**The resolve route is now a wire fact, not only a parser fact.** Phase 6 added
+`CommandLineRoute::Resolve.arguments()` (`crates/cargo-berth/src/cli.rs:2070`),
+which builds the literal argv `resolve <id> --recovered --json` for the recovery
+command the engine prints. Replacing the resolve flag set changes that argv, so
+the route table is part of this phase's surface and its acceptance gate.
 
 `crates/cargo-berth/src/ids.rs:132` carries a
 `cfg_attr(not(test), expect(dead_code, …))` on the `uuid_identifier!` macro's
@@ -1078,12 +903,21 @@ them are the test suite, so a real test lane exists.
    `needless_pass_by_value`, or `struct_excessive_bools` suppression.
 2. Every surviving allow names only pre-authorized test lints, and each one's
    module actually uses the lint's pattern — no speculative allows.
-3. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
-4. `bash ~/.claude/scripts/delegate/verify.sh final` passes, and
+3. `CommandLineRoute::Resolve.arguments()` still builds a runnable resolve
+   command line, and the three `cli.rs` route tests phase 6 added still pass
+   unmodified.
+4. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
+5. `bash ~/.claude/scripts/delegate/verify.sh final` passes, and
    `~/.claude/scripts/lint/lint mend`, `lint clippy --workspace`, and `lint doc`
    are all clean.
 
-**Constraints from prior phases:** the module phases own every other
+**Constraints from prior phases:** phase 6 added three unit tests to
+`crates/cargo-berth/src/cli.rs` that this phase must keep compiling and true:
+`only_the_hook_routes_answer_a_protocol_instead_of_an_envelope`,
+`every_command_line_route_answers_through_the_output_ownership_it_declares`
+(`:2593`), and the `ALL: [Self; 16]` route table they iterate. The resolve route
+must still report `CommandResultReporting::Envelope(CommandVerb::Resolve)` after
+the flag set is replaced. The module phases own every other
 non-boilerplate suppression in the crate — phase 8 the two `too_many_lines` sites
 in `reconcile.rs`, phase 9 the one in `git/mod.rs`, phase 10 the two in
 `reservation/mod.rs`, and phase 12 the three in `board/mod.rs`. If one survives,

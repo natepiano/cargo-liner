@@ -26,7 +26,6 @@ use clap::Error;
 use clap::Parser;
 use clap::Subcommand;
 use clap::error::ErrorKind;
-use serde_json::Value;
 
 use crate::answer::OverlapAuthorizationReason;
 use crate::answer::OverlapAuthorizationRequest;
@@ -64,8 +63,6 @@ use crate::gate::permit::EnvironmentBypassRetentionOutcome;
 use crate::git;
 use crate::git::LocalBranchRenameTargetResolution;
 use crate::hook;
-use crate::hook::post_tool_use::ObservedBashCall;
-use crate::hook::post_tool_use::PostToolUseObservationError;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
@@ -85,7 +82,6 @@ use crate::ledger::WorkPlanReference;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::PostCommitRendering;
-use crate::output::PostToolUseRendering;
 use crate::recovery;
 use crate::recovery::IncursionAnswerScope;
 use crate::recovery::RenewRequest;
@@ -156,12 +152,6 @@ const RETIRE_ORPHAN_ARGUMENT_ID: &str = "retire_orphan";
 const RUN_ARGUMENT: &str = "run";
 const RUN_VALUE_NAME: &str = "COORDINATION_RUN_ID";
 const POST_COMMIT_HOOK_ENVIRONMENT: &str = "CARGO_BERTH_POST_COMMIT";
-const POST_TOOL_USE_NO_FEEDBACK_EXIT_CODE: u8 = 20;
-const POST_TOOL_USE_FEEDBACK_EXIT_CODE: u8 = 21;
-const POST_TOOL_USE_LIVE_BOARD_REQUIRED_EXIT_CODE: u8 = 22;
-const POST_TOOL_USE_PAYLOAD_ARGUMENT: &str = "post-tool-use-payload";
-const INVALID_POST_TOOL_USE_PAYLOAD_EXIT_CODE: u8 = 2;
-const UNAVAILABLE_POST_TOOL_USE_WORKING_DIRECTORY_EXIT_CODE: u8 = 3;
 const TRUNK_OID_VALUE_NAME: &str = "TRUNK_OID";
 const WHY_ARGUMENT: &str = "why";
 const WHY_VALUE_NAME: &str = "WHY";
@@ -241,7 +231,7 @@ struct HookArguments {
 }
 
 /// Harness hook entry points implemented by the engine.
-#[derive(Debug, Subcommand)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Subcommand)]
 enum HookCommand {
     /// Authorize one file-writing tool request read from standard input.
     PreToolUse,
@@ -249,6 +239,20 @@ enum HookCommand {
     PostToolUse,
     /// Publish current coordination state for one session opening read from standard input.
     SessionStart,
+}
+
+impl HookCommand {
+    /// Write this hook's protocol response and report the exit status the process publishes.
+    ///
+    /// Reading this process's standard input happens here, so a caller that only needs to know
+    /// which hook answers an invocation never reaches it.
+    fn write_response(self) -> ExitCode {
+        match self {
+            Self::PreToolUse => hook::pre_tool_use::execute(),
+            Self::PostToolUse => hook::post_tool_use::execute(),
+            Self::SessionStart => hook::session_start::execute(),
+        }
+    }
 }
 
 /// The `--json` flag shared by every verb.
@@ -268,13 +272,10 @@ struct BoardArguments {
         value_name = RESERVATION_VALUE_NAME,
         requires = JSON_ARGUMENT
     )]
-    reservation:           Option<ReservationId>,
-    /// Read and apply one raw `PostToolUse` payload before assembling the board.
-    #[arg(long = POST_TOOL_USE_PAYLOAD_ARGUMENT, hide = true, requires = JSON_ARGUMENT)]
-    post_tool_use_payload: bool,
+    reservation: Option<ReservationId>,
     /// The output representation requested for this command.
     #[command(flatten)]
-    json_output:           JsonOutput,
+    json_output: JsonOutput,
 }
 
 /// Coordination identity management commands.
@@ -540,16 +541,13 @@ struct ReservationArguments {
 struct DriftArguments {
     /// Name the active reservation to widen or receive an incursion record.
     #[arg(long = RESERVATION_ARGUMENT, value_name = RESERVATION_VALUE_NAME)]
-    reservation:           Option<ReservationId>,
+    reservation: Option<ReservationId>,
     /// Run the complete four-command comparison against the protected phase-start HEAD.
     #[arg(long = FULL_ARGUMENT)]
-    full:                  bool,
-    /// Read and apply one raw `PostToolUse` payload before running drift.
-    #[arg(long = POST_TOOL_USE_PAYLOAD_ARGUMENT, hide = true, requires = JSON_ARGUMENT)]
-    post_tool_use_payload: bool,
+    full:        bool,
     /// The output representation requested for this command.
     #[command(flatten)]
-    json_output:           JsonOutput,
+    json_output: JsonOutput,
 }
 
 /// Arguments for the `sequence` verb.
@@ -672,43 +670,16 @@ impl Cli {
             },
             command => command,
         };
-        let post_tool_use_invocation = match prepare_post_tool_use_invocation(&command) {
-            Ok(invocation) => invocation,
-            Err(error) => return post_tool_use_invocation_exit_code(&error),
-        };
         let output_format = command.output_format();
         let recovery_command_line = RecoveryCommandLine::current_process();
         match command.execute(output_format, &recovery_command_line) {
             CommandOutputOwnership::CallerRendersResponse(output_envelope) => {
-                match post_tool_use_invocation {
-                    PostToolUseInvocation::NotRequested => {},
-                    PostToolUseInvocation::Drift => {
-                        return emit_post_tool_use_rendering(
-                            output_envelope.post_tool_use_rendering(),
-                            &output_envelope,
-                        );
-                    },
-                    PostToolUseInvocation::LiveIncursionBoard { drift_envelope } => {
-                        return emit_post_tool_use_rendering(
-                            drift_envelope
-                                .post_tool_use_rendering_with_live_board(&output_envelope),
-                            &output_envelope,
-                        );
-                    },
-                }
-                let berth_exit = output_envelope.exit_code;
-                match command_response_rendering(output_format, post_commit_hook_request()) {
-                    CommandResponseRendering::OutputEnvelope(output_format) => {
-                        emit_response(output_format, &output_envelope);
-                    },
-                    CommandResponseRendering::PostCommitWarning => {
-                        emit_post_commit_response(&output_envelope);
-                    },
-                }
-                berth_exit.into()
+                publish_envelope_response(output_format, &output_envelope).into()
             },
             CommandOutputOwnership::BoardPresentedAndTerminalRestored => BerthExit::Clear.into(),
-            CommandOutputOwnership::HookRendered(exit_code) => exit_code,
+            CommandOutputOwnership::HookOwnsItsResponse(hook_command) => {
+                hook_command.write_response()
+            },
         }
     }
 }
@@ -758,20 +729,8 @@ impl Command {
                 Ok(check_request) => check::execute(check_request, recovery_command_line),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Check, &error),
             },
-            Self::Hook(HookArguments {
-                command: HookCommand::PreToolUse,
-            }) => {
-                return CommandOutputOwnership::HookRendered(hook::pre_tool_use::execute());
-            },
-            Self::Hook(HookArguments {
-                command: HookCommand::PostToolUse,
-            }) => {
-                return CommandOutputOwnership::HookRendered(hook::post_tool_use::execute());
-            },
-            Self::Hook(HookArguments {
-                command: HookCommand::SessionStart,
-            }) => {
-                return CommandOutputOwnership::HookRendered(hook::session_start::execute());
+            Self::Hook(HookArguments { command }) => {
+                return CommandOutputOwnership::HookOwnsItsResponse(command);
             },
             Self::Claim(claim_arguments) => match claim_arguments.into_claim_request() {
                 Ok(claim_request) => claim::execute(claim_request, recovery_command_line),
@@ -852,19 +811,51 @@ impl Command {
             Self::Init(_) => CommandResultReporting::Envelope(CommandVerb::Init),
             Self::Board(_) => CommandResultReporting::Envelope(CommandVerb::Board),
             Self::Check(_) => CommandResultReporting::Envelope(CommandVerb::Check),
-            Self::Hook(_) => CommandResultReporting::HookProtocol,
+            Self::Hook(HookArguments { command }) => CommandResultReporting::HookProtocol(*command),
             Self::Claim(_) => CommandResultReporting::Envelope(CommandVerb::Claim),
             Self::Drift(_) => CommandResultReporting::Envelope(CommandVerb::Drift),
             Self::Release(_) => CommandResultReporting::Envelope(CommandVerb::Release),
             Self::Sequence(_) => CommandResultReporting::Envelope(CommandVerb::Sequence),
-            Self::Integrate(_)
-            | Self::ReferenceTransaction(_)
-            | Self::RefreshManagedHookAfterTrunkDeletion(_) => {
-                CommandResultReporting::Envelope(CommandVerb::Integrate)
-            },
+            Self::Integrate(_) => CommandResultReporting::Envelope(CommandVerb::Integrate),
             Self::Resolve(_) => CommandResultReporting::Envelope(CommandVerb::Resolve),
             Self::Renew(_) => CommandResultReporting::Envelope(CommandVerb::Renew),
             Self::Identity(_) => CommandResultReporting::Envelope(CommandVerb::Identity),
+            Self::ReferenceTransaction(_) | Self::RefreshManagedHookAfterTrunkDeletion(_) => {
+                CommandResultReporting::GitHookProtocol
+            },
+        }
+    }
+
+    /// Name the coverage row this parsed command belongs to.
+    #[cfg(test)]
+    const fn route(&self) -> CommandLineRoute {
+        match self {
+            Self::Init(_) => CommandLineRoute::Init,
+            Self::Board(_) => CommandLineRoute::Board,
+            Self::Check(_) => CommandLineRoute::Check,
+            Self::Hook(HookArguments {
+                command: HookCommand::PreToolUse,
+            }) => CommandLineRoute::HookPreToolUse,
+            Self::Hook(HookArguments {
+                command: HookCommand::PostToolUse,
+            }) => CommandLineRoute::HookPostToolUse,
+            Self::Hook(HookArguments {
+                command: HookCommand::SessionStart,
+            }) => CommandLineRoute::HookSessionStart,
+            Self::Claim(_) => CommandLineRoute::Claim,
+            Self::Drift(_) => CommandLineRoute::Drift,
+            Self::Release(_) => CommandLineRoute::Release,
+            Self::Sequence(_) => CommandLineRoute::Sequence,
+            Self::Integrate(_) => CommandLineRoute::Integrate,
+            Self::Resolve(_) => CommandLineRoute::Resolve,
+            Self::Renew(_) => CommandLineRoute::Renew,
+            Self::Identity(IdentityArguments {
+                command: IdentityCommand::ClearSession(_),
+            }) => CommandLineRoute::IdentityClearSession,
+            Self::ReferenceTransaction(_) => CommandLineRoute::ReferenceTransaction,
+            Self::RefreshManagedHookAfterTrunkDeletion(_) => {
+                CommandLineRoute::RefreshManagedHookAfterTrunkDeletion
+            },
         }
     }
 }
@@ -875,8 +866,53 @@ impl Command {
 enum CommandResultReporting {
     /// The command renders one response envelope recorded under this verb.
     Envelope(CommandVerb),
-    /// The command writes its own harness hook protocol response instead of an envelope.
-    HookProtocol,
+    /// The command answers with this harness hook's protocol response instead of an envelope.
+    HookProtocol(HookCommand),
+    /// The command answers a git hook invocation: any diagnostic goes to standard error
+    /// and the process exit status is the whole answer, so no envelope is ever rendered.
+    GitHookProtocol,
+}
+
+/// One command line for every route the frozen interface publishes a result through.
+///
+/// A new [`Command`] variant forces a new member here through [`Command::route`], and a new
+/// member forces [`CommandLineRoute::ALL`] to grow, so no route can enter the parser without
+/// a row in the coverage the tests below assert over.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandLineRoute {
+    /// `init` initializes the shared ledger.
+    Init,
+    /// `board` inspects reservations and integration constraints.
+    Board,
+    /// `check` asks whether proposed paths collide with a foreign reservation.
+    Check,
+    /// `hook pre-tool-use` authorizes one file-writing tool request.
+    HookPreToolUse,
+    /// `hook post-tool-use` reports drift for one completed Bash call.
+    HookPostToolUse,
+    /// `hook session-start` publishes coordination state for one session opening.
+    HookSessionStart,
+    /// `claim` reserves paths for a reservation.
+    Claim,
+    /// `drift` compares observed changes with reservation scopes.
+    Drift,
+    /// `release` walks a reservation through its lifecycle.
+    Release,
+    /// `sequence` records an ordering relationship.
+    Sequence,
+    /// `integrate` moves trunk to this worktree's head.
+    Integrate,
+    /// `resolve` answers an incursion or records a recovery disposition.
+    Resolve,
+    /// `renew` refreshes a reservation's activity record.
+    Renew,
+    /// `identity clear-session` drops the process's disposable session mapping.
+    IdentityClearSession,
+    /// The private dispatch git's installed `reference-transaction` hook invokes.
+    ReferenceTransaction,
+    /// The private worker scheduled after a committed trunk-ref deletion.
+    RefreshManagedHookAfterTrunkDeletion,
 }
 
 /// Who owns presenting a command's result once the command has run.
@@ -885,8 +921,12 @@ enum CommandOutputOwnership {
     CallerRendersResponse(Box<OutputEnvelope>),
     /// The board TUI presented itself and restored the terminal before returning.
     BoardPresentedAndTerminalRestored,
-    /// A public hook command already wrote its protocol response.
-    HookRendered(ExitCode),
+    /// A public hook command owns its protocol response and the exit status it publishes.
+    ///
+    /// Writing that response reads this process's standard input, so the write belongs to
+    /// [`Cli::run`], which owns the process, rather than to the dispatch that selected the
+    /// hook. Nothing has been written when this value is returned.
+    HookOwnsItsResponse(HookCommand),
 }
 
 impl CheckArguments {
@@ -1159,12 +1199,7 @@ impl DriftArguments {
         } else {
             DriftComparisonChoice::CheapDelta
         };
-        let post_commit_hook_request = if self.post_tool_use_payload {
-            PostCommitHookRequest::Requested
-        } else {
-            post_commit_hook_request()
-        };
-        let reservation = match post_commit_hook_request {
+        let reservation = match post_commit_hook_request() {
             PostCommitHookRequest::Requested => {
                 DriftReservationSelection::EveryActiveForPostCommit {
                     widening: self.reservation.map_or(
@@ -1183,87 +1218,6 @@ impl DriftArguments {
             reservation,
         }
     }
-}
-
-enum PostToolUseInvocation {
-    NotRequested,
-    Drift,
-    LiveIncursionBoard { drift_envelope: Box<OutputEnvelope> },
-}
-
-#[derive(serde::Deserialize)]
-struct PostToolUseLiveIncursionBoardInput {
-    post_tool_use_payload: Value,
-    drift_envelope:        Box<OutputEnvelope>,
-}
-
-/// The process exit status the installed post-Bash hook reads for a rejected payload.
-fn post_tool_use_invocation_exit_code(error: &PostToolUseObservationError) -> ExitCode {
-    match error {
-        PostToolUseObservationError::InvalidPayload => {
-            ExitCode::from(INVALID_POST_TOOL_USE_PAYLOAD_EXIT_CODE)
-        },
-        PostToolUseObservationError::WorkingDirectoryUnavailable => {
-            ExitCode::from(UNAVAILABLE_POST_TOOL_USE_WORKING_DIRECTORY_EXIT_CODE)
-        },
-    }
-}
-
-fn prepare_post_tool_use_invocation(
-    command: &Command,
-) -> Result<PostToolUseInvocation, PostToolUseObservationError> {
-    let requested = match command {
-        Command::Drift(DriftArguments {
-            post_tool_use_payload: true,
-            ..
-        }) => PostToolUseInvocationKind::Drift,
-        Command::Board(BoardArguments {
-            post_tool_use_payload: true,
-            ..
-        }) => PostToolUseInvocationKind::LiveIncursionBoard,
-        Command::Init(_)
-        | Command::Board(_)
-        | Command::Check(_)
-        | Command::Hook(_)
-        | Command::Claim(_)
-        | Command::Drift(_)
-        | Command::Release(_)
-        | Command::Sequence(_)
-        | Command::Integrate(_)
-        | Command::Resolve(_)
-        | Command::Renew(_)
-        | Command::Identity(_)
-        | Command::ReferenceTransaction(_)
-        | Command::RefreshManagedHookAfterTrunkDeletion(_) => {
-            return Ok(PostToolUseInvocation::NotRequested);
-        },
-    };
-    let mut input = String::new();
-    std::io::stdin()
-        .read_to_string(&mut input)
-        .map_err(|_| PostToolUseObservationError::InvalidPayload)?;
-    match requested {
-        PostToolUseInvocationKind::Drift => {
-            let value = serde_json::from_str::<serde_json::Value>(&input)
-                .map_err(|_| PostToolUseObservationError::InvalidPayload)?;
-            ObservedBashCall::from_value(&value)?.enter_current_process()?;
-            Ok(PostToolUseInvocation::Drift)
-        },
-        PostToolUseInvocationKind::LiveIncursionBoard => {
-            let board_input = serde_json::from_str::<PostToolUseLiveIncursionBoardInput>(&input)
-                .map_err(|_| PostToolUseObservationError::InvalidPayload)?;
-            ObservedBashCall::from_value(&board_input.post_tool_use_payload)?
-                .enter_current_process()?;
-            Ok(PostToolUseInvocation::LiveIncursionBoard {
-                drift_envelope: board_input.drift_envelope,
-            })
-        },
-    }
-}
-
-enum PostToolUseInvocationKind {
-    Drift,
-    LiveIncursionBoard,
 }
 
 impl SequenceArguments {
@@ -1940,6 +1894,25 @@ fn initialization_error(error: LedgerError) -> OutputEnvelope {
     }
 }
 
+/// Render one command's response and report the exit status its process publishes.
+///
+/// The envelope's own exit status is what the process returns, so the rendering and the
+/// status it publishes are decided in one place rather than agreeing by convention.
+fn publish_envelope_response(
+    output_format: CliOutputFormat,
+    output_envelope: &OutputEnvelope,
+) -> BerthExit {
+    match command_response_rendering(output_format, post_commit_hook_request()) {
+        CommandResponseRendering::OutputEnvelope(output_format) => {
+            emit_response(output_format, output_envelope);
+        },
+        CommandResponseRendering::PostCommitWarning => {
+            emit_post_commit_response(output_envelope);
+        },
+    }
+    output_envelope.exit_code
+}
+
 fn emit_response(output_format: CliOutputFormat, output_envelope: &OutputEnvelope) {
     let rendered = match output_format {
         CliOutputFormat::Json => match serde_json::to_string(output_envelope) {
@@ -1956,33 +1929,6 @@ fn emit_post_commit_response(output_envelope: &OutputEnvelope) {
         PostCommitRendering::Silent => {},
         PostCommitRendering::Warning(warning) => {
             let _ = writeln!(std::io::stderr().lock(), "{warning}");
-        },
-    }
-}
-
-fn emit_post_tool_use_rendering(
-    rendering: PostToolUseRendering,
-    source_envelope: &OutputEnvelope,
-) -> ExitCode {
-    match rendering {
-        PostToolUseRendering::NoFeedback => ExitCode::from(POST_TOOL_USE_NO_FEEDBACK_EXIT_CODE),
-        PostToolUseRendering::Feedback { summary, detail } => {
-            write_line(
-                serde_json::json!({
-                    "continue": true,
-                    "systemMessage": summary,
-                    "hookSpecificOutput": {
-                        "hookEventName": "PostToolUse",
-                        "additionalContext": detail,
-                    },
-                })
-                .to_string(),
-            );
-            ExitCode::from(POST_TOOL_USE_FEEDBACK_EXIT_CODE)
-        },
-        PostToolUseRendering::FeedbackDecidedByLiveIncursionState => {
-            emit_response(CliOutputFormat::Json, source_envelope);
-            ExitCode::from(POST_TOOL_USE_LIVE_BOARD_REQUIRED_EXIT_CODE)
         },
     }
 }
@@ -2035,7 +1981,10 @@ fn without_subcommand_name(mut arguments: Vec<OsString>) -> Vec<OsString> {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::ffi::OsString;
+    use std::path::Path;
+    use std::path::PathBuf;
 
     use clap::Error;
     use clap::Parser;
@@ -2047,19 +1996,136 @@ mod tests {
     use super::Cli;
     use super::CliOutputFormat;
     use super::Command;
+    use super::CommandLineRoute;
+    use super::CommandOutputOwnership;
     use super::CommandResponseRendering;
     use super::CommandResultReporting;
     use super::CommandVerb;
+    use super::HookCommand;
     use super::PostCommitHookRequest;
     use super::command_response_rendering;
     use super::exit_for_parser_error;
     use super::without_subcommand_name;
+    use crate::coordination_identity::RecoveryCommandLine;
     use crate::exit::BerthExit;
     use crate::output::blocked_edit_answer_guidance;
     use crate::verb::board::BoardOutputSelection;
     use crate::verb::claim::ClaimRequest;
 
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+    const SECOND_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+    const TRUNK_REFERENCE: &str = "refs/heads/main";
+    const TRUNK_TIP: &str = "292471ef2254a985665228c46355571f54e4148a";
+
+    impl CommandLineRoute {
+        /// Every route the frozen interface publishes a result through, one row each.
+        const ALL: [Self; 16] = [
+            Self::Init,
+            Self::Board,
+            Self::Check,
+            Self::HookPreToolUse,
+            Self::HookPostToolUse,
+            Self::HookSessionStart,
+            Self::Claim,
+            Self::Drift,
+            Self::Release,
+            Self::Sequence,
+            Self::Integrate,
+            Self::Resolve,
+            Self::Renew,
+            Self::IdentityClearSession,
+            Self::ReferenceTransaction,
+            Self::RefreshManagedHookAfterTrunkDeletion,
+        ];
+
+        /// One accepted command line that selects this route.
+        fn arguments(self) -> Vec<&'static str> {
+            match self {
+                Self::Init => vec![BINARY_NAME, "init", "--json"],
+                Self::Board => vec![BINARY_NAME, "board", "--json"],
+                Self::Check => vec![BINARY_NAME, "check", "src/lib.rs", "--json"],
+                Self::HookPreToolUse => vec![BINARY_NAME, "hook", "pre-tool-use"],
+                Self::HookPostToolUse => vec![BINARY_NAME, "hook", "post-tool-use"],
+                Self::HookSessionStart => vec![BINARY_NAME, "hook", "session-start"],
+                Self::Claim => vec![
+                    BINARY_NAME,
+                    "claim",
+                    "src/lib.rs",
+                    "--why",
+                    "protect the implementation",
+                    "--json",
+                ],
+                Self::Drift => vec![BINARY_NAME, "drift", "--json"],
+                Self::Release => vec![BINARY_NAME, "release", RESERVATION_ID, "--json"],
+                Self::Sequence => vec![
+                    BINARY_NAME,
+                    "sequence",
+                    RESERVATION_ID,
+                    SECOND_RESERVATION_ID,
+                    "--why",
+                    "the holder API must land first",
+                    "--json",
+                ],
+                Self::Integrate => vec![BINARY_NAME, "integrate", RESERVATION_ID, "--json"],
+                Self::Resolve => {
+                    vec![
+                        BINARY_NAME,
+                        "resolve",
+                        RESERVATION_ID,
+                        "--recovered",
+                        "--json",
+                    ]
+                },
+                Self::Renew => vec![BINARY_NAME, "renew", RESERVATION_ID, "--json"],
+                Self::IdentityClearSession => {
+                    vec![BINARY_NAME, "identity", "clear-session", "--json"]
+                },
+                Self::ReferenceTransaction => vec![
+                    BINARY_NAME,
+                    "__reference-transaction",
+                    "committed",
+                    TRUNK_REFERENCE,
+                ],
+                Self::RefreshManagedHookAfterTrunkDeletion => vec![
+                    BINARY_NAME,
+                    "__refresh-managed-hook-after-trunk-deletion",
+                    TRUNK_REFERENCE,
+                    TRUNK_TIP,
+                ],
+            }
+        }
+
+        /// Where this route states that its result reaches the caller.
+        const fn declared_reporting(self) -> CommandResultReporting {
+            match self {
+                Self::Init => CommandResultReporting::Envelope(CommandVerb::Init),
+                Self::Board => CommandResultReporting::Envelope(CommandVerb::Board),
+                Self::Check => CommandResultReporting::Envelope(CommandVerb::Check),
+                Self::HookPreToolUse => {
+                    CommandResultReporting::HookProtocol(HookCommand::PreToolUse)
+                },
+                Self::HookPostToolUse => {
+                    CommandResultReporting::HookProtocol(HookCommand::PostToolUse)
+                },
+                Self::HookSessionStart => {
+                    CommandResultReporting::HookProtocol(HookCommand::SessionStart)
+                },
+                Self::Claim => CommandResultReporting::Envelope(CommandVerb::Claim),
+                Self::Drift => CommandResultReporting::Envelope(CommandVerb::Drift),
+                Self::Release => CommandResultReporting::Envelope(CommandVerb::Release),
+                Self::Sequence => CommandResultReporting::Envelope(CommandVerb::Sequence),
+                Self::Integrate => CommandResultReporting::Envelope(CommandVerb::Integrate),
+                Self::Resolve => CommandResultReporting::Envelope(CommandVerb::Resolve),
+                Self::Renew => CommandResultReporting::Envelope(CommandVerb::Renew),
+                Self::IdentityClearSession => {
+                    CommandResultReporting::Envelope(CommandVerb::Identity)
+                },
+                Self::ReferenceTransaction | Self::RefreshManagedHookAfterTrunkDeletion => {
+                    CommandResultReporting::GitHookProtocol
+                },
+            }
+        }
+    }
 
     #[derive(Clone, Copy)]
     enum ExpectedClaimResolution {
@@ -2447,6 +2513,181 @@ mod tests {
         assert_eq!(invalid_command_exit, BerthExit::UsageError);
         assert_eq!(help_exit, BerthExit::Clear);
         assert_eq!(version_exit, BerthExit::Clear);
+    }
+
+    /// Every route states where its result reaches the caller, and the parser agrees.
+    ///
+    /// The round trip through [`Command::route`] is what keeps the coverage honest: a row
+    /// whose command line selects some other variant fails here rather than filling a slot
+    /// that its own variant then never occupies.
+    #[test]
+    fn every_command_line_route_declares_the_reporting_its_parser_selects() -> Result<(), String> {
+        for route in CommandLineRoute::ALL {
+            let command = parsed_command(&route.arguments())?;
+
+            assert_eq!(
+                command.route(),
+                route,
+                "the command line for {route:?} selects a different command"
+            );
+            assert_eq!(
+                command.result_reporting(),
+                route.declared_reporting(),
+                "{route:?} reports its result through a route it does not declare"
+            );
+        }
+        Ok(())
+    }
+
+    /// Only the harness hook and git hook routes answer a protocol instead of an envelope.
+    ///
+    /// The exception is asserted rather than skipped: a hook verb
+    /// writes its own response object and owns its exit status through
+    /// [`CommandOutputOwnership::HookOwnsItsResponse`], and the two private git-invoked
+    /// commands return from [`Cli::run`] before any envelope exists.
+    ///
+    /// `__reference-transaction` has its exit statuses proved end to end against the built
+    /// binary in `tests/gate.rs`. No test in this crate invokes
+    /// `__refresh-managed-hook-after-trunk-deletion` as a command line, so the parser
+    /// coverage here is all this crate asserts about that command.
+    #[test]
+    fn only_the_hook_routes_answer_a_protocol_instead_of_an_envelope() {
+        for route in CommandLineRoute::ALL {
+            let answers_a_protocol = !matches!(
+                route.declared_reporting(),
+                CommandResultReporting::Envelope(_)
+            );
+            let is_a_hook_route = matches!(
+                route,
+                CommandLineRoute::HookPreToolUse
+                    | CommandLineRoute::HookPostToolUse
+                    | CommandLineRoute::HookSessionStart
+                    | CommandLineRoute::ReferenceTransaction
+                    | CommandLineRoute::RefreshManagedHookAfterTrunkDeletion
+            );
+
+            assert_eq!(
+                answers_a_protocol, is_a_hook_route,
+                "{route:?} disagrees with itself about whether it renders an envelope"
+            );
+        }
+    }
+
+    /// Every route answers through the output ownership its reporting declares.
+    ///
+    /// The engine runs against an empty scratch directory, so each envelope command fails on
+    /// the absent repository rather than reaching a ledger. What is under test is the
+    /// agreement itself: the ownership [`Command::execute`] hands back for every route, and
+    /// the verb an envelope route records its response under.
+    ///
+    /// No route is skipped. The three harness hook routes are reached without reading this
+    /// process's standard input, because [`Command::execute`] selects the hook and leaves the
+    /// write to [`Cli::run`]. The two private git-invoked routes return from [`Cli::run`]
+    /// before [`Command::execute`] runs at all; what this asserts of them is the refusal that
+    /// guards the public envelope path against ever carrying one.
+    ///
+    /// That an envelope command's own exit status becomes the process exit status is proved
+    /// against the built binary in `tests/drift.rs` and `tests/overlap.rs`. A unit test cannot
+    /// witness it: [`Cli::run`] answers in [`ExitCode`], which carries no equality to assert
+    /// over.
+    #[test]
+    fn every_command_line_route_answers_through_the_output_ownership_it_declares()
+    -> Result<(), String> {
+        let scratch_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let _restored_directory = PreviousWorkingDirectory::left_for(scratch_directory.path())?;
+
+        for route in CommandLineRoute::ALL {
+            let output_ownership = executed_ownership(route)?;
+
+            match route.declared_reporting() {
+                CommandResultReporting::Envelope(declared_verb) => {
+                    let CommandOutputOwnership::CallerRendersResponse(output_envelope) =
+                        output_ownership
+                    else {
+                        return Err(format!("{route:?} rendered no response envelope"));
+                    };
+
+                    assert_eq!(
+                        output_envelope.verb(),
+                        declared_verb,
+                        "{route:?} recorded its response under a verb it does not declare"
+                    );
+                },
+                CommandResultReporting::HookProtocol(declared_hook) => {
+                    let CommandOutputOwnership::HookOwnsItsResponse(selected_hook) =
+                        output_ownership
+                    else {
+                        return Err(format!("{route:?} did not keep ownership of its response"));
+                    };
+
+                    assert_eq!(
+                        selected_hook, declared_hook,
+                        "{route:?} selected a hook it does not declare"
+                    );
+                },
+                CommandResultReporting::GitHookProtocol => {
+                    let CommandOutputOwnership::CallerRendersResponse(refusal) = output_ownership
+                    else {
+                        return Err(format!(
+                            "{route:?} answered no refusal to the envelope path"
+                        ));
+                    };
+
+                    assert_eq!(
+                        refusal.exit_code,
+                        BerthExit::UsageError,
+                        "{route:?} let a private git dispatch through the public envelope path"
+                    );
+                },
+            }
+        }
+        Ok(())
+    }
+
+    fn executed_ownership(route: CommandLineRoute) -> Result<CommandOutputOwnership, String> {
+        let command = parsed_command(&route.arguments())?;
+        let output_format = command.output_format();
+
+        Ok(command.execute(output_format, &RecoveryCommandLine::current_process()))
+    }
+
+    /// The working directory this process returns to when a scratch directory is done with.
+    ///
+    /// `cargo-berth` has no `lib.rs`, so every `#[cfg(test)]` module in `src/` compiles into
+    /// one test binary sharing one process working directory. A test that leaves the process
+    /// standing in a directory that has since been removed breaks whichever test resolves the
+    /// working directory next, so the entry is undone here rather than left to the reader,
+    /// including when an assertion panics.
+    struct PreviousWorkingDirectory {
+        previous_directory: PathBuf,
+    }
+
+    impl PreviousWorkingDirectory {
+        /// Enter `scratch_directory`, remembering the directory to come back to.
+        fn left_for(scratch_directory: &Path) -> Result<Self, String> {
+            let previous_directory = env::current_dir().map_err(|error| error.to_string())?;
+            env::set_current_dir(scratch_directory).map_err(|error| error.to_string())?;
+
+            Ok(Self { previous_directory })
+        }
+    }
+
+    impl Drop for PreviousWorkingDirectory {
+        fn drop(&mut self) {
+            if env::set_current_dir(&self.previous_directory).is_err() {
+                eprintln!(
+                    "the working directory before the scratch directory could not be restored"
+                );
+            }
+        }
+    }
+
+    fn parsed_command(arguments: &[&str]) -> Result<Command, String> {
+        Cli::try_parse_from(without_subcommand_name(
+            arguments.iter().map(OsString::from).collect(),
+        ))
+        .map(|cli| cli.command)
+        .map_err(|error| error.to_string())
     }
 
     fn assert_verb_parses(

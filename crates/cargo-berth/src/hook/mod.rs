@@ -89,10 +89,9 @@ impl HookWorkingDirectorySelection {
     /// payload that names no directory leaves this process where the harness launched
     /// it, which is already the directory the answer is about.
     ///
-    /// A `cwd` present but not a string never reaches here at all: every route into this
-    /// selection, the `--post-tool-use-payload` route included, rejects it as an invalid
-    /// payload rather than coercing it away, because a coerced `cwd` silently observes a
-    /// different repository.
+    /// A `cwd` present but not a string never reaches here at all: every hook event's
+    /// payload boundary rejects it as an invalid payload rather than coercing it away,
+    /// because a coerced `cwd` silently observes a different repository.
     fn enter_current_process(&self) -> Result<(), HookWorkingDirectoryUnavailable> {
         match self {
             Self::PayloadSupplied(working_directory) => {

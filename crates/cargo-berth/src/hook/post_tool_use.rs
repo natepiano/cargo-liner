@@ -36,7 +36,7 @@ use crate::verb::drift;
 
 const HOOK_EVENT_NAME: &str = "PostToolUse";
 const INVALID_PAYLOAD_SUMMARY: &str = "cargo-berth rejected an invalid PostToolUse payload.";
-const INVALID_PAYLOAD_DETAIL: &str = "STOP: `cargo-berth hook post-tool-use` requires valid JSON, tool_name Bash, and a session_id of 1 to 256 characters with no control characters. Run `cargo-berth drift --reservation <id> --json` by hand.";
+const INVALID_PAYLOAD_DETAIL: &str = "STOP: `cargo-berth hook post-tool-use` requires valid JSON, tool_name Bash, a session_id of 1 to 256 characters with no control characters, and a cwd that is a string when it is present. Run `cargo-berth drift --reservation <id> --json` by hand.";
 const UNAVAILABLE_WORKING_DIRECTORY_SUMMARY: &str = "cargo-berth could not inspect this Bash call.";
 const UNAVAILABLE_WORKING_DIRECTORY_DETAIL: &str =
     "STOP: the hook working directory does not exist or is unavailable.";
@@ -78,13 +78,13 @@ impl PostToolUseObservableToolCall {
 }
 
 /// The completed Bash call one raw `PostToolUse` payload reports.
-pub(crate) struct ObservedBashCall {
+struct ObservedBashCall {
     harness_session_id:          HarnessSessionId,
     working_directory_selection: HookWorkingDirectorySelection,
 }
 
 /// A raw `PostToolUse` payload could not be converted into an observable Bash call.
-pub(crate) enum PostToolUseObservationError {
+enum PostToolUseObservationError {
     /// Stdin did not carry a Bash call this verb can attribute to a harness session.
     InvalidPayload,
     /// The payload named a working directory this process could not enter.
@@ -108,7 +108,7 @@ enum LiveIncursionState {
 }
 
 impl ObservedBashCall {
-    pub(crate) fn from_value(value: &Value) -> Result<Self, PostToolUseObservationError> {
+    fn from_value(value: &Value) -> Result<Self, PostToolUseObservationError> {
         let boundary = serde_json::from_value::<PostToolUsePayloadBoundary>(value.clone())
             .map_err(|_| PostToolUseObservationError::InvalidPayload)?;
         let PostToolUseObservableToolCall::BashCall =
@@ -129,10 +129,10 @@ impl ObservedBashCall {
 
     /// Bind this process to the repository, harness session and occasion of the Bash call.
     ///
-    /// Recording the occasion here covers both routes that reach a completed Bash call —
-    /// this verb and the legacy `--post-tool-use-payload` plumbing — so every response
-    /// either one produces names the Bash call it was taken after.
-    pub(crate) fn enter_current_process(self) -> Result<(), PostToolUseObservationError> {
+    /// This verb is the only route that reaches a completed Bash call, and it binds all
+    /// three before it reports anything, so every response it produces names the Bash call
+    /// it was taken after.
+    fn enter_current_process(self) -> Result<(), PostToolUseObservationError> {
         self.working_directory_selection
             .enter_current_process()
             .map_err(|_| PostToolUseObservationError::WorkingDirectoryUnavailable)?;

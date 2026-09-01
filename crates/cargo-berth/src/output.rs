@@ -2565,6 +2565,10 @@ impl OutputEnvelope {
         }
     }
 
+    /// The verb this response is recorded under.
+    #[cfg(test)]
+    pub(crate) const fn verb(&self) -> CommandVerb { self.verb }
+
     /// Attach alerts derived by the reconciliation that preceded this command.
     pub(crate) fn with_alerts(mut self, alerts: Vec<Alert>) -> Self {
         self.payload.alerts = alerts;

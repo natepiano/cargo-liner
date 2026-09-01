@@ -124,8 +124,8 @@ response object, emitting nothing at all when the engine has nothing to raise.
 Both publish the text the engine rendered, word for word; neither reclassifies
 the facts beside it.
 
-`hook session-start` differs in one deliberate way from the shell hook it
-replaces. It takes its harness session identity from the payload alone: a
+`hook session-start` takes one deliberate position on identity that is worth
+stating outright. It takes its harness session identity from the payload alone: a
 payload carrying no `session_id`, or one this engine cannot read, binds the
 process to no session at all rather than falling back to the ambient
 `CARGO_BERTH_SESSION_ID`. That variable belongs to whichever session launched

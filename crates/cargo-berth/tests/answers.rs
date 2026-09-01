@@ -1484,6 +1484,43 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     (directory, root)
 }
 
+/// A proposal token is only meaningful alongside the answer it was issued for.
+///
+/// The token authorizes one exact overlap resolution, so forwarding it with no answer asks
+/// the engine to spend an approval against nothing. This refusal used to be stated by the
+/// retired coordinator; the engine's own parser states it now, and this records the engine's
+/// wording and exit status rather than the front end's, because the engine is the only voice
+/// left to disagree with.
+#[test]
+fn a_proposal_token_with_no_answer_is_refused_by_the_parser() {
+    const PROPOSAL_TOKEN: &str = "01991f4d-77d8-7f5f-9a1f-000000000001";
+
+    let repository = initialized_repository();
+
+    let refused = run_berth(
+        repository.path(),
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            FIRST_RUN,
+            "--proposal",
+            PROPOSAL_TOKEN,
+            "--json",
+        ],
+    );
+
+    assert_eq!(refused.status.code(), Some(5));
+    assert!(refused.stdout.is_empty());
+    let refusal = String::from_utf8_lossy(&refused.stderr);
+    for named in ["--proposal", "--before", "--after", "--defer", "--override"] {
+        assert!(
+            refusal.contains(named),
+            "the refusal should name {named}: {refusal}"
+        );
+    }
+}
+
 fn initialized_repository() -> TempDir {
     let repository = tempdir().expect("temporary repository should exist");
     git(

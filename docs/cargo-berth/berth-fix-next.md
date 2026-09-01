@@ -113,51 +113,48 @@ Surfaced by diagnosing two shared-ledger outages during the Phase 15 checkpoint;
 both were the drift-split worktree's debug build running as the repository's
 commit hook.
 
-## Publish the engine, shims, and generated consumers as one atomic version
+## Publish the engine and its wrappers as one atomic version
 
-Every Claude session can execute a berth shim while an installation is being
+Every Claude session can execute a berth hook while an installation is being
 refreshed. Publishing each file with its own rename prevents partial file
-contents, but still permits a complete shim to read a validator or invoke an
-engine from a different contract version.
+contents, but still permits a live invocation to reach an engine from a
+different contract version than the one its run started against.
 
-Stage and validate one immutable versioned bundle containing the `cargo-berth`
-binary and one complete berth implementation tree: every hook implementation,
-the Python coordinator implementation and package, `tests/test_hook_rendering.py`,
-and every generated consumer artifact, including
-`generated/envelope_validation.jq` and
-`generated/status_payload_tables.py`. Record the bundle identifier and
-timing-harness digest in every timing summary. Nothing inside a published bundle
-is edited or removed in place.
+Most of what this item was written to protect no longer exists: the Python
+coordinator and its package, `generated/envelope_validation.jq`, and
+`generated/status_payload_tables.py` are all deleted, and the three installed
+hooks are a `PATH` check plus `exec cargo-berth hook <event>`. A wrapper holds
+no contract knowledge, so there is nothing left for it to disagree with the
+engine about. What remains to publish atomically is the `cargo-berth` binary
+itself, the three wrappers, `install.sh`, and the Python test suite.
 
-Phase 17 demonstrated the broader failure mode at 2026-08-29 20:03: entering the
-timing test class rewrote the installed uncommitted engine and generated
-consumers while the registered shims retained older timestamps, and the
-in-flight measurement straddled two engine binaries. The new fingerprint guard
-refuses such a run, but it cannot identify the unversioned script-tree and
-harness revision behind an older result.
+The failure mode that survives is a measurement straddling two engine binaries:
+entering the timing test class rewrites the installed engine while an in-flight
+run is still sampling the previous one. The fingerprint guard refuses such a
+run, but it cannot identify the unversioned script-tree and harness revision
+behind an older result.
 
-Registered hook paths and the existing `python3 -m berth.claim_state` entry point
-remain stable bootstraps outside the immutable bundles. Each bootstrap reads the
-active bundle identifier exactly once, resolves that bundle to an absolute path,
-and executes its selected hook or coordinator implementation; every path resolves
-the Python package, generated consumers, and `cargo-berth` from that same captured
-bundle. Publish by atomically replacing the single active bundle identifier in
-the same directory, retaining the previous bundle while an invocation may still
-hold its path and for rollback.
+Stage and validate one immutable versioned bundle holding those files, record
+its identifier and the timing-harness digest in every timing summary, and edit
+or remove nothing inside a published bundle. Registered hook paths remain stable
+bootstraps outside the bundles: each reads the active bundle identifier exactly
+once, resolves it to an absolute path, and executes the engine from that same
+captured bundle. Publish by atomically replacing the single active bundle
+identifier in the same directory, retaining the previous bundle while an
+invocation may still hold its path and for rollback.
 
-Acceptance holds old hook and direct coordinator invocations open across
-publication and starts concurrent new hook and `python3 -m berth.claim_state`
-invocations throughout it. Every invocation observes either the complete old
-bundle or the complete new bundle; none observes partial contents, a missing
-generated directory, or a shim/coordinator/validator/engine version mixture. A
-timing run records one bundle identifier and harness digest, refuses if either
-changes, and can be reproduced from that immutable bundle. Failures before the
-active-version switch leave the old bundle active, and failures after it can
-restore the previous identifier with one atomic replacement.
+Acceptance holds old hook invocations open across publication and starts
+concurrent new ones throughout it. Every invocation observes either the complete
+old bundle or the complete new bundle; none observes partial contents or a
+wrapper/engine version mixture. A timing run records one bundle identifier and
+harness digest, refuses if either changes, and can be reproduced from that
+immutable bundle. Failures before the active-version switch leave the old bundle
+active, and failures after it can restore the previous identifier with one
+atomic replacement.
 
-Surfaced when a Phase 16 timing run edited the canonical PostToolUse shim while
-three sessions were live, and confirmed when Phase 17's 2026-08-29 20:03
-accidental install changed global artifacts during an active measurement.
+Surfaced when a timing run edited the canonical PostToolUse shim while three
+sessions were live, and confirmed when an accidental install changed global
+artifacts during an active measurement.
 
 ## Remove within-sample ordering bias from the fixed-cost probe ladder
 
