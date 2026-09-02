@@ -384,3 +384,58 @@ passes the variant's fields rather than the whole event — so no `_` arm remain
 below `apply`.
 
 Revealed by: Phase 10.
+
+## 21. `cargo berth init` pins both git hooks to a build artifact, so `cargo clean` disables the trunk gate
+
+**Target:** `crates/cargo-berth/src/gate/install.rs:112`, where
+`std::env::current_exe()` supplies the path both generated hooks hard-code.
+
+`install_managed_hooks` writes the absolute path of whichever binary ran `init`
+into the `reference-transaction` and `post-commit` hooks, and each hook opens
+with `if [ ! -x <that path> ]` and permits the operation when the test fails
+(`:273` for post-commit, `:436` for the trunk gate). Running `init` from
+`target/debug/cargo-berth` — the ordinary way to try a development build — pins
+both hooks to a build artifact, so any `cargo clean -p cargo-berth` silently
+turns the trunk gate and the post-commit drift check into no-ops. Observed
+during phase 10: a checkpoint commit landed ungated, and the message told the
+operator to "rerun cargo berth init after restoring cargo-berth" while a working
+`cargo-berth` sat on `PATH` at `~/.cargo/bin/cargo-berth` the whole time. The
+failure is silent in the direction that matters — the gate does not refuse, it
+permits — and the operator has no reason to reread a warning that names a
+recovery they believe they already have.
+
+Satisfied by: the generated hooks resolving the executable at run time rather
+than pinning one path — preferring the recorded path, falling back to `PATH` —
+and the unavailable-executable message naming the path it actually looked for,
+so the operator can see that the pinned artifact is gone rather than concluding
+the tool is uninstalled.
+
+Revealed by: Phase 10 checkpoint.
+
+## 22. A wall-clock benchmark reads as a defect whenever the tree is busy
+
+**Target:** `crates/cargo-berth/tests/gate.rs:2479` —
+`batched_attribution_benchmark_covers_short_and_long_ranges`.
+
+The test measures two elapsed durations and asserts one is within 25ms of the
+other (`one_path.batched <= one_path.reference + Duration::from_millis(25)`),
+then asserts a strict inequality on the 33-path pair. Both comparisons hold
+comfortably on an idle machine and stop holding when anything else is compiling:
+the reference arm and the batched arm are scheduled against different amounts of
+contention, so the margin measures machine load rather than the batching win it
+is meant to pin. It failed five times across phases 9, 10 and 11 — most recently
+at 81ms against a 52ms reference during three-seat compilation, then passed at
+85.8s on a quiet tree with no code change between the two runs.
+
+It sits in the every-phase acceptance gate, so each false red costs a
+re-verification cycle and, worse, trains the reader to discount a failing gate.
+
+Satisfied by: asserting a property that does not vary with load — the ratio
+between the short and long ranges, the number of git invocations each arm makes,
+or the batching invariant itself — or by keeping the timing assertion but
+excluding it from the delegate gate and running it only on a quiet tree.
+Widening the 25ms reference is explicitly ruled out: it does not make the
+assertion load-independent, it only moves the load at which it fires.
+
+Revealed by: Phase 11 architect review, after five occurrences across phases
+9-11.

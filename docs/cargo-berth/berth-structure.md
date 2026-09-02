@@ -646,149 +646,70 @@ opening a private test module; narrowing the four family helpers so the compiler
 checks the inner match, which is real work with its own design decision and
 belongs to the backlog rather than to a behavior-preserving phase.
 
-### Phase 11 — `ledger/mod.rs` becomes a table of contents · status: todo
+### Phase 11 — `ledger/mod.rs` becomes a table of contents · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `ledger/mod.rs` declares submodules and re-exports, and carries no logic.
+`ledger/mod.rs` is an index: module documentation, twelve private `mod`
+declarations, a `#[cfg(test)] mod test_support;` carrying the pre-authorized
+`#[allow(clippy::expect_used, reason = ...)]` in outer position, and one
+`pub(crate) use` block of 62 entries. It holds no logic. The former 2,559-line
+root's contents live in eight sibling files, moved without behavior change: a
+normalized comparison of every original line against the new files leaves only
+declared visibility prefixes, test attributes, rustfmt re-wrapping, and two path
+rewrites the new module depth forced. All thirteen inline tests and their helpers
+survive, each body byte-identical apart from those rewrites.
 
-**Spec:** Roughly 2,458 lines past its declarations (file 2,559, imports end
-`:101`), beside existing `constants.rs`, `journal.rs`, `lock.rs`, and
-`projection.rs`. That makes it the second-largest root in the crate: carrying no
-`too_many_lines` suppression makes this a pure move, not a light one. The
-clusters: the `Ledger` handle and its transaction driver; `WorktreeContext` and
-its discovery; the identity files (`read_or_create_repo_instance_id`,
-`create_or_read_worktree_id`, and the read-only variant); the coordination-run
-marker types — `DetachedCoordinationRunMarker` (`:202`),
-`CoordinationRunMarkerAtRetirement` (`:209`),
-`DetachedCoordinationRunMarkerDisposition` (`:217`),
-`EnvironmentCoordinationRunSelection` (`:282`), `CoordinationRunMarkerRemoval`
-(`:312`), and `impl DetachedCoordinationRunMarker` (`:650`) — which go to
-`ledger/coordination_run_marker.rs`; and the path resolution phase 4 moved in —
-`normalize_absolute_path`, `canonicalize_through_nearest_existing_ancestor`,
-`AbsolutePathNormalizationError` and `AncestorCanonicalizationError` — which
-belongs in a new `ledger/path.rs`.
-
-The edit-authorization types are a cluster of their own and get
-`ledger/authorization.rs`: `EditAuthorization` (`:252`) with its `impl` (`:323`),
-`ResolvedEditAuthorization` (`:129`) with its `impl` (`:135`), and
-`ResolvedJournalMutationActor` (`:180`) — roughly 133 lines that match none of
-the clusters above. `resolve_identity` (`:1502`) builds
-`ResolvedEditAuthorization` at `:1511`, so `authorization.rs` and `identity.rs`
-land on the same seat.
-
-The error family is a cluster of its own and gets `ledger/error.rs`:
-`LedgerError` (`:1572`) with its `Display` (`:1621`), its `Error` impl (`:1684`)
-and its six `From` impls (`:1686`-`:1709`), plus `LedgerTransactionError`
-(`:1831`-`:1867`), `LedgerCommittedActionError` (`:1871`) and
-`CorrectableTransactionInput` (`:1896`-`:1920`) — roughly 230 lines that match
-none of the clusters above.
-
-The root carries an inline `#[cfg(test)] mod tests` at `:1922`-`:2559`, 638
-lines. Each test moves to sit with the type it covers. The peers read the tests
-they take from the root at `HEAD`
-(`git show HEAD:crates/cargo-berth/src/ledger/mod.rs`) and never edit the root;
-`impl` empties the module as part of its own pass.
-
-The marker module is named for what it owns, not for how it is reached. `session`
-would be the wrong name twice over: it describes the caller rather than the
-contents, and `crate::session` already means harness-session identity, a
-different concept this module does not touch.
-
-`normalize_absolute_path`'s doc comment moves **intact**. It is the only written
-record of the rule that separates the two helpers, and phase 4 shipped a defect
-from getting that rule backwards: the collapse is textual, so it is sound only
-when every component left of a `..` is a real directory. A path whose `..` must
-be resolved for real goes to `canonicalize_through_nearest_existing_ancestor`
-uncollapsed. Losing that comment in the move would delete the only warning.
+Eleven items became `pub(super)`, each with a verified caller in a different
+file; nothing reaches past `pub(crate)`. Four more that could have been widened
+stayed private because their only readers live in the same file.
+`ledger::test_support` supplies `scratch_repository` to three destination test
+modules — `handle.rs`, `worktree_context.rs` and `authorization.rs`.
+`identity.rs` builds its own `tempdir()` and does not use it.
 
 **Files:**
-- `crates/cargo-berth/src/ledger/mod.rs`
-- `crates/cargo-berth/src/ledger/handle.rs`
-- `crates/cargo-berth/src/ledger/worktree_context.rs`
-- `crates/cargo-berth/src/ledger/identity.rs`
-- `crates/cargo-berth/src/ledger/authorization.rs`
-- `crates/cargo-berth/src/ledger/coordination_run_marker.rs`
-- `crates/cargo-berth/src/ledger/path.rs`
-- `crates/cargo-berth/src/ledger/error.rs`
+- `crates/cargo-berth/src/ledger/mod.rs` — the index: declarations and re-exports only
+- `crates/cargo-berth/src/ledger/authorization.rs` — `EditAuthorization`, its resolution, and `EnvironmentCoordinationRunSelection`
+- `crates/cargo-berth/src/ledger/identity.rs` — repository and worktree identity readers
+- `crates/cargo-berth/src/ledger/path.rs` — absolute-path normalization and ancestor canonicalization
+- `crates/cargo-berth/src/ledger/test_support.rs` — `scratch_repository`, shared by three test modules
+- `crates/cargo-berth/src/ledger/handle.rs` — `Ledger`, its transactions, and eight of the moved tests
+- `crates/cargo-berth/src/ledger/error.rs` — the ledger error family
+- `crates/cargo-berth/src/ledger/coordination_run_marker.rs` — marker detachment, retirement and sweep
+- `crates/cargo-berth/src/ledger/worktree_context.rs` — `WorktreeContext`, worktree availability, and the git-layout readers
 
-**Seats:** 3 writers + 0 testers — a pure move with seven independent clusters
-and no suppression to remove, so tests travel with their types. `impl` takes the
-root rewrite plus the three smallest clusters, because pairing the 2,458-line
-root with `handle.rs` would leave one seat holding most of the phase for no gate
-reason: nothing here concentrates a gate the way phase 10's two suppressions did.
-- `impl` — `ledger/mod.rs`, `authorization.rs`, `identity.rs`, and `path.rs`;
-  hub: `ledger/mod.rs` (the root, which `impl` alone writes)
-- `test` — opens as `impl`; `handle.rs` and `error.rs`
-- `review` — opens as `impl`; `coordination_run_marker.rs` and `worktree_context.rs`
+**Binds later work:** the remaining table-of-contents splits inherit four rules
+from this one. A shared `#[cfg(test)] mod test_support;` on the root replaces one
+private copy of a helper per destination test module. The pre-authorized test
+allow goes in outer form on that declaration, never as an inner `#![allow(...)]`
+inside the helper file — so a root that is otherwise only declarations still
+carries one attribute, and the suppression phase's crate-wide sweep must
+recognize it. Visibility is a three-rung ladder — private, `pub(super)` for a
+verified reader in a sibling file, `pub(crate)` plus a root re-export only for an
+item the crate names outside the module — chosen from where the callers actually
+are. Every cluster boundary is posted to the board before any seat deletes from
+`HEAD`.
 
-**No seat writes another seat's file.** The pre-edit hook claims paths per
-session, so an edit into a peer's claimed file is blocked rather than merged —
-which makes a partition where three seats each delete their own cluster from one
-root unexecutable. `impl` therefore owns the **entire** root transformation:
-every `mod` declaration, every re-export, and every deletion. The other seats
-create only their own submodule files, reading the code they move from the root
-at `HEAD` (`git show HEAD:<root path>`) rather than from the file `impl` is
-rewriting. Nothing serializes and no seat waits for a skeleton, because no seat
-outside `impl` ever touches the root. Phase 7 paid for the older arrangement:
-two seats converting callers of the same item at once produced a red where each
-seat's own files were clean and neither error was its own.
+**Gotchas:**
+- A `pub(crate)` re-export of an item the crate does not name outside the module
+  is an unused import, and `-D warnings` makes it a hard error. Six items here
+  are correctly absent from the root's list.
+- A `pub(crate)` type in a private module is unnameable outside it unless the
+  root re-exports it. Four are not, so a binding whose type is one of them cannot
+  be annotated: `worktree_identity` is re-exported while `WorktreeIdentity` is
+  not.
+- `batched_attribution_benchmark_covers_short_and_long_ranges` compares two
+  measured durations and fails under compilation load rather than on a
+  regression.
 
-**Acceptance gate:**
-1. `ledger/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
-   documentation.
-2. The existing suite passes unmodified.
-3. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
-4. `~/.claude/scripts/lint/lint doc` passes. This root is the only one of the
-   five module phases that carries intra-doc links across a boundary this split
-   moves, and a link that stops resolving is a rustdoc error rather than a
-   compile error — invisible to gates 2 and 3.
-
-**Constraints from prior phases:** the identity functions were renamed away from
-the banned vocabulary before this plan started; keep the current names. Phase 1
-reads the harness-session mapping through this module under the mutation lock —
-`remove_current_session_mapping` acquires `MutationLock` before removing, and
-that ordering is load-bearing, so it moves intact with the handle cluster.
-`ledger/journal.rs` no longer carries a `dead_code` suppression — the
-`wire_name` method is test-only and exercised — so this module has no suppression
-for any phase to remove.
-
-The root's `#[cfg(test)] mod tests` is the one place in this plan where a phase
-must author suppression attributes. It sits under
-`#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]`
-(`:1923`), and its 638 lines hold 83 `.expect(` calls, so every destination file
-that takes tests from it needs the same attribute. That is the pre-authorized
-test-module boilerplate `~/rust/nate_style/rust/test-module-allow-boilerplate.md`
-names, and the binding constraint does not reach it: copy the attribute verbatim
-onto each destination test module — same lint, same reason string — and author no
-new reason text. Every other suppression rule in this plan still applies in full.
-
-Two intra-doc links cross this split and are what gate 4 exists for:
-`:860`, inside `impl Ledger`, links `[Enrollment]` and `[BerthConfig::read]` and
-travels to `handle.rs`; `:1762` carries `normalize_absolute_path`'s load-bearing
-rule and links `[canonicalize_through_nearest_existing_ancestor]`, which keeps
-resolving only because both helpers land in `path.rs` together. Splitting those
-two helpers across modules breaks the link and deletes the warning.
-
-The submodule names in **Files** are the expected split; if the code argues
-for a different boundary, take it and say so, but every new file must be named
-in the summary.
-
-A `pub(crate)` re-export the crate does not name is an unused import and fails
-`-D warnings`, and this plan forbids the suppression that would silence it. The
-remedy is an explicit type annotation at the call site, which makes the re-export
-used and documents the binding; that annotation may live in a file outside
-this phase's own **Files** list, and doing so is licensed. Widening the module to
-`pub(crate) mod` also compiles, but it lets callers name items around the root
-and changes the path shape — it is ruled out.
-
-Every widening needs a verified cross-module caller. Before changing an item to
-`pub(super)`, name the module outside its own file that reads it; an existing
-accessor beats a new widening. Three seats face this decision independently, and
-a field widened for a reader that turns out to live in the same module is what
-phase 10's review caught.
-
----
+**Ruled out:**
+- Placing `EnvironmentCoordinationRunSelection` in the marker module — it reads
+  an environment variable and touches no marker file, and the placement would
+  have widened both the enum and its constructor for a caller in a third file.
+- Placing the marker-retirement test with the marker module — it calls a private
+  method of `WorktreeContext`, which the placement would have widened for a
+  test-only reader.
+- One private copy of `scratch_repository` per destination test module.
 
 ### Phase 12 — `board/mod.rs` becomes a table of contents · status: todo
 
@@ -848,12 +769,12 @@ parameters are **not** one thing: `answers: &mut Vec<RecordedAnswer>` is an
 output sink the function appends to, and `resolved_pairs` and `constraints` are
 lookup projections it reads through. Only three describe the row being recorded.
 Give that cluster a semantic projection type — name it
-`RecordedAuthorizationConsequence` — carrying `reservation_id`, `authorization`,
+`RecordedAuthorizationRow` — carrying `reservation_id`, `authorization`,
 and `acquisition`, and leave the sink and the two lookups as ordinary
 parameters. The type says what the row is, where the parameter list only says how
 many pieces it has. It borrows: `append_authorization_answer` takes
 `authorization: &ConflictAuthorization`, so the projection is
-`RecordedAuthorizationConsequence<'_>`, holding the reference the parameter
+`RecordedAuthorizationRow<'_>`, holding the reference the parameter
 already carried. Cloning to avoid the lifetime adds an allocation this
 behavior-preserving phase has no license for.
 
@@ -869,21 +790,38 @@ modules. Phase 2 added four of the eight after the original split was written.
 Gate 2 turns on this, so it cannot be left implicit.
 
 `BoardReportContent` (`:124`) travels with `BoardModel` into rows: `report_content`
-and `envelope_presentation` are its only readers. `impl From<&BoardModel> for
-CompleteBoardReport` (`:166`) goes to `report.rs` with the report types it builds,
-even though `complete_report_block` (`:714`) constructs it from the rows side.
-Both are named here because otherwise two seats each reasonably claim the `From`
-impl, and the pre-edit hook turns that into a blocked edit rather than a merge.
+and `envelope_presentation` are its only readers. `impl From<&'board BoardModel> for
+CompleteBoardReport<'board>` (`:166`) travels with them into **`rows.rs`**, not
+with the report types it builds. It reads all sixteen `BoardModel` fields
+(`:104`-`:119`) by direct access, so putting it in `report.rs` would force
+sixteen `pub(super)` widenings — precisely what this Work Order's closing
+paragraph forbids without a verified cross-module caller, and the widening
+phase 10's review caught. `report.rs` owns `CompleteBoardReport` itself and
+imports the impl's output; `rows.rs` owns the conversion. Both are named here
+because otherwise two seats each reasonably claim the `From` impl, and the
+pre-edit hook turns that into a blocked edit rather than a merge.
 
-`board/tests.rs` is an existing sibling test module; move each test to sit with
-the type it covers rather than leaving a catch-all. Like the root, it is written
-by `impl` alone: the other seats copy the tests they need out of it at `HEAD`,
-land them in their own modules, and never edit it, while `impl` empties it as
-part of its own pass. No seat waits for another.
+`board/tests.rs` is an existing sibling test module of 921 lines; move each test
+to sit with the type it covers rather than leaving a catch-all. Like the root, it
+is written by `impl` alone: the other seats copy the tests they need out of it at
+`HEAD`, land them in their own modules, and never edit it, while `impl` empties
+it as part of its own pass. No seat waits for another.
+
+Its five `#[test]` functions sit on a much larger apparatus — six fixture types
+(`BoardFixture` `:88` through `OrderedBoardFixture` `:113`) and roughly twenty
+helpers, including `answered_board` (`:771`) and `git` (`:906`). Distributing the
+tests would copy that apparatus into as many as four modules. It does not get
+copied: the fixtures and helpers go to **`board/test_support.rs`**, declared on
+the root as `#[cfg(test)] mod test_support;` and written by `impl` with the rest
+of the root, so the destination modules import them rather than each carrying a
+private duplicate. This is the shape phase 11 arrived at, and it is a
+requirement here rather than an option — four private copies of a twenty-helper
+fixture set is the outcome the split exists to prevent.
 
 **Files:**
 - `crates/cargo-berth/src/board/mod.rs`
 - `crates/cargo-berth/src/board/tests.rs`
+- `crates/cargo-berth/src/board/test_support.rs`
 - `crates/cargo-berth/src/board/rows.rs`
 - `crates/cargo-berth/src/board/answers.rs`
 - `crates/cargo-berth/src/board/report.rs`
@@ -915,11 +853,14 @@ seat's own files were clean and neither error was its own.
 
 **Acceptance gate:**
 1. `board/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
-   documentation.
+   documentation. Attributes on those declarations count as part of them —
+   `#[cfg(test)]` on a test-only module, and the pre-authorized
+   `#[allow(clippy::expect_used, reason = ...)]` on a shared test-helper
+   declaration, both of which `ledger/mod.rs` now carries.
 2. No `too_many_lines` or `too_many_arguments` suppression remains under
    `crates/cargo-berth/src/board/`.
 3. The `too_many_arguments` allow is deleted, `lint` stays green, and the audit
-   row's own inputs travel as one named type — `RecordedAuthorizationConsequence`
+   row's own inputs travel as one named type — `RecordedAuthorizationRow`
    — with the output sink and the two lookup projections left as parameters.
 4. The existing suite passes unmodified, including
    `tests/board.rs::populated_board_presentation_carries_the_complete_board_report`
@@ -963,6 +904,44 @@ split:
   phase 7 ruled it out of scope deliberately. Leave it as it is — it is not a
   missed consolidation, and retyping it would widen a type phase 7 scoped on
   purpose.
+
+Phase 11 split `ledger/mod.rs` along the same lines and produced four facts this
+split inherits:
+
+- **A shared test helper beats one private copy per destination.** The partition
+  there first predicted `scratch_repository` copied into three destination test
+  modules; the answer was one `#[cfg(test)] mod test_support;` on the root,
+  written by the hub owner before the peers reached their gate. When two or more
+  destination test modules need the same helper, ask the hub owner for it on the
+  board rather than each seat copying it.
+- **The pre-authorized test allow goes in outer form on that declaration** —
+  `#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]`
+  written above `mod test_support;` in the root, never as an inner `#![allow(...)]`
+  at the top of the helper file. The inner form on a module that is not itself a
+  `tests` module is the shape that later grows to cover things nobody intended.
+  Gate 1 admits it: an attribute on a `mod` declaration is part of that
+  declaration, not logic in the root.
+- **Visibility is a three-rung ladder, and most items stay on the bottom rung.**
+  Under `ledger/`, four items are private (`coordination_run_marker.rs:26`,
+  `:86`, `:123`, `authorization.rs:106`), two are `pub(super)` for a verified
+  reader in a sibling file (`coordination_run_marker.rs:11`, `:18`), and only an
+  item the crate names outside the module reaches `pub(crate)` *plus* a root
+  re-export. Pick the rung from where the callers actually are; a `pub(crate)`
+  re-export of an item nothing outside names fails the build as an unused
+  import.
+- **A `pub(crate)` type in a private module is unnameable outside it unless the
+  root re-exports it.** Phase 11 left four that way — `WorktreeIdentity`
+  (`identity.rs:21`), `CorrectableTransactionInput` (`error.rs:222`),
+  `AbsolutePathNormalizationError` (`path.rs:71`) and
+  `ResolvedJournalMutationActor` (`authorization.rs:69`). It compiles, but it
+  means the explicit-type-annotation remedy below is unwritable for any function
+  whose return type is one of them: `worktree_identity` is re-exported while
+  `WorktreeIdentity` is not. Re-export a function and you must re-export the
+  types its signature names, or accept that its binding cannot be annotated.
+- **Two seats can extract the same item.** One seat's cluster over-reached by
+  thirteen lines and redefined an enum a peer's file already owned; nothing could
+  reach the second copy, so only `-D dead-code` caught it. Post the exact
+  boundary of every cluster to the board before deleting anything from `HEAD`.
 
 The submodule names in **Files** are the expected split; if the code argues
 for a different boundary, take it and say so, but every new file must be named
@@ -1008,6 +987,29 @@ of the other three and cannot be folded into one of them without giving that
 module two owners. It gets `gate/decision.rs`. The root's inline `mod tests` is
 28 lines (`:1376`-`:1404`) and moves with the types it covers.
 
+Four `pub(crate)` types the cluster list does not name are produced and consumed
+entirely by the decision functions, and go to `gate/decision.rs` with them:
+`IntegrationRequest` (`:181`), `IntegrationViolation` (`:190`), `GateDecision`
+(`:200`) and `GateResult` (`:241`). Every one of `decide` (`:892`), `decide_hook`
+(`:983`), `decide_integration` (`:1057`), `evaluate_integration` (`:698`) and
+`evaluate_locked` (`:769`) names them in its signature. The
+reference-transaction path returns `Vec<GateResult>` at `:381` and names
+`IntegrationRequest` at `:256`, so `reference_transaction.rs` imports the four
+from `decision.rs` rather than owning them. The root re-exports whichever of the
+four the crate names outside `gate/`, and no others.
+
+A 46-line hole sits inside the decision range and belongs to the
+reference-transaction cluster, not to decision: `ProposedMainMove` (`:719`), its
+inherent impl (`:724`) and `impl ReferenceUpdate` (`:732`, whose `gate_subject`
+constructs it at `:738` and `:744`) all travel to `reference_transaction.rs` with
+`ReferenceUpdateGateSubject` (`:168`), which reads it at `:429`.
+`ProposedMainMove` is private today and becomes `pub(super)` there, for three
+verified readers in other files — `:619`, `:767` and `:938`. Name it explicitly
+because the decision list jumps from `:691` straight to `:765`: without this
+paragraph the lines between belong to no seat, and two seats each reasonably
+claim them. Phase 11's duplicate enum came from a thirteen-line over-reach; this
+gap is forty-six lines across two seats.
+
 The error family is a cluster of its own and gets `gate/error.rs`:
 `GateTransactionRejection` (`:1276`) and `GateError` (`:1290`-`:1375`), which
 belong to none of the four boundaries above.
@@ -1049,12 +1051,21 @@ seat's own files were clean and neither error was its own.
 
 **Acceptance gate:**
 1. `gate/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
-   documentation.
+   documentation. Attributes on those declarations count as part of them —
+   `#[cfg(test)]` on a test-only module, and the pre-authorized
+   `#[allow(clippy::expect_used, reason = ...)]` on a shared test-helper
+   declaration, both of which `ledger/mod.rs` now carries.
 2. No suppression is added anywhere under `crates/cargo-berth/src/gate/`.
 3. The existing suite passes unmodified.
 4. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
 
-**Constraints from prior phases:** phase 7 placed reservation-id ordering with
+**Constraints from prior phases:** `gate/mod.rs:3`-`:4` declares two existing
+sibling modules as `pub(crate) mod install;` and `pub(crate) mod permit;`, and
+`cli.rs:1450` names `gate::permit::environment_bypass_requested` around the root.
+Both stay exactly as they are. Phase 10's rule that no module this plan creates
+is `pub(crate) mod` governs the new submodules only; it is not a licence to
+narrow a sibling that already has a caller reaching through it. Phase 7 placed
+reservation-id ordering with
 `ReservationId` in `ids.rs`; `gate/mod.rs` calls it at `:953`, inside
 `blocking_reservations` (`:948`) — which means the call lands in `decision.rs`,
 and it is that seat's constraint, not the hub owner's. `gate/mod.rs` does not
@@ -1066,6 +1077,44 @@ extracted helper that drops the deduplication changes what the gate reports. `ga
 unexpected values" — pre-authorized test boilerplate, which is why the final
 suppression phase counts four surviving sites and does not list it. It is
 nobody's item; leave it.
+
+Phase 11 split `ledger/mod.rs` along the same lines and produced four facts this
+split inherits:
+
+- **A shared test helper beats one private copy per destination.** The partition
+  there first predicted `scratch_repository` copied into three destination test
+  modules; the answer was one `#[cfg(test)] mod test_support;` on the root,
+  written by the hub owner before the peers reached their gate. When two or more
+  destination test modules need the same helper, ask the hub owner for it on the
+  board rather than each seat copying it.
+- **The pre-authorized test allow goes in outer form on that declaration** —
+  `#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]`
+  written above `mod test_support;` in the root, never as an inner `#![allow(...)]`
+  at the top of the helper file. The inner form on a module that is not itself a
+  `tests` module is the shape that later grows to cover things nobody intended.
+  Gate 1 admits it: an attribute on a `mod` declaration is part of that
+  declaration, not logic in the root.
+- **Visibility is a three-rung ladder, and most items stay on the bottom rung.**
+  Under `ledger/`, four items are private (`coordination_run_marker.rs:26`,
+  `:86`, `:123`, `authorization.rs:106`), two are `pub(super)` for a verified
+  reader in a sibling file (`coordination_run_marker.rs:11`, `:18`), and only an
+  item the crate names outside the module reaches `pub(crate)` *plus* a root
+  re-export. Pick the rung from where the callers actually are; a `pub(crate)`
+  re-export of an item nothing outside names fails the build as an unused
+  import.
+- **A `pub(crate)` type in a private module is unnameable outside it unless the
+  root re-exports it.** Phase 11 left four that way — `WorktreeIdentity`
+  (`identity.rs:21`), `CorrectableTransactionInput` (`error.rs:222`),
+  `AbsolutePathNormalizationError` (`path.rs:71`) and
+  `ResolvedJournalMutationActor` (`authorization.rs:69`). It compiles, but it
+  means the explicit-type-annotation remedy below is unwritable for any function
+  whose return type is one of them: `worktree_identity` is re-exported while
+  `WorktreeIdentity` is not. Re-export a function and you must re-export the
+  types its signature names, or accept that its binding cannot be annotated.
+- **Two seats can extract the same item.** One seat's cluster over-reached by
+  thirteen lines and redefined an enum a peer's file already owned; nothing could
+  reach the second copy, so only `-D dead-code` caught it. Post the exact
+  boundary of every cluster to the board before deleting anything from `HEAD`.
 
 The submodule names in **Files** are the expected split; if the code argues
 for a different boundary, take it and say so, but every new file must be named
@@ -1157,8 +1206,8 @@ attributes left name `clippy::expect_used` or `clippy::panic` on a
 - `crates/cargo-berth/src/cli.rs`
 - `crates/cargo-berth/src/ids.rs`
 
-**Seats:** 2 writers + 1 tester — the three sites are in three files, and two of
-them are the test suite, so a real test lane exists.
+**Seats:** 2 writers + 1 tester — the four sites are spread over three files, and
+one of those is the test suite carrying two of them, so a real test lane exists.
 - `impl` — `cli.rs`
 - `test` — `tests/board.rs`
 - `review` — opens as `impl`; `ids.rs`
@@ -1197,7 +1246,14 @@ in `reconcile.rs`, phase 9 the one in `git/mod.rs`, phase 10 the two in
 `reservation/mod.rs`, and phase 12 the three in `board/mod.rs`. If one survives,
 it is that phase's defect, not a new item here. Every other `#[allow]` still in
 `crates/cargo-berth/src/` names `clippy::expect_used` or `clippy::panic` on a
-`#[cfg(test)]` module and is pre-authorized boilerplate. The sites named above
+`#[cfg(test)]` module and is pre-authorized boilerplate. Phase 11 introduced a
+second spelling of that boilerplate: `crates/cargo-berth/src/ledger/mod.rs`
+carries `#[allow(clippy::expect_used, reason = ...)]` in **outer** position on its
+`#[cfg(test)] mod test_support;` declaration, rather than as an inner
+`#![allow(...)]` inside the module file. Gate 2's crate-wide sweep surfaces it in
+a table-of-contents root that carries no other logic; it is pre-authorized in the
+same sense as the rest, its module does call `.expect(`, and it is nobody's item.
+A sweep that only looks inside `mod tests` bodies misses it. The sites named above
 were never owned by an earlier phase and are this phase's own work.
 
 ## Gates
