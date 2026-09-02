@@ -112,14 +112,15 @@ not block a `check` or a `claim` from this run. Two sessions sharing a worktree
 can therefore both believe they hold the same paths, which is the condition the
 engine exists to prevent.
 
-Phase 7 landed the consolidation: eligibility is now two methods on `Reservation`,
-`is_active_for_coordination_run` (`reservation/mod.rs:1867`), which holds the
-`Active` lifecycle test, and `is_active_for_coordination_run_and_worktree`
-(`:1880`), which adds the worktree term. This item changes what the two-field form
-means for `check` and `claim`, so it is unblocked — but the change belongs in the
-two-field form or at its call sites, never in the run-only base, whose callers
-(`RetainedReservationSet::has_other_active_reservation`, `:1003`) deliberately
-reach across worktrees.
+Phase 7 landed the consolidation and phase 10 moved it: eligibility is two
+methods on `Reservation`, `is_active_for_coordination_run`
+(`reservation/record.rs:158`), which holds the `Active` lifecycle test, and
+`is_active_for_coordination_run_and_worktree` (`:171`), which adds the worktree
+term. This item changes what the two-field form means for `check` and `claim`, so
+it is unblocked — but the change belongs in the two-field form or at its call
+sites, never in the run-only base, whose callers
+(`RetainedReservationSet::has_other_active_reservation`,
+`reservation/retention.rs:487`) deliberately reach across worktrees.
 
 Satisfied by: same-worktree foreign reservations entering the refusal path with
 their holder facts, and a test covering two runs in one worktree.
@@ -238,7 +239,7 @@ asserting the two texts differ.
 
 **Target:** `crates/cargo-berth/tests/lifecycle.rs` against
 `ReservationReplayError::DuplicateIncursionIncident`
-(`crates/cargo-berth/src/reservation/mod.rs:2072`).
+(`crates/cargo-berth/src/reservation/replay.rs:48`, rendered at `:116`).
 
 Journal replay refuses a duplicated incursion record with the status
 `duplicate_incursion_incident` and names the command that recovers from it. The
@@ -361,3 +362,25 @@ successor-head accessor, or a sibling that returns
 `map_or` and no bare `HashMap` crosses a struct field.
 
 Revealed by: Phase 8.
+
+## 20. Four replay family helpers accept any journal operation and silently do nothing
+
+**Target:** `crates/cargo-berth/src/reservation/retention.rs` — `apply` (`:499`)
+and its four family helpers.
+
+`RetainedReservationSet::apply` matches all eighteen `JournalOperation` variants
+with no catch-all, so the compiler still proves routing is total. Each family it
+routes to ends in `_ => Ok(())` — `apply_holder_lifecycle_journal_event` (`:587`),
+`apply_integration_evidence_journal_event` (`:660`),
+`apply_worktree_binding_journal_event` (`:694`) and
+`apply_incursion_journal_event` (`:720`) — so a variant routed to the wrong
+family, or a new variant added to the wrong arm of `apply`, replays as a silent
+no-op with no compile error and no test failure. Before phase 10 the single
+exhaustive match made both mistakes compile errors.
+
+Satisfied by: each family helper accepting only the operations its own arm of
+`apply` routes to — a per-family enum, or a destructure at the dispatch that
+passes the variant's fields rather than the whole event — so no `_` arm remains
+below `apply`.
+
+Revealed by: Phase 10.
