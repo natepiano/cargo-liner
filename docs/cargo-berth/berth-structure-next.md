@@ -76,7 +76,7 @@ plus a command-line test for `__refresh-managed-hook-after-trunk-deletion`.
 presence check plus `exec` — and `crates/cargo-berth/src/hook/pre_tool_use.rs`.
 
 `CARGO_BERTH_BYPASS` is read in exactly one place —
-`gate::permit::environment_bypass_requested` (`src/gate/permit.rs:166`), called
+`gate::permit::environment_bypass_requested` (`src/gate/permit.rs:165`), called
 from `src/cli.rs:1450` on the `reference-transaction` trunk gate — and the
 pre-edit wrapper never mentions it. The wrapper checks only whether
 `cargo-berth` is on `PATH` and then `exec`s it, so it cannot recover from a hang
@@ -279,9 +279,10 @@ re-key to binary and wrapper availability landed; the measurement did not, becau
 the cold-page gate requires zero resident pages for `git` and any sibling session
 executing git faults them straight back in.
 
-The remaining structural phases are behavior-preserving moves that cannot change
-process topology, so nothing later in this plan will make the number wrong in a
-new way — but nothing later will fix it either.
+Every structural phase has shipped. The one phase left removes suppressions and
+rewrites the resolve command-line surface; it changes no process topology, so
+nothing in this plan will make the number wrong in a new way — and nothing in it
+will fix it either. This item is unblocked the moment the plan closes.
 
 Satisfied by: a serialized measurement on a machine with no other active session,
 every timing cell from `attribution` onward corrected to its measured process

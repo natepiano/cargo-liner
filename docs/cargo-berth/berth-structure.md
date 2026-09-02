@@ -766,236 +766,137 @@ resolved against a real compile rather than by reading the code.
 - Widening `batched_attribution_benchmark_covers_short_and_long_ranges`'s timing
   margin to stop its load-dependent failures.
 
-### Phase 13 — `gate/mod.rs` becomes a table of contents · status: todo
+### Phase 13 — `gate/mod.rs` becomes a table of contents · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `gate/mod.rs` declares submodules and re-exports and carries no logic.
-
-**Spec:** 1,404 lines beside `install.rs` and `permit.rs`, with no suppression of
-its own — a pure move. Split along reference-transaction evaluation, branch
-rewrites and re-anchoring, forced-permit auditing, and the gate *decision*
-machinery. Tests move with the type each one covers.
-
-The decision cluster is the largest and the original split had no home for it:
-`evaluate_integration` (`:691`), `evaluate_locked` (`:765`),
-`entering_reservations` (`:866`), `decide` (`:886`), `newly_reachable_commits`
-(`:936`), `blocking_reservations` (`:948`), `decide_hook` (`:977`),
-`decide_integration` (`:1050`), `skipped_holds` (`:1123`), `skipped_set_covers`
-(`:1154`), and `GatePurpose` — the enum declared at `:249` and its `impl` at
-`:1178`, both of which move together — roughly 530 of the 1,404 lines. `decide`
-is reached from the reference-transaction path (`:438`→`:831`), from `evaluate_integration`
-(`:715`) and from `commit_forced_permit_audits` (`:661`), so it belongs to none
-of the other three and cannot be folded into one of them without giving that
-module two owners. It gets `gate/decision.rs`. The root's inline `mod tests` is
-28 lines (`:1376`-`:1404`) and moves with the types it covers.
-
-Four `pub(crate)` types the cluster list does not name are produced and consumed
-entirely by the decision functions, and go to `gate/decision.rs` with them:
-`IntegrationRequest` (`:181`), `IntegrationViolation` (`:190`), `GateDecision`
-(`:200`) and `GateResult` (`:241`). Every one of `decide` (`:892`), `decide_hook`
-(`:983`), `decide_integration` (`:1057`), `evaluate_integration` (`:698`) and
-`evaluate_locked` (`:769`) names them in its signature. The
-reference-transaction path returns `Vec<GateResult>` at `:381` and names
-`IntegrationRequest` at `:256`, so `reference_transaction.rs` imports the four
-from `decision.rs` rather than owning them. The root re-exports whichever of the
-four the crate names outside `gate/`, and no others.
-
-A 46-line hole sits inside the decision range and belongs to the
-reference-transaction cluster, not to decision: `ProposedMainMove` (`:719`), its
-inherent impl (`:724`) and `impl ReferenceUpdate` (`:732`, whose `gate_subject`
-constructs it at `:738` and `:744`) all travel to `reference_transaction.rs` with
-`ReferenceUpdateGateSubject` (`:168`), which reads it at `:429`.
-`ProposedMainMove` is private today and becomes `pub(super)` there, for three
-verified readers in other files — `:619`, `:767` and `:938`. Name it explicitly
-because the decision list jumps from `:691` straight to `:765`: without this
-paragraph the lines between belong to no seat, and two seats each reasonably
-claim them. Phase 11's duplicate enum came from a thirteen-line over-reach; this
-gap is forty-six lines across two seats.
-
-The error family is a cluster of its own and gets `gate/error.rs`:
-`GateTransactionRejection` (`:1276`) and `GateError` (`:1290`-`:1375`), which
-belong to none of the four boundaries above.
-
-`ReferenceTransactionParseError` (`:1239`), with its `Display` (`:1254`) and its
-`Error` impl (`:1273`), is the exception: it goes to `reference_transaction.rs`,
-not `error.rs`. `impl FromStr for ReferenceTransactionPhase` (`:1223`) returns
-it, and that impl travels with the reference-transaction cluster. `impl` owns
-`reference_transaction.rs` and `review` owns `error.rs`, so an unassigned error
-type is one both seats reach for and the pre-edit hook blocks the second.
+`crates/cargo-berth/src/gate/mod.rs` is a table of contents: seven `mod`
+declarations and eighteen `pub(crate) use` re-exports, and nothing else. Its
+former body moved verbatim into five new siblings beside the unchanged
+`install.rs` and `permit.rs`. The move is behavior-preserving by construction —
+an ordered per-item body diff matched all 55 top-level items at the prior commit
+against all 55 afterwards, by normalized signature, and the only difference
+across all of them is rustfmt re-wrapping `GatePurpose::identity_validation` onto
+three lines. No `crate::` import was added or removed anywhere.
 
 **Files:**
-- `crates/cargo-berth/src/gate/mod.rs`
-- `crates/cargo-berth/src/gate/reference_transaction.rs`
-- `crates/cargo-berth/src/gate/rewrite.rs`
-- `crates/cargo-berth/src/gate/audit.rs`
-- `crates/cargo-berth/src/gate/decision.rs`
-- `crates/cargo-berth/src/gate/error.rs`
+- `crates/cargo-berth/src/gate/mod.rs` — module declarations and the crate-facing
+  re-export list for the gate.
+- `crates/cargo-berth/src/gate/decision.rs` — `GateDecision`, `GateResult`,
+  `IntegrationRequest`, `IntegrationViolation`, `GatePurpose`, and
+  `evaluate_integration`.
+- `crates/cargo-berth/src/gate/reference_transaction.rs` — the git
+  reference-transaction protocol: parsing, phase and presence types,
+  `ManagedTrunkDeletion`, the issuing-directory environment variable, and
+  `evaluate_reference_transaction`.
+- `crates/cargo-berth/src/gate/rewrite.rs` — `BranchRewrite` and
+  `branch_rewrites`, module-internal.
+- `crates/cargo-berth/src/gate/error.rs` — `GateError`.
+- `crates/cargo-berth/src/gate/audit.rs` — the gate's audit record construction.
 
-**Seats:** 3 writers + 0 testers — a pure move along five independent
-boundaries, tests travelling with their types. The decision cluster gets its own
-seat because it is the largest and every other cluster calls into it.
-- `impl` — `gate/mod.rs` and `reference_transaction.rs`; hub: `gate/mod.rs` (the
-  root, which `impl` alone writes)
-- `test` — opens as `impl`; `decision.rs`
-- `review` — opens as `impl`; `rewrite.rs`, `audit.rs`, and `error.rs`
+**Binds later work:** the only suppression anywhere under
+`crates/cargo-berth/src/gate/` is `permit.rs:473` — `clippy::expect_used` on
+`mod tests` — which is pre-authorized boilerplate. Nothing under `gate/` is an
+item for the suppression-removal phase.
 
-**No seat writes another seat's file.** The pre-edit hook claims paths per
-session, so an edit into a peer's claimed file is blocked rather than merged —
-which makes a partition where three seats each delete their own cluster from one
-root unexecutable. `impl` therefore owns the **entire** root transformation:
-every `mod` declaration, every re-export, and every deletion. The other seats
-create only their own submodule files, reading the code they move from the root
-at `HEAD` (`git show HEAD:<root path>`) rather than from the file `impl` is
-rewriting. Nothing serializes and no seat waits for a skeleton, because no seat
-outside `impl` ever touches the root. Phase 7 paid for the older arrangement:
-two seats converting callers of the same item at once produced a red where each
-seat's own files were clean and neither error was its own.
+**Gotchas:**
+- Enum visibility is transitive to variant field types: widening an enum to
+  `pub(super)` forces every type its variants name to at least `pub(super)`,
+  because `private_interfaces` is a hard error under `-D warnings`. Struct fields
+  are exempt. These widenings are language-forced, not discretionary.
+- A widening check that only looks for other files naming an item produces false
+  positives. An item nothing else names is still forced wider by appearing in a
+  widened function's signature — `BranchRewrite` is returned by
+  `pub(super) fn branch_rewrites`. Check signatures beside readers.
+- A clippy or test exit 0 with no `Checking`/`Compiling`/`Documenting
+  cargo-berth` line in the output is a cache hit, not a pass. `touch` does not
+  bust it; `cargo clean -p cargo-berth` does.
+- `GateError`'s `Display` arms are asserted nowhere. This predates the split.
 
-**Acceptance gate:**
-1. `gate/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
-   documentation. Attributes on those declarations count as part of them —
-   `#[cfg(test)]` on a test-only module, and the pre-authorized
-   `#[allow(clippy::expect_used, reason = ...)]` on a shared test-helper
-   declaration, both of which `ledger/mod.rs` now carries.
-2. No suppression is added anywhere under `crates/cargo-berth/src/gate/`.
-3. The existing suite passes unmodified.
-4. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
-
-**Constraints from prior phases:** `gate/mod.rs:3`-`:4` declares two existing
-sibling modules as `pub(crate) mod install;` and `pub(crate) mod permit;`, and
-`cli.rs:1450` names `gate::permit::environment_bypass_requested` around the root.
-Both stay exactly as they are. Phase 10's rule that no module this plan creates
-is `pub(crate) mod` governs the new submodules only; it is not a licence to
-narrow a sibling that already has a caller reaching through it. Phase 7 placed
-reservation-id ordering with
-`ReservationId` in `ids.rs`; `gate/mod.rs` calls it at `:953`, inside
-`blocking_reservations` (`:948`) — which means the call lands in `decision.rs`,
-and it is that seat's constraint, not the hub owner's. `gate/mod.rs` does not
-re-implement it. That call is
-`WireOrderedReservationIds::sorted_and_deduplicated`, not a plain sort — the
-site had a pre-existing `dedup` and phase 7 kept it. Move the call intact; an
-extracted helper that drops the deduplication changes what the gate reports. `gate/permit.rs` carries an `#[allow]` at `:473`, but it is
-`clippy::expect_used` on a `mod tests` with the reason "tests should panic on
-unexpected values" — pre-authorized test boilerplate, which is why the final
-suppression phase counts four surviving sites and does not list it. It is
-nobody's item; leave it.
-
-Phase 11 split `ledger/mod.rs` along the same lines and produced four facts this
-split inherits:
-
-- **A shared test helper beats one private copy per destination.** The partition
-  there first predicted `scratch_repository` copied into three destination test
-  modules; the answer was one `#[cfg(test)] mod test_support;` on the root,
-  written by the hub owner before the peers reached their gate. When two or more
-  destination test modules need the same helper, ask the hub owner for it on the
-  board rather than each seat copying it.
-- **The pre-authorized test allow goes in outer form on that declaration** —
-  `#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]`
-  written above `mod test_support;` in the root, never as an inner `#![allow(...)]`
-  at the top of the helper file. The inner form on a module that is not itself a
-  `tests` module is the shape that later grows to cover things nobody intended.
-  Gate 1 admits it: an attribute on a `mod` declaration is part of that
-  declaration, not logic in the root.
-- **Visibility is a three-rung ladder, and most items stay on the bottom rung.**
-  Under `ledger/`, four items are private (`coordination_run_marker.rs:26`,
-  `:86`, `:123`, `authorization.rs:106`), two are `pub(super)` for a verified
-  reader in a sibling file (`coordination_run_marker.rs:11`, `:18`), and only an
-  item the crate names outside the module reaches `pub(crate)` *plus* a root
-  re-export. Pick the rung from where the callers actually are; a `pub(crate)`
-  re-export of an item nothing outside names fails the build as an unused
-  import.
-- **A `pub(crate)` type in a private module is unnameable outside it unless the
-  root re-exports it.** Phase 11 left four that way — `WorktreeIdentity`
-  (`identity.rs:21`), `CorrectableTransactionInput` (`error.rs:222`),
-  `AbsolutePathNormalizationError` (`path.rs:71`) and
-  `ResolvedJournalMutationActor` (`authorization.rs:69`). It compiles, but it
-  means the explicit-type-annotation remedy below is unwritable for any function
-  whose return type is one of them: `worktree_identity` is re-exported while
-  `WorktreeIdentity` is not. Re-export a function and you must re-export the
-  types its signature names, or accept that its binding cannot be annotated.
-- **Two seats can extract the same item.** One seat's cluster over-reached by
-  thirteen lines and redefined an enum a peer's file already owned; nothing could
-  reach the second copy, so only `-D dead-code` caught it. Post the exact
-  boundary of every cluster to the board before deleting anything from `HEAD`.
-
-The submodule names in **Files** are the expected split; if the code argues
-for a different boundary, take it and say so, but every new file must be named
-in the summary.
-
-A `pub(crate)` re-export the crate does not name is an unused import and fails
-`-D warnings`, and this plan forbids the suppression that would silence it. The
-remedy is an explicit type annotation at the call site, which makes the re-export
-used and documents the binding; that annotation may live in a file outside this
-phase's own **Files** list, and doing so is licensed. Widening the module to
-`pub(crate) mod` also compiles, but it lets callers name items around the root
-and changes the path shape — it is ruled out.
-
-Every widening needs a verified cross-module caller. Before changing an item to
-`pub(super)`, name the module outside its own file that reads it; an existing
-accessor beats a new widening. Three seats face this decision independently, and
-a field widened for a reader that turns out to live in the same module is what
-phase 10's review caught.
-
----
-
-Phase 12 split `board/mod.rs` along the same lines and produced one fact this
-split needs before it writes a line:
-
-- **Making an enum `pub(super)` widens every type its variants name.** Variant
-  fields are always as visible as their enum, so a variant carrying a private
-  type makes the enum more public than its own field type, and rustc's
-  `private_interfaces` lint rejects that as a hard error under `-D warnings`.
-  **Struct fields are exempt** — they default to private, so a non-public type
-  behind a private struct field leaks nothing. This is not discretionary
-  widening and the rule requiring a named cross-module reader does not apply to
-  it: the compiler names the readers, and the only alternative is leaving the
-  enum private. It binds `decision.rs` directly — `GateDecision` (`:200`) is an
-  enum whose variants carry `IntegrationViolation` (`:190`), so widening
-  `GateDecision` widens `IntegrationViolation` with it, and the same follows for
-  `GateResult` (`:241`) and `IntegrationRequest` (`:181`) wherever a variant
-  names them. Phase 12 hit this in two files at once — ten errors in one, seven
-  in another — and each seat resolved it against a real compile rather than by
-  reasoning; expect to do the same and do not treat the resulting `pub(super)`
-  set as a deviation.
+**Ruled out:** splitting `install.rs` or `permit.rs`, which were already
+single-concern siblings and never part of the hub body; and any concern that
+narrowing visibility could put an integration test out of reach — `cargo-berth`
+is a binary crate with no `[lib]`, and every integration suite drives the
+compiled binary through `std::process::Command`.
 
 ### Phase 14 — Remove the remaining suppressions · status: todo
 
 #### Work Order
 
-**Goal:** No suppression remains anywhere in `crates/cargo-berth/`, except the
+**Goal:** No suppression remains anywhere in `crates/cargo-berth/src/`, except the
 pre-authorized test-module boilerplate — `clippy::expect_used`, and
 `clippy::panic` where the module uses `panic!`.
 
-**Spec:** Four sites survive the earlier phases, in three shapes.
+**Spec:** Four sites survive the earlier phases, in three shapes. All four, and
+every line reference below, are confirmed against the tree as it stands after
+phase 13.
 
 `crates/cargo-berth/tests/board.rs` holds two: a `too_many_lines` at `:881` on
-`release_dispositions_remain_resolved_when_trunk_rewrites` (`:885`) and a
-`needless_pass_by_value` at `:4385`. The test splits into its arrangement and its
-per-disposition assertions; the helper takes its payload by reference.
+`release_dispositions_remain_resolved_when_trunk_rewrites` (`:885`, running to
+`:1006`) and a `needless_pass_by_value` at `:4385` on
+`append_journal_operation_with_actor`, which has four call sites. The test splits
+into its arrangement and its per-disposition assertions; the helper takes its
+payload by reference.
 
-`crates/cargo-berth/src/cli.rs:585` suppresses `struct_excessive_bools` on the
-resolve arguments, whose flags are one mutually exclusive disposition each and
-are already grouped by `RESOLVE_DISPOSITION_GROUP`. Replace the flag set with
-semantic groups that convert immediately into `ResolveDecision` at the Clap
-boundary, so the boolean count disappears rather than being excused. Confine the
-raw optionals to one explicitly boundary-owned type —
-`UnvalidatedResolveDispositionSelection` — that Clap fills and that converts into
-the existing `ResolveDecision` at once, so nothing optional reaches the verb.
+`crates/cargo-berth/src/cli.rs:585` suppresses `struct_excessive_bools` on
+`ResolveArguments`. The struct holds exactly four bools — `every_incursion`,
+`recovered`, `abandon`, `retire_orphan` — against clippy's default
+`max-struct-bools = 3`, which no workspace configuration overrides. **Moving all
+four into one new boundary type re-trips the identical lint on that type.** Split
+them instead along the partition `ResolveDecision` already names in its own two
+variants:
 
-`ResolveArguments.why` (`crates/cargo-berth/src/cli.rs:647`) is a bare
-`Option<String>` carrying a domain fact — the justification for a deliberate
-abandonment or an orphan retirement — so it converts into
-`ResolveJustification`, an enum that distinguishes a stated justification from an
-unstated one, rather than letting a `String` reach `ResolveDecision`. The
-converted form belongs beside the disposition it justifies, since a justification
-with no disposition is not a state this command line can reach.
+- an incursion-answer selection carrying `incursion: Option<IncursionIncidentId>`
+  and `every_incursion: bool`, converting into `IncursionAnswerScope`;
+- a reservation-recovery selection carrying `recovered`, `abandon`,
+  `retire_orphan` and their value-bearing partners `integrated_as` and `why`,
+  converting into `ReservationRecoveryDecision`.
 
-**The resolve route is now a wire fact, not only a parser fact.** Phase 6 added
+Each is a `#[command(flatten)]` group holding at most three bools, so the count
+falls under the threshold in both rather than being excused, and each converts
+immediately at the Clap boundary so nothing optional reaches the verb.
+
+**`why` keeps its `Option<String>`, confined to the boundary type. Do not
+introduce a `ResolveJustification` enum.** `crates/cargo-berth/src/cli.rs:1292`–
+`:1300` already parses `why` through `AbandonmentReason` and
+`OrphanRetirementReason` (`crates/cargo-berth/src/reservation/lifecycle.rs:300`,
+`:306`) — non-empty-by-construction newtypes with fallible `FromStr`, each
+carried by the `ReservationRecoveryDecision` variant it justifies. A `String`
+therefore never reaches `ResolveDecision` today, and a type distinguishing a
+stated justification from an unstated one would be less specific than what
+exists while modelling a state `requires = WHY_ARGUMENT` makes unreachable.
+Convert the raw optional straight into those two existing reasons, exactly as
+the current code does.
+
+**The user-visible flag surface is frozen; only the parsed representation
+changes.** The flag spellings, their `ArgGroup` membership
+(`RESOLVE_DISPOSITION_GROUP`, `RESOLVE_REASONED_DISPOSITION_GROUP`), and their
+`requires` relationships all survive intact. Nine rendered engine strings
+hard-code the spellings — `crates/cargo-berth/src/output.rs:2980`, `:2984`,
+`:2989`, `:2990`, `:3471`, `:3528`, `:3531`, `:3961` — and
+`crates/cargo-berth/tests/presentation.rs:168`, `:173`, `:498` and `:501` assert
+the literal text `cargo-berth resolve {id} --integrated-as` and
+`cargo-berth resolve {id} --abandon --why`. Further invocations live in
+`crates/cargo-berth/tests/answers.rs:1765` and
+`crates/cargo-berth/tests/lifecycle.rs:166`, and the frozen fixture
+`crates/cargo-berth/tests/fixtures/front_end_corpus.json` carries thirty
+`resolve` occurrences. Renaming or regrouping a flag rewrites that fixture, so
+do not.
+
+**The refusal the parser renders is part of this phase's surface.** The `_ =>`
+arm at `crates/cargo-berth/src/cli.rs:1301` returns the user-facing text
+`choose exactly one resolution disposition and provide --why only for --abandon
+or --retire-orphan`, and the `requires` edges produce clap's own rejections.
+Replacing the flag set rewrites or deletes that arm. Preserve the refusal text
+and every clap rejection path, or state the replacement text and cover it with a
+test — this is the one externally observable behavior the phase can change, and
+it does not get to change silently.
+
+**The resolve route is a wire fact, not only a parser fact.** Phase 6 added
 `CommandLineRoute::Resolve.arguments()` (`crates/cargo-berth/src/cli.rs:2070`),
 which builds the literal argv `resolve <id> --recovered --json` for the recovery
-command the engine prints. Replacing the resolve flag set changes that argv, so
-the route table is part of this phase's surface and its acceptance gate.
+command the engine prints. The route table is part of this phase's surface and
+its acceptance gate.
 
 `crates/cargo-berth/src/ids.rs:132` carries a
 `cfg_attr(not(test), expect(dead_code, …))` on the `uuid_identifier!` macro's
@@ -1004,12 +905,13 @@ reason string, which this plan's binding constraint forbids. **Delete the arm.**
 `macro_rules! uuid_identifier` is declared **twice** in this file: `:22` defines
 the type, and `:128` shadows it to add `new()`. Seven invocations follow each —
 `:120`-`:126` under the first, `:150`-`:156` under the second — so a sweep for
-`uuid_identifier!` finds fourteen sites, not seven. The `(future $name:ident)`
-arm at `:129` and its `cfg_attr` at `:132` belong to the second declaration
-alone. All seven invocations under it (`:150`-`:156`) select the plain arm, so
-the `future` arm is never expanded, its suppression compiles to nothing, and
-every `new()` in the crate already has real consumers — "give the constructor a
-real consumer" is not an option that exists here.
+`uuid_identifier!` finds fourteen sites, not seven, and none of the fourteen is
+a `uuid_identifier!(future …)`. The `(future $name:ident)` arm at `:129` and its
+`cfg_attr` at `:132` belong to the second declaration alone. All seven
+invocations under it (`:150`-`:156`) select the plain arm, so the `future` arm is
+provably never expanded, its suppression compiles to nothing, and every `new()`
+in the crate already has real consumers — "give the constructor a real consumer"
+is not an option that exists here.
 Deleting an arm nothing invokes is precisely gate 2's "no speculative allows".
 It is a multi-line attribute: a single-line `rg 'cfg_attr.*expect'` does not
 match it.
@@ -1020,20 +922,31 @@ method is test-only and exercised — so nothing there remains for this phase.
 
 Then sweep the whole crate and prove the claim: the only `#[allow]`/`#[expect]`
 attributes left name `clippy::expect_used` or `clippy::panic` on a
-`#[cfg(test)]` module, which
+`#[cfg(test)]` module or on a whole integration-test file, which
 `~/rust/nate_style/rust/test-module-allow-boilerplate.md` pre-authorizes. A
 `cfg_attr`-wrapped suppression counts; search for both spellings.
+
+**Read but never written by this phase, since the flag surface is frozen:**
+`crates/cargo-berth/src/output.rs`, `crates/cargo-berth/tests/presentation.rs`,
+`crates/cargo-berth/tests/answers.rs`, `crates/cargo-berth/tests/lifecycle.rs`,
+`crates/cargo-berth/tests/fixtures/front_end_corpus.json`, and
+`docs/cargo-berth/generated/output-contract.json`.
 
 **Files:**
 - `crates/cargo-berth/tests/board.rs`
 - `crates/cargo-berth/src/cli.rs`
 - `crates/cargo-berth/src/ids.rs`
 
-**Seats:** 2 writers + 1 tester — the four sites are spread over three files, and
-one of those is the test suite carrying two of them, so a real test lane exists.
+**Seats:** 2 writers + 1 tester — `impl` carries the whole `cli.rs` redesign plus
+the frozen-surface obligation, `test` writes the two `tests/board.rs` sites, and
+`review` opens on a one-line deletion, so it takes the verification lane that the
+phase's one behavior-shaping change needs.
 - `impl` — `cli.rs`
-- `test` — `tests/board.rs`
-- `review` — opens as `impl`; `ids.rs`
+- `test` — `tests/board.rs` (both sites)
+- `review` — opens as `test`; `ids.rs`, then owns the resolve-argv verification
+  lane across `tests/presentation.rs`, `tests/answers.rs` and
+  `tests/lifecycle.rs`, proving the rendered recovery commands still run
+  verbatim against the rebuilt parser.
 
 **Acceptance gate:**
 1. Within this phase's three files — `cli.rs`, `ids.rs`, and `tests/board.rs` —
@@ -1048,12 +961,24 @@ one of those is the test suite carrying two of them, so a real test lane exists.
    peer's file and in files no seat held, so no seat could satisfy the gate from
    inside its own boundary.
 3. Every surviving allow names only pre-authorized test lints, and each one's
-   module actually uses the lint's pattern — no speculative allows.
+   module actually uses the lint's pattern — no speculative allows. The nine
+   file-level inner allows named in the constraints below are expected hits, not
+   findings.
 4. `CommandLineRoute::Resolve.arguments()` still builds a runnable resolve
    command line, and the three `cli.rs` route tests phase 6 added still pass
    unmodified.
-5. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
-6. `bash ~/.claude/scripts/delegate/verify.sh final` passes, and
+5. Every rendered recovery command still runs verbatim: `tests/presentation.rs`,
+   `tests/answers.rs`, `tests/lifecycle.rs`, and the
+   `tests/fixtures/front_end_corpus.json` corpus all pass **unmodified**. A diff
+   touching any of them means a flag spelling moved, which this phase forbids.
+6. The `_ =>` refusal text at `cli.rs:1301` is preserved verbatim, or its
+   replacement is stated in the report and covered by a test.
+7. `docs/cargo-berth/generated/output-contract.json` is unchanged. It carries
+   `resolve --integrated-as <trunk-oid>` at three places sourced from an
+   `output.rs` doc comment; the frozen flag surface means nothing regenerates.
+   If it does change, a flag spelling moved and gate 5 has already failed.
+8. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
+9. `bash ~/.claude/scripts/delegate/verify.sh final` passes, and
    `~/.claude/scripts/lint/lint mend`, `lint clippy --workspace`, and `lint doc`
    are all clean.
 
@@ -1067,16 +992,26 @@ the flag set is replaced. The module phases own every other
 non-boilerplate suppression in the crate — phase 8 the two `too_many_lines` sites
 in `reconcile.rs`, phase 9 the one in `git/mod.rs`, phase 10 the two in
 `reservation/mod.rs`, and phase 12 the three in `board/mod.rs`. If one survives,
-it is that phase's defect, not a new item here. Every other `#[allow]` still in
-`crates/cargo-berth/src/` names `clippy::expect_used` or `clippy::panic` on a
-`#[cfg(test)]` module and is pre-authorized boilerplate. Phase 11 introduced a
+it is that phase's defect, not a new item here. Phase 13 added no suppression at
+all: the only attribute anywhere under `src/gate/` is `permit.rs:473`
+(`clippy::expect_used` on `mod tests`), which is pre-authorized boilerplate.
+Every other `#[allow]` still in `crates/cargo-berth/src/` names
+`clippy::expect_used` or `clippy::panic` on a `#[cfg(test)]` module and is
+pre-authorized boilerplate. Phase 11 introduced a
 second spelling of that boilerplate: `crates/cargo-berth/src/ledger/mod.rs`
 carries `#[allow(clippy::expect_used, reason = ...)]` in **outer** position on its
 `#[cfg(test)] mod test_support;` declaration, rather than as an inner
 `#![allow(...)]` inside the module file. Gate 2's crate-wide sweep surfaces it in
 a table-of-contents root that carries no other logic; it is pre-authorized in the
 same sense as the rest, its module does call `.expect(`, and it is nobody's item.
-A sweep that only looks inside `mod tests` bodies misses it. The sites named above
+A sweep that only looks inside `mod tests` bodies misses it. There is a third
+spelling the sweep will also surface: nine integration-test files —
+`tests/answers.rs`, `board.rs`, `drift.rs`, `edges.rs`, `gate.rs`, `ledger.rs`,
+`lifecycle.rs`, `liveness.rs` and `overlap.rs`, including one of this phase's own
+three files — each open with a file-level inner
+`#![allow(clippy::expect_used, reason = …)]` at line 1. An integration-test file
+is wholly a test module, so the inner form is the only form available to it;
+all nine are pre-authorized and none is this phase's work. The sites named above
 were never owned by an earlier phase and are this phase's own work.
 
 ## Gates
