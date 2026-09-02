@@ -126,19 +126,6 @@ uuid_identifier!(RepoInstanceId);
 uuid_identifier!(WorktreeId);
 
 macro_rules! uuid_identifier {
-    (future $name:ident) => {
-        impl $name {
-            /// Create a new non-recyclable identifier.
-            #[cfg_attr(
-                not(test),
-                expect(
-                    dead_code,
-                    reason = "This UUID-v7 constructor belongs to a journal operation no verb constructs yet."
-                )
-            )]
-            pub(crate) fn new() -> Self { Self(Uuid::now_v7()) }
-        }
-    };
     ($name:ident) => {
         impl $name {
             /// Create a new non-recyclable identifier.

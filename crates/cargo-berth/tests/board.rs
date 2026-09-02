@@ -878,131 +878,33 @@ fn rewritten_and_unknown_predecessor_evidence_have_distinct_recoveries() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario compares all four release dispositions before and after one rewrite"
-)]
 fn release_dispositions_remain_resolved_when_trunk_rewrites() {
-    // The CLI records git-backed terminal dispositions only after a real merge. Direct journal
-    // facts let this model test cover all four durable variants without coupling it to gate I/O.
-    let repository = initialized_repository();
-    let runs = [
-        FIRST_RUN.to_owned(),
-        SECOND_RUN.to_owned(),
-        uuid::Uuid::now_v7().to_string(),
-        uuid::Uuid::now_v7().to_string(),
-    ];
-    let reservation_ids = runs
-        .iter()
-        .enumerate()
-        .map(|(index, run)| {
-            reservation_id(&claim(
-                repository.path(),
-                &format!("file:release-{index}.rs"),
-                run,
-            ))
-        })
-        .collect::<Vec<_>>();
-    let trunk_oid = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    for reservation_id in &reservation_ids[..2] {
-        append_journal_operation(
-            repository.path(),
-            serde_json::json!({
-                "op": "checkpoint",
-                "reservation_id": reservation_id,
-                "protected_tip": trunk_oid,
-                "trunk_snapshot": trunk_oid,
-            }),
-        );
-        append_journal_operation(
-            repository.path(),
-            serde_json::json!({
-                "op": "evidence_revalidated",
-                "reservation_id": reservation_id,
-                "status": {"status": "integrated", "trunk_oid": trunk_oid},
-                "edit_blocking_status": "clear",
-            }),
-        );
-    }
-    for (reservation_id, disposition) in [
-        (
-            &reservation_ids[0],
-            serde_json::json!({"kind": "integrated"}),
-        ),
-        (
-            &reservation_ids[1],
-            serde_json::json!({"kind": "rewritten_integration", "evidence": trunk_oid}),
-        ),
-        (
-            &reservation_ids[2],
-            serde_json::json!({"kind": "abandoned", "evidence": "discarded deliberately"}),
-        ),
-        (
-            &reservation_ids[3],
-            serde_json::json!({"kind": "retired_orphan", "evidence": "retired after review"}),
-        ),
-    ] {
-        append_journal_operation(
-            repository.path(),
-            serde_json::json!({
-                "op": "release",
-                "reservation_id": reservation_id,
-                "disposition": disposition,
-            }),
-        );
-    }
+    let released = released_disposition_fixture();
 
-    let clean = board_data(repository.path());
-    let resolved = clean["resolved"]["entries"]
-        .as_array()
-        .expect("resolved audit should be an array");
-    assert_eq!(resolved.len(), 4);
-    let dispositions = reservation_ids
-        .iter()
-        .map(|reservation_id| {
-            board_reservation_snapshot(&clean, reservation_id)["lifecycle"]["disposition"]["kind"]
-                .as_str()
-                .expect("released row should carry a disposition")
-                .to_owned()
-        })
-        .collect::<Vec<_>>();
+    let clean = board_data(released.repository.path());
     assert_eq!(
-        dispositions,
-        [
-            "integrated",
-            "rewritten_integration",
-            "abandoned",
-            "retired_orphan"
-        ]
+        clean["resolved"]["entries"].as_array().map(Vec::len),
+        Some(4)
     );
-    assert_eq!(
-        board_reservation_snapshot(&clean, &reservation_ids[0])["integration_evidence"]["status"]["status"],
-        "integrated"
-    );
+    assert_release_disposition_recorded(&clean, &released.integrated);
+    assert_release_disposition_recorded(&clean, &released.rewritten_integration);
+    assert_release_disposition_recorded(&clean, &released.abandoned);
+    assert_release_disposition_recorded(&clean, &released.retired_orphan);
 
     git(
-        repository.path(),
+        released.repository.path(),
         &["commit", "--quiet", "--amend", "-m", "rewrite main"],
     );
-    let rewritten = board_data(repository.path());
-    for reservation_id in &reservation_ids[..2] {
-        let reservation_snapshot = board_reservation_snapshot(&rewritten, reservation_id);
-        assert_eq!(reservation_snapshot["visibility"], "resolved_audit");
-        assert_eq!(reservation_snapshot["edit_blocking_status"], "clear");
-        assert_eq!(
-            reservation_snapshot["integration_evidence"]["status"]["status"],
-            "trunk_rewritten"
-        );
-    }
-    for reservation_id in &reservation_ids[2..] {
-        let reservation_snapshot = board_reservation_snapshot(&rewritten, reservation_id);
-        assert_eq!(reservation_snapshot["visibility"], "resolved_audit");
-        assert_eq!(reservation_snapshot["edit_blocking_status"], "clear");
-    }
+
+    let rewritten = board_data(released.repository.path());
     assert_eq!(
         rewritten["resolved"]["entries"].as_array().map(Vec::len),
         Some(4)
     );
+    assert_release_disposition_survives_rewrite(&rewritten, &released.integrated);
+    assert_release_disposition_survives_rewrite(&rewritten, &released.rewritten_integration);
+    assert_release_disposition_survives_rewrite(&rewritten, &released.abandoned);
+    assert_release_disposition_survives_rewrite(&rewritten, &released.retired_orphan);
 }
 
 #[test]
@@ -1013,7 +915,7 @@ fn board_json_renders_a_retained_scoped_patch_equivalence_proof() {
     let trunk_oid = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "checkpoint",
             "reservation_id": reservation_id,
             "protected_tip": trunk_oid,
@@ -1022,7 +924,7 @@ fn board_json_renders_a_retained_scoped_patch_equivalence_proof() {
     );
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "scoped_patch_equivalence_checked",
             "reservation_id": reservation_id,
             "subject": 1,
@@ -1070,7 +972,7 @@ fn renew_is_activity_but_unrelated_events_and_head_movement_are_not() {
     assert_eq!(stale_claim["at"], "2020-01-01T00:00:00.000Z");
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "bypass",
             "action": "integration",
             "cause": {
@@ -1220,6 +1122,7 @@ fn assert_waiting_reason(data: &serde_json::Value, reason: &str, instruction_fra
     assert_ne!(waiting[0]["action"], "waiting");
 }
 
+#[track_caller]
 fn board_reservation_snapshot<'board>(
     data: &'board serde_json::Value,
     reservation_id: &str,
@@ -1578,7 +1481,7 @@ fn environment_bypasses_group_by_merge_identity_not_coordination_run() {
     for bypassed_merge in ["first-merge", "first-merge", "first-merge", "second-merge"] {
         append_journal_operation(
             repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "bypass",
                 "action": "integration",
                 "cause": {
@@ -1656,7 +1559,7 @@ fn forced_bypass_rows_distinguish_edges_deferrals_and_both() {
         let permit_id = uuid::Uuid::now_v7().to_string();
         append_journal_operation(
             repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "forced_integration_permit",
                 "permit_id": permit_id,
                 "reservation_id": reservation_id,
@@ -1666,7 +1569,7 @@ fn forced_bypass_rows_distinguish_edges_deferrals_and_both() {
         );
         append_journal_operation(
             repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "consume_forced_integration_permit",
                 "permit_id": permit_id,
                 "reservation_id": reservation_id,
@@ -1674,7 +1577,7 @@ fn forced_bypass_rows_distinguish_edges_deferrals_and_both() {
         );
         append_journal_operation(
             repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "bypass",
                 "action": "integration",
                 "cause": {
@@ -1733,7 +1636,7 @@ fn available_forced_permit_becomes_consumed_bypass_history() {
     });
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "forced_integration_permit",
             "permit_id": permit_id,
             "reservation_id": reservation_id,
@@ -1752,7 +1655,7 @@ fn available_forced_permit_becomes_consumed_bypass_history() {
 
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "consume_forced_integration_permit",
             "permit_id": permit_id,
             "reservation_id": reservation_id,
@@ -1760,7 +1663,7 @@ fn available_forced_permit_becomes_consumed_bypass_history() {
     );
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "bypass",
             "action": "integration",
             "cause": {
@@ -1790,7 +1693,7 @@ fn interrupted_marker_import_is_deduplicated_before_deletion() {
     assert!(reservation.status.success());
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "bypass",
             "action": "integration",
             "cause": {
@@ -2031,7 +1934,7 @@ fn transaction_only_post_commit_actor_never_becomes_a_holder_or_orphan() {
     let transaction_run = uuid::Uuid::now_v7().to_string();
     append_journal_operation_with_actor(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "incursion",
             "incident_id": uuid::Uuid::now_v7().to_string(),
             "reservation_id": subject_id,
@@ -2045,7 +1948,7 @@ fn transaction_only_post_commit_actor_never_becomes_a_holder_or_orphan() {
     );
     append_journal_operation_with_actor(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "widen",
             "reservation_id": subject_id,
             "added_scopes": [{"path": "added.rs", "kind": "file"}],
@@ -2103,7 +2006,7 @@ fn incursion_only_post_commit_runs_add_no_invented_widening_row() {
     ] {
         append_journal_operation_with_actor(
             repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "incursion",
                 "incident_id": uuid::Uuid::now_v7().to_string(),
                 "reservation_id": subject_id,
@@ -2635,7 +2538,7 @@ fn lost_evidence_alert_covers_an_unknown_protected_tip() {
     let unavailable_tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     append_journal_operation(
         unknown_tip_repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "checkpoint",
             "reservation_id": unknown_tip_id,
             "protected_tip": unavailable_tip,
@@ -2644,7 +2547,7 @@ fn lost_evidence_alert_covers_an_unknown_protected_tip() {
     );
     append_journal_operation(
         unknown_tip_repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "evidence_revalidated",
             "reservation_id": unknown_tip_id,
             "status": {"status": "integrated", "trunk_oid": trunk_oid},
@@ -2653,7 +2556,7 @@ fn lost_evidence_alert_covers_an_unknown_protected_tip() {
     );
     append_journal_operation(
         unknown_tip_repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "release",
             "reservation_id": unknown_tip_id,
             "disposition": {"kind": "integrated"},
@@ -2737,7 +2640,7 @@ fn legacy_release_then_resnapshot_replays_to_a_lost_evidence_alert() {
             },
         }),
     ] {
-        append_journal_operation(legacy_repository.path(), operation);
+        append_journal_operation(legacy_repository.path(), &operation);
     }
     git(
         legacy_repository.path(),
@@ -3283,6 +3186,178 @@ struct OrderedFixture {
     successor_id:     String,
 }
 
+/// A board holding one released reservation for each of the four durable release dispositions.
+struct ReleasedDispositionFixture {
+    repository:            TempDir,
+    integrated:            ReleasedDisposition,
+    rewritten_integration: ReleasedDisposition,
+    abandoned:             ReleasedDisposition,
+    retired_orphan:        ReleasedDisposition,
+}
+
+/// One released reservation together with the disposition it was released under.
+struct ReleasedDisposition {
+    reservation_id: String,
+    kind:           &'static str,
+    evidence:       ReleaseEvidence,
+}
+
+/// What a release disposition leaves behind for a later trunk rewrite to reinterpret.
+enum ReleaseEvidence {
+    /// The release rests on recorded integration evidence, which a trunk rewrite restates.
+    RecordedIntegration,
+    /// The release rests on a stated reason, which no trunk rewrite can reach.
+    StatedReason,
+}
+
+/// Release four reservations over one trunk commit, one under each durable disposition.
+///
+/// The CLI records git-backed terminal dispositions only after a real merge. Direct journal facts
+/// let the model test cover all four durable variants without coupling it to gate I/O.
+fn released_disposition_fixture() -> ReleasedDispositionFixture {
+    let repository = initialized_repository();
+    let runs = [
+        FIRST_RUN.to_owned(),
+        SECOND_RUN.to_owned(),
+        uuid::Uuid::now_v7().to_string(),
+        uuid::Uuid::now_v7().to_string(),
+    ];
+    let reservation_ids = runs
+        .iter()
+        .enumerate()
+        .map(|(index, run)| {
+            reservation_id(&claim(
+                repository.path(),
+                &format!("file:release-{index}.rs"),
+                run,
+            ))
+        })
+        .collect::<Vec<_>>();
+    let trunk_oid = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    for reservation_id in &reservation_ids[..2] {
+        append_journal_operation(
+            repository.path(),
+            &serde_json::json!({
+                "op": "checkpoint",
+                "reservation_id": reservation_id,
+                "protected_tip": trunk_oid,
+                "trunk_snapshot": trunk_oid,
+            }),
+        );
+        append_journal_operation(
+            repository.path(),
+            &serde_json::json!({
+                "op": "evidence_revalidated",
+                "reservation_id": reservation_id,
+                "status": {"status": "integrated", "trunk_oid": trunk_oid},
+                "edit_blocking_status": "clear",
+            }),
+        );
+    }
+    let releases = [
+        (
+            ReleasedDisposition {
+                reservation_id: reservation_ids[0].clone(),
+                kind:           "integrated",
+                evidence:       ReleaseEvidence::RecordedIntegration,
+            },
+            serde_json::json!({"kind": "integrated"}),
+        ),
+        (
+            ReleasedDisposition {
+                reservation_id: reservation_ids[1].clone(),
+                kind:           "rewritten_integration",
+                evidence:       ReleaseEvidence::RecordedIntegration,
+            },
+            serde_json::json!({"kind": "rewritten_integration", "evidence": trunk_oid}),
+        ),
+        (
+            ReleasedDisposition {
+                reservation_id: reservation_ids[2].clone(),
+                kind:           "abandoned",
+                evidence:       ReleaseEvidence::StatedReason,
+            },
+            serde_json::json!({"kind": "abandoned", "evidence": "discarded deliberately"}),
+        ),
+        (
+            ReleasedDisposition {
+                reservation_id: reservation_ids[3].clone(),
+                kind:           "retired_orphan",
+                evidence:       ReleaseEvidence::StatedReason,
+            },
+            serde_json::json!({"kind": "retired_orphan", "evidence": "retired after review"}),
+        ),
+    ];
+    for (released, disposition) in &releases {
+        append_journal_operation(
+            repository.path(),
+            &serde_json::json!({
+                "op": "release",
+                "reservation_id": released.reservation_id,
+                "disposition": disposition,
+            }),
+        );
+    }
+    let [integrated, rewritten_integration, abandoned, retired_orphan] =
+        releases.map(|(released, _)| released);
+    ReleasedDispositionFixture {
+        repository,
+        integrated,
+        rewritten_integration,
+        abandoned,
+        retired_orphan,
+    }
+}
+
+/// Prove one released reservation reached the resolved audit under its own disposition.
+#[track_caller]
+fn assert_release_disposition_recorded(data: &serde_json::Value, released: &ReleasedDisposition) {
+    let snapshot = board_reservation_snapshot(data, &released.reservation_id);
+    assert_eq!(
+        snapshot["lifecycle"]["disposition"]["kind"], released.kind,
+        "{} should be recorded under its own disposition",
+        released.kind
+    );
+    if matches!(released.evidence, ReleaseEvidence::RecordedIntegration) {
+        assert_eq!(
+            snapshot["integration_evidence"]["status"]["status"], "integrated",
+            "{} should rest on recorded integration evidence",
+            released.kind
+        );
+    }
+}
+
+/// Prove one released reservation stays resolved and unblocking once trunk is rewritten.
+#[track_caller]
+fn assert_release_disposition_survives_rewrite(
+    data: &serde_json::Value,
+    released: &ReleasedDisposition,
+) {
+    let snapshot = board_reservation_snapshot(data, &released.reservation_id);
+    assert_eq!(
+        snapshot["lifecycle"]["disposition"]["kind"], released.kind,
+        "{} should keep its disposition across a trunk rewrite",
+        released.kind
+    );
+    assert_eq!(
+        snapshot["visibility"], "resolved_audit",
+        "{} should stay in the resolved audit",
+        released.kind
+    );
+    assert_eq!(
+        snapshot["edit_blocking_status"], "clear",
+        "{} should block no edit",
+        released.kind
+    );
+    if matches!(released.evidence, ReleaseEvidence::RecordedIntegration) {
+        assert_eq!(
+            snapshot["integration_evidence"]["status"]["status"], "trunk_rewritten",
+            "{} should restate its integration evidence as rewritten",
+            released.kind
+        );
+    }
+}
+
 fn persistent_unavailable_comparison_fixture() -> PersistentUnavailableComparisonFixture {
     let repository = initialized_repository();
     let base = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
@@ -3304,7 +3379,7 @@ fn persistent_unavailable_comparison_fixture() -> PersistentUnavailableCompariso
     let unavailable_phase_start = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "resnapshot",
             "reservation_id": reservation_ids[0],
             "snapshot": {
@@ -3344,7 +3419,7 @@ fn persistent_unavailable_comparison_fixture() -> PersistentUnavailableCompariso
     for reservation_id in &reservation_ids {
         append_journal_operation(
             repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "checkpoint",
                 "reservation_id": reservation_id,
                 "protected_tip": protected_tip,
@@ -3440,7 +3515,7 @@ fn assert_proof_subject_change_rechecks(
     match proof_subject_change {
         ProofSubjectChange::Widen => append_journal_operation(
             fixture.repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "widen",
                 "reservation_id": fixture.reservation_id,
                 "added_scopes": [{"path": "src/extra.rs", "kind": "file"}],
@@ -3451,7 +3526,7 @@ fn assert_proof_subject_change_rechecks(
         ),
         ProofSubjectChange::Resnapshot => append_journal_operation(
             fixture.repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "resnapshot",
                 "reservation_id": fixture.reservation_id,
                 "snapshot": {
@@ -3463,7 +3538,7 @@ fn assert_proof_subject_change_rechecks(
         ),
         ProofSubjectChange::ReleaseDispositionReplacement => append_journal_operation(
             fixture.repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "replace_release_disposition",
                 "reservation_id": fixture.reservation_id,
                 "superseded": {"kind": "integrated"},
@@ -3528,7 +3603,7 @@ fn rewritten_reservation_fixture(
     let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "checkpoint",
             "reservation_id": reservation_id,
             "protected_tip": protected_tip,
@@ -3537,7 +3612,7 @@ fn rewritten_reservation_fixture(
     );
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "evidence_revalidated",
             "reservation_id": reservation_id,
             "status": {
@@ -3551,7 +3626,7 @@ fn rewritten_reservation_fixture(
     if matches!(reservation_completion, ReservationCompletion::Released) {
         append_journal_operation(
             repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "release",
                 "reservation_id": reservation_id,
                 "disposition": {"kind": "integrated"},
@@ -3667,7 +3742,7 @@ fn append_outstanding_ancestor_evidence(
 ) {
     append_journal_operation(
         repository_root,
-        serde_json::json!({
+        &serde_json::json!({
             "op": "checkpoint",
             "reservation_id": reservation_id,
             "protected_tip": protected_tip,
@@ -3676,7 +3751,7 @@ fn append_outstanding_ancestor_evidence(
     );
     append_journal_operation(
         repository_root,
-        serde_json::json!({
+        &serde_json::json!({
             "op": "evidence_revalidated",
             "reservation_id": reservation_id,
             "status": {
@@ -3745,7 +3820,7 @@ fn warmed_ancestor_proof_after_trunk_rewrite() -> RewrittenReservationFixture {
     let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "checkpoint",
             "reservation_id": reservation_id,
             "protected_tip": protected_tip,
@@ -3762,7 +3837,7 @@ fn warmed_ancestor_proof_after_trunk_rewrite() -> RewrittenReservationFixture {
     );
     append_journal_operation(
         repository.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "op": "release",
             "reservation_id": reservation_id,
             "disposition": {"kind": "integrated"},
@@ -3831,7 +3906,7 @@ fn reachable_outstanding_reservations_fixture(
     for reservation_id in &reservation_ids {
         append_journal_operation(
             repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "checkpoint",
                 "reservation_id": reservation_id,
                 "protected_tip": target,
@@ -3893,7 +3968,7 @@ fn comparison_reservations_without_retained_verdicts_fixture(
     for reservation_id in &reservation_ids {
         append_journal_operation(
             repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "checkpoint",
                 "reservation_id": reservation_id,
                 "protected_tip": protected_tip,
@@ -3994,7 +4069,7 @@ fn append_released_reservations(
         };
         append_journal_operation(
             fixture.repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "claim",
                 "reservation_id": reservation_id,
                 "scopes": scopes,
@@ -4010,7 +4085,7 @@ fn append_released_reservations(
         );
         append_journal_operation(
             fixture.repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "checkpoint",
                 "reservation_id": reservation_id,
                 "protected_tip": fixture.protected_tip,
@@ -4019,7 +4094,7 @@ fn append_released_reservations(
         );
         append_journal_operation(
             fixture.repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "evidence_revalidated",
                 "reservation_id": reservation_id,
                 "status": {
@@ -4032,7 +4107,7 @@ fn append_released_reservations(
         );
         append_journal_operation(
             fixture.repository.path(),
-            serde_json::json!({
+            &serde_json::json!({
                 "op": "release",
                 "reservation_id": reservation_id,
                 "disposition": {"kind": "integrated"},
@@ -4045,7 +4120,7 @@ fn append_released_reservations(
 fn append_scoped_patch_attempt(repository_root: &Path, reservation_id: &str, target: &str) {
     append_journal_operation(
         repository_root,
-        serde_json::json!({
+        &serde_json::json!({
             "op": "scoped_patch_comparison_attempted",
             "reservation_id": reservation_id,
             "subject": 1,
@@ -4061,7 +4136,7 @@ fn append_scoped_patch_equivalence_evidence(
 ) {
     append_journal_operation(
         repository_root,
-        serde_json::json!({
+        &serde_json::json!({
             "op": "evidence_revalidated",
             "reservation_id": reservation_id,
             "status": {
@@ -4369,7 +4444,7 @@ fn board_data(repository_root: &Path) -> serde_json::Value {
 /// Append an otherwise unreachable journal fact while retaining the real event envelope.
 fn append_journal_operation(
     repository_root: &Path,
-    operation: serde_json::Value,
+    operation: &serde_json::Value,
 ) -> serde_json::Value {
     append_journal_operation_with_actor(repository_root, operation, ActorFixture::Retained)
 }
@@ -4382,13 +4457,9 @@ enum ActorFixture {
     },
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "callers construct one-use JSON operation fixtures inline"
-)]
 fn append_journal_operation_with_actor(
     repository_root: &Path,
-    operation: serde_json::Value,
+    operation: &serde_json::Value,
     actor_fixture: ActorFixture,
 ) -> serde_json::Value {
     let journal_path = repository_root.join(JOURNAL_PATH);

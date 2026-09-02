@@ -440,3 +440,28 @@ assertion load-independent, it only moves the load at which it fires.
 
 Revealed by: Phase 11 architect review, after five occurrences across phases
 9-11.
+
+## 23. Two macros share one name and one matcher, so a call site cannot say which it selects
+
+**Target:** `crates/cargo-berth/src/ids.rs:22` and `:128` — both declared
+`macro_rules! uuid_identifier`.
+
+The first declaration defines the identifier type; the second shadows it to add
+`new()`. Until phase 14 the second carried an extra `(future $name:ident)` arm,
+which at least made the two textually distinguishable. That arm was dead — no
+invocation anywhere selected it — and deleting it was phase 14's work, so the two
+declarations now have identical matchers.
+
+Every identifier is therefore invoked twice, once under each declaration
+(`:120`-`:126` and `:137`-`:143`), and nothing in the file marks the shadowing.
+A reader cannot tell which definition a given invocation selects. Adding an
+eighth identifier under only one of the two blocks yields either a type with no
+`new()` or an unresolved-type error, and neither diagnostic points at the
+shadowing that caused it.
+
+Satisfied by: renaming the second declaration for what it adds — a constructor —
+so both call sites name what they select, or by merging the two declarations into
+one that emits the type and its constructor together.
+
+Revealed by: Phase 14 reach review, after the dead arm's removal left the two
+matchers identical.

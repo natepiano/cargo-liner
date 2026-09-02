@@ -165,6 +165,8 @@ const RETIRE_ORPHAN_LONG_ABOUT: &str = "Use this only after confirming an orphan
 const RENEW_LONG_ABOUT: &str = "Record that this still-live reservation remains active after inspection. Renewal changes neither its scopes nor any ordering edge; using it to hide abandoned work delays the user-confirmed recovery or abandonment decision that must eventually resolve it.";
 const EVERY_INCURSION_LONG_ABOUT: &str = "Answer every incursion incident outstanding for this reservation in one disposition. A backlog reports one notice per incident, and answering a single member leaves the rest standing, so the notice keeps firing until the set is empty.";
 const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation recovery or an incursion incident. Choose exactly one disposition: --incursion <INCIDENT_ID> for an outstanding incident; --recovered when work survives in this replacement worktree; --integrated-as <TRUNK_OID> when work reached trunk in a form the tool could not prove; --abandon --why <WHY> only when work is deliberately discarded; or --retire-orphan --why <WHY> after confirming an orphan may retire without classifying its work as discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
+/// The refusal earned by a resolve command line that names no single disposition.
+const RESOLVE_DISPOSITION_REFUSAL: &str = "choose exactly one resolution disposition and provide --why only for --abandon or --retire-orphan";
 
 /// `cargo-berth`, as the command line sees it.
 #[derive(Debug, Parser)]
@@ -581,11 +583,70 @@ struct IntegrateArguments {
     json_output:    JsonOutput,
 }
 
+/// Which of a reservation's outstanding incursion incidents this command line answers.
+#[derive(Debug, Args)]
+struct IncursionAnswerSelection {
+    /// Answer this outstanding incursion incident.
+    #[arg(long = INCURSION_ARGUMENT, value_name = INCURSION_VALUE_NAME)]
+    incursion:       Option<IncursionIncidentId>,
+    /// Answer every incursion incident outstanding for the reservation.
+    #[arg(long = EVERY_INCURSION_ARGUMENT, long_help = EVERY_INCURSION_LONG_ABOUT)]
+    every_incursion: bool,
+}
+
+/// How this command line disposes of the stuck reservation itself.
+#[derive(Debug, Args)]
+struct ReservationRecoverySelection {
+    /// Record this worktree as the recovered holder of surviving work.
+    #[arg(long = RECOVERED_ARGUMENT, long_help = RECOVERED_LONG_ABOUT)]
+    recovered:     bool,
+    /// Assert a trunk commit proves rewritten integration.
+    #[arg(
+        long = INTEGRATED_AS_ARGUMENT,
+        value_name = TRUNK_OID_VALUE_NAME,
+        long_help = INTEGRATED_AS_LONG_ABOUT
+    )]
+    integrated_as: Option<RewrittenIntegrationTrunkCommit>,
+    /// Permanently discard this reservation's work and coordination hold.
+    #[arg(
+        long = ABANDON_ARGUMENT,
+        requires = WHY_ARGUMENT,
+        long_help = ABANDON_LONG_ABOUT
+    )]
+    abandon:       bool,
+    /// Retire this confirmed orphan without classifying it as deliberate abandonment.
+    #[arg(
+        long = RETIRE_ORPHAN_ARGUMENT,
+        requires = WHY_ARGUMENT,
+        long_help = RETIRE_ORPHAN_LONG_ABOUT
+    )]
+    retire_orphan: bool,
+    /// Explain the deliberate abandonment or orphan-retirement decision.
+    #[arg(
+        long = WHY_ARGUMENT,
+        value_name = WHY_VALUE_NAME,
+        requires = RESOLVE_REASONED_DISPOSITION_GROUP
+    )]
+    why:           Option<String>,
+}
+
+/// Whether the incursion-answer flags name a disposition for this resolve.
+enum IncursionAnswerNomination {
+    /// No incursion flag appeared on the command line.
+    NoIncursionAnswered,
+    /// The flags name exactly one scope of incursion answers.
+    AnswerScope(IncursionAnswerScope),
+}
+
+/// Whether the reservation-recovery flags name a disposition for this resolve.
+enum ReservationRecoveryNomination {
+    /// No reservation-recovery flag appeared on the command line.
+    NoRecoveryRequested,
+    /// The flags name exactly one reservation recovery decision.
+    Recovery(ReservationRecoveryDecision),
+}
+
 /// A user-confirmed recovery decision for a stuck reservation.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each flag is one mutually exclusive disposition clap must parse separately"
-)]
 #[derive(Debug, Args)]
 #[command(group(
     ArgGroup::new(RESOLVE_DISPOSITION_GROUP)
@@ -607,47 +668,16 @@ struct IntegrateArguments {
 ))]
 struct ResolveArguments {
     /// The stuck reservation to resolve.
-    reservation_id:  ReservationId,
-    /// Answer this outstanding incursion incident.
-    #[arg(long = INCURSION_ARGUMENT, value_name = INCURSION_VALUE_NAME)]
-    incursion:       Option<IncursionIncidentId>,
-    /// Answer every incursion incident outstanding for the reservation.
-    #[arg(long = EVERY_INCURSION_ARGUMENT, long_help = EVERY_INCURSION_LONG_ABOUT)]
-    every_incursion: bool,
-    /// Record this worktree as the recovered holder of surviving work.
-    #[arg(long = RECOVERED_ARGUMENT, long_help = RECOVERED_LONG_ABOUT)]
-    recovered:       bool,
-    /// Assert a trunk commit proves rewritten integration.
-    #[arg(
-        long = INTEGRATED_AS_ARGUMENT,
-        value_name = TRUNK_OID_VALUE_NAME,
-        long_help = INTEGRATED_AS_LONG_ABOUT
-    )]
-    integrated_as:   Option<RewrittenIntegrationTrunkCommit>,
-    /// Permanently discard this reservation's work and coordination hold.
-    #[arg(
-        long = ABANDON_ARGUMENT,
-        requires = WHY_ARGUMENT,
-        long_help = ABANDON_LONG_ABOUT
-    )]
-    abandon:         bool,
-    /// Retire this confirmed orphan without classifying it as deliberate abandonment.
-    #[arg(
-        long = RETIRE_ORPHAN_ARGUMENT,
-        requires = WHY_ARGUMENT,
-        long_help = RETIRE_ORPHAN_LONG_ABOUT
-    )]
-    retire_orphan:   bool,
-    /// Explain the deliberate abandonment or orphan-retirement decision.
-    #[arg(
-        long = WHY_ARGUMENT,
-        value_name = WHY_VALUE_NAME,
-        requires = RESOLVE_REASONED_DISPOSITION_GROUP
-    )]
-    why:             Option<String>,
+    reservation_id:       ReservationId,
+    /// The incursion incidents this command line answers, if it answers any.
+    #[command(flatten)]
+    incursion_answer:     IncursionAnswerSelection,
+    /// The recovery this command line applies to the reservation, if it applies one.
+    #[command(flatten)]
+    reservation_recovery: ReservationRecoverySelection,
     /// The output representation requested for this command.
     #[command(flatten)]
-    json_output:     JsonOutput,
+    json_output:          JsonOutput,
 }
 
 impl Cli {
@@ -1253,58 +1283,84 @@ impl IntegrateArguments {
     }
 }
 
+impl IncursionAnswerSelection {
+    /// Convert clap's incursion flags into the answer scope they name, if any.
+    fn nomination(self) -> Result<IncursionAnswerNomination, String> {
+        let Self {
+            incursion,
+            every_incursion,
+        } = self;
+        match (incursion, every_incursion) {
+            (Some(incident_id), false) => Ok(IncursionAnswerNomination::AnswerScope(
+                IncursionAnswerScope::One(incident_id),
+            )),
+            (None, true) => Ok(IncursionAnswerNomination::AnswerScope(
+                IncursionAnswerScope::Every,
+            )),
+            (None, false) => Ok(IncursionAnswerNomination::NoIncursionAnswered),
+            (Some(_), true) => Err(RESOLVE_DISPOSITION_REFUSAL.to_owned()),
+        }
+    }
+}
+
+impl ReservationRecoverySelection {
+    /// Convert clap's recovery flags into the decision they name, if any.
+    fn nomination(self) -> Result<ReservationRecoveryNomination, String> {
+        let Self {
+            recovered,
+            integrated_as,
+            abandon,
+            retire_orphan,
+            why,
+        } = self;
+        match (recovered, integrated_as, abandon, retire_orphan, why) {
+            (false, None, false, false, None) => {
+                Ok(ReservationRecoveryNomination::NoRecoveryRequested)
+            },
+            (true, None, false, false, None) => Ok(ReservationRecoveryNomination::Recovery(
+                ReservationRecoveryDecision::Recovered,
+            )),
+            (false, Some(trunk_commit), false, false, None) => {
+                Ok(ReservationRecoveryNomination::Recovery(
+                    ReservationRecoveryDecision::IntegratedAs(trunk_commit),
+                ))
+            },
+            (false, None, true, false, Some(reason)) => reason
+                .parse::<AbandonmentReason>()
+                .map(ReservationRecoveryDecision::Abandon)
+                .map(ReservationRecoveryNomination::Recovery)
+                .map_err(|error| error.to_string()),
+            (false, None, false, true, Some(reason)) => reason
+                .parse::<OrphanRetirementReason>()
+                .map(ReservationRecoveryDecision::RetireOrphan)
+                .map(ReservationRecoveryNomination::Recovery)
+                .map_err(|error| error.to_string()),
+            _ => Err(RESOLVE_DISPOSITION_REFUSAL.to_owned()),
+        }
+    }
+}
+
 impl ResolveArguments {
     fn into_resolve_request(self) -> Result<ResolveRequest, String> {
         let Self {
             reservation_id,
-            incursion,
-            every_incursion,
-            recovered,
-            integrated_as,
-            abandon,
-            retire_orphan,
-            why,
+            incursion_answer,
+            reservation_recovery,
             json_output: _,
         } = self;
         let decision = match (
-            incursion,
-            every_incursion,
-            recovered,
-            integrated_as,
-            abandon,
-            retire_orphan,
-            why,
+            incursion_answer.nomination()?,
+            reservation_recovery.nomination()?,
         ) {
-            (Some(incident_id), false, false, None, false, false, None) => {
-                ResolveDecision::Incursion(IncursionAnswerScope::One(incident_id))
-            },
-            (None, true, false, None, false, false, None) => {
-                ResolveDecision::Incursion(IncursionAnswerScope::Every)
-            },
-            (None, false, true, None, false, false, None) => {
-                ResolveDecision::Reservation(ReservationRecoveryDecision::Recovered)
-            },
-            (None, false, false, Some(trunk_commit), false, false, None) => {
-                ResolveDecision::Reservation(ReservationRecoveryDecision::IntegratedAs(
-                    trunk_commit,
-                ))
-            },
-            (None, false, false, None, true, false, Some(reason)) => reason
-                .parse::<AbandonmentReason>()
-                .map(ReservationRecoveryDecision::Abandon)
-                .map(ResolveDecision::Reservation)
-                .map_err(|error| error.to_string())?,
-            (None, false, false, None, false, true, Some(reason)) => reason
-                .parse::<OrphanRetirementReason>()
-                .map(ReservationRecoveryDecision::RetireOrphan)
-                .map(ResolveDecision::Reservation)
-                .map_err(|error| error.to_string())?,
-            _ => {
-                return Err(
-                    "choose exactly one resolution disposition and provide --why only for --abandon or --retire-orphan"
-                        .to_owned(),
-                );
-            },
+            (
+                IncursionAnswerNomination::AnswerScope(scope),
+                ReservationRecoveryNomination::NoRecoveryRequested,
+            ) => ResolveDecision::Incursion(scope),
+            (
+                IncursionAnswerNomination::NoIncursionAnswered,
+                ReservationRecoveryNomination::Recovery(recovery),
+            ) => ResolveDecision::Reservation(recovery),
+            _ => return Err(RESOLVE_DISPOSITION_REFUSAL.to_owned()),
         };
         Ok(ResolveRequest {
             reservation_id,
@@ -2362,6 +2418,16 @@ mod tests {
             .is_err()
         );
         assert!(parsed_verb(&[BINARY_NAME, "resolve", RESERVATION_ID, "--abandon"]).is_err());
+        assert!(
+            parsed_verb(&[
+                BINARY_NAME,
+                "resolve",
+                RESERVATION_ID,
+                "--every-incursion",
+                "--recovered",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

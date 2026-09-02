@@ -819,200 +819,70 @@ narrowing visibility could put an integration test out of reach — `cargo-berth
 is a binary crate with no `[lib]`, and every integration suite drives the
 compiled binary through `std::process::Command`.
 
-### Phase 14 — Remove the remaining suppressions · status: todo
+### Phase 14 — Remove the remaining suppressions · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** No suppression remains anywhere in `crates/cargo-berth/src/`, except the
-pre-authorized test-module boilerplate — `clippy::expect_used`, and
-`clippy::panic` where the module uses `panic!`.
+No suppression remains anywhere in `crates/cargo-berth/` except pre-authorized
+test boilerplate. A multi-line-aware crate-wide sweep finds exactly two lint
+names surviving — `clippy::expect_used` at 25 sites and `clippy::panic` at 2 —
+across three permitted shapes: inside a `#[cfg(test)] mod tests` body, in outer
+position on `ledger/mod.rs`'s `mod test_support;` declaration, and as a
+file-level inner attribute on each of nine integration-test files. Zero
+`dead_code`, `too_many_lines`, `too_many_arguments`, `needless_pass_by_value`,
+`struct_excessive_bools`, and zero `cfg_attr`-wrapped suppressions.
 
-**Spec:** Four sites survive the earlier phases, in three shapes. All four, and
-every line reference below, are confirmed against the tree as it stands after
-phase 13.
-
-`crates/cargo-berth/tests/board.rs` holds two: a `too_many_lines` at `:881` on
-`release_dispositions_remain_resolved_when_trunk_rewrites` (`:885`, running to
-`:1006`) and a `needless_pass_by_value` at `:4385` on
-`append_journal_operation_with_actor`, which has four call sites. The test splits
-into its arrangement and its per-disposition assertions; the helper takes its
-payload by reference.
-
-`crates/cargo-berth/src/cli.rs:585` suppresses `struct_excessive_bools` on
-`ResolveArguments`. The struct holds exactly four bools — `every_incursion`,
-`recovered`, `abandon`, `retire_orphan` — against clippy's default
-`max-struct-bools = 3`, which no workspace configuration overrides. **Moving all
-four into one new boundary type re-trips the identical lint on that type.** Split
-them instead along the partition `ResolveDecision` already names in its own two
-variants:
-
-- an incursion-answer selection carrying `incursion: Option<IncursionIncidentId>`
-  and `every_incursion: bool`, converting into `IncursionAnswerScope`;
-- a reservation-recovery selection carrying `recovered`, `abandon`,
-  `retire_orphan` and their value-bearing partners `integrated_as` and `why`,
-  converting into `ReservationRecoveryDecision`.
-
-Each is a `#[command(flatten)]` group holding at most three bools, so the count
-falls under the threshold in both rather than being excused, and each converts
-immediately at the Clap boundary so nothing optional reaches the verb.
-
-**`why` keeps its `Option<String>`, confined to the boundary type. Do not
-introduce a `ResolveJustification` enum.** `crates/cargo-berth/src/cli.rs:1292`–
-`:1300` already parses `why` through `AbandonmentReason` and
-`OrphanRetirementReason` (`crates/cargo-berth/src/reservation/lifecycle.rs:300`,
-`:306`) — non-empty-by-construction newtypes with fallible `FromStr`, each
-carried by the `ReservationRecoveryDecision` variant it justifies. A `String`
-therefore never reaches `ResolveDecision` today, and a type distinguishing a
-stated justification from an unstated one would be less specific than what
-exists while modelling a state `requires = WHY_ARGUMENT` makes unreachable.
-Convert the raw optional straight into those two existing reasons, exactly as
-the current code does.
-
-**The user-visible flag surface is frozen; only the parsed representation
-changes.** The flag spellings, their `ArgGroup` membership
-(`RESOLVE_DISPOSITION_GROUP`, `RESOLVE_REASONED_DISPOSITION_GROUP`), and their
-`requires` relationships all survive intact. Nine rendered engine strings
-hard-code the spellings — `crates/cargo-berth/src/output.rs:2980`, `:2984`,
-`:2989`, `:2990`, `:3471`, `:3528`, `:3531`, `:3961` — and
-`crates/cargo-berth/tests/presentation.rs:168`, `:173`, `:498` and `:501` assert
-the literal text `cargo-berth resolve {id} --integrated-as` and
-`cargo-berth resolve {id} --abandon --why`. Further invocations live in
-`crates/cargo-berth/tests/answers.rs:1765` and
-`crates/cargo-berth/tests/lifecycle.rs:166`, and the frozen fixture
-`crates/cargo-berth/tests/fixtures/front_end_corpus.json` carries thirty
-`resolve` occurrences. Renaming or regrouping a flag rewrites that fixture, so
-do not.
-
-**The refusal the parser renders is part of this phase's surface.** The `_ =>`
-arm at `crates/cargo-berth/src/cli.rs:1301` returns the user-facing text
-`choose exactly one resolution disposition and provide --why only for --abandon
-or --retire-orphan`, and the `requires` edges produce clap's own rejections.
-Replacing the flag set rewrites or deletes that arm. Preserve the refusal text
-and every clap rejection path, or state the replacement text and cover it with a
-test — this is the one externally observable behavior the phase can change, and
-it does not get to change silently.
-
-**The resolve route is a wire fact, not only a parser fact.** Phase 6 added
-`CommandLineRoute::Resolve.arguments()` (`crates/cargo-berth/src/cli.rs:2070`),
-which builds the literal argv `resolve <id> --recovered --json` for the recovery
-command the engine prints. The route table is part of this phase's surface and
-its acceptance gate.
-
-`crates/cargo-berth/src/ids.rs:132` carries a
-`cfg_attr(not(test), expect(dead_code, …))` on the `uuid_identifier!` macro's
-`future` constructor arm — an unused-outside-tests suppression that authors a
-reason string, which this plan's binding constraint forbids. **Delete the arm.**
-`macro_rules! uuid_identifier` is declared **twice** in this file: `:22` defines
-the type, and `:128` shadows it to add `new()`. Seven invocations follow each —
-`:120`-`:126` under the first, `:150`-`:156` under the second — so a sweep for
-`uuid_identifier!` finds fourteen sites, not seven, and none of the fourteen is
-a `uuid_identifier!(future …)`. The `(future $name:ident)` arm at `:129` and its
-`cfg_attr` at `:132` belong to the second declaration alone. All seven
-invocations under it (`:150`-`:156`) select the plain arm, so the `future` arm is
-provably never expanded, its suppression compiles to nothing, and every `new()`
-in the crate already has real consumers — "give the constructor a real consumer"
-is not an option that exists here.
-Deleting an arm nothing invokes is precisely gate 2's "no speculative allows".
-It is a multi-line attribute: a single-line `rg 'cfg_attr.*expect'` does not
-match it.
-
-`crates/cargo-berth/src/ledger/journal.rs` is **no longer a site.** Its
-`dead_code` suppression on the macro-generated `wire_name` is already gone — the
-method is test-only and exercised — so nothing there remains for this phase.
-
-Then sweep the whole crate and prove the claim: the only `#[allow]`/`#[expect]`
-attributes left name `clippy::expect_used` or `clippy::panic` on a
-`#[cfg(test)]` module or on a whole integration-test file, which
-`~/rust/nate_style/rust/test-module-allow-boilerplate.md` pre-authorizes. A
-`cfg_attr`-wrapped suppression counts; search for both spellings.
-
-**Read but never written by this phase, since the flag surface is frozen:**
-`crates/cargo-berth/src/output.rs`, `crates/cargo-berth/tests/presentation.rs`,
-`crates/cargo-berth/tests/answers.rs`, `crates/cargo-berth/tests/lifecycle.rs`,
-`crates/cargo-berth/tests/fixtures/front_end_corpus.json`, and
-`docs/cargo-berth/generated/output-contract.json`.
+`ResolveArguments` now holds two `#[command(flatten)]` selection structs —
+`IncursionAnswerSelection` (one bool) and `ReservationRecoverySelection` (three)
+— each converting at the clap boundary into the decision it names, so the
+boolean count falls under the threshold rather than being excused. `why` keeps
+its `Option<String>` confined to the boundary struct and converts into the
+existing `AbandonmentReason` and `OrphanRetirementReason`. The user-visible flag
+surface is byte-identical to before the split: every long name, value name,
+`long_help`, `ArgGroup` membership and `requires` edge, and the refusal for a
+command line naming no single disposition, now the single const
+`RESOLVE_DISPOSITION_REFUSAL`.
 
 **Files:**
-- `crates/cargo-berth/tests/board.rs`
-- `crates/cargo-berth/src/cli.rs`
-- `crates/cargo-berth/src/ids.rs`
+- `crates/cargo-berth/src/cli.rs` — the resolve command line, parsed through two
+  flattened selection structs; both `ArgGroup` declarations remain on
+  `ResolveArguments`.
+- `crates/cargo-berth/tests/board.rs` — the release-disposition test split into
+  an arrangement helper plus two `#[track_caller]` per-disposition assertion
+  paths, and the journal helper taking its payload by reference.
+- `crates/cargo-berth/src/ids.rs` — the `uuid_identifier!` macro with the dead
+  `future` constructor arm removed.
 
-**Seats:** 2 writers + 1 tester — `impl` carries the whole `cli.rs` redesign plus
-the frozen-surface obligation, `test` writes the two `tests/board.rs` sites, and
-`review` opens on a one-line deletion, so it takes the verification lane that the
-phase's one behavior-shaping change needs.
-- `impl` — `cli.rs`
-- `test` — `tests/board.rs` (both sites)
-- `review` — opens as `test`; `ids.rs`, then owns the resolve-argv verification
-  lane across `tests/presentation.rs`, `tests/answers.rs` and
-  `tests/lifecycle.rs`, proving the rendered recovery commands still run
-  verbatim against the rebuilt parser.
+**Gotchas:**
+- **A `#[command(group(...))]` must stay on the parent when its members move into
+  `#[command(flatten)]` children.** Attached to a child it names ids that child
+  does not own, and clap resolves group membership at build time — a runtime
+  panic on every invocation of the verb, not a compile error.
+- **Two of this phase's own acceptance gates do not enforce themselves.**
+  `tests/output_contract.rs` reads the checked-in
+  `docs/cargo-berth/generated/output-contract.json` with `include_str!` and
+  asserts only selector branches inside it; it never regenerates or compares.
+  `tests/engine_instructions.rs` only checks that rendered commands start with
+  the binary name. Neither catches a renamed flag; a frozen user-visible surface
+  has to be gated by comparing the files directly.
+- **A `verify.sh lint` run that exits 0 with no `Checking cargo-berth` line is a
+  cache hit**, including after `Blocking waiting for file lock on build
+  directory`. Re-run against a private `CARGO_TARGET_DIR`, then delete it.
+- Forty-six `resolve` argv literals across nine test files exercise every one of
+  the seven flags, so a moved spelling or a broken `requires` edge fails a test
+  rather than passing silently.
+- For four combinations of the shape `--incursion X --abandon --why <unparseable>`
+  this parser returns the reason parse error where the previous one returned the
+  general refusal. All four require two members of a `.multiple(false)` group at
+  once, so clap rejects them before either branch runs.
 
-**Acceptance gate:**
-1. Within this phase's three files — `cli.rs`, `ids.rs`, and `tests/board.rs` —
-   a sweep covering both `#[allow]`/`#[expect]` and `cfg_attr`-wrapped forms shows
-   no `too_many_lines`, `too_many_arguments`, `dead_code`,
-   `needless_pass_by_value`, or `struct_excessive_bools` suppression.
-2. `review` additionally runs the same sweep crate-wide, as a verification rather
-   than as work. A survivor outside the three files above is the defect of the
-   module phase that owned it — name that phase and stop; do not repair it here.
-   The gate is scoped this way deliberately: phase 7 wrote a crate-wide sweep as a
-   gate while seating by file, and instances of the swept concern turned up in a
-   peer's file and in files no seat held, so no seat could satisfy the gate from
-   inside its own boundary.
-3. Every surviving allow names only pre-authorized test lints, and each one's
-   module actually uses the lint's pattern — no speculative allows. The nine
-   file-level inner allows named in the constraints below are expected hits, not
-   findings.
-4. `CommandLineRoute::Resolve.arguments()` still builds a runnable resolve
-   command line, and the three `cli.rs` route tests phase 6 added still pass
-   unmodified.
-5. Every rendered recovery command still runs verbatim: `tests/presentation.rs`,
-   `tests/answers.rs`, `tests/lifecycle.rs`, and the
-   `tests/fixtures/front_end_corpus.json` corpus all pass **unmodified**. A diff
-   touching any of them means a flag spelling moved, which this phase forbids.
-6. The `_ =>` refusal text at `cli.rs:1301` is preserved verbatim, or its
-   replacement is stated in the report and covered by a test.
-7. `docs/cargo-berth/generated/output-contract.json` is unchanged. It carries
-   `resolve --integrated-as <trunk-oid>` at three places sourced from an
-   `output.rs` doc comment; the frozen flag surface means nothing regenerates.
-   If it does change, a flag spelling moved and gate 5 has already failed.
-8. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
-9. `bash ~/.claude/scripts/delegate/verify.sh final` passes, and
-   `~/.claude/scripts/lint/lint mend`, `lint clippy --workspace`, and `lint doc`
-   are all clean.
-
-**Constraints from prior phases:** phase 6 added three unit tests to
-`crates/cargo-berth/src/cli.rs` that this phase must keep compiling and true:
-`only_the_hook_routes_answer_a_protocol_instead_of_an_envelope`,
-`every_command_line_route_answers_through_the_output_ownership_it_declares`
-(`:2594`), and the `ALL: [Self; 16]` route table they iterate. The resolve route
-must still report `CommandResultReporting::Envelope(CommandVerb::Resolve)` after
-the flag set is replaced. The module phases own every other
-non-boilerplate suppression in the crate — phase 8 the two `too_many_lines` sites
-in `reconcile.rs`, phase 9 the one in `git/mod.rs`, phase 10 the two in
-`reservation/mod.rs`, and phase 12 the three in `board/mod.rs`. If one survives,
-it is that phase's defect, not a new item here. Phase 13 added no suppression at
-all: the only attribute anywhere under `src/gate/` is `permit.rs:473`
-(`clippy::expect_used` on `mod tests`), which is pre-authorized boilerplate.
-Every other `#[allow]` still in `crates/cargo-berth/src/` names
-`clippy::expect_used` or `clippy::panic` on a `#[cfg(test)]` module and is
-pre-authorized boilerplate. Phase 11 introduced a
-second spelling of that boilerplate: `crates/cargo-berth/src/ledger/mod.rs`
-carries `#[allow(clippy::expect_used, reason = ...)]` in **outer** position on its
-`#[cfg(test)] mod test_support;` declaration, rather than as an inner
-`#![allow(...)]` inside the module file. Gate 2's crate-wide sweep surfaces it in
-a table-of-contents root that carries no other logic; it is pre-authorized in the
-same sense as the rest, its module does call `.expect(`, and it is nobody's item.
-A sweep that only looks inside `mod tests` bodies misses it. There is a third
-spelling the sweep will also surface: nine integration-test files —
-`tests/answers.rs`, `board.rs`, `drift.rs`, `edges.rs`, `gate.rs`, `ledger.rs`,
-`lifecycle.rs`, `liveness.rs` and `overlap.rs`, including one of this phase's own
-three files — each open with a file-level inner
-`#![allow(clippy::expect_used, reason = …)]` at line 1. An integration-test file
-is wholly a test module, so the inner form is the only form available to it;
-all nine are pre-authorized and none is this phase's work. The sites named above
-were never owned by an earlier phase and are this phase's own work.
+**Ruled out:** a `ResolveJustification` enum, since the justification already
+parses into `AbandonmentReason` and `OrphanRetirementReason` and a new type would
+model a state `requires = WHY_ARGUMENT` makes unreachable; moving all four bools
+into one boundary type, which re-trips the identical lint on that type; a unit
+test asserting the refusal text, which is unreachable in both this parser and its
+predecessor; and renaming the shadowed `uuid_identifier!` macro, which is out of
+this phase's scope.
 
 ## Gates
 
