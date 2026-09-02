@@ -711,257 +711,60 @@ are. Every cluster boundary is posted to the board before any seat deletes from
   test-only reader.
 - One private copy of `scratch_repository` per destination test module.
 
-### Phase 12 — `board/mod.rs` becomes a table of contents · status: todo
+### Phase 12 — `board/mod.rs` becomes a table of contents · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `board/mod.rs` declares submodules and re-exports, and carries no
-`too_many_lines` or `too_many_arguments` suppression.
+`board/mod.rs` is an index: one line of module documentation, five private `mod`
+declarations, `pub(crate) mod tui;`, a `#[cfg(test)] mod test_support;`, and four
+`pub(crate) use` entries. It holds no logic and declares no type. The former
+1,900-line root's contents live in six sibling files, moved without behavior
+change; the deleted `board/tests.rs` redistributed its five tests to the code
+each one covers — three to `rows`, one to `alerts`, one to `answers`.
 
-**Spec:** `board/mod.rs` is 1,886 lines beside `tests.rs` and `tui.rs`, with
-three suppressions: `build` (`fn` at `:737`, its `#[allow]` at `:733`,
-`too_many_lines`), `recorded_answers` (`fn` at `:1269`, its `#[allow(` at `:1265`,
-`too_many_lines`), and
-`append_authorization_answer` (`fn` at `:1404`, its `#[allow]` at `:1400`,
-`too_many_arguments`, six parameters).
+The module's whole external surface is `reservation_lifecycle_presentation`,
+`reservation_lifecycle_snapshot`, `BoardModel`, `LiveIncursionMembership`, and
+`tui`. That is exactly what `output.rs` and `verb/board.rs` name. `BoardError` is
+`pub(crate)` inside a private module with no root re-export, so nothing outside
+`board/` can name it — which is correct, because nothing does.
 
-That third suppression is **inert**. There is no `clippy.toml` anywhere in the
-workspace, so the lint keeps its default threshold of seven, and six parameters
-never fire it — `OrderingGraph::apply_resolution` (`edge/graph.rs:401`) carries
-seven under the same deny-pedantic configuration with no suppression at all.
-Deleting it is free and changes nothing. The projection type below is therefore a
-design requirement in its own right, not lint relief, and gate 3 is written to
-say so.
-
-Phase 2 gave this file two more owners than the original split anticipated:
-`CompleteBoardReport` and `ReservationLifecycleReport`, plus
-`envelope_presentation` and `reservation_lifecycle_presentation`, which render
-the complete report as presentation blocks. `reservation_lifecycle_presentation`
-(`:1065`) is a free function and travels with the report types: do not leave the
-report types in the root while their presentation moves.
-`envelope_presentation` (`:650`) is an inherent method on `BoardModel` and
-travels with that type instead, as the rows paragraph below sets out.
-
-Split along row assembly, the answer/disposition rendering, the
-report-and-presentation cluster, and a fourth the original split missed: the
-alert, audit and git-cost surface. That fifth
-cluster is `AvailableForcedPermit` (`:449`), `BypassAuditEntry` (`:459`),
-`OutstandingIncursion` (`:501`), `BoardAlert` (`:535`), `BoardBranchRefStatus`
-(`:566`), `BoardRetentionRefStatus` (`:583`) and `BoardGitCost` (`:617`), with
-`outstanding_incursion_detail` (`:958`), `board_alert_detail` (`:982`),
-`available_forced_permits` (`:1468`), `bypass_audit` (`:1487`),
-`incursion_sections` (`:1578`), `board_alerts` (`:1631`) and `board_git_cost`
-(`:1756`) — roughly 550 lines that belong to none of the other four. It gets
-`board/alerts.rs`. Without it gate 1 is unreachable: a seat with nowhere to put
-these would have to leave them in the root.
-
-There is no visibility module. `BoardReservationVisibility` (`:273`-`:281`) and
-`reservation_visibility` (`:1204`-`:1212`) are eighteen lines with a single
-caller, `board_reservation_snapshots` (`:1112`), and the omission policy an
-earlier split named exists only as two doc comments. They fold into `rows.rs`.
-
-The error family is a cluster of its own and gets `board/error.rs`: `BoardError`
-(`:1819`) with its `Display` (`:1841`), its `Error` impl (`:1871`) and its three
-`From` impls (`:1873`, `:1877`, `:1881`) — which belong to none of the clusters
-above.
-`append_authorization_answer` sits in the answer-rendering cluster. Its six
-parameters are **not** one thing: `answers: &mut Vec<RecordedAnswer>` is an
-output sink the function appends to, and `resolved_pairs` and `constraints` are
-lookup projections it reads through. Only three describe the row being recorded.
-Give that cluster a semantic projection type — name it
-`RecordedAuthorizationRow` — carrying `reservation_id`, `authorization`,
-and `acquisition`, and leave the sink and the two lookups as ordinary
-parameters. The type says what the row is, where the parameter list only says how
-many pieces it has. It borrows: `append_authorization_answer` takes
-`authorization: &ConflictAuthorization`, so the projection is
-`RecordedAuthorizationRow<'_>`, holding the reference the parameter
-already carried. Cloning to avoid the lifetime adds an allocation this
-behavior-preserving phase has no license for.
-
-`BoardModel` (`:103`) and its `build` constructor (`:737`) go to the **rows**
-cluster: `build` assembles the model the row logic then reads, and no other
-cluster names the type. `impl BoardModel` is a single block spanning `:626`-`:957`
-and holds eight methods — `live_incursion_membership` (`:628`),
-`envelope_presentation` (`:650`), `actionable_notice_blocks` (`:664`),
-`report_content` (`:692`), `complete_report_block` (`:714`), `build` (`:737`),
-`reservation_ids` (`:918`) and `recovered_bypass_marker_names` (`:950`) — all of
-which travel with `BoardModel` rather than splitting one inherent impl across two
-modules. Phase 2 added four of the eight after the original split was written.
-Gate 2 turns on this, so it cannot be left implicit.
-
-`BoardReportContent` (`:124`) travels with `BoardModel` into rows: `report_content`
-and `envelope_presentation` are its only readers. `impl From<&'board BoardModel> for
-CompleteBoardReport<'board>` (`:166`) travels with them into **`rows.rs`**, not
-with the report types it builds. It reads all sixteen `BoardModel` fields
-(`:104`-`:119`) by direct access, so putting it in `report.rs` would force
-sixteen `pub(super)` widenings — precisely what this Work Order's closing
-paragraph forbids without a verified cross-module caller, and the widening
-phase 10's review caught. `report.rs` owns `CompleteBoardReport` itself and
-imports the impl's output; `rows.rs` owns the conversion. Both are named here
-because otherwise two seats each reasonably claim the `From` impl, and the
-pre-edit hook turns that into a blocked edit rather than a merge.
-
-`board/tests.rs` is an existing sibling test module of 921 lines; move each test
-to sit with the type it covers rather than leaving a catch-all. Like the root, it
-is written by `impl` alone: the other seats copy the tests they need out of it at
-`HEAD`, land them in their own modules, and never edit it, while `impl` empties
-it as part of its own pass. No seat waits for another.
-
-Its five `#[test]` functions sit on a much larger apparatus — six fixture types
-(`BoardFixture` `:88` through `OrderedBoardFixture` `:113`) and roughly twenty
-helpers, including `answered_board` (`:771`) and `git` (`:906`). Distributing the
-tests would copy that apparatus into as many as four modules. It does not get
-copied: the fixtures and helpers go to **`board/test_support.rs`**, declared on
-the root as `#[cfg(test)] mod test_support;` and written by `impl` with the rest
-of the root, so the destination modules import them rather than each carrying a
-private duplicate. This is the shape phase 11 arrived at, and it is a
-requirement here rather than an option — four private copies of a twenty-helper
-fixture set is the outcome the split exists to prevent.
+Unlike `ledger::test_support`, `board::test_support` calls no `.expect()`, so its
+declaration carries no suppression and the root is attribute-free.
 
 **Files:**
-- `crates/cargo-berth/src/board/mod.rs`
-- `crates/cargo-berth/src/board/tests.rs`
-- `crates/cargo-berth/src/board/test_support.rs`
-- `crates/cargo-berth/src/board/rows.rs`
-- `crates/cargo-berth/src/board/answers.rs`
-- `crates/cargo-berth/src/board/report.rs`
-- `crates/cargo-berth/src/board/alerts.rs`
-- `crates/cargo-berth/src/board/error.rs`
+- `crates/cargo-berth/src/board/mod.rs` — the index: declarations and re-exports only
+- `crates/cargo-berth/src/board/rows.rs` — `BoardModel`, `LiveIncursionMembership`, `DeclaredOrderingConstraints`, and the row projection
+- `crates/cargo-berth/src/board/alerts.rs` — coordination notices and their ordering
+- `crates/cargo-berth/src/board/answers.rs` — `RecordedAnswer` and the recorded-answer sections
+- `crates/cargo-berth/src/board/report.rs` — `reservation_lifecycle_presentation` and `reservation_lifecycle_snapshot`
+- `crates/cargo-berth/src/board/error.rs` — `BoardError`
+- `crates/cargo-berth/src/board/test_support.rs` — the shared test helper, `#[cfg(test)]` only
 
-**Seats:** 3 writers + 0 testers — five clusters split cleanly, and
-`board/tests.rs` is redistributed rather than owned by a test lane. `rows.rs`
-leaves the hub owner: it absorbs `visibility.rs`, and moving it to `test` puts
-both `too_many_lines` sites (`build`, `recorded_answers`) and gate 3's
-projection type on one seat, which is what phase 10 did with its own two
-suppressions.
-- `impl` — `board/mod.rs`, `tests.rs`, `report.rs`, and `error.rs`; hub:
-  `board/mod.rs` and `tests.rs`, both of which `impl` alone writes
-- `test` — opens as `impl`; `rows.rs` and `answers.rs`
-- `review` — opens as `impl`; `alerts.rs`
+**Binds later work:** making an enum `pub(super)` widens every type its variants
+name. Variant fields are always as visible as their enum, and `private_interfaces`
+is a hard error under `-D warnings`, so a `pub(super)` enum carrying a private
+type does not compile. Struct fields are exempt — they default to private, so a
+narrow type behind a private struct field leaks nothing. These widenings are
+language-forced, not discretionary: the rule requiring a named cross-module
+reader before widening does not apply to them, because the compiler names the
+readers and the only alternative is leaving the enum private. Two of this split's
+files hit it at once — ten errors in one and seven in another — and each was
+resolved against a real compile rather than by reading the code.
 
-**No seat writes another seat's file.** The pre-edit hook claims paths per
-session, so an edit into a peer's claimed file is blocked rather than merged —
-which makes a partition where three seats each delete their own cluster from one
-root unexecutable. `impl` therefore owns the **entire** root transformation:
-every `mod` declaration, every re-export, and every deletion. The other seats
-create only their own submodule files, reading the code they move from the root
-at `HEAD` (`git show HEAD:<root path>`) rather than from the file `impl` is
-rewriting. Nothing serializes and no seat waits for a skeleton, because no seat
-outside `impl` ever touches the root. Phase 7 paid for the older arrangement:
-two seats converting callers of the same item at once produced a red where each
-seat's own files were clean and neither error was its own.
+**Gotchas:**
+- A relocated raw string must keep its `"#` terminator at column 0. Re-indenting
+  it to match the surrounding block appends a newline and four spaces to the
+  value; the compile stays clean and the test fails on content.
+- `board::test_support` needs no test allow because it never calls `.expect()`.
+  The inherited rule is that the suppression follows the helper's actual calls,
+  not the presence of a shared helper.
 
-**Acceptance gate:**
-1. `board/mod.rs` contains only `mod` declarations, `use`/`pub use`, and module
-   documentation. Attributes on those declarations count as part of them —
-   `#[cfg(test)]` on a test-only module, and the pre-authorized
-   `#[allow(clippy::expect_used, reason = ...)]` on a shared test-helper
-   declaration, both of which `ledger/mod.rs` now carries.
-2. No `too_many_lines` or `too_many_arguments` suppression remains under
-   `crates/cargo-berth/src/board/`.
-3. The `too_many_arguments` allow is deleted, `lint` stays green, and the audit
-   row's own inputs travel as one named type — `RecordedAuthorizationRow`
-   — with the output sink and the two lookup projections left as parameters.
-4. The existing suite passes unmodified, including
-   `tests/board.rs::populated_board_presentation_carries_the_complete_board_report`
-   and the git-cost assertions at `tests/board.rs:2189` and `:3126`, which are
-   what actually pin the wire surface the alerts cluster carries.
-5. `verify.sh test cargo-berth` and `verify.sh lint cargo-berth` both pass.
-
-**Constraints from prior phases:** phase 4 made `envelope_presentation` route
-its empty case through `NonEmptyRenderedBlocks::try_from` to
-`EnvelopePresentation::NothingToShow` rather than returning an empty vector, so
-that conversion travels with the report cluster when it moves. Phase 1 rendered
-the ambiguity outcome in
-top-level `output.rs`, not in `board/mod.rs`, so no phase-1 rendering moves here.
-Phase 2 added `CompleteBoardReport`, `ReservationLifecycleReport`,
-`envelope_presentation`, and `reservation_lifecycle_presentation` to this file;
-they are the reason it no longer fits in a shared phase with `gate/`. Phase 7 placed reservation-id ordering with `ReservationId` in `ids.rs`;
-`board/mod.rs` calls it and does not re-implement it. Two consequences for this
-split:
-
-- `BoardModel::reservation_ids()` (`:918`) now **returns**
-  `WireOrderedReservationIds` and builds it at `:946`, and `output.rs:1398`
-  calls it as `board.reservation_ids()`. It is an inherent method on
-  `BoardModel`, not on `CompleteBoardReport`, so that signature moves with the
-  rows cluster.
-- `BoardGitCost` (`:617`) and `board_git_cost` (`:1756`) carry
-  `trunk_resolution_calls` onto the wire: it appears twice in
-  `docs/cargo-berth/generated/output-contract.json`, reaches users as
-  `board --json` → `payload.data.git_cost.trunk_resolution_calls`, and is frozen
-  in `tests/fixtures/front_end_corpus.json`. Phase 8 moved where that count is
-  produced (into `ObservedRepositoryFacts`) without changing its value; this
-  phase moves where it is rendered. The read at `:1803` travels with
-  `board_git_cost` into `alerts.rs`, and gate 4's git-cost assertions are what
-  prove the wire field survived the move.
-- `recorded_answers` (`:1269`) already ends its `JournalOperation` dispatch in
-  `_ => {}`. Splitting it must not nest a second catch-all beneath that one:
-  each helper the split introduces accepts only the operations its own arm
-  routes to, so a mis-routed variant stays a compile error rather than becoming
-  a silent no-op. This is the only remaining phase that splits a dispatch.
-- `board/mod.rs:1181` still sorts `worktree_heads` inline by
-  `worktree_id.to_string()`. That orders `WorktreeId`, not `ReservationId`, and
-  phase 7 ruled it out of scope deliberately. Leave it as it is — it is not a
-  missed consolidation, and retyping it would widen a type phase 7 scoped on
-  purpose.
-
-Phase 11 split `ledger/mod.rs` along the same lines and produced four facts this
-split inherits:
-
-- **A shared test helper beats one private copy per destination.** The partition
-  there first predicted `scratch_repository` copied into three destination test
-  modules; the answer was one `#[cfg(test)] mod test_support;` on the root,
-  written by the hub owner before the peers reached their gate. When two or more
-  destination test modules need the same helper, ask the hub owner for it on the
-  board rather than each seat copying it.
-- **The pre-authorized test allow goes in outer form on that declaration** —
-  `#[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]`
-  written above `mod test_support;` in the root, never as an inner `#![allow(...)]`
-  at the top of the helper file. The inner form on a module that is not itself a
-  `tests` module is the shape that later grows to cover things nobody intended.
-  Gate 1 admits it: an attribute on a `mod` declaration is part of that
-  declaration, not logic in the root.
-- **Visibility is a three-rung ladder, and most items stay on the bottom rung.**
-  Under `ledger/`, four items are private (`coordination_run_marker.rs:26`,
-  `:86`, `:123`, `authorization.rs:106`), two are `pub(super)` for a verified
-  reader in a sibling file (`coordination_run_marker.rs:11`, `:18`), and only an
-  item the crate names outside the module reaches `pub(crate)` *plus* a root
-  re-export. Pick the rung from where the callers actually are; a `pub(crate)`
-  re-export of an item nothing outside names fails the build as an unused
-  import.
-- **A `pub(crate)` type in a private module is unnameable outside it unless the
-  root re-exports it.** Phase 11 left four that way — `WorktreeIdentity`
-  (`identity.rs:21`), `CorrectableTransactionInput` (`error.rs:222`),
-  `AbsolutePathNormalizationError` (`path.rs:71`) and
-  `ResolvedJournalMutationActor` (`authorization.rs:69`). It compiles, but it
-  means the explicit-type-annotation remedy below is unwritable for any function
-  whose return type is one of them: `worktree_identity` is re-exported while
-  `WorktreeIdentity` is not. Re-export a function and you must re-export the
-  types its signature names, or accept that its binding cannot be annotated.
-- **Two seats can extract the same item.** One seat's cluster over-reached by
-  thirteen lines and redefined an enum a peer's file already owned; nothing could
-  reach the second copy, so only `-D dead-code` caught it. Post the exact
-  boundary of every cluster to the board before deleting anything from `HEAD`.
-
-The submodule names in **Files** are the expected split; if the code argues
-for a different boundary, take it and say so, but every new file must be named
-in the summary.
-
-A `pub(crate)` re-export the crate does not name is an unused import and fails
-`-D warnings`, and this plan forbids the suppression that would silence it. The
-remedy is an explicit type annotation at the call site, which makes the re-export
-used and documents the binding; that annotation may live in a file outside this
-phase's own **Files** list, and doing so is licensed. Widening the module to
-`pub(crate) mod` also compiles, but it lets callers name items around the root
-and changes the path shape — it is ruled out.
-
-Every widening needs a verified cross-module caller. Before changing an item to
-`pub(super)`, name the module outside its own file that reads it; an existing
-accessor beats a new widening. Three seats face this decision independently, and
-a field widened for a reader that turns out to live in the same module is what
-phase 10's review caught.
-
----
+**Ruled out:**
+- Re-exporting `BoardError` from the crate root so it can be named outside
+  `board/` — no such consumer exists, and a future one is a re-export, never a
+  wider type.
+- Widening `batched_attribution_benchmark_covers_short_and_long_ranges`'s timing
+  margin to stop its load-dependent failures.
 
 ### Phase 13 — `gate/mod.rs` becomes a table of contents · status: todo
 
@@ -1135,6 +938,26 @@ a field widened for a reader that turns out to live in the same module is what
 phase 10's review caught.
 
 ---
+
+Phase 12 split `board/mod.rs` along the same lines and produced one fact this
+split needs before it writes a line:
+
+- **Making an enum `pub(super)` widens every type its variants name.** Variant
+  fields are always as visible as their enum, so a variant carrying a private
+  type makes the enum more public than its own field type, and rustc's
+  `private_interfaces` lint rejects that as a hard error under `-D warnings`.
+  **Struct fields are exempt** — they default to private, so a non-public type
+  behind a private struct field leaks nothing. This is not discretionary
+  widening and the rule requiring a named cross-module reader does not apply to
+  it: the compiler names the readers, and the only alternative is leaving the
+  enum private. It binds `decision.rs` directly — `GateDecision` (`:200`) is an
+  enum whose variants carry `IntegrationViolation` (`:190`), so widening
+  `GateDecision` widens `IntegrationViolation` with it, and the same follows for
+  `GateResult` (`:241`) and `IntegrationRequest` (`:181`) wherever a variant
+  names them. Phase 12 hit this in two files at once — ten errors in one, seven
+  in another — and each seat resolved it against a real compile rather than by
+  reasoning; expect to do the same and do not treat the resulting `pub(super)`
+  set as a deviation.
 
 ### Phase 14 — Remove the remaining suppressions · status: todo
 
