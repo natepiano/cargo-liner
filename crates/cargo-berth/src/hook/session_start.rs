@@ -6,12 +6,11 @@ use std::process::ExitCode;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::HarnessContinuationStatement;
-use super::HarnessSessionIdentityAvailability;
-use super::HookWorkingDirectorySelection;
-use super::HookWorkingDirectoryUnavailable;
-use super::render_blocks;
-use super::write_context_notice;
+use super::context_notice;
+use super::context_notice::HarnessContinuationStatement;
+use super::process_binding::HarnessSessionIdentityAvailability;
+use super::process_binding::HookWorkingDirectorySelection;
+use super::process_binding::HookWorkingDirectoryUnavailable;
 use crate::cli::CliOutputFormat;
 use crate::output::EngineAnswerOccasion;
 use crate::output::OutputEnvelope;
@@ -178,7 +177,7 @@ impl SessionStartReport {
             [] => Self::NothingToRaise,
             [leading_block, ..] => Self::Stated {
                 summary: leading_block.summary.clone(),
-                detail:  render_blocks(blocks),
+                detail:  context_notice::render_blocks(blocks),
             },
         }
     }
@@ -193,7 +192,7 @@ fn publish(report: SessionStartReport) {
     match report {
         SessionStartReport::NothingToRaise => {},
         SessionStartReport::Stated { summary, detail } => {
-            write_context_notice(
+            context_notice::write_context_notice(
                 SESSION_START_EVENT_NAME,
                 &HarnessContinuationStatement::Omitted,
                 &summary,

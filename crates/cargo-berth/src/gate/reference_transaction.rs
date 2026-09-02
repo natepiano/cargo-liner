@@ -9,13 +9,12 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use super::audit::commit_forced_permit_audits;
+use super::audit;
+use super::decision;
 use super::decision::GatePurpose;
 use super::decision::GateResult;
-use super::decision::evaluate_locked;
 use super::error::GateError;
-use super::rewrite::branch_rewrites;
-use super::rewrite::reanchor_rewritten_phases;
+use super::rewrite;
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
 use crate::git;
@@ -286,7 +285,7 @@ pub(crate) fn evaluate_reference_transaction(
     // fast-forward, so the common case pays one `merge-base --is-ancestor` and stops.
     let rewrites = match transaction.phase {
         ReferenceTransactionPhase::Committed => {
-            branch_rewrites(invocation_directory, &local_branch_updates)?
+            rewrite::branch_rewrites(invocation_directory, &local_branch_updates)?
         },
         ReferenceTransactionPhase::Prepared
         | ReferenceTransactionPhase::Preparing
@@ -313,7 +312,7 @@ pub(crate) fn evaluate_reference_transaction(
                 }
                 match transaction.phase {
                     ReferenceTransactionPhase::Prepared => {
-                        match evaluate_locked(
+                        match decision::evaluate_locked(
                             invocation_directory,
                             &update,
                             &GatePurpose::Hook {
@@ -325,7 +324,7 @@ pub(crate) fn evaluate_reference_transaction(
                             Enrollment::Unconfigured { .. } => return Ok(Vec::new()),
                         }
                     },
-                    ReferenceTransactionPhase::Committed => commit_forced_permit_audits(
+                    ReferenceTransactionPhase::Committed => audit::commit_forced_permit_audits(
                         invocation_directory,
                         &worktree_context,
                         &berth_config,
@@ -344,7 +343,7 @@ pub(crate) fn evaluate_reference_transaction(
         }
     }
     if !rewrites.is_empty() {
-        reanchor_rewritten_phases(invocation_directory, &worktree_context, &rewrites)?;
+        rewrite::reanchor_rewritten_phases(invocation_directory, &worktree_context, &rewrites)?;
     }
     Ok(results)
 }

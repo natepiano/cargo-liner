@@ -1,7 +1,7 @@
 //! Ancestry and reachability queries over the commit graph.
 //!
-//! Every question here is the same shape: one target commit, a batch of candidate
-//! commits, and a typed answer for each candidate. The batching matters — a
+//! Every question here takes one target commit and a batch of candidate
+//! commits, and returns a typed answer for each candidate. The batching matters — a
 //! per-candidate query would spend one git invocation per reservation — so the
 //! types in this module carry both the classification and the object availability
 //! the same batch proved.
@@ -16,27 +16,24 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::git::command::git_output;
-use crate::git::command::git_output_dynamic;
-use crate::git::command::git_output_dynamic_with_input;
-use crate::git::constants::GIT_ANCESTOR_RANGE_INFIX;
-use crate::git::constants::GIT_EXCLUDE_REVISION_PREFIX;
-use crate::git::constants::GIT_HEAD_REVISION;
-use crate::git::constants::GIT_IGNORE_MISSING_ARG;
-use crate::git::constants::GIT_IS_ANCESTOR_ARG;
-use crate::git::constants::GIT_LOCAL_BRANCH_REF_PREFIX;
-use crate::git::constants::GIT_MERGE_BASE_COMMAND;
-use crate::git::constants::GIT_NOT_ANCESTOR_EXIT_CODE;
-use crate::git::constants::GIT_PARENTS_ARG;
-use crate::git::constants::GIT_REV_LIST_COMMAND;
-use crate::git::constants::GIT_STDIN_ARG;
-use crate::git::error::GitError;
-use crate::git::error::completed_git_command;
-use crate::git::object::CommitAvailability;
-use crate::git::object::CommitObjectResolution;
-use crate::git::object::commit_availability;
-use crate::git::object::commit_object_resolutions;
-use crate::git::patch::ScopedPatchTargetHistory;
+use super::command;
+use super::constants::GIT_ANCESTOR_RANGE_INFIX;
+use super::constants::GIT_EXCLUDE_REVISION_PREFIX;
+use super::constants::GIT_HEAD_REVISION;
+use super::constants::GIT_IGNORE_MISSING_ARG;
+use super::constants::GIT_IS_ANCESTOR_ARG;
+use super::constants::GIT_LOCAL_BRANCH_REF_PREFIX;
+use super::constants::GIT_MERGE_BASE_COMMAND;
+use super::constants::GIT_NOT_ANCESTOR_EXIT_CODE;
+use super::constants::GIT_PARENTS_ARG;
+use super::constants::GIT_REV_LIST_COMMAND;
+use super::constants::GIT_STDIN_ARG;
+use super::error;
+use super::error::GitError;
+use super::object;
+use super::object::CommitAvailability;
+use super::object::CommitObjectResolution;
+use super::patch::ScopedPatchTargetHistory;
 use crate::ids::GitObjectId;
 
 /// A worktree's live relationship to the configured trunk.
@@ -207,7 +204,7 @@ pub(crate) fn reservation_checkpoint_commits(
 ) -> Result<ReservationCheckpointCommits, GitError> {
     let trunk_expression = format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{trunk_branch}");
     let expressions = [GIT_HEAD_REVISION.to_owned(), trunk_expression.clone()];
-    let [protected_tip, trunk] = commit_object_resolutions(repository_root, &expressions)?
+    let [protected_tip, trunk] = object::commit_object_resolutions(repository_root, &expressions)?
         .try_into()
         .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
             expected: expressions.len(),
@@ -273,7 +270,7 @@ pub(crate) fn newly_reachable_commits(
         proposed.to_string(),
         format!("{GIT_EXCLUDE_REVISION_PREFIX}{previous}"),
     ];
-    let output = git_output_dynamic(repository_root, &arguments)?;
+    let output = command::git_output_dynamic(repository_root, &arguments)?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_LIST_COMMAND,
@@ -293,7 +290,7 @@ pub(crate) fn reachable_commits(
     proposed: &GitObjectId,
 ) -> Result<Vec<GitObjectId>, GitError> {
     let arguments = vec![GIT_REV_LIST_COMMAND.to_owned(), proposed.to_string()];
-    let output = git_output_dynamic(repository_root, &arguments)?;
+    let output = command::git_output_dynamic(repository_root, &arguments)?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_LIST_COMMAND,
@@ -329,7 +326,8 @@ pub(crate) fn ahead_behind_for_heads(
         GIT_IGNORE_MISSING_ARG.to_owned(),
         GIT_STDIN_ARG.to_owned(),
     ];
-    let Ok(output) = git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())
+    let Ok(output) =
+        command::git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())
     else {
         return vec![AheadBehind::Unavailable; worktree_heads.len()];
     };
@@ -377,7 +375,7 @@ pub(crate) fn reachability(
 ) -> Result<Reachability, GitError> {
     let ancestor = ancestor.to_string();
     let descendant = descendant.to_string();
-    let output = git_output(
+    let output = command::git_output(
         repository_root,
         [
             GIT_MERGE_BASE_COMMAND,
@@ -450,12 +448,13 @@ fn sole_commit_target(
     repository_root: &Path,
     target_expression: &str,
 ) -> Result<SoleCommitTarget, GitError> {
-    let [resolution] = commit_object_resolutions(repository_root, &[target_expression.to_owned()])?
-        .try_into()
-        .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
-            expected: 1,
-            actual:   resolutions.len(),
-        })?;
+    let [resolution] =
+        object::commit_object_resolutions(repository_root, &[target_expression.to_owned()])?
+            .try_into()
+            .map_err(|resolutions: Vec<_>| GitError::InvalidBatchObjectCount {
+                expected: 1,
+                actual:   resolutions.len(),
+            })?;
     Ok(SoleCommitTarget::from(resolution))
 }
 
@@ -487,8 +486,8 @@ fn read_target_history_and_candidates(
     thread::scope(|scope| {
         let target_history_worker =
             scope.spawn(|| target_commit_history(repository_root, target_expression));
-        let candidate_resolution_worker =
-            scope.spawn(|| commit_object_resolutions(repository_root, candidate_expressions));
+        let candidate_resolution_worker = scope
+            .spawn(|| object::commit_object_resolutions(repository_root, candidate_expressions));
         let target_history =
             target_history_worker
                 .join()
@@ -640,7 +639,9 @@ fn target_commit_history(
         GIT_PARENTS_ARG.to_owned(),
         target_expression.to_owned(),
     ];
-    let output = completed_git_command(git_output_dynamic(repository_root, &arguments).into())?;
+    let output = error::completed_git_command(
+        command::git_output_dynamic(repository_root, &arguments).into(),
+    )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_LIST_COMMAND,
@@ -671,7 +672,7 @@ pub(crate) fn reachability_to_target(
     let mut queried_objects = Vec::with_capacity(candidate_ancestors.len() + 1);
     queried_objects.extend(candidate_ancestors.iter().cloned());
     queried_objects.push(target.clone());
-    let object_availability = commit_availability(repository_root, &queried_objects)?;
+    let object_availability = object::commit_availability(repository_root, &queried_objects)?;
     let Some((target_availability, candidate_availability)) = object_availability.split_last()
     else {
         return Err(GitError::InvalidBatchObjectCount {
@@ -718,8 +719,9 @@ pub(crate) fn incursion_range_commits(
         GIT_PARENTS_ARG.to_owned(),
         GIT_STDIN_ARG.to_owned(),
     ];
-    let output = completed_git_command(
-        git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into(),
+    let output = error::completed_git_command(
+        command::git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())
+            .into(),
     )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
@@ -753,7 +755,9 @@ pub(crate) fn commits_outside_origin_basis(
 ) -> Result<HashSet<GitObjectId>, GitError> {
     let range = format!("{origin_basis}{GIT_ANCESTOR_RANGE_INFIX}{target}");
     let arguments = [GIT_REV_LIST_COMMAND.to_owned(), range];
-    let output = completed_git_command(git_output_dynamic(repository_root, &arguments).into())?;
+    let output = error::completed_git_command(
+        command::git_output_dynamic(repository_root, &arguments).into(),
+    )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_LIST_COMMAND,
@@ -791,8 +795,9 @@ pub(crate) fn descendant_commits(
         GIT_PARENTS_ARG.to_owned(),
         GIT_STDIN_ARG.to_owned(),
     ];
-    let output = completed_git_command(
-        git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into(),
+    let output = error::completed_git_command(
+        command::git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())
+            .into(),
     )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {

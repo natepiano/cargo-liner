@@ -751,6 +751,7 @@ mod tests {
     use crate::ids::CoordinationRunId;
     use crate::ids::ReservationId;
     use crate::ids::WorktreeId;
+    use crate::ledger::CanonicalWorktreeRoot;
 
     #[test]
     fn recovery_domain_rejects_empty_commands_and_action_sets() {
@@ -761,7 +762,7 @@ mod tests {
 
     #[test]
     fn recovery_action_serializes_complete_argv_and_canonical_cwd() {
-        let cwd: crate::ledger::CanonicalWorktreeRoot = std::env::current_dir()
+        let cwd: CanonicalWorktreeRoot = std::env::current_dir()
             .expect("current directory should resolve")
             .to_str()
             .expect("current directory should be UTF-8")

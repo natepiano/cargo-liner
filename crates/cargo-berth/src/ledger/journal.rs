@@ -889,7 +889,7 @@ pub(crate) enum ScopeKind {
 
 /// One repository path paired with its declared reservation semantics.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[schemars(transform = crate::output::closed_value_selects_object_shape)]
+#[schemars(transform = crate::output::closed_value_serializes_as_object)]
 pub(crate) struct ReservationScope {
     /// The normalized repository-relative path.
     #[schemars(with = "String", length(min = 1))]

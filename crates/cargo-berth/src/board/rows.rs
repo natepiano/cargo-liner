@@ -8,21 +8,15 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::alerts;
 use super::alerts::AvailableForcedPermit;
 use super::alerts::BoardAlert;
 use super::alerts::BoardGitCost;
 use super::alerts::BypassAuditEntry;
 use super::alerts::OutstandingIncursion;
 use super::alerts::RecordedIncursionAnswer;
-use super::alerts::available_forced_permits;
-use super::alerts::board_alert_detail;
-use super::alerts::board_alerts;
-use super::alerts::board_git_cost;
-use super::alerts::bypass_audit;
-use super::alerts::incursion_sections;
-use super::alerts::outstanding_incursion_detail;
+use super::answers;
 use super::answers::RecordedAnswer;
-use super::answers::recorded_answers;
 use super::error::BoardError;
 use super::report::CompleteBoardReport;
 use crate::answer::OverlapAuthorizationReason;
@@ -54,13 +48,11 @@ use crate::ledger::FullRefName;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::PendingBypassMarkerId;
 use crate::ledger::ReservationPurpose;
+use crate::presentation;
 use crate::presentation::EmptyRenderedBlocks;
 use crate::presentation::EnvelopePresentation;
 use crate::presentation::NonEmptyRenderedBlocks;
 use crate::presentation::RenderedOutputBlock;
-use crate::presentation::actionable_board_notices_block;
-use crate::presentation::engine_message_block;
-use crate::presentation::recovered_bypass_block;
 use crate::reconcile::ReconciliationReport;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
@@ -347,24 +339,26 @@ impl BoardModel {
             .outstanding_incursions
             .entries
             .iter()
-            .map(outstanding_incursion_detail)
+            .map(alerts::outstanding_incursion_detail)
             .collect::<Vec<_>>();
         let actionable_notice_details = self
             .recovered_bypasses_this_invocation
             .0
             .iter()
             .map(PendingBypassMarkerId::file_name)
-            .map(recovered_bypass_block)
-            .chain(self.alerts.entries.iter().map(board_alert_detail))
+            .map(presentation::recovered_bypass_block)
+            .chain(self.alerts.entries.iter().map(alerts::board_alert_detail))
             .collect::<Vec<_>>();
         if immediate_stop_details.is_empty() {
             return match actionable_notice_details.as_slice() {
                 [] => Vec::new(),
-                [_, ..] => vec![actionable_board_notices_block(&actionable_notice_details)],
+                [_, ..] => vec![presentation::actionable_board_notices_block(
+                    &actionable_notice_details,
+                )],
             };
         }
         immediate_stop_details.extend(actionable_notice_details);
-        vec![engine_message_block(
+        vec![presentation::engine_message_block(
             "cargo-berth detected drift that requires an immediate stop.",
             &immediate_stop_details.join("\n"),
         )]
@@ -396,13 +390,13 @@ impl BoardModel {
         let complete_board_report = CompleteBoardReport::from(self);
         serde_json::to_string_pretty(&complete_board_report).map_or_else(
             |error| {
-                engine_message_block(
+                presentation::engine_message_block(
                     "cargo-berth could not render the reservation board report.",
                     &format!("BOARD REPORT SERIALIZATION FAILED: {error}"),
                 )
             },
             |detail| {
-                engine_message_block(
+                presentation::engine_message_block(
                     "cargo-berth read the complete reservation board report.",
                     &detail,
                 )
@@ -461,17 +455,17 @@ impl BoardModel {
             &waiting,
             &unresolved_overlaps,
         );
-        let recorded_overlap_answers = recorded_answers(events, &report.constraints)?;
-        let available_forced_permits = available_forced_permits(events)?;
-        let bypass_audit = bypass_audit(events);
+        let recorded_overlap_answers = answers::recorded_answers(events, &report.constraints)?;
+        let available_forced_permits = alerts::available_forced_permits(events)?;
+        let bypass_audit = alerts::bypass_audit(events);
         let (outstanding_incursions, recorded_incursion_answers) =
-            incursion_sections(&reservations);
-        let alerts = board_alerts(
+            alerts::incursion_sections(&reservations);
+        let alerts = alerts::board_alerts(
             &report.alerts,
             &reservation_snapshots,
             &report.unrecorded_bypass_occurrences,
         )?;
-        let git_cost = board_git_cost(
+        let git_cost = alerts::board_git_cost(
             &reservations,
             &report.constraints,
             &report.repository_snapshot,
@@ -831,15 +825,15 @@ mod tests {
     use std::fs;
     use std::io;
 
-    use super::super::alerts::BypassAuditEntry;
-    use super::super::test_support::BoardFixture;
-    use super::super::test_support::FixtureResult;
-    use super::super::test_support::OrderedBoardFixture;
-    use super::super::test_support::board_reservation_snapshot;
     use super::BoardIntegrationEvidence;
     use super::BoardModel;
     use super::WaitingAction;
     use crate::answer::ConflictAuthorization;
+    use crate::board::alerts::BypassAuditEntry;
+    use crate::board::test_support;
+    use crate::board::test_support::BoardFixture;
+    use crate::board::test_support::FixtureResult;
+    use crate::board::test_support::OrderedBoardFixture;
     use crate::config::Enrollment;
     use crate::ids::GitObjectId;
     use crate::ledger::JournalOperation;
@@ -975,25 +969,25 @@ mod tests {
 
         let model = fixture.model()?;
         assert!(matches!(
-            &board_reservation_snapshot(&model, integrated.reservation_id)?.lifecycle,
+            &test_support::board_reservation_snapshot(&model, integrated.reservation_id)?.lifecycle,
             ReservationLifecycle::Released {
                 disposition: ReleaseDisposition::Integrated,
             }
         ));
         assert!(matches!(
-            &board_reservation_snapshot(&model, rewritten.reservation_id)?.lifecycle,
+            &test_support::board_reservation_snapshot(&model, rewritten.reservation_id)?.lifecycle,
             ReservationLifecycle::Released {
                 disposition: ReleaseDisposition::RewrittenIntegration(_),
             }
         ));
         assert!(matches!(
-            &board_reservation_snapshot(&model, abandoned.reservation_id)?.lifecycle,
+            &test_support::board_reservation_snapshot(&model, abandoned.reservation_id)?.lifecycle,
             ReservationLifecycle::Released {
                 disposition: ReleaseDisposition::Abandoned(_),
             }
         ));
         assert!(matches!(
-            &board_reservation_snapshot(&model, retired.reservation_id)?.lifecycle,
+            &test_support::board_reservation_snapshot(&model, retired.reservation_id)?.lifecycle,
             ReservationLifecycle::Released {
                 disposition: ReleaseDisposition::RetiredOrphan(_),
             }
@@ -1035,8 +1029,11 @@ mod tests {
         };
         assert!(instruction.contains("reach trunk"));
         assert!(matches!(
-            &board_reservation_snapshot(&not_integrated, initial.predecessor.reservation_id)?
-                .integration_evidence,
+            &test_support::board_reservation_snapshot(
+                &not_integrated,
+                initial.predecessor.reservation_id
+            )?
+            .integration_evidence,
             BoardIntegrationEvidence::Current {
                 status: IntegrationEvidenceStatus::NotIntegrated,
             }
@@ -1054,8 +1051,11 @@ mod tests {
         };
         assert!(instruction.contains("reader's own rebase"));
         assert!(matches!(
-            &board_reservation_snapshot(&integrated, initial.predecessor.reservation_id)?
-                .integration_evidence,
+            &test_support::board_reservation_snapshot(
+                &integrated,
+                initial.predecessor.reservation_id
+            )?
+            .integration_evidence,
             BoardIntegrationEvidence::Current {
                 status: IntegrationEvidenceStatus::Integrated { .. },
             }
@@ -1097,8 +1097,11 @@ mod tests {
         assert!(instruction.contains("trunk rewrite"));
         assert_eq!(resolve_flag, "resolve --integrated-as <trunk-oid>");
         assert!(matches!(
-            &board_reservation_snapshot(&rewritten_model, rewritten.predecessor.reservation_id)?
-                .integration_evidence,
+            &test_support::board_reservation_snapshot(
+                &rewritten_model,
+                rewritten.predecessor.reservation_id
+            )?
+            .integration_evidence,
             BoardIntegrationEvidence::Current {
                 status: IntegrationEvidenceStatus::TrunkRewritten,
             }
@@ -1135,8 +1138,11 @@ mod tests {
         };
         assert!(instruction.contains("does not resolve"));
         assert!(matches!(
-            &board_reservation_snapshot(&unknown_model, unknown.predecessor.reservation_id)?
-                .integration_evidence,
+            &test_support::board_reservation_snapshot(
+                &unknown_model,
+                unknown.predecessor.reservation_id
+            )?
+            .integration_evidence,
             BoardIntegrationEvidence::Current {
                 status: IntegrationEvidenceStatus::ObjectUnknown,
             }

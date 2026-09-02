@@ -227,7 +227,7 @@ installs and deletes them together.
 
 **Gotchas:**
 - `EnvelopePresentation` is internally tagged, so `NotProvided` always serializes
-  as `{"kind": "not_provided"}`. A fixture omitting the field describes a shape
+  as `{"kind": "not_provided"}`. A fixture omitting the field describes a value
   the engine cannot emit; a failure from one is a fixture defect.
 - The corpus oracle text-compares exactly one entry;
   `EXPECTED_UNCOVERED_CORPUS_ENTRIES = 49` (`tests/front_end_corpus.rs:15`)
@@ -594,7 +594,7 @@ outside `git/` and all observable behavior are unchanged.
 `reservation/mod.rs` is 62 lines: module documentation, nine private `mod`
 declarations, and one `pub(crate) use` block of 42 entries. No module is
 `pub(crate) mod`, so no caller can name an item around the root and every path
-shape is unchanged. Both `too_many_lines` suppressions are gone, removed by
+is unchanged. Both `too_many_lines` suppressions are gone, removed by
 restructuring rather than by moving the code: `RetainedReservationSet::apply` is
 a 30-line dispatch over all eighteen `JournalOperation` variants with no
 catch-all, routing to four named family helpers plus four variants that are
@@ -637,7 +637,7 @@ during a loaded full-suite run and passed alone at 21.7s on the same tree.
 and that is what made the visibility defect fixable.
 
 **Ruled out:** `pub(crate) mod` as the widening for cross-module access, which
-compiles but lets callers name items around the root and changes the path shape;
+compiles but lets callers name items around the root and rewrites those paths;
 suppressing the unused-import error a `pub(crate)` re-export the crate never
 names produces, where the remedy is an explicit type annotation at the call
 site; sharing `TRUNK_OID` between the two test modules that now define it, since
@@ -826,7 +826,7 @@ compiled binary through `std::process::Command`.
 No suppression remains anywhere in `crates/cargo-berth/` except pre-authorized
 test boilerplate. A multi-line-aware crate-wide sweep finds exactly two lint
 names surviving — `clippy::expect_used` at 25 sites and `clippy::panic` at 2 —
-across three permitted shapes: inside a `#[cfg(test)] mod tests` body, in outer
+across three permitted positions: inside a `#[cfg(test)] mod tests` body, in outer
 position on `ledger/mod.rs`'s `mod test_support;` declaration, and as a
 file-level inner attribute on each of nine integration-test files. Zero
 `dead_code`, `too_many_lines`, `too_many_arguments`, `needless_pass_by_value`,
@@ -871,7 +871,7 @@ command line naming no single disposition, now the single const
 - Forty-six `resolve` argv literals across nine test files exercise every one of
   the seven flags, so a moved spelling or a broken `requires` edge fails a test
   rather than passing silently.
-- For four combinations of the shape `--incursion X --abandon --why <unparseable>`
+- For four combinations of the form `--incursion X --abandon --why <unparseable>`
   this parser returns the reason parse error where the previous one returned the
   general refusal. All four require two members of a `.multiple(false)` group at
   once, so clap rejects them before either branch runs.

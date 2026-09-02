@@ -183,8 +183,8 @@ mod tests {
     use super::CONTRACT_NAME;
     use super::checked_schema_value;
     use super::generate_output_contract;
+    use crate::output;
     use crate::output::OUTPUT_CONTRACT_VERSION;
-    use crate::output::closed_value_selects_object_shape;
 
     const CHECKED_CONTRACT: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -254,7 +254,7 @@ mod tests {
 
         for schema_value in malformed_schemas {
             let mut schema = Schema::try_from(schema_value)?;
-            closed_value_selects_object_shape(&mut schema);
+            output::closed_value_serializes_as_object(&mut schema);
             assert!(checked_schema_value(schema).is_err());
         }
         Ok(())

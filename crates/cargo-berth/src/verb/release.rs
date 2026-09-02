@@ -12,6 +12,7 @@ use crate::edge::EdgeReplayError;
 use crate::edge::OrderingGraph;
 use crate::git;
 use crate::git::GitError;
+use crate::git::ReservationCheckpointCommits;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
@@ -422,12 +423,11 @@ fn checkpoint_operation(
     if release_repository_context.holder_worktree == HolderWorktree::Different {
         return Err(ReleaseRejection::ForeignActiveReservation);
     }
-    let checkpoint_commits: git::ReservationCheckpointCommits =
-        git::reservation_checkpoint_commits(
-            release_repository_context.repository_root,
-            release_repository_context.trunk_branch,
-        )
-        .map_err(ReleaseRejection::Git)?;
+    let checkpoint_commits: ReservationCheckpointCommits = git::reservation_checkpoint_commits(
+        release_repository_context.repository_root,
+        release_repository_context.trunk_branch,
+    )
+    .map_err(ReleaseRejection::Git)?;
     let protected_tip = ProtectedReservationTip::from(checkpoint_commits.protected_tip);
     let trunk_oid = checkpoint_commits.trunk;
     Ok(ReleaseAppend::new(

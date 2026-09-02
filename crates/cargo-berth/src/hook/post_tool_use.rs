@@ -13,10 +13,10 @@ use std::process::ExitCode;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::HarnessContinuationStatement;
-use super::HarnessSessionIdentityAvailability;
-use super::HookWorkingDirectorySelection;
-use super::write_context_notice;
+use super::context_notice;
+use super::context_notice::HarnessContinuationStatement;
+use super::process_binding::HarnessSessionIdentityAvailability;
+use super::process_binding::HookWorkingDirectorySelection;
 use crate::cli::CliOutputFormat;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::drift::DriftComparisonChoice;
@@ -27,7 +27,7 @@ use crate::exit::BerthExit;
 use crate::output::EngineAnswerOccasion;
 use crate::output::OutputEnvelope;
 use crate::output::PostToolUseRendering;
-use crate::presentation::unverifiable_incursion_block;
+use crate::presentation;
 use crate::session::HarnessSessionId;
 use crate::verb::board;
 use crate::verb::board::BoardDisplayOutcome;
@@ -178,7 +178,7 @@ impl PostToolUseAnswer {
     }
 
     fn unverifiable() -> Self {
-        let block = unverifiable_incursion_block();
+        let block = presentation::unverifiable_incursion_block();
         Self::Stated {
             summary: block.summary,
             detail:  block.detail,
@@ -189,7 +189,7 @@ impl PostToolUseAnswer {
         match self {
             Self::Silent => {},
             Self::Stated { summary, detail } => {
-                write_context_notice(
+                context_notice::write_context_notice(
                     HOOK_EVENT_NAME,
                     &HarnessContinuationStatement::Stated,
                     summary,
@@ -287,7 +287,7 @@ fn drift_recovery() -> RecoveryCommandLine {
 mod tests {
     use super::ObservedBashCall;
     use super::PostToolUseObservationError;
-    use crate::hook::HookWorkingDirectorySelection;
+    use crate::hook::process_binding::HookWorkingDirectorySelection;
     use crate::session::HarnessSessionId;
 
     #[test]

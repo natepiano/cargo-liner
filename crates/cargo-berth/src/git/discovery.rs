@@ -8,24 +8,24 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::git::command::git_output;
-use crate::git::constants::GIT_COMMON_DIRECTORY_ARG;
-use crate::git::constants::GIT_HOOKS_PATH;
-use crate::git::constants::GIT_NUL_TERMINATED_ARG;
-use crate::git::constants::GIT_PATH_ARG;
-use crate::git::constants::GIT_PATH_FORMAT_ABSOLUTE_ARG;
-use crate::git::constants::GIT_PORCELAIN_ARG;
-use crate::git::constants::GIT_REBASE_APPLY_STATE_PATH;
-use crate::git::constants::GIT_REBASE_MERGE_STATE_PATH;
-use crate::git::constants::GIT_REV_PARSE_COMMAND;
-use crate::git::constants::GIT_SHOW_TOPLEVEL_ARG;
-use crate::git::constants::GIT_WORKTREE_COMMAND;
-use crate::git::constants::GIT_WORKTREE_LIST_ARG;
-use crate::git::error::GitError;
+use super::command;
+use super::constants::GIT_COMMON_DIRECTORY_ARG;
+use super::constants::GIT_HOOKS_PATH;
+use super::constants::GIT_NUL_TERMINATED_ARG;
+use super::constants::GIT_PATH_ARG;
+use super::constants::GIT_PATH_FORMAT_ABSOLUTE_ARG;
+use super::constants::GIT_PORCELAIN_ARG;
+use super::constants::GIT_REBASE_APPLY_STATE_PATH;
+use super::constants::GIT_REBASE_MERGE_STATE_PATH;
+use super::constants::GIT_REV_PARSE_COMMAND;
+use super::constants::GIT_SHOW_TOPLEVEL_ARG;
+use super::constants::GIT_WORKTREE_COMMAND;
+use super::constants::GIT_WORKTREE_LIST_ARG;
+use super::error::GitError;
 
 /// Resolve the shared administrative directory for a repository worktree.
 pub(crate) fn common_directory(repository_root: &Path) -> Result<PathBuf, GitError> {
-    let output = git_output(
+    let output = command::git_output(
         repository_root,
         [GIT_REV_PARSE_COMMAND, GIT_COMMON_DIRECTORY_ARG],
     )?;
@@ -47,7 +47,7 @@ pub(crate) fn common_directory(repository_root: &Path) -> Result<PathBuf, GitErr
 
 /// Resolve the worktree root for an invocation from anywhere in the repository.
 pub(crate) fn repository_root(invocation_directory: &Path) -> Result<PathBuf, GitError> {
-    let output = git_output(
+    let output = command::git_output(
         invocation_directory,
         [GIT_REV_PARSE_COMMAND, GIT_SHOW_TOPLEVEL_ARG],
     )?;
@@ -69,7 +69,7 @@ pub(crate) fn repository_root(invocation_directory: &Path) -> Result<PathBuf, Gi
 
 /// Resolve the hook directory Git uses after applying `core.hooksPath`.
 pub(crate) fn hooks_directory(repository_root: &Path) -> Result<PathBuf, GitError> {
-    let output = git_output(
+    let output = command::git_output(
         repository_root,
         [
             GIT_REV_PARSE_COMMAND,
@@ -90,7 +90,7 @@ pub(crate) fn hooks_directory(repository_root: &Path) -> Result<PathBuf, GitErro
 
 /// Read git's NUL-delimited registered-worktree representation.
 pub(crate) fn worktree_list_porcelain(repository_root: &Path) -> Result<Vec<u8>, GitError> {
-    let output = git_output(
+    let output = command::git_output(
         repository_root,
         [
             GIT_WORKTREE_COMMAND,

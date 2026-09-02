@@ -10,7 +10,7 @@ use std::fmt::Formatter;
 use std::process::Output;
 use std::string::FromUtf8Error;
 
-use crate::git::command::GitCommandOutputAvailability;
+use super::command::GitCommandOutputAvailability;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 

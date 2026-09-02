@@ -283,7 +283,7 @@ pub(crate) enum FirstTouchReservationAcquisitionKind {
 
 /// The complete durable identity and publication result of first-touch protection.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[schemars(transform = crate::output::closed_value_selects_object_shape)]
+#[schemars(transform = crate::output::closed_value_serializes_as_object)]
 pub(crate) struct FirstTouchReservationAcquisition {
     /// How the transaction established coverage.
     pub(crate) kind:                        FirstTouchReservationAcquisitionKind,
@@ -550,7 +550,7 @@ fn acquire(
             });
         },
     };
-    let trunk_at_claim = read_trunk_commit(&worktree_context, &berth_config.trunk, &source)?;
+    let trunk_at_claim = read_trunk_commit(&worktree_context, &berth_config.trunk)?;
     let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let reservation_id = ReservationId::new();
     let prepared_claim = PreparedClaim {
@@ -608,7 +608,7 @@ pub(crate) fn acquire_first_touch(
 }
 
 /// Acquire first-touch protection using the reservation selection parsed by `check`.
-pub(crate) fn acquire_first_touch_for_check(
+pub(super) fn acquire_first_touch_for_check(
     request: FirstTouchClaimRequest,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
@@ -652,7 +652,7 @@ fn acquire_first_touch_with_reservation_selection(
             });
         },
     };
-    let trunk_at_claim = read_trunk_commit(&worktree_context, &berth_config.trunk, &source)?;
+    let trunk_at_claim = read_trunk_commit(&worktree_context, &berth_config.trunk)?;
     let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let prepared_claim = PreparedClaim {
         reservation_id: ReservationId::new(),
@@ -1535,7 +1535,6 @@ fn read_live_head_snapshot(
 fn read_trunk_commit(
     worktree_context: &WorktreeContext,
     trunk: &str,
-    _source: &ClaimSource,
 ) -> Result<TrunkObservationAtClaim, ClaimError> {
     let trunk_ref = format!("{HEADS_REF_PREFIX}{trunk}");
     match read_reference(worktree_context, &trunk_ref) {

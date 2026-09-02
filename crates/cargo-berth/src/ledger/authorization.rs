@@ -197,9 +197,8 @@ mod tests {
     use crate::ids::ReservationId;
     use crate::ids::WorktreeKind;
     use crate::ledger::constants::COORDINATION_RUN_MARKER_FILE_NAME;
-    use crate::ledger::identity::resolve_identity;
-    use crate::ledger::identity::worktree_identity;
-    use crate::ledger::test_support::scratch_repository;
+    use crate::ledger::identity;
+    use crate::ledger::test_support;
     use crate::ledger::worktree_context::WorktreeContext;
 
     #[test]
@@ -212,7 +211,7 @@ mod tests {
             .parse::<CoordinationRunId>()
             .expect("marker run should parse");
         let administrative_worktree =
-            worktree_identity(administrative_directory.path(), WorktreeKind::Linked)
+            identity::worktree_identity(administrative_directory.path(), WorktreeKind::Linked)
                 .expect("marker worktree identity should be created")
                 .id;
         fs::write(
@@ -296,10 +295,10 @@ mod tests {
             ),
             EditAuthorization::Unidentified
         );
-        let repository = scratch_repository();
+        let repository = test_support::scratch_repository();
         let worktree_context = WorktreeContext::discover(repository.path())
             .expect("scratch worktree should be discovered");
-        assert!(resolve_identity(&worktree_context).is_ok());
+        assert!(identity::resolve_identity(&worktree_context).is_ok());
     }
 
     #[test]
@@ -309,7 +308,7 @@ mod tests {
             .parse::<CoordinationRunId>()
             .expect("marker run should parse");
         let administrative_worktree =
-            worktree_identity(administrative_directory.path(), WorktreeKind::Linked)
+            identity::worktree_identity(administrative_directory.path(), WorktreeKind::Linked)
                 .expect("marker worktree identity should resolve")
                 .id;
         fs::write(

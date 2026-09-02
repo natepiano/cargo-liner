@@ -99,6 +99,7 @@ use crate::verb::board::BoardOutputSelection;
 use crate::verb::check;
 use crate::verb::check::CheckRequest;
 use crate::verb::claim;
+use crate::verb::claim::CheckReservationSelection;
 use crate::verb::claim::ClaimCoordinationRunSelection;
 use crate::verb::claim::ClaimRequest;
 use crate::verb::claim::PhaseStartSelection;
@@ -962,8 +963,8 @@ enum CommandOutputOwnership {
 impl CheckArguments {
     fn into_check_request(self) -> Result<CheckRequest, String> {
         let reservation_selection = self.reservation.map_or(
-            claim::CheckReservationSelection::SessionMappingOrSingleActive,
-            claim::CheckReservationSelection::Explicit,
+            CheckReservationSelection::SessionMappingOrSingleActive,
+            CheckReservationSelection::Explicit,
         );
         DeclaredReservationScopeSet::parse(self.path_arguments.paths, ScopeKind::File)
             .map(|declared_scopes| CheckRequest {
@@ -2064,7 +2065,7 @@ mod tests {
     use super::without_subcommand_name;
     use crate::coordination_identity::RecoveryCommandLine;
     use crate::exit::BerthExit;
-    use crate::output::blocked_edit_answer_guidance;
+    use crate::output;
     use crate::verb::board::BoardOutputSelection;
     use crate::verb::claim::ClaimRequest;
 
@@ -2495,7 +2496,7 @@ mod tests {
 
     #[test]
     fn rendered_overlap_answer_commands_select_the_documented_resolution() -> Result<(), String> {
-        let mut rendered_commands = blocked_edit_answer_guidance()
+        let mut rendered_commands = output::blocked_edit_answer_guidance()
             .lines()
             .filter(|line| {
                 line.chars()
@@ -2583,7 +2584,7 @@ mod tests {
 
     /// Every route states where its result reaches the caller, and the parser agrees.
     ///
-    /// The round trip through [`Command::route`] is what keeps the coverage honest: a row
+    /// The round trip through [`Command::route`] is what makes the coverage exact: a row
     /// whose command line selects some other variant fails here rather than filling a slot
     /// that its own variant then never occupies.
     #[test]
@@ -2786,7 +2787,7 @@ mod tests {
         ))
         .map_err(|error| error.to_string())?;
         match cli.command {
-            super::Command::Claim(claim_arguments) => claim_arguments.into_claim_request(),
+            Command::Claim(claim_arguments) => claim_arguments.into_claim_request(),
             _ => Err("expected claim command".to_owned()),
         }
     }
@@ -2874,7 +2875,7 @@ mod tests {
             arguments.iter().map(OsString::from).collect(),
         ))?;
         match cli.command {
-            super::Command::Board(board_arguments) => Ok(board_arguments.into_output_selection()),
+            Command::Board(board_arguments) => Ok(board_arguments.into_output_selection()),
             _ => Err(Error::raw(
                 ErrorKind::InvalidSubcommand,
                 "test arguments must select board",

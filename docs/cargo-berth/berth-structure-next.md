@@ -345,7 +345,7 @@ wraps exactly `HashMap<GitObjectId, Vec<GitObjectId>>` and converts a missing ke
 into `ScopedPatchTargetHistory::NeedsGitQueries` through `after_phase_start`
 (`:110`); phase 9 moved both out of `git/mod.rs`, which is now declarations and
 re-exports only.
-The reconciliation path lowers the same shape back to a bare map and
+The reconciliation path lowers that same `HashMap` back to a bare map and
 re-implements that conversion by hand at `:648`, against
 `SuccessorScopedPatchTargetHistory` instead — a second home for a lookup the
 crate already names once.
@@ -465,3 +465,61 @@ one that emits the type and its constructor together.
 
 Revealed by: Phase 14 reach review, after the dead arm's removal left the two
 matchers identical.
+
+## 24. `output.rs` holds the whole rendering surface in one file
+
+**Target:** `crates/cargo-berth/src/output.rs` — 4,356 lines, 2,283 at the start
+of the structure work.
+
+Nine module roots were rewritten into directories over this plan and this file
+was never one of them, so the crate's largest module is now the one the split
+never reached. It carries 99 top-level items: the output contract's status and
+consequence tables, the envelope and its presentation, the rendered engine
+sentences for every verb, and the recovery command lines those sentences quote.
+Those are four separate readerships — a contract change, a wording change, and a
+recovery-command change all edit the same file — and the trailing `mod tests`
+starts at line 4,144, so nothing before it can be read without scrolling past
+the rest.
+
+Satisfied by: a `output/` directory whose root declares and re-exports only, with
+the contract tables, the envelope and presentation, and the per-verb rendered
+sentences in siblings named for what they hold. The engine strings are asserted
+verbatim by `tests/presentation.rs` and the frozen `front_end_corpus.json`, so
+the move is provable: neither may change.
+
+Revealed by: project-end style review.
+
+## 25. `reconcile.rs` carries four unrelated concerns and no tests of its own
+
+**Target:** `crates/cargo-berth/src/reconcile.rs` — 2,429 lines, 1,019 at the
+start of the structure work, 47 top-level types, and zero `#[cfg(test)]` blocks.
+
+The file more than doubled across the module phases without being split, and the
+concerns it accumulated do not overlap: journal replay into the projected model,
+overlap and incursion computation, drift attribution, and the board projection
+the verbs read back. Every one of them is exercised only through the integration
+suites, so a change to any single concern has no unit-level failure isolation —
+a replay defect and an attribution defect fail the same integration test.
+
+Satisfied by: a `reconcile/` directory splitting along those four concerns, each
+sibling carrying its own `#[cfg(test)]` module over the part of the model it
+computes.
+
+Revealed by: project-end style review.
+
+## 26. `session/` is a directory module with nothing to hold
+
+**Target:** `crates/cargo-berth/src/session/` — `mod.rs` alone, 424 lines, zero
+`mod` declarations.
+
+The directory form promises submodules the crate never wrote. It predates this
+plan at 285 lines and grew by 139 over it, so the form is now further from what
+the contents justify than when the plan started. Either the file is a flat
+`session.rs`, or the directory earns its form.
+
+Satisfied by: collapsing it to `src/session.rs` if the contents stay one
+concern, or splitting the harness-session identity, the durable mapping, and the
+process-wide selection into named siblings if they do not. The choice is a
+reading of the contents, not of the line count.
+
+Revealed by: project-end style review.

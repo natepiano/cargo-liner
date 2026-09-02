@@ -84,7 +84,7 @@ fn the_check_verb_states_its_own_ledger_unreadable_instructions() -> TestResult 
 /// This is the sentence a reader acts on when no drift check covered their Bash call, and the
 /// only text the engine prints on that path, so nothing else states it for them. It must name
 /// the engine, instruct only in `cargo-berth` commands, and name every part of the payload
-/// shape it refuses on: a clause the verb rejects but the sentence omits sends the reader
+/// it refuses on: a clause the verb rejects but the sentence omits sends the reader
 /// hunting a fault the text never mentions.
 #[test]
 fn the_post_tool_use_verb_states_its_own_invalid_payload_instructions() -> TestResult {
@@ -318,8 +318,8 @@ fn append_unknown_release(repository_root: &Path) -> TestResult {
 
 /// The refusal `hook post-tool-use` states for a payload that reports no Bash call.
 ///
-/// The payload is well-formed JSON naming another tool, so the verb refuses it on the shape
-/// of the payload alone and never reaches the repository. That is the same refusal a
+/// The payload is well-formed JSON naming another tool, so the verb refuses it by reading
+/// the payload alone and never reaches the repository. That is the same refusal a
 /// malformed body reaches, and it is the one carrying the engine's instructions.
 fn post_tool_use_invalid_payload_envelope() -> TestResult<Value> {
     let repository = initialized_repository()?;
@@ -389,7 +389,7 @@ fn session_start_board_envelope() -> TestResult<Value> {
 /// Read one hook response as the rendered block whose text the harness shows its reader.
 ///
 /// A hook publishes the text it rendered rather than the envelope it rendered from, so the
-/// response's heading and context are restored to the block shape this suite inspects.
+/// response's heading and context are restored to the block this suite inspects.
 fn hook_response_envelope(output: &Output, scenario: &str) -> TestResult<Value> {
     let response = json_output(output, scenario)?;
     let summary = required_string(&response, "/systemMessage", scenario)?;

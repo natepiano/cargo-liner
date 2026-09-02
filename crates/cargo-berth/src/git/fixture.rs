@@ -1,7 +1,7 @@
 //! The temporary git repository every scoped-proof and reachability test builds on.
 //!
 //! The fixture seeds one commit and hands back its object id as the phase start,
-//! which is the shape both the patch-equivalence tests and the reachability tests
+//! which is what both the patch-equivalence tests and the reachability tests
 //! need. It lives in its own module because those tests sit in different files.
 
 use std::error::Error;
@@ -14,10 +14,10 @@ use std::process::Command;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
-use crate::git::error::GitError;
-use crate::git::patch::ScopedPatchComparison;
-use crate::git::patch::scoped_patch_equivalence;
-use crate::git::refs::head_object_id;
+use super::error::GitError;
+use super::patch;
+use super::patch::ScopedPatchComparison;
+use super::refs;
 use crate::ids::GitObjectId;
 use crate::ledger::ReservationScope;
 use crate::scope::ReservationScopeSet;
@@ -55,7 +55,7 @@ impl PatchEquivalenceFixture {
         write_file(repository.path(), SCRIPT_PATH, "#!/bin/sh\nexit 0\n")?;
         run_git(repository.path(), &["add", "."])?;
         run_git(repository.path(), &["commit", "--quiet", "-m", "initial"])?;
-        let phase_start_head = head_object_id(repository.path())?;
+        let phase_start_head = refs::head_object_id(repository.path())?;
         Ok(Self {
             repository,
             phase_start_head,
@@ -79,12 +79,12 @@ impl PatchEquivalenceFixture {
     pub(super) fn commit(&self, message: &str) -> FixtureResult<GitObjectId> {
         self.git(&["add", "--all"])?;
         self.git(&["commit", "--quiet", "-m", message])?;
-        Ok(head_object_id(self.root())?)
+        Ok(refs::head_object_id(self.root())?)
     }
 
     pub(super) fn amend(&self, message: &str) -> FixtureResult<GitObjectId> {
         self.git(&["commit", "--quiet", "--amend", "-m", message])?;
-        Ok(head_object_id(self.root())?)
+        Ok(refs::head_object_id(self.root())?)
     }
 
     pub(super) fn reset_to_phase_start(&self) -> io::Result<()> {
@@ -108,7 +108,7 @@ impl PatchEquivalenceFixture {
         protected_tip: &GitObjectId,
         target: &GitObjectId,
     ) -> Result<ScopedPatchComparison, GitError> {
-        scoped_patch_equivalence(
+        patch::scoped_patch_equivalence(
             self.root(),
             &self.phase_start_head,
             scopes,

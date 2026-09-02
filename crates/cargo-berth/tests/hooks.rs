@@ -135,7 +135,7 @@ const TRUNK_BRANCH: &str = "main";
 /// The loose reference file the trunk branch is published at.
 const TRUNK_REFERENCE_PATH: &str = ".git/refs/heads/main";
 
-/// The harness event one hook response answers, and the continuation shape it states.
+/// The harness event one hook response answers, and the continuation field it states.
 ///
 /// The two events state different response objects, and the difference is a contract:
 /// `berth_post_bash.sh` reports `continue`, and `berth_session_start.sh` deliberately
@@ -2272,7 +2272,7 @@ fn hook_feedback(
     })
 }
 
-/// Each event states its own continuation shape, and `SessionStart` states none.
+/// Each event states its own continuation field, and `SessionStart` states none.
 ///
 /// `berth_post_bash.sh` reports `continue`, so a `PostToolUse` response reports it too. The
 /// installed `berth_session_start.sh` deliberately reports no continuation field, because a

@@ -63,7 +63,7 @@ fn empty_board_is_headless_and_declares_no_integration_order() {
     assert!(json.status.success());
     let envelope = json_output(&json);
     assert_preserved_board_envelope_fields(&envelope, &[], "board", BOARD_READY_MESSAGE);
-    assert_complete_board_payload_shape(&envelope["payload"]["data"]);
+    assert_complete_board_payload_sections(&envelope["payload"]["data"]);
     assert_eq!(envelope["status"], "board_ready");
     assert_eq!(envelope["payload"]["kind"], "board");
     assert_eq!(
@@ -109,7 +109,7 @@ fn populated_board_presentation_carries_the_complete_board_report() {
         "board",
         BOARD_READY_MESSAGE,
     );
-    assert_complete_board_payload_shape(&envelope["payload"]["data"]);
+    assert_complete_board_payload_sections(&envelope["payload"]["data"]);
 
     let report = rendered_board_report(&envelope, "complete board");
     let report_object = report
@@ -1245,7 +1245,7 @@ fn assert_preserved_board_envelope_fields(
     assert_eq!(envelope["payload"]["alerts"], serde_json::json!([]));
 }
 
-fn assert_complete_board_payload_shape(data: &serde_json::Value) {
+fn assert_complete_board_payload_sections(data: &serde_json::Value) {
     let object = data
         .as_object()
         .expect("complete board payload should be a JSON object");
@@ -1293,7 +1293,7 @@ fn assert_complete_board_payload_shape(data: &serde_json::Value) {
         );
         assert!(
             data[section_name]["entries"].is_array(),
-            "{section_name} entries changed wire shape"
+            "{section_name} entries are no longer a JSON array"
         );
     }
     let git_cost = data["git_cost"]

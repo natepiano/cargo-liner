@@ -186,7 +186,7 @@ const CORPUS_ENTRIES_WITHOUT_A_TEST: [UnprovenCorpusEntry; 27] = [
     },
     UnprovenCorpusEntry::UnproducibleByThisEngine {
         name:    "test_hooks_render_coordination_identity_recovery_actions_without_message#8",
-        because: "the frozen single-action shape is rendered only for an original command holding \
+        because: "the frozen single-action rendering happens only for an original command holding \
                   an argument that is not text, and post-tool-use supplies three text arguments",
     },
     UnprovenCorpusEntry::UnproducibleByThisEngine {
@@ -226,7 +226,7 @@ const CORPUS_ENTRIES_WITHOUT_A_TEST: [UnprovenCorpusEntry; 27] = [
     },
     UnprovenCorpusEntry::UnproducibleByThisEngine {
         name:    "test_hooks_render_coordination_identity_recovery_actions_without_message#7",
-        because: "the pre-edit twin of the single-action shape: check_recovery_command_line builds \
+        because: "the pre-edit twin of the single-action rendering: check_recovery_command_line builds \
                   all five arguments from Rust text, so runnable_arguments never answers \
                   RecoveryCommandContainsNonTextArgument and a session_worktree_mismatch reached \
                   through this hook always renders both recovery actions",

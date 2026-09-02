@@ -13,10 +13,10 @@ use super::lifecycle::IntegrationProof;
 use super::lifecycle::ReleaseDisposition;
 use super::lifecycle::ReleaseRevalidationSubject;
 use super::lifecycle::ReservationLifecycle;
+use super::partition;
 use super::partition::AuthorizedEditingIdentity;
 use super::partition::DriftBlockingCoverage;
 use super::partition::WidenScopeBinding;
-use super::partition::reservations_authorize_scope;
 use super::record::Reservation;
 use super::replay::ReplayedClaim;
 use super::replay::ReservationReplayError;
@@ -210,16 +210,15 @@ impl RetainedReservationSet {
         let conflicts = self.conflicts_with_holders(&complete_scopes, path_case, |holder| {
             holder.actor.run != subject.actor.run || holder.actor.worktree != subject.actor.worktree
         });
-        let blocked =
-            conflicts
-                .iter()
-                .filter(|(holder, conflict)| {
-                    conflict.overlapping_scopes.as_slice().iter().any(|scope| {
-                        !reservations_authorize_scope(subject, holder, scope, path_case)
-                    })
+        let blocked = conflicts
+            .iter()
+            .filter(|(holder, conflict)| {
+                conflict.overlapping_scopes.as_slice().iter().any(|scope| {
+                    !partition::reservations_authorize_scope(subject, holder, scope, path_case)
                 })
-                .map(|(_, conflict)| conflict.clone())
-                .collect::<Vec<_>>();
+            })
+            .map(|(_, conflict)| conflict.clone())
+            .collect::<Vec<_>>();
         if !blocked.is_empty() {
             return WidenScopeBinding::Blocked(blocked);
         }
@@ -1268,6 +1267,7 @@ impl IncursionIncident {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Error;
     use serde_json::Value;
     use serde_json::json;
 
@@ -2008,7 +2008,7 @@ mod tests {
         projection_generation: u64,
         subject: u64,
         verdict: &str,
-    ) -> Result<JournalEvent, serde_json::Error> {
+    ) -> Result<JournalEvent, Error> {
         journal_event(
             projection_generation,
             &json!({
@@ -2025,7 +2025,7 @@ mod tests {
         projection_generation: u64,
         target: &str,
         verdict: &str,
-    ) -> Result<JournalEvent, serde_json::Error> {
+    ) -> Result<JournalEvent, Error> {
         journal_event(
             projection_generation,
             &json!({
@@ -2038,7 +2038,7 @@ mod tests {
         )
     }
 
-    fn lifecycle_events() -> Result<[JournalEvent; 6], serde_json::Error> {
+    fn lifecycle_events() -> Result<[JournalEvent; 6], Error> {
         let claim = journal_event(
             1,
             &json!({
@@ -2107,10 +2107,7 @@ mod tests {
         ])
     }
 
-    fn journal_event(
-        projection_generation: u64,
-        operation: &Value,
-    ) -> Result<JournalEvent, serde_json::Error> {
+    fn journal_event(projection_generation: u64, operation: &Value) -> Result<JournalEvent, Error> {
         let mut event = json!({
             "schema_version": 1,
             "event_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",

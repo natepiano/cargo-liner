@@ -7,9 +7,9 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::error::BoardError;
+use super::rows;
 use super::rows::SymmetricDeferralConsequence;
 use super::rows::WaitingAction;
-use super::rows::waiting_action;
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
@@ -128,7 +128,7 @@ struct AccumulatedDeferralApprovals {
 fn ordering_consequence(readiness: EdgeReadiness) -> OrderingConsequence {
     match readiness {
         EdgeReadiness::Holding { hold } => OrderingConsequence::Holding {
-            action: waiting_action(hold),
+            action: rows::waiting_action(hold),
         },
         EdgeReadiness::Cancelled => OrderingConsequence::Cancelled,
         EdgeReadiness::Fulfilled => OrderingConsequence::Fulfilled,
@@ -366,24 +366,24 @@ fn append_authorization_answer(
 mod tests {
     use std::io;
 
-    use super::super::rows::BoardModel;
-    use super::super::rows::SymmetricDeferralConsequence;
-    use super::super::rows::WaitingAction;
-    use super::super::test_support::FixtureResult;
-    use super::super::test_support::OverlapAnswerFixture;
-    use super::super::test_support::answered_board;
     use super::AnswerAcquisition;
     use super::OrderingConsequence;
     use super::OverrideConsequence;
     use super::RecordedAnswer;
     use crate::answer::AuthorizedOverlapSet;
+    use crate::board::rows::BoardModel;
+    use crate::board::rows::SymmetricDeferralConsequence;
+    use crate::board::rows::WaitingAction;
+    use crate::board::test_support;
+    use crate::board::test_support::FixtureResult;
+    use crate::board::test_support::OverlapAnswerFixture;
     use crate::ids::ReservationId;
     use crate::ledger::OrderingDirection;
     use crate::ledger::ScopeKind;
 
     #[test]
     fn overlap_answers_preserve_typed_authorization_variants() -> FixtureResult<()> {
-        let sequence = answered_board(OverlapAnswerFixture::Sequence)?;
+        let sequence = test_support::answered_board(OverlapAnswerFixture::Sequence)?;
         let sequence_answer = recorded_answer(&sequence.model, sequence.requester_id)?;
         let RecordedAnswer::Sequence {
             reservation_id,
@@ -415,7 +415,7 @@ mod tests {
             }
         ));
 
-        let defer = answered_board(OverlapAnswerFixture::Defer)?;
+        let defer = test_support::answered_board(OverlapAnswerFixture::Defer)?;
         let defer_answer = recorded_answer(&defer.model, defer.requester_id)?;
         let RecordedAnswer::Defer {
             reservation_id,
@@ -441,7 +441,7 @@ mod tests {
             SymmetricDeferralConsequence::BothIntegrationsHeldUntilSequence
         );
 
-        let override_fixture = answered_board(OverlapAnswerFixture::Override)?;
+        let override_fixture = test_support::answered_board(OverlapAnswerFixture::Override)?;
         let override_answer =
             recorded_answer(&override_fixture.model, override_fixture.requester_id)?;
         let RecordedAnswer::Override {

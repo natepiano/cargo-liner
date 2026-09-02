@@ -38,9 +38,8 @@ use crate::ledger::JournalOperation;
 use crate::ledger::SkippedDeferral;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::ledger::SkippedOrderingEdge;
+use crate::presentation;
 use crate::presentation::IncursionResolutionGuidance;
-use crate::presentation::orphaned_outstanding_block;
-use crate::presentation::outstanding_board_incursion_block;
 use crate::reconcile::ReconciliationGitCost;
 use crate::reservation::IncursionIncidentStatus;
 use crate::reservation::ProtectedReservationTip;
@@ -239,7 +238,7 @@ pub(super) fn outstanding_incursion_detail(incursion: &OutstandingIncursion) -> 
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    outstanding_board_incursion_block(
+    presentation::outstanding_board_incursion_block(
         &incursion.straying_reservation_id.to_string(),
         &entered_paths,
         &foreign_reservation_ids,
@@ -319,7 +318,7 @@ fn orphaned_outstanding_detail(
             .map(|flag| reservation_resolution_command(flag, reservation_id))
             .collect(),
     };
-    orphaned_outstanding_block(
+    presentation::orphaned_outstanding_block(
         &reservation_id.to_string(),
         &protected_tip.to_string(),
         recoverability,
@@ -691,9 +690,9 @@ mod tests {
     use super::StaleReservationResolutionAction;
     use super::board_alerts;
     use crate::answer::ConflictAuthorization;
+    use crate::board::test_support;
     use crate::board::test_support::BoardFixture;
     use crate::board::test_support::FixtureResult;
-    use crate::board::test_support::board_reservation_snapshot;
     use crate::reservation::ReservationFreshness;
 
     #[test]
@@ -702,7 +701,8 @@ mod tests {
         let actor = fixture.main_actor();
         let reservation = fixture.claim(&actor, "stale.rs", ConflictAuthorization::NoConflict)?;
         let model = fixture.model()?;
-        let fresh_row = board_reservation_snapshot(&model, reservation.reservation_id)?.clone();
+        let fresh_row =
+            test_support::board_reservation_snapshot(&model, reservation.reservation_id)?.clone();
         assert!(board_alerts(&[], std::slice::from_ref(&fresh_row), &[])?.is_empty());
 
         let mut stale_row = fresh_row;

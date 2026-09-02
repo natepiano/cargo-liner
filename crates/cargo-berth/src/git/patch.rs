@@ -13,43 +13,42 @@ use std::process::Output;
 use std::thread;
 use std::thread::ScopedJoinHandle;
 
-use crate::git::command::GitCommandOutputAvailability;
-use crate::git::command::git_output;
-use crate::git::command::git_output_dynamic;
-use crate::git::conflict::ScopedMergeConflictCoverage;
-use crate::git::conflict::scoped_merge_conflict_coverage;
-use crate::git::constants::GIT_ANCESTOR_RANGE_INFIX;
-use crate::git::constants::GIT_CHERRY_MARK_ARG;
-use crate::git::constants::GIT_COUNT_ARG;
-use crate::git::constants::GIT_DIFF_COMMAND;
-use crate::git::constants::GIT_EQUIVALENT_COMMIT_MARK;
-use crate::git::constants::GIT_EXCLUDE_REVISION_PREFIX;
-use crate::git::constants::GIT_FIRST_PARENT_ANCESTOR_INFIX;
-use crate::git::constants::GIT_FIRST_PARENT_ARG;
-use crate::git::constants::GIT_LEFT_COMMIT_MARK;
-use crate::git::constants::GIT_LEFT_RIGHT_ARG;
-use crate::git::constants::GIT_LITERAL_TOP_PATHSPEC_PREFIX;
-use crate::git::constants::GIT_LOG_COMMAND;
-use crate::git::constants::GIT_MAX_COUNT_ARG_PREFIX;
-use crate::git::constants::GIT_MERGE_BASE_ARG_PREFIX;
-use crate::git::constants::GIT_MERGE_BASE_COMMAND;
-use crate::git::constants::GIT_MERGE_TREE_CLEAN_EXIT_CODE;
-use crate::git::constants::GIT_MERGE_TREE_COMMAND;
-use crate::git::constants::GIT_MERGE_TREE_CONFLICT_EXIT_CODE;
-use crate::git::constants::GIT_NAME_ONLY_ARG;
-use crate::git::constants::GIT_NAME_STATUS_ARG;
-use crate::git::constants::GIT_NO_MERGE_BASE_EXIT_CODE;
-use crate::git::constants::GIT_NO_MERGES_ARG;
-use crate::git::constants::GIT_NO_RENAMES_ARG;
-use crate::git::constants::GIT_NUL_TERMINATED_ARG;
-use crate::git::constants::GIT_PATHSPEC_SEPARATOR;
-use crate::git::constants::GIT_REV_LIST_COMMAND;
-use crate::git::constants::GIT_RIGHT_COMMIT_MARK;
-use crate::git::constants::GIT_STRATEGY_OPTION_NO_RENAMES_ARG;
-use crate::git::constants::GIT_SYMMETRIC_RANGE_INFIX;
-use crate::git::constants::GIT_WRITE_TREE_ARG;
-use crate::git::error::GitError;
-use crate::git::object::object_id;
+use super::command;
+use super::command::GitCommandOutputAvailability;
+use super::conflict;
+use super::conflict::ScopedMergeConflictCoverage;
+use super::constants::GIT_ANCESTOR_RANGE_INFIX;
+use super::constants::GIT_CHERRY_MARK_ARG;
+use super::constants::GIT_COUNT_ARG;
+use super::constants::GIT_DIFF_COMMAND;
+use super::constants::GIT_EQUIVALENT_COMMIT_MARK;
+use super::constants::GIT_EXCLUDE_REVISION_PREFIX;
+use super::constants::GIT_FIRST_PARENT_ANCESTOR_INFIX;
+use super::constants::GIT_FIRST_PARENT_ARG;
+use super::constants::GIT_LEFT_COMMIT_MARK;
+use super::constants::GIT_LEFT_RIGHT_ARG;
+use super::constants::GIT_LITERAL_TOP_PATHSPEC_PREFIX;
+use super::constants::GIT_LOG_COMMAND;
+use super::constants::GIT_MAX_COUNT_ARG_PREFIX;
+use super::constants::GIT_MERGE_BASE_ARG_PREFIX;
+use super::constants::GIT_MERGE_BASE_COMMAND;
+use super::constants::GIT_MERGE_TREE_CLEAN_EXIT_CODE;
+use super::constants::GIT_MERGE_TREE_COMMAND;
+use super::constants::GIT_MERGE_TREE_CONFLICT_EXIT_CODE;
+use super::constants::GIT_NAME_ONLY_ARG;
+use super::constants::GIT_NAME_STATUS_ARG;
+use super::constants::GIT_NO_MERGE_BASE_EXIT_CODE;
+use super::constants::GIT_NO_MERGES_ARG;
+use super::constants::GIT_NO_RENAMES_ARG;
+use super::constants::GIT_NUL_TERMINATED_ARG;
+use super::constants::GIT_PATHSPEC_SEPARATOR;
+use super::constants::GIT_REV_LIST_COMMAND;
+use super::constants::GIT_RIGHT_COMMIT_MARK;
+use super::constants::GIT_STRATEGY_OPTION_NO_RENAMES_ARG;
+use super::constants::GIT_SYMMETRIC_RANGE_INFIX;
+use super::constants::GIT_WRITE_TREE_ARG;
+use super::error::GitError;
+use super::object;
 use crate::ids::GitObjectId;
 use crate::scope::ReservationScopeSet;
 
@@ -210,7 +209,7 @@ pub(crate) fn rewritten_phase_anchor(
         .iter()
         .take_while(|commit| equivalents.contains(commit))
         .count();
-    object_id(
+    object::object_id(
         repository_root,
         &format!("{proposed_tip}{GIT_FIRST_PARENT_ANCESTOR_INFIX}{replayed}"),
     )
@@ -277,7 +276,7 @@ fn first_parent_commits(
 
 /// Run one `rev-list` invocation and return its standard output.
 fn rev_list(repository_root: &Path, arguments: &[String]) -> Result<String, GitError> {
-    let output = git_output_dynamic(repository_root, arguments)?;
+    let output = command::git_output_dynamic(repository_root, arguments)?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_LIST_COMMAND,
@@ -521,7 +520,7 @@ fn history_relationship(
     let left = left.to_string();
     let right = right.to_string();
     let output = scoped_patch_command_output(
-        git_output(repository_root, [GIT_MERGE_BASE_COMMAND, &left, &right]).into(),
+        command::git_output(repository_root, [GIT_MERGE_BASE_COMMAND, &left, &right]).into(),
     )?;
     if output.status.success() {
         Ok(HistoryRelationship::Shared)
@@ -556,12 +555,17 @@ fn target_contains_protected_scoped_change(
         target.to_string(),
         protected_tip.to_string(),
     ]);
-    let replay_output =
-        scoped_patch_command_output(git_output_dynamic(repository_root, &replay_arguments).into())?;
+    let replay_output = scoped_patch_command_output(
+        command::git_output_dynamic(repository_root, &replay_arguments).into(),
+    )?;
     match replay_output.status.code() {
         Some(GIT_MERGE_TREE_CLEAN_EXIT_CODE) => {},
         Some(GIT_MERGE_TREE_CONFLICT_EXIT_CODE) => {
-            match scoped_merge_conflict_coverage(&replay_output.stdout, scopes, protected_tip) {
+            match conflict::scoped_merge_conflict_coverage(
+                &replay_output.stdout,
+                scopes,
+                protected_tip,
+            ) {
                 ScopedMergeConflictCoverage::OutsideReservationScopes => {},
                 ScopedMergeConflictCoverage::CoveredByReservation
                 | ScopedMergeConflictCoverage::DisplacedReservedFile => {
@@ -598,8 +602,9 @@ fn target_contains_protected_scoped_change(
             .iter()
             .map(|scope| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{}", scope.path)),
     );
-    let diff_output =
-        scoped_patch_command_output(git_output_dynamic(repository_root, &diff_arguments).into())?;
+    let diff_output = scoped_patch_command_output(
+        command::git_output_dynamic(repository_root, &diff_arguments).into(),
+    )?;
     if !diff_output.status.success() {
         return Ok(ScopedPatchComparison::Unavailable);
     }
@@ -779,8 +784,9 @@ fn target_first_parent_history(
         format!("{GIT_EXCLUDE_REVISION_PREFIX}{excluded_ancestor}"),
         GIT_PATHSPEC_SEPARATOR.to_owned(),
     ];
-    let output =
-        scoped_patch_command_output(git_output_dynamic(repository_root, &arguments).into())?;
+    let output = scoped_patch_command_output(
+        command::git_output_dynamic(repository_root, &arguments).into(),
+    )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_LOG_COMMAND,
@@ -877,8 +883,9 @@ fn protected_scoped_changes(
             .iter()
             .map(|scope| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{}", scope.path)),
     );
-    let output =
-        scoped_patch_command_output(git_output_dynamic(repository_root, &arguments).into())?;
+    let output = scoped_patch_command_output(
+        command::git_output_dynamic(repository_root, &arguments).into(),
+    )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_DIFF_COMMAND,
@@ -955,8 +962,9 @@ fn scoped_rev_list(
     repository_root: &Path,
     arguments: &[String],
 ) -> Result<String, ScopedPatchComparisonError> {
-    let output =
-        scoped_patch_command_output(git_output_dynamic(repository_root, arguments).into())?;
+    let output = scoped_patch_command_output(
+        command::git_output_dynamic(repository_root, arguments).into(),
+    )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_LIST_COMMAND,
@@ -983,6 +991,7 @@ mod tests {
     use super::scoped_patch_equivalence_with_target_history;
     use crate::git::command::GitCommandOutputAvailability;
     use crate::git::error::GitError;
+    use crate::git::fixture;
     use crate::git::fixture::FixtureResult;
     use crate::git::fixture::PRIMARY_BACKUP_PATH;
     use crate::git::fixture::PRIMARY_PATH;
@@ -990,9 +999,7 @@ mod tests {
     use crate::git::fixture::SCRIPT_PATH;
     use crate::git::fixture::SECONDARY_PATH;
     use crate::git::fixture::UNAVAILABLE_OBJECT_ID;
-    use crate::git::fixture::file_scopes;
-    use crate::git::fixture::tree_scopes;
-    use crate::git::refs::head_object_id;
+    use crate::git::refs;
     use crate::ids::GitObjectId;
     use crate::ledger::ProtectedPhaseStartHead;
     use crate::reservation;
@@ -1035,7 +1042,7 @@ mod tests {
         fixture.write(SCRIPT_PATH, "#!/bin/sh\necho target\n")?;
         let target = fixture.commit("target unscoped change")?;
         let target_history = [target.clone(), shared_scoped_commit];
-        let scopes = file_scopes(&[PRIMARY_PATH])?;
+        let scopes = fixture::file_scopes(&[PRIMARY_PATH])?;
 
         let proven_comparison = scoped_patch_equivalence_with_target_history(
             fixture.root(),
@@ -1085,7 +1092,11 @@ mod tests {
         let target = fixture.amend("amended identity")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1100,7 +1111,7 @@ mod tests {
         let status = reservation::integration_status(
             fixture.root(),
             &ProtectedPhaseStartHead::from(fixture.phase_start_head.clone()),
-            &file_scopes(&[PRIMARY_PATH])?,
+            &fixture::file_scopes(&[PRIMARY_PATH])?,
             &ProtectedReservationTip::from(protected_tip),
             &target,
             PriorIntegrationStatus::Proven,
@@ -1124,7 +1135,7 @@ mod tests {
         let status = reservation::integration_status(
             fixture.root(),
             &ProtectedPhaseStartHead::from(unavailable_phase_start),
-            &file_scopes(&[PRIMARY_PATH])?,
+            &fixture::file_scopes(&[PRIMARY_PATH])?,
             &protected_tip,
             &fixture.phase_start_head,
             PriorIntegrationStatus::Unproven,
@@ -1147,7 +1158,7 @@ mod tests {
         let protected_tip = fixture.commit("protected identity")?;
         let target = fixture.amend("amended identity")?;
         let unavailable_phase_start = UNAVAILABLE_OBJECT_ID.parse::<GitObjectId>()?;
-        let scopes = file_scopes(&[PRIMARY_PATH])?;
+        let scopes = fixture::file_scopes(&[PRIMARY_PATH])?;
 
         assert_eq!(
             scoped_patch_equivalence(
@@ -1182,10 +1193,14 @@ mod tests {
         fixture.write("docs/upstream.md", "upstream\n")?;
         fixture.commit("new base")?;
         fixture.git(&["cherry-pick", &protected_tip.to_string()])?;
-        let target = head_object_id(fixture.root())?;
+        let target = refs::head_object_id(fixture.root())?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1209,10 +1224,14 @@ mod tests {
             &fixture.phase_start_head.to_string(),
         ])?;
         fixture.git(&["cherry-pick", "--quiet", &protected_tip.to_string()])?;
-        let target = head_object_id(fixture.root())?;
+        let target = refs::head_object_id(fixture.root())?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1236,10 +1255,14 @@ mod tests {
             "--no-edit",
             "integrated-work",
         ])?;
-        let target = head_object_id(fixture.root())?;
+        let target = refs::head_object_id(fixture.root())?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1258,7 +1281,11 @@ mod tests {
         let target = fixture.amend("amended edit with unrelated addition")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1285,7 +1312,11 @@ mod tests {
         let target = fixture.amend("protected edit shifted by insertion")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1304,7 +1335,11 @@ mod tests {
         let target = fixture.amend("replaced edit with unrelated addition")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Different
         );
         Ok(())
@@ -1318,7 +1353,7 @@ mod tests {
         let target = fixture.amend("amended rename")?;
 
         assert_eq!(
-            fixture.equivalence(&tree_scopes(&["src"])?, &protected_tip, &target)?,
+            fixture.equivalence(&fixture::tree_scopes(&["src"])?, &protected_tip, &target)?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1337,7 +1372,7 @@ mod tests {
         let target = fixture.commit("later edit after integrated rename")?;
 
         assert_eq!(
-            fixture.equivalence(&tree_scopes(&["src"])?, &protected_tip, &target)?,
+            fixture.equivalence(&fixture::tree_scopes(&["src"])?, &protected_tip, &target)?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1353,7 +1388,7 @@ mod tests {
         let target = fixture.commit("target rename")?;
 
         assert_eq!(
-            fixture.equivalence(&tree_scopes(&["src"])?, &protected_tip, &target)?,
+            fixture.equivalence(&fixture::tree_scopes(&["src"])?, &protected_tip, &target)?,
             ScopedPatchComparison::Different
         );
         Ok(())
@@ -1370,7 +1405,7 @@ mod tests {
         let target = fixture.commit("target rename outside scope")?;
 
         assert_eq!(
-            fixture.equivalence(&tree_scopes(&["src"])?, &protected_tip, &target)?,
+            fixture.equivalence(&fixture::tree_scopes(&["src"])?, &protected_tip, &target)?,
             ScopedPatchComparison::Different
         );
         Ok(())
@@ -1384,7 +1419,11 @@ mod tests {
         let target = fixture.amend("amended deletion")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1400,7 +1439,11 @@ mod tests {
         let target = fixture.commit("target modification")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Different
         );
         Ok(())
@@ -1418,7 +1461,11 @@ mod tests {
         let target = fixture.commit("target scoped and unscoped modifications")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1438,7 +1485,11 @@ mod tests {
         let target = fixture.commit("target scoped and sibling modifications")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1454,7 +1505,7 @@ mod tests {
         let target = fixture.amend("amended tree change with later descendant")?;
 
         assert_eq!(
-            fixture.equivalence(&tree_scopes(&["src"])?, &protected_tip, &target)?,
+            fixture.equivalence(&fixture::tree_scopes(&["src"])?, &protected_tip, &target)?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1471,7 +1522,7 @@ mod tests {
         let target = fixture.amend("amended tree change with unrelated edits")?;
 
         assert_eq!(
-            fixture.equivalence(&tree_scopes(&["src"])?, &protected_tip, &target)?,
+            fixture.equivalence(&fixture::tree_scopes(&["src"])?, &protected_tip, &target)?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1487,7 +1538,11 @@ mod tests {
         let target = fixture.commit("later same-file edit")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1507,7 +1562,11 @@ mod tests {
         let target = fixture.commit("later same-file edit")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1534,7 +1593,11 @@ mod tests {
         let target = fixture.commit("changed second block")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Different
         );
         Ok(())
@@ -1561,7 +1624,11 @@ mod tests {
         let target = fixture.commit("overwrote first block and changed second block")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Different
         );
         Ok(())
@@ -1576,7 +1643,11 @@ mod tests {
         let target = fixture.commit("unrelated root with protected content")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Different
         );
         Ok(())
@@ -1590,7 +1661,11 @@ mod tests {
         let target = fixture.amend("amended mode")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[SCRIPT_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[SCRIPT_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Equivalent
         );
         Ok(())
@@ -1606,7 +1681,11 @@ mod tests {
         let target = fixture.amend("different target content")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Different
         );
         Ok(())
@@ -1618,10 +1697,14 @@ mod tests {
         fixture.write(PRIMARY_PATH, "protected content\n")?;
         let protected_tip = fixture.commit("protected content")?;
         fixture.reset_to_phase_start()?;
-        let target = head_object_id(fixture.root())?;
+        let target = refs::head_object_id(fixture.root())?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Different
         );
         Ok(())
@@ -1638,7 +1721,11 @@ mod tests {
         let target = fixture.commit("target replaces file with directory")?;
 
         assert_eq!(
-            fixture.equivalence(&file_scopes(&[PRIMARY_PATH])?, &protected_tip, &target)?,
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             ScopedPatchComparison::Different
         );
         Ok(())
@@ -1657,7 +1744,7 @@ mod tests {
 
         assert_eq!(
             fixture.equivalence(
-                &file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
+                &fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
                 &protected_tip,
                 &target,
             )?,
@@ -1683,7 +1770,7 @@ mod tests {
 
         assert_eq!(
             fixture.equivalence(
-                &file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
+                &fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
                 &protected_tip,
                 &target,
             )?,

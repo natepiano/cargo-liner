@@ -16,19 +16,15 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::BLOCKING_EXIT_CODE;
-use super::HarnessSessionIdentityAvailability;
-use super::HookWorkingDirectorySelection;
-use super::refuse_hook_request;
-use super::render_blocks;
-use super::write_stderr_line;
+use super::context_notice;
+use super::process_binding::HarnessSessionIdentityAvailability;
+use super::process_binding::HookWorkingDirectorySelection;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::exit::BerthExit;
+use crate::ledger;
 use crate::ledger::AncestorCanonicalizationError;
 use crate::ledger::LedgerError;
 use crate::ledger::WorktreeContext;
-use crate::ledger::canonicalize_through_nearest_existing_ancestor;
-use crate::ledger::normalize_absolute_path;
 use crate::output::LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE;
 use crate::output::OutputEnvelope;
 use crate::presentation::EnvelopePresentation;
@@ -38,6 +34,7 @@ use crate::verb::check;
 use crate::verb::check::CheckRequest;
 use crate::verb::claim::CheckReservationSelection;
 
+const BLOCKING_EXIT_CODE: u8 = 2;
 const HOOK_EVENT_NAME: &str = "PreToolUse";
 const AUTHORIZED_SYSTEM_MESSAGE: &str =
     "cargo-berth authorized this edit and stated the detail below itself.";
@@ -248,7 +245,8 @@ fn resolve_named_edit_target(
             reason: "the hook working directory is unavailable".to_owned(),
         };
     };
-    let Ok(normalized_working_directory) = normalize_absolute_path(&working_directory) else {
+    let Ok(normalized_working_directory) = ledger::normalize_absolute_path(&working_directory)
+    else {
         return ResolvedEditTarget::Unresolved {
             reason: "the hook working directory must be an absolute path".to_owned(),
         };
@@ -333,21 +331,21 @@ fn place_in_repository(
     payload_edit_path: &Path,
     coordination_domain: &CoordinationDomain,
 ) -> ResolvedEditTarget {
-    let resolved_edit_path = match canonicalize_through_nearest_existing_ancestor(payload_edit_path)
-    {
-        Ok(resolved_edit_path) => resolved_edit_path,
-        Err(AncestorCanonicalizationError::NoExistingAncestor) => {
-            return ResolvedEditTarget::Unresolved {
-                reason: "no existing ancestor of the edit target could be resolved".to_owned(),
-            };
-        },
-        Err(AncestorCanonicalizationError::AncestorUnavailable) => {
-            return ResolvedEditTarget::Unresolved {
-                reason: "the edit target's nearest existing ancestor could not be resolved"
-                    .to_owned(),
-            };
-        },
-    };
+    let resolved_edit_path =
+        match ledger::canonicalize_through_nearest_existing_ancestor(payload_edit_path) {
+            Ok(resolved_edit_path) => resolved_edit_path,
+            Err(AncestorCanonicalizationError::NoExistingAncestor) => {
+                return ResolvedEditTarget::Unresolved {
+                    reason: "no existing ancestor of the edit target could be resolved".to_owned(),
+                };
+            },
+            Err(AncestorCanonicalizationError::AncestorUnavailable) => {
+                return ResolvedEditTarget::Unresolved {
+                    reason: "the edit target's nearest existing ancestor could not be resolved"
+                        .to_owned(),
+                };
+            },
+        };
     resolved_edit_path
         .strip_prefix(&coordination_domain.repository_root)
         .map_or_else(
@@ -500,9 +498,10 @@ fn render_pre_tool_use_answer(output_envelope: &OutputEnvelope) -> ExitCode {
 
 fn render_authorized(presentation: &EnvelopePresentation) -> ExitCode {
     match presentation {
-        EnvelopePresentation::RenderedBlocks { blocks } => {
-            write_allow_notice(AUTHORIZED_SYSTEM_MESSAGE, &render_blocks(blocks.as_slice()))
-        },
+        EnvelopePresentation::RenderedBlocks { blocks } => write_allow_notice(
+            AUTHORIZED_SYSTEM_MESSAGE,
+            &context_notice::render_blocks(blocks.as_slice()),
+        ),
         EnvelopePresentation::NothingToShow | EnvelopePresentation::NotProvided => {
             ExitCode::SUCCESS
         },
@@ -512,9 +511,10 @@ fn render_authorized(presentation: &EnvelopePresentation) -> ExitCode {
 fn render_fail_open(output_envelope: &OutputEnvelope) -> ExitCode {
     match output_envelope.presentation() {
         EnvelopePresentation::NothingToShow => ExitCode::SUCCESS,
-        EnvelopePresentation::RenderedBlocks { blocks } => {
-            write_allow_notice(FAIL_OPEN_SYSTEM_MESSAGE, &render_blocks(blocks.as_slice()))
-        },
+        EnvelopePresentation::RenderedBlocks { blocks } => write_allow_notice(
+            FAIL_OPEN_SYSTEM_MESSAGE,
+            &context_notice::render_blocks(blocks.as_slice()),
+        ),
         EnvelopePresentation::NotProvided => write_allow_notice(
             LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE,
             &output_envelope.render_text(),
@@ -525,7 +525,7 @@ fn render_fail_open(output_envelope: &OutputEnvelope) -> ExitCode {
 fn render_refusal(presentation: &EnvelopePresentation) -> ExitCode {
     match presentation {
         EnvelopePresentation::RenderedBlocks { blocks } => {
-            write_stderr_line(&render_blocks(blocks.as_slice()));
+            write_stderr_line(&context_notice::render_blocks(blocks.as_slice()));
         },
         EnvelopePresentation::NothingToShow => refuse_hook_request(
             "the engine returned a blocking check answer marked as deliberate silence",
@@ -551,4 +551,16 @@ fn write_allow_notice(system_message: &'static str, detail: &str) -> ExitCode {
         std::mem::drop(standard_output.write_all(b"\n"));
     }
     ExitCode::SUCCESS
+}
+
+fn refuse_hook_request(reason: &str) {
+    write_stderr_line(&format!(
+        "cargo-berth refused this edit hook request: {reason}"
+    ));
+}
+
+fn write_stderr_line(detail: &str) {
+    let mut standard_error = std::io::stderr().lock();
+    std::mem::drop(standard_error.write_all(detail.as_bytes()));
+    std::mem::drop(standard_error.write_all(b"\n"));
 }

@@ -1446,7 +1446,7 @@ fn an_incursion_from_merged_trunk_work_says_the_phase_did_not_author_it() {
         .trim()
         .to_owned();
     // Taking trunk's work into the phase puts a commit the phase never wrote inside
-    // <phase_start>..HEAD, which is the shape a false incursion arrives in.
+    // <phase_start>..HEAD, which is how a false incursion arrives.
     git(&foreign_root, &["merge", "--quiet", "main"]);
 
     let reported = run_berth_with_run(

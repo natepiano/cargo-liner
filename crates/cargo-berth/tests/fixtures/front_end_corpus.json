@@ -1975,7 +1975,7 @@
           "body": {
             "blocked_by": [],
             "exit_code": 0,
-            "message": "Cleared under an acquisition shape this installation predates.",
+            "message": "Cleared under an acquisition rule this installation predates.",
             "payload": {
               "alerts": [],
               "data": {
@@ -1993,7 +1993,7 @@
       "expected": {
         "exit_code": 0,
         "stderr": "",
-        "stdout": "{\"systemMessage\":\"cargo-berth authorized this edit and stated the detail below itself.\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"Cleared under an acquisition shape this installation predates.\"}}\n"
+        "stdout": "{\"systemMessage\":\"cargo-berth authorized this edit and stated the detail below itself.\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"Cleared under an acquisition rule this installation predates.\"}}\n"
       },
       "expected_cargo_berth_calls": [
         [

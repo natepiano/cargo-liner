@@ -3,10 +3,8 @@
 use std::convert::Infallible;
 use std::path::Path;
 
+use super::decision;
 use super::decision::GatePurpose;
-use super::decision::decide;
-use super::decision::entering_reservations;
-use super::decision::newly_reachable_commits;
 use super::error::GateError;
 use super::error::GateTransactionRejection;
 use super::reference_transaction::ProposedMainMove;
@@ -58,17 +56,20 @@ pub(super) fn commit_forced_permit_audits(
                         );
                     },
                 };
-                let newly_reachable =
-                    match newly_reachable_commits(worktree_context.repository_root(), update) {
-                        Ok(newly_reachable) => newly_reachable,
-                        Err(error) => {
-                            return ReconciliationValidation::Reject(
-                                GateTransactionRejection::Git(error),
-                            );
-                        },
-                    };
-                let entering = entering_reservations(prepared.constraints(), &newly_reachable);
-                let (_, operations) = match decide(
+                let newly_reachable = match decision::newly_reachable_commits(
+                    worktree_context.repository_root(),
+                    update,
+                ) {
+                    Ok(newly_reachable) => newly_reachable,
+                    Err(error) => {
+                        return ReconciliationValidation::Reject(GateTransactionRejection::Git(
+                            error,
+                        ));
+                    },
+                };
+                let entering =
+                    decision::entering_reservations(prepared.constraints(), &newly_reachable);
+                let (_, operations) = match decision::decide(
                     state.events(),
                     prepared.constraints(),
                     &entering,

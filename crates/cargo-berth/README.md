@@ -131,7 +131,7 @@ process to no session at all rather than falling back to the ambient
 `CARGO_BERTH_SESSION_ID`. That variable belongs to whichever session launched
 the hook process, so adopting it would let one session report on, and later
 attach itself to, another session's reservation. Having no session is an
-answer; borrowing one is a guess.
+answer; borrowing one invents a session identity this process was never given.
 
 A Claude Code hook can execute these commands, but those harness hooks are not
 installed by this crate. A general Git user instead gets the managed

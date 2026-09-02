@@ -19,8 +19,8 @@ use super::rows::SettledOrderingConstraint;
 use super::rows::UnresolvedOverlap;
 use super::rows::WaitingConstraint;
 use crate::ids::ReservationId;
+use crate::presentation;
 use crate::presentation::EnvelopePresentation;
-use crate::presentation::engine_message_block;
 use crate::reconcile::ReconciliationReport;
 use crate::reservation::ReservationLifecycleSnapshot;
 use crate::reservation::ReservationReplayError;
@@ -83,14 +83,14 @@ pub(crate) fn reservation_lifecycle_presentation(
     };
     serde_json::to_string_pretty(&reservation_lifecycle_report).map_or_else(
         |error| {
-            engine_message_block(
+            presentation::engine_message_block(
                 "cargo-berth could not render the reservation lifecycle report.",
                 &format!("RESERVATION LIFECYCLE SERIALIZATION FAILED: {error}"),
             )
             .into()
         },
         |detail| {
-            engine_message_block(
+            presentation::engine_message_block(
                 &format!("cargo-berth read reservation {reservation_id} lifecycle."),
                 &detail,
             )

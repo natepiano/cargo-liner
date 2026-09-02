@@ -3,6 +3,7 @@
 //! Replay reads an append-only journal, so every fault here describes a sequence that
 //! cannot represent valid reservation state rather than an operation that merely failed.
 
+use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -203,4 +204,4 @@ impl Display for ReservationReplayError {
     }
 }
 
-impl std::error::Error for ReservationReplayError {}
+impl Error for ReservationReplayError {}

@@ -21,6 +21,7 @@ use super::report::IncursionCommitOrigin;
 use super::report::ReservationDriftResult;
 use crate::edge::RepositoryTrunk;
 use crate::git;
+use crate::git::IncursionPathLogInvocation;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::IncursionPathSet;
@@ -240,7 +241,7 @@ fn attribution_batch(
         .collect::<Vec<_>>();
     let (commits, range_commits_by_anchor, origin_membership) = thread::scope(|scope| {
         let path_log_worker = scope.spawn(|| {
-            let path_log_invocation: git::IncursionPathLogInvocation =
+            let path_log_invocation: IncursionPathLogInvocation =
                 git::incursion_path_log(repository_root, &subjects.target, &subjects.paths);
             let path_log = git_output::completed_git_output(
                 path_log_invocation.output_availability,

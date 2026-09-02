@@ -20,6 +20,7 @@ use crate::alert::Alert;
 use crate::alert::RecoverabilityVerdict;
 use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
+use crate::board;
 use crate::board::BoardModel;
 use crate::board::LiveIncursionMembership;
 use crate::config::InitializationState;
@@ -62,19 +63,8 @@ use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
 use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::SkippedIntegrationHoldSet;
+use crate::presentation;
 use crate::presentation::EnvelopePresentation;
-use crate::presentation::actionable_board_notices_block;
-use crate::presentation::ambiguous_first_touch_block;
-use crate::presentation::automatic_widening_block;
-use crate::presentation::blocked_edit_refusal_block;
-use crate::presentation::coordination_identity_block;
-use crate::presentation::degraded_session_mapping_block;
-use crate::presentation::engine_message_block;
-use crate::presentation::lost_integration_evidence_block;
-use crate::presentation::orphaned_outstanding_block;
-use crate::presentation::outstanding_incursion_block;
-use crate::presentation::replay_failure_block;
-use crate::presentation::unverifiable_incursion_block;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::LifecycleTransitionError;
 use crate::reservation::ProtectedReservationTip;
@@ -218,7 +208,7 @@ impl From<ClosedValueSelectorTransformFailure> for Schema {
 ///
 /// The alternatives come from the scalar schema values, so a producer variant added to the
 /// selector enum becomes a schema branch without a separate output-contract inventory edit.
-pub(crate) fn closed_value_selects_object_shape(schema: &mut Schema) {
+pub(crate) fn closed_value_serializes_as_object(schema: &mut Schema) {
     *schema = match closed_value_selector_object_schema(schema) {
         Ok(transformed_schema) => transformed_schema,
         Err(failure) => failure.into(),
@@ -1415,7 +1405,7 @@ impl OutputEnvelope {
         reservation_id: ReservationId,
         reservation_lifecycle_snapshot: ReservationLifecycleSnapshot,
     ) -> Self {
-        let presentation = crate::board::reservation_lifecycle_presentation(
+        let presentation = board::reservation_lifecycle_presentation(
             reservation_id,
             &reservation_lifecycle_snapshot,
         );
@@ -2087,7 +2077,7 @@ impl OutputEnvelope {
             .collect();
         let message = blocked_message(&conflicts);
         let refusal_detail = blocked_claim_refusal_detail(&conflicts);
-        let presentation = blocked_edit_refusal_block(&refusal_detail).into();
+        let presentation = presentation::blocked_edit_refusal_block(&refusal_detail).into();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Claim,
@@ -2227,7 +2217,8 @@ impl OutputEnvelope {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let presentation =
-            ambiguous_first_touch_block(&message, &candidate_reservation_id_strings).into();
+            presentation::ambiguous_first_touch_block(&message, &candidate_reservation_id_strings)
+                .into();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: command_verb,
@@ -2256,7 +2247,7 @@ impl OutputEnvelope {
             .collect();
         let message = blocked_message(&conflicts);
         let refusal_detail = blocked_edit_refusal_detail(&scopes, &conflicts);
-        let presentation = blocked_edit_refusal_block(&refusal_detail).into();
+        let presentation = presentation::blocked_edit_refusal_block(&refusal_detail).into();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Check,
@@ -2591,7 +2582,7 @@ impl OutputEnvelope {
             },
             PostToolUseRendering::Feedback { summary, detail } => {
                 self.presentation
-                    .replace_with(engine_message_block(&summary, &detail));
+                    .replace_with(presentation::engine_message_block(&summary, &detail));
             },
             PostToolUseRendering::FeedbackDecidedByLiveIncursionState => {
                 self.presentation = match &self.payload.facts {
@@ -2690,7 +2681,7 @@ impl OutputEnvelope {
                         "cargo-berth stopped on invalid reservation history."
                     },
                 };
-                let block = replay_failure_block(
+                let block = presentation::replay_failure_block(
                     summary,
                     &failure.rendered_reason(),
                     &failure.rendered_subject(),
@@ -2702,7 +2693,7 @@ impl OutputEnvelope {
             },
             OutputFacts::CoordinationIdentity(rejection) => {
                 let recovery_actions = rejection.rendered_recovery_actions();
-                let block = coordination_identity_block(
+                let block = presentation::coordination_identity_block(
                     self.coordination_identity_summary(),
                     rejection.wire_kind(),
                     &recovery_actions,
@@ -2755,7 +2746,12 @@ impl OutputEnvelope {
             EnvelopePresentation::NothingToShow => PostToolUseRendering::NoFeedback,
             EnvelopePresentation::RenderedBlocks { blocks } => {
                 let stated_block = blocks.as_slice().first().map_or_else(
-                    || engine_message_block(UNSTATED_CONDITION_SUMMARY, &self.message),
+                    || {
+                        presentation::engine_message_block(
+                            UNSTATED_CONDITION_SUMMARY,
+                            &self.message,
+                        )
+                    },
                     Clone::clone,
                 );
                 PostToolUseRendering::Feedback {
@@ -2814,13 +2810,15 @@ impl OutputEnvelope {
                                 .iter()
                                 .map(ToString::to_string)
                                 .collect::<Vec<_>>();
-                            immediate_stop_messages.push(outstanding_incursion_block(
-                                &reservation_id.to_string(),
-                                &entered_paths,
-                                &foreign_reservation_ids,
-                                &incident_id.to_string(),
-                                &render_incursion_commits(commits),
-                            ));
+                            immediate_stop_messages.push(
+                                presentation::outstanding_incursion_block(
+                                    &reservation_id.to_string(),
+                                    &entered_paths,
+                                    &foreign_reservation_ids,
+                                    &incident_id.to_string(),
+                                    &render_incursion_commits(commits),
+                                ),
+                            );
                         },
                         LiveIncursionMembership::Recorded => {},
                         LiveIncursionMembership::Unverifiable => {
@@ -2834,8 +2832,11 @@ impl OutputEnvelope {
                             .map(|scope| format!("file:{}", scope.path))
                             .collect::<Vec<_>>();
                         notice_messages.push(
-                            automatic_widening_block(&reservation_id.to_string(), &added_scopes)
-                                .detail,
+                            presentation::automatic_widening_block(
+                                &reservation_id.to_string(),
+                                &added_scopes,
+                            )
+                            .detail,
                         );
                     },
                     DriftEffect::Collision {
@@ -2941,7 +2942,7 @@ impl OutputEnvelope {
                 .iter()
                 .any(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
         {
-            let block = lost_integration_evidence_block(&messages.join("\n"));
+            let block = presentation::lost_integration_evidence_block(&messages.join("\n"));
             return PostToolUseRendering::Feedback {
                 summary: block.summary,
                 detail:  block.detail,
@@ -2960,7 +2961,7 @@ impl OutputEnvelope {
 }
 
 fn unverifiable_live_incursion_rendering() -> PostToolUseRendering {
-    let block = unverifiable_incursion_block();
+    let block = presentation::unverifiable_incursion_block();
     PostToolUseRendering::Feedback {
         summary: block.summary,
         detail:  block.detail,
@@ -2991,7 +2992,7 @@ fn presentation_from_actionable_alerts(alerts: &[Alert]) -> EnvelopePresentation
                         ],
                     ),
                 };
-                orphaned_outstanding_block(
+                presentation::orphaned_outstanding_block(
                     &reservation_id,
                     &orphan.protected_tip().to_string(),
                     recoverability,
@@ -3002,7 +3003,7 @@ fn presentation_from_actionable_alerts(alerts: &[Alert]) -> EnvelopePresentation
         .collect::<Vec<_>>();
     match details.as_slice() {
         [] => EnvelopePresentation::nothing_to_show(),
-        [_, ..] => actionable_board_notices_block(&details).into(),
+        [_, ..] => presentation::actionable_board_notices_block(&details).into(),
     }
 }
 
@@ -3023,9 +3024,9 @@ fn drift_non_incursion_presentation(
         ([], []) => EnvelopePresentation::nothing_to_show(),
         (_, [_, ..]) => {
             widening_details.extend(lost_evidence_details);
-            lost_integration_evidence_block(&widening_details.join("\n")).into()
+            presentation::lost_integration_evidence_block(&widening_details.join("\n")).into()
         },
-        ([_, ..], []) => engine_message_block(
+        ([_, ..], []) => presentation::engine_message_block(
             "cargo-berth widened this worktree reservation footprint.",
             &widening_details.join("\n"),
         )
@@ -3049,7 +3050,11 @@ fn automatic_widening_details(report: &DriftReport) -> Vec<String> {
                         .map(|scope| format!("file:{}", scope.path))
                         .collect::<Vec<_>>();
                     Some(
-                        automatic_widening_block(&reservation_id.to_string(), &added_scopes).detail,
+                        presentation::automatic_widening_block(
+                            &reservation_id.to_string(),
+                            &added_scopes,
+                        )
+                        .detail,
                     )
                 },
                 DriftEffect::Incursion { .. } | DriftEffect::Collision { .. } => None,
@@ -3162,7 +3167,7 @@ fn claimed_presentation(
             "{claimed_detail}\n\nThe journal append and reservation `{reservation_id}` are durable, but the harness session mapping is unavailable: {diagnostic}. Name reservation `{reservation_id}` explicitly on subsequent commands."
         ),
     };
-    engine_message_block(&summary, &detail).into()
+    presentation::engine_message_block(&summary, &detail).into()
 }
 
 /// The occasion an engine response is produced on, for the text that names it.
@@ -3260,13 +3265,13 @@ fn pre_tool_use_check_presentation(condition: &HookFacingCondition<'_>) -> Envel
     match condition {
         HookFacingCondition::Unconfigured => EnvelopePresentation::nothing_to_show(),
         HookFacingCondition::LedgerUnreadable { message } => {
-            engine_message_block(LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE, message).into()
+            presentation::engine_message_block(LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE, message).into()
         },
         HookFacingCondition::Contention { diagnostic } => {
-            engine_message_block(CHECK_CONTENTION_SUMMARY, diagnostic).into()
+            presentation::engine_message_block(CHECK_CONTENTION_SUMMARY, diagnostic).into()
         },
         HookFacingCondition::InvalidInput { diagnostic } => {
-            engine_message_block(CHECK_INVALID_INPUT_SUMMARY, diagnostic).into()
+            presentation::engine_message_block(CHECK_INVALID_INPUT_SUMMARY, diagnostic).into()
         },
     }
 }
@@ -3284,12 +3289,12 @@ fn board_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentati
     let occasion = EngineAnswerOccasion::current();
     match condition {
         HookFacingCondition::Unconfigured => EnvelopePresentation::nothing_to_show(),
-        HookFacingCondition::LedgerUnreadable { message } => engine_message_block(
+        HookFacingCondition::LedgerUnreadable { message } => presentation::engine_message_block(
             &occasion.summary_for(LEDGER_UNREADABLE_CONDITION),
             &format!("{message} {BOARD_LEDGER_RECOVERY}"),
         )
         .into(),
-        HookFacingCondition::Contention { diagnostic } => engine_message_block(
+        HookFacingCondition::Contention { diagnostic } => presentation::engine_message_block(
             &occasion.summary_for(LEDGER_LOCK_DEADLINE_CONDITION),
             &format!(
                 "{diagnostic} {} {BOARD_CONTENTION_RECOVERY}",
@@ -3311,10 +3316,12 @@ fn drift_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentati
     let occasion = EngineAnswerOccasion::current();
     match condition {
         HookFacingCondition::Unconfigured => EnvelopePresentation::nothing_to_show(),
-        HookFacingCondition::LedgerUnreadable { message } => {
-            engine_message_block(&occasion.summary_for(LEDGER_UNREADABLE_CONDITION), message).into()
-        },
-        HookFacingCondition::Contention { diagnostic } => engine_message_block(
+        HookFacingCondition::LedgerUnreadable { message } => presentation::engine_message_block(
+            &occasion.summary_for(LEDGER_UNREADABLE_CONDITION),
+            message,
+        )
+        .into(),
+        HookFacingCondition::Contention { diagnostic } => presentation::engine_message_block(
             &occasion.summary_for(LEDGER_LOCK_DEADLINE_CONDITION),
             &format!(
                 "{diagnostic} {}",
@@ -3322,7 +3329,7 @@ fn drift_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentati
             ),
         )
         .into(),
-        HookFacingCondition::InvalidInput { diagnostic } => engine_message_block(
+        HookFacingCondition::InvalidInput { diagnostic } => presentation::engine_message_block(
             DRIFT_SELECTION_SUMMARY,
             &format!("{diagnostic} {DRIFT_SELECTION_RECOVERY}"),
         )
@@ -3348,7 +3355,7 @@ fn spent_retry_budget_sentence(occasion: EngineAnswerOccasion, unretried: &str) 
 }
 
 fn engine_result_presentation(summary: &str, detail: &str) -> EnvelopePresentation {
-    engine_message_block(summary, detail).into()
+    presentation::engine_message_block(summary, detail).into()
 }
 
 fn blocked_claim_refusal_detail(conflicts: &[ReservationConflict]) -> String {
@@ -3383,7 +3390,7 @@ fn claim_authorization_presentation(escalation: &OverlapEscalationPayload) -> En
         &escalation.conflicts,
         FirstTouchHolderRecoveryContext::Proposal,
     );
-    engine_message_block(
+    presentation::engine_message_block(
         "cargo-berth prepared an overlap proposal that awaits explicit approval.",
         &sections.join("\n\n"),
     )
@@ -3600,7 +3607,7 @@ fn session_mapping_publication_presentation(
             ..
         }
         | SessionIdentityMappingPublication::Unavailable { .. } => {
-            degraded_session_mapping_block(message).into()
+            presentation::degraded_session_mapping_block(message).into()
         },
     }
 }

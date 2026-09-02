@@ -8,20 +8,19 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use crate::git::command::GitCommandOutputAvailability;
-use crate::git::command::git_output_dynamic;
-use crate::git::command::git_output_dynamic_with_input;
-use crate::git::constants::GIT_DENSE_COMBINED_ARG;
-use crate::git::constants::GIT_DIFF_TREE_COMMAND;
-use crate::git::constants::GIT_LITERAL_TOP_PATHSPEC_PREFIX;
-use crate::git::constants::GIT_LOG_COMMAND;
-use crate::git::constants::GIT_NAME_ONLY_ARG;
-use crate::git::constants::GIT_NAME_STATUS_ARG;
-use crate::git::constants::GIT_NO_RENAMES_ARG;
-use crate::git::constants::GIT_NUL_TERMINATED_ARG;
-use crate::git::constants::GIT_PATHSPEC_SEPARATOR;
-use crate::git::constants::GIT_RECURSIVE_ARG;
-use crate::git::constants::GIT_STDIN_ARG;
+use super::command;
+use super::command::GitCommandOutputAvailability;
+use super::constants::GIT_DENSE_COMBINED_ARG;
+use super::constants::GIT_DIFF_TREE_COMMAND;
+use super::constants::GIT_LITERAL_TOP_PATHSPEC_PREFIX;
+use super::constants::GIT_LOG_COMMAND;
+use super::constants::GIT_NAME_ONLY_ARG;
+use super::constants::GIT_NAME_STATUS_ARG;
+use super::constants::GIT_NO_RENAMES_ARG;
+use super::constants::GIT_NUL_TERMINATED_ARG;
+use super::constants::GIT_PATHSPEC_SEPARATOR;
+use super::constants::GIT_RECURSIVE_ARG;
+use super::constants::GIT_STDIN_ARG;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 
@@ -48,7 +47,7 @@ pub(crate) fn phase_committed_path_diffs(
         GIT_NUL_TERMINATED_ARG.to_owned(),
         GIT_NO_RENAMES_ARG.to_owned(),
     ];
-    git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into()
+    command::git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into()
 }
 
 /// Read every selected path's commits for later per-anchor membership filtering.
@@ -74,7 +73,7 @@ pub(crate) fn incursion_path_log(
             .iter()
             .map(|path| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{path}")),
     );
-    let output_availability = git_output_dynamic(repository_root, &arguments).into();
+    let output_availability = command::git_output_dynamic(repository_root, &arguments).into();
     IncursionPathLogInvocation {
         arguments,
         output_availability,

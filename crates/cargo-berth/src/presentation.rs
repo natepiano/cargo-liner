@@ -341,6 +341,7 @@ pub(crate) fn orphaned_outstanding_block(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Error;
     use serde_json::Value;
 
     use super::EmptyRenderedBlocks;
@@ -368,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_nothing_keeps_the_frozen_wire_object() -> Result<(), serde_json::Error> {
+    fn explicit_nothing_keeps_the_frozen_wire_object() -> Result<(), Error> {
         const NOTHING_TO_SHOW_JSON: &str = r#"{"kind":"rendered_blocks","blocks":[]}"#;
 
         let presentation = EnvelopePresentation::NothingToShow;

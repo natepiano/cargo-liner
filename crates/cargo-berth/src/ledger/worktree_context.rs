@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::fs::OpenOptions;
+use std::io::Error;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
@@ -254,7 +255,7 @@ impl WorktreeContext {
         let temporary_path = self.administrative_directory.0.join(format!(
             "{COORDINATION_RUN_MARKER_FILE_NAME}.{coordination_run_id}.{publication_attempt_id}.tmp"
         ));
-        let publication = (|| -> Result<(), std::io::Error> {
+        let publication = (|| -> Result<(), Error> {
             let mut temporary_file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -394,7 +395,7 @@ mod tests {
     use super::WorktreeContext;
     use crate::ids::CoordinationRunId;
     use crate::ids::WorktreeKind;
-    use crate::ledger::test_support::scratch_repository;
+    use crate::ledger::test_support;
 
     #[test]
     fn git_file_without_common_directory_is_a_main_worktree() {
@@ -428,7 +429,7 @@ mod tests {
     #[test]
     fn detached_marker_retirement_preserves_a_concurrent_publication()
     -> Result<(), Box<dyn std::error::Error>> {
-        let repository = scratch_repository();
+        let repository = test_support::scratch_repository();
         let worktree_context =
             WorktreeContext::discover(repository.path()).expect("worktree should be discovered");
         let released_run_id = CoordinationRunId::new();

@@ -8,19 +8,18 @@ use std::fmt::Write;
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::git::command::git_output;
-use crate::git::command::git_output_dynamic_with_input;
-use crate::git::constants::GIT_AMBIGUOUS_OBJECT_SUFFIX;
-use crate::git::constants::GIT_BATCH_CHECK_ARG;
-use crate::git::constants::GIT_BATCH_CHECK_OBJECT_FORMAT_ARG;
-use crate::git::constants::GIT_CAT_FILE_COMMAND;
-use crate::git::constants::GIT_COMMIT_OBJECT_TYPE;
-use crate::git::constants::GIT_COMMIT_PEEL_SUFFIX;
-use crate::git::constants::GIT_EXISTS_ARG;
-use crate::git::constants::GIT_MISSING_OBJECT_SUFFIX;
-use crate::git::constants::GIT_REV_PARSE_COMMAND;
-use crate::git::error::GitError;
-use crate::git::error::completed_git_command;
+use super::command;
+use super::constants::GIT_AMBIGUOUS_OBJECT_SUFFIX;
+use super::constants::GIT_BATCH_CHECK_ARG;
+use super::constants::GIT_BATCH_CHECK_OBJECT_FORMAT_ARG;
+use super::constants::GIT_CAT_FILE_COMMAND;
+use super::constants::GIT_COMMIT_OBJECT_TYPE;
+use super::constants::GIT_COMMIT_PEEL_SUFFIX;
+use super::constants::GIT_EXISTS_ARG;
+use super::constants::GIT_MISSING_OBJECT_SUFFIX;
+use super::constants::GIT_REV_PARSE_COMMAND;
+use super::error;
+use super::error::GitError;
 use crate::ids::GitObjectId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,8 +37,8 @@ pub(super) enum CommitAvailability {
 }
 
 pub(super) fn object_id(repository_root: &Path, revision: &str) -> Result<GitObjectId, GitError> {
-    let output = completed_git_command(
-        git_output(repository_root, [GIT_REV_PARSE_COMMAND, revision]).into(),
+    let output = error::completed_git_command(
+        command::git_output(repository_root, [GIT_REV_PARSE_COMMAND, revision]).into(),
     )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
@@ -65,8 +64,9 @@ pub(super) fn commit_object_resolutions(
         GIT_CAT_FILE_COMMAND.to_owned(),
         GIT_BATCH_CHECK_OBJECT_FORMAT_ARG.to_owned(),
     ];
-    let output = completed_git_command(
-        git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into(),
+    let output = error::completed_git_command(
+        command::git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())
+            .into(),
     )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
@@ -125,8 +125,9 @@ pub(super) fn commit_availability(
         GIT_CAT_FILE_COMMAND.to_owned(),
         GIT_BATCH_CHECK_ARG.to_owned(),
     ];
-    let output = completed_git_command(
-        git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into(),
+    let output = error::completed_git_command(
+        command::git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes())
+            .into(),
     )?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
@@ -160,7 +161,7 @@ pub(crate) fn commit_is_available(
     object_id: &GitObjectId,
 ) -> Result<bool, GitError> {
     let revision = format!("{object_id}{GIT_COMMIT_PEEL_SUFFIX}");
-    let output = git_output(
+    let output = command::git_output(
         repository_root,
         [GIT_CAT_FILE_COMMAND, GIT_EXISTS_ARG, &revision],
     )?;

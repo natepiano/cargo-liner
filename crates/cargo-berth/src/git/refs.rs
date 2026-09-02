@@ -10,33 +10,29 @@ use std::fmt::Formatter;
 use std::fmt::Write;
 use std::path::Path;
 
-use crate::git::command::GitHookExecutionPolicy;
-use crate::git::command::git_output;
-use crate::git::command::git_output_dynamic;
-use crate::git::command::git_output_dynamic_with_hook_execution_policy;
-use crate::git::command::git_output_dynamic_with_hook_execution_policy_and_input;
-use crate::git::constants::GIT_FOR_EACH_REF_COMMAND;
-use crate::git::constants::GIT_FULL_REF_FORMAT_ARG;
-use crate::git::constants::GIT_HEAD_REVISION;
-use crate::git::constants::GIT_LOCAL_BRANCH_REF_PREFIX;
-use crate::git::constants::GIT_MAX_COUNT_ONE_ARG;
-use crate::git::constants::GIT_POINTS_AT_ARG_PREFIX;
-use crate::git::constants::GIT_REFLOG_COMMAND;
-use crate::git::constants::GIT_REFLOG_SHOW_ARG;
-use crate::git::constants::GIT_REFLOG_SUBJECT_FORMAT_ARG;
-use crate::git::constants::GIT_REV_PARSE_COMMAND;
-use crate::git::constants::GIT_STDIN_ARG;
-use crate::git::constants::GIT_SYMBOLIC_REF_COMMAND;
-use crate::git::constants::GIT_UPDATE_REF_COMMAND;
-use crate::git::constants::RESERVATION_RETENTION_REF_PREFIX;
-use crate::git::error::GitError;
-use crate::git::error::completed_git_command;
-use crate::git::object::CommitAvailability;
-use crate::git::object::commit_availability;
-use crate::git::object::object_id;
-use crate::git::reachability::Reachability;
-use crate::git::reachability::ResolvedBatchCommitCandidates;
-use crate::git::reachability::reachability;
+use super::command;
+use super::command::GitHookExecutionPolicy;
+use super::constants::GIT_FOR_EACH_REF_COMMAND;
+use super::constants::GIT_FULL_REF_FORMAT_ARG;
+use super::constants::GIT_HEAD_REVISION;
+use super::constants::GIT_LOCAL_BRANCH_REF_PREFIX;
+use super::constants::GIT_MAX_COUNT_ONE_ARG;
+use super::constants::GIT_POINTS_AT_ARG_PREFIX;
+use super::constants::GIT_REFLOG_COMMAND;
+use super::constants::GIT_REFLOG_SHOW_ARG;
+use super::constants::GIT_REFLOG_SUBJECT_FORMAT_ARG;
+use super::constants::GIT_REV_PARSE_COMMAND;
+use super::constants::GIT_STDIN_ARG;
+use super::constants::GIT_SYMBOLIC_REF_COMMAND;
+use super::constants::GIT_UPDATE_REF_COMMAND;
+use super::constants::RESERVATION_RETENTION_REF_PREFIX;
+use super::error;
+use super::error::GitError;
+use super::object;
+use super::object::CommitAvailability;
+use super::reachability;
+use super::reachability::Reachability;
+use super::reachability::ResolvedBatchCommitCandidates;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ledger::FullRefName;
@@ -49,7 +45,7 @@ const GIT_SHOW_REF_EXISTS_ARG: &str = "--exists";
 
 /// Read the full object id currently named by `HEAD`.
 pub(crate) fn head_object_id(repository_root: &Path) -> Result<GitObjectId, GitError> {
-    object_id(repository_root, GIT_HEAD_REVISION)
+    object::object_id(repository_root, GIT_HEAD_REVISION)
 }
 
 /// Read the full object id currently named by a local branch.
@@ -57,7 +53,7 @@ pub(crate) fn branch_object_id(
     repository_root: &Path,
     branch: &str,
 ) -> Result<GitObjectId, GitError> {
-    object_id(
+    object::object_id(
         repository_root,
         &format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"),
     )
@@ -65,8 +61,8 @@ pub(crate) fn branch_object_id(
 
 /// Ask Git for the branch reference named by `HEAD`.
 pub(crate) fn symbolic_head_reference(repository_root: &Path) -> Result<FullRefName, GitError> {
-    let output = completed_git_command(
-        git_output(
+    let output = error::completed_git_command(
+        command::git_output(
             repository_root,
             [GIT_SYMBOLIC_REF_COMMAND, GIT_HEAD_REVISION],
         )
@@ -95,7 +91,7 @@ pub(crate) enum HeadAttachment {
 
 /// Ask Git whether `HEAD` is attached to a branch or detached.
 pub(crate) fn head_attachment(repository_root: &Path) -> Result<HeadAttachment, GitError> {
-    let output = git_output(
+    let output = command::git_output(
         repository_root,
         [GIT_SYMBOLIC_REF_COMMAND, GIT_QUIET_ARG, GIT_HEAD_REVISION],
     )?;
@@ -135,7 +131,7 @@ pub(crate) fn reference_lookup(
         .map_err(|_| GitError::InvalidReferenceName {
             reference: reference.to_owned(),
         })?;
-    let existence_output = git_output(
+    let existence_output = command::git_output(
         repository_root,
         [GIT_SHOW_REF_COMMAND, GIT_SHOW_REF_EXISTS_ARG, reference],
     )?;
@@ -151,7 +147,7 @@ pub(crate) fn reference_lookup(
         });
     }
 
-    let output = git_output(repository_root, [GIT_REV_PARSE_COMMAND, reference])?;
+    let output = command::git_output(repository_root, [GIT_REV_PARSE_COMMAND, reference])?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_REV_PARSE_COMMAND,
@@ -173,7 +169,7 @@ pub(crate) fn update_local_branch(
     proposed: &GitObjectId,
     expected_previous: &GitObjectId,
 ) -> Result<(), GitError> {
-    match reachability(repository_root, expected_previous, proposed)? {
+    match reachability::reachability(repository_root, expected_previous, proposed)? {
         Reachability::Ancestor => {},
         Reachability::NotAncestor => {
             return Err(GitError::NonFastForwardBranchUpdate {
@@ -191,7 +187,7 @@ pub(crate) fn update_local_branch(
     let reference = format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}");
     let proposed = proposed.to_string();
     let expected_previous = expected_previous.to_string();
-    let output = git_output(
+    let output = command::git_output(
         repository_root,
         [
             GIT_UPDATE_REF_COMMAND,
@@ -241,7 +237,7 @@ pub(crate) fn local_branch_rename_target_resolution(
         format!("{GIT_POINTS_AT_ARG_PREFIX}{tip}"),
         GIT_LOCAL_BRANCH_REF_PREFIX.to_owned(),
     ];
-    let output = git_output_dynamic(repository_root, &arguments)?;
+    let output = command::git_output_dynamic(repository_root, &arguments)?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_FOR_EACH_REF_COMMAND,
@@ -289,7 +285,7 @@ fn local_branch_rename_proof(
     candidate_reference: &FullRefName,
 ) -> Result<LocalBranchRenameProof, GitError> {
     let candidate_reference = candidate_reference.to_string();
-    let output = git_output(
+    let output = command::git_output(
         repository_root,
         [
             GIT_REFLOG_COMMAND,
@@ -361,7 +357,7 @@ pub(crate) fn write_reservation_retention_ref(
         retention_ref,
         protected_tip,
     ];
-    let output = git_output_dynamic_with_hook_execution_policy(
+    let output = command::git_output_dynamic_with_hook_execution_policy(
         repository_root,
         &arguments,
         GitHookExecutionPolicy::SuppressedForRetentionRef,
@@ -392,7 +388,7 @@ pub(crate) fn update_reservation_retention_refs(
     let availability = if protected_tips.is_empty() {
         Vec::new()
     } else {
-        commit_availability(repository_root, &protected_tips)?
+        object::commit_availability(repository_root, &protected_tips)?
     };
     let input = repairs.iter().zip(availability).fold(
         String::new(),
@@ -458,7 +454,7 @@ pub(crate) fn update_reservation_retention_refs_from_resolved_batch(
 /// Apply one transaction containing only retention-ref writes and deletions.
 fn apply_transaction(repository_root: &Path, input: &str) -> Result<(), GitError> {
     let arguments = [GIT_UPDATE_REF_COMMAND.to_owned(), GIT_STDIN_ARG.to_owned()];
-    let output = git_output_dynamic_with_hook_execution_policy_and_input(
+    let output = command::git_output_dynamic_with_hook_execution_policy_and_input(
         repository_root,
         &arguments,
         GitHookExecutionPolicy::SuppressedForRetentionRef,

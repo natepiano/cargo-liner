@@ -17,9 +17,7 @@ use super::error::CorrectableTransactionInput;
 use super::error::LedgerCommittedActionError;
 use super::error::LedgerError;
 use super::error::LedgerTransactionError;
-use super::identity::read_or_create_repo_instance_id;
-use super::identity::read_repo_instance_id;
-use super::identity::validate_journal_repository;
+use super::identity;
 use super::journal::Journal;
 use super::journal::JournalActor;
 use super::journal::JournalAppendError;
@@ -27,9 +25,9 @@ use super::journal::JournalEvent;
 use super::journal::JournalOperation;
 use super::journal::JournalReplay;
 use super::lock::MutationLock;
+use super::projection;
 use super::projection::Projection;
 use super::projection::ProjectionSynchronization;
-use super::projection::read_validated;
 use super::worktree_context::WorktreeContext;
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
@@ -209,7 +207,7 @@ impl Ledger {
 
     /// Read the clone identity that owns this ledger.
     pub(crate) fn repository_identity(&self) -> Result<RepoInstanceId, LedgerError> {
-        read_repo_instance_id(&self.paths.repo_instance_id)
+        identity::read_repo_instance_id(&self.paths.repo_instance_id)
     }
 
     /// Remove only the harness-session mapping selected by this process.
@@ -247,10 +245,10 @@ impl Ledger {
     /// Read validated journal truth without holding the mutation lock.
     fn read_validated_events(&self) -> Result<Vec<JournalEvent>, LedgerError> {
         self.require_existing()?;
-        let repo_instance_id = read_repo_instance_id(&self.paths.repo_instance_id)?;
+        let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
         let replay = Journal::replay_read_only(&self.paths.journal)?;
-        validate_journal_repository(repo_instance_id, &replay)?;
-        read_validated(&self.paths.projection, repo_instance_id, &replay)?;
+        identity::validate_journal_repository(repo_instance_id, &replay)?;
+        projection::read_validated(&self.paths.projection, repo_instance_id, &replay)?;
         Ok(replay.events)
     }
 
@@ -510,9 +508,9 @@ impl Ledger {
         let ledger = Self::locate(repository_root)?;
         ledger.require_existing()?;
         let _lock = MutationLock::acquire(&ledger.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
-        let repo_instance_id = read_repo_instance_id(&ledger.paths.repo_instance_id)?;
+        let repo_instance_id = identity::read_repo_instance_id(&ledger.paths.repo_instance_id)?;
         let replay = Journal::replay_read_only(&ledger.paths.journal)?;
-        validate_journal_repository(repo_instance_id, &replay)?;
+        identity::validate_journal_repository(repo_instance_id, &replay)?;
         match fs::remove_file(&ledger.paths.projection) {
             Ok(()) => {},
             Err(error) if error.kind() == ErrorKind::NotFound => {},
@@ -544,7 +542,7 @@ impl Ledger {
             .map_err(|_| LedgerError::JournalSizeUnrepresentable)?;
         let (journal, _) = Journal::open_or_create(&ledger.paths.journal)?;
         journal.truncate()?;
-        let repo_instance_id = read_repo_instance_id(&ledger.paths.repo_instance_id)?;
+        let repo_instance_id = identity::read_repo_instance_id(&ledger.paths.repo_instance_id)?;
         let replay = Journal::replay_read_only(&ledger.paths.journal)?;
         Projection::from_replay(repo_instance_id, &replay)
             .publish(&ledger.paths.directory, &ledger.paths.projection)?;
@@ -593,7 +591,7 @@ impl Ledger {
     ) -> Result<LedgerTransaction, LedgerError> {
         self.require_existing()?;
         let lock = MutationLock::acquire(&self.paths.lock, contention_tolerance)?;
-        let repo_instance_id = read_repo_instance_id(&self.paths.repo_instance_id)?;
+        let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
         let journal = Journal::open_existing(&self.paths.journal)?;
         self.begin_locked_transaction(
             lock,
@@ -605,7 +603,8 @@ impl Ledger {
 
     fn begin_initialization(&self) -> Result<LedgerTransaction, LedgerError> {
         let lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
-        let repo_instance_id = read_or_create_repo_instance_id(&self.paths.repo_instance_id)?;
+        let repo_instance_id =
+            identity::read_or_create_repo_instance_id(&self.paths.repo_instance_id)?;
         let (journal, journal_initialization) = Journal::open_or_create(&self.paths.journal)?;
         self.begin_locked_transaction(lock, journal, journal_initialization, repo_instance_id)
     }
@@ -618,9 +617,9 @@ impl Ledger {
         repo_instance_id: RepoInstanceId,
     ) -> Result<LedgerTransaction, LedgerError> {
         let replay = journal.replay_repairing_tail()?;
-        validate_journal_repository(repo_instance_id, &replay)?;
+        identity::validate_journal_repository(repo_instance_id, &replay)?;
         let projection_synchronization =
-            read_validated(&self.paths.projection, repo_instance_id, &replay)?;
+            projection::read_validated(&self.paths.projection, repo_instance_id, &replay)?;
         Ok(LedgerTransaction {
             _lock: lock,
             journal,
@@ -714,7 +713,7 @@ impl LedgerTransaction {
             .replay_repairing_tail()
             .map_err(LedgerError::from)
             .map_err(LedgerTransactionError::LedgerUnreadable)?;
-        validate_journal_repository(self.repo_instance_id, &self.replay)
+        identity::validate_journal_repository(self.repo_instance_id, &self.replay)
             .map_err(LedgerTransactionError::LedgerUnreadable)
     }
 
@@ -817,11 +816,11 @@ mod tests {
     use crate::ledger::BypassedAction;
     use crate::ledger::ForcedIntegrationReason;
     use crate::ledger::projection::ProjectionError;
-    use crate::ledger::test_support::scratch_repository;
+    use crate::ledger::test_support;
 
     #[test]
     fn concurrent_mutations_append_without_losing_either_record() {
-        let repository = scratch_repository();
+        let repository = test_support::scratch_repository();
         Ledger::initialize(repository.path()).expect("ledger should initialize");
         let ledger = Arc::new(Ledger::open(repository.path()).expect("ledger should open"));
         let first_writer = append_renewal(Arc::clone(&ledger));
@@ -854,7 +853,7 @@ mod tests {
 
     #[test]
     fn validation_controls_whether_exactly_one_record_is_appended() {
-        let repository = scratch_repository();
+        let repository = test_support::scratch_repository();
         Ledger::initialize(repository.path()).expect("ledger should initialize");
         let ledger = Ledger::open(repository.path()).expect("ledger should open");
         let journal_before = fs::read(&ledger.paths.journal).expect("journal should read");
@@ -912,7 +911,7 @@ mod tests {
 
     #[test]
     fn committed_actions_run_after_append_while_the_mutation_lock_is_held() {
-        let repository = scratch_repository();
+        let repository = test_support::scratch_repository();
         Ledger::initialize(repository.path()).expect("ledger should initialize");
         let ledger = Ledger::open(repository.path()).expect("ledger should open");
         let competing_lock = fs::File::options()
@@ -955,7 +954,7 @@ mod tests {
 
     #[test]
     fn crate_visible_transaction_types_support_a_validator() {
-        let repository = scratch_repository();
+        let repository = test_support::scratch_repository();
         Ledger::initialize(repository.path()).expect("ledger should initialize");
         let ledger = Ledger::open(repository.path()).expect("ledger should open");
 
@@ -977,7 +976,7 @@ mod tests {
 
     #[test]
     fn opening_requires_an_initialized_ledger_and_accepts_nested_callers() {
-        let repository = scratch_repository();
+        let repository = test_support::scratch_repository();
         let ledger_directory = repository.path().join(".git").join("cargo-berth");
 
         assert!(matches!(
@@ -994,7 +993,7 @@ mod tests {
 
     #[test]
     fn oversized_records_are_correctable_input_not_unreadable_state() {
-        let repository = scratch_repository();
+        let repository = test_support::scratch_repository();
         Ledger::initialize(repository.path()).expect("ledger should initialize");
         let ledger = Ledger::open(repository.path()).expect("ledger should open");
 
@@ -1028,7 +1027,7 @@ mod tests {
 
     #[test]
     fn rejected_transaction_rebuilds_a_stale_projection() {
-        let repository = scratch_repository();
+        let repository = test_support::scratch_repository();
         Ledger::initialize(repository.path()).expect("ledger should initialize");
         let ledger = Ledger::open(repository.path()).expect("ledger should open");
         let mut unpublished_transaction = ledger
@@ -1073,7 +1072,7 @@ mod tests {
     #[test]
     fn projection_reads_validate_both_generation_and_journal_byte_offset() {
         for field in ["generation", "journal_end_offset"] {
-            let repository = scratch_repository();
+            let repository = test_support::scratch_repository();
             Ledger::initialize(repository.path()).expect("ledger should initialize");
             let ledger = Ledger::open(repository.path()).expect("ledger should open");
             let mut projection: Value = serde_json::from_slice(
