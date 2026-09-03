@@ -25,6 +25,33 @@ pub(crate) const ATTRACT_FADE_STEP: u8 = 3;
 /// grid rather than trading it back and forth with the animation. The
 /// screen the reader asks for outright waits out none of it.
 pub(crate) const ATTRACT_RETURN_QUIET: Duration = Duration::from_secs(3);
+/// How long the attract screen may want a desktop capture and have none
+/// before it says so.
+///
+/// A display not captured recently answers in about three seconds, against roughly two tenths
+/// when warm, and the first `SCShareableContent` call in a process costs seconds of its own. A cold
+/// start can spend the monitor's whole five-second attempt deadline before its retry succeeds. Ten
+/// seconds covers one stalled first attempt and the retry that follows it, so a gap shorter than
+/// this is the ordinary working of desktop capture and says nothing. A backdrop that never arrives
+/// is still reported promptly enough for an ambient screen.
+pub(crate) const ATTRACT_BACKDROP_GRACE: Duration = Duration::from_secs(10);
+/// What the screen says once unusable workers consume every automatic replacement.
+pub(crate) const ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE: &str =
+    "attract: desktop capture recovery stopped -- worker replacement limit reached";
+/// What the screen says after a stalled capture worker is abandoned and replaced.
+pub(crate) const ATTRACT_BACKDROP_STALLED_NOTICE: &str =
+    "attract: desktop capture stalled -- retrying with a replacement capture worker";
+/// What the screen says when desktop capture is unavailable for a reason
+/// the user cannot grant their way out of. The frame log is off unless
+/// its variable is set, so the line names the variable rather than
+/// promising a recording an ordinary run never makes.
+pub(crate) const ATTRACT_BACKDROP_UNAVAILABLE_NOTICE: &str =
+    "attract: desktop capture unavailable -- set CARGO_TILE_FRAME_LOG to record why";
+/// What the screen says while it has no desktop to draw in the colours
+/// of because Screen Recording access is not granted. The permission
+/// belongs to the terminal the app is drawn in rather than to the app
+/// itself.
+pub(crate) const ATTRACT_NO_BACKDROP_NOTICE: &str = "attract: no desktop capture -- allow Screen Recording for this terminal in System Settings \u{203a} Privacy & Security";
 /// TOML table the moving band's keys are read from and written back to.
 /// Stable -- `keymap.toml` is hand-edited.
 pub(crate) const ATTRACT_MOVING_BAND_SCOPE: &str = "attract_moving_band";
@@ -89,6 +116,14 @@ pub(crate) const CONFIG_FILENAME: &str = "config.toml";
 /// default. Defined in [`crate::theme`], not in `tui_pane`: theme
 /// content belongs to the app.
 pub(crate) const DEFAULT_DARK_THEME: &str = "Default Dark";
+/// The `commands.excluded` default: subcommands the scan drops before
+/// anything is built out of it, so they reach neither the summary nor
+/// the grid. The coordination sibling is the case it exists for -- it
+/// is fired from an editor hook several times a second, finishes inside
+/// one poll interval, and compiles nothing, so every invocation opens a
+/// cell with no rows in it and closes again before the opening
+/// animation has finished.
+pub(crate) const DEFAULT_EXCLUDED: [&str; 1] = [COORDINATION_SUBCOMMAND_NAME];
 /// Id of the built-in high-contrast dark variant.
 pub(crate) const DEFAULT_HC_DARK_THEME: &str = "High Contrast Dark";
 /// Id of the built-in high-contrast light variant.
@@ -103,6 +138,48 @@ pub(crate) const DEFAULT_HIDDEN_WHEN_IDLE: [&str; 1] = [SIBLING_SUBCOMMAND_NAME]
 /// Id of the built-in light variant, and the `appearance.light_theme`
 /// default.
 pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
+/// TOML key for a favorite's pixel block width.
+pub(crate) const FAVORITE_BLOCK_COLUMNS_KEY: &str = "block_columns";
+/// TOML key for a favorite's travel direction.
+pub(crate) const FAVORITE_DIRECTION_KEY: &str = "direction";
+/// TOML key for a favorite's text drift behavior.
+pub(crate) const FAVORITE_DRIFT_KEY: &str = "drift";
+/// TOML key for a favorite's cell fill behavior.
+pub(crate) const FAVORITE_FILL_KEY: &str = "fill";
+/// TOML key for a favorite's band fraying behavior.
+pub(crate) const FAVORITE_FRAYING_KEY: &str = "fraying";
+/// TOML key for a favorite's stable UUID.
+pub(crate) const FAVORITE_ID_KEY: &str = "id";
+/// Diagnostic spelling used when a favorite omits a required key.
+pub(crate) const FAVORITE_MISSING_VALUE: &str = "<missing>";
+/// TOML key for a favorite's attract mode.
+pub(crate) const FAVORITE_MODE_KEY: &str = "mode";
+/// TOML key for a favorite's pixel resolution behavior.
+pub(crate) const FAVORITE_RESOLVE_KEY: &str = "resolve";
+/// TOML key for a favorite's save timestamp.
+pub(crate) const FAVORITE_SAVED_KEY: &str = "saved";
+/// TOML key for a favorite's travel speed.
+pub(crate) const FAVORITE_SPEED_KEY: &str = "speed";
+/// TOML key for a favorite's text speed spread.
+pub(crate) const FAVORITE_SPREAD_KEY: &str = "spread";
+/// TOML key for a favorite's band-tail speed.
+pub(crate) const FAVORITE_TAIL_SPEED_KEY: &str = "tail_speed";
+/// TOML key for a favorite's pixel-wave width.
+pub(crate) const FAVORITE_WAVE_PERCENT_KEY: &str = "wave_percent";
+/// TOML key for a favorite's band width.
+pub(crate) const FAVORITE_WIDTH_KEY: &str = "width";
+/// Top-level array of favorite tables.
+pub(crate) const FAVORITES_ARRAY_KEY: &str = "favorite";
+/// Attract-screen favorites stored beside the app configuration.
+pub(crate) const FAVORITES_FILENAME: &str = "favorites.toml";
+/// Number of brief retries while another process owns the favorites lock.
+pub(crate) const FAVORITES_LOCK_RETRY_ATTEMPTS: usize = 10;
+/// Delay between attempts to acquire the favorites lock.
+pub(crate) const FAVORITES_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
+/// Suffix appended to the favorites path for its sibling lock file.
+pub(crate) const FAVORITES_LOCK_SUFFIX: &str = ".lock";
+/// Suffix appended to the favorites path for its atomic-write file.
+pub(crate) const FAVORITES_TEMP_SUFFIX: &str = ".tmp";
 /// Keymap overrides loaded by [`tui_pane::KeymapBuilder::load_toml`].
 pub(crate) const KEYMAP_FILENAME: &str = "keymap.toml";
 /// Per-user theme directory scanned by
@@ -140,6 +217,15 @@ pub(crate) const SETTINGS_POPUP_WIDTH: u16 = 64;
 /// restart. Distinct from [`APP_NAME`], which is padded for the status
 /// line.
 pub(crate) const BINARY_NAME: &str = "cargo-tile";
+/// The coordination sibling in this workspace, reached as `cargo
+/// berth`. Unlike [`SIBLING_SUBCOMMAND_NAME`] it does not run all day:
+/// it is fired from a hook, does its work in well under one
+/// [`PROCESS_POLL_MILLIS`] and exits. Withholding its cell until it has
+/// work under it would not help, because it never has any -- what it
+/// needs is to be left out of the scan altogether, which is what
+/// [`DEFAULT_EXCLUDED`] names it for. The capture shim skips it for the
+/// matching reason: a run that short has no build to mirror.
+pub(crate) const COORDINATION_SUBCOMMAND_NAME: &str = "berth";
 /// The word cargo knows this tool by, which is the binary's name with
 /// cargo's own prefix taken off. Cargo runs `cargo tile ...` by finding
 /// `cargo-tile` on the path and handing it this word ahead of every
@@ -188,6 +274,11 @@ pub(crate) const KEYMAP_TOML_HEADER: &str = "\
 # Chord steps are space-separated, e.g. \"g g\".\n\n";
 /// Section heading the keymap overlay gives the navigation scope.
 pub(crate) const NAVIGATION_SECTION: &str = "Navigation";
+/// Interior lines a notice toast keeps even when its body is one line,
+/// so entrance and exit animate over a stable height.
+pub(crate) const NOTICE_TOAST_MIN_INTERIOR_LINES: usize = 1;
+/// How long a notice toast stays visible before it starts to exit.
+pub(crate) const NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 /// Rows the status line occupies along the bottom of the terminal.
 pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 
@@ -338,6 +429,14 @@ pub(crate) const TILE_ROWS_RIGHT_INSET: u16 = 1;
 /// Rows the readout takes: it is one line along the foot of the cell.
 pub(crate) const TILE_ROWS_READOUT_HEIGHT: u16 = 1;
 
+// random
+/// Second multiplier in `SplitMix64`'s finalizer.
+pub(crate) const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xbf58_476d_1ce4_e5b9;
+/// Odd increment `SplitMix64` adds to its state before each draw.
+pub(crate) const SPLITMIX_INCREMENT: u64 = 0x9e37_79b9_7f4a_7c15;
+/// Third multiplier in `SplitMix64`'s finalizer.
+pub(crate) const SPLITMIX_SECOND_MULTIPLIER: u64 = 0x94d0_49bb_1331_11eb;
+
 // running-cargo table
 /// Process names that are the genuine cargo binary.
 ///
@@ -384,17 +483,6 @@ pub(crate) const ANCESTRY_GAP_HEIGHT: u16 = 1;
 /// middle rather than off the end: one for the top-level parent, one
 /// for the elision, and one for the level nearest the command.
 pub(crate) const ANCESTRY_MIN_ELIDED_ROWS: usize = 3;
-/// How many times a cell's demand re-measures its ancestry block
-/// against the cell its own last answer would have bought.
-///
-/// The block is given half the cell, so what it draws depends on a
-/// height the demand is itself deciding. Each pass hands the block the
-/// budget the pass before it worked out, and each answer is no larger
-/// than the one before -- a smaller cell buys a smaller budget, which
-/// fits no more levels -- so the sequence settles, usually on the second
-/// pass. This bounds it anyway: a render path is no place to discover
-/// that an assumption about convergence was wrong.
-pub(crate) const ANCESTRY_DEMAND_PASSES: usize = 8;
 /// What stands in the ancestry block for the levels a short cell has no
 /// room to draw.
 pub(crate) const ANCESTRY_ELISION: &str = "\u{2026}";
@@ -631,6 +719,18 @@ pub(crate) const PROGRESS_HEADING_PHASE_MARGIN: u16 = 1;
 /// Bytes of a run log's end to read for the counter. Sized to hold the
 /// bar's last redraw across a burst of diagnostics printed over it.
 pub(crate) const RUN_LOG_TAIL_BYTES: u64 = 64 * 1024;
+/// Run logs one scan will delete before leaving the rest to the next
+/// one.
+///
+/// A log outlives every use it has the moment its run ends -- nothing
+/// reads a finished run's capture -- so each scan clears what it finds,
+/// and in the ordinary way of things that is nothing at all. A
+/// directory that has been accumulating since before the sweep existed
+/// is the exception: at roughly 60 microseconds an unlink, clearing
+/// sixty thousand in one pass would hold the scan for the better part
+/// of four seconds. Bounded, the backlog goes in well under a minute
+/// of ordinary scans and no single one of them is held up noticeably.
+pub(crate) const CAPTURE_SWEEP_LIMIT: usize = 512;
 /// What a run log's name starts with, ahead of its timestamp and pid.
 pub(crate) const RUN_LOG_PREFIX: &str = "run-";
 /// What a run log's name ends with.
@@ -670,10 +770,20 @@ pub(crate) const PHASE_BUILDING: &str = "building";
 /// test runner works through the tests it collected.
 pub(crate) const PHASE_TESTING: &str = "testing";
 /// What cargo says while it waits for another cargo to give up the
-/// build directory. Matched on the phrase alone: the `Blocking` status
-/// word ahead of it arrives wrapped in colour codes, and what it names
-/// varies with which lock is held.
-pub(crate) const LOCK_WAIT_MARKER: &str = "waiting for file lock";
+/// build directory. The match opens past the `Blocking` status word,
+/// which arrives wrapped in colour codes, and runs to the end of the
+/// phrase rather than stopping at the lock: cargo takes the package
+/// cache under the same wording, holds it for a moment, and every
+/// concurrent command touches it. That wait is over before there is
+/// anything to draw, and is not what the state column is for.
+pub(crate) const LOCK_WAIT_MARKER: &str = "waiting for file lock on build directory";
+/// What cargo closes a build with, whether or not it goes on to run
+/// anything: `Finished `dev` profile [unoptimized + debuginfo]
+/// target(s) in 1.49s`. Matched on the tail of the line rather than on
+/// the status word, which arrives wrapped in colour codes with the
+/// profile beside it in a hyperlink escape -- and which profile it
+/// names varies with the command.
+pub(crate) const BUILD_FINISHED_MARKER: &str = "target(s) in ";
 
 // sccache
 /// The sccache executable: what the stats read runs, and the process

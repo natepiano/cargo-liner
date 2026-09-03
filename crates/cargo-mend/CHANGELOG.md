@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-09-01
+
+### Fixed
+- Resolve each file's module path from the `mod` declarations that reach it rather than from its directory. A module attached with `#[path]` does not live where its directory says, so import suggestions written against the layout named a parent that does not exist and left the crate not compiling.
+- Keep a `pub(in path)` whose only caller sits behind an inactive `#[cfg]`. The guard added in 0.21.0 covered `pub(crate)` alone, so `forbidden-pub-in-crate` still advised removing an annotation the excluded configuration needs.
+
+## [0.21.0] - 2026-08-27
+
+### Fixed
+- Keep the `pub(crate)` on an item whose only caller sits behind an inactive `#[cfg]`. Mend sees just the code that survived `#[cfg]` expansion, so that caller was invisible and the narrowing it rules out was advised anyway -- applying it left the other configuration not compiling.
+
 ## [0.20.1] - 2026-08-25
 
 ### Fixed

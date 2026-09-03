@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::time::Instant;
 
 use super::body::ToastBody;
 use super::settings::ToastSettings;
@@ -8,6 +9,7 @@ use super::toast::ToastStyle;
 use super::view::ToastHitbox;
 use crate::AppContext;
 use crate::Viewport;
+use crate::constants::FRAME_POLL_MILLIS;
 
 /// Result of handling a focused toast key.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -16,6 +18,25 @@ pub enum ToastCommand<A> {
     None,
     /// The focused toast requested its action payload.
     Activate(A),
+}
+
+/// Earliest time when an active toast can next change its rendered content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToastVisualDeadline {
+    /// No active toast has a time-driven visual change scheduled.
+    NoVisualChangeScheduled,
+    /// A toast can change visually at this instant.
+    At(Instant),
+}
+
+impl ToastVisualDeadline {
+    pub(super) fn earlier(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::NoVisualChangeScheduled, deadline)
+            | (deadline, Self::NoVisualChangeScheduled) => deadline,
+            (Self::At(left), Self::At(right)) => Self::At(if left < right { left } else { right }),
+        }
+    }
 }
 
 pub(crate) struct ToastSpec<Ctx: AppContext> {
@@ -41,8 +62,8 @@ pub enum ReactivateOutcome {
     /// create a fresh toast for the tracker.
     NotFound,
     /// Toast existed and was returned to
-    /// `toast::ToastPhase::Visible` with task status reset to
-    /// `Running`.
+    /// running status. An in-flight entrance remains in progress; an exiting
+    /// toast returns to `toast::ToastPhase::Static`.
     Revived,
     /// Toast existed but its dismissal is
     /// `toast::ToastDismissal::ClosedByUser`. Caller should neither
@@ -91,7 +112,41 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     pub const fn settings_mut(&mut self) -> &mut ToastSettings { &mut self.settings }
 
     /// Replace the toast settings.
-    pub const fn set_settings(&mut self, settings: ToastSettings) { self.settings = settings; }
+    pub fn set_settings(&mut self, settings: ToastSettings) {
+        self.settings = settings;
+        let item_linger = self.settings.finished_task_visible.get();
+        for toast in &mut self.entries {
+            toast.refresh_entrance_phase(&self.settings);
+            if matches!(toast.lifetime, ToastLifetime::Task { .. }) {
+                toast.item_linger = item_linger;
+            }
+        }
+    }
+
+    /// Return the earliest instant when an active toast can next change what
+    /// it renders.
+    ///
+    /// This scans the stored toasts without building `ToastView`s.
+    /// Each toast combines its line-height, countdown, tracked-item, and
+    /// lifetime deadlines.
+    #[must_use]
+    pub fn next_visual_change_deadline(&self, now: Instant) -> ToastVisualDeadline {
+        if !self.settings.toasts_enabled() {
+            return ToastVisualDeadline::NoVisualChangeScheduled;
+        }
+        let earliest_deadline = self.entries.iter().fold(
+            ToastVisualDeadline::NoVisualChangeScheduled,
+            |deadline, toast| {
+                deadline.earlier(toast.next_visual_change_deadline(now, &self.settings))
+            },
+        );
+        match earliest_deadline {
+            ToastVisualDeadline::NoVisualChangeScheduled => earliest_deadline,
+            ToastVisualDeadline::At(deadline) => ToastVisualDeadline::At(
+                deadline.max(now + Duration::from_millis(FRAME_POLL_MILLIS)),
+            ),
+        }
+    }
 
     pub(super) fn sync_viewport_len(&mut self) {
         let len = self.active_now().len();
@@ -118,11 +173,13 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
+    use crate::ACTIVITY_SPINNER;
     use crate::FocusedPane;
     use crate::Framework;
     use crate::KeyBind;
     use crate::KeyOutcome;
     use crate::NoToastAction;
+    use crate::ToastDuration;
     use crate::ToastTaskId;
     use crate::TrackedItem;
     use crate::TrackedItemKey;
@@ -158,6 +215,367 @@ mod tests {
         toasts.prune(Instant::now());
 
         assert!(!toasts.is_alive(id));
+    }
+
+    #[test]
+    fn coarse_countdown_deadline_is_not_pulled_in_to_the_frame_poll_floor() {
+        let visible = Duration::from_secs(5);
+        let mut toasts = toasts();
+        let id = toasts.push_timed("done", "body", visible, 1);
+        let toast = toasts
+            .entries
+            .iter()
+            .find(|toast| toast.id == id)
+            .expect("pushed toast should be stored");
+        let created_at = toast.created_at;
+        let ToastLifetime::Timed { timeout_at } = toast.lifetime else {
+            unreachable!("push_timed should create a timed lifetime");
+        };
+        let first_countdown_change = created_at + Duration::from_secs(1);
+
+        assert_eq!(
+            toasts.next_visual_change_deadline(created_at),
+            ToastVisualDeadline::At(first_countdown_change)
+        );
+        assert_eq!(timeout_at, created_at + visible);
+    }
+
+    #[test]
+    fn multi_line_toast_first_repaint_follows_minimum_height_steps() {
+        const MIN_INTERIOR_LINES: usize = 1;
+
+        let settings = ToastSettings::default();
+        let body = "x".repeat(crate::toast_body_width(&settings) * 4);
+        let mut toasts = Toasts::<TestApp>::with_settings(settings.clone());
+        let id = toasts.push_timed(
+            "Favorite not saved",
+            body,
+            Duration::from_secs(5),
+            MIN_INTERIOR_LINES,
+        );
+        let toast = toasts
+            .entries
+            .iter()
+            .find(|toast| toast.id == id)
+            .expect("pushed toast should be stored");
+        let created_at = toast.created_at;
+        let min_height = toasts.active_views(created_at)[0].min_height();
+        let entrance_line = settings.animation.entrance_duration.get();
+        let first_repaint_at = created_at + entrance_line.saturating_mul(u32::from(min_height));
+        let before_first_repaint = first_repaint_at
+            .checked_sub(Duration::from_nanos(1))
+            .expect("first repaint should follow toast creation");
+
+        assert_eq!(
+            toasts.next_visual_change_deadline(created_at),
+            ToastVisualDeadline::At(first_repaint_at)
+        );
+        assert_eq!(
+            toasts.active_views(before_first_repaint)[0].desired_height(),
+            min_height
+        );
+        assert_eq!(
+            toasts.active_views(first_repaint_at)[0].desired_height(),
+            min_height.saturating_add(1)
+        );
+    }
+
+    #[test]
+    fn new_tracked_items_refresh_a_task_toasts_entrance_schedule() {
+        let settings = ToastSettings::default();
+        let entrance_line = settings.animation.entrance_duration.get();
+        let mut toasts = Toasts::<TestApp>::with_settings(settings);
+        let task = toasts.start_task("scan", "running");
+        let mut items = vec![
+            TrackedItem::new("a", "a"),
+            TrackedItem::new("b", "b"),
+            TrackedItem::new("c", "c"),
+            TrackedItem::new("d", "d"),
+        ];
+        for item in &mut items {
+            item.started_at = None;
+        }
+        assert!(toasts.set_tracked_items(task, &items));
+        let toast = toasts
+            .toast_for_task(task)
+            .expect("task toast should remain stored");
+        let created_at = toast.created_at;
+        let min_height = toasts.active_views(created_at)[0].min_height();
+        let first_repaint_at = created_at + entrance_line.saturating_mul(u32::from(min_height));
+
+        assert!(matches!(toast.phase, ToastPhase::Entering { .. }));
+        assert_eq!(
+            toasts.next_visual_change_deadline(created_at),
+            ToastVisualDeadline::At(first_repaint_at)
+        );
+    }
+
+    #[test]
+    fn reactivate_task_preserves_an_in_flight_entrance() {
+        let settings = ToastSettings::default();
+        let mut toasts = Toasts::<TestApp>::with_settings(settings);
+        let task = toasts.start_task("scan", "running");
+        let mut items = vec![
+            TrackedItem::new("a", "a"),
+            TrackedItem::new("b", "b"),
+            TrackedItem::new("c", "c"),
+            TrackedItem::new("d", "d"),
+        ];
+        for item in &mut items {
+            item.started_at = None;
+        }
+        assert!(toasts.set_tracked_items(task, &items));
+        let toast = toasts
+            .toast_for_task(task)
+            .expect("task toast should remain stored");
+        let created_at = toast.created_at;
+        let ToastPhase::Entering { starts_at, .. } = toast.phase else {
+            unreachable!("multi-row task toast should be entering");
+        };
+
+        assert_eq!(toasts.reactivate_task(task), ReactivateOutcome::Revived);
+
+        let toast = toasts
+            .toast_for_task(task)
+            .expect("reactivated task toast should remain stored");
+        assert!(matches!(toast.phase, ToastPhase::Entering { .. }));
+        assert_eq!(
+            toasts.next_visual_change_deadline(created_at),
+            ToastVisualDeadline::At(starts_at)
+        );
+    }
+
+    #[test]
+    fn running_task_schedules_the_next_spinner_frame() {
+        let mut toasts = toasts();
+        let task = toasts.start_task("scan", "running");
+        let now = Instant::now();
+        let started_at = now
+            .checked_sub(Duration::from_secs(20))
+            .expect("test instant should support a twenty-second offset");
+        let mut item = TrackedItem::new("repo", "repo");
+        item.started_at = Some(started_at);
+        assert!(toasts.set_tracked_items(task, &[item]));
+        let elapsed = now.saturating_duration_since(started_at);
+        let expected = started_at + ACTIVITY_SPINNER.next_frame_boundary(elapsed);
+
+        assert_eq!(
+            toasts.next_visual_change_deadline(now),
+            ToastVisualDeadline::At(expected)
+        );
+    }
+
+    #[test]
+    fn running_task_millisecond_deadline_respects_the_frame_poll_floor() {
+        let mut toasts = toasts();
+        let task = toasts.start_task("scan", "running");
+        let now = Instant::now();
+        let started_at = now
+            .checked_sub(Duration::from_secs(5))
+            .expect("test instant should support a five-second offset");
+        let mut item = TrackedItem::new("repo", "repo");
+        item.started_at = Some(started_at);
+        assert!(toasts.set_tracked_items(task, &[item]));
+
+        let ToastVisualDeadline::At(deadline) = toasts.next_visual_change_deadline(now) else {
+            unreachable!("a running tracked item should schedule a visual change");
+        };
+        assert!(deadline >= now + Duration::from_millis(FRAME_POLL_MILLIS));
+    }
+
+    #[test]
+    fn finished_task_without_items_schedules_linger_fade_before_countdown() {
+        let mut toasts = toasts();
+        let task = toasts.start_task("scan", "running");
+        let toast = toasts
+            .toast_for_task_mut(task)
+            .expect("task toast should be stored");
+        let finished_at = toast.created_at;
+        let linger = Duration::from_secs(5);
+        toast.lifetime = ToastLifetime::Task {
+            task_id: task,
+            status:  ToastTaskStatus::Finished {
+                finished_at,
+                linger,
+            },
+        };
+        toast.phase = ToastPhase::Static;
+        assert!(toast.tracked_items.is_empty());
+        let now = finished_at + Duration::from_secs(2);
+        let next_countdown_boundary = finished_at + Duration::from_secs(3);
+
+        let ToastVisualDeadline::At(deadline) = toasts.next_visual_change_deadline(now) else {
+            unreachable!("a lingering finished toast should schedule its next fade level");
+        };
+        assert!(deadline > now);
+        assert!(deadline < next_countdown_boundary);
+    }
+
+    #[test]
+    fn completed_item_end_precedes_the_task_countdown_boundary() {
+        let mut toasts = toasts_with_linger(5.0);
+        let task = toasts.start_task("scan", "running");
+        let completed_at = toasts
+            .toast_for_task(task)
+            .expect("task toast should be stored")
+            .created_at;
+        let mut first = TrackedItem::new("first", "first");
+        first.started_at = None;
+        first.completed_at = Some(completed_at);
+        let mut second = TrackedItem::new("second", "second");
+        second.started_at = None;
+        second.completed_at = Some(completed_at + Duration::from_millis(2_400));
+        assert!(toasts.set_tracked_items(task, &[first, second]));
+        let now = completed_at + Duration::from_millis(4_990);
+        let first_item_ends_at = completed_at + Duration::from_secs(5);
+
+        assert_eq!(
+            toasts.next_visual_change_deadline(now),
+            ToastVisualDeadline::At(first_item_ends_at)
+        );
+        assert!(matches!(
+            toasts.next_visual_change_deadline(first_item_ends_at),
+            ToastVisualDeadline::At(deadline) if deadline > first_item_ends_at
+        ));
+    }
+
+    #[test]
+    fn settings_reload_refreshes_entrance_height_and_deadline() {
+        const MIN_INTERIOR_LINES: usize = 1;
+
+        let original_settings = ToastSettings::default();
+        let body = "x".repeat(crate::toast_body_width(&original_settings) * 4);
+        let mut toasts = Toasts::<TestApp>::with_settings(original_settings);
+        let id = toasts.push_timed(
+            "Favorite not saved",
+            body,
+            Duration::from_secs(5),
+            MIN_INTERIOR_LINES,
+        );
+        let created_at = toasts
+            .entries
+            .iter()
+            .find(|toast| toast.id == id)
+            .expect("pushed toast should be stored")
+            .created_at;
+        let mut updated_settings = ToastSettings::default();
+        updated_settings.animation.entrance_duration = ToastDuration::try_from_secs("test", 0.25)
+            .expect("test entrance duration should be valid");
+
+        toasts.set_settings(updated_settings.clone());
+
+        let min_height = toasts.active_views(created_at)[0].min_height();
+        let first_repaint_at = created_at
+            + updated_settings
+                .animation
+                .entrance_duration
+                .get()
+                .saturating_mul(u32::from(min_height));
+        let before_first_repaint = first_repaint_at
+            .checked_sub(Duration::from_nanos(1))
+            .expect("first repaint should follow toast creation");
+        assert_eq!(
+            toasts.next_visual_change_deadline(created_at),
+            ToastVisualDeadline::At(first_repaint_at)
+        );
+        assert_eq!(
+            toasts.active_views(before_first_repaint)[0].desired_height(),
+            min_height
+        );
+        assert_eq!(
+            toasts.active_views(first_repaint_at)[0].desired_height(),
+            min_height.saturating_add(1)
+        );
+    }
+
+    #[test]
+    fn settings_reload_refreshes_tracked_item_removal_deadline() {
+        let mut toasts = toasts_with_linger(10.0);
+        let task = toasts.start_task("scan", "running");
+        let completed_at = toasts
+            .toast_for_task(task)
+            .expect("task toast should be stored")
+            .created_at;
+        let mut item = TrackedItem::new("repo", "repo");
+        item.started_at = None;
+        item.completed_at = Some(completed_at);
+        assert!(toasts.set_tracked_items(task, &[item]));
+
+        let updated_linger = Duration::from_secs(5);
+        let mut updated_settings = toasts.settings().clone();
+        updated_settings.finished_task_visible =
+            ToastDuration::try_from_secs("test", updated_linger.as_secs_f64())
+                .expect("test linger duration should be valid");
+        toasts.set_settings(updated_settings);
+
+        let toast = toasts
+            .toast_for_task_mut(task)
+            .expect("task toast should remain stored");
+        assert_eq!(toast.item_linger, updated_linger);
+        toast.lifetime = ToastLifetime::Task {
+            task_id: task,
+            status:  ToastTaskStatus::Running,
+        };
+        let removal_at = completed_at + updated_linger;
+        let now = removal_at
+            .checked_sub(Duration::from_millis(FRAME_POLL_MILLIS + 2))
+            .expect("removal should follow completion");
+
+        assert_eq!(
+            toasts.next_visual_change_deadline(now),
+            ToastVisualDeadline::At(removal_at)
+        );
+    }
+
+    #[test]
+    fn exit_deadlines_follow_existing_line_height_boundaries() {
+        const MIN_INTERIOR_LINES: usize = 1;
+
+        let settings = ToastSettings::default();
+        let exit_line = settings.animation.exit_duration.get();
+        let body = "x".repeat(crate::toast_body_width(&settings) * 3);
+        let mut toasts = Toasts::<TestApp>::with_settings(settings);
+        let id = toasts.push_timed(
+            "Favorite not saved",
+            body,
+            Duration::from_secs(2),
+            MIN_INTERIOR_LINES,
+        );
+        let toast = toasts
+            .entries
+            .iter()
+            .find(|toast| toast.id == id)
+            .expect("pushed toast should be stored");
+        let ToastLifetime::Timed { timeout_at } = toast.lifetime else {
+            unreachable!("push_timed should create a timed lifetime");
+        };
+
+        toasts.prune(timeout_at);
+
+        let target_height = toasts.active_views(timeout_at)[0].desired_height();
+        let first_exit_repaint_at = timeout_at + exit_line;
+        let exit_ends_at = timeout_at + exit_line.saturating_mul(u32::from(target_height));
+        let before_exit_end = exit_ends_at
+            .checked_sub(Duration::from_millis(FRAME_POLL_MILLIS.saturating_mul(2)))
+            .expect("exit end should follow expiry");
+
+        assert_eq!(
+            toasts.next_visual_change_deadline(timeout_at),
+            ToastVisualDeadline::At(first_exit_repaint_at)
+        );
+        assert_eq!(
+            toasts.active_views(first_exit_repaint_at)[0].desired_height(),
+            target_height.saturating_sub(1)
+        );
+        assert_eq!(
+            toasts.next_visual_change_deadline(before_exit_end),
+            ToastVisualDeadline::At(exit_ends_at)
+        );
+        assert!(toasts.active_views(exit_ends_at).is_empty());
+        assert_eq!(
+            toasts.next_visual_change_deadline(exit_ends_at),
+            ToastVisualDeadline::NoVisualChangeScheduled
+        );
     }
 
     #[test]
@@ -212,7 +630,9 @@ mod tests {
             .phase
         {
             ToastPhase::Exiting { started_at } => started_at,
-            ToastPhase::Visible => unreachable!("dismissed toast should enter Exiting phase"),
+            ToastPhase::Entering { .. } | ToastPhase::Static => {
+                unreachable!("dismissed toast should enter Exiting phase");
+            },
         };
 
         // Spin a touch to make sure Instant::now() advances, then
@@ -225,7 +645,9 @@ mod tests {
             .phase
         {
             ToastPhase::Exiting { started_at } => started_at,
-            ToastPhase::Visible => unreachable!("second dismiss should keep toast Exiting"),
+            ToastPhase::Entering { .. } | ToastPhase::Static => {
+                unreachable!("second dismiss should keep toast Exiting");
+            },
         };
         assert_eq!(first_started_at, second_started_at);
     }
@@ -281,7 +703,7 @@ mod tests {
         let toast = toasts
             .toast_for_task(task)
             .expect("revived task toast should remain tracked");
-        assert!(matches!(toast.phase, ToastPhase::Visible));
+        assert!(matches!(toast.phase, ToastPhase::Static));
     }
 
     #[test]

@@ -96,6 +96,8 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
     if let Some(hook) = builder.dismiss_fallback {
         keymap.set_dismiss_fallback(hook);
     }
+    keymap
+        .set_framework_global_shortcut_presentation(builder.framework_global_shortcut_presentation);
     keymap.set_unknown_warnings(builder.unknown_warnings);
     Ok(keymap)
 }

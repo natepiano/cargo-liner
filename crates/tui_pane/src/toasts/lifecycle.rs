@@ -104,16 +104,20 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             task_id,
             status: ToastTaskStatus::Running,
         };
-        toast.phase = ToastPhase::Visible;
+        if matches!(toast.phase, ToastPhase::Exiting { .. }) {
+            toast.phase = ToastPhase::Static;
+        }
         ReactivateOutcome::Revived
     }
 
     /// Replace the body text for a task toast.
     pub fn update_task_body(&mut self, task_id: ToastTaskId, body: impl Into<String>) -> bool {
+        let settings = self.settings.clone();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
         };
         toast.body = ToastBody::from(body.into());
+        toast.refresh_entrance_phase(&settings);
         true
     }
 
@@ -124,10 +128,12 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         lines: Vec<String>,
         colors: Vec<Color>,
     ) -> bool {
+        let settings = self.settings.clone();
         let Some(toast) = self.toast_for_colored_mut(id) else {
             return false;
         };
         toast.body = ToastBody::Colored { lines, colors };
+        toast.refresh_entrance_phase(&settings);
         true
     }
 
@@ -149,12 +155,14 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// — replacing the list with incomplete items reverts a
     /// previously-finished toast back to running.
     pub fn set_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) -> bool {
-        let linger = self.settings().finished_task_visible.get();
+        let settings = self.settings.clone();
+        let linger = settings.finished_task_visible.get();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
         };
         toast.tracked_items = items.to_vec();
         toast.item_linger = linger;
+        toast.refresh_entrance_phase(&settings);
         self.recompute_task_status(task_id);
         true
     }
@@ -221,7 +229,8 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// a previously-finished toast reverts to running so the
     /// countdown re-anchors when the new items complete.
     pub fn add_new_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) -> bool {
-        let item_linger = self.settings().finished_task_visible.get();
+        let settings = self.settings.clone();
+        let item_linger = settings.finished_task_visible.get();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
         };
@@ -239,6 +248,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         }
         toast.item_linger = item_linger;
         if changed {
+            toast.refresh_entrance_phase(&settings);
             self.recompute_task_status(task_id);
         }
         changed
@@ -333,8 +343,14 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// Advance toast lifetimes and remove entries whose exit animation is done.
     pub fn prune(&mut self, now: Instant) {
         for toast in &mut self.entries {
-            if matches!(toast.phase, ToastPhase::Visible) && toast.should_exit(now) {
-                toast.phase = ToastPhase::Exiting { started_at: now };
+            match toast.phase {
+                ToastPhase::Entering { .. } | ToastPhase::Static if toast.should_exit(now) => {
+                    toast.phase = ToastPhase::Exiting { started_at: now };
+                },
+                ToastPhase::Entering { ends_at, .. } if now >= ends_at => {
+                    toast.phase = ToastPhase::Static;
+                },
+                ToastPhase::Entering { .. } | ToastPhase::Static | ToastPhase::Exiting { .. } => {},
             }
         }
         let settings = &self.settings;
@@ -358,11 +374,9 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     ///   initial `Running` state until the embedding either adds items or calls
     ///   [`Self::finish_task`] explicitly.
     ///
-    /// `phase` is also snapped back to `Visible` whenever the lifetime
-    /// status reverts to `Running`, so an already-Exiting toast (only
-    /// reachable for `Timed`/`Persistent` lifetimes — task toasts
-    /// skip the exit animation) cannot get stuck mid-animation when
-    /// its lifetime changes.
+    /// An `Exiting` phase is also reset to `Static` whenever the lifetime
+    /// status reverts to `Running`, so the toast cannot remain in an exit
+    /// animation after its task resumes.
     pub(super) fn recompute_task_status(&mut self, task_id: ToastTaskId) {
         let Some(toast) = self.toast_for_task(task_id) else {
             return;
@@ -400,7 +414,9 @@ impl<Ctx: AppContext> Toasts<Ctx> {
                 task_id,
                 status: ToastTaskStatus::Running,
             };
-            toast.phase = ToastPhase::Visible;
+            if matches!(toast.phase, ToastPhase::Exiting { .. }) {
+                toast.phase = ToastPhase::Static;
+            }
         }
     }
 

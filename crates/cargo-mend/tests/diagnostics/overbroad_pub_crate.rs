@@ -1368,3 +1368,134 @@ reexport_upstream_fixture = { path = "../upstream" }
         "the re-export module is reached from outside `screens`: {report:#?}",
     );
 }
+
+#[test]
+fn cfg_excluded_consumer_keeps_pub_crate() {
+    let temp = tempdir().expect("create cfg fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cfg_excluded_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    // `gated_only` is reached from an inline `#[cfg]` item and from a whole
+    // module file behind another; neither is compiled for every target, so the
+    // caller set the HIR reports is smaller than the one the crate has.
+    // `unreferenced` is named nowhere and is the control: the guard matches on
+    // the item's name, so a match that was too broad would silence it too.
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        r#"mod helpers;
+
+#[cfg(target_os = "solaris")]
+mod gated_module;
+
+#[cfg(target_os = "solaris")]
+fn gated_caller() -> u32 { helpers::gated_only() }
+
+pub fn entry() -> u32 { helpers::local_only() }
+"#,
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/gated_module.rs"),
+        "pub(crate) fn call() -> u32 { crate::helpers::file_gated_only() }\n",
+    )
+    .expect("write gated module");
+    fs::write(
+        temp.path().join("src/helpers.rs"),
+        r#"pub(crate) fn gated_only() -> u32 { 1 }
+pub(crate) fn file_gated_only() -> u32 { 2 }
+pub(crate) fn local_only() -> u32 { 3 }
+pub(crate) fn unreferenced() -> u32 { 4 }
+"#,
+    )
+    .expect("write helpers");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    // `overbroad-pub-crate` leaves `item` unset, so the findings are keyed by
+    // the line they sit on: `helpers.rs` declares `gated_only`,
+    // `file_gated_only`, `local_only`, and `unreferenced` on lines 1 to 4.
+    let overbroad_lines: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/helpers.rs"
+        })
+        .map(|finding| finding.line_start)
+        .collect();
+    assert_eq!(
+        overbroad_lines,
+        vec![4],
+        "line 1 has an inline `#[cfg]` caller and line 2 a `#[cfg]`-excluded module file, so \
+         both keep `pub(crate)`; line 4 is named nowhere and must still be reported: \
+         {report:#?}",
+    );
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
+fn cfg_excluded_reference_to_a_module_raises_no_review_pub_mod() {
+    let temp = tempdir().expect("create cfg module fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cfg_excluded_module_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    // The excluded caller writes `fault`, so the guard on `overbroad-pub-crate`
+    // suppresses that diagnostic for the `pub(crate) mod fault;` line. The
+    // suppression must end there: `review-pub-mod` reports every module handed
+    // to it, so a guard that reported the annotation as unhandled would trade
+    // one diagnostic on that line for another. `present` is the control — no
+    // excluded region names it, and `pub mod` reaches `review-pub-mod` on the
+    // path the guard does not touch, so it must still be reported.
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        r#"pub(crate) mod fault;
+pub mod present;
+
+#[cfg(target_os = "solaris")]
+fn gated_caller() -> u32 { fault::rows() }
+
+pub fn entry() -> u32 { present::call() }
+"#,
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/fault.rs"),
+        "pub(crate) fn rows() -> u32 { 1 }\n",
+    )
+    .expect("write fault module");
+    fs::write(
+        temp.path().join("src/present.rs"),
+        "pub(crate) fn call() -> u32 { crate::fault::rows() }\n",
+    )
+    .expect("write present module");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let review_pub_mod_items: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == DiagnosticCode::ReviewPubMod)
+        .filter_map(|finding| finding.item.as_deref())
+        .collect();
+    assert!(
+        !review_pub_mod_items.contains(&"fault"),
+        "suppressing `overbroad-pub-crate` must not raise `review-pub-mod`, got \
+         {review_pub_mod_items:?}",
+    );
+    assert!(
+        review_pub_mod_items.contains(&"present"),
+        "a module no excluded region names is still reported, got {review_pub_mod_items:?}",
+    );
+    assert_summary_matches_findings(&report);
+}

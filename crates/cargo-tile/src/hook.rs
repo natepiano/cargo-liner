@@ -237,16 +237,17 @@ mod tests {
         assert!(SHIM_SOURCE.contains("script -q -t 0"));
     }
 
-    /// A finished run's log is kept only if it holds one of the two
-    /// things the grid reads out of it. The shim spells them itself,
-    /// having no way to see the reader's constants, so the wait marker
-    /// is checked here against the one the reader uses -- a rename on
-    /// either side would otherwise leave the shim quietly deleting logs
-    /// that had something to say.
+    /// A log is read only while the run writing it is alive, so the run
+    /// takes it away as it goes. Unconditionally: what a finished log
+    /// happens to hold is no longer a question the shim asks, which is
+    /// what freed it from spelling out the reader's markers to answer.
     #[test]
-    fn the_shim_keeps_the_logs_the_reader_could_read() {
-        assert!(SHIM_SOURCE.contains(LOCK_WAIT_MARKER));
+    fn the_shim_retires_its_log_when_its_run_ends() {
         assert!(SHIM_SOURCE.contains(r#"rm -f "$log""#));
+        assert!(
+            !SHIM_SOURCE.contains(LOCK_WAIT_MARKER),
+            "and no longer carries a copy of a marker the reader owns"
+        );
     }
 
     /// Whether the shim's exemption arm names this subcommand. The arm

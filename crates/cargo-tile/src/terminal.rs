@@ -34,6 +34,7 @@ use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Position;
+use ratatui::layout::Rect;
 use tui_pane::FRAME_POLL_MILLIS;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction;
@@ -43,6 +44,7 @@ use tui_pane::KeyOutcome;
 use tui_pane::Keymap;
 use tui_pane::Navigation;
 use tui_pane::OverlayAction;
+use tui_pane::ToastVisualDeadline;
 use tui_pane::matches_open_overlay_toggle;
 use tui_pane::overlay_is_in_text_mode;
 
@@ -55,6 +57,8 @@ use crate::constants::BINARY_NAME;
 use crate::constants::FULL_REPAINT_SECONDS;
 use crate::constants::PROBE_THRESHOLD;
 use crate::constants::REPAINT_SENTINEL;
+use crate::favorites;
+use crate::favorites_overlay::FavoritesOverlayFrameOutcome;
 use crate::globals::AppGlobalAction;
 use crate::interaction;
 use crate::iterm2;
@@ -75,6 +79,41 @@ use crate::theme;
 /// The terminal backend, with everything written to it counted on the
 /// way out. See [`probe::Counted`].
 type Backend = CrosstermBackend<Counted<Stdout>>;
+
+/// Earliest app-owned visual transition that can require another frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VisualDeadline {
+    /// No app-owned transition is waiting on time alone.
+    NoVisualChangeScheduled,
+    /// Wake no later than this instant.
+    At(Instant),
+}
+
+impl VisualDeadline {
+    pub(crate) fn earlier(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::NoVisualChangeScheduled, deadline)
+            | (deadline, Self::NoVisualChangeScheduled) => deadline,
+            (Self::At(left), Self::At(right)) => Self::At(left.min(right)),
+        }
+    }
+
+    fn limit_wait(self, now: Instant, wait: Duration) -> Duration {
+        match self {
+            Self::NoVisualChangeScheduled => wait,
+            Self::At(deadline) => wait.min(deadline.saturating_duration_since(now)),
+        }
+    }
+}
+
+impl From<ToastVisualDeadline> for VisualDeadline {
+    fn from(toast_visual_deadline: ToastVisualDeadline) -> Self {
+        match toast_visual_deadline {
+            ToastVisualDeadline::NoVisualChangeScheduled => Self::NoVisualChangeScheduled,
+            ToastVisualDeadline::At(deadline) => Self::At(deadline),
+        }
+    }
+}
 
 /// Load configuration, install the theme, build the keymap, and run the
 /// event loop with the terminal in the alternate screen.
@@ -100,6 +139,7 @@ pub(crate) fn run() -> ExitCode {
         },
     };
     let loop_result = event_loop(&mut terminal, &mut app);
+    app.attract.record_completed_backdrop_attempts_before_exit();
     let restart_requested = app.framework.restart_requested();
     let restore_result = restore_terminal(&mut terminal, profile_switch.as_ref());
 
@@ -162,7 +202,7 @@ fn restore_terminal(
 /// app costs essentially nothing.
 fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()> {
     let input = spawn_input_thread();
-    let scans = processes::spawn();
+    let scans = processes::spawn(app.loaded_config.config.commands.excluded.clone());
     // Each due read runs on a worker of its own and replies here, so a
     // server that has wedged parks that one thread rather than the loop.
     let (sccache_reads, sccache_replies) = mpsc::channel();
@@ -211,7 +251,10 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
         if deadline < now {
             deadline = now + period;
         }
-        let remaining = deadline.saturating_duration_since(now);
+        let toast_visual_deadline = app.framework.toasts.next_visual_change_deadline(now);
+        let visual_deadline = VisualDeadline::from(toast_visual_deadline)
+            .earlier(app.favorites_overlay.visual_deadline(now, period));
+        let remaining = visual_deadline.limit_wait(now, deadline.saturating_duration_since(now));
         match input.recv_timeout(remaining) {
             Ok(event) => {
                 let mut resized = apply_event(app, &event);
@@ -224,6 +267,7 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
                     }
                 }
                 if resized == Resized::Yes {
+                    refresh_open_favorites_after_resize(app);
                     force_repaint(terminal);
                 }
                 dirty = true;
@@ -233,6 +277,23 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
             // cannot read input is dead, and without this the loop would
             // spin on a disconnected channel.
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+        let now = Instant::now();
+        app.framework.toasts.prune(now);
+        if matches!(
+            toast_visual_deadline,
+            ToastVisualDeadline::At(deadline) if now >= deadline
+        ) {
+            dirty = true;
+        }
+        match app.favorites_overlay.advance(now) {
+            FavoritesOverlayFrameOutcome::Quiet => {},
+            FavoritesOverlayFrameOutcome::Repaint => dirty = true,
+            FavoritesOverlayFrameOutcome::CommitRemoval(removal_target) => {
+                let result = favorites::remove(removal_target.clone());
+                app.favorites_overlay.finish_removal(removal_target, result);
+                dirty = true;
+            },
         }
         // Frozen, every one of these is skipped: what a scan found,
         // how far a fade has walked and where a travelling cell has
@@ -396,9 +457,22 @@ fn apply_event(app: &mut App, event: &Event) -> Resized {
             handle_mouse(app, mouse);
             Resized::No
         },
-        Event::Resize(..) => Resized::Yes,
+        Event::Resize(width, height) => {
+            app.attract
+                .record_terminal_resize(Rect::new(0, 0, width, height));
+            Resized::Yes
+        },
         _ => Resized::No,
     }
+}
+
+fn refresh_open_favorites_after_resize(app: &mut App) {
+    if !app.favorites_overlay.is_open() {
+        return;
+    }
+    let current_parameters = app.attract.current_settings().into();
+    app.favorites_overlay
+        .refresh_current_parameters(current_parameters);
 }
 
 /// Apply one mouse event.
@@ -448,12 +522,17 @@ fn force_repaint(terminal: &mut Terminal<Backend>) {
 fn handle_key(app: &mut App, key: KeyEvent) {
     let keymap = Rc::clone(&app.keymap);
     let bind = KeyBind::from(key);
+    if app.favorites_overlay.is_open() {
+        if keymap.dispatch_app_pane(AppPaneId::Favorites, &bind, app) == KeyOutcome::Unhandled {
+            app.favorites_overlay.handle_unmapped_key();
+        }
+        return;
+    }
     if let Some(overlay) = app.framework.overlay() {
         let in_text_mode = overlay_is_in_text_mode(&app.framework, overlay);
         if let Some(action) = keymap.framework_globals().action_for(&bind)
             && !in_text_mode
-            && (matches_open_overlay_toggle(action, overlay)
-                || matches!(action, GlobalAction::Dismiss))
+            && matches_open_overlay_toggle(action, overlay)
         {
             keymap.dispatch_framework_global(action, app);
             return;
@@ -581,5 +660,200 @@ fn restart_self() {
     match Command::new(&exe).args(&args).spawn() {
         Ok(_) => std::process::exit(0),
         Err(error) => eprintln!("cargo-tile: restart: {error}"),
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use std::fs;
+
+    use crossterm::event::KeyModifiers;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::attract::SettingsApplicationOutcome;
+    use crate::favorites::FavoritesFileState;
+
+    const FAVORITE_ROW: &str = r#"
+[[favorite]]
+id = "01a03f60-9c14-7b41-8a02-1de4c7c9b332"
+saved = "2026-08-26T11:02:44-07:00"
+mode = "moving_band"
+direction = "left"
+width = 10
+speed = 32
+tail_speed = 72
+fraying = "leading"
+"#;
+
+    fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
+
+    fn rendered_buffer_lines(buffer: &Buffer) -> Vec<String> {
+        (buffer.area.y..buffer.area.bottom())
+            .map(|y| {
+                (buffer.area.x..buffer.area.right()).fold(String::new(), |mut line, x| {
+                    line.push_str(buffer[(x, y)].symbol());
+                    line
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn app_modal_consumes_app_and_framework_globals_until_escape() {
+        let mut app = App::new_for_test().expect("test app should build");
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        );
+        assert!(app.favorites_overlay.is_open());
+
+        handle_key(&mut app, key(KeyCode::Char('f')));
+        handle_key(&mut app, key(KeyCode::Char('?')));
+        assert_eq!(app.updates, Updates::Live);
+        assert_eq!(app.framework.overlay(), None);
+        assert!(app.favorites_overlay.is_open());
+
+        handle_key(&mut app, key(KeyCode::Esc));
+        assert!(!app.favorites_overlay.is_open());
+    }
+
+    #[test]
+    fn unmapped_modal_key_cancels_delete_confirmation_without_writing() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = directory.path().join("favorites.toml");
+        fs::write(&path, FAVORITE_ROW).expect("favorite fixture should be written");
+        let original = fs::read(&path).expect("favorite fixture should be readable");
+        let rows = favorites::parse_rows_for_overlay_test(FAVORITE_ROW)
+            .expect("favorite fixture should parse");
+        let current_parameters = app.attract.current_settings().into();
+        let keymap = Rc::clone(&app.keymap);
+        app.favorites_overlay.open_file_state(
+            FavoritesFileState::Loaded {
+                path: path.clone(),
+                rows,
+            },
+            current_parameters,
+            &keymap,
+        );
+        let mut terminal =
+            Terminal::new(TestBackend::new(100, 30)).expect("test terminal should be created");
+        terminal
+            .draw(|frame| app.favorites_overlay.render(frame))
+            .expect("favorites overlay should render");
+
+        handle_key(&mut app, key(KeyCode::Char('x')));
+        assert!(
+            app.favorites_overlay
+                .deletion_confirmation_is_armed_for_test()
+        );
+        assert!(
+            app.favorites_overlay
+                .deletion_confirmation_notice_is_visible_for_test()
+        );
+        handle_key(&mut app, key(KeyCode::Char('z')));
+
+        assert!(
+            !app.favorites_overlay
+                .deletion_confirmation_is_armed_for_test()
+        );
+        assert!(
+            !app.favorites_overlay
+                .deletion_confirmation_notice_is_visible_for_test()
+        );
+        assert_eq!(
+            fs::read(&path).expect("favorite fixture should remain readable"),
+            original
+        );
+    }
+
+    #[test]
+    fn coalesced_resize_refreshes_currency_after_attract_reclamping() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let rows = favorites::parse_rows_for_overlay_test(FAVORITE_ROW)
+            .expect("favorite fixture should parse");
+        let favorite_settings = rows
+            .recognized()
+            .next()
+            .expect("favorite fixture should have a recognized row")
+            .settings;
+        app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
+        assert_eq!(
+            app.attract.apply_settings(favorite_settings),
+            SettingsApplicationOutcome::AppliedExactly
+        );
+        let current_parameters = app.attract.current_settings().into();
+        let keymap = Rc::clone(&app.keymap);
+        app.favorites_overlay.open_file_state(
+            FavoritesFileState::Loaded {
+                path: PathBuf::from("/tmp/favorites.toml"),
+                rows,
+            },
+            current_parameters,
+            &keymap,
+        );
+        let mut terminal =
+            Terminal::new(TestBackend::new(100, 30)).expect("test terminal should be created");
+        terminal
+            .draw(|frame| app.favorites_overlay.render(frame))
+            .expect("favorites overlay should render");
+        let initial_rows = rendered_buffer_lines(terminal.backend().buffer());
+        assert!(initial_rows.iter().any(|line| line.contains("▸● ")));
+
+        assert_eq!(apply_event(&mut app, &Event::Resize(5, 4)), Resized::Yes);
+        terminal
+            .draw(|frame| app.favorites_overlay.render(frame))
+            .expect("favorites overlay should render before resize refresh");
+        let before_refresh = rendered_buffer_lines(terminal.backend().buffer());
+        assert!(before_refresh.iter().any(|line| line.contains("▸● ")));
+
+        refresh_open_favorites_after_resize(&mut app);
+        assert_ne!(app.attract.current_settings(), favorite_settings);
+        terminal
+            .draw(|frame| app.favorites_overlay.render(frame))
+            .expect("favorites overlay should render after resize refresh");
+        let refreshed_rows = rendered_buffer_lines(terminal.backend().buffer());
+        assert!(refreshed_rows.iter().any(|line| line.contains("▸  ")));
+    }
+
+    #[test]
+    fn x_leaves_each_framework_overlay_open_while_escape_closes_it() {
+        let mut app = App::new_for_test().expect("test app should build");
+        for (overlay, opener) in [
+            (FrameworkOverlayId::Settings, key(KeyCode::Char('s'))),
+            (
+                FrameworkOverlayId::Keymap,
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            ),
+            (FrameworkOverlayId::GlobalShortcuts, key(KeyCode::Char('?'))),
+        ] {
+            handle_key(&mut app, opener);
+            assert_eq!(app.framework.overlay(), Some(overlay));
+            handle_key(&mut app, key(KeyCode::Char('x')));
+            assert_eq!(app.framework.overlay(), Some(overlay));
+            handle_key(&mut app, key(KeyCode::Esc));
+            assert_eq!(app.framework.overlay(), None);
+        }
+    }
+
+    #[test]
+    fn framework_modal_prevents_a_second_app_modal_from_opening() {
+        let mut app = App::new_for_test().expect("test app should build");
+        handle_key(&mut app, key(KeyCode::Char('s')));
+        assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Settings));
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Settings));
+        assert!(!app.favorites_overlay.is_open());
     }
 }

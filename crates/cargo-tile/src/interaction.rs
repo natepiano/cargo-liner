@@ -73,9 +73,9 @@ impl HitTestRegistry for App {
     fn pane(&self, id: AppPaneId) -> Option<&dyn Hittable<Picked>> {
         match id {
             AppPaneId::Main => Some(&self.tiles),
-            // The attract screen is drawn over everything and answers
-            // no click: its pane holds a keymap scope and nothing else.
-            AppPaneId::Attract(_) => None,
+            // The attract screen has no click behavior, and the
+            // favorites modal absorbs clicks before this pane walk.
+            AppPaneId::Attract(_) | AppPaneId::Favorites => None,
         }
     }
 
@@ -89,17 +89,51 @@ impl InputContext for App {
         self.framework.hit_test_at(pos)
     }
 
-    /// This app owns no modal of its own; every overlay it opens is one
-    /// the framework runs.
-    fn app_modal_overlay_hit(&self, _: Position) -> ModalHit<Picked> { ModalHit::Closed }
+    /// The favorites modal has no mouse selection yet, but still
+    /// absorbs every click so none reaches the grid underneath it.
+    fn app_modal_overlay_hit(&self, _: Position) -> ModalHit<Picked> {
+        if self.favorites_overlay.is_open() {
+            ModalHit::MissedRow
+        } else {
+            ModalHit::Closed
+        }
+    }
 
-    /// Toasts are the framework's, and this app raises none, so an
-    /// overlay row is the only framework hit worth acting on. Anything
-    /// else is a click the framework has already absorbed.
+    /// Toasts and overlay chrome are framework surfaces. An overlay row
+    /// is the only framework hit that becomes an app action; every
+    /// other hit has already been absorbed.
     fn map_framework_hit(&self, hit: FrameworkHit) -> Option<Picked> {
         match hit {
             FrameworkHit::Overlay { id, row } => Some(Picked::OverlayRow { id, row }),
             FrameworkHit::Toast(_) | FrameworkHit::ModalMissed => None,
         }
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use std::rc::Rc;
+
+    use super::*;
+
+    #[test]
+    fn open_app_modal_absorbs_clicks_before_the_grid() {
+        let mut app = App::new_for_test().expect("test app should build");
+        assert_eq!(
+            app.app_modal_overlay_hit(Position::new(0, 0)),
+            ModalHit::Closed
+        );
+
+        let current_parameters = app.attract.current_settings().into();
+        let keymap = Rc::clone(&app.keymap);
+        app.favorites_overlay.open(&keymap, current_parameters);
+        assert_eq!(
+            app.app_modal_overlay_hit(Position::new(0, 0)),
+            ModalHit::MissedRow
+        );
     }
 }

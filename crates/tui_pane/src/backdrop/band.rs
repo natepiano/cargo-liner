@@ -6,18 +6,12 @@
 //! edge is coming back in at the other, so the grid is never empty
 //! between one pass and the next.
 //!
-//! Every cell the strip stands wholly on is drawn in exactly the colour
-//! the [`Backdrop`] has there -- no ramp along its length. A terminal
-//! cell is opaque and carries no alpha, so anything done to that colour
-//! is done to what the reader came to look at: the strip's one subject
-//! is the desktop the window is standing on, and a cell wearing a
-//! mixture is a cell showing something that is not there.
-//!
-//! The exception is the one line at each end that the strip stands only
-//! part way across, which is lit by however much of it the strip covers.
-//! Whole cells are the only places a strip on a character grid can
-//! stand, so without that the strip could only step from cell to cell,
-//! and stepping is what the eye reads as stop motion rather than travel.
+//! Every sampled cell paints a desktop-derived background, including
+//! the cells outside the strip. The strip adds glyph ink over that
+//! field, reaching full strength through a multi-cell ramp at its
+//! leading and trailing boundaries. The boundary ramp also carries the
+//! sub-cell position between one terminal cell and the next, so the
+//! strip travels without stepping a whole cell at a time.
 //!
 //! What gives the strip edges to read, then, is where it stops -- and
 //! either edge can fray rather than standing flat across every line.
@@ -30,7 +24,7 @@
 //! of its edges fraying, standing across the whole window. What each
 //! offset across it stands on is its own two edges, so the lines it is
 //! made of end at different places rather than all together, and how
-//! much grid is left empty behind it changes while it travels.
+//! much grid is left without glyphs behind it changes while it travels.
 //!
 //! Position is tracked in whole numbers throughout. A strip that moves
 //! a fraction of a cell per frame wants sub-cell precision, and
@@ -46,6 +40,7 @@ use ratatui::style::Color;
 use super::Backdrop;
 use super::cell_pixels;
 use super::constants::BAND_BEHIND_FADE;
+use super::constants::BAND_EDGE_FALLOFF_CELLS;
 use super::constants::CHURN_CELLS_PER_FRAME;
 use super::constants::DEFAULT_BAND_SPEED;
 use super::constants::DEFAULT_TAIL_SPEED;
@@ -136,6 +131,21 @@ impl BandFraying {
 
     /// Whether the trailing edge frays.
     const fn trailing(self) -> bool { matches!(self, Self::Trailing | Self::Both) }
+}
+
+/// The parameters that steering can change on a [`TravelingBand`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BandSettings {
+    /// Which way the strip travels.
+    pub direction:  BandDirection,
+    /// How deep the strip stands, in cells along its travel axis.
+    pub width:      u32,
+    /// How far the strip travels each second, in cells.
+    pub speed:      u32,
+    /// How fast the strip's edges fray.
+    pub tail_speed: u32,
+    /// Which of the strip's edges fray.
+    pub fraying:    BandFraying,
 }
 
 /// How much of the run of `length` starting at `start` falls inside
@@ -356,6 +366,61 @@ impl TravelingBand {
     #[must_use]
     pub fn new() -> Self { Self::default() }
 
+    /// The strip's current steerable parameters.
+    #[must_use]
+    pub const fn settings(&self) -> BandSettings {
+        BandSettings {
+            direction:  self.direction,
+            width:      self.width,
+            speed:      self.speed,
+            tail_speed: self.tail_speed,
+            fraying:    self.fraying,
+        }
+    }
+
+    /// Restores steerable parameters through the same transitions as
+    /// the individual steering methods.
+    pub fn apply(&mut self, settings: BandSettings) {
+        self.set_direction(settings.direction);
+        self.set_fraying(settings.fraying);
+        self.set_width(settings.width);
+        self.set_speed(settings.speed);
+        self.set_tail_speed(settings.tail_speed);
+    }
+
+    /// Generates steerable parameters deterministically from `seed`.
+    ///
+    /// The width is limited by the field extent along the generated
+    /// direction, so the returned value is already valid for this
+    /// strip's current area.
+    #[must_use]
+    pub fn random_settings(&self, seed: u64) -> BandSettings {
+        let mut xorshift = Xorshift::seeded(seed);
+        let direction = match xorshift.index(4) {
+            0 => BandDirection::Left,
+            1 => BandDirection::Right,
+            2 => BandDirection::Up,
+            _ => BandDirection::Down,
+        };
+        let lines = match direction {
+            BandDirection::Left | BandDirection::Right => self.columns,
+            BandDirection::Up | BandDirection::Down => self.rows,
+        };
+        let widest = Self::widest_permitted_width(lines);
+        BandSettings {
+            direction,
+            width: xorshift.u32_inclusive(MIN_BAND_WIDTH, widest),
+            speed: xorshift.u32_inclusive(MIN_BAND_SPEED, MAX_BAND_SPEED),
+            tail_speed: xorshift.u32_inclusive(MIN_TAIL_SPEED, MAX_TAIL_SPEED),
+            fraying: match xorshift.index(4) {
+                0 => BandFraying::Trailing,
+                1 => BandFraying::Both,
+                2 => BandFraying::Leading,
+                _ => BandFraying::Neither,
+            },
+        }
+    }
+
     /// Move the strip on by `elapsed`, sizing it to `area` and
     /// re-rolling the characters its leading edge has reached.
     pub fn advance(&mut self, area: Rect, elapsed: Duration) {
@@ -407,15 +472,7 @@ impl TravelingBand {
     /// An edge that has stopped fraying is put back flat, so the next
     /// time round it starts from flat and frays outward rather than
     /// snapping to wherever it was left.
-    pub fn cycle_fraying(&mut self) {
-        self.fraying = self.fraying.next();
-        if !self.fraying.trailing() {
-            self.tails.fill(EdgeRun::at(u8::MAX));
-        }
-        if !self.fraying.leading() {
-            self.heads.fill(EdgeRun::at(0));
-        }
-    }
+    pub fn cycle_fraying(&mut self) { self.set_fraying(self.fraying.next()); }
 
     /// Send the strip a different way.
     ///
@@ -492,108 +549,121 @@ impl TravelingBand {
 
     /// Travel `cells_per_second` faster, up to the fastest it goes.
     pub fn speed_up(&mut self, cells_per_second: u32) {
-        self.speed = self
-            .speed
-            .saturating_add(cells_per_second)
-            .clamp(MIN_BAND_SPEED, MAX_BAND_SPEED);
+        self.set_speed(self.speed.saturating_add(cells_per_second));
     }
 
     /// Travel `cells_per_second` slower, down to the slowest it goes.
     pub fn slow_down(&mut self, cells_per_second: u32) {
-        self.speed = self
-            .speed
-            .saturating_sub(cells_per_second)
-            .clamp(MIN_BAND_SPEED, MAX_BAND_SPEED);
+        self.set_speed(self.speed.saturating_sub(cells_per_second));
     }
 
     /// Fray the trailing edge `per_second` faster, up to the fastest it
     /// goes. Does nothing visible while the trailing edge is flat.
     pub fn tail_faster(&mut self, per_second: u32) {
-        self.tail_speed = self
-            .tail_speed
-            .saturating_add(per_second)
-            .clamp(MIN_TAIL_SPEED, MAX_TAIL_SPEED);
+        self.set_tail_speed(self.tail_speed.saturating_add(per_second));
     }
 
     /// Fray the trailing edge `per_second` slower, down to the slowest
     /// it goes.
     pub fn tail_slower(&mut self, per_second: u32) {
-        self.tail_speed = self
-            .tail_speed
-            .saturating_sub(per_second)
-            .clamp(MIN_TAIL_SPEED, MAX_TAIL_SPEED);
+        self.set_tail_speed(self.tail_speed.saturating_sub(per_second));
     }
 
-    /// Draw the strip over `area`, colouring each cell by the
-    /// [`Backdrop`] underneath it.
+    /// Draw the sampled desktop over `area`, then draw the strip's
+    /// glyphs over that field.
     ///
-    /// Every covered cell is that colour exactly, front to back. The
-    /// strip is not a gradient and there is nothing here to fade: what
-    /// separates it from the rest of the grid is that it is drawn at
-    /// all, and where it stops.
+    /// `BAND_BEHIND_FADE` leaves enough of the sampled colour in every
+    /// cell background for neighbouring desktop cells to remain
+    /// distinct. Covered cells add glyph ink at the desktop colour,
+    /// with `BAND_EDGE_FALLOFF_CELLS` carrying both boundaries toward
+    /// each cell's own sampled background.
     ///
-    /// Both the character and the cell behind it are painted, from the
-    /// one colour: the character at the desktop's own, the rest of the
-    /// cell carried `BAND_BEHIND_FADE` of the way toward the ground.
-    /// Painting the character alone is what left the desktop arriving
-    /// through the ink and nothing else -- and a glyph's ink is not
-    /// centred in its cell, so `_` put that cell's colour along the
-    /// bottom, `^` along the top and `.` in neither, and a field of
-    /// punctuation dealt at random scattered every cell's colour to a
-    /// different corner of it. What the reader saw was a picture that
-    /// would not line up with itself.
-    ///
-    /// Leaving is the one moment the strip is meant to stop being
-    /// visible, and it goes toward whatever each cell is already
-    /// painted on to do it -- `ground` only standing in where the cell
-    /// is painted on nothing at all. A cell keeps its own background
-    /// here, so a strip drawn over something opaque settles into that
-    /// something rather than into a colour guessed for the whole grid.
-    ///
-    /// Cells outside the strip are left untouched rather than painted,
-    /// so whatever the terminal shows through stays visible. A cell the
-    /// backdrop has no colour for is skipped for the same reason.
+    /// Leaving carries both layers toward whatever each cell was
+    /// already painted on, with `ground` standing in for
+    /// [`Color::Reset`]. A cell the backdrop has no colour for is
+    /// skipped, so whatever the terminal shows through stays visible.
     pub fn render(&self, area: Rect, backdrop: &Backdrop, ground: Color, buffer: &mut Buffer) {
         if self.faded == u8::MAX {
             return;
         }
-        for row in 0..self.rows.min(area.height) {
-            for column in 0..self.columns.min(area.width) {
-                let Some(strength) = self.coverage(column, row) else {
-                    continue;
-                };
-                // A cell the edge has only just entered is drawn no
-                // more strongly than it has been entered, and a cell it
-                // has not entered at all is left alone rather than
-                // painted in the colour it would be invisible in.
-                if strength == 0 {
-                    continue;
-                }
+        for row in 0..area.height {
+            for column in 0..area.width {
                 let Some(color) = backdrop.color_at(column, row) else {
                     continue;
                 };
+                let Some(cell) = buffer.cell_mut((area.x + column, area.y + row)) else {
+                    continue;
+                };
+                let toward = match cell.bg {
+                    Color::Reset => ground,
+                    background => background,
+                };
+                let desktop = theme::blend_color(color, toward, self.faded);
+                let sampled_background = theme::blend_color(desktop, toward, BAND_BEHIND_FADE);
+                cell.set_bg(sampled_background);
+
+                if column >= self.columns || row >= self.rows {
+                    continue;
+                }
+                let Some(strip_coverage) = self.coverage(column, row) else {
+                    continue;
+                };
+                let glyph_strength = self.glyph_strength(column, row, strip_coverage);
+                if glyph_strength == 0 {
+                    continue;
+                }
                 let Some(&glyph) = self.glyphs.get(self.cell_index(column, row)) else {
                     continue;
                 };
-                if let Some(cell) = buffer.cell_mut((area.x + column, area.y + row)) {
-                    let toward = match cell.bg {
-                        Color::Reset => ground,
-                        background => background,
-                    };
-                    // The strip's own fade and this cell's share of it
-                    // compound: what is left of the colour is the one
-                    // scaled by the other, and the alpha handed on is
-                    // whatever that leaves.
-                    let visible =
-                        u32::from(u8::MAX - self.faded) * u32::from(strength) / u32::from(u8::MAX);
-                    let alpha = u8::MAX - u8::try_from(visible).unwrap_or(u8::MAX);
-                    let foreground = theme::blend_color(color, toward, alpha);
-                    cell.set_char(glyph);
-                    cell.set_fg(foreground);
-                    cell.set_bg(theme::blend_color(foreground, toward, BAND_BEHIND_FADE));
-                }
+                cell.set_char(glyph);
+                cell.set_fg(theme::blend_color(
+                    desktop,
+                    sampled_background,
+                    u8::MAX - glyph_strength,
+                ));
             }
         }
+    }
+
+    /// How strongly glyph ink is drawn at `column`, `row`, after the
+    /// cell's geometric `strip_coverage` is carried through the leading
+    /// and trailing boundary ramps.
+    ///
+    /// Each cell is measured to its far boundary from either end of the
+    /// strip. That keeps sub-cell motion in the first and last cells and
+    /// raises the ink over `BAND_EDGE_FALLOFF_CELLS` instead of in one
+    /// boundary cell.
+    fn glyph_strength(&self, column: u16, row: u16, strip_coverage: u8) -> u8 {
+        let span = self.span();
+        if span == 0 {
+            return 0;
+        }
+        let offset = self.offset_of(column, row);
+        let head = self.head_at(offset);
+        let tail = self.tail_at(offset);
+        let depth = tail.saturating_sub(head);
+        if depth >= span {
+            return strip_coverage;
+        }
+
+        let line = self.line_of(column, row);
+        let leading = (self.leading_edge + self.phase_at(offset)) % span;
+        let near = (leading + span - u32::from(line) * SUBCELLS_PER_CELL) % span;
+        let start = (near + span - SUBCELLS_PER_CELL) % span;
+        let head = head % span;
+        let distance_from_leading = (near + span - head) % span;
+        let shifted_start = (start + span - head) % span;
+        let distance_from_trailing = if shifted_start < depth {
+            depth - shifted_start
+        } else {
+            depth
+        };
+        let edge_distance = distance_from_leading.min(distance_from_trailing);
+        let falloff = BAND_EDGE_FALLOFF_CELLS * SUBCELLS_PER_CELL;
+        let edge_strength = edge_distance.saturating_mul(u32::from(u8::MAX)) / falloff;
+        u8::try_from(edge_strength.min(u32::from(u8::MAX)))
+            .unwrap_or(u8::MAX)
+            .min(strip_coverage)
     }
 
     /// Whether the strip reaches the cell at `column`, `row` at all
@@ -601,16 +671,17 @@ impl TravelingBand {
     ///
     /// Where the strip reaches is a separate question from how strongly
     /// it lights what it reaches, and the tests below ask it directly.
-    /// Rendering asks only [`Self::coverage`], which answers both at
-    /// once.
+    /// Rendering combines [`Self::coverage`] with
+    /// [`Self::glyph_strength`] to answer both.
     #[cfg(test)]
     fn covers(&self, column: u16, row: u16) -> bool { self.coverage(column, row).is_some() }
 
-    /// How strongly the strip lights the cell at `column`, `row` this
-    /// frame, or [`None`] where it does not reach the cell at all.
+    /// How much of the cell at `column`, `row` the strip geometrically
+    /// covers this frame, or [`None`] where it does not reach the cell.
     ///
-    /// [`u8::MAX`] is the strip at full strength, and anything less is
-    /// a cell the leading edge has only partly entered.
+    /// [`u8::MAX`] is a fully covered cell, and anything less is one of
+    /// the cells a boundary has only partly crossed. Glyph intensity is
+    /// derived separately by [`Self::glyph_strength`].
     ///
     /// That partial line is what makes the strip travel rather than
     /// step. The edge moves a fraction of a cell per frame -- a little
@@ -792,6 +863,17 @@ impl TravelingBand {
         usize::from(row) * usize::from(self.columns) + usize::from(column)
     }
 
+    /// Widest width permitted for `lines`; an unsized strip gets the
+    /// [`MAX_BAND_WIDTH`] sentinel until the first sizing lowers it.
+    fn widest_permitted_width(lines: u16) -> u32 {
+        let widest = if lines == 0 {
+            MAX_BAND_WIDTH
+        } else {
+            u32::from(lines) * MAX_BAND_WIDTH_PERCENT / WHOLE_PERCENT
+        };
+        widest.max(MIN_BAND_WIDTH)
+    }
+
     /// Stand the strip `width` deep, clamped to what it is allowed.
     ///
     /// Never deeper than the grid it crosses -- see
@@ -799,16 +881,35 @@ impl TravelingBand {
     /// whose trailing edge is at full stretch has met its own leading
     /// edge and lights its whole line, which is a reasonable place to
     /// be able to get to; past it more and more offsets are in that
-    /// state at once and there is too little grid left empty to read
-    /// the strip against.
+    /// state at once and there is too little grid outside the strip to
+    /// read its boundaries.
     fn set_width(&mut self, width: u32) {
-        let lines = self.lines();
-        let widest = if lines == 0 {
-            MAX_BAND_WIDTH
-        } else {
-            u32::from(lines) * MAX_BAND_WIDTH_PERCENT / WHOLE_PERCENT
-        };
-        self.width = width.clamp(MIN_BAND_WIDTH, widest.max(MIN_BAND_WIDTH));
+        let widest = Self::widest_permitted_width(self.lines());
+        self.width = width.clamp(MIN_BAND_WIDTH, widest);
+    }
+
+    /// Set the strip's travel speed inside its allowed range.
+    fn set_speed(&mut self, speed: u32) {
+        self.speed = speed.clamp(MIN_BAND_SPEED, MAX_BAND_SPEED);
+    }
+
+    /// Set the edge-fraying speed inside its allowed range.
+    fn set_tail_speed(&mut self, tail_speed: u32) {
+        self.tail_speed = tail_speed.clamp(MIN_TAIL_SPEED, MAX_TAIL_SPEED);
+    }
+
+    /// Reach `fraying` through the same transitions as repeated calls
+    /// to [`Self::cycle_fraying`].
+    fn set_fraying(&mut self, fraying: BandFraying) {
+        while self.fraying != fraying {
+            self.fraying = self.fraying.next();
+            if !self.fraying.trailing() {
+                self.tails.fill(EdgeRun::at(u8::MAX));
+            }
+            if !self.fraying.leading() {
+                self.heads.fill(EdgeRun::at(0));
+            }
+        }
     }
 
     /// Ask the terminal how big one character cell is, and keep the
@@ -940,6 +1041,8 @@ fn advance_runs(
 )]
 mod tests {
     use super::*;
+    use crate::backdrop::constants::BAND_BEHIND_FADE;
+    use crate::backdrop::constants::BAND_EDGE_FALLOFF_CELLS;
     use crate::backdrop::constants::GLYPHS;
 
     /// An area big enough that the strip covers only part of it, so a
@@ -952,6 +1055,20 @@ mod tests {
     /// wrapping strip that deep leaves no gap behind its tail at all --
     /// correct, and no use for asking where it stops.
     const NARROW: u32 = 4;
+
+    /// Distinct desktop colours repeated across the synthetic
+    /// [`Backdrop`]. Every entry stays distinct after
+    /// [`BAND_BEHIND_FADE`] is applied over [`PANE_BACKGROUND`].
+    const DESKTOP_PALETTE: [Color; 4] = [
+        Color::Rgb(232, 64, 96),
+        Color::Rgb(72, 208, 128),
+        Color::Rgb(80, 112, 240),
+        Color::Rgb(224, 176, 64),
+    ];
+
+    /// Existing pane background used to distinguish desktop painting
+    /// from leaving a cell untouched.
+    const PANE_BACKGROUND: Color = Color::Rgb(12, 16, 24);
 
     /// A strip sized to [`AREA`] with its leading edge one whole band
     /// width in, so the cell it entered by is at the very end of the
@@ -968,6 +1085,29 @@ mod tests {
         band.advance(AREA, Duration::ZERO);
         band.leading_edge = band.width * SUBCELLS_PER_CELL;
         band
+    }
+
+    /// A strip standing `width` cells deep with both boundaries inside
+    /// [`AREA`].
+    fn entered_with_width(direction: BandDirection, width: u32) -> TravelingBand {
+        let mut band = entered(direction);
+        band.set_width(width);
+        band.leading_edge = band.width * SUBCELLS_PER_CELL;
+        band
+    }
+
+    /// A synthetic desktop whose adjacent cells cycle through visibly
+    /// different colours.
+    fn multicolor_backdrop(area: Rect) -> Backdrop {
+        let cells = usize::from(area.width) * usize::from(area.height);
+        let colors = (0..cells)
+            .map(|index| DESKTOP_PALETTE[index % DESKTOP_PALETTE.len()])
+            .collect();
+        Backdrop {
+            width: area.width,
+            height: area.height,
+            colors,
+        }
     }
 
     #[test]
@@ -1076,63 +1216,107 @@ mod tests {
         }
     }
 
-    /// A cell in the body of the strip wears the colour of the backdrop
-    /// under it, which is the whole point of drawing over one.
-    ///
-    /// The edge is carried a whole cell past the origin first, so the
-    /// cell read is one the strip has fully arrived on rather than the
-    /// one it is still entering -- that line is the single exception,
-    /// and [`the_line_the_edge_is_entering_is_lit_in_proportion_to_how_far_in_it_is`]
-    /// is what covers it.
+    /// A cell between the two boundary falloffs draws glyph ink at its
+    /// own desktop colour.
     #[test]
     fn a_covered_cell_is_drawn_in_the_colour_behind_it() {
-        let color = Color::Rgb(200, 100, 50);
-        let mut band = TravelingBand::new();
-        band.advance(AREA, Duration::ZERO);
-        band.leading_edge = SUBCELLS_PER_CELL;
-        let backdrop = Backdrop::flat(AREA, color);
+        let width = BAND_EDGE_FALLOFF_CELLS * 2 + 1;
+        let band = entered_with_width(BandDirection::Right, width);
+        let backdrop = multicolor_backdrop(AREA);
         let mut buffer = Buffer::empty(AREA);
+        let column = u16::try_from(BAND_EDGE_FALLOFF_CELLS).unwrap_or(u16::MAX);
+        let color = backdrop.color_at(column, 0).expect("desktop covers strip");
 
         band.render(AREA, &backdrop, Color::Black, &mut buffer);
 
         let cell = buffer
-            .cell((AREA.x, AREA.y))
-            .expect("area covers its own origin");
+            .cell((AREA.x + column, AREA.y))
+            .expect("area covers strip center");
         assert_eq!(cell.fg, color);
         assert!(GLYPHS.contains(&cell.symbol().chars().next().unwrap_or(' ')));
     }
 
-    /// The one thing the strip is for is showing what the desktop
-    /// behind the window looks like, so every cell of its body is that
-    /// colour exactly -- the tail, and everything up to the line the
-    /// edge is still entering. A cell carried any distance toward the
-    /// ground shows something that is not behind the window at all, and
-    /// where the window is transparent the ground is not what the
-    /// reader is looking at either.
-    ///
-    /// The one line the edge is part of the way into is the exception,
-    /// and it is bought deliberately: without it the strip cannot
-    /// change between one whole cell and the next, and a whole cell
-    /// arriving on an uneven beat is what the eye reads as stepping
-    /// rather than as travel. One line of a strip twenty deep pays for
-    /// the other nineteen moving smoothly.
+    /// Adjacent cells inside the strip keep separate background samples
+    /// instead of sharing a strip-wide colour.
     #[test]
-    fn the_whole_strip_is_the_desktop_colour_front_to_back() {
-        let color = Color::Rgb(200, 100, 50);
-        let band = entered(BandDirection::Right);
-        let backdrop = Backdrop::flat(AREA, color);
+    fn adjacent_covered_cells_keep_their_own_desktop_backgrounds() {
+        let width = BAND_EDGE_FALLOFF_CELLS * 2 + 1;
+        let band = entered_with_width(BandDirection::Right, width);
+        let backdrop = multicolor_backdrop(AREA);
         let mut buffer = Buffer::empty(AREA);
 
         band.render(AREA, &backdrop, Color::Black, &mut buffer);
 
-        for column in 0..u16::try_from(band.width).unwrap_or(u16::MAX) {
+        let first_column = u16::try_from(BAND_EDGE_FALLOFF_CELLS).unwrap_or(u16::MAX);
+        let second_column = first_column + 1;
+        let backgrounds = [first_column, second_column].map(|column| {
+            let color = backdrop.color_at(column, 0).expect("desktop covers strip");
             let cell = buffer
                 .cell((AREA.x + column, AREA.y))
                 .expect("area covers the strip");
-            assert_eq!(
-                cell.fg, color,
-                "column {column} should wear the desktop's colour"
-            );
+            let expected = theme::blend_color(color, Color::Black, BAND_BEHIND_FADE);
+            assert_eq!(cell.bg, expected);
+            cell.bg
+        });
+
+        assert_ne!(backgrounds[0], backgrounds[1]);
+    }
+
+    /// A cell beyond the strip is still painted from its desktop sample
+    /// instead of retaining the pane background.
+    #[test]
+    fn cells_outside_the_strip_are_painted_from_the_desktop() {
+        let band = entered_with_width(BandDirection::Right, NARROW);
+        let backdrop = multicolor_backdrop(AREA);
+        let mut buffer = Buffer::empty(AREA);
+        let column = u16::try_from(NARROW + 1).unwrap_or(u16::MAX);
+        buffer
+            .cell_mut((AREA.x + column, AREA.y))
+            .expect("area covers the outside cell")
+            .set_bg(PANE_BACKGROUND);
+
+        band.render(AREA, &backdrop, Color::Black, &mut buffer);
+
+        let color = backdrop
+            .color_at(column, 0)
+            .expect("desktop covers the outside cell");
+        let expected = theme::blend_color(color, PANE_BACKGROUND, BAND_BEHIND_FADE);
+        let cell = buffer
+            .cell((AREA.x + column, AREA.y))
+            .expect("area covers the outside cell");
+        assert_eq!(cell.bg, expected);
+        assert_ne!(cell.bg, PANE_BACKGROUND);
+        assert_eq!(cell.symbol(), " ");
+    }
+
+    /// Both boundaries carry glyph ink through two intermediate cells
+    /// before it reaches full desktop colour on the third.
+    #[test]
+    fn both_strip_edges_fade_glyph_ink_across_multiple_cells() {
+        let width = BAND_EDGE_FALLOFF_CELLS * 2 + 1;
+        let band = entered_with_width(BandDirection::Right, width);
+        let backdrop = multicolor_backdrop(AREA);
+        let mut buffer = Buffer::empty(AREA);
+        let last_column = u16::try_from(width - 1).unwrap_or(u16::MAX);
+
+        band.render(AREA, &backdrop, Color::Black, &mut buffer);
+
+        let edge_cells = [(0, 1), (1, 2), (last_column - 1, 2), (last_column, 1)];
+        for (column, cells_from_edge) in edge_cells {
+            let color = backdrop.color_at(column, 0).expect("desktop covers strip");
+            let background = theme::blend_color(color, Color::Black, BAND_BEHIND_FADE);
+            let strength =
+                u8::try_from(cells_from_edge * u32::from(u8::MAX) / BAND_EDGE_FALLOFF_CELLS)
+                    .unwrap_or(u8::MAX);
+            let expected = theme::blend_color(color, background, u8::MAX - strength);
+            let cell = buffer
+                .cell((AREA.x + column, AREA.y))
+                .expect("area covers the edge cell");
+
+            assert_eq!(cell.bg, background, "column {column} background");
+            assert_eq!(cell.fg, expected, "column {column} glyph ink");
+            assert_ne!(cell.fg, background, "column {column} has visible ink");
+            assert_ne!(cell.fg, color, "column {column} remains in the falloff");
         }
     }
 
@@ -1628,5 +1812,194 @@ mod tests {
         band.advance(AREA, Duration::from_millis(500));
 
         assert_eq!(band.leading_edge, speed * SUBCELLS_PER_CELL / 2);
+    }
+
+    /// Settings taken from one sized strip restore exactly on another
+    /// strip sized to the same area.
+    #[test]
+    fn band_settings_round_trip_between_sized_strips() {
+        let mut source = TravelingBand::new();
+        source.advance(AREA, Duration::ZERO);
+        source.set_direction(BandDirection::Down);
+        source.narrow(u32::MAX);
+        source.widen(NARROW - MIN_BAND_WIDTH);
+        source.speed_up(17);
+        source.tail_faster(31);
+        source.cycle_fraying();
+        let settings = source.settings();
+        let mut restored = TravelingBand::new();
+        restored.advance(AREA, Duration::ZERO);
+
+        restored.apply(settings);
+
+        assert_eq!(restored.settings(), settings);
+    }
+
+    /// Applying direction and fraying settings to a running strip has
+    /// the same runtime result as the corresponding steering calls.
+    #[test]
+    fn applying_band_settings_uses_the_steering_transitions() {
+        let mut starting = TravelingBand::new();
+        starting.advance(AREA, Duration::ZERO);
+        starting.narrow(u32::MAX);
+        starting.speed_up(17);
+        starting.tail_faster(31);
+        starting.set_direction(BandDirection::Left);
+        starting.advance(AREA, Duration::from_millis(250));
+        starting.advance(AREA, Duration::from_millis(250));
+
+        for direction in [
+            BandDirection::Left,
+            BandDirection::Right,
+            BandDirection::Up,
+            BandDirection::Down,
+        ] {
+            for fraying in [
+                BandFraying::Trailing,
+                BandFraying::Both,
+                BandFraying::Leading,
+                BandFraying::Neither,
+            ] {
+                let mut expected = starting.clone();
+                expected.set_direction(direction);
+                while expected.fraying != fraying {
+                    expected.cycle_fraying();
+                }
+                let mut settings = starting.settings();
+                settings.direction = direction;
+                settings.fraying = fraying;
+                let mut applied = starting.clone();
+
+                applied.apply(settings);
+
+                assert_eq!(
+                    applied, expected,
+                    "direction {direction:?}, fraying {fraying:?}"
+                );
+            }
+        }
+    }
+
+    /// Values outside every numeric range are normalized by
+    /// [`TravelingBand::apply`].
+    #[test]
+    fn applying_band_settings_clamps_every_numeric_field() {
+        let mut band = TravelingBand::new();
+        band.advance(AREA, Duration::ZERO);
+
+        band.apply(BandSettings {
+            direction:  BandDirection::Right,
+            width:      0,
+            speed:      0,
+            tail_speed: 0,
+            fraying:    BandFraying::Both,
+        });
+        assert_eq!(band.width, MIN_BAND_WIDTH);
+        assert_eq!(band.speed, MIN_BAND_SPEED);
+        assert_eq!(band.tail_speed, MIN_TAIL_SPEED);
+
+        band.apply(BandSettings {
+            direction:  BandDirection::Right,
+            width:      u32::MAX,
+            speed:      u32::MAX,
+            tail_speed: u32::MAX,
+            fraying:    BandFraying::Both,
+        });
+        let widest = u32::from(AREA.width) * MAX_BAND_WIDTH_PERCENT / WHOLE_PERCENT;
+        assert_eq!(band.width, widest);
+        assert_eq!(band.speed, MAX_BAND_SPEED);
+        assert_eq!(band.tail_speed, MAX_TAIL_SPEED);
+    }
+
+    /// A seed always produces the same settings, while the fixed seed
+    /// corpus varies every field and reaches every enum variant.
+    #[test]
+    fn random_band_settings_are_deterministic_and_cover_every_field() {
+        let mut band = TravelingBand::new();
+        band.advance(AREA, Duration::ZERO);
+        let samples: Vec<BandSettings> = (1..=512).map(|seed| band.random_settings(seed)).collect();
+        let first = samples[0];
+
+        assert_eq!(band.random_settings(41), band.random_settings(41));
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.direction != first.direction)
+        );
+        assert!(samples.iter().any(|settings| settings.width != first.width));
+        assert!(samples.iter().any(|settings| settings.speed != first.speed));
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.tail_speed != first.tail_speed)
+        );
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.fraying != first.fraying)
+        );
+        for direction in [
+            BandDirection::Left,
+            BandDirection::Right,
+            BandDirection::Up,
+            BandDirection::Down,
+        ] {
+            assert!(
+                samples
+                    .iter()
+                    .any(|settings| settings.direction == direction)
+            );
+        }
+        for fraying in [
+            BandFraying::Trailing,
+            BandFraying::Both,
+            BandFraying::Leading,
+            BandFraying::Neither,
+        ] {
+            assert!(samples.iter().any(|settings| settings.fraying == fraying));
+        }
+    }
+
+    /// Before its first sizing, the strip draws widths across the
+    /// sentinel range instead of reducing every seed to the minimum.
+    #[test]
+    fn random_band_width_uses_the_unsized_sentinel_range() {
+        let band = TravelingBand::new();
+        let samples: Vec<BandSettings> = (1..=512).map(|seed| band.random_settings(seed)).collect();
+        let first = samples[0].width;
+        let widest = TravelingBand::widest_permitted_width(0);
+
+        assert_eq!(widest, MAX_BAND_WIDTH);
+        assert!(
+            samples
+                .iter()
+                .all(|settings| (MIN_BAND_WIDTH..=widest).contains(&settings.width))
+        );
+        assert!(samples.iter().any(|settings| settings.width != first));
+        assert!(
+            samples
+                .iter()
+                .any(|settings| settings.width > MIN_BAND_WIDTH)
+        );
+    }
+
+    /// Random widths use the sized strip's extent along the generated
+    /// direction, never the pre-sizing sentinel.
+    #[test]
+    fn random_band_width_uses_the_generated_directions_axis_extent() {
+        let mut band = TravelingBand::new();
+        band.advance(AREA, Duration::ZERO);
+
+        for seed in 1..=512 {
+            let settings = band.random_settings(seed);
+            let lines = match settings.direction {
+                BandDirection::Left | BandDirection::Right => AREA.width,
+                BandDirection::Up | BandDirection::Down => AREA.height,
+            };
+            let widest =
+                (u32::from(lines) * MAX_BAND_WIDTH_PERCENT / WHOLE_PERCENT).max(MIN_BAND_WIDTH);
+            assert!((MIN_BAND_WIDTH..=widest).contains(&settings.width));
+            assert_ne!(settings.width, MAX_BAND_WIDTH);
+        }
     }
 }

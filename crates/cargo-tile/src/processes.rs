@@ -142,17 +142,18 @@ pub(crate) struct CommandText {
     arguments:          Vec<String>,
 }
 
-/// Whether a cell shows the manifest path an invocation names.
+/// How much of an invocation's command line a cell prints.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ManifestPath {
-    /// Show it, the way a command's own cell shows the whole line.
-    Shown,
-    /// Leave it out, the way the summary does. Every row there already
-    /// sits under the working directory heading its group, and cargo is
-    /// handed the manifest as an absolute path -- long enough to push
-    /// the subcommand off the edge of a narrow cell to repeat what the
+pub(crate) enum SummaryDetail {
+    /// The whole line, the way a command's own cell shows it.
+    Full,
+    /// The manifest path and the summary's noise flags left out, the
+    /// way the summary shows it. Every row there already sits under the
+    /// working directory heading its group, and cargo is handed the
+    /// manifest as an absolute path -- long enough to push the
+    /// subcommand off the edge of a narrow cell to repeat what the
     /// header just said.
-    Hidden,
+    Trimmed,
 }
 
 impl CommandText {
@@ -211,8 +212,8 @@ impl CommandText {
     }
 
     /// The arguments as one line, the summary's own flags in or out.
-    pub(crate) fn line(&self, manifest: ManifestPath) -> String {
-        if manifest == ManifestPath::Shown {
+    pub(crate) fn line(&self, detail: SummaryDetail) -> String {
+        if detail == SummaryDetail::Full {
             return self.arguments.join(" ");
         }
         let mut kept: Vec<&str> = Vec::with_capacity(self.arguments.len());
@@ -350,7 +351,14 @@ pub(crate) struct Scan {
 /// Start the scanner thread and hand back the channel it publishes on.
 ///
 /// The thread ends when the receiver is dropped.
-pub(crate) fn spawn() -> Receiver<Scan> {
+///
+/// `excluded` is taken by value and read for the life of the thread.
+/// Nothing edits `commands.excluded` while the app runs -- the settings
+/// overlay reports the list and the file is where it is changed -- so a
+/// snapshot at startup and a live read say the same thing, and a
+/// snapshot keeps the scanner free of a lock the loop would take four
+/// times a second.
+pub(crate) fn spawn(excluded: Vec<String>) -> Receiver<Scan> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut system = System::new();
@@ -363,6 +371,7 @@ pub(crate) fn spawn() -> Receiver<Scan> {
                     &mut smoothing,
                     Instant::now(),
                     home.as_deref(),
+                    &excluded,
                 ))
                 .is_err()
             {
@@ -384,6 +393,7 @@ fn scan(
     smoothing: &mut CpuSmoothing,
     now: Instant,
     home: Option<&Path>,
+    excluded: &[String],
 ) -> Scan {
     // Phase one: pid, name, parent and start time for everything. None of
     // the fields this asks for require a per-process read of the argument
@@ -422,10 +432,18 @@ fn scan(
     // Pruning here rather than at render time keeps a mislabelled
     // `sccache` from claiming the compilers that belong to the cargo
     // above it, which `attribute_compilers` is about to hand out.
+    //
+    // `commands.excluded` is read in the same pass and for the same
+    // reason. Dropping an excluded command here rather than where the
+    // cells are handed out is what makes it *untracked* rather than
+    // merely undrawn: it reaches neither the summary nor the grid, it
+    // cannot stand between a compiler and the cargo that owns it, and a
+    // cargo running underneath one attributes to whatever is above it
+    // instead of leaving with it.
     census.cargo.retain(|pid| {
-        system
-            .process(*pid)
-            .is_some_and(|process| names_cargo(process.cmd()))
+        system.process(*pid).is_some_and(|process| {
+            names_cargo(process.cmd()) && !is_excluded(process.cmd(), excluded)
+        })
     });
 
     // Shims are separated from managers on argv, so this waits for phase
@@ -1204,6 +1222,16 @@ fn subcommand(argv: &[OsString]) -> Option<String> {
         .find(|argument| !argument.starts_with('-') && !argument.starts_with('+'))
 }
 
+/// Whether `commands.excluded` names the subcommand an argv carries.
+///
+/// Keyed on the subcommand rather than the binary so one entry covers
+/// both spellings of the same command: `cargo berth claim` run through
+/// cargo and `cargo-berth berth claim` run as its own binary answer
+/// [`subcommand`] the same.
+fn is_excluded(argv: &[OsString], excluded: &[String]) -> bool {
+    subcommand(argv).is_some_and(|subcommand| excluded.contains(&subcommand))
+}
+
 /// Whether a process's own name is one a cargo invocation wears.
 ///
 /// Three spellings reach here: `cargo` itself, the name a shim's
@@ -1266,6 +1294,8 @@ mod tests {
 
     use super::*;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
+    use crate::constants::COORDINATION_SUBCOMMAND_NAME;
+    use crate::constants::DEFAULT_EXCLUDED;
     use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
     use crate::constants::PID_SEPARATOR;
     use crate::constants::RUN_LOG_PREFIX;
@@ -1479,7 +1509,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
-        assert_eq!(text.line(ManifestPath::Shown), "build --release");
+        assert_eq!(text.line(SummaryDetail::Full), "build --release");
     }
 
     #[test]
@@ -1492,7 +1522,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
-        assert_eq!(text.line(ManifestPath::Shown), "check --all-targets");
+        assert_eq!(text.line(SummaryDetail::Full), "check --all-targets");
     }
 
     #[test]
@@ -1507,6 +1537,71 @@ mod tests {
                 .program,
             "cargo"
         );
+    }
+
+    /// The list as it reaches [`is_excluded`] once the config has
+    /// turned it into owned strings.
+    fn excluded() -> Vec<String> {
+        DEFAULT_EXCLUDED
+            .iter()
+            .map(|subcommand| (*subcommand).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn an_excluded_subcommand_run_through_cargo_is_dropped() {
+        let argv = vec![
+            OsString::from("/Users/someone/.cargo/bin/cargo"),
+            OsString::from(COORDINATION_SUBCOMMAND_NAME),
+            OsString::from("claim"),
+        ];
+        assert!(is_excluded(&argv, &excluded()));
+    }
+
+    /// The same command reached as its own binary, which is how a hook
+    /// with the path already resolved runs it. Keying the list on the
+    /// subcommand rather than the binary is what makes one entry cover
+    /// both.
+    #[test]
+    fn an_excluded_subcommand_run_as_its_own_binary_is_dropped() {
+        let argv = vec![
+            OsString::from("/Users/someone/.cargo/bin/cargo-berth"),
+            OsString::from("claim"),
+        ];
+        assert!(is_excluded(&argv, &excluded()));
+    }
+
+    #[test]
+    fn an_excluded_subcommand_is_dropped_past_a_toolchain_selector() {
+        let argv = vec![
+            OsString::from("/Users/someone/.cargo/bin/cargo"),
+            OsString::from("+nightly"),
+            OsString::from(COORDINATION_SUBCOMMAND_NAME),
+            OsString::from("drift"),
+        ];
+        assert!(is_excluded(&argv, &excluded()));
+    }
+
+    #[test]
+    fn a_subcommand_off_the_list_is_kept() {
+        let argv = vec![
+            OsString::from("/Users/someone/.cargo/bin/cargo"),
+            OsString::from("build"),
+            OsString::from("--release"),
+        ];
+        assert!(!is_excluded(&argv, &excluded()));
+    }
+
+    /// An emptied list is the setting turned off, not a list that
+    /// matches everything.
+    #[test]
+    fn an_empty_list_excludes_nothing() {
+        let argv = vec![
+            OsString::from("/Users/someone/.cargo/bin/cargo"),
+            OsString::from(COORDINATION_SUBCOMMAND_NAME),
+            OsString::from("renew"),
+        ];
+        assert!(!is_excluded(&argv, &[]));
     }
 
     /// macOS can report an `sccache` with the name of the cargo that
@@ -1532,7 +1627,7 @@ mod tests {
             OsString::from("--all-targets"),
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
-        assert_eq!(text.line(ManifestPath::Hidden), "check --all-targets");
+        assert_eq!(text.line(SummaryDetail::Trimmed), "check --all-targets");
     }
 
     #[test]
@@ -1544,7 +1639,7 @@ mod tests {
             OsString::from("--all-targets"),
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
-        assert_eq!(text.line(ManifestPath::Hidden), "check --all-targets");
+        assert_eq!(text.line(SummaryDetail::Trimmed), "check --all-targets");
     }
 
     /// What is being built is what the row is there to say: which
@@ -1560,7 +1655,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(ManifestPath::Hidden),
+            text.line(SummaryDetail::Trimmed),
             "mend --all-targets -p hana_clerestory"
         );
     }
@@ -1579,7 +1674,7 @@ mod tests {
             OsString::from("json-render-diagnostics"),
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
-        assert_eq!(text.line(ManifestPath::Hidden), "test --no-run");
+        assert_eq!(text.line(SummaryDetail::Trimmed), "test --no-run");
     }
 
     /// Past a bare `--` the arguments are the other program's. It
@@ -1600,7 +1695,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(ManifestPath::Hidden),
+            text.line(SummaryDetail::Trimmed),
             "clippy -- -D warnings --color always"
         );
     }
@@ -1618,10 +1713,10 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(ManifestPath::Shown),
+            text.line(SummaryDetail::Full),
             "build --bin hana --message-format=json"
         );
-        assert_eq!(text.line(ManifestPath::Hidden), "build --bin hana");
+        assert_eq!(text.line(SummaryDetail::Trimmed), "build --bin hana");
     }
 
     /// The flag is matched whole: an argument that merely starts the
@@ -1635,7 +1730,7 @@ mod tests {
         ];
         let text = command_text(&argv, None).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(ManifestPath::Hidden),
+            text.line(SummaryDetail::Trimmed),
             "check --manifest-path-of-record"
         );
     }
@@ -1651,7 +1746,7 @@ mod tests {
         ];
         let text = command_text(&argv, Some(&home)).expect("argv names a cargo binary");
         assert_eq!(
-            text.line(ManifestPath::Shown),
+            text.line(SummaryDetail::Full),
             "check --manifest-path ~/rust/project/Cargo.toml"
         );
     }
@@ -1853,7 +1948,7 @@ mod tests {
 
         assert_eq!(mend.named(), "mend");
         assert!(
-            mend.line(ManifestPath::Shown).contains("--json"),
+            mend.line(SummaryDetail::Full).contains("--json"),
             "and the long line still carries every one of them",
         );
     }

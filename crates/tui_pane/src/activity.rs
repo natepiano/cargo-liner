@@ -54,6 +54,25 @@ impl FrameCycle {
         let frame_index = usize::try_from(frame_index).unwrap_or(self.frames.len() - 1);
         self.frames[frame_index]
     }
+
+    /// Return the elapsed-time boundary where the frame next changes.
+    pub(crate) fn next_frame_boundary(self, elapsed: Duration) -> Duration {
+        let frame_count = u128::try_from(self.frames.len()).unwrap_or(u128::MAX);
+        let period = self.cycle.period.as_nanos();
+        let elapsed_nanos = elapsed.as_nanos();
+        let completed_cycles = elapsed_nanos / period;
+        let elapsed_in_cycle = elapsed_nanos % period;
+        let frame_index = elapsed_in_cycle.saturating_mul(frame_count) / period;
+        let next_in_cycle = frame_index
+            .saturating_add(1)
+            .saturating_mul(period)
+            .div_ceil(frame_count);
+        duration_from_nanos(
+            completed_cycles
+                .saturating_mul(period)
+                .saturating_add(next_in_cycle),
+        )
+    }
 }
 
 /// A static or animated icon suitable for pane rows.
@@ -74,6 +93,16 @@ impl Icon {
             Self::Animated(cycle) => cycle.frame_at(elapsed),
         }
     }
+}
+
+fn duration_from_nanos(nanos: u128) -> Duration {
+    let nanos_per_second = Duration::from_secs(1).as_nanos();
+    let seconds = nanos / nanos_per_second;
+    let subsecond_nanos = nanos % nanos_per_second;
+    let Ok(seconds) = u64::try_from(seconds) else {
+        return Duration::MAX;
+    };
+    Duration::new(seconds, u32::try_from(subsecond_nanos).unwrap_or(u32::MAX))
 }
 
 #[cfg(test)]
@@ -99,5 +128,21 @@ mod tests {
     #[test]
     fn frame_cycle_wraps_after_full_period() {
         assert_eq!(TEST_FRAME_CYCLE.frame_at(Duration::from_millis(400)), "a");
+    }
+
+    #[test]
+    fn frame_cycle_reports_the_next_frame_boundary() {
+        assert_eq!(
+            TEST_FRAME_CYCLE.next_frame_boundary(Duration::ZERO),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            TEST_FRAME_CYCLE.next_frame_boundary(Duration::from_millis(100)),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            TEST_FRAME_CYCLE.next_frame_boundary(Duration::from_millis(399)),
+            Duration::from_millis(400)
+        );
     }
 }

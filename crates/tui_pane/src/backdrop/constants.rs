@@ -7,20 +7,23 @@ use std::time::Duration;
 /// the ground it is drawn on, against the character itself standing at
 /// the desktop's own colour.
 ///
-/// The same correction [`TEXT_BEHIND_FADE`] makes for the drifting
-/// field, and it is wanted here for a reason the field does not have.
-/// A glyph's ink sits wherever that glyph puts it -- `_` along the
-/// bottom of the cell, `^` along the top, `.` in neither -- so a strip
-/// that painted the character alone dealt every cell's colour to a
-/// different corner of it, and the picture would not line up with
-/// itself however still the desktop underneath was held.
+/// The band paints this background across the whole area, so it keeps
+/// three quarters of the sampled desktop colour. [`TEXT_BEHIND_FADE`]
+/// carries its background halfway toward the ground because every text
+/// cell also has ink to restore the desktop colour. Outside the band's
+/// strip there is no ink, and that halfway blend washed out the desktop
+/// variation the background is there to preserve.
+pub(super) const BAND_BEHIND_FADE: u8 = 64;
+/// How many cells each end of the strip uses to bring glyph ink from
+/// its sampled desktop background up to full strength.
 ///
-/// Matched to the field's own setting rather than drawn separately:
-/// the two animations are read one after the other on the same
-/// desktop, and a strip that showed it at a different strength would
-/// read as a different capture rather than as the same one drawn
-/// another way.
-pub(super) const BAND_BEHIND_FADE: u8 = TEXT_BEHIND_FADE;
+/// Three cells leave two visibly intermediate steps between the
+/// background and full ink, so neither boundary cuts off on one cell.
+pub(super) const BAND_EDGE_FALLOFF_CELLS: u32 = 3;
+const _: () = assert!(
+    BAND_EDGE_FALLOFF_CELLS > 0,
+    "the band edge falloff divides by its cell count"
+);
 /// How many cells are re-rolled to a new character each frame, on top
 /// of the whole line the leading edge re-rolls as it arrives. Enough
 /// to read as a shimmer without the strip looking like static.
@@ -365,6 +368,12 @@ pub(super) const TEXT_WAVE_SUBLINES_PER_SECOND: u32 = LANE_FRACTION_UNIT / 2;
 pub(super) const LANE_FRACTION_UNIT: u32 = 4096;
 
 // capture
+/// How long a capture worker may hold one attempt without returning a result.
+///
+/// Healthy attempts complete well under a second. Five seconds leaves substantial room for a
+/// temporarily busy window server while still recovering before one stalled completion handler
+/// disables capture for the rest of the process.
+pub(super) const CAPTURE_ATTEMPT_DEADLINE: Duration = Duration::from_secs(5);
 /// How often the worker takes a fresh capture.
 ///
 /// What a capture goes stale for is the desktop behind the window
@@ -381,17 +390,24 @@ pub(super) const CAPTURE_REFRESH: Duration = Duration::from_millis(1000);
 /// a window parked off every display is not asking the window server
 /// for a full capture every frame.
 pub(super) const CAPTURE_RETRY: Duration = Duration::from_millis(150);
-/// How many times the window server is asked which window is wearing
-/// the marker title within one pass, before that pass gives up and
-/// [`IDENTIFY_PASSES`] decides whether there is another.
+/// Synthetic owner pid for the frontmost-application candidate path.
+pub(super) const CAPTURE_TEST_FRONTMOST_OWNER_PID: i32 = 3;
+/// Synthetic owner pid accepted by the process-ancestry candidate path.
+pub(super) const CAPTURE_TEST_PROCESS_ANCESTOR_PID: i32 = 1;
+/// Synthetic owner pid for the terminal-program candidate path.
+pub(super) const CAPTURE_TEST_TERMINAL_PROGRAM_OWNER_PID: i32 = 2;
+/// Maximum number of replacement capture workers a monitor may launch.
 ///
-/// These are not paced. A round trip is a fraction of a millisecond,
-/// so all of them together cover a few milliseconds at most -- nowhere
-/// near long enough for a title to reach the emulator, be drawn and
-/// reach the window server. Waiting for that is what the passes are
-/// for; this run is only there to catch a title that has already
-/// arrived.
-pub(super) const IDENTIFY_ATTEMPTS: u32 = 5;
+/// The bound counts replacements since the last result the monitor received, so a worker that
+/// recovers does not spend the allowance. A worker abandoned after [`CAPTURE_ATTEMPT_DEADLINE`]
+/// can remain blocked in `ScreenCaptureKit` for the life of the process, and the bound still limits
+/// the threads retained by a run that never recovers.
+pub(super) const MAX_CAPTURE_WORKER_REPLACEMENTS: usize = 3;
+/// Maximum number of completed capture attempt diagnostics retained between drains.
+///
+/// At the [`CAPTURE_RETRY`] cadence, 64 diagnostics span about ten seconds, far longer than a
+/// rendered-frame interval, while bounding storage for callers that never drain the queue.
+pub(super) const MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS: usize = 64;
 /// How many passes are made before the window is given up on and the
 /// size heuristic carries the run.
 ///
@@ -406,9 +422,13 @@ pub(super) const IDENTIFY_ATTEMPTS: u32 = 5;
 pub(super) const IDENTIFY_PASSES: u32 = 10;
 /// How long the app waits before looking for its window again.
 ///
-/// Long enough that a busy emulator has drained what was queued ahead
-/// of the marker, and short enough that ten of them are over inside
-/// the first few seconds of the animation.
+/// This is the whole of the waiting. Asking the window server costs a
+/// fraction of a millisecond, so nothing else in a pass takes any time
+/// at all, and a title needs far longer than that to reach the
+/// emulator, be drawn, and be seen. Long enough that a busy emulator
+/// has drained what was queued ahead of the marker, and short enough
+/// that ten of them are over inside the first few seconds of the
+/// animation.
 pub(super) const IDENTIFY_RETRY: Duration = Duration::from_millis(500);
 /// What the marker title this app briefly wears begins with, before
 /// the process id that makes it this process's alone.

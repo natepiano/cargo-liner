@@ -86,6 +86,16 @@ case $first in
     tile | port)
         capture=0
         ;;
+    # This workspace's coordination sibling, reached as `cargo berth`.
+    # It is fired from an editor hook several times a second and exits
+    # in well under a poll interval, so capturing it opens a log per
+    # invocation for a run with no build in it to mirror. The grid
+    # leaves it out through `commands.excluded`; this is the same
+    # decision on the capture side, kept here because a POSIX shell
+    # cannot read the TOML the grid reads.
+    berth)
+        capture=0
+        ;;
 esac
 # A nested cargo -- a build script, or cargo driving cargo -- is already
 # inside a captured run and must not open a second one. The flag carries
@@ -146,27 +156,18 @@ else
 fi
 
 fifo=
-# What makes a finished log worth keeping: cargo's unit counter, or the
-# line it prints while it waits for the lock on the directory it builds
-# into. These are the two things the grid reads, spelled here as an ERE
-# because the shim cannot see the constants the reader uses. The lock
-# line is matched short of the directory's name, which cargo has called
-# both the build directory and the artifact directory.
-worth_keeping='waiting for file lock|\] [0-9]+/[0-9]+:'
 cleanup() {
     rm -f "$pids/$$"
     if [ -n "$fifo" ]; then rm -f "$fifo"; fi
-    # A run that reached no unit and waited on no lock leaves a log with
-    # nothing in it the grid could ever have read. Editors issue those
-    # constantly -- rust-analyzer checks on every save -- and nothing
-    # else prunes the directory, so they go here rather than accumulate
-    # one per save until the system sweeps /tmp. A log that did record
-    # something is left alone: `grep -q` stops at the first match, so
-    # the scan costs a real build almost nothing and only reads an empty
-    # one to the end.
-    if [ -f "$log" ] && ! grep -qE "$worth_keeping" "$log" 2> /dev/null; then
-        rm -f "$log"
-    fi
+    # The log is how a cargo that is running now tells the grid where it
+    # has got to, and nothing reads one after the run that wrote it
+    # ends: the grid only ever opens a log whose pid is still registered
+    # above. So the run takes its log with it. Editors make this matter
+    # -- rust-analyzer checks on every save -- but a build worth
+    # watching is no different, because neither is read again. What the
+    # grid sweeps is the logs of runs killed outright, which never reach
+    # this trap, and that is the only way one outlives its run now.
+    rm -f "$log"
 }
 trap cleanup EXIT
 trap 'exit 130' INT

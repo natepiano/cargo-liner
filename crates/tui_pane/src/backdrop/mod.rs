@@ -23,10 +23,10 @@
 //! draws the desktop itself with a band of coarseness sweeping across
 //! it.
 //!
-//! Every entry point answers [`None`] or draws nothing where the
-//! platform has no capture backend or the Screen Recording permission
-//! was refused. This is decoration, and a refusal is a case for
-//! drawing nothing rather than for an error.
+//! A monitor keeps its last successful drawing after a capture failure
+//! and reports the latest attempt through [`BackdropStatus`]. This is
+//! decoration, so a failure still leaves renderers free to draw nothing
+//! or reuse the last good backdrop.
 
 mod band;
 mod constants;
@@ -39,19 +39,38 @@ mod text;
 
 pub use band::BandDirection;
 pub use band::BandFraying;
+pub use band::BandSettings;
 pub use band::TravelingBand;
 use crossterm::terminal;
+pub use desktop::CaptureAttemptResult;
+pub use desktop::CaptureAttemptSequence;
+pub use desktop::CaptureAttemptTestCase;
+pub use desktop::CaptureAttemptWindowSelection;
+pub use desktop::CaptureFailure;
+pub use desktop::CaptureWindowSelectionMethod;
+use desktop::CaptureWindowTarget;
+pub use desktop::CompletedCaptureAttemptDiagnostic;
 use desktop::Desktop;
 use desktop::Placement;
+pub use desktop::TerminalWindowCandidateSource;
+use desktop::TerminalWindowSearchOutcome;
 pub use monitor::BackdropMonitor;
+pub use monitor::BackdropMonitorCaptureTestDriver;
+pub use monitor::BackdropStatus;
+pub use monitor::CaptureTestDriverError;
+pub use monitor::LastSuccessfulCaptureWindowId;
+pub use monitor::LatestCaptureAttemptWindowSelection;
+pub use monitor::WindowIdentification;
 pub use pixels::PixelFill;
 pub use pixels::PixelResolve;
+pub use pixels::PixelSettings;
 pub use pixels::ResolvingPixels;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 pub use text::DriftingText;
 pub use text::TextDrift;
 pub use text::TextFill;
+pub use text::TextSettings;
 
 use self::constants::PIXEL_PRECISION;
 

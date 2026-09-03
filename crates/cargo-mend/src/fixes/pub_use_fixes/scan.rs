@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use rustc_hash::FxHashMap;
 
 use super::parent_boundary;
 use super::parent_boundary::ParentBoundaryKey;
@@ -14,7 +14,8 @@ use super::validated_plan::ValidatedPubUsePlan;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Report;
-use crate::rust_syntax;
+use crate::rust_syntax::FileModulePath;
+use crate::rust_syntax::ModuleMap;
 use crate::selection::Selection;
 
 pub(crate) struct PubUseFixScan {
@@ -97,7 +98,6 @@ pub(crate) fn scan_selection(selection: &Selection, report: &Report) -> Result<P
     }
 
     fixes.extend(validated_plan::rewrite_subtree_imports_for_plans(
-        selection,
         &analysis.supported_plans,
     )?);
     let fixes = ValidatedFixSet::try_from(fixes)?;
@@ -130,6 +130,7 @@ fn collect_pub_use_fix_facts(selection: &Selection, report: &Report) -> Vec<PubU
 fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis> {
     let mut supported_plans = Vec::new();
     let mut skipped = 0usize;
+    let mut module_maps: FxHashMap<PathBuf, ModuleMap> = FxHashMap::default();
     for fact in facts {
         let child_source = fs::read_to_string(&fact.child_file)
             .with_context(|| format!("failed to read {}", fact.child_file.display()))?;
@@ -156,8 +157,19 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
         let source_root = validated_plan::find_source_root(&fact.parent_module)
             .context("failed to determine src root for parent module")?;
 
-        let parent_module_path = module_path_from_boundary_file(&source_root, &fact.parent_module)
-            .context("failed to determine parent module path")?;
+        let module_map = module_maps
+            .entry(source_root.clone())
+            .or_insert_with(|| ModuleMap::resolve(&source_root));
+        let parent_module_path = match module_map
+            .file_module_path(&source_root, &fact.parent_module)
+            .context("failed to determine parent module path")?
+        {
+            FileModulePath::Known(module_path) => module_path,
+            FileModulePath::SeveralParents => {
+                skipped += 1;
+                continue;
+            },
+        };
         let mut target_item_path = parent_module_path.clone();
         target_item_path.push(fact.child_module.clone());
         target_item_path.push(fact.child_item_name.clone());
@@ -296,21 +308,4 @@ fn group_parent_pub_use_plans(
 
 fn normalize_rel_path(path: impl AsRef<Path>) -> String {
     path.as_ref().to_string_lossy().replace('\\', "/")
-}
-
-fn module_path_from_dir(source_root: &Path, module_dir: &Path) -> Option<Vec<String>> {
-    let relative = module_dir.strip_prefix(source_root).ok()?;
-    let components = relative
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    (!components.is_empty()).then_some(components)
-}
-
-fn module_path_from_boundary_file(source_root: &Path, boundary_file: &Path) -> Option<Vec<String>> {
-    if boundary_file.file_name().and_then(OsStr::to_str) == Some("mod.rs") {
-        return module_path_from_dir(source_root, boundary_file.parent()?);
-    }
-
-    rust_syntax::file_module_path(source_root, boundary_file)
 }

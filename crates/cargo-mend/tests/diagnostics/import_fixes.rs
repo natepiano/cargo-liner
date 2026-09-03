@@ -752,3 +752,71 @@ edition = "2024"
         "single super:: should not trigger replace_deep_super_import"
     );
 }
+
+/// A module attached with `#[path]` does not live where its directory says. Its
+/// imports must not be shortened against the directory-derived module path: the
+/// `super::` that produces names the wrong parent, and the crate stops compiling.
+#[test]
+fn fix_leaves_a_path_attached_module_import_alone() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "path_attribute_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/platform")).expect("create src/platform");
+    fs::create_dir_all(temp.path().join("src/stream")).expect("create src/stream");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod platform;\nmod stream;\n\n\
+         pub fn open() { drop(platform::open_camera_stream()); }\n",
+    )
+    .expect("write fixture lib");
+    fs::write(
+        temp.path().join("src/platform/mod.rs"),
+        "#[path = \"../stream/macos.rs\"]\nmod camera_stream;\n\n\
+         pub(crate) use camera_stream::open_camera_stream;\n",
+    )
+    .expect("write fixture platform module");
+    fs::write(
+        temp.path().join("src/stream/mod.rs"),
+        "pub(crate) struct CameraFrame;\n",
+    )
+    .expect("write fixture stream module");
+    fs::write(
+        temp.path().join("src/stream/macos.rs"),
+        "use crate::stream::CameraFrame;\n\n\
+         pub(crate) fn open_camera_stream() -> CameraFrame { CameraFrame }\n",
+    )
+    .expect("write fixture detached module");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let detached =
+        fs::read_to_string(temp.path().join("src/stream/macos.rs")).expect("read fixed file");
+    assert!(
+        detached.contains("use crate::stream::CameraFrame;"),
+        "the crate-absolute import was rewritten: {detached}"
+    );
+    assert!(
+        !detached.contains("use super::"),
+        "a super import was introduced against the wrong parent: {detached}"
+    );
+}

@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-mend"
-version = "0.21.0-dev"
+version = "0.22.0-dev"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-tile"
-version = "0.2.53-dev"
+version = "0.2.78-dev"
 dependencies = [
  "chrono",
  "clap",
@@ -521,6 +521,8 @@ dependencies = [
  "tempfile",
  "toml 1.1.4+spec-1.1.0",
  "tui_pane",
+ "unicode-width",
+ "uuid",
 ]
 
 [[package]]
@@ -3349,6 +3351,7 @@ checksum = "9ddaa8d6b16a2762c9a97c9a6297f04cb8ded0487e5ef02dc98b4e2bee3a26c7"
 dependencies = [
  "apple-cf",
  "apple-metal",
+ "futures-core",
 ]
 
 [[package]]

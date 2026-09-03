@@ -21,7 +21,7 @@ use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
-use crate::rust_syntax;
+use crate::rust_syntax::ModuleMap;
 use crate::selection::Selection;
 
 #[derive(Debug, Clone)]
@@ -154,6 +154,7 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
         if !source_root.is_dir() {
             continue;
         }
+        let module_map = ModuleMap::resolve(&source_root);
         for entry in WalkDir::new(&source_root)
             .into_iter()
             .filter_map(Result::ok)
@@ -168,6 +169,7 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
                 selection.analysis_root.as_path(),
                 &source_root,
                 path,
+                &module_map,
             )?);
         }
     }
@@ -193,13 +195,19 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
     Ok(findings)
 }
 
-fn scan_file(analysis_root: &Path, source_root: &Path, path: &Path) -> Result<Vec<ImportFinding>> {
+fn scan_file(
+    analysis_root: &Path,
+    source_root: &Path,
+    path: &Path,
+    module_map: &ModuleMap,
+) -> Result<Vec<ImportFinding>> {
+    let Some(base_module_path) = module_map.scannable_module_path(source_root, path)? else {
+        return Ok(Vec::new());
+    };
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
         parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let base_module_path = rust_syntax::file_module_path(source_root, path)
-        .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = import_path::line_offsets(&text);
     let mut visitor = UseVisitor {
         analysis_root,

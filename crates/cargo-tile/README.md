@@ -30,7 +30,6 @@ bottom-right corner, and ctrl-k opens the full keymap viewer.
 | `s` | settings overlay |
 | `q` | quit |
 | `R` | restart — re-runs this binary with the same arguments |
-| `x` / Esc | dismiss the open overlay |
 | Tab / shift-Tab | cycle panes |
 | ↑ ↓ | move the selection in the open overlay |
 | ← → | change the selected setting |
@@ -67,21 +66,22 @@ data changes.
 | a status-line slot | push a `StatusLineGlobal` in `render::draw_status_line` |
 | a setting | add a row and a `SettingId` in `settings.rs` |
 
-`AppGlobalAction` starts as an enum with no variants, so the app-globals scope
-is empty until you give it one. That is why its `Action` methods are written by
-hand rather than through `action_enum!` — the macro requires at least one
-variant.
+`AppGlobalAction` is the populated enum of cargo-tile's global shortcuts. Add
+new variants through `action_enum!`, then give each one a place in the default
+bindings and dispatcher.
 
 ## configuration
 
-Three files, all optional, under `<os config dir>/cargo-tile/` — on macOS that
-is `~/Library/Application Support/cargo-tile/`, on Linux `~/.config/cargo-tile/`:
+Four optional configuration entries live under `<os config dir>/cargo-tile/` —
+on macOS that is `~/Library/Application Support/cargo-tile/`, on Linux
+`~/.config/cargo-tile/`:
 
 | file | purpose |
 | --- | --- |
 | `config.toml` | which theme to use |
 | `themes/*.toml` | custom color themes |
 | `keymap.toml` | key binding overrides |
+| `favorites.toml` | saved attract modes and parameters |
 
 ### colors
 
@@ -275,6 +275,32 @@ invocation, carrying that invocation under it, and closes through the usual fade
 once the invocation ends. The list is only for commands that outlast their work:
 anything that finishes on its own already leaves the grid by finishing.
 
+Other commands are cargo by spelling and not by purpose. A subcommand fired from
+an editor hook several times a second finishes inside one poll and compiles
+nothing, so each invocation opens a cell with no rows in it and closes again
+before the opening animation has run — several at once, and the grid spends its
+whole time animating cells that never draw anything. Name those and the scan
+drops them before anything is built out of them:
+
+```toml
+[commands]
+excluded = ["berth"]
+```
+
+This is the stronger of the two lists. `hidden_when_idle` withholds the cell and
+keeps the summary line; `excluded` means not tracked at all — no cell, no summary
+line, no CPU or compiler attribution. Excluded commands go transparent rather
+than opaque: a cargo invocation running underneath one is attributed to whatever
+stands above it and keeps its own cell, so excluding a command never hides real
+work done under it. The list is keyed on the subcommand word, so one entry covers
+both `cargo berth` and a direct `cargo-berth`, and a `+toolchain` selector in
+front of it changes nothing.
+
+Capture is decided separately. The shim carries its own short list of
+subcommands it does not open a log for — `tile`, `port` and `berth` — because a
+POSIX shell cannot read this file. Adding a command to `excluded` keeps it off
+the grid; keeping it out of the capture logs means editing that list too.
+
 A command finishing in the middle takes its cell with it and the grid closes over
 the space: the cell above it and the cell below come together, and everything
 after moves up one place in the same travel. One change at a time, though — a
@@ -447,14 +473,17 @@ between them from any of them.
 `[attract_moving_band]` is the strip of characters crossing the grid: the arrow
 keys send it the way they point, `>` and `<` speed it up and slow it down (`.`
 and `,` do the same unshifted), and `+` and `-` widen and thin it, with `=`
-standing in for `+`. `v` varies the trailing edge, after which every row of the
-band runs back its own distance, growing and shrinking between a third of its
-width and all of it while the leading edge stays flat.
+standing in for `+`. `v` cycles the fraying through the trailing edge, both
+edges, the leading edge and neither. A fraying trailing edge never eats into the
+last third of the band and a fraying leading edge stands back at most a fifth of
+it, so the strip keeps a core at every offset rather than parting in the middle;
+`[` and `]` slow and speed the fraying.
 
 `[attract_moving_text]` fills the window with characters instead, every line
 drifting at a speed of its own. The arrows point the drift, `>` and `<` set the
-pace, `[` and `]` set how far the lines' speeds spread apart, `v` cycles what
-varies down the window and `t` cycles what the lines are made of.
+pace, `[` and `]` set how far the lines' speeds spread apart, `v` cycles whether
+the lines drift together or apart, and `t` cycles what the lines are
+made of.
 
 `[attract_pixelate]` draws the desktop as itself and sweeps a band of coarseness
 across it, which takes the picture to blocks and gives it back. The arrows point
@@ -463,13 +492,39 @@ narrow and widen the band, `v` cycles how a block hands its cells back and `t`
 cycles what a cell is drawn with.
 
 Holding a key steers further per press the longer it is held. No lowercase
-letter any of them takes is one the grid needs, so `f` still freezes and `a`
-still gives the grid back. These keys are live only while the screen was asked
-for with `a` -- left to come on by itself over an idle grid the animation is
-decoration, and the arrows still move the grid's focus ring.
+letter any of the animations takes is one the grid needs, so `f` still freezes
+and `a` still gives the grid back. The steering keys work immediately when the
+attract screen was requested. If it appears on its own, they work once it has
+fully arrived; during an automatic fade in or out, the grid keeps the keyboard
+instead.
 
 Editing it by hand is optional: Enter on a row in the keymap overlay (or in the
 `?` overlay) captures the next keypress, checks it against every binding
 already in force, and writes this file. The framework runs that whole flow —
 `App` supplies only where the file lives and how to rebuild the keymap
 afterwards, through `tui_pane::KeymapEditContext`.
+
+#### favorites
+
+A favorite stores an attract mode and its steerable parameters, not the
+animation's instantaneous position. Favorites live in
+`<os config dir>/cargo-tile/favorites.toml`. Press `ctrl-s` to save the current
+parameters and `ctrl-o` to open their table. `m` shows a random saved favorite,
+`r` replaces the current mode and parameters with a fresh random draw, and `u`
+undoes the last replacement. Saving the same parameters again refreshes the
+existing row instead of adding a second one.
+
+In the table, use the up and down arrows to move, enter to load, `x` to delete,
+the left and right arrows to page through parameter columns, and esc to close.
+Each row begins with a three-cell prefix: `"▸  "` means selected, `" ● "` means
+its parameters match the current attract parameters, `"▸● "` means both, and
+`"   "` means neither. The border's `● matches the current parameters` legend
+is a reminder: every matching row carries the dot, rather than one row being
+the running favorite.
+
+Rows this version cannot read are kept in the file and shown in their own block.
+They remain selectable and can be deleted by pressing the delete key twice on
+the same row. If any key intervenes, including cursor movement, the confirmation
+is cancelled and nothing is written.
+
+All keys listed here are defaults and can be rebound in `keymap.toml`.

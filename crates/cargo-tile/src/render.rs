@@ -30,6 +30,7 @@ use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameLabel;
 use tui_pane::PopupFrame;
 use tui_pane::RenderFocus;
+use tui_pane::Renderable;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::ScanIndicator;
@@ -37,6 +38,7 @@ use tui_pane::SettingsRenderOptions;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
+use tui_pane::ToastsRenderCtx;
 use tui_pane::accent_color;
 use tui_pane::blend_color;
 use tui_pane::default_pane_chrome;
@@ -59,15 +61,19 @@ use crate::app::App;
 use crate::app::ProcessTree;
 use crate::app::Updates;
 use crate::attract;
+use crate::attract::BackdropNotice;
 use crate::attract::Grid;
 use crate::attract::Work;
-use crate::constants::ANCESTRY_DEMAND_PASSES;
 use crate::constants::ANCESTRY_ELISION;
 use crate::constants::ANCESTRY_GAP_HEIGHT;
 use crate::constants::ANCESTRY_LEVEL_INDENT;
 use crate::constants::ANCESTRY_MIN_ELIDED_ROWS;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
+use crate::constants::ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE;
+use crate::constants::ATTRACT_BACKDROP_STALLED_NOTICE;
+use crate::constants::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
+use crate::constants::ATTRACT_NO_BACKDROP_NOTICE;
 use crate::constants::ATTRACT_NOTE_LABEL;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::COMPILER_COLUMN;
@@ -116,7 +122,7 @@ use crate::probe;
 use crate::processes;
 use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
-use crate::processes::ManifestPath;
+use crate::processes::SummaryDetail;
 use crate::progress::Progress;
 use crate::progress::RunState;
 use crate::roster::Roster;
@@ -178,14 +184,55 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     probe::timed(probe::Phase::Band, || {
         app.attract.render(frame.buffer_mut(), area);
     });
+    draw_backdrop_notice(frame, app, body);
     draw_status_line(frame, app, keymap, status);
+    app.framework.toasts.render(
+        frame,
+        area,
+        &ToastsRenderCtx {
+            now:              Instant::now(),
+            pane_focus_state: PaneFocusState::Inactive,
+        },
+    );
+    app.favorites_overlay.render(frame);
 
     match app.framework.overlay() {
         Some(FrameworkOverlayId::Settings) => draw_settings(frame, app),
         Some(FrameworkOverlayId::Keymap) => draw_keymap(frame, app, keymap),
         Some(FrameworkOverlayId::GlobalShortcuts) => draw_global_shortcuts(frame, app, keymap),
-        _ => (),
+        None => (),
     }
+}
+
+/// Say so where the attract screen is running with no desktop to draw.
+///
+/// Every animation draws in the colours of what is behind the terminal,
+/// so with no capture there is nothing to put on the screen and the
+/// screen puts nothing there -- which reads as an attract screen that
+/// never came on, over a grid that is still sitting where it was. One
+/// line is what separates the two. It gives the Screen Recording instruction only when the
+/// capture status reports that access was not granted, names stalled-worker recovery directly,
+/// and points every other failure to the recorded diagnostics.
+///
+/// On the last row of the body, which is the row furthest from anything
+/// an idle grid has to say.
+fn draw_backdrop_notice(frame: &mut Frame, app: &App, body: Rect) {
+    let notice = match app.attract.backdrop_notice(Instant::now()) {
+        BackdropNotice::None => return,
+        BackdropNotice::ScreenRecordingAccessInstruction => ATTRACT_NO_BACKDROP_NOTICE,
+        BackdropNotice::CaptureStalled => ATTRACT_BACKDROP_STALLED_NOTICE,
+        BackdropNotice::CaptureRecoveryStopped => ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE,
+        BackdropNotice::CaptureUnavailable => ATTRACT_BACKDROP_UNAVAILABLE_NOTICE,
+    };
+    let Some(row) = body.bottom().checked_sub(1) else {
+        return;
+    };
+    // `set_string` stops at the edge of the buffer, so a terminal too
+    // narrow for the whole notice gets as much of it as it can hold
+    // rather than a panic or a wrapped second line over the grid.
+    frame
+        .buffer_mut()
+        .set_string(body.left(), row, notice, Style::default().fg(label_color()));
 }
 
 /// Whether the panes are drawn with what is in them.
@@ -417,61 +464,24 @@ fn group_height_parts(
         Some(group.lead.process.path.as_str()),
         tree,
     );
-    (
-        ancestry_demand(&ancestry, width, table, leads_as_ancestor),
-        table,
-    )
+    (ancestry_demand(&ancestry, width), table)
 }
 
-/// Rows the block above the table asks for: the ones
-/// [`draw_ancestry`] will actually put on screen, not the ones the
-/// whole chain would take.
+/// Rows the block above the table asks for: the whole chain, plus the
+/// blank row under it.
 ///
-/// The two are far apart. The block is given half the cell, and
-/// [`ancestry_fit`] then gives up whole levels until what is left fits
-/// -- so what it draws is neither the chain nor the budget, but wherever
-/// the last level to survive leaves it. Counting the chain asked for
-/// every row of every level the cell was always going to elide, which
-/// is how a cell drawing twelve rows came to ask for forty-five, then
-/// sat in a cell sized for the larger number with the difference blank.
-///
-/// The budget comes from the cell's height and the cell's height is what
-/// this is deciding, so it is solved rather than read: the whole chain
-/// is the ceiling, and each pass gives the block the budget its own last
-/// answer would have bought. See [`ANCESTRY_DEMAND_PASSES`] for why that
-/// settles.
-fn ancestry_demand(
-    ancestry: &[Ancestor],
-    width: u16,
-    table: usize,
-    foot_is_the_command: bool,
-) -> usize {
+/// The ask is exactly what [`draw_ancestry`] draws when the cell is
+/// given it, because [`ancestry_budget`] hands the block whatever the
+/// table does not need. Elision is then the answer to a cell that got
+/// less than it asked for, never to a cell that got what it asked for --
+/// which is what keeps the count the readout writes out equal to the
+/// rows on screen.
+fn ancestry_demand(ancestry: &[Ancestor], width: u16) -> usize {
     if ancestry.is_empty() {
         return 0;
     }
-    let gap = usize::from(ANCESTRY_GAP_HEIGHT);
     let whole: Vec<Option<&Ancestor>> = ancestry.iter().map(Some).collect();
-    let mut above = ancestry_height(&whole, width).saturating_add(gap);
-    for _ in 0..ANCESTRY_DEMAND_PASSES {
-        let height = u16::try_from(above.saturating_add(table)).unwrap_or(u16::MAX);
-        let budget = ancestry_budget(height);
-        let levels = ancestry_fit(ancestry, budget, width, foot_is_the_command);
-        // The same rows [`draw_ancestry`] ends up with: the levels it
-        // settled on, cut to the budget where the one level it stops at
-        // outruns it on its own, and no gap at all where it drew nothing.
-        let drawn = if levels.is_empty() {
-            0
-        } else {
-            ancestry_height(&levels, width)
-                .min(budget.max(1))
-                .saturating_add(gap)
-        };
-        if drawn >= above {
-            break;
-        }
-        above = drawn;
-    }
-    above
+    ancestry_height(&whole, width).saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
 }
 
 /// Rows a table of `rows` lays out at `width`: the one column-label row
@@ -777,23 +787,31 @@ fn draw_group(
     // Where the driver stands at the foot of its own chain, that is
     // where its pid is written, and the rows pointing at it in the
     // table below need it in the colour they are pointing with.
-    let foot = leads_as_ancestor
-        .then(|| group.lead.family())
-        .flatten()
-        .map(theme::family_color);
+    let foot = if leads_as_ancestor {
+        group
+            .lead
+            .family()
+            .map_or(AncestryFoot::PlainCommand, |family| {
+                AncestryFoot::ColoredCommand(theme::family_color(family))
+            })
+    } else {
+        AncestryFoot::Other
+    };
     // The lead's own fade goes into the block whether or not it is a
     // row there: the chain stands over the whole cell, and the cell
     // goes out when the command does.
     let faded = heading_fade(&rows).min(group.lead.faded());
-    let used = draw_ancestry(
-        buffer,
-        inner,
-        &ancestry,
-        faded,
-        ground,
-        foot,
-        leads_as_ancestor,
+    // The same measurement [`group_height_parts`] made when the cell
+    // asked for its room, so the block is given back exactly what the
+    // ask left it.
+    let table_rows = table_height(
+        &rows,
+        TableKind::Command,
+        inner.width,
+        Some(group.lead.process.path.as_str()),
+        tree,
     );
+    let used = draw_ancestry(buffer, inner, &ancestry, faded, ground, foot, table_rows);
     let table = Rect {
         y: inner.y.saturating_add(used),
         height: inner.height.saturating_sub(used),
@@ -857,7 +875,7 @@ fn shortened(ancestor: &Ancestor) -> Ancestor {
 /// A command as the last step of its own cell's chain: its pid, and the
 /// whole line it was typed as.
 fn as_ancestor(process: &CargoProcess) -> Ancestor {
-    let arguments = process.command.line(ManifestPath::Shown);
+    let arguments = process.command.line(SummaryDetail::Full);
     let program = process.command.program.as_str();
     Ancestor {
         pid:            process.pid,
@@ -910,17 +928,35 @@ fn carried(chain: Vec<Ancestor>) -> Vec<Ancestor> {
 /// family, `foot` carries the colour its `parent` cells point with; the
 /// rest of the chain heads nothing, and takes the same plain text
 /// [`pid_style`] leaves an unfamilied pid in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AncestryFoot {
+    /// The lead command closes its own chain with a family colour.
+    ColoredCommand(Color),
+    /// The lead command closes its own chain without a family colour.
+    PlainCommand,
+    /// A shell or other ordinary ancestor closes the chain.
+    Other,
+}
+
 fn draw_ancestry(
     buffer: &mut Buffer,
     area: Rect,
     ancestry: &[Ancestor],
     faded: u8,
     ground: Color,
-    foot: Option<Color>,
-    foot_is_the_command: bool,
+    foot: AncestryFoot,
+    table: usize,
 ) -> u16 {
-    let budget = ancestry_budget(area.height);
-    let levels = ancestry_fit(ancestry, budget, area.width, foot_is_the_command);
+    let budget = ancestry_budget(area.height, table);
+    let levels = ancestry_fit(
+        ancestry,
+        budget,
+        area.width,
+        matches!(
+            foot,
+            AncestryFoot::ColoredCommand(_) | AncestryFoot::PlainCommand
+        ),
+    );
     if levels.is_empty() {
         return 0;
     }
@@ -932,8 +968,12 @@ fn draw_ancestry(
         .enumerate()
         .flat_map(|(level, ancestor)| {
             let ink = match foot {
-                Some(color) if level == last => blend_color(color, ground, faded),
-                _ => pid,
+                AncestryFoot::ColoredCommand(color) if level == last => {
+                    blend_color(color, ground, faded)
+                },
+                AncestryFoot::ColoredCommand(_)
+                | AncestryFoot::PlainCommand
+                | AncestryFoot::Other => pid,
             };
             ancestry_lines(*ancestor, level, area.width, ink, command)
         })
@@ -989,13 +1029,18 @@ fn ancestry_height(levels: &[Option<&Ancestor>], width: u16) -> usize {
         .sum()
 }
 
-/// Rows the ancestry block may take at a cell of `height`.
+/// Rows the ancestry block may take at a cell of `height` standing over
+/// a table of `table` rows.
 ///
-/// Never more than half the cell, and the blank row under the block
-/// comes out of that half: whatever the chain has to say, the table it
-/// stands over is what the cell is for.
-fn ancestry_budget(height: u16) -> usize {
-    usize::from(height / 2).saturating_sub(usize::from(ANCESTRY_GAP_HEIGHT))
+/// What the table needs comes off the top, then the blank row under the
+/// block: the table is what the cell is for, and the chain gets what is
+/// left. A cell granted its [`ancestry_demand`] has exactly the whole
+/// chain left over, so it draws the chain whole; a cell given less
+/// elides, and by exactly the shortfall.
+fn ancestry_budget(height: u16, table: usize) -> usize {
+    usize::from(height)
+        .saturating_sub(table)
+        .saturating_sub(usize::from(ANCESTRY_GAP_HEIGHT))
 }
 
 /// Which levels of `ancestry` a block of `budget` rows carries, `None`
@@ -1181,13 +1226,14 @@ impl TableKind {
     /// the columns in [`SUMMARY_HIDDEN_COLUMNS`] have to say.
     const fn shows_invocation_detail(self) -> bool { matches!(self, Self::Command) }
 
-    /// Whether a row here needs its manifest path. A summary row already
-    /// sits under the working directory heading its group, so the path
-    /// says nothing new while costing the width the command line wants.
-    const fn manifest(self) -> ManifestPath {
+    /// How much command detail a row of this kind prints. A summary row
+    /// already sits under the working directory heading its group, so
+    /// the manifest path says nothing new while costing the width the
+    /// command line wants.
+    const fn detail(self) -> SummaryDetail {
         match self {
-            Self::Summary => ManifestPath::Hidden,
-            Self::Command => ManifestPath::Shown,
+            Self::Summary => SummaryDetail::Trimmed,
+            Self::Command => SummaryDetail::Full,
         }
     }
 }
@@ -1213,8 +1259,8 @@ struct TableLayout {
     /// Cells the `command` column absorbed, which is what a command
     /// line too long for it is wrapped to.
     command_width: u16,
-    /// Whether a row spells out `--manifest-path`.
-    manifest:      ManifestPath,
+    /// How much of each row's command line the cell prints.
+    detail:        SummaryDetail,
     /// Whether a row spells out its whole command line or only the
     /// name of what runs.
     tree:          ProcessTree,
@@ -1239,7 +1285,7 @@ impl TableLayout {
             command_width: command_column_width(indented(area).width, &constraints, &columns),
             constraints,
             columns,
-            manifest: kind.manifest(),
+            detail: kind.detail(),
             tree,
             ground,
         }
@@ -1532,7 +1578,7 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
             Span::styled(process.command.program.clone(), program),
             Span::styled(
                 match layout.tree {
-                    ProcessTree::Long => process.command.line(layout.manifest),
+                    ProcessTree::Long => process.command.line(layout.detail),
                     ProcessTree::Short => process.command.named(),
                 },
                 arguments,
@@ -1993,6 +2039,7 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
 
 #[cfg(test)]
 #[allow(
+    clippy::expect_used,
     clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
@@ -2190,17 +2237,17 @@ mod tests {
     /// is for.
     #[test]
     fn the_block_never_takes_more_than_half_the_cell() {
-        assert_eq!(ancestry_budget(12), 5);
-        assert_eq!(ancestry_budget(4), 1);
-        assert_eq!(ancestry_budget(2), 0);
-        assert_eq!(ancestry_budget(0), 0);
+        assert_eq!(ancestry_budget(12, 6), 5);
+        assert_eq!(ancestry_budget(4, 2), 1);
+        assert_eq!(ancestry_budget(2, 1), 0);
+        assert_eq!(ancestry_budget(0, 0), 0);
     }
 
     /// A cell with no room for the block at all draws none of it, and
     /// leaves the table every row it had.
     #[test]
     fn a_cell_too_short_for_the_block_spends_nothing_on_it() {
-        assert!(ancestry_levels(&chain(3), ancestry_budget(2), false).is_empty());
+        assert!(ancestry_levels(&chain(3), ancestry_budget(2, 1), false).is_empty());
     }
 
     /// A command whose parents could not be read costs the table
@@ -2216,8 +2263,8 @@ mod tests {
                 &[],
                 0,
                 pane_background(false),
-                None,
-                false
+                AncestryFoot::Other,
+                usize::from(area.height - area.height / 2),
             ),
             0
         );
@@ -2241,8 +2288,8 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            None,
-            false,
+            AncestryFoot::Other,
+            usize::from(area.height - area.height / 2),
         );
 
         assert_eq!(used, 4, "three levels and the blank row under them");
@@ -2270,8 +2317,8 @@ mod tests {
             &ancestry,
             0,
             ground,
-            Some(theme::family_color(0)),
-            true,
+            AncestryFoot::ColoredCommand(theme::family_color(0)),
+            usize::from(area.height - area.height / 2),
         );
 
         assert_eq!(buffer[(1, 0)].fg, blend_color(text_default(), ground, 0));
@@ -2299,8 +2346,8 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            None,
-            false,
+            AncestryFoot::Other,
+            usize::from(area.height - area.height / 2),
         );
 
         assert_eq!(buffer_line(&buffer, 0), " 6218 claude --remote-control");
@@ -2327,8 +2374,8 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            None,
-            false,
+            AncestryFoot::Other,
+            usize::from(area.height - area.height / 2),
         );
 
         assert_eq!(
@@ -2357,8 +2404,8 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            None,
-            false,
+            AncestryFoot::Other,
+            usize::from(area.height - area.height / 2),
         );
 
         assert_eq!(used, 3, "the two rows the budget bought, and the gap");
@@ -2385,8 +2432,8 @@ mod tests {
             &ancestry,
             0,
             pane_background(false),
-            None,
-            false,
+            AncestryFoot::Other,
+            usize::from(area.height - area.height / 2),
         );
 
         assert!(
@@ -2543,22 +2590,40 @@ mod tests {
         );
     }
 
-    /// The elision the demand is counting on: the cell really does draw
-    /// fewer levels than the chain has, which is what makes the two
-    /// counts capable of disagreeing at all.
+    /// The ask is the chain itself, so a cell granted it has the room to
+    /// draw every level -- which is what makes the count the readout
+    /// writes out the count that goes on screen.
     #[test]
-    fn a_chain_too_long_for_its_cell_costs_far_less_than_the_chain() {
+    fn a_cell_granted_its_ask_draws_the_whole_chain() {
         let width = 60;
         let ancestry = long_chain();
         let whole: Vec<Option<&Ancestor>> = ancestry.iter().map(Some).collect();
         let table = 6;
+        let gap = usize::from(ANCESTRY_GAP_HEIGHT);
 
-        let asked = ancestry_demand(&ancestry, width, table, false);
+        let asked = ancestry_demand(&ancestry, width);
 
-        assert!(
-            asked < ancestry_height(&whole, width),
-            "a demand of {asked} should be under the {} rows the chain takes whole",
-            ancestry_height(&whole, width),
+        assert_eq!(
+            asked,
+            ancestry_height(&whole, width).saturating_add(gap),
+            "the ask is the whole chain plus the blank row under it",
+        );
+
+        // The cell the grid would build from that ask, and the room the
+        // block is left once the table has taken its rows.
+        let height = u16::try_from(asked + table).expect("a test cell should fit a u16");
+        let budget = ancestry_budget(height, table);
+        let levels = ancestry_fit(&ancestry, budget, width, false);
+
+        assert_eq!(
+            levels.len(),
+            ancestry.len(),
+            "a cell sized to the ask elides no level",
+        );
+        assert_eq!(
+            ancestry_height(&levels, width).saturating_add(gap),
+            asked,
+            "and draws exactly the rows it asked for",
         );
     }
 

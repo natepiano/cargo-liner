@@ -29,6 +29,7 @@ pub use item::TrackedItemView;
 pub use manager::ReactivateOutcome;
 pub use manager::ToastCommand;
 pub(super) use manager::ToastSpec;
+pub use manager::ToastVisualDeadline;
 pub use manager::Toasts;
 pub use render::ToastsRenderCtx;
 pub use running_tracker::RunningEntry;

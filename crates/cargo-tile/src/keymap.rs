@@ -21,6 +21,9 @@ use std::path::PathBuf;
 
 use tui_pane::CycleDirection;
 use tui_pane::Framework;
+use tui_pane::FrameworkGlobalShortcutPresentation;
+use tui_pane::FrameworkGlobalShortcutVisibility;
+use tui_pane::GlobalAction;
 use tui_pane::Keymap;
 use tui_pane::KeymapError;
 use tui_pane::Mode;
@@ -31,6 +34,7 @@ use crate::app::AppPaneId;
 use crate::attract::MovingBandPane;
 use crate::attract::MovingTextPane;
 use crate::attract::PixelatePane;
+use crate::favorites_overlay::FavoritesOverlayPane;
 use crate::globals::AppGlobalAction;
 use crate::navigation::AppNavigation;
 
@@ -56,6 +60,21 @@ impl Pane<App> for MainPane {
     }
 }
 
+const fn cargo_tile_framework_global_shortcut_visibility(
+    action: GlobalAction,
+) -> FrameworkGlobalShortcutVisibility {
+    match action {
+        GlobalAction::Dismiss => FrameworkGlobalShortcutVisibility::Hidden,
+        GlobalAction::Quit
+        | GlobalAction::Restart
+        | GlobalAction::NextPane
+        | GlobalAction::PrevPane
+        | GlobalAction::OpenKeymap
+        | GlobalAction::OpenSettings
+        | GlobalAction::OpenGlobalShortcuts => FrameworkGlobalShortcutVisibility::Shown,
+    }
+}
+
 /// Assemble the keymap and install its pane registry on `framework`.
 ///
 /// Built in [`ignore_unknown_entries`](tui_pane::KeymapBuilder::ignore_unknown_entries)
@@ -65,7 +84,11 @@ pub(crate) fn build_keymap(
     framework: &mut Framework<App>,
     keymap_path: Option<PathBuf>,
 ) -> Result<Keymap<App>, KeymapError> {
-    let mut builder = Keymap::builder().ignore_unknown_entries();
+    let mut builder = Keymap::builder()
+        .ignore_unknown_entries()
+        .framework_global_shortcut_presentation(FrameworkGlobalShortcutPresentation::new(
+            cargo_tile_framework_global_shortcut_visibility,
+        ));
     if let Some(path) = keymap_path {
         builder = builder.config_path(path.clone());
         if path.is_file() {
@@ -80,6 +103,7 @@ pub(crate) fn build_keymap(
         .register(MovingBandPane)
         .register(MovingTextPane)
         .register(PixelatePane)
+        .register(FavoritesOverlayPane)
         .build_into(framework)
 }
 
@@ -122,5 +146,12 @@ mod tests {
                 "{mode:?} must be rebindable under a table of its own"
             );
         }
+        assert!(
+            keymap
+                .global_shortcut_rows()
+                .iter()
+                .all(|row| row.action != "dismiss"),
+            "the compact shortcut overlay must omit cargo-tile's inactive x Dismiss row"
+        );
     }
 }

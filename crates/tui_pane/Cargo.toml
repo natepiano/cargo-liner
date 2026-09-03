@@ -15,9 +15,8 @@ version              = "0.8.0-dev"
 workspace = true
 
 [features]
-# Capture of the desktop behind the terminal window, and the attract-mode
-# animation drawn from it. Off by default: it pulls in ScreenCaptureKit, and
-# only an app that draws an idle screen has any use for it.
+# Capture of the desktop behind the terminal window, and the attract-mode animation drawn from it.
+# Off by default because only an app that draws an idle screen has any use for it.
 backdrop  = ["dep:objc2-core-graphics", "dep:screencapturekit"]
 clipboard = ["crossterm/osc52"]
 default   = ["clipboard"]
@@ -54,19 +53,23 @@ objc2-core-foundation = { workspace = true, features = [
   "CFString",
   "std",
 ] }
-# Backs the `backdrop` feature alongside ScreenCaptureKit. Re-reading where the
-# window stands is the one window-server call made every frame, and asking
-# CoreGraphics about a single window by number is some five hundred times
-# cheaper than asking ScreenCaptureKit to describe every window on the machine.
+# Backs the `backdrop` feature. CoreGraphics answers the cheap per-frame window-position and title
+# queries; the display capture itself runs through a persistent ScreenCaptureKit stream (see
+# `backdrop/desktop/platform/macos/stream.rs`).
 objc2-core-graphics = { workspace = true, optional = true, features = [
+  "CGBitmapContext",
+  "CGColorSpace",
+  "CGContext",
+  "CGDataProvider",
   "CGDirectDisplay",
+  "CGError",
   "CGGeometry",
+  "CGImage",
   "CGWindow",
   "std",
 ] }
 objc2-io-kit = { workspace = true, features = ["libc", "std"] }
-# Backs the `backdrop` feature. `macos_14_0` is what carries
-# `SCScreenshotManager`, the single-shot capture the backdrop takes.
-screencapturekit = { workspace = true, optional = true, features = [
-  "macos_14_0",
-] }
+# Backs the `backdrop` feature's display capture: one persistent, multi-client ScreenCaptureKit
+# stream per display (see `backdrop/desktop/platform/macos/stream.rs`), which several instances
+# share without the cross-process stall a fresh per-frame screenshot hits on macOS 26.
+screencapturekit = { workspace = true, optional = true, features = ["async"] }

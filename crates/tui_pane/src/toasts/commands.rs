@@ -204,7 +204,10 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let Some(toast) = self.entries.iter_mut().find(|toast| toast.id == id) else {
             return false;
         };
-        if matches!(toast.phase, ToastPhase::Visible) {
+        if matches!(
+            toast.phase,
+            ToastPhase::Entering { .. } | ToastPhase::Static
+        ) {
             toast.phase = ToastPhase::Exiting { started_at: now };
         }
         toast.dismissal = ToastDismissal::ClosedByUser;
@@ -219,20 +222,22 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     fn push_entry(&mut self, spec: ToastSpec<Ctx>, now: Instant) -> ToastId {
         let id = ToastId(self.next_id);
         self.next_id += 1;
-        self.entries.push(Toast {
+        let mut toast = Toast {
             id,
             title: spec.title,
             body: spec.body,
             style: spec.style,
             lifetime: spec.lifetime,
-            phase: ToastPhase::Visible,
+            phase: ToastPhase::Static,
             dismissal: ToastDismissal::Open,
             action: spec.action,
             tracked_items: Vec::new(),
             created_at: now,
             min_interior_lines: spec.min_interior_lines,
             item_linger: spec.item_linger,
-        });
+        };
+        toast.refresh_entrance_phase(&self.settings);
+        self.entries.push(toast);
         self.sync_viewport_len();
         id
     }

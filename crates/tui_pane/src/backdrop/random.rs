@@ -39,9 +39,7 @@ impl Default for Xorshift {
 
 impl Xorshift {
     /// The same generator started from a seed of the caller's choosing,
-    /// so a test can read the field a given draw produces rather than
-    /// whatever the clock happened to hand over.
-    #[cfg(test)]
+    /// so callers can reproduce the field a given draw produces.
     pub(super) const fn seeded(seed: u64) -> Self {
         Self(if seed == 0 {
             XORSHIFT_FALLBACK_SEED
@@ -73,6 +71,15 @@ impl Xorshift {
             return 0;
         }
         usize::try_from(self.roll() % len).unwrap_or(0)
+    }
+
+    /// A number from the inclusive range `start..=end`.
+    pub(super) fn u32_inclusive(&mut self, start: u32, end: u32) -> u32 {
+        let count = u64::from(end)
+            .saturating_sub(u64::from(start))
+            .saturating_add(1);
+        let offset = self.roll() % count.max(1);
+        start.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX))
     }
 }
 

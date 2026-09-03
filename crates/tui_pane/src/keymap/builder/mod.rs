@@ -4,8 +4,9 @@
 //! Two states:
 //!
 //! - [`Configuring`]: settings phase. Settings methods (`config_path`, `load_toml`, `vim_mode`,
-//!   `on_quit`, `on_restart`, `dismiss_fallback`, `register_navigation`, `register_globals`,
-//!   `register_settings_overlay`, `register_keymap_overlay`) are reachable here only.
+//!   `on_quit`, `on_restart`, `dismiss_fallback`, `framework_global_shortcut_presentation`,
+//!   `register_navigation`, `register_globals`, `register_settings_overlay`,
+//!   `register_keymap_overlay`) are reachable here only.
 //! - `Registering`: panes phase. Entered on the first [`KeymapBuilder::register`] call. Settings
 //!   methods drop off the type — the compiler enforces "settings before panes" at compile time.
 //!   `build_into(&mut Framework<Ctx>)` is the production finalizer.
@@ -35,6 +36,7 @@ use super::vim::VimMode;
 use crate::AppContext;
 use crate::CopySelection;
 use crate::Framework;
+use crate::FrameworkGlobalShortcutPresentation;
 use crate::NavAction;
 use crate::OverlayAction;
 use crate::Pane;
@@ -114,59 +116,60 @@ pub struct Registering;
 /// }
 /// ```
 pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
-    scopes:                   HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
-    pane_registrations:       Vec<PaneRegistration<Ctx>>,
-    copy_registrations:       Vec<CopyRegistration<Ctx>>,
-    registered_scopes:        HashSet<&'static str>,
-    duplicate_scope:          Option<&'static str>,
-    config_path:              Option<PathBuf>,
-    toml_table:               Option<Table>,
-    vim_mode:                 VimMode,
-    on_quit:                  Option<fn(&mut Ctx)>,
-    on_restart:               Option<fn(&mut Ctx)>,
-    dismiss_fallback:         Option<fn(&mut Ctx) -> bool>,
-    navigation_scope:         Option<ScopeMap<NavAction>>,
-    navigation_scope_name:    Option<&'static str>,
+    scopes:                                 HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
+    pane_registrations:                     Vec<PaneRegistration<Ctx>>,
+    copy_registrations:                     Vec<CopyRegistration<Ctx>>,
+    registered_scopes:                      HashSet<&'static str>,
+    duplicate_scope:                        Option<&'static str>,
+    config_path:                            Option<PathBuf>,
+    toml_table:                             Option<Table>,
+    vim_mode:                               VimMode,
+    on_quit:                                Option<fn(&mut Ctx)>,
+    on_restart:                             Option<fn(&mut Ctx)>,
+    dismiss_fallback:                       Option<fn(&mut Ctx) -> bool>,
+    framework_global_shortcut_presentation: FrameworkGlobalShortcutPresentation,
+    navigation_scope:                       Option<ScopeMap<NavAction>>,
+    navigation_scope_name:                  Option<&'static str>,
     /// `N`-monomorphized renderer captured at
     /// [`Self::register_navigation`] time; copied onto the keymap in
     /// [`finalize`]. The bar uses
     /// [`Keymap::render_navigation_slots`] without naming `N`.
-    navigation_render_fn:     Option<ScopeRenderFn<Ctx>>,
-    globals_scope:            Option<ErasedSingleton>,
-    globals_scope_name:       Option<&'static str>,
-    globals_action_keys:      Option<HashSet<&'static str>>,
+    navigation_render_fn:                   Option<ScopeRenderFn<Ctx>>,
+    globals_scope:                          Option<ErasedSingleton>,
+    globals_scope_name:                     Option<&'static str>,
+    globals_action_keys:                    Option<HashSet<&'static str>>,
     /// `G`-monomorphized renderer captured at
     /// [`Self::register_globals`] time. See
     /// [`Self::navigation_render_fn`].
-    globals_render_fn:        Option<ScopeRenderFn<Ctx>>,
+    globals_render_fn:                      Option<ScopeRenderFn<Ctx>>,
     /// `G`-monomorphized help-row renderer captured at
     /// [`Self::register_globals`] time for the global shortcut
     /// viewer.
-    globals_shortcut_rows_fn: Option<super::ScopeShortcutRowsFn<Ctx>>,
+    globals_shortcut_rows_fn:               Option<super::ScopeShortcutRowsFn<Ctx>>,
     /// `N`-monomorphized help-row renderer captured at
     /// [`Self::register_navigation`] time for the keymap-help overlay.
-    navigation_help_rows_fn:  Option<super::ScopeHelpRowsFn<Ctx>>,
+    navigation_help_rows_fn:                Option<super::ScopeHelpRowsFn<Ctx>>,
     /// `G`-monomorphized help-row renderer captured at
     /// [`Self::register_globals`] time for the keymap-help overlay.
-    app_globals_help_rows_fn: Option<super::ScopeHelpRowsFn<Ctx>>,
+    app_globals_help_rows_fn:               Option<super::ScopeHelpRowsFn<Ctx>>,
     /// `N`-monomorphized TOML-action-key collector for the keymap
     /// TOML writer.
-    navigation_toml_keys_fn:  Option<super::ScopeTomlActionKeysFn<Ctx>>,
+    navigation_toml_keys_fn:                Option<super::ScopeTomlActionKeysFn<Ctx>>,
     /// `G`-monomorphized TOML-action-key collector for the keymap
     /// TOML writer.
-    app_globals_toml_keys_fn: Option<super::ScopeTomlActionKeysFn<Ctx>>,
-    overlay_scope:            Option<ScopeMap<OverlayAction>>,
-    vim_reserved_keys:        Vec<super::KeySequence>,
-    deferred_error:           Option<KeymapError>,
+    app_globals_toml_keys_fn:               Option<super::ScopeTomlActionKeysFn<Ctx>>,
+    overlay_scope:                          Option<ScopeMap<OverlayAction>>,
+    vim_reserved_keys:                      Vec<super::KeySequence>,
+    deferred_error:                         Option<KeymapError>,
     /// When set, unknown actions / scopes in the loaded TOML are
     /// skipped and recorded in [`Self::unknown_warnings`] instead of
     /// failing the build. See [`Self::ignore_unknown_entries`].
-    unknown_entry_policy:     UnknownEntryPolicy,
+    unknown_entry_policy:                   UnknownEntryPolicy,
     /// Human-readable warnings for each TOML entry skipped because
     /// [`Self::unknown_entry_policy`] is lenient. Moved onto the finalized
     /// [`Keymap`] so the binary can surface them.
-    unknown_warnings:         Vec<String>,
-    _state:                   PhantomData<State>,
+    unknown_warnings:                       Vec<String>,
+    _state:                                 PhantomData<State>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -189,35 +192,36 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     /// Empty builder.
     pub(super) fn new() -> Self {
         Self {
-            scopes:                   HashMap::new(),
-            pane_registrations:       Vec::new(),
-            copy_registrations:       Vec::new(),
-            registered_scopes:        HashSet::new(),
-            duplicate_scope:          None,
-            config_path:              None,
-            toml_table:               None,
-            vim_mode:                 VimMode::Disabled,
-            on_quit:                  None,
-            on_restart:               None,
-            dismiss_fallback:         None,
-            navigation_scope:         None,
-            navigation_scope_name:    None,
-            navigation_render_fn:     None,
-            globals_scope:            None,
-            globals_scope_name:       None,
-            globals_action_keys:      None,
-            globals_render_fn:        None,
-            globals_shortcut_rows_fn: None,
-            navigation_help_rows_fn:  None,
-            app_globals_help_rows_fn: None,
-            navigation_toml_keys_fn:  None,
-            app_globals_toml_keys_fn: None,
-            overlay_scope:            None,
-            vim_reserved_keys:        Vec::new(),
-            deferred_error:           None,
-            unknown_entry_policy:     UnknownEntryPolicy::Strict,
-            unknown_warnings:         Vec::new(),
-            _state:                   PhantomData,
+            scopes:                                 HashMap::new(),
+            pane_registrations:                     Vec::new(),
+            copy_registrations:                     Vec::new(),
+            registered_scopes:                      HashSet::new(),
+            duplicate_scope:                        None,
+            config_path:                            None,
+            toml_table:                             None,
+            vim_mode:                               VimMode::Disabled,
+            on_quit:                                None,
+            on_restart:                             None,
+            dismiss_fallback:                       None,
+            framework_global_shortcut_presentation: FrameworkGlobalShortcutPresentation::default(),
+            navigation_scope:                       None,
+            navigation_scope_name:                  None,
+            navigation_render_fn:                   None,
+            globals_scope:                          None,
+            globals_scope_name:                     None,
+            globals_action_keys:                    None,
+            globals_render_fn:                      None,
+            globals_shortcut_rows_fn:               None,
+            navigation_help_rows_fn:                None,
+            app_globals_help_rows_fn:               None,
+            navigation_toml_keys_fn:                None,
+            app_globals_toml_keys_fn:               None,
+            overlay_scope:                          None,
+            vim_reserved_keys:                      Vec::new(),
+            deferred_error:                         None,
+            unknown_entry_policy:                   UnknownEntryPolicy::Strict,
+            unknown_warnings:                       Vec::new(),
+            _state:                                 PhantomData,
         }
     }
 
@@ -310,6 +314,20 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     #[must_use]
     pub const fn dismiss_fallback(mut self, hook: fn(&mut Ctx) -> bool) -> Self {
         self.dismiss_fallback = Some(hook);
+        self
+    }
+
+    /// Set the client policy that decides which framework-global
+    /// actions appear in the compact shortcut overlay.
+    ///
+    /// This changes presentation only: hidden actions remain bound,
+    /// dispatchable, and present in the full keymap editor.
+    #[must_use]
+    pub const fn framework_global_shortcut_presentation(
+        mut self,
+        presentation: FrameworkGlobalShortcutPresentation,
+    ) -> Self {
+        self.framework_global_shortcut_presentation = presentation;
         self
     }
 
