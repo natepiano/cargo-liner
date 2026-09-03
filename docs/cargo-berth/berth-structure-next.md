@@ -523,3 +523,44 @@ process-wide selection into named siblings if they do not. The choice is a
 reading of the contents, not of the line count.
 
 Revealed by: project-end style review.
+
+## 27. Every test file writes its own `git` helper over the one shared spawn
+
+**Target:** `crates/cargo-berth/tests/support/mod.rs` and the eighteen `git`,
+`git_stdout`, and `git_output` definitions across `lifecycle.rs`, `overlap.rs`,
+`gate.rs`, `board.rs`, `liveness.rs`, `ledger.rs`, `drift.rs`, and `edges.rs`.
+
+Each integration test is its own crate, so before `support/` existed there was
+nowhere shared to put them and eight files each grew a near-identical pair. The
+module now exists and owns exactly one thing — `git_command()`, which names the
+`cargo-berth` under test so a managed hook fires the built binary rather than
+whatever `cargo install` last left behind. The run-and-capture wrappers around
+it are still copied per file, so a change to how a test invokes git (an
+environment variable, a failure message, a captured stream) has eight sites and
+no single owner.
+
+Satisfied by: moving the run-and-capture wrappers into `support`, leaving each
+test file with only the fixtures particular to it.
+
+Revealed by: the managed-hook executable-resolution fix, which had to reach
+every one of those spawn sites.
+
+## 28. A `release` that did nothing reports the same sentence as one that acted
+
+**Target:** the `release` verb's presentation, `crates/cargo-berth/src/output.rs`
+and its callers in `crates/cargo-berth/src/reservation/`.
+
+Releasing a reservation is two steps: the first checkpoints an active
+reservation, the second evaluates integration evidence and retires it. A third
+call on an already-retired reservation prints `recorded disposition Integrated`
+— byte-identical to the call that performed the retirement. Someone settling
+several reservations by hand cannot tell which of their commands did work and
+which were no-ops, so the only way to learn the true state is to read the board
+JSON.
+
+Satisfied by: a distinct sentence for the already-settled case, naming the
+disposition the reservation already carries and the commit that proved it,
+rather than reporting the action as freshly taken.
+
+Revealed by: settling the merge's reservations by hand, where five identical
+lines described a mix of work and no-ops.
