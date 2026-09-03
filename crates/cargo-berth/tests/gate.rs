@@ -3428,7 +3428,14 @@ fn run_hook_at_path(
         .current_dir(repository_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // A hook run straight from its path skips the git invocation that would
+        // otherwise name the binary under test, so it names it here. Left to its
+        // own resolution the hook finds whatever `cargo install` last left on the
+        // machine, and a test then passes or fails on that instead of on the code
+        // it was compiled from. A fixture that pins the executable in the script
+        // text still wins, because pinning replaces this variable's reader.
+        .env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE);
     if release_valve == ReleaseValve::Set {
         command.env(BYPASS_ENVIRONMENT, "1");
     } else {
