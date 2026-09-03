@@ -5,6 +5,8 @@
 
 //! Built-binary tests for worktree liveness, recovery, marker sweeping, and cache repair.
 
+mod support;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::fs::symlink;
@@ -1556,7 +1558,7 @@ fn assert_coordination_identity_rejection(
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = Command::new("git")
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository_root)
         .output()
@@ -1569,7 +1571,7 @@ fn git(repository_root: &Path, arguments: &[&str]) {
 }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository_root)
         .output()

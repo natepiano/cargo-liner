@@ -9,6 +9,8 @@
 //! identity over whatever the fixture carries, so a floor on the fixture's own size
 //! carries the rest of that promise: a deletion cannot balance itself out to green.
 
+mod support;
+
 use std::error::Error;
 use std::fs;
 use std::path::Path;
@@ -628,7 +630,7 @@ fn ambiguous_first_touch_envelope() -> ShellOracleResult<Value> {
 }
 
 fn run_git(repository: &Path, arguments: &[&str]) -> ShellOracleResult<()> {
-    let output = Command::new("git")
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository)
         .output()?;

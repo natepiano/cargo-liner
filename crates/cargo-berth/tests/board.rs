@@ -5,6 +5,8 @@
 
 //! Built-binary tests for the headless board and its coherent replay projection.
 
+mod support;
+
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -4629,7 +4631,7 @@ fn run_berth_with_run(repository_root: &Path, arguments: &[&str], run: &str) -> 
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = Command::new("git")
+    let output = support::git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)
@@ -4643,7 +4645,7 @@ fn git(repository_root: &Path, arguments: &[&str]) {
 }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = support::git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)

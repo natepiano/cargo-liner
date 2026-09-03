@@ -574,7 +574,6 @@ mod tests {
         fs::create_dir(&policy_worktree).expect("policy worktree should exist");
         let script_path = common_git_directory.join("reference-transaction");
         let script = install::reference_transaction_hook_script_for_test(
-            Path::new("/missing/cargo-berth"),
             common_git_directory,
             &policy_worktree,
             "refs/heads/main",
@@ -590,6 +589,7 @@ mod tests {
             .arg("prepared")
             .current_dir(policy_worktree)
             .env(BYPASS_ENVIRONMENT, BYPASS_ENVIRONMENT_ENABLED_VALUE)
+            .env(install::EXECUTABLE_ENVIRONMENT, "/missing/cargo-berth")
             .env("PATH", path)
             .output()
             .expect("managed hook should run");

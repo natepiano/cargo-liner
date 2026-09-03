@@ -5,6 +5,8 @@
 
 //! Built-binary tests for ordering-edge replay, locked mutation, and limits.
 
+mod support;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -1762,7 +1764,7 @@ fn reservation_ref(reservation_id: &str) -> String {
 }
 
 fn reference_exists(repository_root: &Path, reference: &str) -> bool {
-    Command::new("git")
+    support::git_command()
         .arg("--no-optional-locks")
         .args(["show-ref", "--verify", "--quiet", reference])
         .current_dir(repository_root)
@@ -1772,7 +1774,7 @@ fn reference_exists(repository_root: &Path, reference: &str) -> bool {
 }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = support::git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)
@@ -2100,7 +2102,7 @@ fn git_binary() -> PathBuf {
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = Command::new("git")
+    let output = support::git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)
@@ -2114,7 +2116,7 @@ fn git(repository_root: &Path, arguments: &[&str]) {
 }
 
 fn git_status(repository_root: &Path, arguments: &[&str]) -> bool {
-    Command::new("git")
+    support::git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)

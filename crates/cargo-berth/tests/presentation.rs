@@ -1,5 +1,7 @@
 //! Built-binary acceptance tests for render-ready reservation responses.
 
+mod support;
+
 use std::error::Error;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -953,7 +955,7 @@ fn enable_enforcing_gate(repository_root: &Path) -> TestResult {
 }
 
 fn run_git(repository_root: &Path, arguments: &[&str]) -> TestResult {
-    let output = Command::new("git")
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository_root)
         .output()?;

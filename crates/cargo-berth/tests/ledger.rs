@@ -5,6 +5,8 @@
 
 //! End-to-end ledger durability tests against disposable git repositories.
 
+mod support;
+
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -1200,7 +1202,7 @@ fn json_output(output: &Output) -> serde_json::Value {
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = Command::new("git")
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1217,7 +1219,7 @@ fn git(repository_root: &Path, arguments: &[&str]) {
 }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)

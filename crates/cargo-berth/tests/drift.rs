@@ -5,6 +5,8 @@
 
 //! End-to-end drift fingerprint, selection, classification, replay, and hook tests.
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
@@ -3313,7 +3315,7 @@ fn git(repository_root: &Path, arguments: &[&str]) {
 }
 
 fn git_output(repository_root: &Path, arguments: &[&str]) -> Output {
-    Command::new(GIT_BINARY)
+    support::git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)
@@ -3329,7 +3331,7 @@ fn git_output_with_environment(
     name: &str,
     value: &str,
 ) -> Output {
-    Command::new(GIT_BINARY)
+    support::git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)

@@ -1,5 +1,7 @@
 //! Real-binary acceptance guard for executable engine instructions.
 
+mod support;
+
 use std::error::Error;
 use std::fs;
 use std::fs::OpenOptions;
@@ -588,7 +590,7 @@ fn add_worktree(repository: &TempDir, branch: &str) -> TestResult<(TempDir, Path
 }
 
 fn run_git(repository: &Path, arguments: &[&str]) -> TestResult {
-    let output = Command::new("git")
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository)
         .output()?;

@@ -23,6 +23,29 @@ const POST_COMMIT_HOOK_NAME: &str = "post-commit";
 const POST_COMMIT_MARKER: &str = "# cargo-berth managed hook: post-commit";
 const REFERENCE_TRANSACTION_HOOK_NAME: &str = "reference-transaction";
 const REFERENCE_TRANSACTION_MARKER: &str = "# cargo-berth managed hook: reference-transaction";
+/// Names a specific `cargo-berth` for a managed hook, ahead of the installed one.
+///
+/// The generated shell carries this name as its own literal; tests reach for it
+/// through this constant, which `executable_resolution_reads_the_override_it_documents`
+/// holds to the same spelling.
+#[cfg(test)]
+pub(super) const EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
+/// Shell that names the `cargo-berth` a managed hook runs.
+///
+/// A hook outlives the build that installed it and is read by every checkout
+/// sharing the repository, so the path is resolved when the hook runs rather
+/// than written into the script. Baking one in pins the gate to a single
+/// machine, and to a build directory that `cargo clean` or a removed worktree
+/// silently empties; every managed hook fails open, so the gate would then be
+/// absent rather than noisy. `CARGO_BERTH_EXECUTABLE` names a specific binary
+/// for anyone exercising a build that is not the installed one.
+const EXECUTABLE_RESOLUTION: &str = r#"cargo_berth_executable="${CARGO_BERTH_EXECUTABLE:-}"
+if [ -z "$cargo_berth_executable" ]; then
+    cargo_berth_executable=$(command -v cargo-berth 2>/dev/null)
+fi
+if [ -z "$cargo_berth_executable" ]; then
+    cargo_berth_executable="${CARGO_HOME:-$HOME/.cargo}/bin/cargo-berth"
+fi"#;
 /// One hook name paired with the complete script body owned by `cargo-berth`.
 #[derive(Clone, Copy)]
 struct ManagedHook {
@@ -109,15 +132,14 @@ pub(crate) fn install_managed_hooks(
     policy_worktree: &Path,
     trunk_reference: &str,
 ) -> Vec<ManagedHookInstallation> {
-    let setup = std::env::current_exe()
+    let setup = git::hooks_directory(policy_worktree)
         .map_err(HookInstallationError::from)
-        .and_then(|executable| {
-            let hooks_directory = git::hooks_directory(policy_worktree)?;
+        .and_then(|hooks_directory| {
             fs::create_dir_all(&hooks_directory)?;
-            Ok((executable, hooks_directory))
+            Ok(hooks_directory)
         });
-    let (executable, hooks_directory) = match setup {
-        Ok(setup) => setup,
+    let hooks_directory = match setup {
+        Ok(hooks_directory) => hooks_directory,
         Err(error) => return failed_managed_hook_installations(&error),
     };
     MANAGED_HOOKS
@@ -126,7 +148,6 @@ pub(crate) fn install_managed_hooks(
             let activation = match install_managed_hook(
                 &hooks_directory,
                 hook,
-                &executable,
                 common_git_directory,
                 policy_worktree,
                 trunk_reference,
@@ -166,7 +187,6 @@ fn failed_managed_hook_installations(
 fn install_managed_hook(
     hooks_directory: &Path,
     hook: &ManagedHook,
-    executable: &Path,
     common_git_directory: &Path,
     policy_worktree: &Path,
     trunk_reference: &str,
@@ -187,12 +207,7 @@ fn install_managed_hook(
         });
     }
     let was_present = existing.is_some();
-    let script = hook.script(
-        executable,
-        common_git_directory,
-        policy_worktree,
-        trunk_reference,
-    );
+    let script = hook.script(common_git_directory, policy_worktree, trunk_reference);
     if existing.as_deref() == Some(script.as_bytes()) {
         let mut permissions = fs::metadata(&hook_path)?.permissions();
         permissions.set_mode(EXECUTABLE_PERMISSIONS);
@@ -254,12 +269,10 @@ impl Drop for PendingManagedHookReplacement {
 impl ManagedHook {
     fn script(
         &self,
-        executable: &Path,
         common_git_directory: &Path,
         policy_worktree: &Path,
         trunk_reference: &str,
     ) -> String {
-        let executable = shell_single_quoted(&executable.to_string_lossy());
         let pending_marker_prefix = shell_single_quoted(
             &common_git_directory
                 .join(PENDING_BYPASS_FILE_PREFIX)
@@ -270,10 +283,9 @@ impl ManagedHook {
         let trunk_reference = shell_single_quoted(trunk_reference);
         match self.dispatch {
             ManagedHookDispatch::PostCommit => format!(
-                "#!/bin/sh\n{POST_COMMIT_MARKER}\nif [ \"${{CARGO_BERTH_BYPASS:-}}\" = \"1\" ]; then\n    exit 0\nfi\nif [ ! -x {executable} ]; then\n    printf '%s\\n' 'cargo-berth could not check this commit drift because its executable is unavailable. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\n    exit 0\nfi\nCARGO_BERTH_POST_COMMIT=1 {executable} drift --full\nstatus=$?\nif [ \"$status\" -eq 126 ] || [ \"$status\" -eq 127 ]; then\n    printf '%s\\n' 'cargo-berth could not run the post-commit drift check. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\nfi\nexit 0\n"
+                "#!/bin/sh\n{POST_COMMIT_MARKER}\nif [ \"${{CARGO_BERTH_BYPASS:-}}\" = \"1\" ]; then\n    exit 0\nfi\n{EXECUTABLE_RESOLUTION}\nif [ ! -x \"$cargo_berth_executable\" ]; then\n    printf '%s\\n' 'cargo-berth could not check this commit drift because its executable is unavailable. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\n    exit 0\nfi\nCARGO_BERTH_POST_COMMIT=1 \"$cargo_berth_executable\" drift --full\nstatus=$?\nif [ \"$status\" -eq 126 ] || [ \"$status\" -eq 127 ]; then\n    printf '%s\\n' 'cargo-berth could not run the post-commit drift check. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\nfi\nexit 0\n"
             ),
             ManagedHookDispatch::ReferenceTransaction => reference_transaction_script(
-                &executable,
                 &pending_marker_prefix,
                 &pending_marker_suffix,
                 &policy_worktree,
@@ -296,6 +308,8 @@ case "${1:-}" in
     prepared|committed) ;;
     *) exit 0 ;;
 esac
+
+__EXECUTABLE_RESOLUTION__
 
 transaction_input=''
 transaction_buffered=0
@@ -398,11 +412,11 @@ case "$bypassed_merge_id" in
     ''|*[!A-Za-z0-9_-]*) bypassed_merge_id="git-process-${PPID:-$$}" ;;
 esac
 if [ "${CARGO_BERTH_BYPASS:-}" = "1" ]; then
-    if [ -x __EXECUTABLE__ ]; then
+    if [ -x "$cargo_berth_executable" ]; then
         if [ "$transaction_buffered" -eq 1 ]; then
-            CARGO_BERTH_BYPASSED_MERGE_ID="$bypassed_merge_id" __EXECUTABLE__ __reference-transaction "$@" "$cargo_berth_trunk_reference" < "$transaction_input"
+            CARGO_BERTH_BYPASSED_MERGE_ID="$bypassed_merge_id" "$cargo_berth_executable" __reference-transaction "$@" "$cargo_berth_trunk_reference" < "$transaction_input"
         else
-            CARGO_BERTH_BYPASSED_MERGE_ID="$bypassed_merge_id" __EXECUTABLE__ __reference-transaction "$@" "$cargo_berth_trunk_reference"
+            CARGO_BERTH_BYPASSED_MERGE_ID="$bypassed_merge_id" "$cargo_berth_executable" __reference-transaction "$@" "$cargo_berth_trunk_reference"
         fi
         status=$?
         if [ "$status" -eq 0 ]; then
@@ -432,14 +446,14 @@ if [ "${CARGO_BERTH_BYPASS:-}" = "1" ]; then
     fi
     exit 0
 fi
-if [ ! -x __EXECUTABLE__ ]; then
+if [ ! -x "$cargo_berth_executable" ]; then
     printf '%s\n' 'cargo-berth trunk gate executable is unavailable; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2
     exit 0
 fi
 if [ "$transaction_buffered" -eq 1 ]; then
-    __EXECUTABLE__ __reference-transaction "$@" "$cargo_berth_trunk_reference" < "$transaction_input"
+    "$cargo_berth_executable" __reference-transaction "$@" "$cargo_berth_trunk_reference" < "$transaction_input"
 else
-    __EXECUTABLE__ __reference-transaction "$@" "$cargo_berth_trunk_reference"
+    "$cargo_berth_executable" __reference-transaction "$@" "$cargo_berth_trunk_reference"
 fi
 status=$?
 if [ "$status" -eq 126 ] || [ "$status" -eq 127 ]; then
@@ -450,7 +464,6 @@ exit "$status"
 "#;
 
 fn reference_transaction_script(
-    executable: &str,
     pending_marker_prefix: &str,
     pending_marker_suffix: &str,
     policy_worktree: &str,
@@ -467,7 +480,7 @@ fn reference_transaction_script(
         ),
         ("__POLICY_WORKTREE__", policy_worktree),
         ("__TRUNK_REFERENCE__", trunk_reference),
-        ("__EXECUTABLE__", executable),
+        ("__EXECUTABLE_RESOLUTION__", EXECUTABLE_RESOLUTION),
         ("__PENDING_MARKER_PREFIX__", pending_marker_prefix),
         ("__PENDING_MARKER_SUFFIX__", pending_marker_suffix),
     ])
@@ -496,17 +509,11 @@ fn render_reference_transaction_template(substitutions: &[(&str, &str)]) -> Stri
 /// Render the reference-transaction script for marker compatibility tests.
 #[cfg(test)]
 pub(super) fn reference_transaction_hook_script_for_test(
-    executable: &Path,
     common_git_directory: &Path,
     policy_worktree: &Path,
     trunk_reference: &str,
 ) -> String {
-    REFERENCE_TRANSACTION_HOOK.script(
-        executable,
-        common_git_directory,
-        policy_worktree,
-        trunk_reference,
-    )
+    REFERENCE_TRANSACTION_HOOK.script(common_git_directory, policy_worktree, trunk_reference)
 }
 
 fn shell_single_quoted(value: &str) -> String { format!("'{}'", value.replace('\'', "'\"'\"'")) }
@@ -541,7 +548,17 @@ impl From<GitError> for HookInstallationError {
 
 #[cfg(test)]
 mod tests {
+    use super::EXECUTABLE_ENVIRONMENT;
+    use super::EXECUTABLE_RESOLUTION;
     use super::reference_transaction_script;
+
+    #[test]
+    fn executable_resolution_reads_the_override_it_documents() {
+        assert!(
+            EXECUTABLE_RESOLUTION.contains(EXECUTABLE_ENVIRONMENT),
+            "resolution shell must read {EXECUTABLE_ENVIRONMENT}"
+        );
+    }
 
     #[test]
     fn template_rendering_does_not_rescan_inserted_placeholder_text() {
@@ -549,12 +566,10 @@ mod tests {
             "'/bin/__TRUNK_REFERENCE__'",
             "'/git/__PENDING_MARKER_SUFFIX__'",
             "'.json.__POLICY_WORKTREE__'",
-            "'/repo/__EXECUTABLE__'",
             "'refs/heads/__PENDING_MARKER_PREFIX__'",
         ];
 
-        let script =
-            reference_transaction_script(values[0], values[1], values[2], values[3], values[4]);
+        let script = reference_transaction_script(values[0], values[1], values[2], values[3]);
 
         for value in values {
             assert!(script.contains(value), "rendering changed {value}");

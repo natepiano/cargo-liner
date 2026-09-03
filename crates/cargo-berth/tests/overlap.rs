@@ -5,6 +5,8 @@
 
 //! Built-binary tests for claim acquisition and mutation-free edit checks.
 
+mod support;
+
 use std::fs;
 use std::fs::File;
 use std::path::Path;
@@ -1320,7 +1322,7 @@ fn journal_events(repository_root: &Path) -> Vec<serde_json::Value> {
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = Command::new("git")
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository_root)
         .output()

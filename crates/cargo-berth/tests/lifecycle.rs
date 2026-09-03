@@ -5,6 +5,8 @@
 
 //! Built-binary tests for reservation lifecycle and retained git evidence.
 
+mod support;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -315,7 +317,7 @@ fn foreign_active_reservation_cannot_checkpoint_the_invoking_head() {
 
     assert_eq!(release.status.code(), Some(5));
     assert_eq!(json_output(&release)["status"], "invalid_input");
-    let retention_ref = Command::new("git")
+    let retention_ref = support::git_command()
         .args([
             "rev-parse",
             "--verify",
@@ -971,7 +973,7 @@ fn last_claim_event(repository_root: &Path) -> serde_json::Value {
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = Command::new("git")
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository_root)
         .output()
@@ -984,7 +986,7 @@ fn git(repository_root: &Path, arguments: &[&str]) {
 }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository_root)
         .output()

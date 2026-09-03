@@ -5,6 +5,8 @@
 
 //! End-to-end tests for installation, enforcement, release valves, and gate cost.
 
+mod support;
+
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
@@ -1509,10 +1511,7 @@ fn managed_hook_fails_open_and_marks_a_bypass_for_an_unavailable_binary() {
     let repository = initialized_repository();
     let hook_path = repository.path().join(HOOK_PATH);
     let installed = fs::read_to_string(&hook_path).expect("managed hook should read");
-    let executable = shell_single_quoted(Path::new(env!("CARGO_BIN_EXE_cargo-berth")));
-    let unavailable = shell_single_quoted(Path::new("/missing/cargo-berth"));
-    let broken = installed.replace(&executable, &unavailable);
-    assert_ne!(broken, installed);
+    let broken = pin_managed_hook_executable(&installed, Path::new("/missing/cargo-berth"));
     fs::write(&hook_path, broken).expect("broken hook fixture should write");
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
     let input = format!("{base} {base} refs/heads/main\n");
@@ -2699,7 +2698,7 @@ fn deleting_the_retention_ref_leaves_no_hook_owned_reference() {
     git(repository.path(), &["gc", "--prune=now"]);
     assert!(!reference_exists(repository.path(), &retention_ref));
 
-    let object_status = Command::new(GIT_BINARY)
+    let object_status = support::git_command()
         .arg("--no-optional-locks")
         .args(["cat-file", "-e", &format!("{protected_tip}^{{commit}}")])
         .current_dir(repository.path())
@@ -3170,7 +3169,7 @@ fn update_main(
     proposed: &str,
     release_valve: ReleaseValve,
 ) -> Output {
-    let mut command = Command::new(GIT_BINARY);
+    let mut command = support::git_command();
     command
         .arg("--no-optional-locks")
         .args(["update-ref", "refs/heads/main", proposed, previous])
@@ -3215,7 +3214,7 @@ fn pending_bypass_marker(repository_root: &Path) -> serde_json::Value {
 }
 
 fn reference_exists(repository_root: &Path, reference: &str) -> bool {
-    Command::new(GIT_BINARY)
+    support::git_command()
         .arg("--no-optional-locks")
         .args(["show-ref", "--verify", "--quiet", reference])
         .current_dir(repository_root)
@@ -3893,6 +3892,24 @@ fn run_berth_with_input_and_environment(
     child.wait_with_output().expect("cargo-berth should finish")
 }
 
+/// Pin a managed hook to one binary in place of the resolution it performs when it runs.
+///
+/// The installed hook names no binary: it resolves `cargo-berth` at run time so a
+/// hook outlives the build that wrote it. A test that needs a stub, a spy, or a
+/// path that is deliberately absent replaces that resolution with a fixed answer.
+fn pin_managed_hook_executable(installed: &str, executable: &Path) -> String {
+    let resolution = "cargo_berth_executable=\"${CARGO_BERTH_EXECUTABLE:-}\"";
+    let pinned = installed.replace(
+        resolution,
+        &format!("cargo_berth_executable={}", shell_single_quoted(executable)),
+    );
+    assert_ne!(
+        pinned, installed,
+        "managed hook should carry its executable resolution"
+    );
+    pinned
+}
+
 fn replace_managed_hook_executable_with_spy(repository_root: &Path) -> ManagedHookSpy {
     let spy_path = repository_root.join(".git/cargo-berth-hook-spy");
     let phase_log = repository_root.join(".git/cargo-berth-hook-spy-phases");
@@ -3911,10 +3928,7 @@ fn replace_managed_hook_executable_with_spy(repository_root: &Path) -> ManagedHo
 
     let hook_path = repository_root.join(HOOK_PATH);
     let installed = fs::read_to_string(&hook_path).expect("managed hook should read");
-    let executable = shell_single_quoted(Path::new(env!("CARGO_BIN_EXE_cargo-berth")));
-    let spy_executable = shell_single_quoted(&spy_path);
-    let instrumented = installed.replace(&executable, &spy_executable);
-    assert_ne!(instrumented, installed);
+    let instrumented = pin_managed_hook_executable(&installed, &spy_path);
     fs::write(hook_path, instrumented).expect("instrumented hook should write");
 
     ManagedHookSpy {
@@ -4208,7 +4222,7 @@ fn checkpointed_reservations(repository_root: &Path, count: usize) -> Vec<String
 }
 
 fn apply_test_ref_transaction(repository_root: &Path, input: &str) {
-    let mut child = Command::new(GIT_BINARY)
+    let mut child = support::git_command()
         .arg("--no-optional-locks")
         .args(["-c", "core.hooksPath=/dev/null", "update-ref", "--stdin"])
         .current_dir(repository_root)
@@ -4392,7 +4406,7 @@ fn run_three_commit_rebase_sample(
         ],
     );
     let started_at = Instant::now();
-    let mut command = Command::new(GIT_BINARY);
+    let mut command = support::git_command();
     command.arg("--no-optional-locks");
     if matches!(hook_mode, RebaseHookMode::Disabled) {
         command.args(["-c", "core.hooksPath=/dev/null"]);
@@ -4485,7 +4499,7 @@ fn run_berth_with_session_and_run(
 }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = Command::new(GIT_BINARY)
+    let output = support::git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)
@@ -4513,7 +4527,7 @@ fn git(repository_root: &Path, arguments: &[&str]) {
 }
 
 fn git_output(repository_root: &Path, arguments: &[&str]) -> Output {
-    Command::new(GIT_BINARY)
+    support::git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)

@@ -5,6 +5,8 @@
 
 //! Built-binary tests for proposal-bound overlap answers.
 
+mod support;
+
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
@@ -1967,7 +1969,7 @@ where
     Arguments: IntoIterator<Item = Argument>,
     Argument: AsRef<OsStr>,
 {
-    let output = Command::new(GIT_BINARY)
+    let output = support::git_command()
         .args(arguments)
         .current_dir(repository_root)
         .output()
