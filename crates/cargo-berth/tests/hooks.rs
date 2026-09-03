@@ -5,7 +5,10 @@
 //! the verb writes. The frozen front-end corpus supplies the text these comparisons are
 //! held to, so a change to what a user is told fails here rather than reaching a user.
 
-mod support;
+use cargo_berth_test_support::git_command;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 
 use std::error::Error;
 use std::fs;
@@ -1531,7 +1534,7 @@ fn run_berth_with_session(
 
 /// Read one reference's current commit, the way the corpus identifiers are restated from it.
 fn git_revision(repository_root: &Path, reference: &str) -> TestResult<String> {
-    let output = support::git_command()
+    let output = git_command(BERTH_EXECUTABLE)
         .args(["rev-parse", reference])
         .current_dir(repository_root)
         .output()?;
@@ -1540,7 +1543,7 @@ fn git_revision(repository_root: &Path, reference: &str) -> TestResult<String> {
 }
 
 fn run_git(repository_root: &Path, arguments: &[&str]) -> TestResult {
-    let output = support::git_command()
+    let output = git_command(BERTH_EXECUTABLE)
         .args(arguments)
         .current_dir(repository_root)
         .output()?;

@@ -5,7 +5,20 @@
 
 //! End-to-end tests for installation, enforcement, release valves, and gate cost.
 
-mod support;
+use cargo_berth_test_support::EXECUTABLE_ENVIRONMENT;
+use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::git_command;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// How this file drives git: no optional locks, clearing what its fixtures set for themselves.
+const GIT: GitDriver = GitDriver {
+    executable:          BERTH_EXECUTABLE,
+    optional_locks:      OptionalLocks::Refused,
+    cleared_environment: &[BYPASS_ENVIRONMENT],
+};
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -46,6 +59,7 @@ const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 const RAW_TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
+
 separator=$(printf '\037')
 record=git
 for argument in "$@"; do
@@ -2698,7 +2712,7 @@ fn deleting_the_retention_ref_leaves_no_hook_owned_reference() {
     git(repository.path(), &["gc", "--prune=now"]);
     assert!(!reference_exists(repository.path(), &retention_ref));
 
-    let object_status = support::git_command()
+    let object_status = git_command(BERTH_EXECUTABLE)
         .arg("--no-optional-locks")
         .args(["cat-file", "-e", &format!("{protected_tip}^{{commit}}")])
         .current_dir(repository.path())
@@ -3169,7 +3183,7 @@ fn update_main(
     proposed: &str,
     release_valve: ReleaseValve,
 ) -> Output {
-    let mut command = support::git_command();
+    let mut command = git_command(BERTH_EXECUTABLE);
     command
         .arg("--no-optional-locks")
         .args(["update-ref", "refs/heads/main", proposed, previous])
@@ -3214,13 +3228,10 @@ fn pending_bypass_marker(repository_root: &Path) -> serde_json::Value {
 }
 
 fn reference_exists(repository_root: &Path, reference: &str) -> bool {
-    support::git_command()
-        .arg("--no-optional-locks")
-        .args(["show-ref", "--verify", "--quiet", reference])
-        .current_dir(repository_root)
-        .status()
-        .expect("git show-ref should run")
-        .success()
+    GIT.succeeds(
+        repository_root,
+        &["show-ref", "--verify", "--quiet", reference],
+    )
 }
 
 fn reservation_id(output: &Output) -> String {
@@ -3898,9 +3909,9 @@ fn run_berth_with_input_and_environment(
 /// hook outlives the build that wrote it. A test that needs a stub, a spy, or a
 /// path that is deliberately absent replaces that resolution with a fixed answer.
 fn pin_managed_hook_executable(installed: &str, executable: &Path) -> String {
-    let resolution = "cargo_berth_executable=\"${CARGO_BERTH_EXECUTABLE:-}\"";
+    let resolution = format!("cargo_berth_executable=\"${{{EXECUTABLE_ENVIRONMENT}:-}}\"");
     let pinned = installed.replace(
-        resolution,
+        resolution.as_str(),
         &format!("cargo_berth_executable={}", shell_single_quoted(executable)),
     );
     assert_ne!(
@@ -4222,7 +4233,7 @@ fn checkpointed_reservations(repository_root: &Path, count: usize) -> Vec<String
 }
 
 fn apply_test_ref_transaction(repository_root: &Path, input: &str) {
-    let mut child = support::git_command()
+    let mut child = git_command(BERTH_EXECUTABLE)
         .arg("--no-optional-locks")
         .args(["-c", "core.hooksPath=/dev/null", "update-ref", "--stdin"])
         .current_dir(repository_root)
@@ -4406,7 +4417,7 @@ fn run_three_commit_rebase_sample(
         ],
     );
     let started_at = Instant::now();
-    let mut command = support::git_command();
+    let mut command = git_command(BERTH_EXECUTABLE);
     command.arg("--no-optional-locks");
     if matches!(hook_mode, RebaseHookMode::Disabled) {
         command.args(["-c", "core.hooksPath=/dev/null"]);
@@ -4499,41 +4510,13 @@ fn run_berth_with_session_and_run(
 }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = support::git_command()
-        .arg("--no-optional-locks")
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove(BYPASS_ENVIRONMENT)
-        .output()
-        .expect("git should run");
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("git output should be UTF-8")
-        .trim()
-        .to_owned()
+    GIT.stdout(repository_root, arguments)
 }
 
-fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = git_output(repository_root, arguments);
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+fn git(repository_root: &Path, arguments: &[&str]) { GIT.run(repository_root, arguments); }
 
 fn git_output(repository_root: &Path, arguments: &[&str]) -> Output {
-    support::git_command()
-        .arg("--no-optional-locks")
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove(BYPASS_ENVIRONMENT)
-        .output()
-        .expect("git should run")
+    GIT.output(repository_root, arguments)
 }
 
 fn git_binary() -> PathBuf {

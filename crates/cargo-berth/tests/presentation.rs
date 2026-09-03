@@ -1,6 +1,9 @@
 //! Built-binary acceptance tests for render-ready reservation responses.
 
-mod support;
+use cargo_berth_test_support::git_command;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 
 use std::error::Error;
 use std::fs;
@@ -955,7 +958,7 @@ fn enable_enforcing_gate(repository_root: &Path) -> TestResult {
 }
 
 fn run_git(repository_root: &Path, arguments: &[&str]) -> TestResult {
-    let output = support::git_command()
+    let output = git_command(BERTH_EXECUTABLE)
         .args(arguments)
         .current_dir(repository_root)
         .output()?;

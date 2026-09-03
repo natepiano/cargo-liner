@@ -5,7 +5,19 @@
 
 //! Built-binary tests for reservation lifecycle and retained git evidence.
 
-mod support;
+use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::git_command;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// How this file drives git: an ordinary checkout, with nothing held back from a hook.
+const GIT: GitDriver = GitDriver {
+    executable:          BERTH_EXECUTABLE,
+    optional_locks:      OptionalLocks::Taken,
+    cleared_environment: &[],
+};
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -186,6 +198,71 @@ fn resolve_reports_failed_session_mapping_retirement() {
     );
 }
 
+/// Releases needed before a merged reservation carries its disposition.
+///
+/// One revalidates the integration evidence and one records what it proved; a
+/// third would be the no-op this test is about.
+const RELEASES_TO_A_DISPOSITION: usize = 2;
+
+#[test]
+fn a_release_that_changed_nothing_does_not_repeat_the_sentence_of_one_that_acted() {
+    let repository = initialized_repository();
+    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
+    commit_file(
+        repository.path(),
+        "src/lib.rs",
+        "phase work\n",
+        "phase work",
+    );
+    let claim = claim(repository.path(), "tree:src", FIRST_RUN);
+    let reservation_id = reservation_id(&claim);
+    assert!(
+        run_berth(repository.path(), &["release", &reservation_id])
+            .status
+            .success()
+    );
+    git(repository.path(), &["switch", "--quiet", "main"]);
+    git(
+        repository.path(),
+        &["merge", "--quiet", "--ff-only", "phase"],
+    );
+
+    // Reaching a disposition takes one release to revalidate the evidence and one
+    // to record what it proved; which of the two a given call performs depends on
+    // what reconciliation had already materialized.
+    let mut acted = String::new();
+    for _ in 0..RELEASES_TO_A_DISPOSITION {
+        let release = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+        let release = json_output(&release);
+        if release["payload"]["data"]["status"] == "released" {
+            acted = release["message"]
+                .as_str()
+                .expect("release should carry a message")
+                .to_owned();
+            break;
+        }
+    }
+    assert!(
+        !acted.is_empty(),
+        "the reservation should reach a disposition"
+    );
+
+    let repeated = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+    let repeated = json_output(&repeated);
+    assert_eq!(repeated["payload"]["data"]["status"], "already_settled");
+    let unchanged = repeated["message"]
+        .as_str()
+        .expect("repeated release should carry a message");
+    assert_ne!(
+        unchanged, acted,
+        "a release that did nothing must read differently from one that acted"
+    );
+    assert!(
+        unchanged.contains("was already released"),
+        "a repeated release should name the disposition it found: {unchanged}"
+    );
+}
+
 #[test]
 fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
     let repository = initialized_repository();
@@ -317,7 +394,7 @@ fn foreign_active_reservation_cannot_checkpoint_the_invoking_head() {
 
     assert_eq!(release.status.code(), Some(5));
     assert_eq!(json_output(&release)["status"], "invalid_input");
-    let retention_ref = support::git_command()
+    let retention_ref = git_command(BERTH_EXECUTABLE)
         .args([
             "rev-parse",
             "--verify",
@@ -972,34 +1049,10 @@ fn last_claim_event(repository_root: &Path) -> serde_json::Value {
         .expect("journal should contain a claim event")
 }
 
-fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = support::git_command()
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()
-        .expect("git should run");
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+fn git(repository_root: &Path, arguments: &[&str]) { GIT.run(repository_root, arguments); }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = support::git_command()
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()
-        .expect("git should run");
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("git output should be UTF-8")
-        .trim()
-        .to_owned()
+    GIT.stdout(repository_root, arguments)
 }
 
 fn git_binary() -> String {

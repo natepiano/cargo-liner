@@ -78,7 +78,7 @@ pub(crate) fn trim_leading_self(segments: &[String]) -> &[String] {
     }
 }
 
-pub(crate) fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
+fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
     let relative = path.strip_prefix(source_root).ok()?;
     let mut result: Vec<String> = relative
         .parent()

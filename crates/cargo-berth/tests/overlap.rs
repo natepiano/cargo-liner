@@ -5,7 +5,18 @@
 
 //! Built-binary tests for claim acquisition and mutation-free edit checks.
 
-mod support;
+use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::OptionalLocks;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// How this file drives git: an ordinary checkout, with nothing held back from a hook.
+const GIT: GitDriver = GitDriver {
+    executable:          BERTH_EXECUTABLE,
+    optional_locks:      OptionalLocks::Taken,
+    cleared_environment: &[],
+};
 
 use std::fs;
 use std::fs::File;
@@ -1321,18 +1332,7 @@ fn journal_events(repository_root: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = support::git_command()
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()
-        .expect("git should run");
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+fn git(repository_root: &Path, arguments: &[&str]) { GIT.run(repository_root, arguments); }
 
 fn json_output(output: &Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("command should render a JSON envelope")

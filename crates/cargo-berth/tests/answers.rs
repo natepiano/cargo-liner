@@ -5,7 +5,18 @@
 
 //! Built-binary tests for proposal-bound overlap answers.
 
-mod support;
+use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::OptionalLocks;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// How this file drives git: an ordinary checkout, with nothing held back from a hook.
+const GIT: GitDriver = GitDriver {
+    executable:          BERTH_EXECUTABLE,
+    optional_locks:      OptionalLocks::Taken,
+    cleared_environment: &[],
+};
 
 use std::ffi::OsStr;
 use std::fs;
@@ -1969,16 +1980,7 @@ where
     Arguments: IntoIterator<Item = Argument>,
     Argument: AsRef<OsStr>,
 {
-    let output = support::git_command()
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()
-        .expect("git should run");
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    GIT.run(repository_root, arguments);
 }
 
 fn paused_git_wrapper() -> String {

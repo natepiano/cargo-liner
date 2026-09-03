@@ -7648,6 +7648,34 @@
               "type": "object"
             },
             {
+              "description": "A release ran against a reservation that already carried its disposition.",
+              "properties": {
+                "disposition": {
+                  "$ref": "#/$defs/release_disposition",
+                  "description": "The disposition it already retains."
+                },
+                "evidence": {
+                  "$ref": "#/$defs/integration_evidence_status",
+                  "description": "What current trunk still proves about it."
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that was already settled."
+                },
+                "status": {
+                  "const": "already_settled",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "reservation_id",
+                "disposition",
+                "evidence"
+              ],
+              "type": "object"
+            },
+            {
               "description": "A verified or user-confirmed disposition was appended.",
               "properties": {
                 "disposition": {
@@ -13541,6 +13569,34 @@
                 "reservation_id",
                 "evidence",
                 "marker"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A release ran against a reservation that already carried its disposition.",
+              "properties": {
+                "disposition": {
+                  "$ref": "#/$defs/release_disposition",
+                  "description": "The disposition it already retains."
+                },
+                "evidence": {
+                  "$ref": "#/$defs/integration_evidence_status",
+                  "description": "What current trunk still proves about it."
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that was already settled."
+                },
+                "status": {
+                  "const": "already_settled",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "reservation_id",
+                "disposition",
+                "evidence"
               ],
               "type": "object"
             },

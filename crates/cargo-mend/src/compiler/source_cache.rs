@@ -40,10 +40,10 @@ use super::constants::SOURCE_DIR_SRC;
 use super::constants::SOURCE_DIR_TESTS;
 use super::sweep_counters;
 use crate::reporting::AllFeaturesCoverage;
+use crate::rust_syntax;
 use crate::rust_syntax::LexicalRegions;
 use crate::rust_syntax::ModuleDirectories;
 use crate::rust_syntax::PathAnchor;
-use crate::rust_syntax::parse_meta_list;
 #[cfg(test)]
 use crate::selection::CARGO_TARGET_KIND_LIB;
 #[cfg(test)]
@@ -537,7 +537,7 @@ fn attribute_meta_all_features_coverage(meta: &Meta) -> AllFeaturesCoverage {
 }
 
 fn cfg_predicates_all_features_coverage(list: &MetaList) -> AllFeaturesCoverage {
-    let Ok(metas) = parse_meta_list(list) else {
+    let Ok(metas) = rust_syntax::parse_meta_list(list) else {
         return AllFeaturesCoverage::NotGuaranteed;
     };
     metas
@@ -551,7 +551,7 @@ fn cfg_predicates_all_features_coverage(list: &MetaList) -> AllFeaturesCoverage 
 }
 
 fn cfg_attr_all_features_coverage(list: &MetaList) -> AllFeaturesCoverage {
-    let Ok(metas) = parse_meta_list(list) else {
+    let Ok(metas) = rust_syntax::parse_meta_list(list) else {
         return AllFeaturesCoverage::NotGuaranteed;
     };
     let Some(predicate) = metas.first() else {
@@ -582,7 +582,7 @@ fn cfg_predicate_all_features_coverage(
     let Meta::List(list) = meta else {
         return AllFeaturesCoverage::Superset;
     };
-    let Ok(metas) = parse_meta_list(list) else {
+    let Ok(metas) = rust_syntax::parse_meta_list(list) else {
         return AllFeaturesCoverage::NotGuaranteed;
     };
     let nested_polarity = if meta.path().is_ident("not") {

@@ -5,7 +5,18 @@
 
 //! Built-binary tests for ordering-edge replay, locked mutation, and limits.
 
-mod support;
+use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::OptionalLocks;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// How this file drives git: no optional locks, with nothing held back from a hook.
+const GIT: GitDriver = GitDriver {
+    executable:          BERTH_EXECUTABLE,
+    optional_locks:      OptionalLocks::Refused,
+    cleared_environment: &[],
+};
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -43,6 +54,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 const STALE_RUN_ENVIRONMENT: &str = "CARGO_BERTH_TEST_STALE_RUN";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
+
 if [ "$1" = "--no-optional-locks" ]; then
     command_name="$2"
     (
@@ -1764,31 +1776,14 @@ fn reservation_ref(reservation_id: &str) -> String {
 }
 
 fn reference_exists(repository_root: &Path, reference: &str) -> bool {
-    support::git_command()
-        .arg("--no-optional-locks")
-        .args(["show-ref", "--verify", "--quiet", reference])
-        .current_dir(repository_root)
-        .status()
-        .expect("git show-ref should run")
-        .success()
+    GIT.succeeds(
+        repository_root,
+        &["show-ref", "--verify", "--quiet", reference],
+    )
 }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = support::git_command()
-        .arg("--no-optional-locks")
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()
-        .expect("git should run");
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("git output should be UTF-8")
-        .trim()
-        .to_owned()
+    GIT.stdout(repository_root, arguments)
 }
 
 /// Add a real worktree beside the repository, the only actor berth treats as foreign.
@@ -2101,26 +2096,8 @@ fn git_binary() -> PathBuf {
         .expect("git should exist on PATH")
 }
 
-fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = support::git_command()
-        .arg("--no-optional-locks")
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()
-        .expect("git should run");
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+fn git(repository_root: &Path, arguments: &[&str]) { GIT.run(repository_root, arguments); }
 
 fn git_status(repository_root: &Path, arguments: &[&str]) -> bool {
-    support::git_command()
-        .arg("--no-optional-locks")
-        .args(arguments)
-        .current_dir(repository_root)
-        .status()
-        .expect("git should run")
-        .success()
+    GIT.succeeds(repository_root, arguments)
 }

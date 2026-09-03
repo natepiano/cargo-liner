@@ -5,7 +5,18 @@
 
 //! End-to-end drift fingerprint, selection, classification, replay, and hook tests.
 
-mod support;
+use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::OptionalLocks;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// How this file drives git: no optional locks, clearing what its fixtures set for themselves.
+const GIT: GitDriver = GitDriver {
+    executable:          BERTH_EXECUTABLE,
+    optional_locks:      OptionalLocks::Refused,
+    cleared_environment: &[BYPASS_ENVIRONMENT, RUN_ENVIRONMENT],
+};
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -68,6 +79,7 @@ fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 const MARKER_RELEASE_GIT_WRAPPER: &str = r#"#!/bin/sh
+
 set -eu
 if [ "$1" = "--no-optional-locks" ] && [ "$2" = "status" ] \
     && [ ! -e "$CARGO_BERTH_TEST_MARKER_RELEASE_TRIGGER" ]; then
@@ -3293,36 +3305,13 @@ fn git_binary() -> PathBuf {
 }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = git_output(repository_root, arguments);
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("git output should be UTF-8")
-        .trim()
-        .to_owned()
+    GIT.stdout(repository_root, arguments)
 }
 
-fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = git_output(repository_root, arguments);
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+fn git(repository_root: &Path, arguments: &[&str]) { GIT.run(repository_root, arguments); }
 
 fn git_output(repository_root: &Path, arguments: &[&str]) -> Output {
-    support::git_command()
-        .arg("--no-optional-locks")
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove(BYPASS_ENVIRONMENT)
-        .env_remove(RUN_ENVIRONMENT)
-        .output()
-        .expect("git should run")
+    GIT.output(repository_root, arguments)
 }
 
 fn git_output_with_environment(
@@ -3331,12 +3320,5 @@ fn git_output_with_environment(
     name: &str,
     value: &str,
 ) -> Output {
-    support::git_command()
-        .arg("--no-optional-locks")
-        .args(arguments)
-        .current_dir(repository_root)
-        .env(name, value)
-        .env_remove(RUN_ENVIRONMENT)
-        .output()
-        .expect("git should run")
+    GIT.output_with_environment(repository_root, arguments, name, value)
 }

@@ -1,6 +1,9 @@
 //! Real-binary acceptance guard for executable engine instructions.
 
-mod support;
+use cargo_berth_test_support::git_command;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 
 use std::error::Error;
 use std::fs;
@@ -590,7 +593,7 @@ fn add_worktree(repository: &TempDir, branch: &str) -> TestResult<(TempDir, Path
 }
 
 fn run_git(repository: &Path, arguments: &[&str]) -> TestResult {
-    let output = support::git_command()
+    let output = git_command(BERTH_EXECUTABLE)
         .args(arguments)
         .current_dir(repository)
         .output()?;

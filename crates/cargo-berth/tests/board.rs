@@ -5,7 +5,18 @@
 
 //! Built-binary tests for the headless board and its coherent replay projection.
 
-mod support;
+use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::OptionalLocks;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// How this file drives git: no optional locks, with nothing held back from a hook.
+const GIT: GitDriver = GitDriver {
+    executable:          BERTH_EXECUTABLE,
+    optional_locks:      OptionalLocks::Refused,
+    cleared_environment: &[],
+};
 
 use std::fs;
 use std::fs::OpenOptions;
@@ -51,6 +62,7 @@ fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 const BLOCKING_GIT_WRAPPER: &str = r#"#!/bin/sh
+
 if [ "$1" = "--no-optional-locks" ] && [ "$2" = "worktree" ] && [ "$3" = "list" ]; then
     : > "$CARGO_BERTH_TEST_BOARD_SIGNAL"
     while [ ! -e "$CARGO_BERTH_TEST_BOARD_RELEASE" ]; do sleep 0.01; done
@@ -4630,36 +4642,10 @@ fn run_berth_with_run(repository_root: &Path, arguments: &[&str], run: &str) -> 
         .expect("identified cargo-berth command should run")
 }
 
-fn git(repository_root: &Path, arguments: &[&str]) {
-    let output = support::git_command()
-        .arg("--no-optional-locks")
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()
-        .expect("git should run");
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+fn git(repository_root: &Path, arguments: &[&str]) { GIT.run(repository_root, arguments); }
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    let output = support::git_command()
-        .arg("--no-optional-locks")
-        .args(arguments)
-        .current_dir(repository_root)
-        .output()
-        .expect("git should run");
-    assert!(
-        output.status.success(),
-        "git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("git output should be UTF-8")
-        .trim()
-        .to_owned()
+    GIT.stdout(repository_root, arguments)
 }
 
 fn git_binary() -> String {

@@ -573,10 +573,10 @@ fn released_evidence_operation(
         release_repository_context.repository_root,
         release_repository_context.trunk_branch,
     ) else {
-        return Ok(evidence_operation(
+        return Ok(already_settled_operation(
             reservation_id,
+            disposition,
             IntegrationEvidenceStatus::ObjectUnknown,
-            EditBlockingStatus::Clear,
             protected_tip.clone(),
         ));
     };
@@ -589,12 +589,40 @@ fn released_evidence_operation(
         PriorIntegrationStatus::Proven,
     )
     .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown);
-    Ok(evidence_operation(
+    Ok(already_settled_operation(
         reservation_id,
+        disposition,
         evidence,
-        EditBlockingStatus::Clear,
         protected_tip.clone(),
     ))
+}
+
+/// Revalidate a reservation that already carries its disposition.
+///
+/// The durable record is the same evidence revalidation a live reservation
+/// appends; only the reported outcome differs. A settled reservation that
+/// reported its evidence the way a live one does left the caller unable to tell
+/// a release that acted from one that found the work already done.
+fn already_settled_operation(
+    reservation_id: ReservationId,
+    disposition: &ReleaseDisposition,
+    evidence: IntegrationEvidenceStatus,
+    protected_tip: ProtectedReservationTip,
+) -> ReleaseAppend {
+    ReleaseAppend::new(
+        JournalOperation::EvidenceRevalidated {
+            reservation_id,
+            status: evidence.clone(),
+            edit_blocking_status: EditBlockingStatus::Clear,
+        },
+        ReleasePayloadSeed::AlreadySettled {
+            reservation_id,
+            disposition: disposition.clone(),
+            evidence,
+        },
+        reservation_id,
+        protected_tip,
+    )
 }
 
 struct ReleaseRepositoryContext<'repository> {
@@ -746,6 +774,11 @@ enum ReleasePayloadSeed {
         reservation_id: ReservationId,
         evidence:       IntegrationEvidenceStatus,
     },
+    AlreadySettled {
+        reservation_id: ReservationId,
+        disposition:    ReleaseDisposition,
+        evidence:       IntegrationEvidenceStatus,
+    },
     Released {
         reservation_id: ReservationId,
         disposition:    ReleaseDisposition,
@@ -787,6 +820,15 @@ impl ReleasePayloadSeed {
                 reservation_id,
                 evidence,
                 marker,
+            },
+            Self::AlreadySettled {
+                reservation_id,
+                disposition,
+                evidence,
+            } => ReleasePayload::AlreadySettled {
+                reservation_id,
+                disposition,
+                evidence,
             },
             Self::Released {
                 reservation_id,

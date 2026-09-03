@@ -26,4 +26,5 @@ unicode-width = { workspace = true }
 uuid          = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+cargo-berth-test-support = { workspace = true }
+tempfile                 = { workspace = true }

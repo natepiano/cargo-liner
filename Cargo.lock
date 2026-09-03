@@ -423,6 +423,7 @@ dependencies = [
 name = "cargo-berth"
 version = "0.1.0-dev"
 dependencies = [
+ "cargo-berth-test-support",
  "clap",
  "crossterm",
  "ratatui",
@@ -434,6 +435,10 @@ dependencies = [
  "unicode-width",
  "uuid",
 ]
+
+[[package]]
+name = "cargo-berth-test-support"
+version = "0.1.0-dev"
 
 [[package]]
 name = "cargo-mend"

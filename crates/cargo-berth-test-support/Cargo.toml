@@ -1,0 +1,12 @@
+[package]
+authors.workspace    = true
+description          = "Git invocation shared by the cargo-berth integration tests"
+edition.workspace    = true
+license.workspace    = true
+name                 = "cargo-berth-test-support"
+publish              = false
+repository.workspace = true
+version              = "0.1.0-dev"
+
+[lints]
+workspace = true

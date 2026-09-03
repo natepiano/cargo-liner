@@ -1288,6 +1288,15 @@ pub(crate) enum ReleasePayload {
         /// What happened to the worktree coordination-run marker.
         marker:         CoordinationRunMarkerRetirement,
     },
+    /// A release ran against a reservation that already carried its disposition.
+    AlreadySettled {
+        /// The reservation that was already settled.
+        reservation_id: ReservationId,
+        /// The disposition it already retains.
+        disposition:    ReleaseDisposition,
+        /// What current trunk still proves about it.
+        evidence:       IntegrationEvidenceStatus,
+    },
     /// A verified or user-confirmed disposition was appended.
     Released {
         /// The reservation that received the disposition.
@@ -1307,6 +1316,7 @@ impl ReleasePayload {
             Self::Checkpointed { reservation_id, .. }
             | Self::Resnapshotted { reservation_id, .. }
             | Self::EvidenceRevalidated { reservation_id, .. }
+            | Self::AlreadySettled { reservation_id, .. }
             | Self::Released { reservation_id, .. } => *reservation_id,
         }
     }
@@ -1314,14 +1324,21 @@ impl ReleasePayload {
     const fn output_status(&self) -> OutputStatus {
         match self {
             Self::Checkpointed { .. } | Self::Resnapshotted { .. } => OutputStatus::Outstanding,
-            Self::EvidenceRevalidated { evidence, .. } => match evidence {
-                IntegrationEvidenceStatus::Integrated { .. } => OutputStatus::Integrated,
-                IntegrationEvidenceStatus::NotIntegrated => OutputStatus::Outstanding,
-                IntegrationEvidenceStatus::TrunkRewritten => OutputStatus::TrunkRewritten,
-                IntegrationEvidenceStatus::ObjectUnknown => OutputStatus::ObjectUnknown,
+            Self::EvidenceRevalidated { evidence, .. } | Self::AlreadySettled { evidence, .. } => {
+                integration_evidence_status(evidence)
             },
             Self::Released { disposition, .. } => release_disposition_status(disposition),
         }
+    }
+}
+
+/// Report what trunk currently proves, whatever disposition the reservation retains.
+const fn integration_evidence_status(evidence: &IntegrationEvidenceStatus) -> OutputStatus {
+    match evidence {
+        IntegrationEvidenceStatus::Integrated { .. } => OutputStatus::Integrated,
+        IntegrationEvidenceStatus::NotIntegrated => OutputStatus::Outstanding,
+        IntegrationEvidenceStatus::TrunkRewritten => OutputStatus::TrunkRewritten,
+        IntegrationEvidenceStatus::ObjectUnknown => OutputStatus::ObjectUnknown,
     }
 }
 
@@ -2381,6 +2398,20 @@ impl OutputEnvelope {
                 ),
                 IntegrationEvidenceStatus::ObjectUnknown => format!(
                     "Reservation {reservation_id} is blocking because git could not resolve its integration evidence."
+                ),
+            },
+            ReleasePayload::AlreadySettled {
+                disposition,
+                evidence,
+                ..
+            } => match evidence {
+                IntegrationEvidenceStatus::Integrated { trunk_oid, .. } => format!(
+                    "Reservation {reservation_id} was already released with disposition {disposition:?}; trunk commit {trunk_oid} still carries its integration evidence. This release changed nothing."
+                ),
+                IntegrationEvidenceStatus::NotIntegrated
+                | IntegrationEvidenceStatus::TrunkRewritten
+                | IntegrationEvidenceStatus::ObjectUnknown => format!(
+                    "Reservation {reservation_id} was already released with disposition {disposition:?}. This release changed nothing."
                 ),
             },
             ReleasePayload::Released {

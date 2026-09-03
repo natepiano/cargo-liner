@@ -9,7 +9,10 @@
 //! identity over whatever the fixture carries, so a floor on the fixture's own size
 //! carries the rest of that promise: a deletion cannot balance itself out to green.
 
-mod support;
+use cargo_berth_test_support::git_command;
+
+/// The `cargo-berth` a managed hook must run, in place of any installed copy.
+const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 
 use std::error::Error;
 use std::fs;
@@ -630,7 +633,7 @@ fn ambiguous_first_touch_envelope() -> ShellOracleResult<Value> {
 }
 
 fn run_git(repository: &Path, arguments: &[&str]) -> ShellOracleResult<()> {
-    let output = support::git_command()
+    let output = git_command(BERTH_EXECUTABLE)
         .args(arguments)
         .current_dir(repository)
         .output()?;
