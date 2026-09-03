@@ -1716,6 +1716,7 @@ fn a_trunk_bypass_without_an_invocation_directory_leaves_a_fallback_marker() {
     let mut child = Command::new("sh")
         .args(["-c", &command])
         .env(BYPASS_ENVIRONMENT, "1")
+        .env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -3262,7 +3263,7 @@ fn board_reservation_snapshot<'board>(
 }
 
 fn run_private_hook(repository_root: &Path, phase: &str, input: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let mut child = berth_command()
         .args(["__reference-transaction", phase, "refs/heads/main"])
         .current_dir(repository_root)
         .env(
@@ -3294,7 +3295,7 @@ fn run_private_hook_with_session(
     input: &str,
     session_id: &str,
 ) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let mut child = berth_command()
         .args(["__reference-transaction", phase, "refs/heads/main"])
         .current_dir(repository_root)
         .env(
@@ -3333,6 +3334,7 @@ fn run_managed_hook_with_session(
         .env_remove(BYPASS_ENVIRONMENT)
         .env_remove(RUN_ENVIRONMENT)
         .env(SESSION_ENVIRONMENT, session_id)
+        .env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -3838,6 +3840,11 @@ fn run_command_with_raw_git_behavior(
         .env(RAW_GIT_BEHAVIOR_ENVIRONMENT, raw_git_behavior.as_str())
         .env(REAL_GIT_ENVIRONMENT, git_binary())
         .env(TRACE_ENVIRONMENT, &trace_path)
+        // The traced command is a managed hook, or reaches one through the
+        // wrapped git, and a hook resolves its own cargo-berth. The wrapped
+        // search path still carries the machine's own, so without this the
+        // trace counts whatever `cargo install` last left there.
+        .env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE)
         .env_remove(BYPASS_ENVIRONMENT)
         .env_remove(RUN_ENVIRONMENT)
         .env_remove(SESSION_ENVIRONMENT)
@@ -3854,8 +3861,21 @@ fn run_command_with_raw_git_behavior(
     (output, invocations)
 }
 
+/// Start the `cargo-berth` under test, named for any hook it goes on to fire.
+///
+/// The binary a test spawns is settled by its own path, but a managed hook this
+/// binary triggers resolves `cargo-berth` for itself and answers with whatever
+/// `cargo install` last left on the machine. Naming it here keeps a hook on the
+/// code the test was compiled from, so a developer machine with an installed
+/// copy and a continuous integration machine without one agree.
+fn berth_command() -> Command {
+    let mut command = Command::new(BERTH_EXECUTABLE);
+    command.env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE);
+    command
+}
+
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command()
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -3871,7 +3891,7 @@ fn run_berth_with_environment(
     name: &str,
     value: &str,
 ) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command()
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -3889,7 +3909,7 @@ fn run_berth_with_input_and_environment(
     name: &str,
     value: &str,
 ) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let mut child = berth_command()
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -4457,7 +4477,7 @@ fn run_three_commit_rebase_sample(
 }
 
 fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command()
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -4506,7 +4526,7 @@ fn run_berth_with_session_and_run(
     session_id: &str,
     coordination_run_id: &str,
 ) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command()
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
