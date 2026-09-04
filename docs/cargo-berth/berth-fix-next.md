@@ -78,38 +78,6 @@ the union combination no longer compiles.
 
 Surfaced while investigating why an answered incursion kept reappearing.
 
-## Refuse to install a managed hook that points inside a `target/` directory
-
-`init` writes the resolved path of whichever executable invoked it into both
-managed hooks. Run it once from a development build and both hooks hard-code
-that build's path — `<worktree>/target/debug/cargo-berth`.
-
-`.git/hooks` lives in the common git directory, so it is shared by every
-worktree of the repository. A development build in one worktree therefore
-becomes the hook binary for all of them, and nothing reports that it happened:
-while the development build agrees with the installed one, the hooks look
-correct.
-
-The divergence surfaces as an unrelated failure. When the bounded-projection
-work removed `events` from the projection and raised the projection schema
-version, the first commit after that build landed wrote the new projection into
-the shared ledger, and every session still on the installed binary failed with a
-deserialization error naming a missing field. The cause is the hook target, not
-the format change; nothing in the message points at it.
-
-Prefer a stable installed path when one resolves, and refuse to install a hook
-whose target lies inside a `target/` directory unless an explicit flag opts in.
-Report the chosen hook target in `init`'s payload either way, so a development
-target is visible at the moment it is installed rather than at the moment it
-breaks a sibling worktree.
-
-Acceptance installs hooks from a `target/debug` executable and confirms the
-install is refused with the target named, confirms the same install succeeds
-under the opt-in flag, and confirms `init` reports the hook target it wrote.
-
-Surfaced by diagnosing two shared-ledger outages; both were the drift-split worktree's debug build running as the repository's
-commit hook.
-
 ## Publish the engine and its wrappers as one atomic version
 
 Every Claude session can execute a berth hook while an installation is being

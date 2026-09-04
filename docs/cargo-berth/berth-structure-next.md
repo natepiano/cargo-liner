@@ -60,7 +60,7 @@ it. A second worktree then runs the first one's hook, and removing that first
 worktree leaves a hook pointing at a path that no longer exists.
 
 The baked value is the `__POLICY_WORKTREE__` substitution
-(`src/gate/install.rs:468`). The same install path owns
+(`src/gate/install.rs:481`). The same install path owns
 `__refresh-managed-hook-after-trunk-deletion`, which carries
 `CommandResultReporting::GitHookProtocol` and which no test in this crate invokes
 as a command line — its `Cli::run` doc comment says so rather than claiming
@@ -381,32 +381,7 @@ Satisfied by: each family helper accepting only the operations its own arm of
 passes the variant's fields rather than the whole event — so no `_` arm remains
 below `apply`.
 
-## 21. `cargo berth init` pins both git hooks to a build artifact, so `cargo clean` disables the trunk gate
-
-**Target:** `crates/cargo-berth/src/gate/install.rs:112`, where
-`std::env::current_exe()` supplies the path both generated hooks hard-code.
-
-`install_managed_hooks` writes the absolute path of whichever binary ran `init`
-into the `reference-transaction` and `post-commit` hooks, and each hook opens
-with `if [ ! -x <that path> ]` and permits the operation when the test fails
-(`:273` for post-commit, `:436` for the trunk gate). Running `init` from
-`target/debug/cargo-berth` — the ordinary way to try a development build — pins
-both hooks to a build artifact, so any `cargo clean -p cargo-berth` silently
-turns the trunk gate and the post-commit drift check into no-ops. Observed
-in ordinary use: a checkpoint commit landed ungated, and the message told the
-operator to "rerun cargo berth init after restoring cargo-berth" while a working
-`cargo-berth` sat on `PATH` at `~/.cargo/bin/cargo-berth` the whole time. The
-failure is silent in the direction that matters — the gate does not refuse, it
-permits — and the operator has no reason to reread a warning that names a
-recovery they believe they already have.
-
-Satisfied by: the generated hooks resolving the executable at run time rather
-than pinning one path — preferring the recorded path, falling back to `PATH` —
-and the unavailable-executable message naming the path it actually looked for,
-so the operator can see that the pinned artifact is gone rather than concluding
-the tool is uninstalled.
-
-## 22. A wall-clock benchmark reads as a defect whenever the tree is busy
+## 21. A wall-clock benchmark reads as a defect whenever the tree is busy
 
 **Target:** `crates/cargo-berth/tests/gate.rs:2479` —
 `batched_attribution_benchmark_covers_short_and_long_ranges`.
@@ -432,7 +407,7 @@ Widening the 25ms reference is explicitly ruled out: it does not make the
 assertion load-independent, it only moves the load at which it fires. It has
 fired five times on a busy tree.
 
-## 23. Two macros share one name and one matcher, so a call site cannot say which it selects
+## 22. Two macros share one name and one matcher, so a call site cannot say which it selects
 
 **Target:** `crates/cargo-berth/src/ids.rs:22` and `:128` — both declared
 `macro_rules! uuid_identifier`.
@@ -454,7 +429,7 @@ Satisfied by: renaming the second declaration for what it adds — a constructor
 so both call sites name what they select, or by merging the two declarations into
 one that emits the type and its constructor together.
 
-## 24. `output.rs` holds the whole rendering surface in one file
+## 23. `output.rs` holds the whole rendering surface in one file
 
 **Target:** `crates/cargo-berth/src/output.rs` — 4,356 lines, 2,283 at the start
 of the structure work.
@@ -475,7 +450,7 @@ sentences in siblings named for what they hold. The engine strings are asserted
 verbatim by `tests/presentation.rs` and the frozen `front_end_corpus.json`, so
 the move is provable: neither may change.
 
-## 25. `reconcile.rs` carries four unrelated concerns and no tests of its own
+## 24. `reconcile.rs` carries four unrelated concerns and no tests of its own
 
 **Target:** `crates/cargo-berth/src/reconcile.rs` — 2,429 lines, 1,019 at the
 start of the structure work, 47 top-level types, and zero `#[cfg(test)]` blocks.
@@ -491,7 +466,7 @@ Satisfied by: a `reconcile/` directory splitting along those four concerns, each
 sibling carrying its own `#[cfg(test)]` module over the part of the model it
 computes.
 
-## 26. `session/` is a directory module with nothing to hold
+## 25. `session/` is a directory module with nothing to hold
 
 **Target:** `crates/cargo-berth/src/session/` — `mod.rs` alone, 424 lines, zero
 `mod` declarations.
