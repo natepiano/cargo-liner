@@ -1,8 +1,8 @@
 # berth-structure — next items
 
-Approved work this plan does not cover. Each item names a concrete target and
-what would satisfy it. Adding an item commits nobody to building it; scheduling
-one into a phase is the decision.
+Approved work not yet built. Each item names a concrete target and what would
+satisfy it. Adding an item commits nobody to building it; scheduling one is the
+decision.
 
 ## 1. A contradictory proposal token re-proposes rather than claiming
 
@@ -112,7 +112,7 @@ not block a `check` or a `claim` from this run. Two sessions sharing a worktree
 can therefore both believe they hold the same paths, which is the condition the
 engine exists to prevent.
 
-Phase 7 landed the consolidation and phase 10 moved it: eligibility is two
+The consolidation landed and then moved: eligibility is two
 methods on `Reservation`, `is_active_for_coordination_run`
 (`reservation/record.rs:158`), which holds the `Active` lifecycle test, and
 `is_active_for_coordination_run_and_worktree` (`:171`), which adds the worktree
@@ -136,11 +136,10 @@ exists — `tests/engine_instructions.rs` carries named real-binary scenarios
 (`POST_TOOL_USE_SCENARIO`, `SESSION_START_SCENARIO`, `run_hook_verb`,
 `hook_response_envelope`) — so the remaining work is binding README blocks to
 those scenarios rather than building the harness. The drift is recurring, not
-hypothetical: the instruction-naming phase required four manual documentation
-corrections, the hook-verb phase swept the README by hand again, and the
-coordinator cutover carried a third hand sweep over text it changed wholesale.
-That cutover also removed the last obstacle — the three installed hooks are
-pass-throughs, so every quoted hook block is the engine's own rendering. The one
+hypothetical: three separate rounds of work each required a hand sweep over
+README text they changed wholesale. Nothing blocks the binding now — the three
+installed hooks are pass-throughs, so every quoted hook block is the engine's
+own rendering. The one
 exception is the wrappers' binary-absent notices, produced without an engine and
 asserted directly in `~/.claude/scripts/berth/tests/test_hook_rendering.py`.
 
@@ -197,7 +196,7 @@ a later check" — it publishes no mapping, so the next edit is refused
 identically. `CARGO_BERTH_SESSION_ID` is unset in an ordinary Bash tool
 environment and only the pre-edit hook ever sets it, per invocation, from the
 payload, so the printed instruction is unusable by hand in exactly the situation
-that prints it. Reproduced three times during phase 4; prefixing the same
+that prints it. Reproduced three times by hand; prefixing the same
 command with `CARGO_BERTH_SESSION_ID=<session uuid>` is what worked.
 
 Satisfied by: the printed recovery command succeeding when run verbatim from a
@@ -242,11 +241,9 @@ asserting the two texts differ.
 (`crates/cargo-berth/src/reservation/replay.rs:48`, rendered at `:116`).
 
 Journal replay refuses a duplicated incursion record with the status
-`duplicate_incursion_incident` and names the command that recovers from it. The
-coordinator cutover surfaced the answer — the retired two-call front end had made
-the timing cell that reached it unreachable — but nothing under
-`crates/cargo-berth/tests/` asserts the status or the rendered text, and the only
-named surface is the timing matrix outside the repository.
+`duplicate_incursion_incident` and names the command that recovers from it. Nothing under
+`crates/cargo-berth/tests/` asserts the status or the rendered text; it was
+reachable only from a front-end path that no longer exists.
 
 Satisfied by: a test building a journal with a duplicated incursion record and
 asserting the status `duplicate_incursion_incident` and its rendered recovery
@@ -299,7 +296,7 @@ refusal to measure into a false measurement.
 (`crates/cargo-berth/src/drift/selection.rs:254`) and `ResolvedDriftSubjects.reporting`
 (`:228`).
 
-Phase 7 routed both through `WireOrderedReservationIds`, so the operator message
+Both route through `WireOrderedReservationIds`, so the operator message
 `drift is ambiguous; choose one active reservation with --reservation: …` and the
 multi-subject reporting list in `drift --json` now print in a stable ascending
 order. `reservation_selection_requires_an_explicit_choice_only_when_ambiguous`
@@ -345,7 +342,7 @@ the foreign claim predates the commit.
 `git::PhaseStartTargetFirstParentHistories` (`src/git/reachability.rs:106`) already
 wraps exactly `HashMap<GitObjectId, Vec<GitObjectId>>` and converts a missing key
 into `ScopedPatchTargetHistory::NeedsGitQueries` through `after_phase_start`
-(`:110`); phase 9 moved both out of `git/mod.rs`, which is now declarations and
+(`:110`); both moved out of `git/mod.rs`, which is now declarations and
 re-exports only.
 The reconciliation path lowers that same `HashMap` back to a bare map and
 re-implements that conversion by hand at `:648`, against
@@ -355,7 +352,7 @@ crate already names once.
 A reader of `:630` has to reach the call site to learn that a missing key means
 "no proven interval — query git", not "not computed", and the same empty map is
 produced both by `AncestorObjectUnknown` and by a classified head that is
-`NotDescendant`. Phase 8's split made the contract visible without changing it;
+`NotDescendant`. The module split made the contract visible without changing it;
 the module phases are behavior-preserving and cannot own it.
 
 Satisfied by: the pending-candidate context carrying a named type whose absence
@@ -363,8 +360,6 @@ case states the meaning — reusing `PhaseStartTargetFirstParentHistories` with 
 successor-head accessor, or a sibling that returns
 `SuccessorScopedPatchTargetHistory` directly — so `candidate` performs no
 `map_or` and no bare `HashMap` crosses a struct field.
-
-Revealed by: Phase 8.
 
 ## 20. Four replay family helpers accept any journal operation and silently do nothing
 
@@ -378,15 +373,13 @@ routes to ends in `_ => Ok(())` — `apply_holder_lifecycle_journal_event` (`:58
 `apply_worktree_binding_journal_event` (`:694`) and
 `apply_incursion_journal_event` (`:720`) — so a variant routed to the wrong
 family, or a new variant added to the wrong arm of `apply`, replays as a silent
-no-op with no compile error and no test failure. Before phase 10 the single
+no-op with no compile error and no test failure. Before the split the single
 exhaustive match made both mistakes compile errors.
 
 Satisfied by: each family helper accepting only the operations its own arm of
 `apply` routes to — a per-family enum, or a destructure at the dispatch that
 passes the variant's fields rather than the whole event — so no `_` arm remains
 below `apply`.
-
-Revealed by: Phase 10.
 
 ## 21. `cargo berth init` pins both git hooks to a build artifact, so `cargo clean` disables the trunk gate
 
@@ -400,7 +393,7 @@ with `if [ ! -x <that path> ]` and permits the operation when the test fails
 `target/debug/cargo-berth` — the ordinary way to try a development build — pins
 both hooks to a build artifact, so any `cargo clean -p cargo-berth` silently
 turns the trunk gate and the post-commit drift check into no-ops. Observed
-during phase 10: a checkpoint commit landed ungated, and the message told the
+in ordinary use: a checkpoint commit landed ungated, and the message told the
 operator to "rerun cargo berth init after restoring cargo-berth" while a working
 `cargo-berth` sat on `PATH` at `~/.cargo/bin/cargo-berth` the whole time. The
 failure is silent in the direction that matters — the gate does not refuse, it
@@ -412,8 +405,6 @@ than pinning one path — preferring the recorded path, falling back to `PATH` �
 and the unavailable-executable message naming the path it actually looked for,
 so the operator can see that the pinned artifact is gone rather than concluding
 the tool is uninstalled.
-
-Revealed by: Phase 10 checkpoint.
 
 ## 22. A wall-clock benchmark reads as a defect whenever the tree is busy
 
@@ -438,10 +429,8 @@ between the short and long ranges, the number of git invocations each arm makes,
 or the batching invariant itself — or by keeping the timing assertion but
 excluding it from the delegate gate and running it only on a quiet tree.
 Widening the 25ms reference is explicitly ruled out: it does not make the
-assertion load-independent, it only moves the load at which it fires.
-
-Revealed by: Phase 11 architect review, after five occurrences across phases
-9-11.
+assertion load-independent, it only moves the load at which it fires. It has
+fired five times on a busy tree.
 
 ## 23. Two macros share one name and one matcher, so a call site cannot say which it selects
 
@@ -449,9 +438,9 @@ Revealed by: Phase 11 architect review, after five occurrences across phases
 `macro_rules! uuid_identifier`.
 
 The first declaration defines the identifier type; the second shadows it to add
-`new()`. Until phase 14 the second carried an extra `(future $name:ident)` arm,
-which at least made the two textually distinguishable. That arm was dead — no
-invocation anywhere selected it — and deleting it was phase 14's work, so the two
+`new()`. The second once carried an extra `(future $name:ident)` arm, which at
+least made the two textually distinguishable. That arm was dead — no invocation
+anywhere selected it — and removing it left the two
 declarations now have identical matchers.
 
 Every identifier is therefore invoked twice, once under each declaration
@@ -464,9 +453,6 @@ shadowing that caused it.
 Satisfied by: renaming the second declaration for what it adds — a constructor —
 so both call sites name what they select, or by merging the two declarations into
 one that emits the type and its constructor together.
-
-Revealed by: Phase 14 reach review, after the dead arm's removal left the two
-matchers identical.
 
 ## 24. `output.rs` holds the whole rendering surface in one file
 
@@ -489,8 +475,6 @@ sentences in siblings named for what they hold. The engine strings are asserted
 verbatim by `tests/presentation.rs` and the frozen `front_end_corpus.json`, so
 the move is provable: neither may change.
 
-Revealed by: project-end style review.
-
 ## 25. `reconcile.rs` carries four unrelated concerns and no tests of its own
 
 **Target:** `crates/cargo-berth/src/reconcile.rs` — 2,429 lines, 1,019 at the
@@ -507,8 +491,6 @@ Satisfied by: a `reconcile/` directory splitting along those four concerns, each
 sibling carrying its own `#[cfg(test)]` module over the part of the model it
 computes.
 
-Revealed by: project-end style review.
-
 ## 26. `session/` is a directory module with nothing to hold
 
 **Target:** `crates/cargo-berth/src/session/` — `mod.rs` alone, 424 lines, zero
@@ -523,6 +505,4 @@ Satisfied by: collapsing it to `src/session.rs` if the contents stay one
 concern, or splitting the harness-session identity, the durable mapping, and the
 process-wide selection into named siblings if they do not. The choice is a
 reading of the contents, not of the line count.
-
-Revealed by: project-end style review.
 

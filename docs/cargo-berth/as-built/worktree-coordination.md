@@ -21,7 +21,9 @@ All coordination state lives in a `cargo-berth` directory under the repository's
 | `cargo-berth-run-id` | Coordination-run marker, plus a `retiring` suffix during teardown. |
 | `session-identities.json` | Harness session id to reservation id mapping. |
 
-The projection is never authoritative. It carries a generation counter and is rebuilt by replaying the journal whenever it is missing, stale, unparseable, or ahead of the journal. `MINIMUM_SUPPORTED_SCHEMA_VERSION` is 1 and `CURRENT_SCHEMA_VERSION` is 2: new records and projections are written at 2, and records at 1 still decode.
+The projection is never authoritative, and it carries only what is read back from it: schema version, repository instance id, generation, journal end offset, and journal fingerprint. It holds no copy of the events, so the cost of publishing one is set by live replay state rather than by how many records the journal has ever carried.
+
+The two schemas version independently. The journal's `CURRENT_SCHEMA_VERSION` is 2 with `MINIMUM_SUPPORTED_SCHEMA_VERSION` 1 — new records are written at 2 and records at 1 still decode — while the projection owns `CURRENT_PROJECTION_SCHEMA_VERSION`, at 3. `read_once` reads a small `ProjectionSchemaHeader` and validates its version before decoding the rest, mirroring the journal's own header-first read. `read_validated` answers `ProjectionSynchronization::RebuildRequired` for a missing file, an older schema version, and a version too new for this binary to decode, so an unreadable cache is discarded and rebuilt rather than failing the command. Malformed bytes, a repository-identity mismatch, a cache ahead of the journal, and a fingerprint mismatch stay fatal, because none of them establishes that the file is a readable cache for *this* repository.
 
 ### The transaction surface
 
@@ -46,7 +48,9 @@ Projection maintenance is `ProjectionSynchronization`, and `ProjectionError::Cac
 
 ### The journal operation union
 
-`JournalOperation` carries sixteen variants: `Claim`, `Widen`, `Checkpoint`, `Resnapshot`, `Renew`, `Release`, `ReplaceReleaseDisposition`, `EvidenceRevalidated`, `ResolveDefer`, `Incursion`, `ResolveIncursion`, `ForcedIntegrationPermit`, `ConsumeForcedIntegrationPermit`, `Bypass`, `RebindWorktree`, and `RelocateWorktree`. Every record also carries its actor — worktree id and coordination run id — and a `RecordedAt`. A record may not exceed `MAXIMUM_JOURNAL_RECORD_BYTES` (16 KiB) including its terminating newline; the writer refuses rather than emitting a line a reader could not decode.
+`JournalOperation` carries twenty variants: `Claim`, `Widen`, `Checkpoint`, `Resnapshot`, `Renew`, `Release`, `ReplaceReleaseDisposition`, `EvidenceRevalidated`, `ResolveDefer`, `Incursion`, `ResolveIncursion`, `ForcedIntegrationPermit`, `ConsumeForcedIntegrationPermit`, `Bypass`, `RebindWorktree`, `RelocateWorktree`, and the four that carry integration proof across a restart — `ScopedPatchEquivalenceChecked`, `ScopedPatchComparisonAttempted`, `SuccessorScopedPatchEquivalenceChecked`, and `SuccessorScopedPatchComparisonAttempted`. Every record also carries its actor — worktree id and coordination run id — and a `RecordedAt`.
+
+Every record also carries `identity_inputs`: the process inputs available when its actor was resolved — the invocation directory plus `CARGO_BERTH_SESSION_ID`, `CARGO_BERTH_RUN`, `GIT_DIR`, and `GIT_COMMON_DIR`. Each is a tagged state rather than a bare string (the directory as `utf8`/`too_long`/`non_utf8`/`unavailable`, each environment value as `unset`/`utf8`/`too_long`/`non_utf8`), each is bounded at `MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES` (256 JSON-content bytes) with `too_long` retaining only `observed_bytes`, and the field is additive: records written before it omit it. These bytes are journal evidence, not replay state. A record may not exceed `MAXIMUM_JOURNAL_RECORD_BYTES` (16 KiB) including its terminating newline; the writer refuses rather than emitting a line a reader could not decode.
 
 `Claim` carries the origin of the reservation as `ClaimSource::{WorkPlan, FirstTouch, Explicit}` — a claim made under a named plan and phase, one created by first touch, or one a user stated outright. `Widen` carries a reason distinguishing drift-driven widening from an explicit one.
 
@@ -56,7 +60,7 @@ A reservation scope is a set of repo-relative paths. `scope/` validates them pur
 
 ### The command surface
 
-`main.rs` is `cli::Cli::parse_arguments().run()` returning an `ExitCode`. `cli.rs` holds the whole clap surface; `verb/` holds `board`, `check`, `claim`, `drift`, `integrate`, `release`, and `sequence`; `recovery.rs` holds `resolve` and `renew`; and `init` is implemented in `cli.rs` itself.
+`main.rs` is `cli::Cli::parse_arguments().run()` returning an `ExitCode`. `cli.rs` holds the whole clap surface; `verb/` holds `board`, `check`, `claim`, `drift`, `integrate`, `release`, and `sequence`; `hook/` holds the three harness hook events; `recovery.rs` holds `resolve` and `renew`; and `init` and `identity` are implemented in `cli.rs` itself.
 
 | Verb | What it does |
 | --- | --- |
@@ -70,10 +74,12 @@ A reservation scope is a set of repo-relative paths. `scope/` validates them pur
 | `release` | Retires a reservation with a disposition. |
 | `resolve` | Acts on an alert — an orphaned reservation, an incursion. |
 | `renew` | Refreshes a reservation's activity timestamp. |
+| `hook` | Answers one harness hook event — `pre-tool-use`, `post-tool-use`, `session-start` — from a raw payload on standard input. |
+| `identity` | Manages the current process's disposable coordination identity; `clear-session` is its one subcommand. |
 
 There is no `reserve` verb. `claim` is what creates a reservation; `check` is what creates one on first touch.
 
-A hidden `__reference-transaction` subcommand exists solely for the git hook to invoke; it is not part of the user surface.
+Two hidden subcommands exist solely for git to invoke — `__reference-transaction` and `__refresh-managed-hook-after-trunk-deletion` — and are not part of the user surface. `cli.rs` carries a route table over all sixteen entries, and a unit test that reads no standard input asserts each entry's real output ownership.
 
 `CommandExecution` separates `Response` from `BoardTerminalRestored`, so a command whose output is a restored terminal is not mistaken for one that produced a payload. `TOTAL_GATE_DEADLINE` is `Duration::from_secs(10)`.
 
@@ -93,6 +99,34 @@ pub(crate) enum BerthExit {
 }
 ```
 
+### The harness hook surface
+
+`cargo-berth hook` is a public verb with three subcommands, one per harness event: `pre-tool-use`, `post-tool-use`, and `session-start`. Each reads one raw JSON payload on standard input and writes the response object that event's protocol defines, so the engine — not a front end — decides every byte a user reads.
+
+`hook/mod.rs` holds only what all three share. `hook/process_binding.rs` makes the two decisions every event makes before any repository work starts: `HookWorkingDirectorySelection` chooses the directory whose repository owns the answer, and `HarnessSessionIdentityAvailability` (`Available | Unusable`) decides whether the process can select a disposable harness-session mapping. `hook/context_notice.rs` owns the single stdout object every event publishes when work continues; the three differ only in whether stating continuation means anything for them, which is the one thing a caller chooses. Each event's module carries only the response fields and decisions belonging to its own event.
+
+Dispatch keeps the hook's write out of the dispatch that selected it. `Command::execute` returns `CommandOutputOwnership::HookOwnsItsResponse(HookCommand)` with nothing written, and `Cli::run` calls `HookCommand::write_response()` one frame later, so a caller that only needs to know which hook answers an invocation never reads standard input. `CommandResultReporting` has three answers: `Envelope` for the verbs that produce one, `HookProtocol(HookCommand)` for these three, and `GitHookProtocol` for the two git-invoked private commands, which return before any envelope exists.
+
+Payload parts are domain types with named absent cases, never a bare `Option<T>`; optionals live only inside the private serde boundary structs. A payload whose `cwd` or `session_id` is present but not a string is invalid rather than coerced to an empty string — an empty `cwd` silently observes a different repository, and an empty `session_id` silently attributes drift to another session's reservation. An absent or invalid payload session id publishes a no-session selection that blocks the ambient `CARGO_BERTH_SESSION_ID` fallback, in all three events.
+
+`EngineAnswerOccasion` — `DirectInvocation`, `CompletedBashCall`, `OpeningSession` — is recorded once per process by the hook that owns it, and the first record stands. The verb decides which words a condition gets; the occasion decides which event those words name, because `check`, `board`, and `drift` are each shared between a hook and a person running the verb by hand.
+
+**`hook pre-tool-use`** is the only blocking event. It answers the protocol directly: nothing on a silent allow, an allow-notice object on stdout when the presentation carries blocks, the refusal detail on stderr with exit 2. Edit-target resolution is a two-type split — `PayloadEditTarget { Named | NotNamed { reason } }` resolving into `ResolvedEditTarget { WithinRepository | OutsideCoordinationDomain | Unresolved { reason } }` — so `execute()` carries no impossible arm. The path arrives exactly as the payload named it, `..` components included, because only the filesystem can say what a `..` means: `alias/../held.rs` is `held.rs` when `alias` is a real directory and something else entirely when `alias` is a symlink. `CoordinationDomain` keeps the repository root in both the filesystem's canonical namespace and the payload's. Canonical placement runs first, so a file reached through a symlink keeps the single coordination identity it has always had; only when canonicalization lands outside the repository does the payload-namespace comparison run, because a symlinked directory inside the worktree pointing elsewhere is still an edit inside this worktree. `WorktreeRelativeEditName` rebuilds the worktree-relative name from `Component::Normal` alone, so a surviving `..` answers `NamesNoWorktreeFile` and the hook refuses visibly rather than coordinating a name no write ever reaches.
+
+**`hook post-tool-use`** reports on a Bash call that has already completed, so nothing it says can block and every route ends at exit 0. It performs the drift comparison and, when the answer depends on it, reads the live incursion board in the same process — the harness is never asked to run a second command to finish an answer. `PostToolUseAnswer` is `Silent` or `Stated { summary, detail }`; `LiveIncursionState` is `Read` or `Unverifiable`; `PostToolUseObservableToolCall` separates a Bash call from a payload this verb was invoked on by mistake. Invalid payload and unavailable working directory fail open with distinct messages under `continue: true`.
+
+**`hook session-start`** is advisory: it starts no work and blocks none, so every route ends at exit 0 and the only question it answers is what the reader is told. It reads `BoardModel::envelope_presentation` and branches on `RenderedBlocks` / `NothingToShow` / `NotProvided`, so an unconfigured repository and an unreadable ledger are distinguishable without classifying envelope facts. Its response omits the continuation field, because a session-start response cannot stop anything and the harness continues by default.
+
+`EnvelopePresentation` is what makes silence a state rather than an emptiness check. Three variants — `NotProvided`, `NothingToShow`, and `RenderedBlocks { blocks: NonEmptyRenderedBlocks }` — where the rendered-blocks payload has a private field and a fallible constructor, so an empty rendered-blocks payload is unconstructible. `NothingToShow` serializes as the frozen `{"kind":"rendered_blocks","blocks":[]}` and deserializes back. An alert reaches a user as a rendered block on the presentation a hook publishes; nothing downstream re-derives an alert from wire facts.
+
+`HookFacingCondition` names the conditions a hook-facing verb states in its own words rather than leaving a hook to classify a wire status: `Unconfigured`, `OutsideCoordinationDomain`, `LedgerUnreadable`, `Contention`, and `InvalidInput`. The first two render nothing. A directory under no git worktree is not a ledger the tool opened and failed to read; it is a place where there is no ledger to read and no repair anyone can perform, so `LedgerError::RepositoryNotFound` selects `LedgerReadFailureAudience::DirectCallerOnly` — the hook stays quiet, and a person who ran the verb and asked a question still reads the sentence on an unchanged envelope.
+
+### The installed front end
+
+The installed front end is three shell wrappers — `berth_pre_edit.sh`, `berth_post_bash.sh`, and `berth_session_start.sh` — and each decides exactly one thing: whether `cargo-berth` is on `PATH`. If it is, the wrapper `exec`s `cargo-berth hook <event>`, so stdout, stderr, and exit status pass through byte for byte and the response is identical to invoking the engine directly. The one policy each wrapper states alone is its binary-absent failure mode: pre-edit refuses with exit 2 and a stderr notice; the other two state the problem and exit 0, since neither can refuse what it reports on. Both of those notices are static JSON written with `printf` rather than composed through `jq`, so they hold when nothing else on the path does.
+
+`tests/fixtures/front_end_corpus.json` records what the three installed hooks printed for real engine responses, and `tests/front_end_corpus.rs` is an independent oracle over it: nothing there regenerates the fixture, relaxes a comparison, or drops an entry because nothing drives it any more. Every entry is either driven by a named test or carries the measured reason it cannot be, asserted as a partition rather than a count, and `MINIMUM_FROZEN_CORPUS_ENTRIES` (50) is a ratchet so a deletion cannot balance the partition back to green.
+
 ### Enrollment
 
 `Enrollment<T>` is `Enrolled(T)` or `Unconfigured { expected_configuration_path }`. Absence of configuration is a state the tool reports, not an error it fails on: a repository that has never run `init` gets told where the file would go. Configuration lives at `<root>/.claude/config/berth.toml`, parsed by a hand-rolled subset reader. `BerthConfig` defaults are `trunk = "main"`, `maximum_reservations = 128`, `maximum_ordering_edges = 512`, and `gate_mode = Observe`. `InitializationState::{Created, Existing}` distinguishes a file the run wrote from one it found.
@@ -111,6 +145,8 @@ pub(crate) enum EditAuthorization {
 ```
 
 `resolve_from_sources` consults the harness session mapping first, then `CARGO_BERTH_RUN`, then the on-disk coordination-run marker, and falls back to `Unidentified`. `session/mod.rs` keeps `session-identities.json` current: `apply_journal_event` publishes a mapping on `Claim` and `Widen`, and retires every entry pointing at the reservation on `Checkpoint` and `Release`. Marker removal reports `CoordinationRunMarkerRemoval::{Removed, AlreadyAbsent, PreservedDifferentRun, PreservedMalformed}` — a marker belonging to another run or one that cannot be parsed is left in place rather than deleted.
+
+`ledger::resolve_identity(&WorktreeContext)` is the single entry point for actor identity. It returns a `ResolvedJournalMutationActor` carrying the worktree id, the coordination run id, and the `EditAuthorization` resolved in that same read, and every journal-mutating path routes through it — claim, check, release, sequence, gate, permit, recovery, reconcile, and drift. Identity is resolved exactly once per invocation, because a second read can disagree with the first when a concurrent release retires the session mapping and marker in between. `WorktreeContext` distinguishes its two directories by type: `WorktreeAdministrativeDirectory` owns the worktree and run identity markers, `SharedLedgerDirectory` owns the journal and session mappings.
 
 Worktree identity is persistent, not derived from the environment. Every identified `EditAuthorization` variant therefore carries the worktree id alongside the run, created on first use by `create_or_read_worktree_id` so an invocation that precedes any claim still resolves it.
 
@@ -139,9 +175,27 @@ If the answer is blocked, `reconcile_and_retry` runs reconciliation once and re-
 
 `ReservationLifecycle` has exactly three variants: `Active`, `Outstanding { protected_tip }`, and `Released { disposition }`. The `release` verb on an active reservation produces `Outstanding`, not `Released`.
 
+`Released` is terminal. `resnapshot` accepts only `Outstanding`, `apply_widen` accepts only `Active`, and `apply_resnapshot` returns early for a released reservation so a legacy release-then-resnapshot journal replays to `Released` without reopening.
+
+`edit_blocking_status` is computed, never stored. `Reservation::edit_blocking_status()` is a `const` projection of lifecycle — `Active` blocks, `Outstanding` defers to its integration evidence, `Released` is `Clear` unconditionally — and the blocking filter runs before either identity predicate, so a clear holder is dropped before foreignness is consulted. The v1 `edit_blocking_status` journal field is retained for audit and is not authoritative on replay: a journalled `Released` + `Blocking` contradiction replays to an effective `Clear`.
+
 `reservation/mod.rs` holds `RetainedReservationSet::replay`, the only path by which live reservation state is derived. Every consumer — board, gate, drift, integration — reads the same replay rather than maintaining a parallel view.
 
-Integration evidence is git, not a flag. A reservation's protected tip is pinned by a retention ref at `refs/cargo-berth/reservations/<id>`, so the commit survives branch deletion and `git gc --prune=now`. Evidence questions are ancestry queries against that ref. `git/` wraps `std::process::Command`; there is no git library dependency and no libgit2.
+Integration evidence is git, not a flag. A reservation's protected tip is pinned by a retention ref at `refs/cargo-berth/reservations/<id>`, so the commit survives branch deletion and `git gc --prune=now`. `git/` wraps `std::process::Command`; there is no git library dependency and no libgit2.
+
+### Integration proof
+
+Ancestry is the fast answer, not the only one. When a reservation's protected tip stops being an ancestor of trunk, the change the reservation made *inside its own scopes* — measured from `phase_start_head` — is compared against current trunk history. An amended, rebased, or squashed commit whose scoped content survives still certifies; the same paths carrying different content do not. `IntegrationEvidenceStatus::Integrated { trunk_oid, proof }` carries which of the two proved it, as `IntegrationProof::{ProtectedTipAncestor, ScopedPatchEquivalent}`; records written before the field decode as `ProtectedTipAncestor`.
+
+The ancestry-success path issues no extra subprocess. The fallback batches every scope into one comparison composed of merge-base, rev-list, tree/index, merge-tree, and diff — roughly a dozen git invocations, run once per retained reservation during reconciliation. Every one routes through the typed `GitCommandExecution` boundary, so a git that could not start stays distinct from a git that ran and answered no: merge-base exit 1 (unrelated histories) and merge-tree exit 1 (conflict) both resolve to a definitive `Different`, never `Unavailable`.
+
+The proof is cached against the pair that produced it. `IntegrationProofSubjectRevision` versions the baseline, protected content, and scopes a proof was checked under, and advances on `Widen`, `Resnapshot`, and release-disposition replacement — never on ordinary revalidation. `ScopedPatchEquivalenceCache` retains definitive verdicts (`Integrated`, `NotIntegrated`, `TrunkRewritten`) for the two most recent targets; an `ObjectUnknown` comparison is never cached, because it is a transient environment fact and storing it would make one failed subprocess durable across restarts. The cache and its schedule reach the journal as `ScopedPatchEquivalenceChecked` and `ScopedPatchComparisonAttempted`, so both survive a restart from replay alone.
+
+Reconciliation admits **one** cold scoped comparison per trunk target per pass. Targets that lose the slot are scheduled round-robin over a bounded attempt history, so a skipped subject is preferred next pass and a subject whose comparison keeps returning `ObjectUnknown` cannot starve the others. A deferral is not neutral: `DeferredScopedPatchIntegrationStatus` decides what the materialized evidence still proves — `StillValid` only for an equivalence proof bound to the trunk actually observed, and `Degraded` to `NotIntegrated` both for a protected-tip proof reachability has just refuted and for an equivalence proof bound to an earlier target. Degradation is durable: the `EvidenceRevalidated` append precedes the schedule update, so the correct answer is the one that replays.
+
+Successor edges use the same proof on a different axis. `SuccessorIncorporationEvidence` — `ProtectedTipAncestor`, `ScopedPatchEquivalent`, `NotIncorporated`, `ObjectUnknown` — and the per-predecessor `PredecessorSuccessorIncorporation` replaced a type named for containment that had grown a value that was not containment. `Edge::readiness` reads only the snapshot; the git work assembles every predecessor's subject into one `descendant_commits` call. Successor verdicts have their own cache, keyed by the predecessor's proof-subject revision and the successor head, with its own retention limit (512, against 2 for trunk targets) because twenty heads are twenty targets. A deferred head keeps reporting `AwaitingSuccessorIncorporation`: a deferral never reads as incorporation.
+
+Git cost is bounded by batching, and the standard is exact argv equality at one subject and at twenty rather than a sublinear trend. Predecessor ancestry, worktree ahead/behind, retention-ref availability, and retention-ref repair are each one invocation regardless of count, and incursion attribution is three batched queries — one union-base resolution over usable phase-start anchors, one path log over every entered path, one range-membership query over every anchor — in place of a per-path loop. `IncursionAttributionAnchorState` (`UsableAncestor` / `NotAncestorOfHead` / `ObjectUnknown`) records each anchor's relation to the target, so an unreadable anchor reports nothing rather than defaulting into a false `Unchanged`.
 
 ### Answering an overlap
 
@@ -181,7 +235,17 @@ pub(crate) enum EdgeReadiness {
 
 ### Alerts and recovery
 
-`Alert` currently carries `OrphanedOutstanding(OrphanedOutstandingAlert)` — a protected reservation with no validated worktree holder. Alerts travel on every envelope. The board's `BoardAlert` adds the board-only views `StaleReservation` and `UnrecordedBypasses`. An orphan alert carries everything needed to act: `protected_tip`, `BoardBranchRefStatus`, `ObjectAvailability`, `BoardRetentionRefStatus`, `RecoverabilityVerdict`, `OrphanRecoveryConsequence`, and the `OrphanResolutionAction` that would clear it. `recovery.rs` implements `resolve` and `renew` against those verdicts.
+`Alert` carries two variants. `OrphanedOutstanding` is a protected reservation with no validated worktree holder. `LostIntegrationEvidence` is a released reservation that no longer has affirmative integration evidence; it carries the reservation id, protected tip, evidence status, and a recovery split into `VerifyResolvedTrunk { trunk_oid, action }` and `ResolveTrunkFirst { action }`, so the unresolved-trunk case is representable without emitting an `--integrated-as <trunk-oid>` instruction nobody could run. It is derived on every reconciliation from replayed state and the already-materialized trunk, so the *first* drift envelope detecting a rewrite reports it, and the derivation is pure — it adds no git subprocess and no per-reservation cost. Alerts travel on every envelope. The board's `BoardAlert` adds the board-only views `StaleReservation` and `UnrecordedBypasses`. An orphan alert carries everything needed to act: `protected_tip`, `BoardBranchRefStatus`, `ObjectAvailability`, `BoardRetentionRefStatus`, `RecoverabilityVerdict`, `OrphanRecoveryConsequence`, and the `OrphanResolutionAction` that would clear it. `recovery.rs` implements `resolve` and `renew` against those verdicts.
+
+### Coordination identity and recovery commands
+
+One `validate_coordination_identity` serves the git gate and every ordinary verb. It returns a `CoordinationIdentityRejection` — stale session mapping, stale marker run, or session/worktree mismatch — each carrying a non-empty `CoordinationIdentityRecoveryActions`, so the human message and the machine payload render from one source.
+
+Every published recovery `argv` is a `RunnableRecoveryCommandLine`, produced only through a fallible conversion from the lossless `RecoveryCommandLine(Vec<OsString>)`. A command that cannot be represented as text is omitted from the action set rather than published in degraded form; `RerunFromHoldingWorktree` is the only omittable action and `ClaimSeparatelyHere` always remains, so the set is never empty and every member is directly executable. A recovery command is built from `std::env::args_os()`, so whether it is representable depends on how the process was invoked rather than on anything the ledger holds. A front end renders these actions; it does not parse `message`.
+
+The `reference-transaction` hook exports `CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY=$PWD` before it changes directory to the policy worktree, and the binary reads it into `ReferenceTransactionIssuingDirectory::{CapturedByManagedHook, MissingFromLegacyHook}`. There is no fallback to the process's own working directory. A hook installed before that export yields `MissingFromLegacyHook`, and the gate returns `GateError::LegacyReferenceTransactionHook` before resolving any worktree; the refusal carries `OutputStatus::LegacyHookOutdated` and names both repairs — rerun `cargo-berth init`, or set `CARGO_BERTH_BYPASS=1` to proceed now.
+
+A resolve reports what it accomplished rather than that it ran: `recorded_now` when the invocation appended the disposition, `already_recorded_by_same_coordination_actor` (also exit 0) when the retained actor's worktree and run ids equal the caller's, and `already_recorded_by_different_coordination_actor` (exit 5, `invalid_input`) naming the resolving worktree, run, event id, and time in typed fields. `JournalActor::has_coordination_identity` is the single comparison: responsibility means equality of the ids the journal recorded, never sameness of process. `IncursionIncidentStatus::Resolved` retains its resolving actor, reconstructed on replay from the record's own actor, so earlier records replay unchanged and no journal lookup exists.
 
 ### Drift
 
@@ -211,11 +275,37 @@ const MANAGED_HOOKS: &[ManagedHook] = &[REFERENCE_TRANSACTION_HOOK, POST_COMMIT_
 
 `ManagedHookInstallation` and `ManagedHookActivationOutcome` report what installation did. Each hook body carries a marker comment identifying it as managed, so a subsequent run can recognize its own file and refuse to overwrite a hand-written one. Installed hooks get `EXECUTABLE_PERMISSIONS` (`0o755`). The post-commit hook runs `CARGO_BERTH_POST_COMMIT=1 <executable> drift --full` and always exits 0; if the executable is missing or non-executable it prints a message telling the user to run `cargo-berth drift --full` by hand and states that the commit remains in place.
 
+The rendered `reference-transaction` hook classifies phase/ref pairs in shell and spawns the binary only for actionable ones: `preparing`, `aborted`, and unknown phases exit before the binary; `prepared` invokes only when the transaction names the configured trunk ref exactly, as a complete third field rather than a substring; `committed` invokes for any local `refs/heads/*`, because it reanchors phase starts after a local rewrite and consumes forced-integration permits. The same filter gates the bypass recording. Two classifier stages run per fire at a cost independent of ref count: `LC_ALL=C grep -q` routes straight to the binary on any byte outside tab and printable ASCII — grep's own error exit counts as a bad byte — and then one `awk` pass classifies the surviving records. The byte scan must precede awk, because awk truncates a record at NUL. Stdin is copied to a protected temporary file and the *unchanged bytes* are redirected into the binary; a buffering failure refuses and prints a retry instruction rather than replaying a partial transaction. Anything unclassifiable invokes the binary: skipping is not a failure mode this table produces.
+
+Trunk-rename refresh keys on the deletion alone, since `git branch -m` emits only the delete. Candidate branches are those sharing the deleted trunk's tip, and a candidate is admitted only when its newest reflog subject matches `Branch: renamed {deleted} to {candidate}` exactly; `LocalBranchRenameProof` short-circuits to `MultipleMatches` at the second proof, and zero or several proofs leave the hook untouched. The rewrite runs in the hidden `__refresh-managed-hook-after-trunk-deletion` subcommand, spawned detached because it cannot run inside the hook that triggered it, and `PendingManagedHookReplacement` keeps the swap atomic so a failed write leaves the previous hook rather than an empty permissive one.
+
+Berth's own retention-ref writes do not pay for any of that. `GitHookExecutionPolicy` is `Enabled` by default and only the private retention-ref writes in `git/refs.rs` name `SuppressedForRetentionRef`, so `init` hook discovery and `integrate`'s trunk update still fire hooks. Suppression sets `core.hooksPath=/dev/null` through the `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` environment overlay rather than a `-c` argv flag, appending after whatever overlay the environment already carries, so it is invisible in recorded argv and every before/after trace stays comparable. Repair and deletion are one call issuing a single `update-ref --stdin` transaction per pass; there is no per-reservation deletion helper left to reintroduce the scaling.
+
 Forced permits are one-use: `ForcedIntegrationPermit` grants and `ConsumeForcedIntegrationPermit` spends. `Bypass` records a gate bypass. `CARGO_BERTH_BYPASS=1` is evaluated before any ledger read, so an unreadable ledger can still be bypassed — and both managed hooks honor it in their first lines.
 
 ### The board
 
 `board/mod.rs` builds a `BoardModel` with sixteen top-level fields, and `board/tui.rs` renders it with ratatui, crossterm, and `tui_pane` across six panes. Three output modes exist: the terminal view, plain text, and `--json` carrying the full model. The model includes a `git_cost` block with six dimensions — trunk resolution calls, worktree list calls, reservation evidence revalidations, protected predecessor ancestry queries, worktree ahead/behind computations, and orphan recovery evidence queries — so the cost of rendering the board is visible in its own output. A terminal that cannot be driven exits 7 rather than reusing a data error code.
+
+`board --reservation <id> --json` is a placement-independent lifecycle read for one reservation, covering rows the board deliberately omits — a waiting successor, either endpoint of an unresolved overlap. The selector requires `--json` and is rejected at the command line otherwise, so it never reaches the TUI path. `ReservationLifecycleSnapshot` is projected from `Reservation::evidence_state` rather than re-matched: `Active`, `Outstanding { protected_tip }`, `ReleasedAfterCheckpoint { protected_tip, disposition }`, `ReleasedWithoutCheckpoint { disposition }`. An unknown id rejects as `ReservationLifecycleQueryRejection::UnknownReservation`, never as an absent value.
+
+### The generated output contract
+
+`output_contract.rs` generates the wire contract in-crate rather than from a build script, and `docs/cargo-berth/generated/output-contract.json` is the checked artifact. One test rewrites it on request; the ordinary run regenerates it in memory and byte-compares. Four declaration macros pair each variant with its pinned wire name in one list and generate both a test-visible inventory and an exhaustive match, so a status, verb, exit code, journal operation, or trunk observation cannot be added without appearing in the contract.
+
+The contract's unit is the whole outcome tuple — verb, envelope status, exit code, payload kind, nested discriminants — because every value is individually legal and only the tuple rejects a success envelope carrying a rejection sub-status. Retained legacy outcomes are tuples marked `decodable_only` rather than omitted, which is how `reblocked_active_constraint` stays accepted as a reserved board value while never being emitted. Every `schemars` definition name is pinned to its wire name, so no Rust rename can move the generated bytes — a property a test proves by declaring a genuinely distinct type carrying the same wire name.
+
+`ReplayFailurePayload { reason, subject, effect }` types every replay hard stop: `reason` is generated exhaustively from the replay error enums, `subject` is a three-arm identity union, and `effect` is `HardStop`. Without it the roughly twenty replay invariant failures collapse into one untyped `ledger_unreadable` envelope. `docs/cargo-berth/json-contract.md` is the document independent consumers read.
+
+### Semantic types at the boundaries
+
+Types name their semantic role rather than their representation, and no domain-state `Option<T>` survives at a boundary that carried one: a state that could be "not known yet" is a named variant instead.
+
+`WorktreeComparability::{Comparable(WorktreeId), IdentityNotRecorded, DeferredPendingRewrite}` replaced a `Result<Option<WorktreeId>>`, and the middle variant is named for absence because unavailability is what the code it replaced *claimed* while swallowing every identity-read failure. `EnvironmentCoordinationRunSelection::{NotSupplied, UnusableFallbackToMarker, Identified}` is internal to `EditAuthorization::resolve_from_sources` and converted before its single authorization read, preserving the one-read guarantee. `OverlapSelection` converts all six clap optionals in one place, called once with `?`, so no downstream helper receives a raw optional and the "choose only one overlap answer" arm stays reachable. `GitCommandOutputAvailability::{Available(Output), Unavailable(io::Error)}` carries the error and its exact diagnostic through the conversion. `FilesystemReferenceResolution::{Resolved, RequiresGitResolution { rejection_if_git_reports_missing }}` has the producer pick the fallback error, so the reader matches two arms and never inspects a payload — and no wire status, payload member, or diagnostic names the fallback.
+
+Drift's stand-aside is narrow by construction. `comparable_worktree` stands aside for exactly one case — the identity file genuinely absent, under `DriftReservationSelection::EveryActiveForPostCommit` — and propagates every other ledger error as a `DriftExecutionError`, so a malformed worktree identity fails loudly instead of reading as no drift.
+
+`HarnessSessionId` is a type rather than a validated string: 1 to 256 **characters** — not bytes, so a 256-character multibyte id is valid — with no control characters. It travels as itself to every consumer, and none re-validates it.
 
 ### Environment variables
 
@@ -224,6 +314,8 @@ Forced permits are one-use: `ForcedIntegrationPermit` grants and `ConsumeForcedI
 | `CARGO_BERTH_RUN` | Supplies the coordination run id, consulted after the session mapping. |
 | `CARGO_BERTH_BYPASS=1` | Skips gate evaluation; read before any ledger access, and honored by both hooks. |
 | `CARGO_BERTH_POST_COMMIT=1` | Marks a `drift` run as hook-invoked, selecting warning rendering. |
+| `CARGO_BERTH_SESSION_ID` | Supplies the harness session id, consulted only when a hook payload named none. |
+| `CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY` | Exported by the managed `reference-transaction` hook before it changes directory; the gate reads the issuing checkout from it and has no fallback. |
 | `CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH` | Test-only signal that makes a waiting lock acquisition observable. |
 
 ## Invariants
@@ -242,7 +334,19 @@ Forced permits are one-use: `ForcedIntegrationPermit` grants and `ConsumeForcedI
 - `RetainedReservationSet::replay` is the only path by which live reservation state is derived.
 - `lifecycle.rs` and `evidence.rs` carry no `Option`. A new state is a new variant.
 - The four lifecycle types stay orthogonal. Fusing them into one stage enum is not an available simplification.
-- Integration evidence is a git ancestry query against the retention ref, never a stored boolean.
+- Integration evidence is derived from git, never a stored boolean: ancestry against the retention ref, or scoped patch equivalence when ancestry fails.
+- A widen resets an outstanding reservation's integration evidence to `NotIntegrated`, so a proof never extends to scope it did not check.
+- Only definitive scoped-patch verdicts are cached, keyed by the trunk or successor target together with the proof-subject revision. An `ObjectUnknown` comparison is transient and is never made durable.
+- A deferred comparison never reads as incorporation, and a degraded verdict is journalled before the schedule update so the correct answer is the one that replays.
+- Git cost per pass does not scale with paths, commits, reservations, or successor heads. The standard is exact argv equality at one subject and at twenty, measured on an unfiltered trace.
+- `edit_blocking_status` is computed from lifecycle and evidence, never stored. `Released` is terminal and reports `Clear` unconditionally, so no gate may key repair eligibility on it.
+- Identity is resolved exactly once per invocation, through `resolve_identity`, and every journal record carries the bounded `identity_inputs` observed at that resolution.
+- Every published recovery `argv` is directly executable. A command that cannot be represented as text is omitted from the action set rather than degraded, and the set is never empty.
+- The gate reads the issuing checkout from the variable the managed hook exports, never from the process's working directory. A hook that does not export it is refused, not assumed away.
+- Responsibility for a resolution is equality of the ids the journal recorded, never sameness of process.
+- The projection versions independently of the journal. A cache that is unreadable but identifiably this repository's rebuilds; one whose identity or fingerprint does not match is fatal.
+- Retention-ref writes suppress hooks through the environment config overlay, never through argv, so every before-and-after argv trace stays comparable.
+- The `reference-transaction` dispatch table fails toward invoking the binary. Anything it cannot classify is treated as actionable.
 - Every reservation with a protected tip has a retention ref, and the ref is written inside the same lock hold as the record that justifies it.
 - Edge readiness is derived, never stored. `holds_successor()` remains the single decision point.
 - A readiness question about an absent snapshot entry fails closed with exit 4.
@@ -266,6 +370,14 @@ Forced permits are one-use: `ForcedIntegrationPermit` grants and `ConsumeForcedI
 - Git is reached only through `git/`, as `std::process::Command`. No git library is introduced.
 - The session identity mapping is maintained only by `apply_journal_event`, and only `Claim`, `Widen`, `Checkpoint`, and `Release` move it.
 - A coordination-run marker belonging to a different run, or one that cannot be parsed, is preserved rather than removed.
+- The engine writes every byte of a harness hook response. A front end may decide whether the engine can be reached; it may not rebuild, reformat, or supplement what the engine said.
+- Every hook process binds its repository and harness session from the payload before any repository work starts. An absent or invalid payload session id publishes a no-session selection rather than falling through to `CARGO_BERTH_SESSION_ID`.
+- `pre-tool-use` is the only hook event that can refuse. `post-tool-use` and `session-start` always exit 0, whatever they report.
+- A payload-named edit path is resolved through the filesystem. Collapsing `..` textually on a path a payload named as an edit target is not permitted.
+- An empty rendered-blocks presentation is unconstructible. Deliberate silence is `NothingToShow`.
+- A condition a hook's reader cannot act on renders nothing. `Unconfigured` and `OutsideCoordinationDomain` are both silent to a hook while a direct caller still reads the message, and the wire fields are the same either way.
+- No domain-state `Option<T>` at a boundary. A state that could be absent is a named variant, named for what it means rather than for what a failure claimed.
+- The frozen front-end corpus is never shrunk to satisfy a coverage assertion, and its coverage is an asserted partition, never a count.
 
 ## Calibration and gotchas
 
@@ -285,6 +397,12 @@ Forced permits are one-use: `ForcedIntegrationPermit` grants and `ConsumeForcedI
 | Cheap drift comparison | 2 git calls |
 | Full drift comparison | 3 git calls plus one committed-diff call per additional reservation |
 | `DELETE_CONTROL_BYTE` | `0x7f`, rejected in ref names |
+| `SCOPED_PATCH_TARGET_RETENTION_LIMIT` | 2 trunk targets |
+| `SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT` | 512 successor heads |
+| Cold scoped comparisons | one per target per reconciliation pass |
+| Scoped-patch fallback | roughly 12 git invocations per evaluation |
+| `CURRENT_PROJECTION_SCHEMA_VERSION` | 3, independent of the journal's 2 |
+| `MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES` | 256 JSON-content bytes |
 
 - Reservation freshness is computed from owner activity events only. Unrelated journal traffic from other worktrees does not refresh a reservation, so a busy repository does not mask an abandoned claim.
 - `check` runs without the lock and without git. Adding a git call to `decide` changes the cost of the most frequent operation in the system.
@@ -307,6 +425,28 @@ Forced permits are one-use: `ForcedIntegrationPermit` grants and `ConsumeForcedI
 - The shipped dependency set is `clap`, `crossterm`, `ratatui`, `serde`, `serde_json`, `tui_pane`, `unicode-width`, and `uuid`, with `tempfile` for tests. There is no TOML crate, no time crate, and no error-handling crate.
 - Reservation ids are UUID v7, so id ordering is roughly creation ordering — useful for reading a journal, not a substitute for the recorded timestamp.
 - The `__reference-transaction` subcommand is hidden and its argument handling is driven by git's hook protocol, not by user ergonomics.
+- Wall time is not driven by git process count. Fitting measured per-cell maxima against git argv gives roughly 8.6 ms per git process over a ~0.234 s intercept at zero of them, so the floor alone exceeds a 0.20 s budget and the five-git outcome measured slower than the twenty-two-git one. A plan that reaches a latency target by cutting git arity is unreachable on its own arithmetic.
+- Concurrency bought the first order of magnitude on the scoped-patch reads — worst case 7.34 s to 0.28 s — and then stopped helping. What remains is per-process spawn overhead no overlap removes.
+- A harness must never set an environment variable the engine reads as a scheduling switch. A measurement that changes the code path it measures is void however green it reads; that defect once serialized every timed concurrent read.
+- `git::reference_lookup` returns `Missing` only on git's own exit 2. A failed `rev-parse`, a spawn failure, and malformed output each propagate as an error; collapsing any of them back into absence reintroduces a repaired defect.
+- `rev-list --stdin` exits 128 on a single unknown object, blanking every result. `--ignore-missing` plus a per-item membership check confines the damage to the item actually missing.
+- `anchor..HEAD` and "descendants of anchor" are different sets: a commit merged from a branch that forked before the anchor is in the first and not the second.
+- Batching a per-item query silently converts a degradable failure into a fatal one. The origin query maps its failure to a named "cannot classify" state and must never propagate with `?`.
+- A filter that drops unreadable anchors, combined with a collector that defaults the gap, produces a confident wrong answer instead of an error.
+- `core.hooksPath = ""` does not resolve to the repository root — git rejects the empty path outright, so a hook configured that way never fires under any condition.
+- An absent reflog proves nothing: reflogs can be disabled, so a missing entry leaves the hook alone rather than inferring a rename from a shared tip.
+- After a proven trunk rename the hook and `.claude/config/berth.toml` disagree on the trunk name, and re-running `cargo berth init` reverts the hook to the stale configured value.
+- `ReleasedWithoutCheckpoint` cannot raise the lost-evidence alert; it carries no integration status at all.
+- A reported misattribution of a linked worktree's resolve does not reproduce, and was investigated on 2026-08-26 from the journalled actors, marker contents, invocation directory, and command route it recorded: the directories were passed in the correct order and a linked worktree's resolve is attributed to the linked worktree. The `identity_inputs` record on every journal record exists so a recurrence is diagnosable rather than re-investigated.
+- `verify.sh test <package>` resolves lib and bin targets only and cannot see `crates/cargo-berth/tests/`, so a scoped package run reports green while every integration suite goes unrun. Name each integration target explicitly.
+- A fixture edited until it passes stops proving its property. Call counts asserted without statuses, a helper filtering out the calls that had begun to scale, and a released fixture that could not show blocking status all went green while checking nothing. Every assertion change has to say what it still proves.
+- `normalize_absolute_path` collapses `..` textually, which is sound only when every component left of a `..` is a real directory. It applies to a working directory the harness reports itself sitting in, never to a path a payload names as an edit target — reversed, the hook coordinates a file the write never touches while the write lands outside the repository uncoordinated.
+- `Path::file_name()` is `None` for a path ending in `..`, so `<repo>/absent/../held.rs` reaches no existing ancestor and refuses visibly rather than resolving.
+- A linked git worktree does not inherit `.claude/config/berth.toml`, so an unenrolled requester answers exit 0 for every edit.
+- On macOS a worktree under `/tmp` is discovered as `/private/tmp/...`. The payload namespace and the canonical namespace genuinely differ, which is why `CoordinationDomain` carries both.
+- `hook/mod.rs` is a shared protocol across three events. A new hook event extends it rather than growing a fourth private copy.
+- Because the wrappers are pass-throughs, changing a hook's rendered text changes what users see with no front-end edit — and no front-end file to forget.
+- This package's suite contains wall-clock-bounded tests. Concurrent verification runs push them past their deadlines even when compiles are serialized; those failures are contention and clear on a quiet rerun.
 - Workspace-wide builds enable `clap/wrap_help` through an unrelated member's dependency, which rewraps `long_about` text. Help-text assertions must normalize whitespace, and package-scoped verification cannot observe this class of defect.
 
 ## Why it is this way
@@ -366,5 +506,21 @@ A live holder that is clean and zero commits ahead of trunk is treated the same 
 **The board is computed, not stored.** A maintained board file is a second copy of facts git and the journal already hold, and it is wrong the moment someone forgets to update it. Recomputing means the board cannot disagree with reality — and publishing the git cost of that recomputation keeps the price of the choice visible.
 
 **One standalone binary.** Building this as a cargo subcommand crate keeps it installable with `cargo install`, invocable as `cargo berth`, and usable from a git hook as a plain executable. A library would have required a host; an editor plugin would have covered one editor and left the hooks unguarded.
+
+**The engine owns the harness protocol; the front end owns nothing.** An installed front end and an installed engine upgrade at different moments. Every byte a front end composes itself is a byte the two can disagree about, and the disagreement shows up as a user reading text no version of the engine would have produced. Reducing the front end to `exec` makes that class of defect unconstructible: installing a new engine is the whole repair, and there is no front-end file that can be forgotten. The wrappers keep exactly one decision, whether the engine can be reached, because that is the one thing the engine cannot answer for itself.
+
+**A condition the reader cannot act on is silence.** A hook speaks unprompted, after every tool call, in whatever directory a session happens to sit in. A notice there costs attention on every command and is repaid only if the reader can do something with it. A repository outside coordination and a directory under no repository at all are both conditions with no action attached, so they render nothing — while the same verb run by hand, where a person asked the question, still answers it in full. The wire fields never change between the two; only whether anyone is told unbidden.
+
+**The occasion is recorded, not inferred.** `check`, `board`, and `drift` each serve a hook and a person running the verb directly. Letting the verb decide which event its words name would fuse two questions that move independently — which words a condition gets, and which occasion those words are for. `EngineAnswerOccasion` is recorded once by the hook that owns the process, so a response knows its occasion as a recorded fact rather than deriving one.
+
+**Semantic names over representational ones.** `Result<Option<WorktreeId>>` says how a value is stored; it says nothing about which absence occurred, and it invites a caller to flatten several distinct absences into one benign branch. That is exactly what happened: every identity-read failure read as "unchanged". A named variant per state makes the flattening visible as a match arm someone has to write on purpose, which is why the repaired name says `IdentityNotRecorded` and not `IdentityUnavailable`.
+
+**Integration proof survives a rewrite.** Ancestry against the protected tip is the cheap answer and the wrong *only* answer: rebasing, amending, and squashing are ordinary, and each one moves work onto trunk under a commit the reservation never named. Comparing the change the reservation made inside its own scopes asks the question that actually matters — did this work land — and answers it for a commit that no longer exists. Path existence would accept a file whose edits were later removed; whole-blob equality would reject the proof the moment trunk legitimately edits the same file again; the checkpoint's trunk snapshot as a baseline would attribute trunk's own concurrent commits to the reservation. Scoped content measured from the phase start is the predicate none of those failures reach.
+
+**Only definitive verdicts are cached, and a deferral degrades rather than affirms.** A cache exists because the fallback comparison costs a dozen subprocesses; it is bounded because the alternative is paying that on every pass. But an `ObjectUnknown` answer is a fact about the environment, not about the repository, and storing it would make one failed subprocess durable across every future restart. The same asymmetry governs deferral: copying materialized evidence through a skipped comparison re-affirms proofs reachability has just refuted, which is a false positive — the class this system ranks strictly worse than a false negative, because a false negative holds work and a false positive lands it unverified.
+
+**The git hook classifies before it spawns.** `reference-transaction` is the highest-frequency event git has: a three-commit rebase delivers 75 of them, of which berth wants a handful. Paying a process spawn per delivery made a rebase cost eight seconds where the same rebase without hooks cost a quarter of one, and — because the bypass check lived inside the binary — setting the escape variable still paid five of those seconds. Classifying in shell, at a fixed two-process cost independent of how many refs a transaction names, is what makes the gate affordable enough to leave on. The table fails toward invoking the binary because a false negative silently drops the trunk gate while a false positive costs one invocation.
+
+**Recovery is an argv, not a sentence.** A front end that reads a recovery out of prose is a parser of text the engine is free to rewrite, and the failure is silent: the text changes and the front end renders nothing, or worse, something stale. Publishing `argv` and `cwd` as typed fields means the front end prints a line the user can run. It also means a command that cannot be faithfully represented as text has exactly one disposition that does not mislead — omission — since the argv is meant to be executed verbatim and a damaged one is worse than an absent one.
 
 **The wire contract is frozen first.** Envelope fields, `kind`/`data` tagging, exit codes, and the journal operation names are consumed by hooks, scripts, and harnesses that upgrade on their own schedule. Fixing them before the behavior settles means later work adds variants rather than renaming fields.
