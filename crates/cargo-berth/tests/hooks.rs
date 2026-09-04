@@ -666,6 +666,33 @@ fn unconfigured_no_facts_allows_silently() -> TestResult {
     assert_hook_output(&output, 0, b"", b"")
 }
 
+/// A directory under no git worktree is not a ledger this tool read and failed.
+///
+/// A harness runs `hook post-tool-use` after every Bash call, wherever the session
+/// happens to be sitting. Stating a repair notice for a directory cargo-berth does not
+/// govern repeats it once per tool call for a repair nobody can make, which is the same
+/// reason an unconfigured repository stays silent. The failure is still stated to
+/// someone who ran a verb and asked, so both halves are pinned here together.
+#[test]
+fn a_tool_call_outside_any_repository_states_nothing_to_the_hook() -> TestResult {
+    let outside = TempDir::new_in(SCRATCH_ROOT)?;
+
+    let hook = run_post_tool_use(
+        outside.path(),
+        &bash_payload(outside.path(), "outside-any-repository-session"),
+    )?;
+    assert_hook_output(&hook, 0, b"", b"")?;
+
+    let by_hand = run_berth(outside.path(), &["drift", "--json"])?;
+    let stated = String::from_utf8(by_hand.stdout)?;
+    assert!(
+        stated.contains("no containing git worktree could be found"),
+        "a direct caller still reads the failure: {stated}"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn overlap_refusal_from_raw_payload_lists_every_answer_command() -> TestResult {
     let repository = initialized_repository()?;

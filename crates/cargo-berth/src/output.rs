@@ -1655,11 +1655,31 @@ impl OutputEnvelope {
 
     /// Build a ledger-unreadable response without adding a new process outcome.
     pub(crate) fn ledger_unreadable(command_verb: CommandVerb, diagnostic: &str) -> Self {
+        Self::ledger_unreadable_stated_as(command_verb, diagnostic, LedgerReadFailureAudience::All)
+    }
+
+    /// Build the same response, choosing whether a harness hook states it.
+    ///
+    /// The wire fields do not vary with the audience: a caller reading `status`,
+    /// `exit_code` or `message` sees one answer however the failure was reached. Only
+    /// the presentation varies, because only the presentation decides whether a hook
+    /// puts a sentence in front of a user who did not ask a question.
+    fn ledger_unreadable_stated_as(
+        command_verb: CommandVerb,
+        diagnostic: &str,
+        audience: LedgerReadFailureAudience,
+    ) -> Self {
         let message = format!("The reservation ledger could not be read: {diagnostic}");
-        let presentation = hook_facing_presentation(
-            command_verb,
-            &HookFacingCondition::LedgerUnreadable { message: &message },
-        );
+        let presentation = match audience {
+            LedgerReadFailureAudience::All => hook_facing_presentation(
+                command_verb,
+                &HookFacingCondition::LedgerUnreadable { message: &message },
+            ),
+            LedgerReadFailureAudience::DirectCallerOnly => hook_facing_presentation(
+                command_verb,
+                &HookFacingCondition::OutsideCoordinationDomain,
+            ),
+        };
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: command_verb,
@@ -1760,8 +1780,21 @@ impl OutputEnvelope {
     }
 
     /// Convert a ledger failure into the requesting verb's public response.
+    ///
+    /// `RepositoryNotFound` is the one failure a harness hook does not state. It means
+    /// the directory the tool call ran in is under no git worktree at all, which is not
+    /// a ledger this repository owns and failed to read — it is a directory cargo-berth
+    /// does not govern. A harness runs `hook post-tool-use` after every Bash call
+    /// wherever the session happens to be, so stating it there repeats a repair notice
+    /// for a repair nobody can make, once per tool call, forever. This is the same
+    /// reasoning that keeps an unconfigured repository silent; see `board_presentation`.
+    /// Someone who runs a verb by hand still reads it, in `message`.
     pub(crate) fn ledger_error(command_verb: CommandVerb, error: &LedgerError) -> Self {
-        Self::ledger_unreadable(command_verb, &error.to_string())
+        let audience = match error {
+            LedgerError::RepositoryNotFound => LedgerReadFailureAudience::DirectCallerOnly,
+            _ => LedgerReadFailureAudience::All,
+        };
+        Self::ledger_unreadable_stated_as(command_verb, &error.to_string(), audience)
     }
 
     /// Build the successful result for one appended claim.
@@ -3248,10 +3281,24 @@ impl EngineAnswerOccasion {
     }
 }
 
+/// Who a failed ledger read is stated to.
+///
+/// A verb invoked by hand always states its failure through `message`. What varies is
+/// whether a harness hook also puts that sentence in front of someone who was doing
+/// something else at the time.
+enum LedgerReadFailureAudience {
+    /// State the failure everywhere, hook presentations included.
+    All,
+    /// State it only to a caller that asked, leaving hook presentations silent.
+    DirectCallerOnly,
+}
+
 /// The engine conditions a harness hook reads, in the words the deciding verb states.
 enum HookFacingCondition<'condition> {
     /// This repository is not participating in coordination.
     Unconfigured,
+    /// The invocation directory lies under no git worktree this tool could govern.
+    OutsideCoordinationDomain,
     /// The reservation ledger could not be read.
     LedgerUnreadable { message: &'condition str },
     /// The bounded ledger-lock deadline was exhausted before the ledger came free.
@@ -3294,7 +3341,9 @@ fn hook_facing_presentation(
 /// State one condition in the words `hook pre-tool-use` publishes about a pending edit.
 fn pre_tool_use_check_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentation {
     match condition {
-        HookFacingCondition::Unconfigured => EnvelopePresentation::nothing_to_show(),
+        HookFacingCondition::Unconfigured | HookFacingCondition::OutsideCoordinationDomain => {
+            EnvelopePresentation::nothing_to_show()
+        },
         HookFacingCondition::LedgerUnreadable { message } => {
             presentation::engine_message_block(LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE, message).into()
         },
@@ -3319,7 +3368,9 @@ fn pre_tool_use_check_presentation(condition: &HookFacingCondition<'_>) -> Envel
 fn board_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentation {
     let occasion = EngineAnswerOccasion::current();
     match condition {
-        HookFacingCondition::Unconfigured => EnvelopePresentation::nothing_to_show(),
+        HookFacingCondition::Unconfigured | HookFacingCondition::OutsideCoordinationDomain => {
+            EnvelopePresentation::nothing_to_show()
+        },
         HookFacingCondition::LedgerUnreadable { message } => presentation::engine_message_block(
             &occasion.summary_for(LEDGER_UNREADABLE_CONDITION),
             &format!("{message} {BOARD_LEDGER_RECOVERY}"),
@@ -3346,7 +3397,9 @@ fn board_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentati
 fn drift_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentation {
     let occasion = EngineAnswerOccasion::current();
     match condition {
-        HookFacingCondition::Unconfigured => EnvelopePresentation::nothing_to_show(),
+        HookFacingCondition::Unconfigured | HookFacingCondition::OutsideCoordinationDomain => {
+            EnvelopePresentation::nothing_to_show()
+        },
         HookFacingCondition::LedgerUnreadable { message } => presentation::engine_message_block(
             &occasion.summary_for(LEDGER_UNREADABLE_CONDITION),
             message,
