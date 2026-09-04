@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use super::identity::DriftScopeAcquisition;
+use super::identity::DriftWideningAuthorization;
 use super::observation::ObservedDriftChanges;
 use super::observation::ReservationPhaseHistory;
 use super::ordering;
@@ -10,10 +12,12 @@ use super::report::DriftEffect;
 use super::report::DriftEffectSet;
 use super::report::DriftPathAttributionOutcome;
 use super::report::DriftReport;
+use super::report::PostWriteFreePathProtection;
 use super::report::ReservationDriftResult;
 use super::report::UnattributedDriftPathSet;
 use super::selection::DriftWideningSelection;
 use super::selection::ResolvedDriftSubjects;
+use crate::coordination_identity::IssuingWorktreeRun;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ids::WireOrderedReservationIds;
@@ -231,6 +235,7 @@ pub(super) fn classify_locked(
     prior: &PreLockForeignPathClassification,
     path_case: PathCase,
     comparison: DriftComparisonMode,
+    widening_authorization: DriftWideningAuthorization,
 ) -> Result<DriftTransactionDecision, ReservationReplayError> {
     let mut operations = Vec::new();
     let mut results = Vec::new();
@@ -258,16 +263,19 @@ pub(super) fn classify_locked(
                     if !changes.carries_work(path) {
                         return;
                     }
-                    match &subjects.widening {
-                        DriftWideningSelection::Selected(selected)
-                            if selected == reservation_id =>
-                        {
-                            builder.widened_paths.push(path.clone());
-                        },
-                        DriftWideningSelection::Ambiguous(_) => {
-                            unattributed_paths.push(path.clone());
-                        },
-                        DriftWideningSelection::NotNeeded | DriftWideningSelection::Selected(_) => {
+                    match widening_authorization {
+                        DriftWideningAuthorization::WithheldFromRefusedRun => {},
+                        DriftWideningAuthorization::Permitted => match &subjects.widening {
+                            DriftWideningSelection::Selected(selected)
+                                if selected == reservation_id =>
+                            {
+                                builder.widened_paths.push(path.clone());
+                            },
+                            DriftWideningSelection::Ambiguous(_) => {
+                                unattributed_paths.push(path.clone());
+                            },
+                            DriftWideningSelection::NotNeeded
+                            | DriftWideningSelection::Selected(_) => {},
                         },
                     }
                 },
@@ -322,8 +330,92 @@ pub(super) fn classify_locked(
             comparison,
             path_attribution,
             results,
+            scope_acquisition: DriftScopeAcquisition::Permitted,
         },
     })
+}
+
+/// What a refused second run's observed writes entered in the worktree it stands in.
+pub(super) enum RefusedRunPathEntry {
+    /// No holder protects any path this observation attributed to the refused run.
+    NoHolderEntered,
+    /// The refused run's observed writes entered paths these holders already protect.
+    HoldersEntered(DriftPathAttributionOutcome),
+}
+
+/// Attribute a refused run's observed writes to every holder whose scopes they entered.
+///
+/// The refusal withholds acquisition, so this asks the acquisition question's *other* half
+/// without taking anything: which holders would have blocked a first touch of these paths.
+/// The predicate is [`RetainedReservationSet::conflicts_for_first_touch`], the same one
+/// [`crate::verb::claim::acquire_first_touch`] asks under its own lock, so the reported shape
+/// matches an unrefused post-write detection exactly — minus the reservation, which is what
+/// was refused.
+///
+/// The incumbent occupying this worktree is a holder like any other here. Subject
+/// classification cannot report that entry: the incumbent is its own subject, and a
+/// reservation never enters its own scopes.
+///
+/// Only paths this invocation can attribute to the refused run are asked about, which is what
+/// [`ObservedDriftChanges::acting_run_attributable_paths`] names. A reporting subject's
+/// committed range runs from that subject's own phase start, so the incumbent's earlier
+/// commits sit inside it the moment the refused run commits onto the same branch: asking about
+/// that range reported the incumbent's own writes back to the refused run as an incursion it
+/// had committed, and stopped it on them.
+pub(super) fn attribute_refused_run_entry(
+    reservations: &RetainedReservationSet,
+    changes: &ObservedDriftChanges,
+    refused: IssuingWorktreeRun,
+    path_case: PathCase,
+) -> RefusedRunPathEntry {
+    let observed_paths = changes
+        .acting_run_attributable_paths()
+        .into_iter()
+        .filter(|path| changes.carries_work(path))
+        .collect::<Vec<_>>();
+    let Ok(candidate) = ReservationScopeSet::try_from(
+        observed_paths
+            .iter()
+            .map(|path| ReservationScope {
+                path: path.clone(),
+                kind: ScopeKind::File,
+            })
+            .collect::<Vec<_>>(),
+    ) else {
+        return RefusedRunPathEntry::NoHolderEntered;
+    };
+    let conflicts = reservations.conflicts_for_first_touch(
+        &candidate,
+        refused.coordination_run_id,
+        refused.worktree_id,
+        path_case,
+    );
+    let entered = observed_paths
+        .into_iter()
+        .filter(|path| {
+            let entered_scope = ReservationScope {
+                path: path.clone(),
+                kind: ScopeKind::File,
+            };
+            conflicts.iter().any(|conflict| {
+                conflict
+                    .overlapping_scopes
+                    .as_slice()
+                    .iter()
+                    .any(|held| held.overlaps(&entered_scope, path_case))
+            })
+        })
+        .collect::<Vec<_>>();
+    UnattributedDriftPathSet::try_from(entered).map_or(
+        RefusedRunPathEntry::NoHolderEntered,
+        |paths| {
+            RefusedRunPathEntry::HoldersEntered(DriftPathAttributionOutcome::IncursionDetected {
+                paths,
+                conflicts,
+                protection: PostWriteFreePathProtection::NotAcquired,
+            })
+        },
+    )
 }
 
 /// Name who the widening belongs to, or why nobody could be named.
@@ -404,7 +496,12 @@ fn blocking_coverage(
     }]) else {
         return DriftBlockingCoverage::Unclaimed;
     };
-    reservations.blocking_coverage_for_drift(&candidate, subject.actor().worktree, path_case)
+    reservations.blocking_coverage_for_drift(
+        &candidate,
+        subject.actor().worktree,
+        subject.actor().run,
+        path_case,
+    )
 }
 
 #[cfg(test)]

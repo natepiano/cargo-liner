@@ -21,6 +21,29 @@ use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::WorktreeContext;
 use crate::reservation::RetainedReservationSet;
 
+/// Whether a caller presented the coordination identity a claim was recorded under.
+///
+/// The same-worktree occupancy refusal is a rule between two *presented* coordination runs.
+/// An identity this process created for itself, because nothing identified the caller, is not
+/// a coordination run and never refuses anyone. Claims written before this fact was recorded
+/// carry [`Self::Unknown`] and also never refuse, so upgrading a repository can never lock a
+/// worktree against its own work.
+///
+/// [`Self::NotPresented`] and [`Self::Unknown`] stay distinct even though both decline to
+/// refuse today: "nobody presented one" is a recorded fact, "we do not know" is the absence
+/// of one.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CoordinationIdentityProvenance {
+    /// An argument, environment value, or honored marker identified the claimant.
+    Presented,
+    /// Nothing identified the claimant, so this process issued an identity to stand in for it.
+    NotPresented,
+    /// The claim predates this record, so how its identity was obtained is unrecoverable.
+    #[default]
+    Unknown,
+}
+
 /// A complete process argument vector that always contains an executable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RecoveryCommandLine(Vec<OsString>);
@@ -75,6 +98,22 @@ impl RunnableRecoveryCommandLine {
 
     pub(crate) fn clear_session_mapping() -> Self {
         Self::from_static(Self::CLEAR_SESSION_ARGUMENTS)
+    }
+
+    /// The command that releases one named reservation from the worktree holding it.
+    ///
+    /// `release` checkpoints an `Active` reservation into `Outstanding`, and occupancy is an
+    /// `Active`-only rule, so running this in the incumbent's own worktree ends the occupancy
+    /// the refusal named. It is built from the incumbent's reservation id rather than taken
+    /// from a recovery-command set because the same argv is executable from an ordinary
+    /// command and from a git gate alike.
+    fn release_reservation(reservation_id: ReservationId) -> Self {
+        Self(vec![
+            "cargo-berth".to_owned(),
+            "release".to_owned(),
+            reservation_id.to_string(),
+            "--json".to_owned(),
+        ])
     }
 
     fn from_static<const ARGUMENT_COUNT: usize>(arguments: [&str; ARGUMENT_COUNT]) -> Self {
@@ -228,6 +267,13 @@ pub(crate) enum CoordinationIdentityRecoveryAction {
         /// The canonical holder root in which to run the command.
         cwd:  CanonicalWorktreeRoot,
     },
+    /// Release the incumbent reservation occupying the issuing worktree.
+    ReleaseIncumbentReservation {
+        /// The complete recovery command.
+        argv: RunnableRecoveryCommandLine,
+        /// The canonical incumbent worktree in which to run the command.
+        cwd:  CanonicalWorktreeRoot,
+    },
     /// Remove the foreign session mapping before starting independent work here.
     ClaimSeparatelyHere {
         /// The complete clear-session command.
@@ -242,6 +288,7 @@ impl Display for CoordinationIdentityRecoveryAction {
         let (argv, cwd) = match self {
             Self::ClearSessionMapping { argv, cwd }
             | Self::ReconcileAndSweepMarker { argv, cwd }
+            | Self::ReleaseIncumbentReservation { argv, cwd }
             | Self::RerunFromHoldingWorktree { argv, cwd }
             | Self::ClaimSeparatelyHere { argv, cwd } => (argv, cwd),
         };
@@ -292,7 +339,8 @@ impl CoordinationIdentityRecoveryActions {
                     Some(OriginalCommandRecovery::ContainsNonTextArgument)
                 },
                 CoordinationIdentityRecoveryAction::ClearSessionMapping { .. }
-                | CoordinationIdentityRecoveryAction::ReconcileAndSweepMarker { .. } => None,
+                | CoordinationIdentityRecoveryAction::ReconcileAndSweepMarker { .. }
+                | CoordinationIdentityRecoveryAction::ReleaseIncumbentReservation { .. } => None,
             })
             .unwrap_or(OriginalCommandRecovery::GitPrivateTransaction)
     }
@@ -377,8 +425,41 @@ pub(crate) enum CoordinationIdentityRejection {
         /// The executable repair for this stale marker.
         recovery_actions:    CoordinationIdentityRecoveryActions,
     },
+    /// Another coordination run already holds active work in the issuing worktree.
+    WorktreeHeldByAnotherRun {
+        /// The run already holding active work here.
+        incumbent_coordination_run_id: CoordinationRunId,
+        /// The incumbent's active reservation.
+        incumbent_reservation_id:      ReservationId,
+        /// The run this command presented.
+        issuing_coordination_run_id:   CoordinationRunId,
+        /// The worktree both runs name.
+        issuing_worktree_id:           WorktreeId,
+        /// The canonical checkout both runs name.
+        issuing_root:                  CanonicalWorktreeRoot,
+        /// The executable repair that ends the incumbent's occupancy of this worktree.
+        recovery_actions:              CoordinationIdentityRecoveryActions,
+    },
     /// A live session reservation belongs to another worktree.
     SessionWorktreeMismatch(Box<SessionWorktreeMismatchRejection>),
+}
+
+/// The coordination run whose active reservation already occupies a worktree.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IncumbentWorktreeRun {
+    /// The run holding the active reservation.
+    pub(crate) coordination_run_id: CoordinationRunId,
+    /// The active reservation that run holds in this worktree.
+    pub(crate) reservation_id:      ReservationId,
+}
+
+/// The coordination run and worktree a command presented when it was refused.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IssuingWorktreeRun {
+    /// The run this command presented.
+    pub(crate) coordination_run_id: CoordinationRunId,
+    /// The worktree this command ran in.
+    pub(crate) worktree_id:         WorktreeId,
 }
 
 /// The complete holder and issuer facts for a session-to-worktree mismatch.
@@ -407,6 +488,7 @@ impl CoordinationIdentityRejection {
         match self {
             Self::StaleSessionMapping { .. } => "stale_session_mapping",
             Self::StaleMarkerRun { .. } => "stale_marker_run",
+            Self::WorktreeHeldByAnotherRun { .. } => "worktree_held_by_another_run",
             Self::SessionWorktreeMismatch(_) => "session_worktree_mismatch",
         }
     }
@@ -416,8 +498,53 @@ impl CoordinationIdentityRejection {
         match self {
             Self::StaleSessionMapping { reservation_id, .. } => vec![*reservation_id],
             Self::StaleMarkerRun { .. } => Vec::new(),
+            Self::WorktreeHeldByAnotherRun {
+                incumbent_reservation_id,
+                ..
+            } => vec![*incumbent_reservation_id],
             Self::SessionWorktreeMismatch(rejection) => vec![rejection.reservation_id],
         }
+    }
+
+    /// Refuse a command whose run is not the one already holding active work here.
+    ///
+    /// The worktree is the coordination unit, so one run holds it at a time. The offered
+    /// repair is [`CoordinationIdentityRecoveryAction::ReleaseIncumbentReservation`], which
+    /// checkpoints the incumbent out of `Active` and so ends the occupancy this refusal
+    /// names. A marker sweep cannot repair it: a sweep keeps every marker whose run still holds
+    /// an active reservation, which is exactly the state being refused, so running it returns
+    /// the caller to this same refusal. When
+    /// the incumbent is still working the answer is a separate checkout, which the rendered
+    /// message states and no command can perform.
+    ///
+    /// The rendered message closes on acquisition alone rather than on a blanket claim that
+    /// nothing changed. The two paths that reach this refusal differ in what has already
+    /// happened when it is raised: the pre-edit hook refuses before any decision, while
+    /// post-commit drift observes and classifies first and refuses only the acquisition step,
+    /// so the same invocation can report an incursion beside this refusal. One `Display` serves
+    /// both, so it claims only what holds on both — no reservation was taken and none was
+    /// widened — and leaves what else the invocation reported to the envelope carrying it.
+    pub(crate) fn worktree_held_by_another_run(
+        incumbent: IncumbentWorktreeRun,
+        issuing: IssuingWorktreeRun,
+        worktree_context: &WorktreeContext,
+    ) -> Result<Self, CoordinationIdentityValidationError> {
+        let issuing_root = canonical_issuing_root(worktree_context)?;
+        Ok(Self::WorktreeHeldByAnotherRun {
+            incumbent_coordination_run_id: incumbent.coordination_run_id,
+            incumbent_reservation_id:      incumbent.reservation_id,
+            issuing_coordination_run_id:   issuing.coordination_run_id,
+            issuing_worktree_id:           issuing.worktree_id,
+            issuing_root:                  issuing_root.clone(),
+            recovery_actions:              CoordinationIdentityRecoveryActions::one(
+                CoordinationIdentityRecoveryAction::ReleaseIncumbentReservation {
+                    argv: RunnableRecoveryCommandLine::release_reservation(
+                        incumbent.reservation_id,
+                    ),
+                    cwd:  issuing_root,
+                },
+            ),
+        })
     }
 
     /// Render only the executable recovery actions selected for this rejection.
@@ -427,6 +554,9 @@ impl CoordinationIdentityRejection {
                 recovery_actions, ..
             }
             | Self::StaleMarkerRun {
+                recovery_actions, ..
+            }
+            | Self::WorktreeHeldByAnotherRun {
                 recovery_actions, ..
             } => recovery_actions.render(),
             Self::SessionWorktreeMismatch(rejection) => rejection.recovery_actions.render(),
@@ -454,6 +584,18 @@ impl Display for CoordinationIdentityRejection {
             } => write!(
                 formatter,
                 "Worktree {issuing_root} has an inactive marker for coordination run {coordination_run_id}. Run {} to reconcile and sweep the marker, then retry the rejected command. For a managed hook, retry the original git command. Retrying first will repeat this rejection.",
+                recovery_actions.render()
+            ),
+            Self::WorktreeHeldByAnotherRun {
+                incumbent_coordination_run_id,
+                incumbent_reservation_id,
+                issuing_coordination_run_id,
+                issuing_root,
+                recovery_actions,
+                ..
+            } => write!(
+                formatter,
+                "Worktree {issuing_root} already holds active reservation {incumbent_reservation_id} for coordination run {incumbent_coordination_run_id}, so coordination run {issuing_coordination_run_id} cannot take work here. If coordination run {incumbent_coordination_run_id} is finished, run {} to release reservation {incumbent_reservation_id}, then retry the rejected command. If it is still working, run coordination run {issuing_coordination_run_id} from a separate checkout instead. Acquisition is all this refuses: no reservation was taken or widened for coordination run {issuing_coordination_run_id}. Whatever else this invocation reports, it observed and recorded regardless.",
                 recovery_actions.render()
             ),
             Self::SessionWorktreeMismatch(rejection) => {
@@ -514,6 +656,38 @@ impl Display for CoordinationIdentityValidationError {
 }
 
 impl Error for CoordinationIdentityValidationError {}
+
+/// Refuse a presented run while another presented run holds an active reservation here.
+///
+/// The one same-worktree occupancy rule, in one place. Every caller that can reach it — the
+/// `claim` and `check` paths through [`crate::verb`], and post-commit drift — asks the same
+/// question through the same predicate, so the
+/// [`CoordinationIdentityProvenance`] term is read in exactly one place and no path can grow a
+/// second foreignness answer of its own.
+pub(crate) fn validate_worktree_occupancy(
+    reservations: &RetainedReservationSet,
+    worktree_context: &WorktreeContext,
+    worktree_id: WorktreeId,
+    actor_run_id: CoordinationRunId,
+) -> Result<(), CoordinationIdentityValidationError> {
+    let Some(incumbent) =
+        reservations.active_reservation_held_by_another_run(worktree_id, actor_run_id)
+    else {
+        return Ok(());
+    };
+    let rejection = CoordinationIdentityRejection::worktree_held_by_another_run(
+        IncumbentWorktreeRun {
+            coordination_run_id: incumbent.actor().run,
+            reservation_id:      incumbent.id(),
+        },
+        IssuingWorktreeRun {
+            coordination_run_id: actor_run_id,
+            worktree_id,
+        },
+        worktree_context,
+    )?;
+    Err(CoordinationIdentityValidationError::Rejected(rejection))
+}
 
 /// Validate one coherently resolved authorization against retained reservations.
 pub(crate) fn validate_coordination_identity(

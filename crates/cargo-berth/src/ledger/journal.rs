@@ -28,6 +28,7 @@ use super::constants::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
 use super::constants::MINIMUM_SUPPORTED_SCHEMA_VERSION;
 use crate::answer::ConflictAuthorization;
 use crate::config::InitializationState;
+use crate::coordination_identity::CoordinationIdentityProvenance;
 use crate::edge::OrderingReason;
 use crate::ids::CoordinationRunId;
 use crate::ids::EdgeId;
@@ -354,6 +355,12 @@ pub(crate) enum JournalOperation {
         worktree_administrative_locator: WorktreeAdministrativeLocator,
         /// The overlap result that authorized this acquisition.
         authorization:                   ConflictAuthorization,
+        /// Whether a caller presented the coordination identity this claim was made under.
+        ///
+        /// Absent on claims written before the field existed, which decode as
+        /// [`CoordinationIdentityProvenance::Unknown`].
+        #[serde(default)]
+        coordination_identity_provenance: CoordinationIdentityProvenance,
     },
     /// Enlarge an existing reservation and any conflict answer that authorized it.
     Widen {
@@ -1804,6 +1811,7 @@ mod tests {
     use super::ClaimHeadSnapshot;
     use super::ClaimSource;
     use super::CollisionPathSet;
+    use super::CoordinationIdentityProvenance;
     use super::ExplicitWidenReason;
     use super::ForeignReservationIdSet;
     use super::FullRefName;
@@ -2077,6 +2085,7 @@ mod tests {
                     "edge_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a21",
                     "reason": "The implementation must precede the dependent documentation update.",
                 },
+                "coordination_identity_provenance": "presented",
             })
         );
     }
@@ -2222,16 +2231,16 @@ mod tests {
                 .expect("recorded timestamp should parse"),
             projection_generation: ProjectionGeneration::from(9),
             operation:             JournalOperation::Claim {
-                reservation_id:                  "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f"
+                reservation_id:                   "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f"
                     .parse::<ReservationId>()
                     .expect("reservation identifier should parse"),
-                scopes:                          ReservationScopeSet::try_from(vec![
+                scopes:                           ReservationScopeSet::try_from(vec![
                     reservation_scope("crates/cargo-berth/src", ScopeKind::Tree),
                     reservation_scope("crates/cargo-berth/tests", ScopeKind::Tree),
                     reservation_scope("docs/berth-plan.md", ScopeKind::File),
                 ])
                 .expect("claim footprint should be non-empty"),
-                source:                          ClaimSource::WorkPlan {
+                source:                           ClaimSource::WorkPlan {
                     plan:  "docs/berth-plan.md"
                         .parse::<WorkPlanReference>()
                         .expect("work-plan reference should parse"),
@@ -2244,11 +2253,11 @@ mod tests {
                         .parse::<NonEmptyReservationPurpose>()
                         .map(ReservationPurpose::Explained)
                         .expect("reservation purpose should parse"),
-                trunk_at_claim:                  "1111111111111111111111111111111111111111"
+                trunk_at_claim:                   "1111111111111111111111111111111111111111"
                     .parse::<GitObjectId>()
                     .map(TrunkCommitAtClaim::from)
                     .expect("trunk commit should parse"),
-                head_snapshot:                   ClaimHeadSnapshot::Branch {
+                head_snapshot:                    ClaimHeadSnapshot::Branch {
                     full_ref: "refs/heads/feature/ledger-transactions"
                         .parse::<FullRefName>()
                         .expect("full branch reference should parse"),
@@ -2257,17 +2266,17 @@ mod tests {
                         .map(ClaimHeadCommit::from)
                         .expect("claim head should parse"),
                 },
-                phase_start_head:                "3333333333333333333333333333333333333333"
+                phase_start_head:                 "3333333333333333333333333333333333333333"
                     .parse::<GitObjectId>()
                     .map(ProtectedPhaseStartHead::from)
                     .expect("phase-start head should parse"),
-                worktree_root:                   "/Users/example/rust/cargo-berth-init"
+                worktree_root:                    "/Users/example/rust/cargo-berth-init"
                     .parse::<CanonicalWorktreeRoot>()
                     .expect("canonical worktree root should parse"),
-                worktree_administrative_locator: "worktrees/cargo-berth-init"
+                worktree_administrative_locator:  "worktrees/cargo-berth-init"
                     .parse::<WorktreeAdministrativeLocator>()
                     .expect("worktree administrative locator should parse"),
-                authorization:                   ConflictAuthorization::Sequence {
+                authorization:                    ConflictAuthorization::Sequence {
                     overlaps:  AuthorizedOverlapSet::try_from(vec![AuthorizedOverlap {
                         reservation_id: parse_reservation_id(HOLDER_RESERVATION_ID),
                         scope_revision: OverlapScopeRevision::from(
@@ -2296,6 +2305,7 @@ mod tests {
                             .parse::<OverlapAuthorizationReason>()
                             .expect("overlap authorization reason should parse"),
                 },
+                coordination_identity_provenance: CoordinationIdentityProvenance::Presented,
             },
         }
     }

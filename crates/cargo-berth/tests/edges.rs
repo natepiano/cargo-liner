@@ -392,7 +392,9 @@ fn reservation_and_ordering_edge_limits_have_distinct_typed_outcomes() {
     set_config_limit(reservation_repository.path(), "maximum_reservations", 1);
     let first = claim(reservation_repository.path(), "tree:src", FIRST_RUN);
     assert!(first.status.success());
-    let over_limit = claim(reservation_repository.path(), "tree:tests", SECOND_RUN);
+    // One run, because the limit is what this claim must run into. A second run in this
+    // worktree is refused occupancy before any limit is consulted.
+    let over_limit = claim(reservation_repository.path(), "tree:tests", FIRST_RUN);
     let over_limit_json = json_output(&over_limit);
     assert_eq!(over_limit.status.code(), Some(1));
     assert_eq!(over_limit_json["status"], "reservation_limit_reached");
@@ -1786,11 +1788,11 @@ fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
     GIT.stdout(repository_root, arguments)
 }
 
-/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+/// Add a real worktree beside the repository, the second party berth has always refused.
 ///
-/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
-/// no longer names a second party. The returned directory owns the worktree and
-/// must outlive its use.
+/// A distinct `--run` inside one worktree now names a second party too, but only a real
+/// worktree can hold a reservation of its own alongside another run's. The returned
+/// directory owns the worktree and must outlive its use.
 fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     let directory = tempdir().expect("foreign worktree parent should exist");
     let root = directory.path().join(name);

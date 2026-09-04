@@ -741,9 +741,11 @@ fn independent_ready_reservations_are_an_unnumbered_tie() {
     assert!(second.status.success());
 
     let (_third_directory, third_root) = foreign_worktree(&repository, "third");
-    let third_run = uuid::Uuid::now_v7().to_string();
     let fourth_run = uuid::Uuid::now_v7().to_string();
-    let third = claim(repository.path(), "file:third.rs", &third_run);
+    // The second chain's head is claimed in this same worktree, so it shares its run. The two
+    // chains are independent because their scopes and ordering edges are, not because of who
+    // claimed them.
+    let third = claim(repository.path(), "file:third.rs", FIRST_RUN);
     let third_id = reservation_id(&third);
     let fourth = answered_claim(
         &third_root,
@@ -1942,8 +1944,11 @@ fn drift_widen_audit_names_existing_coverage_without_new_ordering() {
 fn transaction_only_post_commit_actor_never_becomes_a_holder_or_orphan() {
     // A markerless post-commit actor is transaction-only and has no public CLI identity.
     let repository = initialized_repository();
+    // Both reservations belong to the worktree's one run. The synthetic incursion below names
+    // the second as foreign, and the board renders reservation ids without asking whose run
+    // they are, so a second run here would only be a way to obtain a second reservation.
     let subject_id = reservation_id(&claim(repository.path(), "file:subject.rs", FIRST_RUN));
-    let foreign_id = reservation_id(&claim(repository.path(), "file:foreign.rs", SECOND_RUN));
+    let foreign_id = reservation_id(&claim(repository.path(), "file:foreign.rs", FIRST_RUN));
     let transaction_worktree = uuid::Uuid::now_v7().to_string();
     let transaction_run = uuid::Uuid::now_v7().to_string();
     append_journal_operation_with_actor(
@@ -2002,16 +2007,18 @@ fn incursion_only_post_commit_runs_add_no_invented_widening_row() {
     // Replay records incidents but no refused-or-unneeded widening outcome, so the answer rows
     // before and after these two incident reports must be identical.
     let repository = initialized_repository();
+    // Three reservations, one run: the subject is the answer rows the board renders, and the
+    // incursions below name reservation ids rather than runs.
     let subject_id = reservation_id(&claim(repository.path(), "file:subject.rs", FIRST_RUN));
     let first_foreign = reservation_id(&claim(
         repository.path(),
         "file:first-foreign.rs",
-        SECOND_RUN,
+        FIRST_RUN,
     ));
     let second_foreign = reservation_id(&claim(
         repository.path(),
         "file:second-foreign.rs",
-        &uuid::Uuid::now_v7().to_string(),
+        FIRST_RUN,
     ));
     let before = board_data(repository.path())["recorded_overlap_answers"]["entries"].clone();
     for (foreign_id, path) in [
@@ -3230,20 +3237,14 @@ enum ReleaseEvidence {
 /// let the model test cover all four durable variants without coupling it to gate I/O.
 fn released_disposition_fixture() -> ReleasedDispositionFixture {
     let repository = initialized_repository();
-    let runs = [
-        FIRST_RUN.to_owned(),
-        SECOND_RUN.to_owned(),
-        uuid::Uuid::now_v7().to_string(),
-        uuid::Uuid::now_v7().to_string(),
-    ];
-    let reservation_ids = runs
-        .iter()
-        .enumerate()
-        .map(|(index, run)| {
+    // Four reservations in one worktree, so one run owns them all. Each is released under a
+    // different disposition below, and the disposition is what this fixture is for.
+    let reservation_ids = (0..4)
+        .map(|index| {
             reservation_id(&claim(
                 repository.path(),
                 &format!("file:release-{index}.rs"),
-                run,
+                FIRST_RUN,
             ))
         })
         .collect::<Vec<_>>();
@@ -4290,11 +4291,11 @@ fn run_board_with_git_trace(repository_root: &Path) -> TracedBoard {
     }
 }
 
-/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+/// Add a real worktree beside the repository, the second party berth has always refused.
 ///
-/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
-/// no longer names a second party. The returned directory owns the worktree and
-/// must outlive its use.
+/// A distinct `--run` inside one worktree now names a second party too, but only a real
+/// worktree can hold a reservation of its own alongside another run's. The returned
+/// directory owns the worktree and must outlive its use.
 fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     let directory = tempdir().expect("foreign worktree parent should exist");
     let root = directory.path().join(name);

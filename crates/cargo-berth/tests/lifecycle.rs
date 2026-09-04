@@ -110,6 +110,18 @@ struct ClaimGitTrace {
     commands: Vec<String>,
 }
 
+/// The two runs and the one worktree a `worktree_held_by_another_run` refusal names.
+struct WorktreeOccupancy<'facts> {
+    /// The run already holding active work in the worktree.
+    incumbent_run:            &'facts str,
+    /// The active reservation that run holds.
+    incumbent_reservation_id: &'facts str,
+    /// The run the refused command presented.
+    issuing_run:              &'facts str,
+    /// The checkout both runs name.
+    issuing_root:             &'facts Path,
+}
+
 #[test]
 fn checkpoint_retains_commit_after_branch_deletion_and_git_gc() {
     let repository = initialized_repository();
@@ -844,11 +856,213 @@ fn lock_contention_is_retryable_while_corrupt_journal_is_unreadable() {
     assert_eq!(unreadable_json["payload"]["kind"], "no_facts");
 }
 
-/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+#[test]
+fn claim_refuses_a_second_coordination_run_in_the_incumbents_worktree() {
+    let repository = initialized_repository();
+    let incumbent_id = reservation_id(&claim(repository.path(), "file:held.rs", FIRST_RUN));
+
+    let refused = claim(repository.path(), "file:separate.rs", SECOND_RUN);
+    let refused_json = json_output(&refused);
+
+    assert_eq!(refused.status.code(), Some(5));
+    assert_eq!(refused_json["status"], "invalid_input");
+    assert_worktree_held_by_another_run(
+        &refused_json,
+        &WorktreeOccupancy {
+            incumbent_run:            FIRST_RUN,
+            incumbent_reservation_id: &incumbent_id,
+            issuing_run:              SECOND_RUN,
+            issuing_root:             repository.path(),
+        },
+    );
+    assert_eq!(
+        journal_events(repository.path())
+            .iter()
+            .filter(|event| event["op"] == "claim")
+            .count(),
+        1,
+        "the refused claim should journal nothing"
+    );
+}
+
+#[test]
+fn check_refuses_a_second_coordination_run_in_the_incumbents_worktree() {
+    let repository = initialized_repository();
+    let incumbent_id = reservation_id(&claim(repository.path(), "file:held.rs", FIRST_RUN));
+
+    let refused = run_berth_with_run(
+        repository.path(),
+        &["check", "file:separate.rs", "--json"],
+        SECOND_RUN,
+    );
+    let refused_json = json_output(&refused);
+
+    assert_eq!(refused.status.code(), Some(5));
+    assert_worktree_held_by_another_run(
+        &refused_json,
+        &WorktreeOccupancy {
+            incumbent_run:            FIRST_RUN,
+            incumbent_reservation_id: &incumbent_id,
+            issuing_run:              SECOND_RUN,
+            issuing_root:             repository.path(),
+        },
+    );
+    assert_eq!(
+        journal_events(repository.path())
+            .iter()
+            .filter(|event| event["op"] == "claim")
+            .count(),
+        1,
+        "the refused first-touch check should journal nothing"
+    );
+}
+
+/// The action the refusal publishes must clear the refusal rather than repeat it.
 ///
-/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
-/// no longer names a second party. The returned directory owns the worktree and
-/// must outlive its use.
+/// A marker sweep is kept deliberately away from a run that still holds an `Active`
+/// reservation, so an action that only sweeps returns the caller to this same refusal.
+/// Releasing the incumbent is a repair: the holder stops being `Active`, and the worktree
+/// admits the run it just refused.
+#[test]
+fn the_occupancy_refusals_recovery_action_admits_the_run_it_refused() {
+    let repository = initialized_repository();
+    let incumbent_id = reservation_id(&claim(repository.path(), "file:held.rs", FIRST_RUN));
+    let refused = claim(repository.path(), "file:separate.rs", SECOND_RUN);
+    let actions = json_output(&refused)["payload"]["data"]["recovery_actions"]
+        .as_array()
+        .expect("the refusal should carry recovery actions")
+        .clone();
+    assert!(!actions.is_empty());
+
+    for action in &actions {
+        let performed = run_recovery_action(action);
+        assert!(
+            performed.status.success(),
+            "a published recovery action should run where it is published: {}",
+            String::from_utf8_lossy(&performed.stderr)
+        );
+    }
+
+    let retried = claim(repository.path(), "file:separate.rs", SECOND_RUN);
+    assert!(
+        retried.status.success(),
+        "following the published recovery actions should admit the refused run: {}",
+        String::from_utf8_lossy(&retried.stdout)
+    );
+    assert_ne!(
+        reservation_id(&retried),
+        incumbent_id,
+        "the admitted run should take a reservation of its own"
+    );
+}
+
+/// An incumbent that released but has not integrated must not lock its own worktree out.
+///
+/// Commit `1b74ad02` fixed exactly this: a worktree blocking itself with what its
+/// previous session left behind. The occupancy rule is `Active`-only so that stays fixed.
+#[test]
+fn an_outstanding_holder_from_another_run_refuses_nothing() {
+    let repository = initialized_repository();
+    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
+    commit_file(
+        repository.path(),
+        "src/lib.rs",
+        "incumbent work\n",
+        "incumbent work",
+    );
+    let incumbent_id = reservation_id(&claim(repository.path(), "tree:src", FIRST_RUN));
+    let released = run_berth(repository.path(), &["release", &incumbent_id, "--json"]);
+    assert!(released.status.success());
+    assert_eq!(json_output(&released)["status"], "outstanding");
+
+    let successor = claim(repository.path(), "tree:src", SECOND_RUN);
+    assert!(
+        successor.status.success(),
+        "an outstanding holder should not refuse a new run: {}",
+        String::from_utf8_lossy(&successor.stdout)
+    );
+    let checked = run_berth_with_run(
+        repository.path(),
+        &["check", "file:src/lib.rs", "--json"],
+        SECOND_RUN,
+    );
+    assert!(
+        checked.status.success(),
+        "an outstanding holder should not refuse an edit: {}",
+        String::from_utf8_lossy(&checked.stdout)
+    );
+    assert_eq!(json_output(&checked)["status"], "clear");
+
+    commit_file(
+        repository.path(),
+        "src/lib.rs",
+        "successor work\n",
+        "successor work",
+    );
+
+    assert!(
+        journal_events(repository.path())
+            .iter()
+            .all(|event| event["op"] != "incursion"),
+        "an outstanding holder should raise no incursion against its own worktree"
+    );
+}
+
+/// Two harness sessions sharing one checkout are one run, and this change must keep it so.
+///
+/// Identity resolution creates a run only when nothing else names the caller, so the
+/// second session reads the worktree's own slot and continues the incumbent run.
+#[test]
+fn a_second_harness_session_adopts_the_incumbent_run_without_refusal() {
+    let repository = initialized_repository();
+    let incumbent = run_berth_with_session(
+        repository.path(),
+        &["claim", "file:held.rs", "--run", FIRST_RUN, "--json"],
+        "incumbent-session",
+    );
+    assert!(incumbent.status.success());
+    let incumbent_id = reservation_id(&incumbent);
+
+    let adopted = run_berth_with_session(
+        repository.path(),
+        &["check", "file:adopted.rs", "--json"],
+        "adopting-session",
+    );
+    let adopted_json = json_output(&adopted);
+
+    assert!(
+        adopted.status.success(),
+        "a second harness session adopts the incumbent run: {}",
+        String::from_utf8_lossy(&adopted.stdout)
+    );
+    assert_eq!(adopted_json["status"], "clear");
+    assert_eq!(
+        adopted_json["payload"]["data"]["acquisition"]["kind"], "widened",
+        "one run's own reservation grows rather than gaining a sibling"
+    );
+    assert_eq!(
+        adopted_json["reservations"],
+        serde_json::json!([incumbent_id])
+    );
+    assert_eq!(
+        journal_events(repository.path())
+            .iter()
+            .filter(|event| event["op"] == "claim")
+            .count(),
+        1,
+        "the adopting session should grow the incumbent's reservation, not open a second"
+    );
+    assert_eq!(
+        last_claim_event(repository.path())["actor"]["run"],
+        FIRST_RUN
+    );
+}
+
+/// Add a real worktree beside the repository, the second party berth has always refused.
+///
+/// A distinct `--run` inside one worktree now names a second party too, but only a real
+/// worktree exercises the cross-worktree half of these tests. The returned directory owns
+/// the worktree and must outlive its use.
 fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     let directory = tempdir().expect("foreign worktree parent should exist");
     let root = directory.path().join(name);
@@ -922,6 +1136,32 @@ fn claim(repository_root: &Path, scope: &str, run: &str) -> Output {
     run_berth(repository_root, &["claim", scope, "--run", run, "--json"])
 }
 
+/// Run one published recovery action exactly as the refusal published it.
+fn run_recovery_action(action: &serde_json::Value) -> Output {
+    let arguments = action["argv"]
+        .as_array()
+        .expect("a recovery action should carry an argument vector")
+        .iter()
+        .skip(1)
+        .map(|argument| {
+            argument
+                .as_str()
+                .expect("a recovery action argument should be text")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let working_directory = action["cwd"]
+        .as_str()
+        .expect("a recovery action should carry a working directory");
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(&arguments)
+        .current_dir(working_directory)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("a published recovery action should run")
+}
+
 fn reservation_id(claim: &Output) -> String {
     json_output(claim)["payload"]["data"]["reservation_id"]
         .as_str()
@@ -957,6 +1197,87 @@ fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id
         .env(SESSION_ENVIRONMENT, session_id)
         .output()
         .expect("cargo-berth should run")
+}
+
+fn run_berth_with_run(repository_root: &Path, arguments: &[&str], run: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env(RUN_ENVIRONMENT, run)
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("cargo-berth should run")
+}
+
+/// Assert the refusal a second coordination run receives in an occupied worktree.
+///
+/// The refusal is caller-repairable, so it names both runs, the incumbent's reservation,
+/// the checkout they share, and one recovery action that runs where the caller stands and
+/// actually performs the repair. A sweep would not: it keeps a marker whose run still holds
+/// an `Active` reservation, so it returns the caller to this same refusal.
+fn assert_worktree_held_by_another_run(
+    envelope: &serde_json::Value,
+    occupancy: &WorktreeOccupancy<'_>,
+) {
+    assert_eq!(envelope["payload"]["kind"], "coordination_identity");
+    let rejection = &envelope["payload"]["data"];
+    assert_eq!(rejection["kind"], "worktree_held_by_another_run");
+    assert_eq!(
+        rejection["incumbent_coordination_run_id"],
+        occupancy.incumbent_run
+    );
+    assert_eq!(
+        rejection["incumbent_reservation_id"],
+        occupancy.incumbent_reservation_id
+    );
+    assert_eq!(
+        rejection["issuing_coordination_run_id"],
+        occupancy.issuing_run
+    );
+    assert!(
+        rejection["issuing_worktree_id"]
+            .as_str()
+            .is_some_and(|worktree_id| !worktree_id.is_empty())
+    );
+    let issuing_root = fs::canonicalize(occupancy.issuing_root)
+        .expect("issuing root should canonicalize")
+        .to_str()
+        .expect("issuing root should be UTF-8")
+        .to_owned();
+    assert_eq!(rejection["issuing_root"], issuing_root);
+    let actions = rejection["recovery_actions"]
+        .as_array()
+        .expect("the refusal should carry recovery actions");
+    assert_eq!(
+        actions
+            .iter()
+            .map(|action| action["kind"].as_str().expect("action kind should be text"))
+            .collect::<Vec<_>>(),
+        ["release_incumbent_reservation"]
+    );
+    for action in actions {
+        assert_eq!(
+            action["argv"],
+            serde_json::json!([
+                "cargo-berth",
+                "release",
+                occupancy.incumbent_reservation_id,
+                "--json"
+            ])
+        );
+        assert_eq!(action["cwd"], issuing_root);
+    }
+    let message = envelope["message"]
+        .as_str()
+        .expect("the refusal should carry a message");
+    assert!(
+        message.contains(occupancy.incumbent_reservation_id),
+        "the refusal should name the incumbent reservation in its message: {message:?}"
+    );
+    assert!(
+        message.contains("separate checkout"),
+        "the refusal should name the remedy for an incumbent that is still working: {message:?}"
+    );
 }
 
 fn run_claim_with_git_trace(

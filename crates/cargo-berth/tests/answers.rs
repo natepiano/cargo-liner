@@ -830,10 +830,12 @@ fn permissive_answer_without_a_conflict_is_blocked_without_issuing() {
     let holder_id = reservation_id(&holder);
     let journal_before = journal_bytes(repository.path());
 
+    // One run for one worktree: the requester's run is incidental here, because the refusal
+    // is about a named holder that does not overlap, not about who asked.
     let blocked = propose_answer(
         repository.path(),
         "file:src/unrelated.rs",
-        SECOND_RUN,
+        FIRST_RUN,
         "--override",
         &holder_id,
         AnswerReasons::new(
@@ -1269,6 +1271,9 @@ fn identity_clear_session_removes_only_the_current_mapping() {
     let repository = initialized_repository();
     let first_session = "clear-only-first-session";
     let second_session = "preserve-second-session";
+    // Two harness sessions share one checkout, so they share its coordination run. The
+    // subject is that clearing one session's mapping leaves the other's, which is a question
+    // about sessions rather than about runs.
     assert!(
         run_berth_with_session(
             repository.path(),
@@ -1291,7 +1296,7 @@ fn identity_clear_session_removes_only_the_current_mapping() {
                 "claim",
                 "file:second-session.txt",
                 "--run",
-                SECOND_RUN,
+                FIRST_RUN,
                 "--json",
             ],
             second_session,
@@ -1468,11 +1473,11 @@ fn defer_records_both_integration_holds_and_permits_both_editors() {
     );
 }
 
-/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+/// Add a real worktree beside the repository, the second party berth has always refused.
 ///
-/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
-/// no longer names a second party. The returned directory owns the worktree and
-/// must outlive its use.
+/// A distinct `--run` inside one worktree now names a second party too, but only a real
+/// worktree can hold a reservation of its own alongside another run's. The returned
+/// directory owns the worktree and must outlive its use.
 fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     let directory = tempdir().expect("foreign worktree parent should exist");
     let root = directory.path().join(name);

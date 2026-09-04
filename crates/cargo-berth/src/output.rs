@@ -28,6 +28,7 @@ use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::drift::DriftEffect;
 use crate::drift::DriftPathAttributionOutcome;
 use crate::drift::DriftReport;
+use crate::drift::DriftScopeAcquisition;
 use crate::drift::IncursionCommit;
 use crate::drift::IncursionCommitOrigin;
 use crate::drift::PostWriteFreePathProtection;
@@ -64,7 +65,10 @@ use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::presentation;
+use crate::presentation::EmptyRenderedBlocks;
 use crate::presentation::EnvelopePresentation;
+use crate::presentation::NonEmptyRenderedBlocks;
+use crate::presentation::RenderedOutputBlock;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::LifecycleTransitionError;
 use crate::reservation::ProtectedReservationTip;
@@ -107,6 +111,12 @@ const BOARD_LEDGER_RECOVERY: &str =
 const BOARD_CONTENTION_RECOVERY: &str = "Run `cargo-berth board --json` when the ledger is free.";
 /// The summary a post-Bash response falls back to when no verb stated its condition.
 const UNSTATED_CONDITION_SUMMARY: &str = "cargo-berth could not inspect this Bash call.";
+/// The summary a response states when this run was refused the scopes it would have taken.
+///
+/// It says acquisition and nothing else on purpose: the observation, the classification and
+/// the report all ran, and only the taking was withheld.
+const SCOPE_ACQUISITION_REFUSED_SUMMARY: &str =
+    "cargo-berth refused this run's scope acquisition in a worktree another run occupies.";
 #[cfg(test)]
 const UNIMPLEMENTED_MESSAGE: &str = "The reservation engine is not implemented.";
 
@@ -1919,11 +1929,25 @@ impl OutputEnvelope {
             OutputStatus::DriftAttributionRequired
         } else if has_unknown_phase_start {
             OutputStatus::ObjectUnknown
+        } else if matches!(
+            report.scope_acquisition,
+            DriftScopeAcquisition::RefusedToSecondRun { .. }
+        ) {
+            // A refusal with no drift effect beside it is the whole answer, and it is the
+            // same answer the caller received when the refusal replaced this envelope. The
+            // status carries both that run and one that never started, so anything rendering
+            // it for a reader --- `post_commit_rendering` --- asks the payload which it holds.
+            OutputStatus::InvalidInput
         } else {
             OutputStatus::Clear
         };
         let exit_code = if report.has_blocking_effect() {
             BerthExit::BlockedByOverlap
+        } else if matches!(
+            report.scope_acquisition,
+            DriftScopeAcquisition::RefusedToSecondRun { .. }
+        ) {
+            BerthExit::UsageError
         } else {
             BerthExit::Clear
         };
@@ -2332,10 +2356,52 @@ impl OutputEnvelope {
         }
     }
 
+    /// Whether this response reports a run that completed and was refused only its scopes.
+    ///
+    /// The refusal is a fact of the drift payload, not of the status: a withheld acquisition
+    /// and a request that never ran both report [`OutputStatus::InvalidInput`], and only the
+    /// payload separates them.
+    const fn refused_scope_acquisition(&self) -> bool {
+        match &self.payload.facts {
+            OutputFacts::Drift(report) => matches!(
+                report.scope_acquisition,
+                DriftScopeAcquisition::RefusedToSecondRun { .. }
+            ),
+            OutputFacts::NoFacts
+            | OutputFacts::ReplayFailure(_)
+            | OutputFacts::Init(_)
+            | OutputFacts::ProjectionRepair(_)
+            | OutputFacts::Reinitialize(_)
+            | OutputFacts::Board(_)
+            | OutputFacts::Reservation(_)
+            | OutputFacts::FirstTouchReservationSelection(_)
+            | OutputFacts::Check(_)
+            | OutputFacts::Claim(_)
+            | OutputFacts::Release(_)
+            | OutputFacts::Sequence(_)
+            | OutputFacts::Integrate(_)
+            | OutputFacts::Resolve(_)
+            | OutputFacts::Renew(_)
+            | OutputFacts::CoordinationIdentity(_)
+            | OutputFacts::Identity(_) => false,
+        }
+    }
+
     /// Convert a drift envelope into the commit hook's silent-or-warning behavior.
     pub(crate) fn post_commit_rendering(&self) -> PostCommitRendering {
         match self.status {
             OutputStatus::Clear | OutputStatus::Unconfigured => PostCommitRendering::Silent,
+            // A refused acquisition reaches this status alongside requests that never ran at
+            // all, so the guard separates them. The catch-all below is written for a run that
+            // aborted: it offers a by-hand `drift --full` that this rule would refuse the same
+            // way, and it calls the check incomplete two clauses before the message says the
+            // check observed and recorded everything it found.
+            OutputStatus::InvalidInput if self.refused_scope_acquisition() => {
+                PostCommitRendering::Warning(format!(
+                    "cargo-berth completed the post-commit drift check and refused this run's scope acquisition. {} This commit remains in place.",
+                    self.message
+                ))
+            },
             OutputStatus::Widened | OutputStatus::Incursion | OutputStatus::DriftCollision => {
                 PostCommitRendering::Warning(self.message.clone())
             },
@@ -2847,6 +2913,7 @@ impl OutputEnvelope {
             &mut immediate_stop_messages,
             &mut notice_messages,
         );
+        append_scope_acquisition_rendering(&report.scope_acquisition, &mut immediate_stop_messages);
         for result in &report.results {
             let ReservationDriftResult::Changed {
                 reservation_id,
@@ -2953,43 +3020,29 @@ impl OutputEnvelope {
             .filter(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        let (prefix, immediate_stop) = match &report.path_attribution {
-            DriftPathAttributionOutcome::FirstTouchReserved { .. } => {
-                ("FIRST-TOUCH CLAIM: ", false)
-            },
-            DriftPathAttributionOutcome::IncursionDetected { protection, .. } => match protection {
-                PostWriteFreePathProtection::NotAcquired => {
-                    ("POST-WRITE INCURSION: nothing was reserved. ", true)
-                },
-                PostWriteFreePathProtection::Acquired { .. } => ("POST-WRITE INCURSION: ", true),
-            },
-            DriftPathAttributionOutcome::Ambiguous { .. }
-            | DriftPathAttributionOutcome::CoordinationRunRequired { .. } => {
-                ("DRIFT ATTRIBUTION REQUIRED: ", true)
-            },
-            DriftPathAttributionOutcome::NotNeeded
-            | DriftPathAttributionOutcome::Attributed { .. }
-                if has_collision =>
-            {
-                ("COLLISION: ", true)
-            },
-            DriftPathAttributionOutcome::NotNeeded
-            | DriftPathAttributionOutcome::Attributed { .. }
-                if has_widen =>
-            {
-                ("AUTO-WIDEN: ", false)
-            },
-            DriftPathAttributionOutcome::NotNeeded
-            | DriftPathAttributionOutcome::Attributed { .. } => ("", false),
-        };
+        let (prefix, immediate_stop) =
+            drift_rendering_prefix(&report.path_attribution, has_collision, has_widen);
+        // A refused run must stop acting in this worktree whatever else the observation
+        // found, so the refusal both earns the reader a message and makes it a stop. The
+        // detail arms below that build their own lines never quote `self.message`, so the
+        // refusal is stated as its own line there.
+        let mut refusal = Vec::new();
+        append_scope_acquisition_rendering(&report.scope_acquisition, &mut refusal);
+        let refused = !refusal.is_empty();
+        let immediate_stop = immediate_stop || refused;
         let mut messages = match prefix {
             "COLLISION: " => {
                 let mut details = automatic_widening_details(report);
                 details.extend(collision_details(report));
+                details.extend(refusal);
                 details
             },
-            "AUTO-WIDEN: " => automatic_widening_details(report),
-            _ if !prefix.is_empty() || report.has_reportable_effect() => {
+            "AUTO-WIDEN: " => {
+                let mut details = automatic_widening_details(report);
+                details.extend(refusal);
+                details
+            },
+            _ if !prefix.is_empty() || report.has_reportable_effect() || refused => {
                 vec![format!("{prefix}{}", self.message)]
             },
             _ => Vec::new(),
@@ -3071,31 +3124,59 @@ fn presentation_from_actionable_alerts(alerts: &[Alert]) -> EnvelopePresentation
     }
 }
 
+/// Render the stored presentation for a drift response whose feedback a live board decides.
+///
+/// A withheld acquisition gets a block of its own, ahead of everything else. It shares no
+/// heading with the widening detail because the two cannot both be true of one summary: a
+/// refusal takes and widens nothing by construction, so heading it with the widening summary
+/// tells the reader a footprint grew on the invocation that refused to grow it. Front ends
+/// publish these blocks and never parse `message`, so the summary is the whole of what the
+/// reader is told. It leads because a refusal is a stop, which is the order
+/// `live_board_feedback` and the board's own notices already rank in.
 fn drift_non_incursion_presentation(
     report: &DriftReport,
     alerts: &[Alert],
 ) -> EnvelopePresentation {
+    let mut refusal_details = Vec::new();
+    append_scope_acquisition_rendering(&report.scope_acquisition, &mut refusal_details);
     let mut widening_details = automatic_widening_details(report);
     let lost_evidence_details = alerts
         .iter()
         .filter(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
         .map(ToString::to_string)
         .collect::<Vec<_>>();
+    let mut blocks = Vec::new();
+    if !refusal_details.is_empty() {
+        blocks.push(presentation::engine_message_block(
+            SCOPE_ACQUISITION_REFUSED_SUMMARY,
+            &refusal_details.join("\n"),
+        ));
+    }
     match (
         widening_details.as_slice(),
         lost_evidence_details.as_slice(),
     ) {
-        ([], []) => EnvelopePresentation::nothing_to_show(),
+        ([], []) => {},
         (_, [_, ..]) => {
             widening_details.extend(lost_evidence_details);
-            presentation::lost_integration_evidence_block(&widening_details.join("\n")).into()
+            blocks.push(presentation::lost_integration_evidence_block(
+                &widening_details.join("\n"),
+            ));
         },
-        ([_, ..], []) => presentation::engine_message_block(
+        ([_, ..], []) => blocks.push(presentation::engine_message_block(
             "cargo-berth widened this worktree reservation footprint.",
             &widening_details.join("\n"),
-        )
-        .into(),
+        )),
     }
+    rendered_blocks_presentation(blocks)
+}
+
+/// Publish every rendered block, or state that the engine found nothing to show.
+fn rendered_blocks_presentation(blocks: Vec<RenderedOutputBlock>) -> EnvelopePresentation {
+    NonEmptyRenderedBlocks::try_from(blocks).map_or_else(
+        |EmptyRenderedBlocks| EnvelopePresentation::nothing_to_show(),
+        |blocks| EnvelopePresentation::RenderedBlocks { blocks },
+    )
 }
 
 fn automatic_widening_details(report: &DriftReport) -> Vec<String> {
@@ -3753,7 +3834,21 @@ fn render_incursion_commits(commits: &[IncursionCommit]) -> String {
     format!(" Committed by {rendered}.")
 }
 
+/// State what this observation found, and then whether the run that made it may act here.
+///
+/// The order is deliberate. The incursion is the condition the caller must act on, and the
+/// refusal is why nothing was taken for the run that caused it; stating the refusal first
+/// would read as a rejection with nothing behind it.
 fn drift_message(report: &DriftReport) -> String {
+    let mut message = drift_effect_message(report);
+    if let DriftScopeAcquisition::RefusedToSecondRun { rejection } = &report.scope_acquisition {
+        message.push(' ');
+        message.push_str(&rejection.to_string());
+    }
+    message
+}
+
+fn drift_effect_message(report: &DriftReport) -> String {
     if !report.has_reportable_effect() {
         return if report.results.is_empty() {
             "No active reservation in this worktree required a drift check.".to_owned()
@@ -3869,6 +3964,53 @@ fn append_live_path_attribution_rendering(
             immediate_stop_messages.push(format!("DRIFT ATTRIBUTION REQUIRED: {message}"));
         },
         DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. } => {
+        },
+    }
+}
+
+/// Choose the label one drift observation's condition is announced under, and whether it stops.
+const fn drift_rendering_prefix(
+    attribution: &DriftPathAttributionOutcome,
+    has_collision: bool,
+    has_widen: bool,
+) -> (&'static str, bool) {
+    match attribution {
+        DriftPathAttributionOutcome::FirstTouchReserved { .. } => ("FIRST-TOUCH CLAIM: ", false),
+        DriftPathAttributionOutcome::IncursionDetected { protection, .. } => match protection {
+            PostWriteFreePathProtection::NotAcquired => {
+                ("POST-WRITE INCURSION: nothing was reserved. ", true)
+            },
+            PostWriteFreePathProtection::Acquired { .. } => ("POST-WRITE INCURSION: ", true),
+        },
+        DriftPathAttributionOutcome::Ambiguous { .. }
+        | DriftPathAttributionOutcome::CoordinationRunRequired { .. } => {
+            ("DRIFT ATTRIBUTION REQUIRED: ", true)
+        },
+        DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. }
+            if has_collision =>
+        {
+            ("COLLISION: ", true)
+        },
+        DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. }
+            if has_widen =>
+        {
+            ("AUTO-WIDEN: ", false)
+        },
+        DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. } => {
+            ("", false)
+        },
+    }
+}
+
+/// State a withheld scope acquisition as its own stop, wherever drift detail is assembled.
+fn append_scope_acquisition_rendering(
+    scope_acquisition: &DriftScopeAcquisition,
+    immediate_stop_messages: &mut Vec<String>,
+) {
+    match scope_acquisition {
+        DriftScopeAcquisition::Permitted => {},
+        DriftScopeAcquisition::RefusedToSecondRun { rejection } => {
+            immediate_stop_messages.push(format!("SCOPE ACQUISITION REFUSED: {rejection}"));
         },
     }
 }

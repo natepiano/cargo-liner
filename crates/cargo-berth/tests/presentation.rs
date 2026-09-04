@@ -369,7 +369,7 @@ fn sequence_presentation_is_engine_considered() -> TestResult {
     let first = claim(repository.path(), "file:first.rs", FIRST_RUN)?;
     let first_envelope = json_output(&first)?;
     let first_id = required_string(&first_envelope, "/payload/data/reservation_id")?;
-    let second = claim(repository.path(), "file:second.rs", SECOND_RUN)?;
+    let second = claim(repository.path(), "file:second.rs", FIRST_RUN)?;
     let second_envelope = json_output(&second)?;
     let second_id = required_string(&second_envelope, "/payload/data/reservation_id")?;
 

@@ -90,6 +90,8 @@ pub(super) const GIT_POINTS_AT_ARG_PREFIX: &str = "--points-at=";
 pub(super) const GIT_PORCELAIN_ARG: &str = "--porcelain";
 /// Recurse into subtrees while comparing tree objects.
 pub(super) const GIT_RECURSIVE_ARG: &str = "-r";
+/// Compare a parentless commit with the empty tree.
+pub(super) const GIT_ROOT_ARG: &str = "--root";
 /// Show entries from the named reflog.
 pub(super) const GIT_REFLOG_SHOW_ARG: &str = "show";
 /// Print only each reflog entry's subject.

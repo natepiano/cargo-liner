@@ -22,11 +22,16 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
 use std::fs::File;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
+use std::process::Stdio;
+use std::thread;
+use std::time::Duration;
 
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -47,6 +52,10 @@ const MARKER_RELEASE_OUTPUT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_RELEASE
 const MARKER_RELEASE_RESERVATION_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_RELEASE_RESERVATION";
 const MARKER_RELEASE_ROOT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_RELEASE_ROOT";
 const MARKER_RELEASE_TRIGGER_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_RELEASE_TRIGGER";
+/// Test-only path a process waiting on the mutation lock writes, making the wait observable.
+const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
+const MUTATION_LOCK_WAIT_ATTEMPTS: usize = 500;
+const MUTATION_LOCK_WAIT_INTERVAL: Duration = Duration::from_millis(10);
 const POST_COMMIT_HOOK_PATH: &str = ".git/hooks/post-commit";
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
@@ -832,9 +841,12 @@ fn a_backlog_of_incursions_reports_its_size_and_clears_in_one_disposition() {
     let repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "backlog-holder");
+    // Two holders means two runs, and one run holds one worktree, so the second holder
+    // needs a checkout of its own.
+    let second_foreign_root = add_worktree(repository.path(), worktrees.path(), "backlog-second");
     let subject_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
     let first_holder = claim(&foreign_root, "file:first-held.txt", SECOND_RUN);
-    let second_holder = claim(&foreign_root, "file:second-held.txt", THIRD_RUN);
+    let second_holder = claim(&second_foreign_root, "file:second-held.txt", THIRD_RUN);
     fs::write(repository.path().join("first-held.txt"), "entered\n")
         .expect("first held path should write");
     let first = drift(repository.path(), &["--full", "--reservation", &subject_id]);
@@ -1548,42 +1560,159 @@ fn unresolved_trunk_keeps_commit_attribution_and_marks_its_origin_unknown() {
     assert_eq!(commit["origin"], "unknown");
 }
 
+/// The two second parties post-commit answers, and it refuses only one of them a berth.
+///
+/// A second run in the holder's own worktree is refused a reservation of its own and told so
+/// by name. That refusal governs acquisition alone, so the commit is observed and classified
+/// first, and its entry into the holder's scopes is reported as an incursion naming the
+/// holder as the blocking reservation.
+///
+/// Reported, not journalled. A journal incursion is always recorded against a subject
+/// reservation, and a run refused a berth holds none, so no incident can name it. Another
+/// worktree is refused nothing, holds a reservation of its own, and its entry is both
+/// reported and journalled against it.
 #[test]
-fn post_commit_treats_only_another_worktree_as_foreign() {
+fn post_commit_refuses_another_run_here_and_reports_another_worktree_as_foreign() {
     let repository = initialized_repository();
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "foreign");
     let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
-    claim(repository.path(), "file:subject.txt", SECOND_RUN);
     fs::write(repository.path().join("held.txt"), "entered holder scope\n")
         .expect("holder path should write");
     git(repository.path(), &["add", "held.txt"]);
+    let claims_before_the_second_run = claim_event_count(repository.path());
 
-    let same_worktree = git_output(repository.path(), &["commit", "-m", "enter the other run"]);
+    let same_worktree = git_output_with_environment(
+        repository.path(),
+        &["commit", "-m", "enter the other run"],
+        RUN_ENVIRONMENT,
+        SECOND_RUN,
+    );
+    let same_worktree_warning = String::from_utf8_lossy(&same_worktree.stderr);
 
     assert!(same_worktree.status.success());
-    assert!(
-        !String::from_utf8_lossy(&same_worktree.stderr).contains("Incursion"),
-        "a second run in the holder's own worktree is the same actor"
+    assert_eq!(
+        git_stdout(repository.path(), &["log", "-1", "--format=%s"]),
+        "enter the other run",
+        "a refused post-commit check leaves the commit in place"
     );
     assert!(
         journal_events(repository.path())
-            .iter()
-            .all(|event| event["op"] != "incursion")
+            .into_iter()
+            .all(|event| event["op"] != "incursion"),
+        "a journal incursion is recorded against a subject reservation and the refused run \
+         holds none, so its entry is reported rather than journalled"
+    );
+    assert_eq!(
+        claim_event_count(repository.path()),
+        claims_before_the_second_run,
+        "the refusal governs acquisition, so the refused run takes no reservation"
+    );
+    assert!(
+        same_worktree_warning.contains("already holds active reservation"),
+        "a second run in the holder's worktree should be refused by name: {same_worktree_warning}"
+    );
+    assert!(same_worktree_warning.contains(&holder_id));
+    assert!(same_worktree_warning.contains(FIRST_RUN));
+    assert!(same_worktree_warning.contains(SECOND_RUN));
+    assert!(
+        same_worktree_warning.contains(&format!(
+            "Acquisition is all this refuses: no reservation was taken or widened for \
+             coordination run {SECOND_RUN}."
+        )),
+        "the refusal should name what it refused, not claim the invocation recorded nothing: \
+         {same_worktree_warning}"
+    );
+    assert!(
+        same_worktree_warning.contains(
+            "Whatever else this invocation reports, it observed and recorded regardless."
+        ),
+        "the refusal should say the observation it did not condition still stands: \
+         {same_worktree_warning}"
+    );
+    assert!(
+        same_worktree_warning.contains(&format!(
+            "Post-write detection found changed paths held.txt inside foreign reservations \
+             {holder_id}."
+        )),
+        "the refused run's entry into the holder's scopes is reported to the committer by \
+         path and by holder, not swallowed by the refusal: {same_worktree_warning}"
+    );
+    assert!(
+        !same_worktree_warning.contains("could not complete the post-commit drift check"),
+        "a refused run completes its observation and reports it, rather than aborting the \
+         check the way the refusal once did: {same_worktree_warning}"
     );
 
-    let foreign_id = claim(&foreign_root, "file:foreign.txt", THIRD_RUN);
+    assert_the_refused_entry_is_reported_but_not_journalled(repository.path(), &holder_id);
+    assert_a_foreign_worktree_entry_is_recorded_against_its_own_reservation(
+        repository.path(),
+        &foreign_root,
+        &holder_id,
+    );
+}
+
+/// Assert the refused run's entry into the incumbent's scopes is reported, and only reported.
+///
+/// The git hook renders text, so the same observation is read again as JSON. Nothing was
+/// published for it -- a blocking report withholds the fingerprint -- so the second read
+/// observes the same entry and, holding no reservation to be a subject of, journals nothing
+/// for it either time.
+fn assert_the_refused_entry_is_reported_but_not_journalled(
+    repository_root: &Path,
+    holder_id: &str,
+) {
+    let reported = post_commit_drift_under_run(repository_root, SECOND_RUN);
+    let reported_envelope = json_output(&reported);
+    let entry = &reported_envelope["payload"]["data"]["widening"];
+
+    assert_eq!(
+        reported_envelope["status"], "incursion",
+        "the refused run's entry into the holder's scopes is the report's headline: \
+         {reported_envelope}"
+    );
+    assert_eq!(entry["status"], "post_write_incursion");
+    assert_eq!(entry["paths"], serde_json::json!(["held.txt"]));
+    assert_eq!(entry["conflicts"][0]["reservation_id"], holder_id);
+    assert_eq!(
+        reported_envelope["blocked_by"],
+        serde_json::json!([holder_id]),
+        "the reported incursion names the holder as the blocking reservation: \
+         {reported_envelope}"
+    );
+    assert_eq!(
+        reported_envelope["payload"]["data"]["scope_acquisition"]["status"],
+        "refused_to_second_run",
+        "one report states both the entry it observed and the berth it was refused: \
+         {reported_envelope}"
+    );
+    assert!(
+        journal_events(repository_root)
+            .into_iter()
+            .all(|event| event["op"] != "incursion"),
+        "reporting the entry a second time still journals no incident for a run that holds \
+         no reservation to record one against"
+    );
+}
+
+/// Assert another worktree is refused nothing and its entry is recorded against its holder.
+fn assert_a_foreign_worktree_entry_is_recorded_against_its_own_reservation(
+    repository_root: &Path,
+    foreign_root: &Path,
+    holder_id: &str,
+) {
+    let foreign_id = claim(foreign_root, "file:foreign.txt", THIRD_RUN);
     fs::write(foreign_root.join("held.txt"), "entered holder scope\n")
         .expect("foreign path should write");
-    git(&foreign_root, &["add", "held.txt"]);
+    git(foreign_root, &["add", "held.txt"]);
 
-    let foreign = git_output(&foreign_root, &["commit", "-m", "enter the holder scope"]);
+    let foreign = git_output(foreign_root, &["commit", "-m", "enter the holder scope"]);
     let warning = String::from_utf8_lossy(&foreign.stderr);
 
     assert!(foreign.status.success());
     assert!(warning.contains("Incursion"));
-    assert!(warning.contains(&holder_id));
+    assert!(warning.contains(holder_id));
     assert!(warning.contains(&foreign_id));
-    let incursion = journal_events(repository.path())
+    let incursion = journal_events(repository_root)
         .into_iter()
         .find(|event| event["op"] == "incursion" && event["reservation_id"] == foreign_id)
         .expect("the foreign worktree should record an incursion");
@@ -1597,14 +1726,637 @@ fn post_commit_treats_only_another_worktree_as_foreign() {
     );
 }
 
+/// An incumbent holding `held.txt` here, which committed that path itself before a second run
+/// ever arrived.
+///
+/// The incumbent's own commit sits inside its `phase_start..HEAD` range. That range is a commit
+/// range and not an authorship record, so once a second run commits onto the same branch in the
+/// same worktree, anything reading the range as what the second run wrote is handed `held.txt`
+/// too. Both directions of that mistake are pinned against this one standing: the run that
+/// entered nothing must not be told it entered `held.txt`, and the run that entered `held.txt`
+/// must still be told so.
+struct IncumbentThatCommittedItsOwnScope {
+    /// The worktree both runs stand in; owns the repository for the fixture's lifetime.
+    repository: TempDir,
+    /// The reservation the incumbent holds over `held.txt`.
+    holder_id:  String,
+}
+
+impl IncumbentThatCommittedItsOwnScope {
+    /// Claim `held.txt` for the incumbent and commit it here under the incumbent's own run.
+    fn stand_up() -> Self {
+        let repository = initialized_repository();
+        let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
+        fs::write(
+            repository.path().join("held.txt"),
+            "the incumbent's own work\n",
+        )
+        .expect("holder path should write");
+        git(repository.path(), &["add", "held.txt"]);
+        let committed = git_output_with_environment(
+            repository.path(),
+            &["commit", "-m", "the incumbent commits its own scope"],
+            RUN_ENVIRONMENT,
+            FIRST_RUN,
+        );
+        assert!(
+            committed.status.success(),
+            "the incumbent's own commit should stand: {}",
+            String::from_utf8_lossy(&committed.stderr)
+        );
+        Self {
+            repository,
+            holder_id,
+        }
+    }
+
+    /// Commit one path here under a second presented run, which the occupancy rule refuses.
+    fn the_second_run_commits(&self, path: &str, contents: &str) -> Output {
+        fs::write(self.repository.path().join(path), contents)
+            .expect("the second run's path should write");
+        git(self.repository.path(), &["add", path]);
+        let committed = git_output_with_environment(
+            self.repository.path(),
+            &["commit", "-m", "the second run commits"],
+            RUN_ENVIRONMENT,
+            SECOND_RUN,
+        );
+        assert!(
+            committed.status.success(),
+            "a refused post-commit check leaves the commit in place: {}",
+            String::from_utf8_lossy(&committed.stderr)
+        );
+        committed
+    }
+
+    /// Read the same post-commit observation again as JSON, under the refused run.
+    fn reported_under_the_second_run(&self) -> serde_json::Value {
+        json_output(&post_commit_drift_under_run(
+            self.repository.path(),
+            SECOND_RUN,
+        ))
+    }
+}
+
+/// A refused run is told what it wrote, not what the worktree's history happens to contain.
+///
+/// The incumbent committed `held.txt` — its own scope — before the second run existed. The
+/// second run then commits `other.txt` and nothing else. Reading the incumbent's whole
+/// `phase_start..HEAD` range as the second run's writes offers `held.txt` back as a path the
+/// second run entered, which it never touched.
+#[test]
+fn a_refused_run_is_not_told_it_entered_what_the_incumbent_committed_itself() {
+    let worktree = IncumbentThatCommittedItsOwnScope::stand_up();
+
+    let committed = worktree.the_second_run_commits("other.txt", "outside every scope\n");
+    let warning = String::from_utf8_lossy(&committed.stderr);
+    let reported = worktree.reported_under_the_second_run();
+    let holder_id = &worktree.holder_id;
+
+    assert!(
+        !warning.contains("held.txt"),
+        "the refused run wrote other.txt alone, so no path of the incumbent's may be read back \
+         to it as an entry: {warning}"
+    );
+    assert_ne!(
+        reported["status"], "incursion",
+        "a refused run that entered nobody's scopes has no incursion to report: {reported}"
+    );
+    assert!(
+        incursion_effects(&reported).is_empty(),
+        "the incumbent's own commit is not an incursion by the run that followed it: {reported}"
+    );
+    let entry = &reported["payload"]["data"]["widening"];
+    assert_ne!(
+        entry["status"], "post_write_incursion",
+        "nothing the second run wrote entered a holder's scopes: {reported}"
+    );
+    assert!(
+        !entry["paths"].to_string().contains("held.txt"),
+        "the incumbent's own committed path is not one the second run entered: {reported}"
+    );
+    assert!(
+        !reported["payload"]["data"]["widening"]["conflicts"]
+            .to_string()
+            .contains(holder_id.as_str()),
+        "no holder blocked a path the second run wrote, so none may be named: {reported}"
+    );
+}
+
+/// The other direction: a real entry is still reported.
+///
+/// Narrowing what a refused run is told it entered must not silence the report. The second run
+/// commits `held.txt` itself, into the incumbent's scope, and that entry is reported on the same
+/// invocation that reports the refusal, with the commit left in place.
+#[test]
+fn a_refused_run_that_committed_into_the_incumbents_scope_is_still_reported() {
+    let worktree = IncumbentThatCommittedItsOwnScope::stand_up();
+
+    let committed = worktree.the_second_run_commits("held.txt", "the second run's own work\n");
+    let warning = String::from_utf8_lossy(&committed.stderr);
+    let reported = worktree.reported_under_the_second_run();
+    let holder_id = &worktree.holder_id;
+
+    assert_eq!(
+        git_stdout(worktree.repository.path(), &["log", "-1", "--format=%s"]),
+        "the second run commits",
+        "a reported entry never removes the commit"
+    );
+    assert!(
+        warning.contains(&format!(
+            "Post-write detection found changed paths held.txt inside foreign reservations \
+             {holder_id}."
+        )),
+        "the refused run's own entry into the incumbent's scope is reported by path and by \
+         holder: {warning}"
+    );
+    assert_eq!(
+        reported["status"], "incursion",
+        "the entry the refused run really made is the report's headline: {reported}"
+    );
+    let entry = &reported["payload"]["data"]["widening"];
+    assert_eq!(entry["status"], "post_write_incursion");
+    assert_eq!(entry["paths"], serde_json::json!(["held.txt"]));
+    assert_eq!(entry["conflicts"][0]["reservation_id"], holder_id.as_str());
+    assert_eq!(
+        reported["blocked_by"],
+        serde_json::json!([holder_id]),
+        "the reported incursion names the incumbent as the blocking reservation: {reported}"
+    );
+    assert_eq!(
+        reported["payload"]["data"]["scope_acquisition"]["status"], "refused_to_second_run",
+        "one report states both the entry it observed and the berth it was refused: {reported}"
+    );
+}
+
+/// A merge at `HEAD` contributes its own resolution to refused-run attribution.
+///
+/// Both parents add `held.txt` differently, and the merge resolves it to a third value. That
+/// makes the merge commit itself -- rather than either parent's history -- the source of the
+/// entry into the incumbent's scope.
+#[test]
+fn a_refused_merge_head_reports_the_path_it_introduced() {
+    let repository = initialized_repository();
+    let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
+
+    git(repository.path(), &["switch", "--quiet", "-c", "incoming"]);
+    fs::write(repository.path().join("held.txt"), "incoming parent\n")
+        .expect("incoming parent path should write");
+    git(repository.path(), &["add", "held.txt"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "incoming parent",
+        ],
+    );
+    git(repository.path(), &["switch", "--quiet", "main"]);
+    fs::write(repository.path().join("held.txt"), "main parent\n")
+        .expect("main parent path should write");
+    git(repository.path(), &["add", "held.txt"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "main parent",
+        ],
+    );
+
+    let conflicted = git_output(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--no-ff",
+            "incoming",
+        ],
+    );
+    assert!(
+        !conflicted.status.success(),
+        "the fixture should require a merge resolution"
+    );
+    fs::write(repository.path().join("held.txt"), "merge resolution\n")
+        .expect("merge resolution should write");
+    git(repository.path(), &["add", "held.txt"]);
+    let committed = git_output_with_environment(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "resolve held path",
+        ],
+        RUN_ENVIRONMENT,
+        SECOND_RUN,
+    );
+    assert!(committed.status.success(), "merge commit should stand");
+    assert_eq!(
+        git_stdout(
+            repository.path(),
+            &["rev-list", "--parents", "-n", "1", "HEAD"]
+        )
+        .split_whitespace()
+        .count(),
+        3,
+        "HEAD should be a two-parent merge commit"
+    );
+
+    assert_refused_head_entry(
+        &post_commit_drift_under_run(repository.path(), SECOND_RUN),
+        &holder_id,
+    );
+}
+
+/// A parentless `HEAD` contributes its tree to refused-run attribution.
+#[test]
+fn a_refused_root_head_reports_the_path_it_introduced() {
+    let repository = tempdir().expect("root-commit repository should exist");
+    git(
+        repository.path(),
+        &["init", "--quiet", "--initial-branch", "main"],
+    );
+    git(
+        repository.path(),
+        &["config", "user.email", "test@example.invalid"],
+    );
+    git(repository.path(), &["config", "user.name", "Berth Test"]);
+    fs::write(repository.path().join("held.txt"), "root commit entry\n")
+        .expect("root path should write");
+    git(repository.path(), &["add", "held.txt"]);
+    let committed = git_output_with_environment(
+        repository.path(),
+        &["commit", "--quiet", "-m", "root entry"],
+        RUN_ENVIRONMENT,
+        SECOND_RUN,
+    );
+    assert!(committed.status.success(), "root commit should stand");
+    assert_eq!(
+        git_stdout(
+            repository.path(),
+            &["rev-list", "--parents", "-n", "1", "HEAD"]
+        )
+        .split_whitespace()
+        .count(),
+        1,
+        "HEAD should be parentless"
+    );
+    assert!(
+        run_berth(repository.path(), &["init", "--json"])
+            .status
+            .success()
+    );
+    let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
+
+    assert_refused_head_entry(
+        &post_commit_drift_under_run(repository.path(), SECOND_RUN),
+        &holder_id,
+    );
+}
+
+/// Assert a refused invocation reports `HEAD` entering the incumbent's held path.
+fn assert_refused_head_entry(reported: &Output, holder_id: &str) {
+    assert_eq!(
+        reported.status.code(),
+        Some(1),
+        "a real entry is a blocking drift result, not a plain usage rejection: {}",
+        String::from_utf8_lossy(&reported.stdout)
+    );
+    let envelope = json_output(reported);
+    let entry = &envelope["payload"]["data"]["widening"];
+    assert_eq!(envelope["status"], "incursion", "{envelope}");
+    assert_eq!(entry["status"], "post_write_incursion", "{envelope}");
+    assert_eq!(
+        entry["paths"],
+        serde_json::json!(["held.txt"]),
+        "{envelope}"
+    );
+    assert_eq!(
+        entry["conflicts"][0]["reservation_id"], holder_id,
+        "{envelope}"
+    );
+    assert_eq!(
+        envelope["payload"]["data"]["scope_acquisition"]["rejection"]["incumbent_reservation_id"],
+        holder_id,
+        "{envelope}"
+    );
+    assert_eq!(
+        envelope["blocked_by"],
+        serde_json::json!([holder_id]),
+        "the reported incursion names the incumbent as its blocker: {envelope}"
+    );
+    assert_eq!(
+        envelope["payload"]["data"]["scope_acquisition"]["status"], "refused_to_second_run",
+        "{envelope}"
+    );
+}
+
+/// A refused run that entered nothing is told it was refused, not that the check failed.
+///
+/// The incumbent claims a path and commits nothing, so nothing in this worktree's history can
+/// be read back to the second run as an entry however the range is sliced. The second run then
+/// commits an unclaimed path. What is left is a refusal carrying no drift effect at all, which
+/// is the one standing of the three that no earlier test reaches.
+///
+/// A refusal is not a broken check: the observation ran, found nothing outside anyone's
+/// coverage, and recorded what it saw. Telling the committer the check could not be completed
+/// contradicts the same message's own account of what it did, and sending them to run the check
+/// by hand sends them to the same refusal.
+#[test]
+fn a_refusal_with_nothing_entered_is_not_reported_as_a_failed_check() {
+    let repository = initialized_repository();
+    let holder_id = claim(repository.path(), "file:mine.txt", FIRST_RUN);
+    fs::write(repository.path().join("free.txt"), "unclaimed work\n")
+        .expect("the second run's path should write");
+    git(repository.path(), &["add", "free.txt"]);
+
+    let committed = git_output_with_environment(
+        repository.path(),
+        &["commit", "-m", "write an unclaimed path"],
+        RUN_ENVIRONMENT,
+        SECOND_RUN,
+    );
+    let warning = String::from_utf8_lossy(&committed.stderr);
+
+    assert!(
+        committed.status.success(),
+        "a refused post-commit check leaves the commit in place: {warning}"
+    );
+    assert!(
+        warning.contains("already holds active reservation"),
+        "a second run in the incumbent's worktree is refused by name even when it entered \
+         nothing: {warning}"
+    );
+    assert!(warning.contains(&holder_id));
+    assert!(warning.contains(SECOND_RUN));
+    assert!(
+        !warning.contains("could not complete the post-commit drift check"),
+        "the check completed and the refusal withheld acquisition alone, so the committer is \
+         not told the check failed: {warning}"
+    );
+    assert!(
+        !warning.contains("cargo-berth drift --full"),
+        "rerunning the check by hand under the same run earns the same refusal, so it is not \
+         offered as the remedy: {warning}"
+    );
+}
+
+/// An untracked file created by `init` does not change direct drift's occupancy answer.
+#[test]
+fn an_init_untracked_path_does_not_hide_direct_post_commit_refusal() {
+    let repository = repository_with_uncommitted_berth_configuration();
+    let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
+    let claims_before = claim_event_count(repository.path());
+
+    let refused = post_commit_drift_under_run(repository.path(), SECOND_RUN);
+    let envelope = json_output(&refused);
+
+    assert_eq!(refused.status.code(), Some(5), "{envelope}");
+    assert_eq!(envelope["status"], "invalid_input", "{envelope}");
+    assert_eq!(
+        envelope["payload"]["data"]["scope_acquisition"]["status"], "refused_to_second_run",
+        "{envelope}"
+    );
+    assert_eq!(
+        envelope["payload"]["data"]["scope_acquisition"]["rejection"]["incumbent_reservation_id"],
+        holder_id,
+        "{envelope}"
+    );
+    assert_eq!(
+        envelope["blocked_by"],
+        serde_json::json!([]),
+        "a refusal with no incursion has no blocking drift holder: {envelope}"
+    );
+    assert_eq!(
+        claim_event_count(repository.path()),
+        claims_before,
+        "direct refusal must not first-touch the init-created path"
+    );
+}
+
+/// The installed post-commit hook preserves the second run's presented identity.
+///
+/// This is the smoke fixture's two-variable combination: a real commit reaches the installed
+/// hook while `init`'s configuration remains untracked. The hook leaves the commit in place,
+/// but its engine invocation still refuses acquisition and journals no first-touch claim.
+#[test]
+fn installed_hook_refuses_a_second_run_with_the_init_path_still_untracked() {
+    let repository = repository_with_uncommitted_berth_configuration();
+    let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
+    let claims_before = claim_event_count(repository.path());
+    fs::write(repository.path().join("free.txt"), "second run work\n")
+        .expect("unreserved commit path should write");
+    git(repository.path(), &["add", "free.txt"]);
+
+    let committed = git_output_with_environment(
+        repository.path(),
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "second run through installed hook",
+        ],
+        RUN_ENVIRONMENT,
+        SECOND_RUN,
+    );
+    let warning = String::from_utf8_lossy(&committed.stderr);
+
+    assert!(
+        committed.status.success(),
+        "the hook must leave the commit in place: {warning}"
+    );
+    assert!(
+        warning.contains("already holds active reservation"),
+        "{warning}"
+    );
+    assert!(warning.contains(&holder_id), "{warning}");
+    assert!(warning.contains(FIRST_RUN), "{warning}");
+    assert!(warning.contains(SECOND_RUN), "{warning}");
+    assert_eq!(
+        claim_event_count(repository.path()),
+        claims_before,
+        "the installed hook must not first-touch either unreserved path for the refused run"
+    );
+}
+
+/// No summary over a refusal may say the footprint grew, because a refusal withholds widening.
+///
+/// The incumbent's range carries an entry into another worktree's holder, so the report's
+/// results carry an incursion effect and the presentation is decided by live incursion state.
+/// The refusal is appended to the widening detail there, under a summary that announces a
+/// widening that by construction did not happen. Front ends render `presentation`, so this is
+/// asserted on the blocks rather than on the message text.
+#[test]
+fn a_refusal_is_never_summarized_as_a_widened_footprint() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let foreign_root = add_worktree(repository.path(), worktrees.path(), "holds-shared");
+    claim(&foreign_root, "tree:shared", THIRD_RUN);
+    claim(repository.path(), "file:held.txt", FIRST_RUN);
+    fs::create_dir_all(repository.path().join("shared")).expect("shared directory should exist");
+    fs::write(
+        repository.path().join("shared/s.txt"),
+        "entered the other worktree\n",
+    )
+    .expect("entered path should write");
+    git(repository.path(), &["add", "shared/s.txt"]);
+    let committed = git_output_with_environment(
+        repository.path(),
+        &["commit", "-m", "enter the other worktree"],
+        RUN_ENVIRONMENT,
+        SECOND_RUN,
+    );
+    assert!(
+        committed.status.success(),
+        "a refused post-commit check leaves the commit in place: {}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+
+    let reported = json_output(&post_commit_drift_under_run(repository.path(), SECOND_RUN));
+    let blocks = reported["presentation"]["blocks"]
+        .as_array()
+        .expect("the refused run's report should render blocks")
+        .clone();
+    let refusals = blocks
+        .iter()
+        .filter(|block| {
+            block["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("already holds active reservation"))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        !refusals.is_empty(),
+        "the refusal should reach the front end as rendered detail: {reported}"
+    );
+    for block in refusals {
+        assert!(
+            !block["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("widened")),
+            "a refusal takes and widens nothing, so no summary carrying one may claim the \
+             footprint grew: {block}"
+        );
+    }
+}
+
+/// Refusing a berth here says nothing about a holder standing in another worktree.
+///
+/// The occupancy rule governs what a second run may take in the worktree it stands in.
+/// Whether a commit entered another worktree's scopes is a different question, and it is
+/// answered the same way whether or not the committing run was refused a berth of its own.
+#[test]
+fn a_refused_second_run_still_reports_a_foreign_worktrees_holder() {
+    let refused = cross_worktree_entry(CommittingRun::ASecondPresentedRun);
+    let unrefused = cross_worktree_entry(CommittingRun::TheIncumbent);
+
+    assert!(
+        unrefused.names_the_foreign_holder(),
+        "the unrefused commit must record the incursion this test compares against: {:?}",
+        unrefused.incursions
+    );
+    assert!(
+        refused.names_the_foreign_holder(),
+        "a refusal in this worktree must not silence reporting about another worktree: {:?}",
+        refused.incursions
+    );
+}
+
+/// The occupancy answer is the same asked before the mutation lock and asked under it.
+///
+/// A second run whose post-commit drift starts while the worktree is still unoccupied reads
+/// an empty answer before the lock. Acquisition happens under the lock, so the question is
+/// asked again there, and the incumbent that arrived meanwhile refuses it.
+///
+/// The interleaving is staged rather than raced. The ledger is rolled back to its unoccupied
+/// state, the second run is held at the mutation lock — which it reports through
+/// `MUTATION_LOCK_READY_ENVIRONMENT`, so its pre-lock read is known to have already
+/// happened — and the incumbent's claim is restored before the lock is released.
+#[test]
+fn a_second_run_that_read_an_unoccupied_worktree_is_refused_under_the_lock() {
+    let repository = initialized_repository();
+    let incumbent_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
+    let occupied = LedgerSnapshot::capture(repository.path());
+    stage_an_unoccupied_ledger(repository.path());
+    fs::write(repository.path().join("own.txt"), "second run work\n")
+        .expect("second run path should write");
+    let lock_file = File::options()
+        .read(true)
+        .write(true)
+        .open(repository.path().join(LOCK_PATH))
+        .expect("mutation lock should open");
+    lock_file.lock().expect("mutation lock should lock");
+    let signals = tempdir().expect("lock signal directory should exist");
+    let waiting_path = signals.path().join("waiting-at-the-mutation-lock");
+
+    let second_run = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["drift", "--full", "--json"])
+        .current_dir(repository.path())
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(POST_COMMIT_ENVIRONMENT, "1")
+        .env(RUN_ENVIRONMENT, SECOND_RUN)
+        .env(MUTATION_LOCK_READY_ENVIRONMENT, &waiting_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the second run's post-commit drift should start");
+    wait_until_held_at_the_mutation_lock(&waiting_path);
+    occupied.restore(repository.path());
+    std::mem::drop(lock_file);
+    let refused = second_run
+        .wait_with_output()
+        .expect("the second run's post-commit drift should finish");
+    let reported = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    assert_eq!(
+        claim_event_count(repository.path()),
+        1,
+        "an incumbent that arrived under the lock must still refuse the acquisition: {reported}"
+    );
+    assert!(
+        reported.contains(&incumbent_id),
+        "the refusal should name the incumbent the locked answer found: {reported}"
+    );
+
+    let unoccupied_repository = initialized_repository();
+    fs::write(
+        unoccupied_repository.path().join("own.txt"),
+        "second run work\n",
+    )
+    .expect("second run path should write");
+    let admitted = post_commit_drift_under_run(unoccupied_repository.path(), SECOND_RUN);
+    assert_eq!(
+        claim_event_count(unoccupied_repository.path()),
+        1,
+        "an unoccupied worktree admits the first touch the incumbent must refuse: {}",
+        String::from_utf8_lossy(&admitted.stdout)
+    );
+}
+
 #[test]
 fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
     let repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "foreign");
     let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
-    let second_id = claim(repository.path(), "file:second.txt", SECOND_RUN);
-    let foreign_id = claim(&foreign_root, "tree:shared", THIRD_RUN);
+    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
+    let foreign_id = claim(&foreign_root, "tree:shared", SECOND_RUN);
     fs::remove_file(repository.path().join(MARKER_PATH))
         .expect("coordination marker should remove");
     fs::create_dir_all(repository.path().join("shared")).expect("shared directory should exist");
@@ -1655,9 +2407,10 @@ fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
 #[test]
 fn post_commit_attribution_candidates_belong_to_the_identified_run() {
     let repository = initialized_repository();
-    let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
-    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
-    let selected_id = claim(repository.path(), "file:selected.txt", SECOND_RUN);
+    let (_other_run_directory, other_run_root) = foreign_worktree(&repository, "other-run");
+    let first_id = claim(&other_run_root, "file:first.txt", SECOND_RUN);
+    let second_id = claim(&other_run_root, "file:second.txt", SECOND_RUN);
+    let selected_id = claim(repository.path(), "file:selected.txt", FIRST_RUN);
     fs::write(
         repository.path().join("outside.txt"),
         "outside every scope\n",
@@ -1699,14 +2452,16 @@ fn post_commit_widens_the_only_active_reservation() {
 fn json_post_commit_reports_every_active_reservation_without_warning_rendering() {
     let repository = initialized_repository();
     let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
-    let second_id = claim(repository.path(), "file:second.txt", SECOND_RUN);
+    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
     fs::write(
         repository.path().join("outside.txt"),
         "outside both scopes\n",
     )
     .expect("outside path should write");
 
-    let widened = post_commit_drift(repository.path(), &[]);
+    // One worktree holds one run, so two live reservations are two candidates: the
+    // attribution is named here so this test reports on rendering, not on ambiguity.
+    let widened = post_commit_drift(repository.path(), &["--reservation", &first_id]);
     let envelope = json_output(&widened);
 
     assert!(widened.status.success());
@@ -1789,7 +2544,7 @@ fn session_mapping_attributes_post_commit_widening_with_two_active_reservations(
     let repository = initialized_repository();
     let session_id = "drift-attribution-session";
     let first_id = claim_with_session(repository.path(), "file:first.txt", FIRST_RUN, session_id);
-    let second_id = claim(repository.path(), "file:second.txt", SECOND_RUN);
+    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
     fs::remove_file(repository.path().join(MARKER_PATH))
         .expect("coordination marker should remove");
     fs::write(repository.path().join("outside.txt"), "outside\n")
@@ -1845,6 +2600,317 @@ fn drift_widen_records_existing_answer_coverage_for_a_scope_bound_answer() {
         widen["authorization"]["overlaps"][0]["scopes"][0]["path"],
         "shared/approved.txt"
     );
+}
+
+/// Where the holder standing over a widening subject's scopes is, and in what state.
+///
+/// A widening asks the one foreignness question the pre-edit hook asks, so a same-worktree
+/// holder is foreign only while another *presented* run holds it `Active`. These are the
+/// three same-worktree standings that question declines --- released and awaiting
+/// integration, claimed under an identity the engine issued for itself, and claimed before
+/// provenance was recorded at all --- and the one standing it accepts.
+#[derive(Clone, Copy, Debug)]
+enum OverlappedHolderStanding {
+    /// This worktree, another run, released and awaiting integration.
+    HereAwaitingIntegration,
+    /// This worktree, claimed by post-commit drift under an identity nobody presented.
+    HereUnderAnEngineIssuedIdentity,
+    /// This worktree, claimed by a build that recorded no identity provenance at all.
+    HereFromBeforeProvenanceWasRecorded,
+    /// Another worktree, held `Active` by a run that presented its identity.
+    InAnotherWorktreeUnderAPresentedRun,
+}
+
+/// What a drift widening recorded about the holder its subject's scopes overlap.
+#[derive(Debug, Eq, PartialEq)]
+enum RecordedWidenAuthorization {
+    /// The widening bound no foreign overlap, so no answer was required of it.
+    NoOverlapAnswerRequired,
+    /// Earlier answers cover the overlap, and the widen names every holder they cover.
+    ExistingAnswersCover { holder_ids: Vec<String> },
+    /// The overlap is foreign and unanswered, so no widen was recorded at all.
+    RefusedPendingAnOverlapAnswer,
+}
+
+/// Whether the holder still blocked a foreign edit when the widening was decided.
+///
+/// A holder the projection has stopped treating as blocking is skipped before foreignness is
+/// ever asked, so a permissive arm of this test would record nothing for a reason that has
+/// nothing to do with the rule under test.
+#[derive(Debug, Eq, PartialEq)]
+enum HolderEditBlocking {
+    BlocksAForeignEdit,
+    DoesNotBlockAForeignEdit,
+}
+
+struct WideningOverAHolder {
+    holder_id:       String,
+    holder_blocking: HolderEditBlocking,
+    authorization:   RecordedWidenAuthorization,
+}
+
+/// A widening asks an overlap answer only of a holder that is foreign to the widening run.
+///
+/// Widening once tested the run and the worktree by hand, with no lifecycle and no
+/// provenance term, so it demanded an answer from a same-worktree holder the pre-edit hook
+/// had already decided this identity may edit. It now asks
+/// `Reservation::is_foreign_to_coordination_run_in_worktree`, the same predicate every other
+/// site asks, which relaxes exactly three same-worktree standings: their overlaps stop
+/// forcing an answer and stop appearing among the authorized overlaps the widen records.
+///
+/// The contrast is drawn on the worktree because the same-worktree `Active` and `Presented`
+/// standing cannot reach a widening at all. Occupancy refuses that run's acquisition first,
+/// and the drift transaction then selects no widening subject, so the widening path is never
+/// entered and there is no authorization to compare.
+#[test]
+fn widening_asks_an_overlap_answer_only_of_a_holder_foreign_to_it() {
+    for standing in [
+        OverlappedHolderStanding::HereAwaitingIntegration,
+        OverlappedHolderStanding::HereUnderAnEngineIssuedIdentity,
+        OverlappedHolderStanding::HereFromBeforeProvenanceWasRecorded,
+    ] {
+        let widening = widening_over_an_overlapped_holder(standing);
+
+        assert_eq!(
+            widening.holder_blocking,
+            HolderEditBlocking::BlocksAForeignEdit,
+            "{standing:?} must still block a foreign edit, or this arm records nothing for the \
+             wrong reason"
+        );
+        assert_eq!(
+            widening.authorization,
+            RecordedWidenAuthorization::NoOverlapAnswerRequired,
+            "{standing:?} is not foreign to the widening run, so its overlap must neither \
+             require an answer nor be recorded as an authorized one"
+        );
+    }
+
+    let foreign = widening_over_an_overlapped_holder(
+        OverlappedHolderStanding::InAnotherWorktreeUnderAPresentedRun,
+    );
+
+    assert_eq!(
+        foreign.holder_blocking,
+        HolderEditBlocking::BlocksAForeignEdit
+    );
+    assert_eq!(
+        foreign.authorization,
+        RecordedWidenAuthorization::ExistingAnswersCover {
+            holder_ids: vec![foreign.holder_id.clone()],
+        },
+        "a presented run's active holder in another worktree still requires an answer, and the \
+         widen still records it"
+    );
+}
+
+/// Widen one subject whose scopes overlap a holder standing as `standing` describes.
+///
+/// Every arm uses the same shapes: the holder covers `shared/held.txt`, the subject covers
+/// `tree:shared` around it, and the subject widens onto an unclaimed `outside.txt`. Only the
+/// holder's worktree and state differ, so the recorded authorization differs for one reason.
+fn widening_over_an_overlapped_holder(standing: OverlappedHolderStanding) -> WideningOverAHolder {
+    let repository = initialized_repository();
+    let (_probe_directory, probe_root) = foreign_worktree(&repository, "probe");
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "holder");
+    let (holder_id, subject_id) = match standing {
+        OverlappedHolderStanding::HereAwaitingIntegration => {
+            // The holder must carry unintegrated work, or releasing it leaves nothing to
+            // integrate, its evidence reads as clear, and it stops blocking edits at all.
+            git(
+                repository.path(),
+                &["switch", "--quiet", "-c", "holder-phase"],
+            );
+            fs::create_dir_all(repository.path().join("shared"))
+                .expect("held scope directory should exist");
+            fs::write(repository.path().join("shared/held.txt"), "holder work\n")
+                .expect("held path should write");
+            git(repository.path(), &["add", "shared/held.txt"]);
+            git(
+                repository.path(),
+                &["commit", "--quiet", "-m", "holder work"],
+            );
+            let holder_id = claim(repository.path(), "file:shared/held.txt", FIRST_RUN);
+            let checkpointed = run_berth(repository.path(), &["release", &holder_id, "--json"]);
+            assert!(checkpointed.status.success());
+            assert_eq!(
+                json_output(&checkpointed)["payload"]["data"]["status"],
+                "checkpointed"
+            );
+            (
+                holder_id,
+                claim(repository.path(), "tree:shared", SECOND_RUN),
+            )
+        },
+        OverlappedHolderStanding::HereUnderAnEngineIssuedIdentity => {
+            fs::create_dir_all(repository.path().join("shared"))
+                .expect("held scope directory should exist");
+            fs::write(repository.path().join("shared/held.txt"), "engine-issued\n")
+                .expect("held path should write");
+            let first_touched = post_commit_drift(repository.path(), &[]);
+            assert!(first_touched.status.success());
+            let holder_id = json_output(&first_touched)["payload"]["data"]["widening"]
+                ["acquisition"]["reservation_id"]
+                .as_str()
+                .expect("the post-write first touch should return a reservation id")
+                .to_owned();
+            (
+                holder_id,
+                claim(repository.path(), "tree:shared", SECOND_RUN),
+            )
+        },
+        OverlappedHolderStanding::HereFromBeforeProvenanceWasRecorded => {
+            let subject_id = claim(repository.path(), "tree:shared", SECOND_RUN);
+            (
+                append_claim_recording_no_provenance(
+                    repository.path(),
+                    FIRST_RUN,
+                    "shared/held.txt",
+                ),
+                subject_id,
+            )
+        },
+        OverlappedHolderStanding::InAnotherWorktreeUnderAPresentedRun => {
+            let holder_id = claim(&holder_root, "file:shared/held.txt", FIRST_RUN);
+            let subject_id =
+                claim_with_override(repository.path(), "tree:shared", SECOND_RUN, &holder_id);
+            (holder_id, subject_id)
+        },
+    };
+    let holder_blocking = holder_edit_blocking(&probe_root, "file:shared/held.txt", &holder_id);
+    fs::write(repository.path().join("outside.txt"), "new scope\n")
+        .expect("new scope path should write");
+
+    let widened = run_berth_with_run(
+        repository.path(),
+        &["drift", "--full", "--reservation", &subject_id, "--json"],
+        SECOND_RUN,
+    );
+
+    assert!(
+        widened.status.success(),
+        "drift failed for {standing:?}: {}{}",
+        String::from_utf8_lossy(&widened.stdout),
+        String::from_utf8_lossy(&widened.stderr)
+    );
+    let authorization = journal_events(repository.path())
+        .into_iter()
+        .find(|event| event["op"] == "widen" && event["reservation_id"] == subject_id)
+        .map_or(
+            RecordedWidenAuthorization::RefusedPendingAnOverlapAnswer,
+            |widen| recorded_widen_authorization(&widen["authorization"]),
+        );
+    WideningOverAHolder {
+        holder_id,
+        holder_blocking,
+        authorization,
+    }
+}
+
+/// Read one widen event's recorded authorization as the answer question it settles.
+fn recorded_widen_authorization(authorization: &serde_json::Value) -> RecordedWidenAuthorization {
+    let kind = authorization["kind"]
+        .as_str()
+        .expect("a widen should record an authorization kind");
+    if kind == "no_conflict" {
+        return RecordedWidenAuthorization::NoOverlapAnswerRequired;
+    }
+    assert_eq!(
+        kind, "existing_answers_cover_every_overlap",
+        "this fixture answers overlaps only by existing coverage: {authorization}"
+    );
+    RecordedWidenAuthorization::ExistingAnswersCover {
+        holder_ids: authorization["overlaps"]
+            .as_array()
+            .expect("covered overlaps should be an array")
+            .iter()
+            .map(|overlap| {
+                overlap["reservation_id"]
+                    .as_str()
+                    .expect("an authorized overlap should name its holder")
+                    .to_owned()
+            })
+            .collect(),
+    }
+}
+
+/// Ask a third worktree whether the named holder still refuses it the holder's own path.
+fn holder_edit_blocking(probe_root: &Path, scope: &str, holder_id: &str) -> HolderEditBlocking {
+    let probed = run_berth_with_run(probe_root, &["check", scope, "--json"], THIRD_RUN);
+    let blocked_by_the_holder = json_output(&probed)["blocked_by"]
+        .as_array()
+        .is_some_and(|holders| holders.iter().any(|holder| holder == holder_id));
+    if probed.status.code() == Some(1) && blocked_by_the_holder {
+        HolderEditBlocking::BlocksAForeignEdit
+    } else {
+        HolderEditBlocking::DoesNotBlockAForeignEdit
+    }
+}
+
+/// Append the claim a build that predates provenance recording left behind.
+///
+/// No verb can write one any more --- the field is recorded at every claim site --- so the
+/// record an upgraded repository replays is appended directly. It is copied from a real
+/// claim in the same journal so every other field stays exactly what the engine wrote, and
+/// only the reservation, its scope, its run, and the absent provenance differ.
+fn append_claim_recording_no_provenance(
+    repository_root: &Path,
+    run: &str,
+    scope_path: &str,
+) -> String {
+    let events = journal_events(repository_root);
+    let previous = events
+        .last()
+        .expect("the fixture should have written one event")
+        .clone();
+    let mut event = events
+        .iter()
+        .find(|event| event["op"] == "claim")
+        .expect("the fixture should have written one claim")
+        .as_object()
+        .expect("a journal event should be an object")
+        .clone();
+    let reservation_id = uuid::Uuid::now_v7().to_string();
+    event.insert(
+        "event_id".to_owned(),
+        serde_json::json!(uuid::Uuid::now_v7().to_string()),
+    );
+    event.insert(
+        "reservation_id".to_owned(),
+        serde_json::json!(reservation_id),
+    );
+    event.insert(
+        "scopes".to_owned(),
+        serde_json::json!([{"path": scope_path, "kind": "file"}]),
+    );
+    event.remove("coordination_identity_provenance");
+    event.insert(
+        "actor".to_owned(),
+        serde_json::json!({
+            "repository": previous["actor"]["repository"],
+            "worktree": previous["actor"]["worktree"],
+            "run": run,
+        }),
+    );
+    event.insert("at".to_owned(), previous["at"].clone());
+    event.insert(
+        "projection_generation".to_owned(),
+        serde_json::json!(
+            previous["projection_generation"]
+                .as_u64()
+                .expect("a projection generation should be numeric")
+                + 1
+        ),
+    );
+    let mut journal = OpenOptions::new()
+        .append(true)
+        .open(repository_root.join(JOURNAL_PATH))
+        .expect("the journal should open for the provenance-free claim");
+    serde_json::to_writer(&mut journal, &serde_json::Value::Object(event))
+        .expect("the provenance-free claim should serialize");
+    journal
+        .write_all(b"\n")
+        .expect("the provenance-free claim terminator should write");
+    reservation_id
 }
 
 #[test]
@@ -1991,7 +3057,12 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
         &["--full", "--reservation", &reservation_id],
     );
     assert!(full.output.status.success());
-    assert_eq!(full.fingerprint_commands(), vec!["diff-tree", "status"]);
+    assert_eq!(
+        full.fingerprint_commands(),
+        vec!["diff-tree", "status"],
+        "the phase range and HEAD's own commit ride one batched read, and the working tree is \
+         the other"
+    );
     assert_batched_full_attribution_commands(&full.commands());
 
     let cheap = traced_drift(repository.path(), &["--reservation", &reservation_id]);
@@ -2851,7 +3922,7 @@ fn a_rebase_anchors_each_phase_sharing_a_branch_below_its_own_commits() {
     git(&feature, &["add", "alpha.txt"]);
     git(&feature, &["commit", "--quiet", "-m", "alpha"]);
 
-    let second = claim(&feature, "file:beta.txt", SECOND_RUN);
+    let second = claim(&feature, "file:beta.txt", FIRST_RUN);
     fs::write(feature.join("beta.txt"), "beta\n").expect("beta path should write");
     git(&feature, &["add", "beta.txt"]);
     git(&feature, &["commit", "--quiet", "-m", "beta"]);
@@ -2957,11 +4028,11 @@ fn assert_no_phase_ancestry_or_metadata_command(commands: &[String]) {
     assert!(!commands.iter().any(|command| command == "metadata"));
 }
 
-/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+/// Add a real worktree beside the repository, the second party berth has always refused.
 ///
-/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
-/// no longer names a second party. The returned directory owns the worktree and
-/// must outlive its use.
+/// A distinct `--run` inside one worktree now names a second party too, but only a real
+/// worktree can hold a reservation of its own alongside another run's. The returned
+/// directory owns the worktree and must outlive its use.
 fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     let directory = tempdir().expect("foreign worktree parent should exist");
     let root = directory.path().join(name);
@@ -2997,6 +4068,27 @@ fn initialized_repository() -> TempDir {
     git(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
+    );
+    repository
+}
+
+/// Initialize berth while leaving its repository configuration as an untracked path.
+fn repository_with_uncommitted_berth_configuration() -> TempDir {
+    let repository = scratch_repository();
+    assert!(
+        run_berth(repository.path(), &["init", "--json"])
+            .status
+            .success()
+    );
+    let untracked = git_stdout(
+        repository.path(),
+        &["status", "--short", "--untracked-files=all"],
+    );
+    assert!(
+        untracked
+            .lines()
+            .any(|line| line == format!("?? {CONFIGURATION_PATH}")),
+        "init's configuration should remain the fixture's untracked change: {untracked}"
     );
     repository
 }
@@ -3184,6 +4276,143 @@ fn fingerprint_cache(repository_root: &Path) -> PathBuf {
         })
         .expect("fingerprint cache should exist")
         .path()
+}
+
+/// Which coordination run makes the commit that enters another worktree's scopes.
+#[derive(Clone, Copy)]
+enum CommittingRun {
+    /// A second presented run, which the occupancy rule refuses a berth of its own.
+    ASecondPresentedRun,
+    /// No run of its own, so the worktree's incumbent is the party that committed.
+    TheIncumbent,
+}
+
+/// What a commit entering another worktree's scopes left in the journal.
+struct CrossWorktreeEntry {
+    /// The reservation the other worktree holds over the entered path.
+    foreign_id: String,
+    /// Every incursion the commit recorded.
+    incursions: Vec<serde_json::Value>,
+}
+
+impl CrossWorktreeEntry {
+    /// Whether some incursion names the other worktree's holder as a party entered.
+    fn names_the_foreign_holder(&self) -> bool {
+        self.incursions.iter().any(|incursion| {
+            incursion["foreign_reservation_ids"]
+                .as_array()
+                .is_some_and(|holders| holders.iter().any(|held| held == &self.foreign_id))
+        })
+    }
+}
+
+/// Commit into a second worktree's scopes under the named run and report what it recorded.
+fn cross_worktree_entry(committing_run: CommittingRun) -> CrossWorktreeEntry {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let foreign_root = add_worktree(repository.path(), worktrees.path(), "foreign");
+    let foreign_id = claim(&foreign_root, "tree:shared", THIRD_RUN);
+    claim(repository.path(), "file:held.txt", FIRST_RUN);
+    fs::create_dir_all(repository.path().join("shared")).expect("shared directory should exist");
+    fs::write(
+        repository.path().join("shared/s.txt"),
+        "entered the other worktree\n",
+    )
+    .expect("entered path should write");
+    git(repository.path(), &["add", "shared/s.txt"]);
+
+    let committed = match committing_run {
+        CommittingRun::ASecondPresentedRun => git_output_with_environment(
+            repository.path(),
+            &["commit", "-m", "enter the other worktree"],
+            RUN_ENVIRONMENT,
+            SECOND_RUN,
+        ),
+        CommittingRun::TheIncumbent => git_output(
+            repository.path(),
+            &["commit", "-m", "enter the other worktree"],
+        ),
+    };
+    assert!(
+        committed.status.success(),
+        "a reported entry never removes the commit: {}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    let incursions = journal_events(repository.path())
+        .into_iter()
+        .filter(|event| event["op"] == "incursion")
+        .collect();
+    CrossWorktreeEntry {
+        foreign_id,
+        incursions,
+    }
+}
+
+/// The journal and its projection at one moment, so an interleaving can be staged.
+struct LedgerSnapshot {
+    journal:    Vec<u8>,
+    projection: Vec<u8>,
+}
+
+impl LedgerSnapshot {
+    fn capture(repository_root: &Path) -> Self {
+        Self {
+            journal:    fs::read(repository_root.join(JOURNAL_PATH)).expect("journal should read"),
+            projection: fs::read(repository_root.join(PROJECTION_PATH))
+                .expect("projection should read"),
+        }
+    }
+
+    fn restore(&self, repository_root: &Path) {
+        fs::write(repository_root.join(JOURNAL_PATH), &self.journal)
+            .expect("journal should restore");
+        fs::write(repository_root.join(PROJECTION_PATH), &self.projection)
+            .expect("projection should restore");
+    }
+}
+
+/// Roll the ledger back to the state a worktree no run has claimed in would present.
+fn stage_an_unoccupied_ledger(repository_root: &Path) {
+    fs::write(repository_root.join(JOURNAL_PATH), b"").expect("journal should stage empty");
+    let projection_path = repository_root.join(PROJECTION_PATH);
+    if projection_path.exists() {
+        fs::remove_file(projection_path).expect("projection should stage empty");
+    }
+}
+
+/// Block until the spawned run reports that it is waiting on the mutation lock.
+fn wait_until_held_at_the_mutation_lock(waiting_path: &Path) {
+    let reached_the_lock = (0..MUTATION_LOCK_WAIT_ATTEMPTS).any(|_| {
+        if waiting_path.is_file() {
+            return true;
+        }
+        thread::sleep(MUTATION_LOCK_WAIT_INTERVAL);
+        false
+    });
+    assert!(
+        reached_the_lock,
+        "the second run should reach the mutation lock and report waiting on it"
+    );
+}
+
+/// Count the claims the journal records, the acquisition a refused run must not make.
+fn claim_event_count(repository_root: &Path) -> usize {
+    journal_events(repository_root)
+        .iter()
+        .filter(|event| event["op"] == "claim")
+        .count()
+}
+
+fn post_commit_drift_under_run(repository_root: &Path, run: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["drift", "--full", "--json"])
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(POST_COMMIT_ENVIRONMENT, "1")
+        .env(RUN_ENVIRONMENT, run)
+        .output()
+        .expect("post-commit drift under a presented run should run")
 }
 
 fn journal_text(repository_root: &Path) -> String {

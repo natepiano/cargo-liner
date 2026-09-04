@@ -335,25 +335,50 @@ pub(super) fn parse_phase_committed_paths(
             {
                 break;
             }
-            index += 1;
-            let tab_position = field.iter().position(|byte| *byte == b'\t');
-            let first_path = tab_position.map(|position| &field[position + 1..]);
-            let path = if let Some(path) = first_path {
-                path
-            } else {
-                let Some(path) = fields.get(index) else {
-                    return Err(DriftFingerprintError::MalformedGitOutput(
-                        "phase name-status output ended before its path".to_owned(),
-                    ));
-                };
-                index += 1;
-                path
-            };
+            let path = parse_phase_name_status_path(&fields, &mut index)?;
             paths.push(parse_path(path)?);
         }
         ordering::normalize_paths(paths);
     }
     Ok(paths_by_anchor)
+}
+
+/// Consume one ordinary or combined name-status entry and return its path bytes.
+fn parse_phase_name_status_path<'output>(
+    fields: &[&'output [u8]],
+    index: &mut usize,
+) -> Result<&'output [u8], DriftFingerprintError> {
+    let status_field = fields[*index];
+    *index += 1;
+    let tab_position = status_field.iter().position(|byte| *byte == b'\t');
+    let (status, inline_path) = tab_position.map_or((status_field, None), |position| {
+        (
+            &status_field[..position],
+            Some(&status_field[position + 1..]),
+        )
+    });
+    if status.is_empty()
+        || !status.iter().all(|byte| {
+            matches!(
+                byte,
+                b'A' | b'C' | b'D' | b'M' | b'R' | b'T' | b'U' | b'X' | b'B'
+            )
+        })
+    {
+        return Err(DriftFingerprintError::MalformedGitOutput(
+            "phase name-status output contained an invalid status".to_owned(),
+        ));
+    }
+    if let Some(path) = inline_path {
+        return Ok(path);
+    }
+    let Some(path) = fields.get(*index) else {
+        return Err(DriftFingerprintError::MalformedGitOutput(
+            "phase name-status output ended before its path".to_owned(),
+        ));
+    };
+    *index += 1;
+    Ok(path)
 }
 
 pub(super) fn parse_working_tree_status(
@@ -475,6 +500,22 @@ mod tests {
             ])
         );
         assert_eq!(path_names.get(&second), Some(&Vec::new()));
+        Ok(())
+    }
+
+    #[test]
+    fn phase_diff_parser_accepts_dense_combined_name_status()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let anchor = COMMIT_OBJECT_ID.parse::<GitObjectId>()?;
+        let output = format!("{COMMIT_OBJECT_ID}\0MM\0merge-changed.txt\0");
+
+        let parsed = parse_phase_committed_paths(output.as_bytes(), std::slice::from_ref(&anchor))?;
+        let path_names = parsed[&anchor]
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
+        assert_eq!(path_names, ["merge-changed.txt"]);
         Ok(())
     }
 

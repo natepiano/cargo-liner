@@ -73,7 +73,7 @@ fn blocked_claim_names_holder_provenance_and_appends_nothing() {
             "claim",
             "tree:crates/hana_kana_extra",
             "--run",
-            SECOND_RUN,
+            FIRST_RUN,
             "--json",
         ],
     );
@@ -1234,11 +1234,11 @@ fn initialized_repository(path_case_setting: PathCaseSetting) -> TempDir {
     repository
 }
 
-/// Add a real worktree beside the repository, the only actor berth treats as foreign.
+/// Add a real worktree beside the repository, the second party berth has always refused.
 ///
-/// Two coordination runs inside one worktree are one actor, so a distinct `--run`
-/// no longer simulates a second party. The returned directory owns the worktree and
-/// must outlive its use.
+/// A distinct `--run` inside one worktree now names a second party too, but only a real
+/// worktree can hold a reservation of its own alongside another run's. The returned
+/// directory owns the worktree and must outlive its use.
 fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     let directory = tempdir().expect("foreign worktree parent should exist");
     let root = directory.path().join(name);

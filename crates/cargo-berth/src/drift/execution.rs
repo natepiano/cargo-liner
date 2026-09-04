@@ -9,9 +9,12 @@ use std::path::PathBuf;
 
 use super::classification;
 use super::classification::PreLockForeignPathClassification;
+use super::classification::RefusedRunPathEntry;
 use super::fingerprint;
 use super::git_output::DriftFingerprintError;
 use super::identity::DriftActingIdentity;
+use super::identity::DriftRunValidation;
+use super::identity::DriftScopeAcquisition;
 use super::observation;
 use super::observation::FingerprintObservation;
 use super::observation::PostWriteClaimSubject;
@@ -32,6 +35,7 @@ use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
+use crate::coordination_identity::IssuingWorktreeRun;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::edge::RepositoryTrunk;
 use crate::git;
@@ -93,6 +97,7 @@ enum DriftTransactionRejection {
 struct DriftMutationContext<'observation> {
     request:                              DriftRequest,
     ledger:                               &'observation Ledger,
+    worktree_context:                     &'observation WorktreeContext,
     acting_identity:                      DriftActingIdentity,
     resolved_edit_authorization:          ResolvedEditAuthorization,
     identity_validation:                  CoordinationIdentityValidationContext,
@@ -253,7 +258,7 @@ fn execute_inner(
     repository_trunk: &RepositoryTrunk,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<DriftReport>, DriftExecutionError> {
-    let (
+    let ObservedDriftExecution {
         initial_reservations,
         initial_subjects,
         cache_path,
@@ -261,30 +266,11 @@ fn execute_inner(
         acting_identity,
         resolved_edit_authorization,
         identity_validation,
-    ) = match prepared {
+    } = match prepared {
         PreparedDriftExecution::CompletedUnchanged(report) => {
             return Ok(Enrollment::Enrolled(*report));
         },
-        PreparedDriftExecution::Observed(observed) => {
-            let ObservedDriftExecution {
-                initial_reservations,
-                initial_subjects,
-                cache_path,
-                observation,
-                acting_identity,
-                resolved_edit_authorization,
-                identity_validation,
-            } = *observed;
-            (
-                initial_reservations,
-                initial_subjects,
-                cache_path,
-                observation,
-                acting_identity,
-                resolved_edit_authorization,
-                identity_validation,
-            )
-        },
+        PreparedDriftExecution::Observed(observed) => *observed,
     };
     if !observation
         .changes
@@ -307,9 +293,10 @@ fn execute_inner(
     {
         let attribution = claim_post_write_paths(&observation, recovery_command_line)?;
         let report = DriftReport {
-            comparison:       observation.comparison,
-            path_attribution: attribution.outcome,
-            results:          attribution.results,
+            comparison:        observation.comparison,
+            path_attribution:  attribution.outcome,
+            results:           attribution.results,
+            scope_acquisition: DriftScopeAcquisition::Permitted,
         };
         if !report.has_blocking_effect() {
             fingerprint::publish_fingerprint(&cache_path, &observation.cache_value);
@@ -326,6 +313,7 @@ fn execute_inner(
     let mutation_context = DriftMutationContext {
         request,
         ledger,
+        worktree_context,
         acting_identity,
         resolved_edit_authorization,
         identity_validation,
@@ -341,20 +329,41 @@ fn execute_inner(
         repository_trunk,
         &mut report,
     )?;
-    if matches!(
-        initial_subjects.post_write_first_touch,
-        PostWriteFirstTouchRequirement::Required
-    ) {
+    // From here the refusal withholds every acquisition this invocation could still make: the
+    // post-write first touch below, and the fingerprint publication that would move the
+    // worktree's shared comparison baseline under the run that does occupy it. Nothing else
+    // above is withheld, so the refused run's report states what its commit did before it
+    // states that it may take nothing here.
+    //
+    // The unchanged early return sits outside that account entirely. An observation that finds
+    // no change for any reporting subject publishes the fingerprint and returns above, before
+    // the lock that decides refusal, so such a run is never refused and never told it was.
+    let acquisition_permitted =
+        matches!(report.scope_acquisition, DriftScopeAcquisition::Permitted);
+    if acquisition_permitted
+        && matches!(
+            initial_subjects.post_write_first_touch,
+            PostWriteFirstTouchRequirement::Required
+        )
+    {
         let attribution = claim_post_write_paths(&observation, recovery_command_line)?;
         report.path_attribution = attribution.outcome;
         report.results.extend(attribution.results);
     }
-    if !report.has_blocking_effect() {
+    if acquisition_permitted && !report.has_blocking_effect() {
         fingerprint::publish_fingerprint(&cache_path, &observation.cache_value);
     }
     Ok(Enrollment::Enrolled(report))
 }
 
+/// Refuse a drift invocation whose resolved identity is stale, then name what it acts as.
+///
+/// Only the staleness questions a session mapping or a worktree marker raises are answered
+/// here. The same-worktree occupancy question belongs to the acquisition step and is asked
+/// there, under the ledger lock, by [`DriftRunValidation::authorize_scope_acquisition`]:
+/// answering it here aborts the invocation before [`observation::observe`] runs, which would
+/// leave a second presented run's commits with no incursion record against any foreign holder
+/// in the repository.
 fn validated_drift_identity(
     worktree_id: WorktreeId,
     reservations: &RetainedReservationSet,
@@ -366,15 +375,7 @@ fn validated_drift_identity(
             LedgerError::WorktreeIdentityMismatch,
         ));
     }
-    coordination_identity::validate_coordination_identity(reservations, identity_validation)
-        .map_err(|error| match error {
-            CoordinationIdentityValidationError::Rejected(rejection) => {
-                DriftExecutionError::CoordinationIdentity(rejection)
-            },
-            CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
-                DriftExecutionError::Ledger(LedgerError::InvalidCanonicalWorktreeRoot)
-            },
-        })?;
+    coordination_identity::validate_coordination_identity(reservations, identity_validation)?;
     Ok(DriftActingIdentity::resolve(
         resolved_edit_authorization,
         reservations,
@@ -547,6 +548,7 @@ fn paths_from_scopes(
     })
 }
 
+/// Classify the observation under the ledger lock, refusing acquisition but not observation.
 fn transact_classification(
     context: &DriftMutationContext<'_>,
 ) -> Result<DriftReport, DriftExecutionError> {
@@ -569,14 +571,19 @@ fn transact_classification(
                     ));
                 },
             };
-            if let Err(error) = coordination_identity::validate_coordination_identity(
-                &reservations,
-                &context.identity_validation,
-            ) {
-                return ReconciliationValidation::Reject(
-                    DriftTransactionRejection::CoordinationIdentity(error),
-                );
-            }
+            let acquisition = match DriftRunValidation::resolve(context.resolved_edit_authorization)
+                .authorize_scope_acquisition(
+                    &reservations,
+                    context.worktree_context,
+                    &context.identity_validation,
+                ) {
+                Ok(acquisition) => acquisition,
+                Err(error) => {
+                    return ReconciliationValidation::Reject(
+                        DriftTransactionRejection::CoordinationIdentity(error),
+                    );
+                },
+            };
             let subjects = match context
                 .request
                 .reservation
@@ -596,11 +603,34 @@ fn transact_classification(
                 context.pre_lock_foreign_path_classification,
                 context.path_case,
                 context.observation.comparison,
+                acquisition.widening_authorization(),
             ) {
-                Ok(decision) => ReconciliationValidation::Apply {
-                    operations:             decision.operations,
-                    recoverable_operations: Vec::new(),
-                    action:                 decision.report,
+                Ok(decision) => {
+                    let mut report = decision.report;
+                    // A refused run holds nothing here, so no subject can carry its entry into
+                    // the incumbent's own scopes: the incumbent is the subject, and a
+                    // reservation never enters its own scopes. The same locked reservation set
+                    // that answered the occupancy question answers this one.
+                    if let DriftScopeAcquisition::RefusedToSecondRun { .. } = acquisition
+                        && let RefusedRunPathEntry::HoldersEntered(attribution) =
+                            classification::attribute_refused_run_entry(
+                                &reservations,
+                                &context.observation.changes,
+                                IssuingWorktreeRun {
+                                    coordination_run_id: actor_run,
+                                    worktree_id:         journal_mutation_actor.worktree_id,
+                                },
+                                context.path_case,
+                            )
+                    {
+                        report.path_attribution = attribution;
+                    }
+                    report.scope_acquisition = acquisition;
+                    ReconciliationValidation::Apply {
+                        operations:             decision.operations,
+                        recoverable_operations: Vec::new(),
+                        action:                 report,
+                    }
                 },
                 Err(error) => {
                     ReconciliationValidation::Reject(DriftTransactionRejection::Replay(error))
@@ -613,14 +643,7 @@ fn transact_classification(
         Ok(LedgerCommittedActionOutcome::Appended { output: report, .. }) => Ok(report),
         Ok(LedgerCommittedActionOutcome::Rejected(
             DriftTransactionRejection::CoordinationIdentity(error),
-        )) => match error {
-            CoordinationIdentityValidationError::Rejected(rejection) => {
-                Err(DriftExecutionError::CoordinationIdentity(rejection))
-            },
-            CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => Err(
-                DriftExecutionError::Ledger(LedgerError::InvalidCanonicalWorktreeRoot),
-            ),
-        },
+        )) => Err(error.into()),
         Ok(LedgerCommittedActionOutcome::Rejected(DriftTransactionRejection::Replay(error))) => {
             Err(DriftExecutionError::Replay(error))
         },
@@ -724,6 +747,19 @@ impl From<ClaimError> for DriftExecutionError {
     fn from(error: ClaimError) -> Self { Self::Claim(error) }
 }
 
+impl From<CoordinationIdentityValidationError> for DriftExecutionError {
+    fn from(error: CoordinationIdentityValidationError) -> Self {
+        match error {
+            CoordinationIdentityValidationError::Rejected(rejection) => {
+                Self::CoordinationIdentity(rejection)
+            },
+            CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
+                Self::Ledger(LedgerError::InvalidCanonicalWorktreeRoot)
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -743,6 +779,7 @@ mod tests {
     use super::prepare_drift_execution;
     use crate::coordination_identity::RecoveryCommandLine;
     use crate::drift::constants::DRIFT_CACHE_FILE_PREFIX;
+    use crate::drift::identity::DriftScopeAcquisition;
     use crate::drift::report::DriftComparisonMode;
     use crate::drift::report::DriftPathAttributionOutcome;
     use crate::drift::report::DriftReport;
@@ -867,9 +904,10 @@ mod tests {
         assert_eq!(
             report,
             DriftReport {
-                comparison:       DriftComparisonMode::FullPhaseStart,
-                path_attribution: DriftPathAttributionOutcome::NotNeeded,
-                results:          Vec::new(),
+                comparison:        DriftComparisonMode::FullPhaseStart,
+                path_attribution:  DriftPathAttributionOutcome::NotNeeded,
+                results:           Vec::new(),
+                scope_acquisition: DriftScopeAcquisition::Permitted,
             }
         );
         assert!(!report.has_reportable_effect());

@@ -9,6 +9,7 @@ Issue: `/home/natepiano/rust/hanadocs/issues/refuse foreign same worktree reserv
 ## Delegation Context
 
 - **Project:** `cargo-berth` — the reservation engine that stops concurrent work from occupying the same paths across git worktrees.
+- **Project started:** 2026-09-04T10:34:38-04:00
 - **Stack:** Rust, edition 2024, workspace `cargo-liner`. `serde` + `schemars` for the wire contract, `uuid` v7 for identities, `tempfile` for test repositories. Integration tests drive the built binary through `CARGO_BIN_EXE_cargo-berth`.
 - **Layout:**
   - `crates/cargo-berth/src/reservation/` — retained reservation set, holder records, foreignness partition
@@ -51,133 +52,38 @@ Issue: `/home/natepiano/rust/hanadocs/issues/refuse foreign same worktree reserv
 
 ## Phases
 
-### Phase 1 — Refuse a second coordination run in one worktree, at claim and at both hooks  · status: todo
+### Phase 1 — Refuse a second presented coordination run in one worktree, at claim and at both hooks  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** While one coordination run holds an `Active` reservation in a worktree, a second coordination run is refused a reservation there, is refused edits into the holder's scopes, and has commits into those scopes reported as incursions.
+A worktree admits one coordination run at a time. A second run that presents its own identity is refused the ability to take or widen a reservation there, at claim, at the pre-edit hook, and at the post-commit hook. The refusal governs acquisition only: observation and classification still run, so a refused run is still told what it entered and its report is still recorded.
 
-**Spec:**
+Both sides of the rule are narrow, which is why upgrading an existing repository never arrives as a lockout. A holder occupies only if its own identity was presented — `Reservation::occupies_worktree_for_another_coordination_run(coordination_run_id, worktree_id)` (`reservation/record.rs`) requires same worktree, different run, `is_active()`, and `CoordinationIdentityProvenance::Presented`; `RetainedReservationSet::active_reservation_held_by_another_run(worktree_id, coordination_run_id) -> Option<&Reservation>` returns the incumbent, not a boolean, because the rejection needs its facts. The acting side is guarded separately at three call sites, each matching an environment-supplied identity first.
 
-The defect: `AuthorizedEditingIdentity::is_foreign` (`reservation/partition.rs:70`) compares worktree identity alone, so two coordination runs in one worktree can both hold reservations over the same paths and neither `claim` nor `check` refuses. `bind_widened_scopes` already refuses this case, so the engine is internally inconsistent.
-
-Two mechanisms, because the two questions differ.
-
-**1. Worktree occupancy, at claim acquisition.**
-
-`ClaimRunValidation::validate` (`verb/claim.rs:1444`) is the one place both claim paths converge: each calls it inside the locked transaction with the replayed `RetainedReservationSet` — the first-touch path through `validate_first_touch_run` (`:1295`) and the full claim path directly (`:889`). Today its two `Independent*` variants return `Ok(())` unconditionally, which is the hole.
-
-Add the occupancy check to `ClaimRunValidation::validate` for **both** `Independent` variants:
-
-- `IndependentWithPresentedIdentity(run)` — an explicit `--run` or `CARGO_BERTH_RUN`. This is the case the issue is about.
-- `IndependentWithoutPresentedIdentity { actor_run_id }` — nothing identified the caller, so a fresh id was created. Reaching here while an `Active` reservation exists in this worktree means the worktree's `cargo-berth-run-id` slot was absent; the same refusal applies, and its `reconcile` recovery action is the repair.
-
-`ResolvedIdentityRequired` keeps its current path unchanged: a session mapping or slot already names a run, and `validate_coordination_identity` owns it.
-
-Add to `RetainedReservationSet` (`reservation/retention.rs`) a predicate returning the incumbent, not a boolean — the rejection needs its facts:
-
-```rust
-/// Return an `Active` reservation in this worktree held by a different coordination run.
-///
-/// The worktree is the coordination unit, so one run holds it at a time. `Active` only:
-/// an `Outstanding` holder has released and is awaiting integration, and blocking on it
-/// would lock a worktree out of paths its own previous session released.
-pub(crate) fn active_reservation_held_by_another_run(
-    &self,
-    worktree_id: WorktreeId,
-    coordination_run_id: CoordinationRunId,
-) -> Option<&Reservation>
-```
-
-Express the `Active` lifecycle test by reusing the eligibility predicates on `Reservation` (`reservation/record.rs:158`, `:171`) rather than re-writing `matches!(self.lifecycle, Active)` — the record doc comment states that test is written in one place. Do not add the worktree term to `is_active_for_coordination_run`; `has_other_active_reservation` depends on its cross-worktree reach.
-
-Add the rejection variant to `CoordinationIdentityRejection` (`coordination_identity.rs:359`):
-
-```rust
-/// Another coordination run already holds active work in the issuing worktree.
-WorktreeHeldByAnotherRun {
-    /// The run already holding active work here.
-    incumbent_coordination_run_id: CoordinationRunId,
-    /// The incumbent's active reservation.
-    incumbent_reservation_id:      ReservationId,
-    /// The run this command presented.
-    issuing_coordination_run_id:   CoordinationRunId,
-    /// The worktree both runs name.
-    issuing_worktree_id:           WorktreeId,
-    /// The canonical checkout both runs name.
-    issuing_root:                  CanonicalWorktreeRoot,
-    /// The executable repair when the incumbent is no longer live.
-    recovery_actions:              CoordinationIdentityRecoveryActions,
-},
-```
-
-Follow `StaleMarkerRun` (`:370`) as the model throughout — it is the closest existing shape and already resolves its `reconcile` command line through `CoordinationIdentityRecoveryCommands`. Update every match in the file:
-
-- `wire_kind` (`:406`) — `"worktree_held_by_another_run"`.
-- `reservation_ids` (`:415`) — `vec![*incumbent_reservation_id]`.
-- `rendered_recovery_actions` (`:423`) — the variant's `recovery_actions`.
-- `Display` (`:437`) — name the incumbent run and reservation, the issuing root, and what to do. Model the wording on the `StaleMarkerRun` arm: state the situation, then `Run {}` with the rendered recovery, then that the correct move is a separate checkout, then that no state changed. The recovery action is `CoordinationIdentityRecoveryAction::ReconcileAndSweepMarker` (`:218`), which is the repair when the incumbent is gone rather than live.
-
-Thread it out through the existing rejection plumbing: `FirstTouchClaimRejection::CoordinationIdentity` (`verb/claim.rs:500`) and `ClaimRejection`'s equivalent already carry a `CoordinationIdentityRejection`, and `verb/check.rs` already surfaces one through `CheckDecisionError::CoordinationIdentity` (`:55`) into `OutputEnvelope::coordination_identity_rejected`. No new output shape.
-
-The rejection is a published wire subject, so regenerate `docs/cargo-berth/generated/output-contract.json`. `crates/cargo-berth/tests/output_contract.rs` compares the checked-in artifact against generation and will fail until it is regenerated.
-
-**2. Run-aware foreignness, at the two hook sites.**
-
-The occupancy refusal prevents the situation from forming; it does not stop a writer. The pre-edit hook never asks whether the writer holds a reservation, only whether the path belongs to another worktree, so a refusal at claim time and nothing at write time leaves the board reading as protective when it is not. Give the two hook sites the same rule, for situations that formed anyway — a reservation acquired before this change shipped, an explicit run that never claimed, or a recorded bypass.
-
-`AuthorizedEditingIdentity::is_foreign` (`partition.rs:70`) becomes: a holder is foreign when it belongs to a different worktree, **or** when it belongs to this worktree, is `Active`, and belongs to a different coordination run. `Unidentified` stays foreign to everything. Rewrite the doc comment at `:64` — it currently records the removal of the run term as settled and must state the narrower rule and why `Outstanding` is excluded.
-
-`AuthorizedEditingIdentity`'s identified variants already carry `coordination_run_id`, so no signature changes there.
-
-The same term goes into the drift predicates in `retention.rs`:
-
-- `conflicts_for_drift` (`:163`) and `blocking_coverage_for_drift` (`:175`) currently close over `holder.actor.worktree != acting_worktree_id`. They need the acting run as well, and `blocking_coverage_for_drift`'s `SameIdentity` probe (`:181`) needs the matching inverse — same worktree and either the same run or a non-`Active` holder.
-- The one caller is `drift/classification.rs:407`, which passes `subject.actor().worktree` and has `subject.actor().run` available on the same value.
-
-Leave `conflicts_for_claim` (`:151`) alone: the occupancy refusal fires before it in both claim paths, so a run term there is unreachable.
-
-**Test rewrites this forces.**
-
-`post_commit_treats_only_another_worktree_as_foreign` (`tests/drift.rs:1552`) exists to assert the behavior being reversed, and its `claim(repository.path(), "file:subject.txt", SECOND_RUN)` (`:1555`) is refused once the occupancy gate lands — the file's `claim` helper (`:3037`) asserts success, so the test panics rather than failing an assertion. Restructure it:
-
-- Rename to state the new rule.
-- The second run no longer claims. It commits into the holder's scopes with no reservation of its own, and the assertion flips: an incursion **is** raised, naming the holder's reservation id in `foreign_reservation_ids`.
-- Keep the genuinely-foreign-worktree half (`:1573` onward) exactly as it is.
-
-Nothing else needs a new fixture: `foreign_worktree` is a per-file local helper for real `git worktree add` cases, and the same-worktree two-run case is already expressible through the existing `claim(root, scope, run)` helpers with distinct run constants.
+The refusal is `CoordinationIdentityRejection::WorktreeHeldByAnotherRun`, carrying `CoordinationIdentityRecoveryAction::ReleaseIncumbentReservation`, and it names two remedies: a runnable command that releases the incumbent, and a separate checkout when the incumbent is still working. On the drift path it travels as a two-state value on the report, `DriftScopeAcquisition::{Permitted, RefusedToSecondRun { rejection }}` (`drift/identity.rs`), so one envelope carries both the refusal and the drift outcome rather than an early error cutting the report short. A refused run is told what its own invocation wrote and never what the incumbent committed itself, including when its own commit is a merge or the repository's first commit.
 
 **Files:**
-- `crates/cargo-berth/src/reservation/partition.rs` — `is_foreign` gains the `Active`-only run term; its doc comment is rewritten; `identifies_requester` untouched
-- `crates/cargo-berth/src/reservation/retention.rs` — new `active_reservation_held_by_another_run`; `conflicts_for_drift` and `blocking_coverage_for_drift` gain the acting run
-- `crates/cargo-berth/src/reservation/record.rs` — reuse or extend the eligibility predicates so the `Active` test stays in one place
-- `crates/cargo-berth/src/drift/classification.rs` — pass the acting run at `:407`
-- `crates/cargo-berth/src/coordination_identity.rs` — the `WorktreeHeldByAnotherRun` variant and its four matches
-- `crates/cargo-berth/src/verb/claim.rs` — the occupancy check in `ClaimRunValidation::validate` for both `Independent` variants
-- `crates/cargo-berth/src/verb/check.rs` — confirm the new rejection reaches output unchanged; no edit expected
-- `crates/cargo-berth/src/output_contract.rs` — the new variant reaches the published schema
-- `docs/cargo-berth/generated/output-contract.json` — regenerated
-- `crates/cargo-berth/tests/lifecycle.rs` — claim and check refusal tests, the `Outstanding` regression guard, the adopted-run guard
-- `crates/cargo-berth/tests/drift.rs` — restructure `post_commit_treats_only_another_worktree_as_foreign`
-- `crates/cargo-berth/tests/hooks.rs` — pre-edit refusal test
+- `crates/cargo-berth/src/reservation/record.rs` — the occupancy predicate and the recorded identity provenance it reads
+- `crates/cargo-berth/src/reservation/retention.rs` — `active_reservation_held_by_another_run`; the drift predicates carry the acting run
+- `crates/cargo-berth/src/coordination_identity.rs` — `CoordinationIdentityProvenance`, the rejection, and the release remedy it names
+- `crates/cargo-berth/src/drift/identity.rs`, `verb/claim.rs`, `verb/check.rs` — the three sites deciding whether the rule is asked
+- `crates/cargo-berth/src/drift/execution.rs`, `classification.rs`, `observation.rs` — where the refusal is decided, what it withholds, and what a refused run can be told it wrote
+- `crates/cargo-berth/src/git/paths.rs`, `git/constants.rs`, `drift/git_output.rs` — one batched committed-history read answering both the incumbent's ranges and the newcomer's own commit
+- `crates/cargo-berth/src/output.rs` — a refusal is presented as its own block, with no suggestion to re-run a command this rule would refuse
+- `crates/cargo-berth/tests/drift.rs`, `tests/hooks.rs` — the acceptance cases
+- `docs/cargo-berth/generated/output-contract.json` — the published payload gained the refusal
 
-**Seats:** 2 writers + 1 tester — split by mechanism: the rejection and its claim-side wiring, versus the foreignness predicates and their drift call site.
-- `impl` — `src/coordination_identity.rs`, `src/verb/claim.rs`, `src/verb/check.rs`, `src/output_contract.rs`, `docs/cargo-berth/generated/output-contract.json`; hub: `src/coordination_identity.rs` (the rejection variant every other seat's behavior is described against)
-- `review` — opens as impl: `src/reservation/partition.rs`, `src/reservation/record.rs`, `src/drift/classification.rs`; hub: `src/reservation/retention.rs` (holds both the occupancy predicate `impl` calls and the drift predicates this seat edits — `impl` messages this owner for the predicate signature)
-- `test` — `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/hooks.rs`; the Spec fixes the refusal's wire kind, the run constants, and which helper returns `Output`, so every case below is writable before the implementation lands
+**Gotchas:**
+- A commit range is not an authorship record. The incumbent's own commits sit inside `phase_start..HEAD`, so attributing the range to whoever runs next accuses the wrong party — and the accusation carries a blocking exit code, making it a wrong decision rather than a wrong message.
+- `git diff-tree --stdin` accepts a lone commit line beside its pair lines and prefixes that record with the commit's own id. That is what lets one invocation answer two questions and holds the pinned process budgets where they are; keep the budget assertions rather than relax them.
+- An anchor already standing at the target is dropped from the pair lines. The caller supplies that empty range itself, and the same line carries the target's own diff out — the subtlest line in the change.
+- A live session mapping outranks the run-identity environment variable, so a caller inside a mapped session cannot present a second run and the rule is never asked for it. The refusal depends on this and nothing in the code states it.
+- `OutputStatus::InvalidInput` now means two things: a request that never ran, and a run that completed a report and was refused only its acquisition. The presented text distinguishes them; the status does not.
+- `CoordinationIdentityProvenance` is durable in the journal but read only on the holder's side. The acting side is guarded separately at each of the three call sites, so the rule's two terms live apart and a fourth call site added without that guard applies the rule to one side only.
 
-**Constraints from prior phases:** none — first phase.
+**Ruled out:**
+- Refusing a run that presents no identity at all — it would refuse the engine's own markerless first touch, which reaches the same validation.
+- A second git process to read the newcomer's own commit — batched onto the existing invocation instead, keeping the budget guards in place.
+- A new output status for the completed-but-refused run during this phase, because it regenerates the published contract; carried as a next item instead.
+- Threading the acting side's provenance into the occupancy predicate — unreachable today, and it crosses the whole foreignness surface.
 
-**Acceptance gate:**
-
-- `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth` green
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green
-- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green
-- With two distinct run ids in one worktree, the second run's `claim` is refused with wire kind `worktree_held_by_another_run`, naming the incumbent run id, the incumbent reservation id, the issuing root, and a runnable `reconcile` recovery action
-- `check` from the second run is refused the same way
-- The pre-edit hook refuses the second run's edit into the incumbent's scopes
-- A commit by the second run into the incumbent's scopes is reported as an incursion naming the incumbent's reservation id in `foreign_reservation_ids`
-- An `Outstanding` same-worktree holder belonging to a different run blocks nothing: a new run claims, checks, edits, and commits over those paths without refusal or incursion
-- A second harness session in the same checkout with no explicit run adopts the incumbent run and is refused nothing
-- `crates/cargo-berth/tests/output_contract.rs` green against the regenerated artifact
-- Every existing cross-worktree test unchanged and green, including the second half of the restructured `tests/drift.rs` test

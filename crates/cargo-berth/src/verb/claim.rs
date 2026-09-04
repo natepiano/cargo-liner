@@ -25,6 +25,7 @@ use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::config::Enrollment;
 use crate::coordination_identity;
+use crate::coordination_identity::CoordinationIdentityProvenance;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
@@ -166,15 +167,16 @@ enum FilesystemReferenceResolution {
 }
 
 struct PreparedClaim {
-    reservation_id:                  ReservationId,
-    scopes:                          ReservationScopeSet,
-    source:                          ClaimSource,
-    purpose:                         ReservationPurpose,
-    trunk_at_claim:                  TrunkObservationAtClaim,
-    head_snapshot:                   ClaimHeadSnapshot,
-    phase_start_head:                ProtectedPhaseStartHead,
-    worktree_root:                   CanonicalWorktreeRoot,
-    worktree_administrative_locator: WorktreeAdministrativeLocator,
+    reservation_id:                   ReservationId,
+    scopes:                           ReservationScopeSet,
+    source:                           ClaimSource,
+    purpose:                          ReservationPurpose,
+    trunk_at_claim:                   TrunkObservationAtClaim,
+    head_snapshot:                    ClaimHeadSnapshot,
+    phase_start_head:                 ProtectedPhaseStartHead,
+    worktree_root:                    CanonicalWorktreeRoot,
+    worktree_administrative_locator:  WorktreeAdministrativeLocator,
+    coordination_identity_provenance: CoordinationIdentityProvenance,
 }
 
 struct ClaimValidationContext {
@@ -563,6 +565,7 @@ fn acquire(
         phase_start_head,
         worktree_root: claim_repository_facts.worktree_root,
         worktree_administrative_locator: worktree_context.administrative_locator().clone(),
+        coordination_identity_provenance: claim_run_validation.coordination_identity_provenance(),
     };
     let requester = OverlapRequester::new(
         claim_run_validation.presented_coordination_identity(),
@@ -664,6 +667,7 @@ fn acquire_first_touch_with_reservation_selection(
         phase_start_head,
         worktree_root: repository_facts.worktree_root,
         worktree_administrative_locator: worktree_context.administrative_locator().clone(),
+        coordination_identity_provenance: run_validation.coordination_identity_provenance(),
     };
     let execution = ledger.transact_with_committed_action_and_consume_locked_outcome(
         journal_mutation_actor.worktree_id,
@@ -886,9 +890,12 @@ fn validate_claim_transaction(
         Ok(reservations) => reservations,
         Err(error) => return TransactionValidation::Reject(ClaimRejection::Replay(error)),
     };
-    if let Err(error) =
-        run_validation.validate(&reservations, &worktree_context, &recovery_command_line)
-    {
+    if let Err(error) = run_validation.validate(
+        &reservations,
+        &worktree_context,
+        worktree_id,
+        &recovery_command_line,
+    ) {
         return TransactionValidation::Reject(ClaimRejection::from(error));
     }
     if count_reaches_limit(reservations.nonterminal_count(), maximum_reservations) {
@@ -950,6 +957,7 @@ fn validate_first_touch_transaction(
         run_validation,
         &reservations,
         &worktree_context,
+        worktree_id,
         &recovery_command_line,
     ) {
         return CommittedActionValidation::Reject(rejection);
@@ -1296,9 +1304,15 @@ fn validate_first_touch_run(
     run_validation: ClaimRunValidation,
     reservations: &RetainedReservationSet,
     worktree_context: &WorktreeContext,
+    worktree_id: WorktreeId,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<(), FirstTouchClaimRejection> {
-    match run_validation.validate(reservations, worktree_context, recovery_command_line) {
+    match run_validation.validate(
+        reservations,
+        worktree_context,
+        worktree_id,
+        recovery_command_line,
+    ) {
         Ok(()) => Ok(()),
         Err(ClaimRunValidationError::CoordinationIdentity(rejection)) => {
             Err(FirstTouchClaimRejection::CoordinationIdentity(rejection))
@@ -1379,6 +1393,7 @@ impl PreparedClaim {
             worktree_root: self.worktree_root,
             worktree_administrative_locator: self.worktree_administrative_locator,
             authorization,
+            coordination_identity_provenance: self.coordination_identity_provenance,
         }
     }
 }
@@ -1441,15 +1456,52 @@ impl ClaimRunValidation {
         }
     }
 
+    /// Record whether the caller presented the coordination identity this claim carries.
+    ///
+    /// Derived from [`Self::presented_coordination_identity`] so the requester answer and the
+    /// stored incumbent fact can never disagree. [`CoordinationIdentityProvenance::Unknown`] is
+    /// unreachable here: it exists only for claims written before the fact was recorded.
+    const fn coordination_identity_provenance(self) -> CoordinationIdentityProvenance {
+        match self.presented_coordination_identity() {
+            RequesterCoordinationIdentity::Presented(_) => {
+                CoordinationIdentityProvenance::Presented
+            },
+            RequesterCoordinationIdentity::NotPresented => {
+                CoordinationIdentityProvenance::NotPresented
+            },
+        }
+    }
+
+    /// Refuse a run that cannot take work in this worktree under locked reservation state.
+    ///
+    /// The occupancy refusal is between two *presented* coordination runs, and only a caller
+    /// that presented one can reach it. A caller that presented nothing had its run created by
+    /// this process to stand in for an unknown caller, which is not a coordination run and has
+    /// no second run to be: refusing it would refuse the engine's own markerless post-commit
+    /// work. A caller whose identity resolved from a session mapping or a worktree marker is
+    /// answered by [`coordination_identity::validate_coordination_identity`] instead, which
+    /// owns the staleness questions those sources raise.
+    ///
+    /// The matching question about the *incumbent* is asked by
+    /// [`coordination_identity::validate_worktree_occupancy`].
     fn validate(
         self,
         reservations: &RetainedReservationSet,
         worktree_context: &WorktreeContext,
+        worktree_id: WorktreeId,
         recovery_command_line: &RecoveryCommandLine,
     ) -> Result<(), ClaimRunValidationError> {
         match self {
-            Self::IndependentWithPresentedIdentity(_)
-            | Self::IndependentWithoutPresentedIdentity { .. } => Ok(()),
+            Self::IndependentWithPresentedIdentity(actor_run_id) => {
+                coordination_identity::validate_worktree_occupancy(
+                    reservations,
+                    worktree_context,
+                    worktree_id,
+                    actor_run_id,
+                )
+                .map_err(ClaimRunValidationError::from)
+            },
+            Self::IndependentWithoutPresentedIdentity { .. } => Ok(()),
             Self::ResolvedIdentityRequired(resolved_edit_authorization) => {
                 let identity_validation = CoordinationIdentityValidationContext::for_user_command(
                     resolved_edit_authorization,

@@ -20,25 +20,37 @@ use super::constants::GIT_NO_RENAMES_ARG;
 use super::constants::GIT_NUL_TERMINATED_ARG;
 use super::constants::GIT_PATHSPEC_SEPARATOR;
 use super::constants::GIT_RECURSIVE_ARG;
+use super::constants::GIT_ROOT_ARG;
 use super::constants::GIT_STDIN_ARG;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 
-/// Compare every readable phase start with one target in a single git invocation.
+/// Compare every readable phase start with one target, and read what the target itself
+/// introduced, in a single git invocation.
 ///
 /// `diff-tree --stdin` prefixes every non-empty result with the first supplied
-/// object, so each input line starts with its distinct phase-start anchor. Empty
-/// comparisons emit no record and remain distinguishable because callers
-/// initialize every requested anchor before parsing the output.
+/// object, so each pair line starts with its distinct phase-start anchor and the
+/// lone target line starts with the target. Empty comparisons emit no record and
+/// remain distinguishable because callers initialize every requested anchor before
+/// parsing the output.
+///
+/// An anchor already standing at the target is dropped rather than compared with
+/// itself: that comparison is empty by construction, and asking it would key two
+/// different questions to one object. The record under the target is always the
+/// target's own diff, so a caller that anchors there supplies the empty range itself.
 pub(crate) fn phase_committed_path_diffs(
     repository_root: &Path,
     anchors: &[GitObjectId],
     target: &GitObjectId,
 ) -> GitCommandOutputAvailability {
-    let input = anchors.iter().fold(String::new(), |mut input, anchor| {
-        let _ = writeln!(input, "{anchor} {target}");
-        input
-    });
+    let mut input = anchors.iter().filter(|anchor| *anchor != target).fold(
+        String::new(),
+        |mut input, anchor| {
+            let _ = writeln!(input, "{anchor} {target}");
+            input
+        },
+    );
+    let _ = writeln!(input, "{target}");
     let arguments = [
         GIT_DIFF_TREE_COMMAND.to_owned(),
         GIT_STDIN_ARG.to_owned(),
@@ -46,6 +58,8 @@ pub(crate) fn phase_committed_path_diffs(
         GIT_NAME_STATUS_ARG.to_owned(),
         GIT_NUL_TERMINATED_ARG.to_owned(),
         GIT_NO_RENAMES_ARG.to_owned(),
+        GIT_DENSE_COMBINED_ARG.to_owned(),
+        GIT_ROOT_ARG.to_owned(),
     ];
     command::git_output_dynamic_with_input(repository_root, &arguments, input.as_bytes()).into()
 }

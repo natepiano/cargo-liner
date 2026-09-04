@@ -20,6 +20,7 @@ use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapAuthorizationReason;
 use crate::answer::OverlapScopeRevision;
 use crate::config::Enrollment;
+use crate::coordination_identity::CoordinationIdentityProvenance;
 use crate::ids::CoordinationRunId;
 use crate::ids::EdgeId;
 use crate::ids::GitObjectId;
@@ -215,6 +216,7 @@ impl BoardFixture {
                 worktree_root: actor.worktree_root.clone(),
                 worktree_administrative_locator: actor.worktree_administrative_locator.clone(),
                 authorization,
+                coordination_identity_provenance: CoordinationIdentityProvenance::Presented,
             },
         )?;
         Ok(ReservationClaimFixture {

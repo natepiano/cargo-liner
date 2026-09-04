@@ -87,6 +87,29 @@
               "type": "object"
             },
             {
+              "description": "Release the incumbent reservation occupying the issuing worktree.",
+              "properties": {
+                "argv": {
+                  "$ref": "#/$defs/runnable_recovery_argv",
+                  "description": "The complete recovery command."
+                },
+                "cwd": {
+                  "$ref": "#/$defs/canonical_worktree_root",
+                  "description": "The canonical incumbent worktree in which to run the command."
+                },
+                "kind": {
+                  "const": "release_incumbent_reservation",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "argv",
+                "cwd"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Remove the foreign session mapping before starting independent work here.",
               "properties": {
                 "argv": {
@@ -234,6 +257,49 @@
           "required": [
             "kind",
             "coordination_run_id",
+            "issuing_worktree_id",
+            "issuing_root",
+            "recovery_actions"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Another coordination run already holds active work in the issuing worktree.",
+          "properties": {
+            "incumbent_coordination_run_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The run already holding active work here."
+            },
+            "incumbent_reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The incumbent's active reservation."
+            },
+            "issuing_coordination_run_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The run this command presented."
+            },
+            "issuing_root": {
+              "$ref": "#/$defs/canonical_worktree_root",
+              "description": "The canonical checkout both runs name."
+            },
+            "issuing_worktree_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The worktree both runs name."
+            },
+            "kind": {
+              "const": "worktree_held_by_another_run",
+              "type": "string"
+            },
+            "recovery_actions": {
+              "$ref": "#/$defs/coordination_identity_recovery_actions",
+              "description": "The executable repair that ends the incumbent's occupancy of this worktree."
+            }
+          },
+          "required": [
+            "kind",
+            "incumbent_coordination_run_id",
+            "incumbent_reservation_id",
+            "issuing_coordination_run_id",
             "issuing_worktree_id",
             "issuing_root",
             "recovery_actions"
@@ -1144,6 +1210,29 @@
               "type": "object"
             },
             {
+              "description": "Release the incumbent reservation occupying the issuing worktree.",
+              "properties": {
+                "argv": {
+                  "$ref": "#/$defs/runnable_recovery_argv",
+                  "description": "The complete recovery command."
+                },
+                "cwd": {
+                  "$ref": "#/$defs/canonical_worktree_root",
+                  "description": "The canonical incumbent worktree in which to run the command."
+                },
+                "kind": {
+                  "const": "release_incumbent_reservation",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "argv",
+                "cwd"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Remove the foreign session mapping before starting independent work here.",
               "properties": {
                 "argv": {
@@ -1234,6 +1323,49 @@
               "required": [
                 "kind",
                 "coordination_run_id",
+                "issuing_worktree_id",
+                "issuing_root",
+                "recovery_actions"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Another coordination run already holds active work in the issuing worktree.",
+              "properties": {
+                "incumbent_coordination_run_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The run already holding active work here."
+                },
+                "incumbent_reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The incumbent's active reservation."
+                },
+                "issuing_coordination_run_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The run this command presented."
+                },
+                "issuing_root": {
+                  "$ref": "#/$defs/canonical_worktree_root",
+                  "description": "The canonical checkout both runs name."
+                },
+                "issuing_worktree_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The worktree both runs name."
+                },
+                "kind": {
+                  "const": "worktree_held_by_another_run",
+                  "type": "string"
+                },
+                "recovery_actions": {
+                  "$ref": "#/$defs/coordination_identity_recovery_actions",
+                  "description": "The executable repair that ends the incumbent's occupancy of this worktree."
+                }
+              },
+              "required": [
+                "kind",
+                "incumbent_coordination_run_id",
+                "incumbent_reservation_id",
+                "issuing_coordination_run_id",
                 "issuing_worktree_id",
                 "issuing_root",
                 "recovery_actions"
@@ -3172,6 +3304,10 @@
               },
               "type": "array"
             },
+            "scope_acquisition": {
+              "$ref": "#/$defs/drift_scope_acquisition",
+              "description": "Whether this invocation may still take or widen scopes in this worktree.\n\nObservation and classification never depended on this answer, so the report carries it\nbeside them rather than in place of them: a refused run's report still states every\nconsequence the commit had, and states the refusal too."
+            },
             "widening": {
               "$ref": "#/$defs/DriftPathAttributionOutcome",
               "description": "How paths outside the acting run's reservations were attributed."
@@ -3180,7 +3316,8 @@
           "required": [
             "comparison",
             "widening",
-            "results"
+            "results",
+            "scope_acquisition"
           ],
           "type": "object"
         },
@@ -6016,6 +6153,29 @@
               "type": "object"
             },
             {
+              "description": "Release the incumbent reservation occupying the issuing worktree.",
+              "properties": {
+                "argv": {
+                  "$ref": "#/$defs/runnable_recovery_argv",
+                  "description": "The complete recovery command."
+                },
+                "cwd": {
+                  "$ref": "#/$defs/canonical_worktree_root",
+                  "description": "The canonical incumbent worktree in which to run the command."
+                },
+                "kind": {
+                  "const": "release_incumbent_reservation",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "argv",
+                "cwd"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Remove the foreign session mapping before starting independent work here.",
               "properties": {
                 "argv": {
@@ -6106,6 +6266,49 @@
               "required": [
                 "kind",
                 "coordination_run_id",
+                "issuing_worktree_id",
+                "issuing_root",
+                "recovery_actions"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Another coordination run already holds active work in the issuing worktree.",
+              "properties": {
+                "incumbent_coordination_run_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The run already holding active work here."
+                },
+                "incumbent_reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The incumbent's active reservation."
+                },
+                "issuing_coordination_run_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The run this command presented."
+                },
+                "issuing_root": {
+                  "$ref": "#/$defs/canonical_worktree_root",
+                  "description": "The canonical checkout both runs name."
+                },
+                "issuing_worktree_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The worktree both runs name."
+                },
+                "kind": {
+                  "const": "worktree_held_by_another_run",
+                  "type": "string"
+                },
+                "recovery_actions": {
+                  "$ref": "#/$defs/coordination_identity_recovery_actions",
+                  "description": "The executable repair that ends the incumbent's occupancy of this worktree."
+                }
+              },
+              "required": [
+                "kind",
+                "incumbent_coordination_run_id",
+                "incumbent_reservation_id",
+                "issuing_coordination_run_id",
                 "issuing_worktree_id",
                 "issuing_root",
                 "recovery_actions"
@@ -6261,6 +6464,42 @@
               "required": [
                 "status",
                 "diagnostic"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "drift_scope_acquisition": {
+          "description": "Whether this drift invocation may take or widen reservation scopes in this worktree.\n\nThis travels on [`super::report::DriftReport`] rather than replacing it: a refusal that\ndisplaced the report would downgrade an incursion the caller must act on into a rejection\nthat reads as \"nothing happened\". One envelope states both, so the refusal is carried as a\nvalue the report owns.",
+          "oneOf": [
+            {
+              "description": "No other presented coordination run occupies this worktree, so widening and the\npost-write first touch may proceed.",
+              "properties": {
+                "status": {
+                  "const": "permitted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A second presented coordination run may not take scopes in a worktree another\npresented run already occupies, and a separate checkout is the remedy. Observation and\nclassification still ran, so every incursion this commit made into a foreign holder is\nrecorded; only the acquisition is withheld.",
+              "properties": {
+                "rejection": {
+                  "$ref": "#/$defs/coordination_identity_rejection",
+                  "description": "The refusal, named for the caller in the words the identity rule chose."
+                },
+                "status": {
+                  "const": "refused_to_second_run",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "rejection"
               ],
               "type": "object"
             }
@@ -9871,6 +10110,10 @@
               },
               "type": "array"
             },
+            "scope_acquisition": {
+              "$ref": "#/$defs/drift_scope_acquisition",
+              "description": "Whether this invocation may still take or widen scopes in this worktree.\n\nObservation and classification never depended on this answer, so the report carries it\nbeside them rather than in place of them: a refused run's report still states every\nconsequence the commit had, and states the refusal too."
+            },
             "widening": {
               "$ref": "#/$defs/DriftPathAttributionOutcome",
               "description": "How paths outside the acting run's reservations were attributed."
@@ -9879,7 +10122,8 @@
           "required": [
             "comparison",
             "widening",
-            "results"
+            "results",
+            "scope_acquisition"
           ],
           "type": "object"
         },
@@ -12516,6 +12760,29 @@
               "type": "object"
             },
             {
+              "description": "Release the incumbent reservation occupying the issuing worktree.",
+              "properties": {
+                "argv": {
+                  "$ref": "#/$defs/runnable_recovery_argv",
+                  "description": "The complete recovery command."
+                },
+                "cwd": {
+                  "$ref": "#/$defs/canonical_worktree_root",
+                  "description": "The canonical incumbent worktree in which to run the command."
+                },
+                "kind": {
+                  "const": "release_incumbent_reservation",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "argv",
+                "cwd"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Remove the foreign session mapping before starting independent work here.",
               "properties": {
                 "argv": {
@@ -12606,6 +12873,49 @@
               "required": [
                 "kind",
                 "coordination_run_id",
+                "issuing_worktree_id",
+                "issuing_root",
+                "recovery_actions"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Another coordination run already holds active work in the issuing worktree.",
+              "properties": {
+                "incumbent_coordination_run_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The run already holding active work here."
+                },
+                "incumbent_reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The incumbent's active reservation."
+                },
+                "issuing_coordination_run_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The run this command presented."
+                },
+                "issuing_root": {
+                  "$ref": "#/$defs/canonical_worktree_root",
+                  "description": "The canonical checkout both runs name."
+                },
+                "issuing_worktree_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The worktree both runs name."
+                },
+                "kind": {
+                  "const": "worktree_held_by_another_run",
+                  "type": "string"
+                },
+                "recovery_actions": {
+                  "$ref": "#/$defs/coordination_identity_recovery_actions",
+                  "description": "The executable repair that ends the incumbent's occupancy of this worktree."
+                }
+              },
+              "required": [
+                "kind",
+                "incumbent_coordination_run_id",
+                "incumbent_reservation_id",
+                "issuing_coordination_run_id",
                 "issuing_worktree_id",
                 "issuing_root",
                 "recovery_actions"
@@ -12761,6 +13071,42 @@
               "required": [
                 "status",
                 "diagnostic"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "drift_scope_acquisition": {
+          "description": "Whether this drift invocation may take or widen reservation scopes in this worktree.\n\nThis travels on [`super::report::DriftReport`] rather than replacing it: a refusal that\ndisplaced the report would downgrade an incursion the caller must act on into a rejection\nthat reads as \"nothing happened\". One envelope states both, so the refusal is carried as a\nvalue the report owns.",
+          "oneOf": [
+            {
+              "description": "No other presented coordination run occupies this worktree, so widening and the\npost-write first touch may proceed.",
+              "properties": {
+                "status": {
+                  "const": "permitted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A second presented coordination run may not take scopes in a worktree another\npresented run already occupies, and a separate checkout is the remedy. Observation and\nclassification still ran, so every incursion this commit made into a foreign holder is\nrecorded; only the acquisition is withheld.",
+              "properties": {
+                "rejection": {
+                  "$ref": "#/$defs/coordination_identity_rejection",
+                  "description": "The refusal, named for the caller in the words the identity rule chose."
+                },
+                "status": {
+                  "const": "refused_to_second_run",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "rejection"
               ],
               "type": "object"
             }

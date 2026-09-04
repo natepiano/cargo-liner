@@ -10,6 +10,7 @@ use std::fmt::Formatter;
 
 use super::lifecycle::LifecycleTransitionError;
 use crate::answer::ConflictAuthorization;
+use crate::coordination_identity::CoordinationIdentityProvenance;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ledger::CanonicalWorktreeRoot;
@@ -26,18 +27,20 @@ use crate::scope::ReservationScopeSet;
 /// Borrowed fields from one replayed claim event.
 #[derive(Clone, Copy)]
 pub(super) struct ReplayedClaim<'event> {
-    pub(super) id:               ReservationId,
-    pub(super) scopes:           &'event ReservationScopeSet,
-    pub(super) source:           &'event ClaimSource,
-    pub(super) purpose:          &'event ReservationPurpose,
-    pub(super) trunk_at_claim:   &'event TrunkObservationAtClaim,
-    pub(super) head_snapshot:    &'event ClaimHeadSnapshot,
-    pub(super) phase_start_head: &'event ProtectedPhaseStartHead,
-    pub(super) actor:            &'event JournalActor,
-    pub(super) worktree_root:    &'event CanonicalWorktreeRoot,
-    pub(super) worktree_locator: &'event WorktreeAdministrativeLocator,
-    pub(super) authorization:    &'event ConflictAuthorization,
-    pub(super) recorded_at:      &'event RecordedAt,
+    pub(super) id:                               ReservationId,
+    pub(super) scopes:                           &'event ReservationScopeSet,
+    pub(super) source:                           &'event ClaimSource,
+    pub(super) purpose:                          &'event ReservationPurpose,
+    pub(super) trunk_at_claim:                   &'event TrunkObservationAtClaim,
+    pub(super) head_snapshot:                    &'event ClaimHeadSnapshot,
+    pub(super) phase_start_head:                 &'event ProtectedPhaseStartHead,
+    pub(super) actor:                            &'event JournalActor,
+    pub(super) worktree_root:                    &'event CanonicalWorktreeRoot,
+    pub(super) worktree_locator:                 &'event WorktreeAdministrativeLocator,
+    pub(super) authorization:                    &'event ConflictAuthorization,
+    pub(super) recorded_at:                      &'event RecordedAt,
+    /// Whether a caller presented the coordination identity this claim was made under.
+    pub(super) coordination_identity_provenance: CoordinationIdentityProvenance,
 }
 
 /// A journal sequence that cannot represent valid reservation state.

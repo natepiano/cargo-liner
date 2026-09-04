@@ -159,34 +159,55 @@ impl RetainedReservationSet {
         })
     }
 
-    /// Evaluate changed paths against edit-blocking reservations of another worktree.
+    /// Evaluate changed paths against edit-blocking reservations foreign to the acting
+    /// identity.
+    ///
+    /// Foreign is another worktree, or this worktree while another run's active reservation
+    /// occupies it, exactly as the pre-edit hook decides it.
     fn conflicts_for_drift(
         &self,
         candidate: &ReservationScopeSet,
         acting_worktree_id: WorktreeId,
+        acting_coordination_run_id: CoordinationRunId,
         path_case: PathCase,
     ) -> Vec<ReservationConflict> {
         self.conflicts(candidate, path_case, |holder| {
-            holder.actor.worktree != acting_worktree_id
+            holder.is_foreign_to_coordination_run_in_worktree(
+                acting_coordination_run_id,
+                acting_worktree_id,
+            )
         })
     }
 
     /// Classify all blocking coverage of one changed path in drift-table order.
+    ///
+    /// The `SameIdentity` probe is the exact inverse of the foreignness the conflict pass
+    /// applies: the acting worktree, holding either the acting run's work or work no longer
+    /// `Active`.
     pub(crate) fn blocking_coverage_for_drift(
         &self,
         candidate: &ReservationScopeSet,
         acting_worktree_id: WorktreeId,
+        acting_coordination_run_id: CoordinationRunId,
         path_case: PathCase,
     ) -> DriftBlockingCoverage {
         if !self
             .conflicts_with_holders(candidate, path_case, |holder| {
-                holder.actor.worktree == acting_worktree_id
+                !holder.is_foreign_to_coordination_run_in_worktree(
+                    acting_coordination_run_id,
+                    acting_worktree_id,
+                )
             })
             .is_empty()
         {
             return DriftBlockingCoverage::SameIdentity;
         }
-        let conflicts = self.conflicts_for_drift(candidate, acting_worktree_id, path_case);
+        let conflicts = self.conflicts_for_drift(
+            candidate,
+            acting_worktree_id,
+            acting_coordination_run_id,
+            path_case,
+        );
         if conflicts.is_empty() {
             DriftBlockingCoverage::Unclaimed
         } else {
@@ -195,6 +216,12 @@ impl RetainedReservationSet {
     }
 
     /// Re-run exact overlap binding against one reservation's complete widened scope set.
+    ///
+    /// Foreignness is [`Reservation::is_foreign_to_coordination_run_in_worktree`], the same
+    /// predicate the pre-edit hook, the drift conflict pass, and the drift coverage probe ask.
+    /// Widening once tested the run and the worktree by hand, with no lifecycle and no
+    /// provenance term, and so demanded an answer for a same-worktree holder the hook had
+    /// already decided this identity may edit.
     pub(crate) fn bind_widened_scopes(
         &self,
         subject: &Reservation,
@@ -208,7 +235,10 @@ impl RetainedReservationSet {
             |scopes| scopes.minimal_antichain(path_case),
         );
         let conflicts = self.conflicts_with_holders(&complete_scopes, path_case, |holder| {
-            holder.actor.run != subject.actor.run || holder.actor.worktree != subject.actor.worktree
+            holder.is_foreign_to_coordination_run_in_worktree(
+                subject.actor.run,
+                subject.actor.worktree,
+            )
         });
         let blocked = conflicts
             .iter()
@@ -478,6 +508,28 @@ impl RetainedReservationSet {
         self.incursion_incidents.iter()
     }
 
+    /// Return the reservation whose run occupies this worktree, when another run occupies it.
+    ///
+    /// The worktree is the coordination unit, so one run holds it at a time. Two terms narrow
+    /// which holder counts as the occupant, and both live in
+    /// [`Reservation::occupies_worktree_for_another_coordination_run`] rather than here.
+    /// `Active` only: an `Outstanding` holder has released and is awaiting integration, and
+    /// blocking on it would lock a worktree out of paths its own previous session released.
+    /// [`Presented`](crate::coordination_identity::CoordinationIdentityProvenance::Presented)
+    /// only: occupancy is a rule between two
+    /// coordination identities a caller presented, so a holder claimed under an identity this
+    /// engine created for itself, and one predating the record, both decline to occupy.
+    pub(crate) fn active_reservation_held_by_another_run(
+        &self,
+        worktree_id: WorktreeId,
+        coordination_run_id: CoordinationRunId,
+    ) -> Option<&Reservation> {
+        self.reservations.iter().find(|reservation| {
+            reservation
+                .occupies_worktree_for_another_coordination_run(coordination_run_id, worktree_id)
+        })
+    }
+
     /// Return whether the run still has another reservation in `Active`, in any worktree.
     ///
     /// The run, not the run and the worktree: this deliberately calls
@@ -543,6 +595,7 @@ impl RetainedReservationSet {
                 worktree_root,
                 worktree_administrative_locator,
                 authorization,
+                coordination_identity_provenance,
                 ..
             } => self.apply_claim(ReplayedClaim {
                 id: *reservation_id,
@@ -556,6 +609,7 @@ impl RetainedReservationSet {
                 worktree_root,
                 worktree_locator: worktree_administrative_locator,
                 authorization,
+                coordination_identity_provenance: *coordination_identity_provenance,
                 recorded_at: event.recorded_at(),
             }),
             JournalOperation::Widen {
@@ -847,6 +901,8 @@ impl RetainedReservationSet {
                 .phase_start_head
                 .clone(),
             actor:                                             replayed_claim.actor.clone(),
+            coordination_identity_provenance:                  replayed_claim
+                .coordination_identity_provenance,
             lifecycle:                                         ReservationLifecycle::Active,
             retained_protected_tip:
                 RetainedProtectedTip::NotCheckpointed,
@@ -1278,6 +1334,7 @@ mod tests {
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
     use super::RetainedReservationSet;
+    use crate::coordination_identity::CoordinationIdentityProvenance;
     use crate::ids::CoordinationRunId;
     use crate::ids::GitObjectId;
     use crate::ids::ProjectionGeneration;
@@ -1741,29 +1798,259 @@ mod tests {
         Ok(())
     }
 
+    /// Drift coverage follows the holder's identity, run included while it is `Active`.
     #[test]
-    fn drift_blocking_coverage_follows_worktree_identity_and_ignores_the_run()
+    fn drift_blocking_coverage_treats_another_active_run_in_this_worktree_as_foreign()
     -> Result<(), Box<dyn std::error::Error>> {
         let [claim, ..] = lifecycle_events()?;
         let reservations = RetainedReservationSet::replay(&[claim])?;
         let candidate = serde_json::from_value::<ReservationScopeSet>(json!([
             {"path": "src/lib.rs", "kind": "file"}
         ]))?;
+        let holder_run_id = reservations
+            .reservation(RESERVATION_ID.parse::<ReservationId>()?)?
+            .actor()
+            .run;
+        let second_run_id = SECOND_RUN_ID.parse::<CoordinationRunId>()?;
         let worktree_id = WORKTREE_ID.parse::<WorktreeId>()?;
         let second_worktree_id = SECOND_WORKTREE_ID.parse::<WorktreeId>()?;
 
         assert!(matches!(
-            reservations.blocking_coverage_for_drift(&candidate, worktree_id, PathCase::Sensitive),
+            reservations.blocking_coverage_for_drift(
+                &candidate,
+                worktree_id,
+                holder_run_id,
+                PathCase::Sensitive
+            ),
             DriftBlockingCoverage::SameIdentity
         ));
+        let DriftBlockingCoverage::Foreign(another_run) = reservations.blocking_coverage_for_drift(
+            &candidate,
+            worktree_id,
+            second_run_id,
+            PathCase::Sensitive,
+        ) else {
+            return Err(
+                std::io::Error::other("another run in this worktree should be foreign").into(),
+            );
+        };
+        assert_eq!(another_run[0].reservation_id.to_string(), RESERVATION_ID);
         let DriftBlockingCoverage::Foreign(different_worktree) = reservations
-            .blocking_coverage_for_drift(&candidate, second_worktree_id, PathCase::Sensitive)
+            .blocking_coverage_for_drift(
+                &candidate,
+                second_worktree_id,
+                holder_run_id,
+                PathCase::Sensitive,
+            )
         else {
             return Err(std::io::Error::other("another worktree should be foreign").into());
         };
         assert_eq!(
             different_worktree[0].reservation_id.to_string(),
             RESERVATION_ID
+        );
+        Ok(())
+    }
+
+    /// An `Outstanding` holder never makes its own worktree foreign to a later run.
+    ///
+    /// The holder has released and is only awaiting integration, so a second run in the same
+    /// checkout must be free to claim, edit, and commit over those paths. Blocking here once
+    /// made a worktree fight what its previous session left behind.
+    #[test]
+    fn an_outstanding_holder_never_blocks_another_run_in_its_own_worktree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let [claim, checkpoint, ..] = lifecycle_events()?;
+        let reservations = RetainedReservationSet::replay(&[claim, checkpoint])?;
+        let candidate = serde_json::from_value::<ReservationScopeSet>(json!([
+            {"path": "src/lib.rs", "kind": "file"}
+        ]))?;
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let second_run_id = SECOND_RUN_ID.parse::<CoordinationRunId>()?;
+        let worktree_id = WORKTREE_ID.parse::<WorktreeId>()?;
+        assert_eq!(
+            reservations
+                .reservation(reservation_id)?
+                .edit_blocking_status(),
+            EditBlockingStatus::Blocking
+        );
+
+        assert!(
+            reservations
+                .active_reservation_held_by_another_run(worktree_id, second_run_id)
+                .is_none()
+        );
+        assert!(matches!(
+            reservations.blocking_coverage_for_drift(
+                &candidate,
+                worktree_id,
+                second_run_id,
+                PathCase::Sensitive
+            ),
+            DriftBlockingCoverage::SameIdentity
+        ));
+        assert!(
+            reservations
+                .conflicts_for_first_touch(
+                    &candidate,
+                    second_run_id,
+                    worktree_id,
+                    PathCase::Sensitive,
+                )
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    /// The incumbent an occupancy refusal names is the worktree's own active holder.
+    #[test]
+    fn an_active_holder_is_the_incumbent_only_for_another_run_in_its_worktree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let [claim, ..] = lifecycle_events()?;
+        let reservations = RetainedReservationSet::replay(&[claim])?;
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let holder_run_id = reservations.reservation(reservation_id)?.actor().run;
+        let second_run_id = SECOND_RUN_ID.parse::<CoordinationRunId>()?;
+        let worktree_id = WORKTREE_ID.parse::<WorktreeId>()?;
+        let second_worktree_id = SECOND_WORKTREE_ID.parse::<WorktreeId>()?;
+
+        let Some(incumbent) =
+            reservations.active_reservation_held_by_another_run(worktree_id, second_run_id)
+        else {
+            return Err(std::io::Error::other("the active holder should be the incumbent").into());
+        };
+        assert_eq!(incumbent.id(), reservation_id);
+        assert_eq!(incumbent.actor().run, holder_run_id);
+        assert!(
+            reservations
+                .active_reservation_held_by_another_run(worktree_id, holder_run_id)
+                .is_none()
+        );
+        assert!(
+            reservations
+                .active_reservation_held_by_another_run(second_worktree_id, second_run_id)
+                .is_none()
+        );
+        Ok(())
+    }
+
+    /// Only a presented incumbent occupies its worktree against a second coordination run.
+    ///
+    /// `NotPresented` is the post-commit drift holder: claimed under an identity this engine
+    /// created because nobody supplied one, and refusing on it locked a checkout out against
+    /// its own `--run`. `Unknown` declines for a different reason --- the record predates
+    /// provenance recording and nothing is known --- so upgrading a repository never arrives
+    /// as a lockout. Both decline today and both stay distinct on the record, which is why
+    /// the stored value is asserted alongside the refusal.
+    #[test]
+    fn only_a_presented_incumbent_occupies_its_worktree_against_another_run()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let second_run_id = SECOND_RUN_ID.parse::<CoordinationRunId>()?;
+        let worktree_id = WORKTREE_ID.parse::<WorktreeId>()?;
+        let candidate = serde_json::from_value::<ReservationScopeSet>(json!([
+            {"path": "src/lib.rs", "kind": "file"}
+        ]))?;
+
+        for (recorded, stored, occupies) in [
+            (
+                RecordedProvenance::Recorded("presented"),
+                CoordinationIdentityProvenance::Presented,
+                true,
+            ),
+            (
+                RecordedProvenance::Recorded("not_presented"),
+                CoordinationIdentityProvenance::NotPresented,
+                false,
+            ),
+            (
+                RecordedProvenance::Recorded("unknown"),
+                CoordinationIdentityProvenance::Unknown,
+                false,
+            ),
+            (
+                RecordedProvenance::Absent,
+                CoordinationIdentityProvenance::Unknown,
+                false,
+            ),
+        ] {
+            let reservations = RetainedReservationSet::replay(&[claim_event(recorded)?])?;
+            let holder = reservations.reservation(reservation_id)?;
+            assert_eq!(holder.coordination_identity_provenance, stored);
+            assert_eq!(
+                holder.edit_blocking_status(),
+                EditBlockingStatus::Blocking,
+                "provenance decides occupancy, never whether an active holder blocks at all"
+            );
+            assert_eq!(
+                reservations
+                    .active_reservation_held_by_another_run(worktree_id, second_run_id)
+                    .is_some(),
+                occupies,
+                "{stored:?} incumbent occupancy"
+            );
+            assert_eq!(
+                !reservations
+                    .conflicts_for_first_touch(
+                        &candidate,
+                        second_run_id,
+                        worktree_id,
+                        PathCase::Sensitive,
+                    )
+                    .is_empty(),
+                occupies,
+                "{stored:?} incumbent first-touch conflict"
+            );
+            assert_eq!(
+                matches!(
+                    reservations.blocking_coverage_for_drift(
+                        &candidate,
+                        worktree_id,
+                        second_run_id,
+                        PathCase::Sensitive,
+                    ),
+                    DriftBlockingCoverage::Foreign(_)
+                ),
+                occupies,
+                "{stored:?} incumbent drift coverage"
+            );
+        }
+        Ok(())
+    }
+
+    /// Provenance governs only the worktree the holder sits in; another worktree stays foreign.
+    ///
+    /// The refusal being relaxed is the same-worktree occupancy rule alone. A holder claimed
+    /// under an identity the engine created for itself still protects its own checkout's paths
+    /// from every other worktree, which is the coordination the engine exists to provide.
+    #[test]
+    fn an_unpresented_holder_stays_foreign_to_every_other_worktree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservations = RetainedReservationSet::replay(&[claim_event(
+            RecordedProvenance::Recorded("not_presented"),
+        )?])?;
+        let candidate = serde_json::from_value::<ReservationScopeSet>(json!([
+            {"path": "src/lib.rs", "kind": "file"}
+        ]))?;
+        let holder_run_id = reservations
+            .reservation(RESERVATION_ID.parse::<ReservationId>()?)?
+            .actor()
+            .run;
+        let second_worktree_id = SECOND_WORKTREE_ID.parse::<WorktreeId>()?;
+
+        let DriftBlockingCoverage::Foreign(conflicts) = reservations.blocking_coverage_for_drift(
+            &candidate,
+            second_worktree_id,
+            holder_run_id,
+            PathCase::Sensitive,
+        ) else {
+            return Err(std::io::Error::other("another worktree should be foreign").into());
+        };
+        assert_eq!(conflicts[0].reservation_id.to_string(), RESERVATION_ID);
+        assert!(
+            !reservations
+                .conflicts_for_claim(&candidate, second_worktree_id, PathCase::Sensitive)
+                .is_empty()
         );
         Ok(())
     }
@@ -1815,14 +2102,15 @@ mod tests {
         Ok(())
     }
 
-    /// A worktree must never block itself with an active reservation it holds.
+    /// An active holder blocks another worktree and another run in its own worktree.
     ///
-    /// An active holder blocks foreign worktrees, but a later coordination run in the same
-    /// checkout remains the holder's identity. Deciding foreignness by run once made the
-    /// worktree foreign to itself and offered an overlap negotiation where there was only
-    /// one party.
+    /// The run term is confined to `Active` holders, so it never makes a worktree fight
+    /// what a previous session left behind --- see
+    /// [`an_outstanding_holder_never_blocks_another_run_in_its_own_worktree`]. Recorded
+    /// overlap answers still bind the worktree alone, so `identifies_requester` answers
+    /// `true` for either run.
     #[test]
-    fn an_active_reservation_blocks_another_worktree_and_never_its_own()
+    fn an_active_reservation_blocks_another_worktree_and_another_run_in_its_own()
     -> Result<(), Box<dyn std::error::Error>> {
         let [claim, ..] = lifecycle_events()?;
         let reservations = RetainedReservationSet::replay(&[claim])?;
@@ -1854,15 +2142,18 @@ mod tests {
             .identifies_requester(active_holder)
         );
 
-        assert!(
-            reservations
-                .conflicts_for_first_touch(
-                    &candidate,
-                    second_run_id,
-                    worktree_id,
-                    PathCase::Sensitive,
-                )
-                .is_empty()
+        let same_worktree_first_touch = reservations.conflicts_for_first_touch(
+            &candidate,
+            second_run_id,
+            worktree_id,
+            PathCase::Sensitive,
+        );
+        assert_eq!(
+            same_worktree_first_touch
+                .iter()
+                .map(|conflict| conflict.reservation_id)
+                .collect::<Vec<_>>(),
+            [reservation_id]
         );
         assert!(
             reservations
@@ -2038,23 +2329,47 @@ mod tests {
         )
     }
 
+    /// Build the shared claim event, recording the provenance of the identity it was made under.
+    ///
+    /// Passing the wire spelling rather than the enum keeps the omitted-field case reachable:
+    /// [`RecordedProvenance::Absent`] writes no key at all, which is exactly the shape a
+    /// repository claimed before provenance was recorded replays from.
+    fn claim_event(provenance: RecordedProvenance) -> Result<JournalEvent, Error> {
+        let mut claim = json!({
+            "op": "claim",
+            "reservation_id": RESERVATION_ID,
+            "scopes": [{"path": "src", "kind": "tree"}],
+            "source": {"kind": "explicit"},
+            "purpose": {"kind": "not_provided_by_caller"},
+            "trunk_at_claim": TRUNK_OID,
+            "head_snapshot": {"kind": "branch", "full_ref": "refs/heads/phase", "head": PROTECTED_TIP},
+            "phase_start_head": TRUNK_OID,
+            "worktree_root": "/repo",
+            "worktree_administrative_locator": ".",
+            "authorization": {"kind": "no_conflict"},
+        });
+        if let (Some(claim), RecordedProvenance::Recorded(wire)) =
+            (claim.as_object_mut(), provenance)
+        {
+            claim.insert(
+                "coordination_identity_provenance".to_owned(),
+                Value::String(wire.to_owned()),
+            );
+        }
+        journal_event(1, &claim)
+    }
+
+    /// Whether a fixture claim carries a provenance key at all, and which one.
+    #[derive(Clone, Copy)]
+    enum RecordedProvenance {
+        /// The claim records this wire spelling of the provenance.
+        Recorded(&'static str),
+        /// The claim predates provenance recording and writes no key.
+        Absent,
+    }
+
     fn lifecycle_events() -> Result<[JournalEvent; 6], Error> {
-        let claim = journal_event(
-            1,
-            &json!({
-                "op": "claim",
-                "reservation_id": RESERVATION_ID,
-                "scopes": [{"path": "src", "kind": "tree"}],
-                "source": {"kind": "explicit"},
-                "purpose": {"kind": "not_provided_by_caller"},
-                "trunk_at_claim": TRUNK_OID,
-                "head_snapshot": {"kind": "branch", "full_ref": "refs/heads/phase", "head": PROTECTED_TIP},
-                "phase_start_head": TRUNK_OID,
-                "worktree_root": "/repo",
-                "worktree_administrative_locator": ".",
-                "authorization": {"kind": "no_conflict"},
-            }),
-        )?;
+        let claim = claim_event(RecordedProvenance::Recorded("presented"))?;
         let checkpoint = journal_event(
             2,
             &json!({

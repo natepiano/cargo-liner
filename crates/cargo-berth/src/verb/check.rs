@@ -16,8 +16,11 @@ use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::ledger;
+use crate::ledger::EditAuthorization;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
+use crate::ledger::ResolvedEditAuthorization;
+use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
@@ -53,6 +56,19 @@ enum CheckDecisionError {
     ReservationReplay(ReservationReplayError),
     /// The process identity is stale or belongs to another worktree.
     CoordinationIdentity(CoordinationIdentityRejection),
+}
+
+impl From<CoordinationIdentityValidationError> for CheckDecisionError {
+    fn from(error: CoordinationIdentityValidationError) -> Self {
+        match error {
+            CoordinationIdentityValidationError::Rejected(rejection) => {
+                Self::CoordinationIdentity(rejection)
+            },
+            CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
+                Self::Ledger(LedgerError::InvalidCanonicalWorktreeRoot)
+            },
+        }
+    }
 }
 
 impl CheckDecisionError {
@@ -254,18 +270,50 @@ fn decide(
         recovery_command_line,
     );
     coordination_identity::validate_coordination_identity(&reservations, &identity_validation)
-        .map_err(|error| match error {
-            CoordinationIdentityValidationError::Rejected(rejection) => {
-                CheckDecisionError::CoordinationIdentity(rejection)
-            },
-            CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
-                CheckDecisionError::Ledger(LedgerError::InvalidCanonicalWorktreeRoot)
-            },
-        })?;
+        .map_err(CheckDecisionError::from)?;
+    validate_edit_worktree_occupancy(
+        &reservations,
+        snapshot.worktree_context(),
+        resolved_edit_authorization,
+    )
+    .map_err(CheckDecisionError::from)?;
     let conflicts = reservations.conflicts_for_edit(
         &scopes,
         resolved_edit_authorization.edit_authorization(),
         path_case,
     );
     Ok(Enrollment::Enrolled(CheckDecision { scopes, conflicts }))
+}
+
+/// Refuse a pre-edit check whose run is not the one occupying the issuing worktree.
+///
+/// The occupancy rule holds between two coordination runs that both presented an identity, so
+/// only [`EditAuthorization::Environment`] can reach it here. A session mapping and a worktree
+/// marker each require an active reservation of their own run in this worktree, which this same
+/// rule stops a second run from ever acquiring, and an unidentified caller presented nothing.
+///
+/// Deciding this before overlap is what makes the refusal repairable. Left to the overlap pass,
+/// a second run in an occupied worktree was refused with the generic overlap answer, whose
+/// stated remedy is to record one answer for the named holder --- a
+/// `claim --run <second> --override <holder>` that this same rule refuses before any conflict
+/// is evaluated. The occupancy refusal names the repair that works instead.
+fn validate_edit_worktree_occupancy(
+    reservations: &RetainedReservationSet,
+    worktree_context: &WorktreeContext,
+    resolved_edit_authorization: ResolvedEditAuthorization,
+) -> Result<(), CoordinationIdentityValidationError> {
+    match resolved_edit_authorization.edit_authorization() {
+        EditAuthorization::Environment {
+            coordination_run_id,
+            ..
+        } => coordination_identity::validate_worktree_occupancy(
+            reservations,
+            worktree_context,
+            resolved_edit_authorization.worktree_id,
+            coordination_run_id,
+        ),
+        EditAuthorization::Session { .. }
+        | EditAuthorization::Marker { .. }
+        | EditAuthorization::Unidentified => Ok(()),
+    }
 }

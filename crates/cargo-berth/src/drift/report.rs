@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::identity::DriftScopeAcquisition;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
@@ -38,12 +39,18 @@ pub(super) enum DriftComparisonMode {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct DriftReport {
     /// The comparison that actually ran.
-    pub(super) comparison:       DriftComparisonMode,
+    pub(super) comparison:        DriftComparisonMode,
     /// How paths outside the acting run's reservations were attributed.
     #[serde(rename = "widening")]
-    pub(crate) path_attribution: DriftPathAttributionOutcome,
+    pub(crate) path_attribution:  DriftPathAttributionOutcome,
     /// One result for every selected reservation.
-    pub(crate) results:          Vec<ReservationDriftResult>,
+    pub(crate) results:           Vec<ReservationDriftResult>,
+    /// Whether this invocation may still take or widen scopes in this worktree.
+    ///
+    /// Observation and classification never depended on this answer, so the report carries it
+    /// beside them rather than in place of them: a refused run's report still states every
+    /// consequence the commit had, and states the refusal too.
+    pub(crate) scope_acquisition: DriftScopeAcquisition,
 }
 
 impl DriftReport {
@@ -54,6 +61,7 @@ impl DriftReport {
         Self {
             comparison,
             path_attribution: DriftPathAttributionOutcome::NotNeeded,
+            scope_acquisition: DriftScopeAcquisition::Permitted,
             results: reservation_ids
                 .iter()
                 .map(|reservation_id| ReservationDriftResult::Unchanged {

@@ -89,6 +89,8 @@ const COORDINATION_IDENTITY_EDIT_SUMMARY: &str =
     "cargo-berth rejected this edit under the current coordination identity.";
 /// The rejection kind a reservation whose session mapping outlived it is refused under.
 const STALE_SESSION_REJECTION_KIND: &str = "stale_session_mapping";
+/// The rejection kind a second run in an occupied worktree is refused under.
+const WORKTREE_OCCUPANCY_REJECTION_KIND: &str = "worktree_held_by_another_run";
 const CORRUPT_JOURNAL_RECORD: &[u8] = b"this journal record is not JSON\n";
 const FAIL_OPEN_SENTENCE: &str = "cargo-berth could not establish edit safety; editing is allowed because ledger loss fails open.";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
@@ -117,6 +119,8 @@ const RESERVATION_LIMIT_SUMMARY: &str =
 const RETIRED_MISSING_PRESENTATION_DIAGNOSTIC: &str =
     "the engine returned a blocking check answer without a presentation";
 const SCRATCH_ROOT: &str = "/tmp/claude";
+/// A coordination run other than the one holding the fixture repository.
+const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const STALE_SESSION_RECOVERY_ENTRY: &str =
     "test_hooks_render_coordination_identity_recovery_actions_without_message";
@@ -254,6 +258,61 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
     assert!(refusal_detail.ends_with('\n'));
     assert!(refusal_detail.contains("Choose exactly one answer for one named holder."));
     assert!(refusal_detail.contains("cargo-berth claim <paths...> --before"));
+    Ok(())
+}
+
+/// A second run reaches the incumbent's paths as a writer, and the pre-edit hook refuses it.
+///
+/// The occupancy rule refuses this run a reservation of its own before any overlap is
+/// evaluated, so the refusal is a coordination-identity rejection rather than the generic
+/// overlap text. Recording an overlap answer would need a claim this same rule refuses, so
+/// the remedy the refusal names is the one that works: release the incumbent, and the paths
+/// become editable.
+#[test]
+fn a_second_coordination_run_is_refused_the_incumbents_paths() -> TestResult {
+    let repository = initialized_repository()?;
+    let incumbent = run_berth(
+        repository.path(),
+        &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
+    )?;
+    require_success(&incumbent, "incumbent claim")?;
+    let incumbent_id = json_output(&incumbent)?["payload"]["data"]["reservation_id"]
+        .as_str()
+        .ok_or_else(|| failure("the incumbent claim should return a reservation id"))?
+        .to_owned();
+    let remedy = format!("cargo-berth release {incumbent_id} --json");
+
+    let output = spawn_pre_tool_use_with_run(
+        repository.path(),
+        &edit_payload(repository.path(), "src/lib.rs", None),
+        SECOND_RUN,
+    )?;
+
+    assert_engine_authored_refusal(
+        &output,
+        COORDINATION_IDENTITY_EDIT_SUMMARY,
+        &remedy,
+        "second coordination run pre-edit refusal",
+    )?;
+    let refusal = String::from_utf8(output.stderr)?;
+    assert!(
+        refusal.contains(WORKTREE_OCCUPANCY_REJECTION_KIND),
+        "the refusal should name the rule that refused it: {refusal:?}"
+    );
+    assert!(
+        !refusal.contains("--override"),
+        "the refusal must not name a remedy this rule refuses first: {refusal:?}"
+    );
+
+    let released = run_berth(repository.path(), &["release", &incumbent_id, "--json"])?;
+    require_success(&released, "the remedy the refusal names")?;
+    let permitted = spawn_pre_tool_use_with_run(
+        repository.path(),
+        &edit_payload(repository.path(), "src/lib.rs", None),
+        SECOND_RUN,
+    )?;
+
+    require_success(&permitted, "the edit the named remedy should unblock")?;
     Ok(())
 }
 
@@ -1441,6 +1500,33 @@ fn spawn_pre_tool_use(
         &serde_json::to_vec(payload)?,
         ambient_session,
     )
+}
+
+/// Run the pre-edit hook under a coordination run the caller names for itself.
+///
+/// The harness never sets this variable; a second run inside one checkout arises only
+/// when a caller presents one, which is the situation the hook is being held to here.
+fn spawn_pre_tool_use_with_run(
+    repository_root: &Path,
+    payload: &Value,
+    coordination_run_id: &str,
+) -> TestResult<Output> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["hook", "pre-tool-use"])
+        .current_dir(repository_root)
+        .env("CARGO_BERTH_RUN", coordination_run_id)
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut piped_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| failure("hook stdin should be piped"))?;
+    piped_stdin.write_all(&serde_json::to_vec(payload)?)?;
+    drop(piped_stdin);
+    Ok(child.wait_with_output()?)
 }
 
 /// Run one public hook verb the way the harness runs it: raw payload on standard input.

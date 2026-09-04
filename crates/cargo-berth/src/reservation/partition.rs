@@ -20,7 +20,13 @@ use crate::scope::ReservationScope;
 
 /// How current edit-blocking reservations cover one drift path.
 pub(crate) enum DriftBlockingCoverage {
-    /// Another reservation from the same run and worktree already claims the path.
+    /// A holder the acting identity is not foreign to already claims the path.
+    ///
+    /// The acting run's own reservation in this worktree, and equally a same-worktree holder
+    /// of another run that no longer occupies it: one that has left `Active`, or one claimed
+    /// under an identity the engine created for itself rather than one a caller presented.
+    /// The probe is the exact inverse of the foreignness the conflict pass applies, so both
+    /// read [`Reservation::is_foreign_to_coordination_run_in_worktree`] and cannot disagree.
     SameIdentity,
     /// Reservations from another run or worktree currently block the path.
     Foreign(Vec<ReservationConflict>),
@@ -39,9 +45,10 @@ pub(crate) enum WidenScopeBinding {
 
 /// The actor identity permitted to receive its reservation-specific overlap answers.
 ///
-/// Every identified variant names a worktree, because the worktree is the coordination
-/// unit. Two runs in one worktree share one filesystem, one index, and one branch, so
-/// they cannot produce the merge collision a reservation exists to prevent.
+/// Every identified variant names a worktree and the coordination run acting in it. The
+/// worktree is the coordination unit and one run occupies it at a time, so both terms are
+/// needed: recorded overlap answers bind the worktree, while active work belongs to the
+/// run that acquired it.
 #[derive(Clone, Copy)]
 pub(crate) enum AuthorizedEditingIdentity {
     /// A live session mapping identifies one exact reservation.
@@ -61,16 +68,35 @@ pub(crate) enum AuthorizedEditingIdentity {
 }
 
 impl AuthorizedEditingIdentity {
-    /// Whether this holder belongs to another worktree, the only foreignness that blocks.
+    /// Whether this holder is foreign to the caller: another worktree, or another run
+    /// still occupying this one.
     ///
-    /// A holder in the caller's own worktree is never foreign, however many coordination
-    /// runs that worktree has issued. A run mismatch alone once blocked here, which let a
-    /// worktree block itself with a reservation an earlier session in the same checkout
-    /// had left behind.
+    /// A holder in the caller's own worktree is foreign only while it is `Active` for a
+    /// different coordination run, because one run occupies a worktree at a time. The
+    /// `Active` term is what keeps a worktree from blocking itself: once a holder reaches
+    /// `Outstanding` it has released and is only awaiting integration, and a later session
+    /// in the same checkout must be free to edit the paths its predecessor left behind.
+    /// Deciding foreignness on the run alone, with no lifecycle term, once did exactly
+    /// that.
+    ///
+    /// The same-worktree case narrows once more on the holder's own identity provenance:
+    /// occupancy is a rule between two coordination identities a caller presented, so a
+    /// holder claimed under an identity the engine created for itself is never foreign
+    /// inside its own worktree. The pre-edit hook therefore lets a run edit over the
+    /// reservation post-commit drift first-touched in that same checkout, while a holder in
+    /// any other worktree stays foreign exactly as before.
     pub(super) fn is_foreign(self, holder: &Reservation) -> bool {
         match self {
-            Self::SessionReservation { worktree_id, .. } | Self::Run { worktree_id, .. } => {
-                holder.actor.worktree != worktree_id
+            Self::SessionReservation {
+                coordination_run_id,
+                worktree_id,
+                ..
+            }
+            | Self::Run {
+                coordination_run_id,
+                worktree_id,
+            } => {
+                holder.is_foreign_to_coordination_run_in_worktree(coordination_run_id, worktree_id)
             },
             Self::Unidentified => true,
         }

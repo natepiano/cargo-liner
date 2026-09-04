@@ -27,6 +27,7 @@ use super::scoped_patch_evaluation::ScopedPatchEvaluationPriority;
 use super::scoped_patch_evaluation::ScopedPatchTargetEvaluationSchedule;
 use super::scoped_patch_evaluation::SuccessorScopedPatchTargetEvaluationSchedule;
 use crate::answer::ConflictAuthorization;
+use crate::coordination_identity::CoordinationIdentityProvenance;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::RecordedAt;
@@ -61,6 +62,7 @@ pub(crate) struct Reservation {
     pub(super) head_snapshot:                                     ClaimHeadSnapshot,
     pub(super) phase_start_head:                                  ProtectedPhaseStartHead,
     pub(super) actor:                                             JournalActor,
+    pub(super) coordination_identity_provenance:                  CoordinationIdentityProvenance,
     pub(super) lifecycle:                                         ReservationLifecycle,
     pub(super) retained_protected_tip:                            RetainedProtectedTip,
     pub(super) integration_trunk_snapshot:                        IntegrationTrunkSnapshot,
@@ -145,29 +147,31 @@ impl Reservation {
     /// Return the reservation's owning actor.
     pub(crate) const fn actor(&self) -> &JournalActor { &self.actor }
 
+    /// Return whether this reservation is still in `Active`, whoever holds it.
+    ///
+    /// Every eligibility predicate below is this test plus identity terms, so the `Active`
+    /// lifecycle test is written once for all of them. Lifecycle tests that ask a different
+    /// question live on their own: [`Self::edit_blocking_status`] admits an `Outstanding`
+    /// holder whose work has not reached the trunk, and eligibility never does.
+    const fn is_active(&self) -> bool { matches!(self.lifecycle, ReservationLifecycle::Active) }
+
     /// Return whether this active reservation belongs to the named run, in any worktree.
     ///
-    /// This is the base of the two eligibility predicates: within them the `Active` lifecycle
-    /// test is written here and nowhere else, and
-    /// [`Self::is_active_for_coordination_run_and_worktree`] is this question plus a worktree
-    /// term, taking the lifecycle test by delegating here. Lifecycle tests that carry no run
-    /// term ask a different question and live on their own. Constraining the run and not the
-    /// worktree is deliberate, so a run holding live work in a second worktree still answers
-    /// `true`. Callers deciding the fate of a run-scoped record want that reach; callers
-    /// deciding what one worktree may edit want the two-field form.
+    /// Constraining the run and not the worktree is deliberate, so a run holding live work in
+    /// a second worktree still answers `true`. Callers deciding the fate of a run-scoped
+    /// record want that reach; callers deciding what one worktree may edit want
+    /// [`Self::is_active_for_coordination_run_and_worktree`].
     pub(crate) fn is_active_for_coordination_run(
         &self,
         coordination_run_id: CoordinationRunId,
     ) -> bool {
-        self.actor.run == coordination_run_id
-            && matches!(self.lifecycle, ReservationLifecycle::Active)
+        self.actor.run == coordination_run_id && self.is_active()
     }
 
     /// Return whether this active reservation belongs to the named run and worktree.
     ///
     /// Delegates to [`Self::is_active_for_coordination_run`] and adds the worktree term, so the
-    /// narrower predicate is structurally a subset of this one and the `Active` lifecycle test
-    /// is written once.
+    /// narrower predicate is structurally a subset of this one.
     pub(crate) fn is_active_for_coordination_run_and_worktree(
         &self,
         coordination_run_id: CoordinationRunId,
@@ -175,6 +179,79 @@ impl Reservation {
     ) -> bool {
         self.is_active_for_coordination_run(coordination_run_id)
             && self.actor.worktree == worktree_id
+    }
+
+    /// Return whether this holder occupies the named worktree for some other coordination run.
+    ///
+    /// The worktree is the coordination unit, so one run occupies it at a time. `Active` only:
+    /// an `Outstanding` holder has released and is awaiting integration, and counting it as an
+    /// occupant would lock a worktree out of paths its own previous session released.
+    ///
+    /// Occupancy holds only between two coordination identities a caller actually presented.
+    /// A holder recorded as [`CoordinationIdentityProvenance::NotPresented`] was claimed under
+    /// an identity this engine created for itself --- post-commit drift first-touches that way
+    /// --- and treating it as an occupant locks a checkout out against its own `--run`.
+    /// [`CoordinationIdentityProvenance::Unknown`] predates provenance recording and declines
+    /// for the same reason, so upgrading a repository never arrives as a lockout. The two
+    /// stay distinct on the record: not knowing is not the same as knowing nobody presented
+    /// one.
+    ///
+    /// Only the *holder's* provenance is read here, and the two chains that reach this
+    /// predicate treat the acting side differently.
+    ///
+    /// The **occupancy chain** --- `coordination_identity::validate_worktree_occupancy`
+    /// through `RetainedReservationSet::active_reservation_held_by_another_run` --- is
+    /// guarded on the acting side before it arrives. `ClaimRunValidation::validate`,
+    /// `DriftRunValidation::authorize_scope_acquisition`, and
+    /// `check::validate_edit_worktree_occupancy` each match the acting identity source first
+    /// and answer without asking when the caller presented none, so only
+    /// `EditAuthorization::Environment` reaches the question. There the rule is symmetric in
+    /// effect while its two terms live apart, and a fourth occupancy call site added without
+    /// that variant match would apply the rule to one side only.
+    ///
+    /// The **overlap chain** applies no acting-side term at all.
+    /// [`Self::is_foreign_to_coordination_run_in_worktree`] reaches this predicate from
+    /// `conflicts_for_drift`, `blocking_coverage_for_drift`, `bind_widened_scopes`, and ---
+    /// through `AuthorizedEditingIdentity::is_foreign` --- `conflicts_for_edit` and
+    /// `conflicts_for_first_touch`, and every hop carries a bare `CoordinationRunId` with no
+    /// provenance beside it. A same-worktree holder that presented an identity is foreign to
+    /// any other run there, whatever that run presented.
+    ///
+    /// The asymmetry stands because closing it is a data-flow change, not a predicate change:
+    /// putting both terms here means carrying the acting side's provenance through
+    /// `RetainedReservationSet` and `AuthorizedEditingIdentity`, which no caller supplies
+    /// today.
+    pub(super) fn occupies_worktree_for_another_coordination_run(
+        &self,
+        coordination_run_id: CoordinationRunId,
+        worktree_id: WorktreeId,
+    ) -> bool {
+        self.actor.worktree == worktree_id
+            && self.actor.run != coordination_run_id
+            && self.is_active()
+            && matches!(
+                self.coordination_identity_provenance,
+                CoordinationIdentityProvenance::Presented
+            )
+    }
+
+    /// Return whether this holder is foreign to a run acting in the named worktree.
+    ///
+    /// Foreign is another worktree entirely, or this worktree while another run occupies it
+    /// per [`Self::occupies_worktree_for_another_coordination_run`]. Both hook sites and the
+    /// drift predicates ask exactly this question, so it is answered in one place.
+    ///
+    /// Occupancy carries its provenance term here by construction: a reservation this engine
+    /// claimed under an identity it created for itself is never foreign inside its own
+    /// worktree, so the hook, the drift conflict pass, and the drift coverage probe all read
+    /// it as the acting identity's own work rather than someone else's.
+    pub(super) fn is_foreign_to_coordination_run_in_worktree(
+        &self,
+        coordination_run_id: CoordinationRunId,
+        worktree_id: WorktreeId,
+    ) -> bool {
+        self.actor.worktree != worktree_id
+            || self.occupies_worktree_for_another_coordination_run(coordination_run_id, worktree_id)
     }
 
     /// Borrow the normalized scopes this reservation currently protects.

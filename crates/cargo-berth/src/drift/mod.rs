@@ -13,6 +13,7 @@ mod report;
 mod selection;
 
 pub(crate) use execution::execute;
+pub(crate) use identity::DriftScopeAcquisition;
 pub(crate) use report::DriftEffect;
 pub(crate) use report::DriftPathAttributionOutcome;
 pub(crate) use report::DriftReport;

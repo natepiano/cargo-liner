@@ -53,6 +53,43 @@ impl CommittedPhaseChanges {
     fn as_slice(&self) -> &[ReservationScopePath] { &self.0 }
 }
 
+/// The paths `HEAD`'s own commit introduced.
+///
+/// A phase range answers "what changed since a reservation started", so it carries every
+/// commit any run has made in the worktree since that point. This answers the narrower
+/// question "what did the commit under observation write", which is the only committed set
+/// an invocation can attribute to the run acting through it rather than to whoever committed
+/// earlier inside the same range.
+struct HeadCommitOwnChanges(Vec<ReservationScopePath>);
+
+impl HeadCommitOwnChanges {
+    fn as_slice(&self) -> &[ReservationScopePath] { &self.0 }
+}
+
+/// Whether one full observation read what `HEAD`'s own commit wrote.
+enum HeadCommitOwnAttribution {
+    /// No reservation supplied a phase start, so no committed history was read at all.
+    CommittedHistoryNotRead,
+    /// `HEAD`'s own commit introduced exactly these paths.
+    Read(HeadCommitOwnChanges),
+}
+
+impl HeadCommitOwnAttribution {
+    fn as_slice(&self) -> &[ReservationScopePath] {
+        match self {
+            Self::CommittedHistoryNotRead => &[],
+            Self::Read(changes) => changes.as_slice(),
+        }
+    }
+}
+
+/// Everything one committed-history read establishes for a full observation.
+struct ObservedPhaseHistory {
+    history:             FullPhaseHistoryObservation,
+    committed_by_anchor: HashMap<GitObjectId, Vec<ReservationScopePath>>,
+    head_commit:         HeadCommitOwnAttribution,
+}
+
 enum FullReservationPhaseHistory {
     Compared(CommittedPhaseChanges),
     PhaseStartObjectUnknown(GitObjectId),
@@ -80,11 +117,12 @@ pub(super) struct CheapDeltaChanges {
 }
 
 pub(super) struct FullPhaseStartChanges {
-    committed: HashMap<ReservationId, FullReservationPhaseHistory>,
-    history:   FullPhaseHistoryObservation,
-    staged:    StagedWorkingTreeChanges,
-    unstaged:  UnstagedWorkingTreeChanges,
-    untracked: UntrackedWorkingTreeChanges,
+    committed:   HashMap<ReservationId, FullReservationPhaseHistory>,
+    head_commit: HeadCommitOwnAttribution,
+    history:     FullPhaseHistoryObservation,
+    staged:      StagedWorkingTreeChanges,
+    unstaged:    UnstagedWorkingTreeChanges,
+    untracked:   UntrackedWorkingTreeChanges,
 }
 
 /// The shared target and phase-start states established by one full comparison.
@@ -150,6 +188,26 @@ impl ObservedDriftChanges {
                 .collect::<Vec<_>>(),
         };
         ordering::normalize_paths(&mut paths);
+        paths
+    }
+
+    /// The observed paths this invocation can attribute to the run acting through it.
+    ///
+    /// A full observation's committed component is one reservation's `phase_start..HEAD`
+    /// range. That range is a comparison, not an authorship record: once a second run commits
+    /// onto the same branch in the same worktree, every path the incumbent committed earlier
+    /// in the range sits inside it too, and nothing downstream separates the two. Attribution
+    /// to the acting run therefore stops at `HEAD`'s own commit plus the working tree that
+    /// commit left behind.
+    ///
+    /// A cheap comparison names what moved since the last observation and reads no committed
+    /// history at all, so its observed paths are already this narrow.
+    pub(super) fn acting_run_attributable_paths(&self) -> Vec<ReservationScopePath> {
+        let mut paths = self.observed_paths();
+        if let Self::Full(changes) = self {
+            paths.extend(changes.head_commit.as_slice().iter().cloned());
+            ordering::normalize_paths(&mut paths);
+        }
         paths
     }
 
@@ -358,7 +416,11 @@ fn observe_full(
             ),
         )
     });
-    let (history, committed_by_anchor) = phase_history?;
+    let ObservedPhaseHistory {
+        history,
+        committed_by_anchor,
+        head_commit,
+    } = phase_history?;
     let working_tree_status = working_tree_status?;
     let anchor_states = match &history {
         FullPhaseHistoryObservation::NoReservationAnchor => HashMap::new(),
@@ -409,6 +471,7 @@ fn observe_full(
         comparison,
         changes: ObservedDriftChanges::Full(FullPhaseStartChanges {
             committed,
+            head_commit,
             history,
             staged: StagedWorkingTreeChanges(staged_paths),
             unstaged: UnstagedWorkingTreeChanges(unstaged_paths),
@@ -446,18 +509,13 @@ fn join_full_observation_worker<T>(
 fn observe_phase_history(
     repository_root: &Path,
     anchors: &[GitObjectId],
-) -> Result<
-    (
-        FullPhaseHistoryObservation,
-        HashMap<GitObjectId, Vec<ReservationScopePath>>,
-    ),
-    DriftFingerprintError,
-> {
+) -> Result<ObservedPhaseHistory, DriftFingerprintError> {
     if anchors.is_empty() {
-        return Ok((
-            FullPhaseHistoryObservation::NoReservationAnchor,
-            HashMap::new(),
-        ));
+        return Ok(ObservedPhaseHistory {
+            history:             FullPhaseHistoryObservation::NoReservationAnchor,
+            committed_by_anchor: HashMap::new(),
+            head_commit:         HeadCommitOwnAttribution::CommittedHistoryNotRead,
+        });
     }
     let (target, reachability) = match git::head_commit_reachability(repository_root, anchors)
         .map_err(DriftFingerprintError::from)?
@@ -494,29 +552,38 @@ fn observe_phase_history(
             (anchor, reachability.into())
         })
         .collect::<HashMap<_, _>>();
-    let comparable_anchors = anchors
+    let mut requested_anchors = anchors
         .iter()
         .filter(|anchor| {
             anchor_states.get(*anchor) != Some(&IncursionAttributionAnchorState::ObjectUnknown)
         })
         .cloned()
         .collect::<Vec<_>>();
-    let committed_by_anchor = if comparable_anchors.is_empty() {
-        HashMap::new()
-    } else {
-        let execution =
-            git::phase_committed_path_diffs(repository_root, &comparable_anchors, &target);
-        let output =
-            git_output::completed_git_output(execution, &["diff-tree", "batched phase starts"])?;
-        git_output::parse_phase_committed_paths(&output.stdout, &comparable_anchors)?
-    };
-    Ok((
-        FullPhaseHistoryObservation::Anchored {
+    if !requested_anchors.contains(&target) {
+        requested_anchors.push(target.clone());
+    }
+    let execution = git::phase_committed_path_diffs(repository_root, &requested_anchors, &target);
+    let output =
+        git_output::completed_git_output(execution, &["diff-tree", "batched phase starts"])?;
+    let mut committed_by_anchor =
+        git_output::parse_phase_committed_paths(&output.stdout, &requested_anchors)?;
+    // The record keyed by the target answers what `HEAD` introduced on its own, not what any
+    // range carries. A phase start already standing at the target has an empty range by
+    // construction, so swapping that empty range in leaves both answers correct whether or not
+    // a reservation anchors there.
+    let head_commit = HeadCommitOwnAttribution::Read(HeadCommitOwnChanges(
+        committed_by_anchor
+            .insert(target.clone(), Vec::new())
+            .unwrap_or_default(),
+    ));
+    Ok(ObservedPhaseHistory {
+        history: FullPhaseHistoryObservation::Anchored {
             target,
             anchor_states,
         },
         committed_by_anchor,
-    ))
+        head_commit,
+    })
 }
 
 fn symmetric_difference(
