@@ -267,28 +267,30 @@ while the other has no command-line test in the crate at all.
 Satisfied by: `GitHookProtocol` carrying the route it answers for, and the
 route test asserting each git route selects the one it declares.
 
-## 16. The published post-tool-use timing bound still describes the retired front end
+## 16. The published post-tool-use timing bound still describes the retired front end — closed, not built
 
-**Target:** `~/.claude/scripts/berth/tests/installed_front_end.py` —
-`POST_TOOL_USE_BOUND_SECONDS` (`:43`).
+**Target:** was `~/.claude/scripts/berth/tests/installed_front_end.py` —
+`POST_TOOL_USE_BOUND_SECONDS`.
 
-The bound is `0.20`, measured when the installed hook parsed and validated JSON in
-bash and made more than one engine call. The wrappers are now a presence check plus
-`exec`, so the number describes a process topology that no longer exists. The
-re-key to binary and wrapper availability landed; the measurement did not, because
-the cold-page gate requires zero resident pages for `git` and any sibling session
-executing git faults them straight back in.
+The bound was `0.20`, measured when the installed hook parsed and validated JSON
+in bash and made more than one engine call. The wrappers became a presence check
+plus `exec`, so the number described a process topology that no longer existed.
+The re-key to binary and wrapper availability landed; the measurement never did,
+because the cold-page gate required zero resident pages for `git` and any sibling
+session executing git faulted them straight back in.
 
-Every structural phase has shipped. The one phase left removes suppressions and
-rewrites the resolve command-line surface; it changes no process topology, so
-nothing in this plan will make the number wrong in a new way — and nothing in it
-will fix it either. This item is unblocked the moment the plan closes.
+Closed by deleting the measurement rather than repairing it. On Linux the gate
+cannot be satisfied at all: `POSIX_FADV_DONTNEED` does not evict files under
+`/nix/store`, and `/usr/bin/env`, `/bin/sh`, bash, git and jq all live there, so
+every timed child is permanently resident. With Linux now the primary development
+machine, the suite had no host it could run on. `test_hook_timing.py` and the
+timing machinery in `installed_front_end.py` are gone (`claude_commands` f578fc5
+and a1571ba); the module is 367 lines and carries the wrapper fixture only.
 
-Satisfied by: a serialized measurement on a machine with no other active session,
-every timing cell from `attribution` onward corrected to its measured process
-counts, and the bound republished. Do not widen the bound to make the run green,
-and do not loosen `COLD_PAGE_INVALIDATION_ATTEMPTS` or accept a non-zero
-resident-page count: both convert a refusal to measure into a false measurement.
+Reopening this means republishing a bound, which means a measurement, which means
+a host whose timed executables can be evicted — macOS today. Do not widen a bound
+or accept a non-zero resident-page count to make a run green: both convert a
+refusal to measure into a false measurement.
 
 ## 17. Nothing regression-tests the reservation-id ordering two surfaces now promise
 
