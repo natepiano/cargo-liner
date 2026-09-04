@@ -3003,16 +3003,7 @@ impl OutputEnvelope {
         }) {
             return PostToolUseRendering::FeedbackDecidedByLiveIncursionState;
         }
-        let has_collision = report.results.iter().any(|result| {
-            result_has_effect(result, |effect| {
-                matches!(effect, DriftEffect::Collision { .. })
-            })
-        });
-        let has_widen = report.results.iter().any(|result| {
-            result_has_effect(result, |effect| {
-                matches!(effect, DriftEffect::Widened { .. })
-            })
-        });
+        let observed_effect = ObservedDriftEffect::from(report.results.as_slice());
         let lost_evidence = self
             .payload
             .alerts
@@ -3021,7 +3012,7 @@ impl OutputEnvelope {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let (prefix, immediate_stop) =
-            drift_rendering_prefix(&report.path_attribution, has_collision, has_widen);
+            drift_rendering_prefix(&report.path_attribution, observed_effect);
         // A refused run must stop acting in this worktree whatever else the observation
         // found, so the refusal both earns the reader a message and makes it a stop. The
         // detail arms below that build their own lines never quote `self.message`, so the
@@ -3052,7 +3043,7 @@ impl OutputEnvelope {
             return PostToolUseRendering::NoFeedback;
         }
         if !immediate_stop
-            && !has_collision
+            && !matches!(observed_effect, ObservedDriftEffect::Collision)
             && self
                 .payload
                 .alerts
@@ -3065,7 +3056,8 @@ impl OutputEnvelope {
                 detail:  block.detail,
             };
         }
-        let summary = if immediate_stop || has_collision {
+        let summary = if immediate_stop || matches!(observed_effect, ObservedDriftEffect::Collision)
+        {
             "cargo-berth detected drift that requires an immediate stop."
         } else {
             "cargo-berth widened this worktree reservation footprint."
@@ -3968,11 +3960,39 @@ fn append_live_path_attribution_rendering(
     }
 }
 
+/// The strongest drift effect an observation's own results carry, ranked as the prefix reports it.
+#[derive(Clone, Copy)]
+enum ObservedDriftEffect {
+    /// At least one result collided with a scope another run holds.
+    Collision,
+    /// No result collided, and at least one widened the acting run's scopes.
+    Widened,
+    /// No result did either.
+    Neither,
+}
+
+impl From<&[ReservationDriftResult]> for ObservedDriftEffect {
+    /// A collision outranks a widen, so it is the effect the prefix announces when both appear.
+    fn from(results: &[ReservationDriftResult]) -> Self {
+        let carries = |wanted: fn(&DriftEffect) -> bool| {
+            results
+                .iter()
+                .any(|result| result_has_effect(result, wanted))
+        };
+        if carries(|effect| matches!(effect, DriftEffect::Collision { .. })) {
+            Self::Collision
+        } else if carries(|effect| matches!(effect, DriftEffect::Widened { .. })) {
+            Self::Widened
+        } else {
+            Self::Neither
+        }
+    }
+}
+
 /// Choose the label one drift observation's condition is announced under, and whether it stops.
 const fn drift_rendering_prefix(
     attribution: &DriftPathAttributionOutcome,
-    has_collision: bool,
-    has_widen: bool,
+    effect: ObservedDriftEffect,
 ) -> (&'static str, bool) {
     match attribution {
         DriftPathAttributionOutcome::FirstTouchReserved { .. } => ("FIRST-TOUCH CLAIM: ", false),
@@ -3986,18 +4006,12 @@ const fn drift_rendering_prefix(
         | DriftPathAttributionOutcome::CoordinationRunRequired { .. } => {
             ("DRIFT ATTRIBUTION REQUIRED: ", true)
         },
-        DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. }
-            if has_collision =>
-        {
-            ("COLLISION: ", true)
-        },
-        DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. }
-            if has_widen =>
-        {
-            ("AUTO-WIDEN: ", false)
-        },
         DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. } => {
-            ("", false)
+            match effect {
+                ObservedDriftEffect::Collision => ("COLLISION: ", true),
+                ObservedDriftEffect::Widened => ("AUTO-WIDEN: ", false),
+                ObservedDriftEffect::Neither => ("", false),
+            }
         },
     }
 }

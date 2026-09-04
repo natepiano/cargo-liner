@@ -1986,6 +1986,13 @@ fn a_refused_root_head_reports_the_path_it_introduced() {
         repository.path(),
         &["init", "--quiet", "--initial-branch", "main"],
     );
+    // Git runs `maintenance run --auto --detach` after a commit, and this machine leaves that
+    // default on. Several detached runs then repack one repository at once, and the geometric
+    // repack deletes a pack a commit still in flight is reading, which surfaces as
+    // `invalid object <oid> for '<path>'` from a commit that did nothing wrong. A fixture
+    // repository is short-lived and never needs maintenance, so it opts out of both schedulers.
+    git(repository.path(), &["config", "maintenance.auto", "false"]);
+    git(repository.path(), &["config", "gc.auto", "0"]);
     git(
         repository.path(),
         &["config", "user.email", "test@example.invalid"],
@@ -3060,7 +3067,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert_eq!(
         full.fingerprint_commands(),
         vec!["diff-tree", "status"],
-        "the phase range and HEAD's own commit ride one batched read, and the working tree is \
+        "the phase range and HEAD's own commit share one batched read, and the working tree is \
          the other"
     );
     assert_batched_full_attribution_commands(&full.commands());
@@ -4099,6 +4106,13 @@ fn scratch_repository() -> TempDir {
         repository.path(),
         &["init", "--quiet", "--initial-branch", "main"],
     );
+    // Git runs `maintenance run --auto --detach` after a commit, and this machine leaves that
+    // default on. Several detached runs then repack one repository at once, and the geometric
+    // repack deletes a pack a commit still in flight is reading, which surfaces as
+    // `invalid object <oid> for '<path>'` from a commit that did nothing wrong. A fixture
+    // repository is short-lived and never needs maintenance, so it opts out of both schedulers.
+    git(repository.path(), &["config", "maintenance.auto", "false"]);
+    git(repository.path(), &["config", "gc.auto", "0"]);
     git(
         repository.path(),
         &["config", "user.email", "test@example.invalid"],

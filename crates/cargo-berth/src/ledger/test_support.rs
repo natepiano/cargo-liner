@@ -14,5 +14,19 @@ pub(super) fn scratch_repository() -> TempDir {
         .status()
         .expect("git should initialize a scratch repository");
     assert!(git_init.success());
+    // Git runs `maintenance run --auto --detach` after a commit, and this machine leaves that
+    // default on. Several detached runs then repack one repository at once, and the geometric
+    // repack deletes a pack a commit still in flight is reading, which surfaces as
+    // `invalid object <oid> for '<path>'` from a commit that did nothing wrong. A fixture
+    // repository is short-lived and never needs maintenance, so it opts out of both schedulers.
+    for setting in [["maintenance.auto", "false"], ["gc.auto", "0"]] {
+        let configured = Command::new("git")
+            .args(["config"])
+            .args(setting)
+            .current_dir(repository.path())
+            .status()
+            .expect("git should configure a scratch repository");
+        assert!(configured.success());
+    }
     repository
 }

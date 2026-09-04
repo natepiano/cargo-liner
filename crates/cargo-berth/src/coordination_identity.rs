@@ -446,11 +446,11 @@ pub(crate) enum CoordinationIdentityRejection {
 
 /// The coordination run whose active reservation already occupies a worktree.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct IncumbentWorktreeRun {
+struct IncumbentWorktreeRun {
     /// The run holding the active reservation.
-    pub(crate) coordination_run_id: CoordinationRunId,
+    coordination_run_id: CoordinationRunId,
     /// The active reservation that run holds in this worktree.
-    pub(crate) reservation_id:      ReservationId,
+    reservation_id:      ReservationId,
 }
 
 /// The coordination run and worktree a command presented when it was refused.
@@ -524,7 +524,7 @@ impl CoordinationIdentityRejection {
     /// so the same invocation can report an incursion beside this refusal. One `Display` serves
     /// both, so it claims only what holds on both — no reservation was taken and none was
     /// widened — and leaves what else the invocation reported to the envelope carrying it.
-    pub(crate) fn worktree_held_by_another_run(
+    fn worktree_held_by_another_run(
         incumbent: IncumbentWorktreeRun,
         issuing: IssuingWorktreeRun,
         worktree_context: &WorktreeContext,

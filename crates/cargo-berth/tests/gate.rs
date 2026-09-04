@@ -58,6 +58,14 @@ const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
+/// The search path the wrapper uses for its own utilities.
+///
+/// [`RawGitBehavior::RemoveAfterTargetHistory`] narrows the traced process's `PATH` to the
+/// wrapper directory alone, which is what makes git unavailable once the wrapper deletes
+/// itself. That narrowing also reaches the wrapper's own `mkdir`, `rmdir`, `rm` and `sleep`,
+/// so the wrapper restores this path for itself before running any of them. Resolving them
+/// under `/bin` instead only works where `/bin` holds more than `sh`.
+const UTILITY_PATH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_UTILITY_PATH";
 const RAW_TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 
 separator=$(printf '\037')
@@ -65,8 +73,10 @@ record=git
 for argument in "$@"; do
     record="${record}${separator}${argument}"
 done
+PATH="$CARGO_BERTH_TEST_UTILITY_PATH"
+export PATH
 lock_attempt=0
-while ! /bin/mkdir "$CARGO_BERTH_TEST_GIT_TRACE.lock" 2>/dev/null; do
+while ! mkdir "$CARGO_BERTH_TEST_GIT_TRACE.lock" 2>/dev/null; do
     lock_attempt=$((lock_attempt + 1))
     if [ "$lock_attempt" -ge 200 ]; then
         printf '%s\n' 'timed out acquiring raw git trace lock' >&2
@@ -75,7 +85,7 @@ while ! /bin/mkdir "$CARGO_BERTH_TEST_GIT_TRACE.lock" 2>/dev/null; do
     sleep 0.01
 done
 printf '%s\036' "$record" >> "$CARGO_BERTH_TEST_GIT_TRACE"
-/bin/rmdir "$CARGO_BERTH_TEST_GIT_TRACE.lock"
+rmdir "$CARGO_BERTH_TEST_GIT_TRACE.lock"
 if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "fail_phase_diff" ] \
     && [ "$1" = "--no-optional-locks" ] \
     && [ "$2" = "diff-tree" ] \
@@ -103,7 +113,7 @@ if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "remove_after_target
     && [ -z "${5:-}" ]; then
     "$CARGO_BERTH_TEST_REAL_GIT" "$@"
     status=$?
-    /bin/rm -f "$0"
+    rm -f "$0"
     exit "$status"
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
@@ -2983,6 +2993,13 @@ fn scratch_repository() -> TempDir {
         repository.path(),
         &["init", "--quiet", "--initial-branch", "main"],
     );
+    // Git runs `maintenance run --auto --detach` after a commit, and this machine leaves that
+    // default on. Several detached runs then repack one repository at once, and the geometric
+    // repack deletes a pack a commit still in flight is reading, which surfaces as
+    // `invalid object <oid> for '<path>'` from a commit that did nothing wrong. A fixture
+    // repository is short-lived and never needs maintenance, so it opts out of both schedulers.
+    git(repository.path(), &["config", "maintenance.auto", "false"]);
+    git(repository.path(), &["config", "gc.auto", "0"]);
     git(
         repository.path(),
         &["config", "user.email", "test@example.com"],
@@ -3840,6 +3857,7 @@ fn run_command_with_raw_git_behavior(
         .env(RAW_GIT_BEHAVIOR_ENVIRONMENT, raw_git_behavior.as_str())
         .env(REAL_GIT_ENVIRONMENT, git_binary())
         .env(TRACE_ENVIRONMENT, &trace_path)
+        .env(UTILITY_PATH_ENVIRONMENT, &original_path)
         // The traced command is a managed hook, or reaches one through the
         // wrapped git, and a hook resolves its own cargo-berth. The wrapped
         // search path still carries the machine's own, so without this the
