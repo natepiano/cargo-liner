@@ -486,7 +486,7 @@ fn recorded_linked_worktree_resolve_incident_uses_the_invoking_actor() {
         RECORDED_INCIDENT_COORDINATION_RUN_ID
     );
     assert_eq!(
-        incursion_event["foreign_reservation_ids"],
+        incursion_event["blocked_paths"][0]["holders"],
         serde_json::json!([holder_id])
     );
     let incident_id = incursion_event["incident_id"]

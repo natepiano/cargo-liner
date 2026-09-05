@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unconfigured`: every verb stopped there, and the edit hook allowed every write
   in silence. A file the linked worktree does have still wins, and a worktree with
   no file anywhere names the main worktree's path as the one `init` should create.
+- An incursion observation pairs each entered path with the holders that block
+  it. The observation and the retained incident carried paths and holders as two
+  independent sets, so a caller could report every path under the union of all
+  their holders; an answered path then stopped matching its own incident as soon
+  as an unrelated path added a holder, and was raised again. The `incursion`
+  journal record now writes `blocked_paths`; records already written in the
+  two-array layout replay unchanged.
 - The batched-attribution benchmark no longer sits in the test suite. It timed
   two hand-copied git command lines against each other with a 25ms margin, so
   it went red whenever the machine was busy and never ran cargo-berth at all.

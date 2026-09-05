@@ -535,12 +535,8 @@ fn incursion_incident_round_trip_deduplicates_and_resolves() {
         .to_owned();
     assert_eq!(incursion_event["reservation_id"], subject_id);
     assert_eq!(
-        incursion_event["foreign_reservation_ids"],
-        serde_json::json!([foreign_id])
-    );
-    assert_eq!(
-        incursion_event["paths"],
-        serde_json::json!(["shared/entered.txt"])
+        incursion_event["blocked_paths"],
+        serde_json::json!([{"path": "shared/entered.txt", "holders": [foreign_id]}])
     );
     assert_eq!(
         incursion_envelope["payload"]["data"]["results"][0]["effects"][0]["incident_id"],
@@ -1819,7 +1815,7 @@ fn assert_a_foreign_worktree_entry_is_recorded_against_its_own_reservation(
         .expect("incursion should carry an incident id");
     assert!(warning.contains(&format!("resolve {foreign_id} --incursion {incident_id}")));
     assert_eq!(
-        incursion["foreign_reservation_ids"],
+        incursion["blocked_paths"][0]["holders"],
         serde_json::json!([holder_id])
     );
 }
@@ -2546,11 +2542,11 @@ fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
     assert_eq!(incursion_events.len(), 2);
     assert!(incursion_events.iter().any(|event| {
         event["reservation_id"] == first_id
-            && event["foreign_reservation_ids"] == serde_json::json!([foreign_id])
+            && event["blocked_paths"][0]["holders"] == serde_json::json!([foreign_id])
     }));
     assert!(incursion_events.iter().any(|event| {
         event["reservation_id"] == second_id
-            && event["foreign_reservation_ids"] == serde_json::json!([foreign_id])
+            && event["blocked_paths"][0]["holders"] == serde_json::json!([foreign_id])
     }));
     assert!(!journal_events.iter().any(|event| event["op"] == "widen"));
 }
@@ -4376,9 +4372,15 @@ impl CrossWorktreeEntry {
     /// Whether some incursion names the other worktree's holder as a party entered.
     fn names_the_foreign_holder(&self) -> bool {
         self.incursions.iter().any(|incursion| {
-            incursion["foreign_reservation_ids"]
+            incursion["blocked_paths"]
                 .as_array()
-                .is_some_and(|holders| holders.iter().any(|held| held == &self.foreign_id))
+                .is_some_and(|blocked| {
+                    blocked.iter().any(|entry| {
+                        entry["holders"].as_array().is_some_and(|holders| {
+                            holders.iter().any(|held| held == &self.foreign_id)
+                        })
+                    })
+                })
         })
     }
 }

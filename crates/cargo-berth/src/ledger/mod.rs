@@ -38,6 +38,8 @@ pub(crate) use handle::TransactionValidation;
 pub(crate) use identity::read_worktree_identity;
 pub(crate) use identity::resolve_identity;
 pub(crate) use identity::worktree_identity;
+pub(crate) use journal::BlockedIncursionPath;
+pub(crate) use journal::BlockedIncursionPathSet;
 pub(crate) use journal::BypassCause;
 pub(crate) use journal::BypassOccurrenceTime;
 pub(crate) use journal::BypassRecording;

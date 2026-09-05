@@ -630,7 +630,7 @@ The operation union is:
 | `successor_scoped_patch_equivalence_checked` | `predecessor_reservation_id`, `subject`, `successor_head`, `verdict` |
 | `successor_scoped_patch_comparison_attempted` | `predecessor_reservation_id`, `subject`, `successor_head` |
 | `resolve_defer` | `deferred_reservation_id`, `blocker_reservation_id`, `edge_id`, `direction`, `reason` |
-| `incursion` | `incident_id`, `reservation_id`, `foreign_reservation_ids`, `paths` |
+| `incursion` | `incident_id`, `reservation_id`, `blocked_paths` |
 | `resolve_incursion` | `incident_id` |
 | `forced_integration_permit` | `permit_id`, `reservation_id`, `reason`, `skipped_holds` |
 | `consume_forced_integration_permit` | `permit_id`, `reservation_id` |
@@ -715,8 +715,12 @@ These operation fields use the following tagged values:
   heads are ordered by their persisted attempt generation, and every transient
   attempt records a new generation so an unavailable head rotates behind other
   pending heads instead of starving them. A deferred head remains not incorporated.
-- Incursion `foreign_reservation_ids` and `paths` are non-empty arrays of
-  reservation-id strings and repository-relative path strings, respectively.
+- Incursion `blocked_paths` is a non-empty array of `{ "path", "holders" }`
+  objects: a repository-relative path string and the non-empty array of
+  reservation-id strings whose scopes cover that path. Records written before
+  the pairing carry two independent arrays instead, `foreign_reservation_ids`
+  and `paths`; the reader still accepts that layout and pairs every path with
+  the whole holder set, so replay decides coverage for it as it always did.
 - `skipped_holds.kind` is `ordering_edges` with non-empty `edges`; `deferrals`
   with non-empty `deferrals`; or `ordering_edges_and_deferrals` with both.
   An edge is `{ "edge_id": <uuid-v7>, "predecessor": <uuid-v7> }`; a

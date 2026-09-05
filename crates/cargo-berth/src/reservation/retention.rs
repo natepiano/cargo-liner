@@ -39,13 +39,12 @@ use crate::ids::ProjectionGeneration;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::ReservationRevision;
-use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
+use crate::ledger::BlockedIncursionPath;
+use crate::ledger::BlockedIncursionPathSet;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::EditAuthorization;
-use crate::ledger::ForeignReservationIdSet;
 use crate::ledger::IncursionIncidentId;
-use crate::ledger::IncursionPathSet;
 use crate::ledger::JournalActor;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
@@ -85,11 +84,10 @@ pub(super) enum IntegrationTrunkSnapshot {
 /// One incursion incident and its current replayed disposition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IncursionIncident {
-    id:                      IncursionIncidentId,
-    reservation_id:          ReservationId,
-    foreign_reservation_ids: ForeignReservationIdSet,
-    paths:                   IncursionPathSet,
-    status:                  IncursionIncidentStatus,
+    id:             IncursionIncidentId,
+    reservation_id: ReservationId,
+    blocked_paths:  BlockedIncursionPathSet,
+    status:         IncursionIncidentStatus,
 }
 
 /// Whether an incursion still requires a user disposition.
@@ -113,18 +111,18 @@ pub(crate) enum IncursionObservation {
     /// Every entered path already belongs to this unanswered incident, which still stands.
     AlreadyOutstanding {
         /// The incident the caller should be pointed at rather than a fresh one.
-        incident_id: IncursionIncidentId,
-        /// The entered paths that incident already covers.
-        paths:       IncursionPathSet,
+        incident_id:   IncursionIncidentId,
+        /// The entered paths that incident already covers, each with its holders.
+        blocked_paths: BlockedIncursionPathSet,
     },
     /// Every entered path was already answered, and must not be raised again.
     AlreadyAnswered,
     /// These paths are new to this overlap and need a freshly created incident.
     NewlyObserved {
         /// The identity issued for the new incident.
-        incident_id: IncursionIncidentId,
-        /// Only the entered paths no incident accounts for yet.
-        paths:       IncursionPathSet,
+        incident_id:   IncursionIncidentId,
+        /// Only the entered paths no incident accounts for yet, each with its holders.
+        blocked_paths: BlockedIncursionPathSet,
     },
 }
 
@@ -447,34 +445,41 @@ impl RetainedReservationSet {
     ///
     /// An answered path stays answered. The edit remains on disk after a disposition is
     /// recorded, so re-raising it would hand the caller a warning no answer can clear.
+    ///
+    /// Each entered path arrives with the holders that block it, so a path answered
+    /// under one holder stays answered when an unrelated path adds a second holder to
+    /// the same observation.
     pub(crate) fn observe_incursion(
         &self,
         reservation_id: ReservationId,
-        foreign_reservation_ids: &ForeignReservationIdSet,
-        paths: &IncursionPathSet,
+        blocked_paths: &BlockedIncursionPathSet,
     ) -> IncursionObservation {
         let mut outstanding = None;
         let mut outstanding_paths = Vec::new();
         let mut uncovered_paths = Vec::new();
-        for path in paths.as_slice() {
-            match self.incursion_path_coverage(reservation_id, foreign_reservation_ids, path) {
+        for blocked in blocked_paths.as_slice() {
+            match self.incursion_path_coverage(reservation_id, blocked) {
                 IncursionPathCoverage::Outstanding(incident_id) => {
                     outstanding.get_or_insert(incident_id);
-                    outstanding_paths.push(path.clone());
+                    outstanding_paths.push(blocked.clone());
                 },
                 IncursionPathCoverage::Answered => {},
-                IncursionPathCoverage::Uncovered => uncovered_paths.push(path.clone()),
+                IncursionPathCoverage::Uncovered => uncovered_paths.push(blocked.clone()),
             }
         }
-        if let Ok(paths) = IncursionPathSet::try_from(uncovered_paths) {
+        if let Ok(blocked_paths) = BlockedIncursionPathSet::try_from(uncovered_paths) {
             return IncursionObservation::NewlyObserved {
                 incident_id: IncursionIncidentId::new(),
-                paths,
+                blocked_paths,
             };
         }
-        match (outstanding, IncursionPathSet::try_from(outstanding_paths)) {
-            (Some(incident_id), Ok(paths)) => {
-                IncursionObservation::AlreadyOutstanding { incident_id, paths }
+        match (
+            outstanding,
+            BlockedIncursionPathSet::try_from(outstanding_paths),
+        ) {
+            (Some(incident_id), Ok(blocked_paths)) => IncursionObservation::AlreadyOutstanding {
+                incident_id,
+                blocked_paths,
             },
             _ => IncursionObservation::AlreadyAnswered,
         }
@@ -483,24 +488,27 @@ impl RetainedReservationSet {
     /// Decide whether any retained incident already accounts for one entered path.
     ///
     /// The holders are compared by containment rather than equality, matching the
-    /// sibling suppression in drift classification: an incident naming every holder
-    /// observed now already covers what this observation would report.
+    /// sibling suppression in drift classification: an incident naming, against this
+    /// path, every holder observed against it now already covers what this observation
+    /// would report.
     fn incursion_path_coverage(
         &self,
         reservation_id: ReservationId,
-        foreign_reservation_ids: &ForeignReservationIdSet,
-        path: &ReservationScopePath,
+        blocked: &BlockedIncursionPath,
     ) -> IncursionPathCoverage {
         let mut answered = false;
         for incident in &self.incursion_incidents {
             if incident.reservation_id() != reservation_id
-                || !incident.paths().as_slice().contains(path)
-                || !foreign_reservation_ids.as_slice().iter().all(|holder| {
-                    incident
-                        .foreign_reservation_ids()
-                        .as_slice()
-                        .contains(holder)
-                })
+                || !incident
+                    .blocked_paths()
+                    .holders_of(&blocked.path)
+                    .is_some_and(|recorded| {
+                        blocked
+                            .holders
+                            .as_slice()
+                            .iter()
+                            .all(|holder| recorded.as_slice().contains(holder))
+                    })
             {
                 continue;
             }
@@ -790,14 +798,8 @@ impl RetainedReservationSet {
             JournalOperation::Incursion {
                 incident_id,
                 reservation_id,
-                foreign_reservation_ids,
-                paths,
-            } => self.apply_incursion(
-                *incident_id,
-                *reservation_id,
-                foreign_reservation_ids,
-                paths,
-            ),
+                blocked_paths,
+            } => self.apply_incursion(*incident_id, *reservation_id, blocked_paths.blocked_paths()),
             JournalOperation::ResolveIncursion { incident_id } => self.apply_incursion_resolution(
                 *incident_id,
                 &event.actor,
@@ -812,8 +814,7 @@ impl RetainedReservationSet {
         &mut self,
         incident_id: IncursionIncidentId,
         reservation_id: ReservationId,
-        foreign_reservation_ids: &ForeignReservationIdSet,
-        paths: &IncursionPathSet,
+        blocked_paths: &BlockedIncursionPathSet,
     ) -> Result<(), ReservationReplayError> {
         self.reservation(reservation_id)?;
         if self
@@ -828,8 +829,7 @@ impl RetainedReservationSet {
         self.incursion_incidents.push(IncursionIncident {
             id: incident_id,
             reservation_id,
-            foreign_reservation_ids: foreign_reservation_ids.clone(),
-            paths: paths.clone(),
+            blocked_paths: blocked_paths.clone(),
             status: IncursionIncidentStatus::Outstanding,
         });
         Ok(())
@@ -1339,13 +1339,8 @@ impl IncursionIncident {
     /// Return the reservation whose worktree entered foreign scopes.
     pub(crate) const fn reservation_id(&self) -> ReservationId { self.reservation_id }
 
-    /// Borrow the foreign reservations entered by this incident.
-    pub(crate) const fn foreign_reservation_ids(&self) -> &ForeignReservationIdSet {
-        &self.foreign_reservation_ids
-    }
-
-    /// Borrow the repository paths entered by this incident.
-    pub(crate) const fn paths(&self) -> &IncursionPathSet { &self.paths }
+    /// Borrow the repository paths entered by this incident, each with its holders.
+    pub(crate) const fn blocked_paths(&self) -> &BlockedIncursionPathSet { &self.blocked_paths }
 
     /// Return the incident's current replayed disposition.
     pub(crate) const fn status(&self) -> &IncursionIncidentStatus { &self.status }
@@ -1373,8 +1368,10 @@ mod tests {
     use crate::ids::ReservationId;
     use crate::ids::ReservationScopePath;
     use crate::ids::WorktreeId;
+    use crate::ledger::BlockedIncursionPath;
+    use crate::ledger::BlockedIncursionPathSet;
+    use crate::ledger::ForeignReservationIdSet;
     use crate::ledger::IncursionIncidentId;
-    use crate::ledger::IncursionPathSet;
     use crate::ledger::JournalEvent;
     use crate::reservation::record::ReservationEvidenceState;
     use crate::reservation::scoped_patch_evaluation::DurableScopedPatchComparison;
@@ -1386,6 +1383,8 @@ mod tests {
 
     const FOREIGN_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a22";
     const INCIDENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a23";
+    const SECOND_FOREIGN_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a24";
+    const SECOND_INCIDENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a25";
     const PROTECTED_TIP: &str = "2222222222222222222222222222222222222222";
     const REPLACEMENT_TIP: &str = "3333333333333333333333333333333333333333";
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
@@ -2233,10 +2232,9 @@ mod tests {
             .incursion_incidents()
             .next()
             .ok_or("replay should retain the incursion")?;
-        let foreign_reservation_ids = incident.foreign_reservation_ids().clone();
-        let paths = incident.paths().clone();
+        let blocked_paths = incident.blocked_paths().clone();
         assert!(matches!(
-            outstanding.observe_incursion(reservation_id, &foreign_reservation_ids, &paths),
+            outstanding.observe_incursion(reservation_id, &blocked_paths),
             IncursionObservation::AlreadyOutstanding { .. }
         ));
 
@@ -2253,7 +2251,7 @@ mod tests {
         assert_eq!(replayed_resolving_actor, &resolving_actor);
         assert!(
             matches!(
-                answered.observe_incursion(reservation_id, &foreign_reservation_ids, &paths),
+                answered.observe_incursion(reservation_id, &blocked_paths),
                 IncursionObservation::AlreadyAnswered
             ),
             "the straying edit stays on disk, so a fresh incident could never be cleared"
@@ -2282,19 +2280,20 @@ mod tests {
             .incursion_incidents()
             .next()
             .ok_or("replay should retain the incursion")?;
-        let foreign_reservation_ids = incident.foreign_reservation_ids().clone();
-        let widened = IncursionPathSet::try_from(vec![
-            "src/lib.rs".parse::<ReservationScopePath>()?,
-            "src/other.rs".parse::<ReservationScopePath>()?,
-        ])?;
+        let holders = incident
+            .blocked_paths()
+            .holders_of(&"src/lib.rs".parse::<ReservationScopePath>()?)
+            .ok_or("the incident should name the entered path")?
+            .clone();
+        let widened = blocked_paths(&[("src/lib.rs", &holders), ("src/other.rs", &holders)])?;
 
-        let observation =
-            outstanding.observe_incursion(reservation_id, &foreign_reservation_ids, &widened);
-        let IncursionObservation::NewlyObserved { paths, .. } = observation else {
+        let observation = outstanding.observe_incursion(reservation_id, &widened);
+        let IncursionObservation::NewlyObserved { blocked_paths, .. } = observation else {
             return Err("a genuinely new path must still raise an incident".into());
         };
         assert_eq!(
-            paths
+            blocked_paths
+                .paths()
                 .as_slice()
                 .iter()
                 .map(ToString::to_string)
@@ -2303,6 +2302,130 @@ mod tests {
             "the outstanding incident already covers src/lib.rs, so it must not be re-raised"
         );
         Ok(())
+    }
+
+    /// An answered path stays answered when an unrelated path adds a second holder.
+    ///
+    /// Reporting both paths under the union of their holders once made the answered path
+    /// stop matching its own incident, and it was raised a third time. Each path now
+    /// carries only the holders that block it, so the union cannot be expressed.
+    #[test]
+    fn an_answered_path_stays_answered_when_another_path_adds_a_holder()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let [claim, ..] = lifecycle_events()?;
+        let incursion = journal_event(
+            2,
+            &json!({
+                "op": "incursion",
+                "incident_id": INCIDENT_ID,
+                "reservation_id": RESERVATION_ID,
+                "blocked_paths": [
+                    {"path": "src/lib.rs", "holders": [FOREIGN_RESERVATION_ID]},
+                ],
+            }),
+        )?;
+        let resolution = journal_event(
+            3,
+            &json!({"op": "resolve_incursion", "incident_id": INCIDENT_ID}),
+        )?;
+        let answered = RetainedReservationSet::replay(&[claim, incursion, resolution])?;
+        let first_holder = ForeignReservationIdSet::try_from(vec![
+            FOREIGN_RESERVATION_ID.parse::<ReservationId>()?,
+        ])?;
+        let both_holders = ForeignReservationIdSet::try_from(vec![
+            FOREIGN_RESERVATION_ID.parse::<ReservationId>()?,
+            SECOND_FOREIGN_RESERVATION_ID.parse::<ReservationId>()?,
+        ])?;
+        let observed =
+            blocked_paths(&[("src/lib.rs", &first_holder), ("Cargo.lock", &both_holders)])?;
+
+        let IncursionObservation::NewlyObserved { blocked_paths, .. } =
+            answered.observe_incursion(reservation_id, &observed)
+        else {
+            return Err("the path under a new holder must raise an incident".into());
+        };
+        assert_eq!(
+            blocked_paths
+                .paths()
+                .as_slice()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["Cargo.lock".to_owned()],
+            "src/lib.rs was answered under its own holder and must not be raised again"
+        );
+        Ok(())
+    }
+
+    /// The independent-array record layout replays to the same coverage as a paired one.
+    #[test]
+    fn independent_array_and_paired_incursion_records_replay_alike()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let [claim, ..] = lifecycle_events()?;
+        let independent = journal_event(
+            2,
+            &json!({
+                "op": "incursion",
+                "incident_id": INCIDENT_ID,
+                "reservation_id": RESERVATION_ID,
+                "foreign_reservation_ids": [FOREIGN_RESERVATION_ID, SECOND_FOREIGN_RESERVATION_ID],
+                "paths": ["src/lib.rs", "src/other.rs"],
+            }),
+        )?;
+        let paired = journal_event(
+            3,
+            &json!({
+                "op": "incursion",
+                "incident_id": SECOND_INCIDENT_ID,
+                "reservation_id": RESERVATION_ID,
+                "blocked_paths": [
+                    {"path": "src/lib.rs", "holders": [FOREIGN_RESERVATION_ID, SECOND_FOREIGN_RESERVATION_ID]},
+                    {"path": "src/other.rs", "holders": [FOREIGN_RESERVATION_ID, SECOND_FOREIGN_RESERVATION_ID]},
+                ],
+            }),
+        )?;
+        let retained = RetainedReservationSet::replay(&[claim, independent, paired])?;
+        let [from_independent, from_paired] = retained
+            .incursion_incidents()
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| "replay should retain both incidents")?;
+        assert_eq!(
+            from_independent.blocked_paths(),
+            from_paired.blocked_paths(),
+            "an independent-array record pairs every path with the whole holder set"
+        );
+
+        let both_holders = ForeignReservationIdSet::try_from(vec![
+            FOREIGN_RESERVATION_ID.parse::<ReservationId>()?,
+            SECOND_FOREIGN_RESERVATION_ID.parse::<ReservationId>()?,
+        ])?;
+        let observed = blocked_paths(&[("src/other.rs", &both_holders)])?;
+        let IncursionObservation::AlreadyOutstanding { incident_id, .. } =
+            retained.observe_incursion(reservation_id, &observed)
+        else {
+            return Err("either record should already cover the path".into());
+        };
+        assert_eq!(incident_id, INCIDENT_ID.parse::<IncursionIncidentId>()?);
+        Ok(())
+    }
+
+    fn blocked_paths(
+        entries: &[(&str, &ForeignReservationIdSet)],
+    ) -> Result<BlockedIncursionPathSet, Box<dyn std::error::Error>> {
+        Ok(BlockedIncursionPathSet::try_from(
+            entries
+                .iter()
+                .map(|(path, holders)| {
+                    Ok(BlockedIncursionPath {
+                        path:    path.parse::<ReservationScopePath>()?,
+                        holders: (*holders).clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?,
+        )?)
     }
 
     fn assert_no_retained_scoped_patch_target_verdict(

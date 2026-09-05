@@ -22,10 +22,11 @@ use crate::ids::CommitterTime;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ids::WireOrderedReservationIds;
+use crate::ledger::BlockedIncursionPath;
+use crate::ledger::BlockedIncursionPathSet;
 use crate::ledger::ClaimSource;
 use crate::ledger::CollisionPathSet;
 use crate::ledger::ForeignReservationIdSet;
-use crate::ledger::IncursionPathSet;
 use crate::ledger::JournalOperation;
 use crate::ledger::ReservationScopeAdditionSet;
 use crate::ledger::WidenCause;
@@ -172,28 +173,54 @@ struct DriftEffectBuilder {
     collision_reservations: Vec<ReservationId>,
 }
 
-/// Gather entered paths into one group per distinct set of blocking holders.
+/// Pair every entered path with the holders that block it, in path order.
 ///
 /// Incursion coverage is decided one path at a time, so an observation must carry the
-/// holders that actually block that path. Reporting every entered path under the union
-/// of all their holders made an answered path stop matching its own incident as soon as
-/// an unrelated path added a holder, and the answered path was raised again.
-fn group_incursions_by_holders(
+/// holders that actually block each path. A path observed more than once keeps its
+/// first holders; a path no holder blocks is not an incursion and is dropped.
+fn pair_incursions_with_holders(
     incursions: Vec<(ReservationScopePath, Vec<ReservationId>)>,
-) -> Vec<(WireOrderedReservationIds, Vec<ReservationScopePath>)> {
-    let mut groups: Vec<(WireOrderedReservationIds, Vec<ReservationScopePath>)> = Vec::new();
+) -> Vec<BlockedIncursionPath> {
+    let mut blocked_paths: Vec<BlockedIncursionPath> = Vec::new();
     for (path, holders) in incursions {
-        let holders = WireOrderedReservationIds::sorted_and_deduplicated(holders);
-        match groups.iter_mut().find(|(grouped, _)| *grouped == holders) {
-            Some((_, paths)) => paths.push(path),
-            None => groups.push((holders, vec![path])),
+        if blocked_paths.iter().any(|blocked| blocked.path == path) {
+            continue;
+        }
+        let Ok(holders) = ForeignReservationIdSet::try_from(
+            WireOrderedReservationIds::sorted_and_deduplicated(holders).into_vec(),
+        ) else {
+            continue;
+        };
+        blocked_paths.push(BlockedIncursionPath { path, holders });
+    }
+    blocked_paths.sort_by_cached_key(|blocked| blocked.path.to_string());
+    blocked_paths
+}
+
+/// Gather blocked paths into one observation per distinct set of blocking holders.
+///
+/// Each observation becomes its own incident, and an incident is answered as one, so
+/// paths held by different reservations are kept apart: answering the overlap with one
+/// holder must not silently answer an overlap with another. Groups keep the order their
+/// first path arrived in, which is path order.
+fn group_blocked_paths_by_holders(
+    blocked_paths: Vec<BlockedIncursionPath>,
+) -> Vec<BlockedIncursionPathSet> {
+    let mut groups: Vec<Vec<BlockedIncursionPath>> = Vec::new();
+    for blocked in blocked_paths {
+        match groups.iter_mut().find(|group| {
+            group
+                .first()
+                .is_some_and(|first| first.holders == blocked.holders)
+        }) {
+            Some(group) => group.push(blocked),
+            None => groups.push(vec![blocked]),
         }
     }
-    for (_, paths) in &mut groups {
-        ordering::normalize_paths(paths);
-    }
-    groups.sort_by_key(|(_, paths)| paths.first().map(ToString::to_string).unwrap_or_default());
     groups
+        .into_iter()
+        .filter_map(|group| BlockedIncursionPathSet::try_from(group).ok())
+        .collect()
 }
 
 impl DriftEffectBuilder {
@@ -250,37 +277,32 @@ impl DriftEffectBuilder {
                 },
             }
         }
-        for (holders, group_paths) in group_incursions_by_holders(self.incursions) {
-            let (Ok(foreign_reservation_ids), Ok(paths)) = (
-                ForeignReservationIdSet::try_from(holders.into_vec()),
-                IncursionPathSet::try_from(group_paths),
-            ) else {
-                continue;
-            };
-            let reportable = match reservations.observe_incursion(
-                reservation_id,
-                &foreign_reservation_ids,
-                &paths,
-            ) {
+        for blocked_paths in
+            group_blocked_paths_by_holders(pair_incursions_with_holders(self.incursions))
+        {
+            let reportable = match reservations.observe_incursion(reservation_id, &blocked_paths) {
                 IncursionObservation::AlreadyAnswered => None,
-                IncursionObservation::AlreadyOutstanding { incident_id, paths } => {
-                    Some((incident_id, paths))
-                },
-                IncursionObservation::NewlyObserved { incident_id, paths } => {
+                IncursionObservation::AlreadyOutstanding {
+                    incident_id,
+                    blocked_paths,
+                } => Some((incident_id, blocked_paths)),
+                IncursionObservation::NewlyObserved {
+                    incident_id,
+                    blocked_paths,
+                } => {
                     operations.push(JournalOperation::Incursion {
                         incident_id,
                         reservation_id,
-                        foreign_reservation_ids: foreign_reservation_ids.clone(),
-                        paths: paths.clone(),
+                        blocked_paths: blocked_paths.clone().into(),
                     });
-                    Some((incident_id, paths))
+                    Some((incident_id, blocked_paths))
                 },
             };
-            if let Some((incident_id, paths)) = reportable {
+            if let Some((incident_id, blocked_paths)) = reportable {
                 effects.push(DriftEffect::Incursion {
                     incident_id,
-                    foreign_reservation_ids,
-                    paths,
+                    foreign_reservation_ids: blocked_paths.holders(),
+                    paths: blocked_paths.paths(),
                     commits: Vec::new(),
                 });
             }
@@ -543,13 +565,14 @@ fn outstanding_incursion_covers(
         .any(|incident| {
             incident.reservation_id() != current_reservation_id
                 && reporting.contains(&incident.reservation_id())
-                && incident.paths().as_slice().contains(path)
-                && blockers.iter().all(|blocker| {
-                    incident
-                        .foreign_reservation_ids()
-                        .as_slice()
-                        .contains(blocker)
-                })
+                && incident
+                    .blocked_paths()
+                    .holders_of(path)
+                    .is_some_and(|recorded| {
+                        blockers
+                            .iter()
+                            .all(|blocker| recorded.as_slice().contains(blocker))
+                    })
         })
 }
 
@@ -621,80 +644,68 @@ fn blocking_coverage(
 
 #[cfg(test)]
 mod tests {
-    use super::group_incursions_by_holders;
+    use super::pair_incursions_with_holders;
     use crate::ids::ReservationId;
 
     const FIRST_HOLDER: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a22";
     const SECOND_HOLDER: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a24";
 
-    /// Paths blocked by different holders belong to different incursions.
+    /// Every entered path keeps the holders that block it, and only those.
     ///
-    /// Reporting them together forced one incident to carry the union of both holders,
-    /// which stopped either path from matching its own answer.
+    /// Reporting paths under the union of their holders forced one incident to carry
+    /// holders no single path exhibited, which stopped an answered path from matching
+    /// its own answer as soon as an unrelated path added a holder.
     #[test]
-    fn paths_held_by_different_reservations_are_reported_separately()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let groups = group_incursions_by_holders(vec![
-            (
-                "src/lib.rs".parse()?,
-                vec![FIRST_HOLDER.parse::<ReservationId>()?],
-            ),
-            (
-                "src/other.rs".parse()?,
-                vec![SECOND_HOLDER.parse::<ReservationId>()?],
-            ),
+    fn each_path_keeps_its_own_holders_in_path_order() -> Result<(), Box<dyn std::error::Error>> {
+        let first = FIRST_HOLDER.parse::<ReservationId>()?;
+        let second = SECOND_HOLDER.parse::<ReservationId>()?;
+        let blocked = pair_incursions_with_holders(vec![
+            ("src/other.rs".parse()?, vec![second, first, second]),
+            ("src/lib.rs".parse()?, vec![first]),
         ]);
 
-        assert_eq!(groups.len(), 2, "each holder owns its own incursion");
-        let reported: Vec<_> = groups
+        let reported = blocked
             .iter()
-            .map(|(holders, paths)| {
+            .map(|blocked| {
                 (
-                    holders
+                    blocked.path.to_string(),
+                    blocked
+                        .holders
                         .as_slice()
                         .iter()
                         .map(ToString::to_string)
                         .collect::<Vec<_>>(),
-                    paths.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
         assert_eq!(
             reported,
             vec![
-                (vec![FIRST_HOLDER.to_owned()], vec!["src/lib.rs".to_owned()]),
+                ("src/lib.rs".to_owned(), vec![FIRST_HOLDER.to_owned()]),
                 (
-                    vec![SECOND_HOLDER.to_owned()],
-                    vec!["src/other.rs".to_owned()]
+                    "src/other.rs".to_owned(),
+                    vec![FIRST_HOLDER.to_owned(), SECOND_HOLDER.to_owned()]
                 ),
-            ]
+            ],
+            "paths are ordered regardless of entry order, and holders are ordered and distinct"
         );
         Ok(())
     }
 
-    /// Paths blocked by the same holders stay in one incursion.
+    /// A path with no blocking holder is not an incursion, and a repeated path is one.
     #[test]
-    fn paths_sharing_their_holders_are_reported_together() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let holders = vec![
-            SECOND_HOLDER.parse::<ReservationId>()?,
-            FIRST_HOLDER.parse::<ReservationId>()?,
-        ];
-        let groups = group_incursions_by_holders(vec![
-            ("src/other.rs".parse()?, holders.clone()),
-            ("src/lib.rs".parse()?, holders),
+    fn unblocked_and_repeated_paths_collapse() -> Result<(), Box<dyn std::error::Error>> {
+        let first = FIRST_HOLDER.parse::<ReservationId>()?;
+        let second = SECOND_HOLDER.parse::<ReservationId>()?;
+        let blocked = pair_incursions_with_holders(vec![
+            ("src/lib.rs".parse()?, vec![first]),
+            ("src/lib.rs".parse()?, vec![second]),
+            ("src/free.rs".parse()?, Vec::new()),
         ]);
 
-        assert_eq!(groups.len(), 1, "one holder set covers both paths");
-        assert_eq!(
-            groups[0]
-                .1
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
-            vec!["src/lib.rs".to_owned(), "src/other.rs".to_owned()],
-            "grouped paths are ordered regardless of the order they were entered in"
-        );
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].path.to_string(), "src/lib.rs");
+        assert_eq!(blocked[0].holders.as_slice(), [first]);
         Ok(())
     }
 }

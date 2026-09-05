@@ -459,8 +459,8 @@ pub(super) fn incursion_sections(
             IncursionIncidentStatus::Outstanding => outstanding.push(OutstandingIncursion {
                 incident_id:             incident.id(),
                 straying_reservation_id: incident.reservation_id(),
-                foreign_reservation_ids: incident.foreign_reservation_ids().as_slice().to_vec(),
-                entered_paths:           incident.paths().as_slice().to_vec(),
+                foreign_reservation_ids: incident.blocked_paths().holders().as_slice().to_vec(),
+                entered_paths:           incident.blocked_paths().paths().as_slice().to_vec(),
                 outstanding_count:       outstanding_counts
                     .get(&incident.reservation_id())
                     .copied()
@@ -486,8 +486,8 @@ pub(super) fn incursion_sections(
             } => recorded.push(RecordedIncursionAnswer {
                 incident_id:             incident.id(),
                 straying_reservation_id: incident.reservation_id(),
-                foreign_reservation_ids: incident.foreign_reservation_ids().as_slice().to_vec(),
-                entered_paths:           incident.paths().as_slice().to_vec(),
+                foreign_reservation_ids: incident.blocked_paths().holders().as_slice().to_vec(),
+                entered_paths:           incident.blocked_paths().paths().as_slice().to_vec(),
                 resolution_event_id:     *resolution_event_id,
                 resolved_at:             resolved_at.clone(),
             }),

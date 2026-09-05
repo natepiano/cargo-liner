@@ -43,6 +43,7 @@ use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ids::SchemaVersion;
+use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorkPlanPhase;
 use crate::ids::WorktreeId;
 use crate::reservation::EditBlockingStatus;
@@ -472,13 +473,12 @@ pub(crate) enum JournalOperation {
     /// Record a write that entered scopes reserved by another worktree.
     Incursion {
         /// The durable identity used to answer this incident.
-        incident_id:             IncursionIncidentId,
+        incident_id:    IncursionIncidentId,
         /// The reservation whose worktree made the write.
-        reservation_id:          ReservationId,
-        /// The foreign reservations whose scopes were entered.
-        foreign_reservation_ids: ForeignReservationIdSet,
-        /// The paths written without coverage.
-        paths:                   IncursionPathSet,
+        reservation_id: ReservationId,
+        /// The paths written without coverage, each with the holders blocking it.
+        #[serde(flatten)]
+        blocked_paths:  IncursionBlockedPaths,
     },
     /// Record the user disposition that answers one incursion incident.
     ResolveIncursion {
@@ -1061,6 +1061,117 @@ nonempty_journal_set!(
     "The non-empty repository path set entered by one incursion.",
     "an incursion must name at least one path"
 );
+/// One entered path and the foreign reservations whose scopes cover it.
+///
+/// The relation an incursion records is per path: each entered path is blocked by the
+/// holders that actually claim it. Carrying the path and its holders together makes a
+/// union of several paths' holders unrepresentable rather than merely unwritten.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub(crate) struct BlockedIncursionPath {
+    /// The repository path the write entered.
+    pub(crate) path:    ReservationScopePath,
+    /// The foreign reservations whose scopes cover that path.
+    pub(crate) holders: ForeignReservationIdSet,
+}
+
+nonempty_journal_set!(
+    BlockedIncursionPathSet,
+    BlockedIncursionPath,
+    EmptyBlockedIncursionPathSet,
+    "The non-empty set of entered paths, each with its blocking holders, proven by one incursion.",
+    "an incursion must name at least one blocked path"
+);
+
+impl BlockedIncursionPathSet {
+    /// Every entered path, in record order.
+    pub(crate) fn paths(&self) -> IncursionPathSet {
+        IncursionPathSet(self.0.iter().map(|blocked| blocked.path.clone()).collect())
+    }
+
+    /// Every holder blocking any entered path, ordered and deduplicated.
+    pub(crate) fn holders(&self) -> ForeignReservationIdSet {
+        ForeignReservationIdSet(
+            WireOrderedReservationIds::sorted_and_deduplicated(
+                self.0
+                    .iter()
+                    .flat_map(|blocked| blocked.holders.as_slice().iter().copied())
+                    .collect(),
+            )
+            .into_vec(),
+        )
+    }
+
+    /// The holders recorded against one entered path, when the set names it.
+    pub(crate) fn holders_of(
+        &self,
+        path: &ReservationScopePath,
+    ) -> Option<&ForeignReservationIdSet> {
+        self.0
+            .iter()
+            .find(|blocked| blocked.path == *path)
+            .map(|blocked| &blocked.holders)
+    }
+}
+
+/// The blocked-path payload of one incursion record, in either layout the journal holds.
+///
+/// Records written before paths carried their own holders stored two independent arrays,
+/// `foreign_reservation_ids` and `paths`. Reading one pairs every path with the whole
+/// holder set, which is exactly the relation coverage assumed of it at the time, so the
+/// coverage decisions replay unchanged. New records write only `blocked_paths`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "IncursionBlockedPathsWire")]
+pub(crate) struct IncursionBlockedPaths {
+    blocked_paths: BlockedIncursionPathSet,
+}
+
+impl IncursionBlockedPaths {
+    /// Borrow the entered paths with their holders.
+    pub(crate) const fn blocked_paths(&self) -> &BlockedIncursionPathSet { &self.blocked_paths }
+}
+
+impl From<BlockedIncursionPathSet> for IncursionBlockedPaths {
+    fn from(blocked_paths: BlockedIncursionPathSet) -> Self { Self { blocked_paths } }
+}
+
+/// The two record layouts an incursion's blocked paths arrive in.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IncursionBlockedPathsWire {
+    /// Every path carries its own holders.
+    Paired {
+        blocked_paths: BlockedIncursionPathSet,
+    },
+    /// Paths and holders were stored as two independent arrays.
+    Independent {
+        foreign_reservation_ids: ForeignReservationIdSet,
+        paths:                   IncursionPathSet,
+    },
+}
+
+impl From<IncursionBlockedPathsWire> for IncursionBlockedPaths {
+    fn from(wire: IncursionBlockedPathsWire) -> Self {
+        match wire {
+            IncursionBlockedPathsWire::Paired { blocked_paths } => Self { blocked_paths },
+            IncursionBlockedPathsWire::Independent {
+                foreign_reservation_ids,
+                paths,
+            } => Self {
+                blocked_paths: BlockedIncursionPathSet(
+                    paths
+                        .as_slice()
+                        .iter()
+                        .map(|path| BlockedIncursionPath {
+                            path:    path.clone(),
+                            holders: foreign_reservation_ids.clone(),
+                        })
+                        .collect(),
+                ),
+            },
+        }
+    }
+}
+
 nonempty_journal_set!(
     CollisionPathSet,
     ReservationScopePath,
@@ -1796,6 +1907,8 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use super::BlockedIncursionPath;
+    use super::BlockedIncursionPathSet;
     use super::BypassedMergeIdentity;
     use super::CURRENT_SCHEMA_VERSION;
     use super::CanonicalWorktreeRoot;
@@ -2090,6 +2203,47 @@ mod tests {
         assert!(serde_json::from_str::<ReservationScopeSet>("[]").is_err());
     }
 
+    /// An incursion record writes paired blocked paths and reads either layout.
+    #[test]
+    fn incursion_records_write_paired_paths_and_read_independent_arrays()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let holder = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a22".parse::<ReservationId>()?;
+        let paired = JournalOperation::Incursion {
+            incident_id:    "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a23".parse()?,
+            reservation_id: "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f".parse()?,
+            blocked_paths:  BlockedIncursionPathSet::try_from(vec![BlockedIncursionPath {
+                path:    "src/lib.rs".parse()?,
+                holders: ForeignReservationIdSet::try_from(vec![holder])?,
+            }])?
+            .into(),
+        };
+        let written = serde_json::to_value(&paired)?;
+        assert_eq!(
+            written,
+            serde_json::json!({
+                "op": "incursion",
+                "incident_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a23",
+                "reservation_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f",
+                "blocked_paths": [{"path": "src/lib.rs", "holders": [holder.to_string()]}],
+            })
+        );
+        assert_eq!(serde_json::from_value::<JournalOperation>(written)?, paired);
+
+        let independent = serde_json::json!({
+            "op": "incursion",
+            "incident_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a23",
+            "reservation_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f",
+            "foreign_reservation_ids": [holder.to_string()],
+            "paths": ["src/lib.rs"],
+        });
+        assert_eq!(
+            serde_json::from_value::<JournalOperation>(independent)?,
+            paired,
+            "independent arrays pair every path with the whole holder set"
+        );
+        Ok(())
+    }
+
     #[test]
     fn drift_journal_inputs_reject_empty_domain_values() {
         assert!(" \t\n".parse::<ExplicitWidenReason>().is_err());
@@ -2097,10 +2251,12 @@ mod tests {
         assert!(ReservationScopeAdditionSet::try_from(Vec::new()).is_err());
         assert!(ForeignReservationIdSet::try_from(Vec::new()).is_err());
         assert!(IncursionPathSet::try_from(Vec::new()).is_err());
+        assert!(BlockedIncursionPathSet::try_from(Vec::new()).is_err());
         assert!(CollisionPathSet::try_from(Vec::new()).is_err());
         assert!(serde_json::from_str::<ReservationScopeAdditionSet>("[]").is_err());
         assert!(serde_json::from_str::<ForeignReservationIdSet>("[]").is_err());
         assert!(serde_json::from_str::<IncursionPathSet>("[]").is_err());
+        assert!(serde_json::from_str::<BlockedIncursionPathSet>("[]").is_err());
         assert!(serde_json::from_str::<CollisionPathSet>("[]").is_err());
 
         let reason = "  reviewed expansion  "
