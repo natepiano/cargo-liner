@@ -3286,6 +3286,7 @@ impl EngineAnswerOccasion {
 /// A verb invoked by hand always states its failure through `message`. What varies is
 /// whether a harness hook also puts that sentence in front of someone who was doing
 /// something else at the time.
+#[derive(Clone, Copy)]
 enum LedgerReadFailureAudience {
     /// State the failure everywhere, hook presentations included.
     All,
