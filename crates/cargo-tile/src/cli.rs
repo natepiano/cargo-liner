@@ -1,10 +1,10 @@
 //! The command line, which is the grid unless it says otherwise.
 //!
 //! Running `cargo-tile` with nothing after it opens the grid, because
-//! that is what the tool is for. The subcommands exist for the one thing
-//! the grid cannot do for itself: putting the capture shim in front of
-//! cargo, which rewrites files in every rustup toolchain and so is only
-//! ever done when it is asked for by name.
+//! that is what the tool is for. The subcommands are for the capture
+//! shim: the grid stands it up itself as it opens, but taking it out
+//! again is never automatic, and a machine with `capture.auto_install`
+//! off in `config.toml` needs a way to put it in by name.
 //!
 //! Both spellings reach the same place. `cargo tile` works because cargo
 //! runs any `cargo-`-prefixed binary on the path as a subcommand of its
@@ -43,8 +43,8 @@ enum Command {
     /// Put the capture shim in front of cargo, so runs report progress.
     ///
     /// Each toolchain's real cargo is moved aside and the shim takes its
-    /// name. Safe to repeat: it is also how the hook is repaired after
-    /// `rustup update` replaces it.
+    /// name. Safe to repeat. The grid does the same as it opens unless
+    /// `capture.auto_install` is off in `config.toml`.
     Install,
     /// Take the capture shim back out and give cargo its name back.
     Uninstall,
@@ -142,6 +142,7 @@ const fn describe(change: Change) -> &'static str {
         Change::Refreshed => "capture shim already installed, rewritten",
         Change::Removed => "capture shim removed",
         Change::AlreadyAbsent => "no capture shim to remove",
+        Change::Orphaned => "broken -- shim installed but the real cargo is missing",
     }
 }
 

@@ -143,6 +143,14 @@ pub(crate) fn rows(app: &App) -> SettingsRows {
         &app.loaded_config.config.tiles.fade().as_secs().to_string(),
     );
 
+    out.rows.push(SettingsRow::section("Capture"));
+    push_value(
+        &mut out,
+        &mut widths,
+        "auto install",
+        app.loaded_config.config.capture.auto_install.to_string(),
+    );
+
     out.rows.push(SettingsRow::section("Commands"));
     push_value(
         &mut out,
@@ -177,11 +185,15 @@ pub(crate) fn rows(app: &App) -> SettingsRows {
         display_path(config::keymap_path()),
     );
 
-    if app.startup_note.is_some() || app.loaded_config.error.is_some() {
+    if app.startup_note.is_some() || app.capture_note.is_some() || app.loaded_config.error.is_some()
+    {
         out.rows.push(SettingsRow::section("Notices"));
     }
     if let Some(note) = app.startup_note.clone() {
         push_value(&mut out, &mut widths, "theme", note);
+    }
+    if let Some(note) = app.capture_note.clone() {
+        push_value(&mut out, &mut widths, "capture", note);
     }
     if let Some(error) = app.loaded_config.error.clone() {
         push_value(&mut out, &mut widths, "config", error);

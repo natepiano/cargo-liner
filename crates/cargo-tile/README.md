@@ -386,7 +386,11 @@ still rules the reading. A run whose tests are drawn without a terminal — pipe
 output, or a script — reports the build alone, a test runner drawing no bar
 where nothing is watching.
 
-Reading it takes a capture, and that is what the shim is for:
+Reading it takes a capture, and that is what the shim is for. The grid puts it
+in place itself the first time it opens, says so in a toast that names the
+toolchains and the command that reverses it, and from then on brings the shim up
+to date whenever this binary carries a newer one. The subcommands do the same by
+name:
 
 ```bash
 cargo-tile install      # put the shim in front of cargo
@@ -394,7 +398,16 @@ cargo-tile status       # report what stands in front of each toolchain
 cargo-tile uninstall    # give cargo its name back
 ```
 
-`cargo tile install` and the rest work the same way.
+`cargo tile install` and the rest work the same way. Turning the automatic
+install off leaves the shim to those commands alone:
+
+```toml
+[capture]
+auto_install = false
+```
+
+Taking the shim out is never automatic, whatever the setting: runs started in
+other terminals need it whether or not a grid is open.
 
 The rows in the grid are found by scanning the process table, so they belong to
 other terminals — and a process's output belongs to the terminal that started
@@ -429,9 +442,13 @@ Worth knowing before installing it:
   would run the grid under `script` and log every redraw of it.
 - **A nested cargo does not open a second capture.** A build script, or cargo
   driving cargo, is already inside the outer run.
-- **`rustup update` replaces the shim** with a fresh cargo. Run
-  `cargo-tile install` again — it is safe to repeat, and repairing that is the
-  same command.
+- **`rustup update` replaces the shim** with a fresh cargo. The next grid to
+  open puts it back; with `auto_install` off, `cargo-tile install` does — it is
+  safe to repeat, and repairing that is the same command.
+- **A shim with no real cargo beside it is left alone.** That only happens when
+  `cargo-tile-real` is deleted by hand, and installing over it would put a shim
+  in front of nothing. The grid reports the toolchain under **Notices** in the
+  settings overlay instead; `rustup update` puts a cargo back.
 - **The real binary is only ever moved, never written over**, and anything
   holding the name without the shim's marker in it is treated as the real cargo.
   That is what makes installing twice harmless.

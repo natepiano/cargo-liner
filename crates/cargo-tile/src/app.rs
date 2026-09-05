@@ -162,6 +162,10 @@ pub(crate) struct App {
     /// Theme-resolution note from startup (a configured theme id that
     /// no file or built-in supplies), surfaced in the settings overlay.
     pub(crate) startup_note:      Option<String>,
+    /// What is still wrong with the capture shim after startup stood it
+    /// up -- an orphaned toolchain, one that refused the install --
+    /// surfaced in the settings overlay once the toast has gone.
+    pub(crate) capture_note:      Option<String>,
     /// The commands the display is holding: what the last scan found,
     /// plus whatever has finished and is still fading out of it.
     pub(crate) roster:            Roster,
@@ -207,6 +211,7 @@ impl App {
             keymap: Rc::new(keymap),
             loaded_config,
             startup_note,
+            capture_note: None,
             roster: Roster::new(),
             tiles: TileGrid::new(),
             sccache: SccacheStats::new(),

@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::constants::CONFIG_DIRNAME;
 use crate::constants::CONFIG_FILENAME;
+use crate::constants::DEFAULT_CAPTURE_AUTO_INSTALL;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_EXCLUDED;
 use crate::constants::DEFAULT_FADE_SECONDS;
@@ -132,6 +133,27 @@ impl TilesConfig {
     }
 }
 
+/// Whether the grid stands the capture shim up on its own.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct CaptureConfig {
+    /// Put the capture shim in front of every toolchain's cargo when
+    /// the grid opens, and bring an installed one up to date. On, the
+    /// grid reports progress from its first launch and repairs itself
+    /// after `rustup update`; off, the shim is only ever touched by
+    /// `cargo tile install` and `cargo tile uninstall`. The grid never
+    /// takes the shim out on its own either way.
+    pub(crate) auto_install: bool,
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            auto_install: DEFAULT_CAPTURE_AUTO_INSTALL,
+        }
+    }
+}
+
 /// Parsed `config.toml`. Every section defaults, so a missing file and
 /// an empty file behave the same.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -139,6 +161,8 @@ impl TilesConfig {
 pub(crate) struct Config {
     /// `[appearance]` — theme selection.
     pub(crate) appearance: AppearanceConfig,
+    /// `[capture]` — whether the grid installs the shim itself.
+    pub(crate) capture:    CaptureConfig,
     /// `[commands]` — which commands the grid holds back while idle.
     pub(crate) commands:   CommandsConfig,
     /// `[tiles]` — how the tile grid grows.
@@ -281,6 +305,7 @@ mod tests {
         let old = "[appearance]\nmode = \"dark\"\n";
         let restated = round_trip(old);
         assert_ne!(restated, old);
+        assert!(restated.contains("[capture]"));
         assert!(restated.contains("[commands]"));
         assert!(restated.contains("[tiles]"));
         // What the file did say survives the rewrite; only what it left

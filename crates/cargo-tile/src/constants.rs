@@ -672,6 +672,18 @@ pub(crate) const RUSTUP_HOME_ENV: &str = "RUSTUP_HOME";
 /// cargo is a thirty-megabyte binary and the marker is in the shim's
 /// opening comment, so there is no reason to read further.
 pub(crate) const SHIM_MARKER_SEARCH_BYTES: usize = 1024;
+/// Name the shim is written under, beside `cargo`, before it is renamed
+/// over the top. A shim that is running is still being read by its
+/// `sh`, which does not `exec` the real cargo but waits on it, so the
+/// file it was started from is never written in place.
+pub(crate) const SHIM_STAGING_NAME: &str = "cargo-tile-shim.staging";
+/// Whether the grid puts the shim in front of cargo when it opens,
+/// when `config.toml` says nothing.
+pub(crate) const DEFAULT_CAPTURE_AUTO_INSTALL: bool = true;
+/// How long the toast announcing a shim the grid just installed stays
+/// up. Longer than a notice: it names a change to every toolchain on
+/// the machine and the command that reverses it.
+pub(crate) const CAPTURE_INSTALLED_TOAST_VISIBLE: Duration = Duration::from_secs(12);
 
 // build progress
 /// Directory under [`CAPTURE_ROOT`], one file per run still in flight,

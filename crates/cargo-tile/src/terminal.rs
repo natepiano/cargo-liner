@@ -51,6 +51,7 @@ use tui_pane::overlay_is_in_text_mode;
 use crate::app::App;
 use crate::app::AppPaneId;
 use crate::app::Updates;
+use crate::capture;
 use crate::config;
 use crate::constants::ATTRACT_FRAME_INTERVAL;
 use crate::constants::BINARY_NAME;
@@ -129,6 +130,9 @@ pub(crate) fn run() -> ExitCode {
             return ExitCode::FAILURE;
         },
     };
+    // Before the terminal is taken: the toasts it pushes are drawn by
+    // the first frame, and a failure here is a notice, never an exit.
+    capture::stand_up(&mut app);
 
     iterm2::install_panic_restore();
     let (mut terminal, profile_switch) = match setup_terminal(&iterm2_profile) {

@@ -3,6 +3,7 @@
 
 mod app;
 mod attract;
+mod capture;
 mod cli;
 mod config;
 mod constants;

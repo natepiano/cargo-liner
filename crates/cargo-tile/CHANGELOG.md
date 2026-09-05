@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The grid puts the capture shim in front of cargo itself as it opens, so progress bars work from the first launch and come back on their own after `rustup update`. A toast names the toolchains and `cargo tile uninstall`; a shim left by an earlier version is brought up to date, quietly. `[capture] auto_install = false` in `config.toml` leaves the shim to the subcommands. Taking it out is never automatic.
+- The shim is written beside `cargo` and renamed across, never over the file already there, so a run part way through it keeps the script it opened.
 - A saved favorite whose parameters match the running attract screen is marked with `●`, and the popup's title says how many rows are saved and what the mark means.
 - `commands.excluded` in `config.toml` names cargo subcommands the scan drops entirely — no cell, no summary line, no attribution. Defaults to `["berth"]`, whose hook fires several times a second and opened a cell per invocation that closed before it could draw. The capture shim skips the same command.
 - Press `u` to restore the full attract configuration displaced by the latest random draw or favorite load, with a notice when terminal bounds adjust it or there is nothing to undo.

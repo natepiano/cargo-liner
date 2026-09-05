@@ -9,12 +9,18 @@
 //! [`REAL_CARGO_NAME`], and mirrors what it runs.
 //!
 //! Standing in front of every cargo invocation on the machine is not
-//! something to do quietly, so nothing here runs unless it is asked for
-//! by name. Two properties make that safe to live with: the real binary
-//! is only ever moved, never written over or removed, and a `cargo`
-//! without [`SHIM_MARKER`] in it is treated as the real one no matter
-//! what is beside it -- which is what makes installing twice harmless
-//! and repairs the hook after `rustup update` puts a fresh cargo back.
+//! something to do quietly. The grid does it when it opens, through
+//! [`at_startup`], and says so on screen every time it changes
+//! anything; `config.toml` can turn that off, and `cargo tile install`
+//! does the same by name. Two properties make it safe to live with: the
+//! real binary is only ever moved, never written over or removed, and a
+//! `cargo` without [`SHIM_MARKER`] in it is treated as the real one no
+//! matter what is beside it -- which is what makes installing twice
+//! harmless and repairs the hook after `rustup update` puts a fresh
+//! cargo back.
+//!
+//! Taking the shim out is never automatic. Runs started from other
+//! terminals need it whether or not a grid is open.
 
 use std::env;
 use std::fs;
@@ -31,6 +37,7 @@ use crate::constants::RUSTUP_HOME_ENV;
 use crate::constants::SHIM_MARKER;
 use crate::constants::SHIM_MARKER_SEARCH_BYTES;
 use crate::constants::SHIM_MODE;
+use crate::constants::SHIM_STAGING_NAME;
 use crate::constants::TOOLCHAIN_BIN_DIR;
 use crate::constants::TOOLCHAINS_DIR;
 
@@ -41,12 +48,71 @@ const SHIM_SOURCE: &str = include_str!("cargo-capture-shim.sh");
 /// One toolchain's cargo, and whatever stands in front of it.
 pub(crate) struct Hook {
     /// The toolchain's name, which is what a report names it by.
-    name:  String,
+    name:    String,
     /// The `cargo` the toolchain resolves, which the shim takes the
     /// place of.
-    cargo: PathBuf,
+    cargo:   PathBuf,
     /// Where the real cargo is kept while the shim holds its name.
-    real:  PathBuf,
+    real:    PathBuf,
+    /// Where a shim is written before it is renamed over `cargo`.
+    staging: PathBuf,
+}
+
+/// What the grid found, and did, standing the shim up as it opened.
+///
+/// Every list holds toolchain names, sorted, so the notice built from
+/// it reads the same twice running. A toolchain whose shim was already
+/// current is in none of them: it is the ordinary case, and there is
+/// nothing to say about it.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct Startup {
+    /// Toolchains the shim was put in front of just now.
+    pub(crate) installed: Vec<String>,
+    /// Toolchains whose shim was out of date -- written by an earlier
+    /// cargo-tile -- and now carries this binary's copy.
+    pub(crate) refreshed: Vec<String>,
+    /// Toolchains whose shim has no real cargo beside it. Left alone:
+    /// installing over that would write a shim in front of nothing, and
+    /// the only repair is `rustup` putting a cargo back.
+    pub(crate) orphaned:  Vec<String>,
+    /// Toolchains where installing failed, and the error's text. A
+    /// read-only toolchain directory is the usual reason.
+    pub(crate) failed:    Vec<(String, String)>,
+}
+
+impl Startup {
+    /// Whether anything happened that the user should hear about.
+    pub(crate) const fn is_quiet(&self) -> bool {
+        self.installed.is_empty()
+            && self.refreshed.is_empty()
+            && self.orphaned.is_empty()
+            && self.failed.is_empty()
+    }
+}
+
+/// Stand the shim up in front of every toolchain that lacks one, and
+/// bring every installed shim up to date with this binary's copy.
+///
+/// The one state left alone is [`HookState::Orphaned`], which is
+/// reported rather than repaired. A toolchain that fails does not stop
+/// the others: each is its own file system operation, and one refusing
+/// says nothing about the next.
+pub(crate) fn at_startup() -> io::Result<Startup> { Ok(stand_up(&Hook::all()?)) }
+
+/// [`at_startup`] over a known set of hooks, which is what the tests
+/// hand in.
+fn stand_up(hooks: &[Hook]) -> Startup {
+    let mut startup = Startup::default();
+    for hook in hooks {
+        match hook.ensure() {
+            Ok(Some(Change::Installed)) => startup.installed.push(hook.name.clone()),
+            Ok(Some(Change::Refreshed)) => startup.refreshed.push(hook.name.clone()),
+            Ok(Some(Change::Orphaned)) => startup.orphaned.push(hook.name.clone()),
+            Ok(Some(Change::Removed | Change::AlreadyAbsent) | None) => {},
+            Err(error) => startup.failed.push((hook.name.clone(), error.to_string())),
+        }
+    }
+    startup
 }
 
 /// What is standing in front of a toolchain's cargo right now.
@@ -75,6 +141,9 @@ pub(crate) enum Change {
     Removed,
     /// Nothing to do: no shim was installed.
     AlreadyAbsent,
+    /// Nothing done: the shim is there with no real cargo beside it,
+    /// which is not a state installing can repair.
+    Orphaned,
 }
 
 impl Hook {
@@ -102,6 +171,7 @@ impl Hook {
             name: toolchain.file_name()?.to_str()?.to_owned(),
             cargo,
             real: binaries.join(REAL_CARGO_NAME),
+            staging: binaries.join(SHIM_STAGING_NAME),
         })
     }
 
@@ -127,15 +197,50 @@ impl Hook {
     /// rather than leaving the toolchain with no cargo at all.
     pub(crate) fn install(&self) -> io::Result<Change> {
         if self.state() == HookState::Installed {
-            write_shim(&self.cargo)?;
+            self.write_shim()?;
             return Ok(Change::Refreshed);
         }
         // Whatever holds the name without the marker in it is the real
         // binary -- a first install, or the fresh cargo `rustup update`
         // just put back over the shim. Either way it is the one to keep.
         fs::rename(&self.cargo, &self.real)?;
-        write_shim(&self.cargo)?;
+        self.write_shim()?;
         Ok(Change::Installed)
+    }
+
+    /// [`install`](Self::install) as the grid runs it on every launch:
+    /// a missing shim goes in, a stale one is brought up to date, a
+    /// current one is left untouched, and an orphaned one is reported.
+    ///
+    /// `None` is the ordinary case -- the shim is there and current --
+    /// and the one that must cost nothing, because it is what every
+    /// launch after the first finds.
+    fn ensure(&self) -> io::Result<Option<Change>> {
+        match self.state() {
+            HookState::Absent => self.install().map(Some),
+            HookState::Orphaned => Ok(Some(Change::Orphaned)),
+            HookState::Installed => {
+                if fs::read_to_string(&self.cargo)? == SHIM_SOURCE {
+                    return Ok(None);
+                }
+                self.write_shim()?;
+                Ok(Some(Change::Refreshed))
+            },
+        }
+    }
+
+    /// Write the shim as `cargo`, executable, without ever writing the
+    /// file already there in place.
+    ///
+    /// A shim that is mid-run is still being read by its `sh`, which
+    /// waits on the real cargo rather than `exec`ing it. Writing over it
+    /// would hand that `sh` a half-written script. So the shim goes in
+    /// beside it and is renamed across: the running `sh` keeps the inode
+    /// it opened, and the name changes hands in one step.
+    fn write_shim(&self) -> io::Result<()> {
+        fs::write(&self.staging, SHIM_SOURCE)?;
+        fs::set_permissions(&self.staging, fs::Permissions::from_mode(SHIM_MODE))?;
+        fs::rename(&self.staging, &self.cargo)
     }
 
     /// Give the real cargo its name back.
@@ -179,12 +284,6 @@ fn is_shim(path: &Path) -> bool {
     };
     opening.truncate(read);
     String::from_utf8_lossy(&opening).contains(SHIM_MARKER)
-}
-
-/// Write the shim to `path` and make it executable.
-fn write_shim(path: &Path) -> io::Result<()> {
-    fs::write(path, SHIM_SOURCE)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(SHIM_MODE))
 }
 
 #[cfg(test)]
@@ -366,6 +465,138 @@ mod tests {
 
         assert_eq!(hook.state(), HookState::Orphaned);
         assert!(hook.remove().is_err());
+    }
+
+    /// The shim is renamed into place, never written there, so a `sh`
+    /// that is part way through reading it keeps the file it opened.
+    #[test]
+    fn writing_the_shim_leaves_nothing_staged_beside_it() {
+        let (_home, hook) = toolchain("\u{7f}ELF real cargo");
+        hook.install().unwrap();
+        hook.install().unwrap();
+
+        assert!(!hook.staging.exists());
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+    }
+
+    /// A rustup home holding one toolchain per entry, each with a cargo
+    /// holding `contents`, in the order [`Hook::all`] would list them.
+    fn toolchains(entries: &[(&str, &str)]) -> (TempDir, Vec<Hook>) {
+        let home = tempdir().unwrap();
+        for (name, contents) in entries {
+            let binaries = home
+                .path()
+                .join(TOOLCHAINS_DIR)
+                .join(name)
+                .join(TOOLCHAIN_BIN_DIR);
+            fs::create_dir_all(&binaries).unwrap();
+            fs::write(binaries.join(CARGO_NAME), contents).unwrap();
+        }
+        let mut hooks: Vec<Hook> = entries
+            .iter()
+            .map(|(name, _)| Hook::at(&home.path().join(TOOLCHAINS_DIR).join(name)).unwrap())
+            .collect();
+        hooks.sort_by(|left, right| left.name.cmp(&right.name));
+        (home, hooks)
+    }
+
+    #[test]
+    fn startup_installs_where_nothing_is_and_says_which_toolchains() {
+        let (_home, hooks) = toolchains(&[
+            ("stable-test", "\u{7f}ELF stable"),
+            ("nightly-test", "\u{7f}ELF nightly"),
+        ]);
+
+        let startup = stand_up(&hooks);
+
+        assert_eq!(
+            startup,
+            Startup {
+                installed: vec!["nightly-test".to_owned(), "stable-test".to_owned()],
+                ..Startup::default()
+            }
+        );
+        assert!(
+            hooks
+                .iter()
+                .all(|hook| hook.state() == HookState::Installed)
+        );
+    }
+
+    /// Every launch after the first finds this, and it must change
+    /// nothing and say nothing.
+    #[test]
+    fn startup_over_a_current_shim_is_quiet() {
+        let (_home, hooks) = toolchains(&[("stable-test", "\u{7f}ELF stable")]);
+        stand_up(&hooks);
+        let written = fs::metadata(&hooks[0].cargo).unwrap().modified().unwrap();
+
+        let startup = stand_up(&hooks);
+
+        assert!(startup.is_quiet());
+        assert_eq!(
+            fs::metadata(&hooks[0].cargo).unwrap().modified().unwrap(),
+            written
+        );
+    }
+
+    /// A shim an earlier cargo-tile wrote still carries the marker, so
+    /// it is installed rather than absent -- and out of date.
+    #[test]
+    fn startup_brings_a_stale_shim_up_to_this_binarys_copy() {
+        let (_home, hooks) = toolchains(&[("stable-test", "\u{7f}ELF stable")]);
+        stand_up(&hooks);
+        fs::write(
+            &hooks[0].cargo,
+            format!("#!/bin/sh\n# {SHIM_MARKER} from an earlier version\n"),
+        )
+        .unwrap();
+
+        let startup = stand_up(&hooks);
+
+        assert_eq!(startup.refreshed, vec!["stable-test".to_owned()]);
+        assert_eq!(fs::read_to_string(&hooks[0].cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(
+            fs::read_to_string(&hooks[0].real).unwrap(),
+            "\u{7f}ELF stable"
+        );
+    }
+
+    #[test]
+    fn startup_reports_an_orphaned_shim_and_leaves_it_alone() {
+        let (_home, hooks) = toolchains(&[("stable-test", "\u{7f}ELF stable")]);
+        stand_up(&hooks);
+        fs::remove_file(&hooks[0].real).unwrap();
+
+        let startup = stand_up(&hooks);
+
+        assert_eq!(startup.orphaned, vec!["stable-test".to_owned()]);
+        assert_eq!(hooks[0].state(), HookState::Orphaned);
+        assert!(!hooks[0].real.exists());
+    }
+
+    /// One toolchain refusing must not stop the shim going in front of
+    /// the others.
+    #[test]
+    fn startup_carries_on_past_a_toolchain_that_cannot_be_written() {
+        let (_home, hooks) = toolchains(&[
+            ("nightly-test", "\u{7f}ELF nightly"),
+            ("stable-test", "\u{7f}ELF stable"),
+        ]);
+        let locked = hooks[0].cargo.parent().unwrap().to_path_buf();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let startup = stand_up(&hooks);
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(startup.installed, vec!["stable-test".to_owned()]);
+        assert_eq!(startup.failed.len(), 1);
+        assert_eq!(startup.failed[0].0, "nightly-test");
+        assert_eq!(hooks[0].state(), HookState::Absent);
+        assert_eq!(
+            fs::read_to_string(&hooks[0].cargo).unwrap(),
+            "\u{7f}ELF nightly"
+        );
     }
 
     #[test]
