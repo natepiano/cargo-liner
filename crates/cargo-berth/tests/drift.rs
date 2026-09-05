@@ -2118,6 +2118,47 @@ fn a_refusal_with_nothing_entered_is_not_reported_as_a_failed_check() {
     );
 }
 
+/// A completed-but-refused run carries its own status, distinct from a request that never ran.
+///
+/// `InvalidInput` once carried both, so a machine reader could not tell an aborted request
+/// from a run that observed everything and was refused only its acquisition. The exit code is
+/// unchanged, so a caller keying on exit alone sees no difference.
+///
+/// This does not cover the ranking of that status against the attribution and unreadable
+/// phase-start conditions: attribution is `NotNeeded` here, so the refusal branch is reached
+/// under either ranking. See `docs/cargo-berth/refuse-foreign-same-worktree-reservation-next.md`.
+#[test]
+fn a_completed_but_refused_run_carries_its_own_status() {
+    let repository = repository_with_uncommitted_berth_configuration();
+    let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
+    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
+
+    let refused = post_commit_drift_under_run(repository.path(), SECOND_RUN);
+    let envelope = json_output(&refused);
+
+    assert_eq!(
+        envelope["status"], "scope_acquisition_refused",
+        "the refusal outranks the attribution question: {envelope}"
+    );
+    assert_ne!(
+        envelope["status"], "drift_attribution_required",
+        "a refused run cannot run the command an attribution answer names: {envelope}"
+    );
+    assert_eq!(refused.status.code(), Some(5), "{envelope}");
+    assert_eq!(
+        envelope["payload"]["data"]["scope_acquisition"]["status"], "refused_to_second_run",
+        "{envelope}"
+    );
+    let incumbent =
+        envelope["payload"]["data"]["scope_acquisition"]["rejection"]["incumbent_reservation_id"]
+            .as_str()
+            .expect("a refusal names the incumbent it was refused for");
+    assert!(
+        incumbent == first_id || incumbent == second_id,
+        "the incumbent is one of this worktree's holders: {envelope}"
+    );
+}
+
 /// An untracked file created by `init` does not change direct drift's occupancy answer.
 #[test]
 fn an_init_untracked_path_does_not_hide_direct_post_commit_refusal() {
@@ -2129,7 +2170,10 @@ fn an_init_untracked_path_does_not_hide_direct_post_commit_refusal() {
     let envelope = json_output(&refused);
 
     assert_eq!(refused.status.code(), Some(5), "{envelope}");
-    assert_eq!(envelope["status"], "invalid_input", "{envelope}");
+    assert_eq!(
+        envelope["status"], "scope_acquisition_refused",
+        "{envelope}"
+    );
     assert_eq!(
         envelope["payload"]["data"]["scope_acquisition"]["status"], "refused_to_second_run",
         "{envelope}"

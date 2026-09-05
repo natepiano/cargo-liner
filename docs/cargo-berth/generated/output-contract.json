@@ -7539,6 +7539,11 @@
               "type": "string"
             },
             {
+              "const": "scope_acquisition_refused",
+              "description": "A completed drift run may take no scopes: another run occupies this worktree.",
+              "type": "string"
+            },
+            {
               "const": "ambiguous_active_run_reservations",
               "description": "Several active reservations are eligible, and no session mapping selects one.",
               "type": "string"

@@ -181,31 +181,35 @@ impl RetainedReservationSet {
 
     /// Classify all blocking coverage of one changed path in drift-table order.
     ///
-    /// The `SameIdentity` probe is the exact inverse of the foreignness the conflict pass
-    /// applies: the acting worktree, holding either the acting run's work or work no longer
+    /// The `NoForeignStanding` probe is the exact inverse of the foreignness the conflict pass
+    /// applies: the subject's worktree, holding either the subject's own work or work no longer
     /// `Active`.
+    ///
+    /// The two identity parameters carry the *subject's* actor, not the invoking run. Coverage
+    /// is asked once per reporting subject, so a caller that passed the invoking run would
+    /// silently change which holders block for every subject that is not its own.
     pub(crate) fn blocking_coverage_for_drift(
         &self,
         candidate: &ReservationScopeSet,
-        acting_worktree_id: WorktreeId,
-        acting_coordination_run_id: CoordinationRunId,
+        subject_worktree_id: WorktreeId,
+        subject_coordination_run_id: CoordinationRunId,
         path_case: PathCase,
     ) -> DriftBlockingCoverage {
         if !self
             .conflicts_with_holders(candidate, path_case, |holder| {
                 !holder.is_foreign_to_coordination_run_in_worktree(
-                    acting_coordination_run_id,
-                    acting_worktree_id,
+                    subject_coordination_run_id,
+                    subject_worktree_id,
                 )
             })
             .is_empty()
         {
-            return DriftBlockingCoverage::SameIdentity;
+            return DriftBlockingCoverage::NoForeignStanding;
         }
         let conflicts = self.conflicts_for_drift(
             candidate,
-            acting_worktree_id,
-            acting_coordination_run_id,
+            subject_worktree_id,
+            subject_coordination_run_id,
             path_case,
         );
         if conflicts.is_empty() {
@@ -1822,7 +1826,7 @@ mod tests {
                 holder_run_id,
                 PathCase::Sensitive
             ),
-            DriftBlockingCoverage::SameIdentity
+            DriftBlockingCoverage::NoForeignStanding
         ));
         let DriftBlockingCoverage::Foreign(another_run) = reservations.blocking_coverage_for_drift(
             &candidate,
@@ -1887,7 +1891,7 @@ mod tests {
                 second_run_id,
                 PathCase::Sensitive
             ),
-            DriftBlockingCoverage::SameIdentity
+            DriftBlockingCoverage::NoForeignStanding
         ));
         assert!(
             reservations

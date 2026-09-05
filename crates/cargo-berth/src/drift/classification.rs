@@ -63,7 +63,8 @@ impl PreLockForeignPathClassification {
                     return;
                 }
                 match blocking_coverage(reservations, reservation, path, path_case) {
-                    DriftBlockingCoverage::SameIdentity | DriftBlockingCoverage::Unclaimed => {},
+                    DriftBlockingCoverage::NoForeignStanding | DriftBlockingCoverage::Unclaimed => {
+                    },
                     DriftBlockingCoverage::Foreign(_) => {
                         foreign_paths.insert((*reservation_id, path.to_string()));
                     },
@@ -258,7 +259,7 @@ pub(super) fn classify_locked(
                 return;
             }
             match blocking_coverage(reservations, reservation, path, path_case) {
-                DriftBlockingCoverage::SameIdentity => {},
+                DriftBlockingCoverage::NoForeignStanding => {},
                 DriftBlockingCoverage::Unclaimed => {
                     if !changes.carries_work(path) {
                         return;

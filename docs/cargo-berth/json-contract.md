@@ -532,8 +532,12 @@ or widen reservation scopes in the worktree it ran in. It is
 the report rather than replacing it: observation and classification ran either
 way, so the response still states every drift result and every incursion the
 commit made. A refused invocation carrying no drift effect has
-`status = "invalid_input"` and `exit_code = 5`; one carrying a drift effect keeps
-that effect's status and exit code.
+`status = "scope_acquisition_refused"` and `exit_code = 5`; one carrying a drift
+effect keeps that effect's status and exit code. That status means the run
+observed and recorded everything it found and was refused only its acquisition,
+which is what separates it from `invalid_input`, a request that never ran. The
+refusal also outranks `drift_attribution_required` and `object_unknown`, because
+each of those names a follow-up command this same rule would refuse.
 
 ## Resolve incursion outcomes
 

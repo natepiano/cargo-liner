@@ -585,6 +585,8 @@ declare_output_contract_metadata! {
         DriftCollision => ("drift_collision", BlockedByOverlap);
         /// Unclaimed paths require an explicit reservation attribution.
         DriftAttributionRequired => ("drift_attribution_required", BlockedByOverlap);
+        /// A completed drift run may take no scopes: another run occupies this worktree.
+        ScopeAcquisitionRefused => ("scope_acquisition_refused", UsageError);
         /// Several active reservations are eligible, and no session mapping selects one.
         AmbiguousActiveRunReservations => ("ambiguous_active_run_reservations", BlockedByOverlap);
         /// Repository policy permits no additional live reservations.
@@ -1922,6 +1924,16 @@ impl OutputEnvelope {
         {
             OutputStatus::Widened
         } else if matches!(
+            report.scope_acquisition,
+            DriftScopeAcquisition::RefusedToSecondRun { .. }
+        ) {
+            // A refusal outranks both conditions below because each names a remedy this same
+            // rule would refuse: `drift --reservation <id>` for an attribution, `drift --full`
+            // for an unreadable phase start. Ranking either first tells a refused caller to
+            // run a command that cannot succeed, so the refusal is the answer whenever no
+            // drift effect outranks it.
+            OutputStatus::ScopeAcquisitionRefused
+        } else if matches!(
             &report.path_attribution,
             DriftPathAttributionOutcome::Ambiguous { .. }
                 | DriftPathAttributionOutcome::CoordinationRunRequired { .. }
@@ -1929,15 +1941,6 @@ impl OutputEnvelope {
             OutputStatus::DriftAttributionRequired
         } else if has_unknown_phase_start {
             OutputStatus::ObjectUnknown
-        } else if matches!(
-            report.scope_acquisition,
-            DriftScopeAcquisition::RefusedToSecondRun { .. }
-        ) {
-            // A refusal with no drift effect beside it is the whole answer, and it is the
-            // same answer the caller received when the refusal replaced this envelope. The
-            // status carries both that run and one that never started, so anything rendering
-            // it for a reader --- `post_commit_rendering` --- asks the payload which it holds.
-            OutputStatus::InvalidInput
         } else {
             OutputStatus::Clear
         };
@@ -2356,52 +2359,18 @@ impl OutputEnvelope {
         }
     }
 
-    /// Whether this response reports a run that completed and was refused only its scopes.
-    ///
-    /// The refusal is a fact of the drift payload, not of the status: a withheld acquisition
-    /// and a request that never ran both report [`OutputStatus::InvalidInput`], and only the
-    /// payload separates them.
-    const fn refused_scope_acquisition(&self) -> bool {
-        match &self.payload.facts {
-            OutputFacts::Drift(report) => matches!(
-                report.scope_acquisition,
-                DriftScopeAcquisition::RefusedToSecondRun { .. }
-            ),
-            OutputFacts::NoFacts
-            | OutputFacts::ReplayFailure(_)
-            | OutputFacts::Init(_)
-            | OutputFacts::ProjectionRepair(_)
-            | OutputFacts::Reinitialize(_)
-            | OutputFacts::Board(_)
-            | OutputFacts::Reservation(_)
-            | OutputFacts::FirstTouchReservationSelection(_)
-            | OutputFacts::Check(_)
-            | OutputFacts::Claim(_)
-            | OutputFacts::Release(_)
-            | OutputFacts::Sequence(_)
-            | OutputFacts::Integrate(_)
-            | OutputFacts::Resolve(_)
-            | OutputFacts::Renew(_)
-            | OutputFacts::CoordinationIdentity(_)
-            | OutputFacts::Identity(_) => false,
-        }
-    }
-
     /// Convert a drift envelope into the commit hook's silent-or-warning behavior.
     pub(crate) fn post_commit_rendering(&self) -> PostCommitRendering {
         match self.status {
             OutputStatus::Clear | OutputStatus::Unconfigured => PostCommitRendering::Silent,
-            // A refused acquisition reaches this status alongside requests that never ran at
-            // all, so the guard separates them. The catch-all below is written for a run that
-            // aborted: it offers a by-hand `drift --full` that this rule would refuse the same
-            // way, and it calls the check incomplete two clauses before the message says the
-            // check observed and recorded everything it found.
-            OutputStatus::InvalidInput if self.refused_scope_acquisition() => {
-                PostCommitRendering::Warning(format!(
-                    "cargo-berth completed the post-commit drift check and refused this run's scope acquisition. {} This commit remains in place.",
-                    self.message
-                ))
-            },
+            // The catch-all below is written for a run that aborted: it offers a by-hand
+            // `drift --full` that this rule would refuse the same way, and it calls the check
+            // incomplete two clauses before the message says the check observed and recorded
+            // everything it found.
+            OutputStatus::ScopeAcquisitionRefused => PostCommitRendering::Warning(format!(
+                "cargo-berth completed the post-commit drift check and refused this run's scope acquisition. {} This commit remains in place.",
+                self.message
+            )),
             OutputStatus::Widened | OutputStatus::Incursion | OutputStatus::DriftCollision => {
                 PostCommitRendering::Warning(self.message.clone())
             },

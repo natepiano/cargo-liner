@@ -51,9 +51,10 @@ A worktree admits one coordination run at a time. A caller that presents its own
 run identity — through `CARGO_BERTH_RUN`, since a live session mapping outranks
 it — in a checkout where another presented run already holds an active
 reservation is refused the ability to take or widen a reservation there, at
-`claim`, at the pre-edit hook, and at post-commit drift. The response has
-`status = "invalid_input"` and exit 5, names the incumbent reservation, and
-offers one runnable repair:
+`claim`, at the pre-edit hook, and at post-commit drift. On the post-commit path
+the response has `status = "scope_acquisition_refused"` and exit 5 — the run
+observed and recorded everything it found, and was refused only its acquisition.
+It names the incumbent reservation and offers one runnable repair:
 
 ```text
 cargo-berth release <incumbent-reservation-id> --json

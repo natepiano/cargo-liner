@@ -20,14 +20,15 @@ use crate::scope::ReservationScope;
 
 /// How current edit-blocking reservations cover one drift path.
 pub(crate) enum DriftBlockingCoverage {
-    /// A holder the acting identity is not foreign to already claims the path.
+    /// Every holder of the path has no foreign standing against the subject.
     ///
-    /// The acting run's own reservation in this worktree, and equally a same-worktree holder
-    /// of another run that no longer occupies it: one that has left `Active`, or one claimed
-    /// under an identity the engine created for itself rather than one a caller presented.
-    /// The probe is the exact inverse of the foreignness the conflict pass applies, so both
-    /// read [`Reservation::is_foreign_to_coordination_run_in_worktree`] and cannot disagree.
-    SameIdentity,
+    /// The subject's own reservation in this worktree qualifies, and so does a same-worktree
+    /// holder of another run that no longer occupies it — one that has left `Active`, or one
+    /// claimed under an identity the engine created for itself rather than one a caller
+    /// presented. The probe is the exact inverse of the foreignness the conflict pass applies,
+    /// so both read [`Reservation::is_foreign_to_coordination_run_in_worktree`] and cannot
+    /// disagree.
+    NoForeignStanding,
     /// Reservations from another run or worktree currently block the path.
     Foreign(Vec<ReservationConflict>),
     /// No edit-blocking reservation claims the path.

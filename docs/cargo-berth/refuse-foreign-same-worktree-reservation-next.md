@@ -8,22 +8,16 @@
   - Completion condition: The precedence is stated in the as-built occupancy section as a precondition, and a test pins that a `CARGO_BERTH_RUN` supplied alongside a live session mapping is ignored.
   - Revealed by: Phase 1
 
-- [ ] **Give a completed-but-refused drift run its own output status**
-  - Target: `OutputStatus`; `crates/cargo-berth/src/output.rs`; `docs/cargo-berth/generated/output-contract.json`
-  - Why needed: `OutputStatus::InvalidInput` carries both a request that never ran and a drift run that completed a report and was refused only its scope acquisition. The presented text distinguishes them; the status does not, and `output.rs::refused_scope_acquisition` exists only to re-derive the difference from the payload. A machine reader currently cannot tell an aborted request from a completed one.
-  - Completion condition: The completed-but-refused run carries a distinct status and the published output contract is regenerated.
-  - Revealed by: Phase 1
-
 - [ ] **Thread the acting side's provenance into the occupancy predicate**
   - Target: `Reservation::occupies_worktree_for_another_coordination_run`; `reservation/retention.rs`, `reservation/partition.rs`, `verb/check.rs`, `drift/identity.rs`
   - Why needed: The predicate reads only the holder's coordination-identity provenance; the acting side is guarded separately at each of three call sites by matching an environment-supplied identity first. The rule is symmetric in effect, but the invariant keeping it so is held by a comment rather than by the type, so a fourth call site would apply it to one side only. Unreachable today.
   - Completion condition: Both terms of the rule sit in the predicate, and a new call site cannot apply it one-sidedly.
   - Revealed by: Phase 1
 
-- [ ] **Keep an unreadable phase start from re-wrapping a refusal as a failed check**
-  - Target: `crates/cargo-berth/src/output.rs` drift status selection (the unknown-phase-start branch) and `post_commit_rendering`
-  - Why needed: The unknown-phase-start and attribution-required conditions sit above the refusal branch, so a refused run whose phase start cannot be read falls into the post-commit catch-all — the "could not complete the post-commit drift check … run `cargo-berth drift --full` by hand" text, whose by-hand command this same rule would refuse.
-  - Completion condition: A refused run with an unreadable phase start is presented as a refusal, not as a failed check with a self-contradicting remedy.
+- [ ] **Cover the refusal's ranking against attribution and an unreadable phase start**
+  - Target: `crates/cargo-berth/tests/drift.rs`
+  - Why needed: The ranking shipped — `OutputStatus::ScopeAcquisitionRefused` now sits above `DriftAttributionRequired` and `ObjectUnknown`, so a refused run is no longer presented as a failed check offering a `drift --full` this rule would refuse. No test pins it. `a_completed_but_refused_run_carries_its_own_status` passes under either ranking because attribution is `NotNeeded` in its fixture, and nothing in the crate produces a drift `PhaseStartObjectUnknown`, which needs a reservation whose `phase_start_head` git cannot resolve.
+  - Completion condition: One test drives a refused run whose path attribution is `Ambiguous` or `CoordinationRunRequired`, and one drives a refused run whose phase start is unreadable; each asserts the refusal status rather than the condition it outranks.
   - Revealed by: Phase 1
 
 - [ ] **Record why the post-write first touch need not ask about occupancy**
@@ -38,14 +32,8 @@
   - Completion condition: The return type states both answers, and the caller reads them without recovering meaning from a variable name.
   - Revealed by: Phase 1
 
-- [ ] **Rename `DriftBlockingCoverage::SameIdentity` for the guarantee it now carries**
-  - Target: `DriftBlockingCoverage::SameIdentity` (`crates/cargo-berth/src/reservation/partition.rs`)
-  - Why needed: The variant now covers a same-worktree holder of another run that has left the active state, and one claimed under an engine-issued identity. Its doc comment has grown several lines whose only job is to say the name is untrue. The guarantee is that the holder has no foreign standing against the subject.
-  - Completion condition: The variant name states that guarantee and the doc comment no longer exists to contradict the name.
-  - Revealed by: Phase 1
-
-- [ ] **Rename `blocking_coverage_for_drift`'s acting-side parameters**
-  - Target: `blocking_coverage_for_drift` parameters (`crates/cargo-berth/src/reservation/retention.rs`)
-  - Why needed: Parameters named for the invoking run are fed the subject's actor. Per-subject is the right question, but the current names invite a future caller to pass the invoking run and silently change which holders block.
-  - Completion condition: The parameter names say they carry the subject's actor.
-  - Revealed by: Phase 1
+- [ ] **Make `batched_git_path_distinguishes_spawn_failure_from_completed_failure` load-independent**
+  - Target: `crates/cargo-berth/tests/gate.rs:2554`
+  - Why needed: The test passes alone in 0.18s and fails under the full parallel suite. After `RawGitBehavior::RemoveAfterTargetHistory` deletes the fake-git wrapper, the engine's next git call under load is `git worktree`, so the envelope is `status: ledger_unreadable` with `git worktree failed: <wrapper>/git: No such file or directory`, while the test asserts the message contains `could not run drift fingerprint`. The assertion pins which git call happens to run first, which load decides. Observed failing 2026-09-04 under the full suite, passing in isolation immediately after; an earlier claim in this session that the fixture git-maintenance fix resolved it was wrong — that fix addressed a different failure mode of a different test.
+  - Completion condition: Either the assertion accepts any spawn failure the removed wrapper can produce, or the engine resolves the worktree before the history read so the fingerprint call is deterministically first. Not a widened timeout.
+  - Revealed by: Phase 1 final gate
