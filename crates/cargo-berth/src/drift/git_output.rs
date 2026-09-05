@@ -99,7 +99,7 @@ impl From<Reachability> for IncursionAttributionAnchorState {
     }
 }
 
-/// One commit and its selected paths from the batched incursion log.
+/// One commit, its committer time, and its selected paths from the batched incursion log.
 pub(super) struct IncursionPathCommit {
     pub(super) commit:       GitObjectId,
     pub(super) committed_at: CommitterTime,

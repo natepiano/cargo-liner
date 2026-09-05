@@ -202,6 +202,9 @@ impl RetainedReservationSet {
     /// applies: the subject's worktree, holding either the subject's own work or work no longer
     /// `Active`.
     ///
+    /// The answer is for the present ledger. `drift/classification.rs` narrows a committed
+    /// path's `Foreign` holders to those whose claim did not follow the commit that wrote it.
+    ///
     /// The two identity parameters carry the *subject's* actor, not the invoking run. Coverage
     /// is asked once per reporting subject, so a caller that passed the invoking run would
     /// silently change which holders block for every subject that is not its own.

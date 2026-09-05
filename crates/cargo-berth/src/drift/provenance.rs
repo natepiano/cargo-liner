@@ -1,4 +1,7 @@
-//! The commits behind an incursion's entered paths.
+//! The commits behind the paths a phase committed into a foreign holder's scope.
+//!
+//! Read once, before the ledger lock; classification asks the batch when each path was
+//! committed, and the report is named from it after the lock without a further git read.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -164,6 +167,9 @@ pub(super) fn latest_commit(
 /// arrived on a replayed upstream commit and a path this worktree wrote read the same.
 /// Only the committed component can carry a path the worktree never opened, so only
 /// those paths are looked up, and a working-tree incursion is left as it was.
+///
+/// Nothing is read here. `batch` is what [`read_committed_foreign_paths`] took before the
+/// lock, and the commits it yields are cut to those made while a named holder stood.
 pub(super) fn name_incursion_commits(
     reservations: &RetainedReservationSet,
     changes: &ObservedDriftChanges,

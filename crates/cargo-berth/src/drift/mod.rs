@@ -1,4 +1,5 @@
-//! Working-tree drift observation and locked reservation reconciliation.
+//! Working-tree drift observation, pre-lock commit attribution, and locked reservation
+//! reconciliation.
 
 mod classification;
 mod constants;

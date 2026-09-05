@@ -1,4 +1,5 @@
-//! The drift command: observe, classify under the ledger lock, and publish.
+//! The drift command: observe, read committed history, classify under the ledger lock, and
+//! publish.
 
 use std::convert::Infallible;
 use std::fmt;
@@ -326,6 +327,11 @@ fn execute_inner(
         &observation.changes,
         path_case,
     )?;
+    // The pre-lock pass names the paths a phase committed into a present foreign holder's
+    // scope; their commits are read here, outside the lock, so the locked pass judges each
+    // such path against the holders in force when it was committed and the report naming
+    // below reuses the same batch. The lock holds no git, and nothing is read when there is
+    // no such path.
     let committed_history = provenance::read_committed_foreign_paths(
         worktree_context.repository_root(),
         &initial_reservations,

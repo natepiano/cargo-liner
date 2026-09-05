@@ -271,10 +271,10 @@ impl Reservation {
     /// Return the branch or detached commit recorded at acquisition.
     pub(crate) const fn head_snapshot(&self) -> &ClaimHeadSnapshot { &self.head_snapshot }
 
-    /// Return the protected commit used as this active phase's drift baseline.
     /// Return when this reservation was claimed.
     pub(crate) const fn claimed_at(&self) -> &RecordedAt { &self.claimed_at }
 
+    /// Return the protected commit used as this active phase's drift baseline.
     pub(crate) const fn phase_start_head(&self) -> &ProtectedPhaseStartHead {
         &self.phase_start_head
     }
