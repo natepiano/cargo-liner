@@ -1589,7 +1589,21 @@ pub(super) fn dispatch_settings_action(action: OverlayAction, app: &mut App) {
 }
 
 pub(super) fn handle_settings_navigation_key(app: &mut App, key: KeyCode) {
-    let setting = selected_setting(app);
+    // The viewport learns its row count from the rows themselves, not
+    // from the last frame: the event loop drains every queued key before
+    // it draws, so a key that arrives in the same batch as the one that
+    // opened the overlay would otherwise face a zero-length viewport and
+    // be dropped.
+    let rows = settings_rows(app, app.config.current());
+    let selectable = rows
+        .iter()
+        .filter(|(setting, _, _)| setting.is_some())
+        .count();
+    app.framework
+        .settings_pane
+        .viewport_mut()
+        .set_len(selectable);
+    let setting = setting_at_selection(&rows, app.framework.settings_pane.viewport().pos());
     match key {
         KeyCode::Up => {
             app.overlays.clear_inline_error();

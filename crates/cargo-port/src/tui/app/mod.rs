@@ -5598,6 +5598,73 @@ mod tests {
         }
 
         #[test]
+        fn settings_overlay_moves_with_vim_keys() {
+            let projects = vec![super::make_project(Some("alpha"), "~/alpha")];
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let mut app = tui_test_support::make_app_with_config(&projects, &cargo_port_config);
+            open_settings_overlay(&mut app);
+            render_ui(&mut app);
+
+            press_key(&mut app, KeyCode::Char('j'));
+            assert_eq!(
+                app.framework.settings_pane.viewport().pos(),
+                1,
+                "j moves down"
+            );
+
+            press_key(&mut app, KeyCode::Char('k'));
+            assert_eq!(
+                app.framework.settings_pane.viewport().pos(),
+                0,
+                "k moves up"
+            );
+        }
+
+        #[test]
+        fn settings_overlay_vim_keys_ignore_the_pane_underneath() {
+            // The CPU pane folds h/l into up/down; an open overlay must
+            // not inherit that, or h/l would scroll settings instead of
+            // adjusting the selected value.
+            let projects = vec![super::make_project(Some("alpha"), "~/alpha")];
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+            let mut app = tui_test_support::make_app_with_config(&projects, &cargo_port_config);
+            app.set_focus_to_pane(PaneId::Cpu);
+            open_settings_overlay(&mut app);
+            render_ui(&mut app);
+
+            press_key(&mut app, KeyCode::Char('l'));
+            assert_eq!(
+                app.framework.settings_pane.viewport().pos(),
+                0,
+                "l is not down"
+            );
+            press_key(&mut app, KeyCode::Char('j'));
+            assert_eq!(app.framework.settings_pane.viewport().pos(), 1, "j is down");
+            press_key(&mut app, KeyCode::Char('h'));
+            assert_eq!(
+                app.framework.settings_pane.viewport().pos(),
+                1,
+                "h is not up"
+            );
+        }
+
+        #[test]
+        fn settings_overlay_moves_before_its_first_frame() {
+            // A Down queued in the same input batch as the key that opened
+            // the overlay reaches the handler before any frame has sized
+            // the viewport.
+            let mut app = make_app(&[]);
+            open_settings_overlay(&mut app);
+
+            press_key(&mut app, KeyCode::Down);
+            assert_eq!(app.framework.settings_pane.viewport().pos(), 1);
+            press_key(&mut app, KeyCode::Up);
+            assert_eq!(app.framework.settings_pane.viewport().pos(), 0);
+        }
+
+        #[test]
         fn keyboard_navigation_clears_stale_settings_hover() {
             let mut app = make_app(&[]);
             open_settings_overlay(&mut app);

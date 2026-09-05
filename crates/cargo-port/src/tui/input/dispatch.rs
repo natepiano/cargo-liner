@@ -410,7 +410,7 @@ fn dispatch_framework_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEve
     }
 
     match overlay {
-        FrameworkOverlayId::Settings => dispatch_settings_overlay(app, bind),
+        FrameworkOverlayId::Settings => dispatch_settings_overlay(app, bind, normalized),
         FrameworkOverlayId::Keymap => dispatch_keymap_overlay(app, bind, normalized),
         FrameworkOverlayId::GlobalShortcuts => {
             dispatch_global_shortcuts_overlay(app, bind, normalized);
@@ -419,12 +419,12 @@ fn dispatch_framework_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEve
     true
 }
 
-fn dispatch_settings_overlay(app: &mut App, bind: &KeyBind) {
+fn dispatch_settings_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) {
     if let Some(action) = app.framework_keymap.overlay().action_for(bind) {
         settings::dispatch_settings_action(action, app);
         return;
     }
-    settings::handle_settings_navigation_key(app, bind.code);
+    settings::handle_settings_navigation_key(app, normalized.code);
 }
 
 fn dispatch_keymap_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) {
@@ -513,46 +513,51 @@ fn focused_text_input_mode(app: &App) -> bool {
 /// Normalize navigation keys only. Vim hjkl conversion applies only when
 /// no modifiers are held (so `Ctrl+k` is never eaten by vim mode).
 /// Arrow remapping in list panes also only applies to bare arrows.
+///
+/// A framework overlay owns the keyboard while it is open, so the
+/// pane underneath never shapes the mapping: an overlay is always a
+/// four-direction surface (settings adjust values with left/right),
+/// even when the pane it covers folds left/right into up/down.
 fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
     if focused_text_input_mode(app) {
         return *raw;
     }
 
-    let code = if raw.modifiers == KeyModifiers::NONE && app.config.navigation_keys().uses_vim() {
-        match panes::behavior(app.focused_pane_id()) {
+    let folds_horizontal = app.framework.overlay().is_none()
+        && matches!(
+            panes::behavior(app.focused_pane_id()),
             PaneBehavior::DetailFields
-            | PaneBehavior::DetailTargets
-            | PaneBehavior::Cpu
-            | PaneBehavior::CiRuns
-            | PaneBehavior::Toasts => match raw.code {
+                | PaneBehavior::DetailTargets
+                | PaneBehavior::Cpu
+                | PaneBehavior::CiRuns
+                | PaneBehavior::Toasts
+        );
+
+    let code = if raw.modifiers == KeyModifiers::NONE && app.config.navigation_keys().uses_vim() {
+        if folds_horizontal {
+            match raw.code {
                 KeyCode::Char('h' | 'k') => KeyCode::Up,
                 KeyCode::Char('j' | 'l') => KeyCode::Down,
                 _ => raw.code,
-            },
-            _ => match raw.code {
+            }
+        } else {
+            match raw.code {
                 KeyCode::Char('h') => KeyCode::Left,
                 KeyCode::Char('j') => KeyCode::Down,
                 KeyCode::Char('k') => KeyCode::Up,
                 KeyCode::Char('l') => KeyCode::Right,
                 _ => raw.code,
-            },
+            }
         }
     } else {
         raw.code
     };
 
     // In list panes, bare left/right map to up/down.
-    let code = if raw.modifiers == KeyModifiers::NONE {
-        match panes::behavior(app.focused_pane_id()) {
-            PaneBehavior::DetailFields
-            | PaneBehavior::DetailTargets
-            | PaneBehavior::Cpu
-            | PaneBehavior::CiRuns
-            | PaneBehavior::Toasts => match code {
-                KeyCode::Left => KeyCode::Up,
-                KeyCode::Right => KeyCode::Down,
-                _ => code,
-            },
+    let code = if raw.modifiers == KeyModifiers::NONE && folds_horizontal {
+        match code {
+            KeyCode::Left => KeyCode::Up,
+            KeyCode::Right => KeyCode::Down,
             _ => code,
         }
     } else {

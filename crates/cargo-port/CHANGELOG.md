@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The settings overlay now moves with `j`/`k` when `navigation_keys` enables vim keys. It was handed the untranslated key, so only the arrows ever reached it, while the keymap and global-shortcuts overlays already received the translated one.
+- While a framework overlay is open, `h`/`l` always mean left/right. They were being folded into up/down whenever the pane underneath the overlay was one of the panes that fold horizontal keys, so `h`/`l` scrolled settings instead of adjusting the selected value.
+- A settings key that arrives in the same input batch as the key that opened the overlay is no longer dropped. The overlay's row count was only known after its first frame, and the event loop drains every queued key before it draws.
+
 ### Removed
 - **Breaking:** Remove the build monitor from the Output pane. The opt-in view of running Cargo builds (`C`), its per-session columns and compile-activity rows, and the build termination it offered (`alt-k` for the selected build, `alt-shift-k` for every build in scope) are all gone, along with the process-termination machinery behind them. Use [cargo-tile](https://crates.io/crates/cargo-tile) instead: it shows the output of running Cargo commands, and does it better than this ever did. The Output pane itself stays — it still shows the captured output of a target Cargo Port launched from the Targets pane, and `Esc` still stops that run.
 
