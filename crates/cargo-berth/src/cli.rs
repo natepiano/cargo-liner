@@ -1429,23 +1429,24 @@ fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnv
                                 Ok(worktree_context) => worktree_context,
                                 Err(error) => return initialization_error(error),
                             };
-                        let berth_config = match BerthConfig::read(&repository_root) {
-                            Ok(Enrollment::Enrolled(berth_config)) => berth_config,
-                            Ok(Enrollment::Unconfigured {
-                                expected_configuration_path,
-                            }) => {
-                                return OutputEnvelope::unconfigured(
-                                    CommandVerb::Init,
-                                    &expected_configuration_path,
-                                );
-                            },
-                            Err(error) => {
-                                return OutputEnvelope::ledger_error(
-                                    CommandVerb::Init,
-                                    &LedgerError::Config(error),
-                                );
-                            },
-                        };
+                        let berth_config =
+                            match BerthConfig::read(&worktree_context.configuration_lookup()) {
+                                Ok(Enrollment::Enrolled(berth_config)) => berth_config,
+                                Ok(Enrollment::Unconfigured {
+                                    expected_configuration_path,
+                                }) => {
+                                    return OutputEnvelope::unconfigured(
+                                        CommandVerb::Init,
+                                        &expected_configuration_path,
+                                    );
+                                },
+                                Err(error) => {
+                                    return OutputEnvelope::ledger_error(
+                                        CommandVerb::Init,
+                                        &LedgerError::Config(error),
+                                    );
+                                },
+                            };
                         let trunk_reference = format!("refs/heads/{}", berth_config.trunk);
                         let hook_installations = gate::install::install_managed_hooks(
                             worktree_context.common_git_directory(),

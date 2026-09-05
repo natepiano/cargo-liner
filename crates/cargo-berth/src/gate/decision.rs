@@ -169,7 +169,7 @@ pub(super) fn evaluate_locked(
     purpose: &GatePurpose,
 ) -> Result<Enrollment<GateResult>, GateError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
-    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+    let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
             expected_configuration_path,

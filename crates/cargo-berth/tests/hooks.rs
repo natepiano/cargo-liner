@@ -710,6 +710,36 @@ fn coordination_identity_rejection_emits_its_recovery() -> TestResult {
     Ok(())
 }
 
+/// A worktree added after `init` carries no configuration file, and used to answer exit 0
+/// with nothing said, so its edits were uncoordinated without a word about it. It reads
+/// the main worktree's configuration now and refuses like any other requester.
+#[test]
+fn a_worktree_added_after_init_coordinates_without_its_own_configuration() -> TestResult {
+    let repository = initialized_repository()?;
+    let holder = run_berth(
+        repository.path(),
+        &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
+    )?;
+    require_success(&holder, "holder claim")?;
+    let (_requester_directory, requester_root) =
+        add_worktree_without_configuration(&repository, "uncopied-requester")?;
+    let output = run_pre_tool_use(
+        &requester_root,
+        &edit_payload(&requester_root, "src/lib.rs", Some("uncopied-session")),
+    )?;
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let refusal = String::from_utf8(output.stderr)?;
+    assert!(
+        refusal.starts_with(
+            "cargo-berth refused this edit because another reservation holds the requested paths."
+        ),
+        "the uncopied worktree should be refused like any other requester: {refusal}"
+    );
+    Ok(())
+}
+
 #[test]
 fn unconfigured_no_facts_allows_silently() -> TestResult {
     let repository = git_repository()?;
@@ -1602,15 +1632,7 @@ fn git_repository() -> TestResult<TempDir> {
 }
 
 fn add_worktree(repository: &TempDir, name: &str) -> TestResult<(TempDir, PathBuf)> {
-    let directory = TempDir::new_in(SCRATCH_ROOT)?;
-    let root = directory.path().join(name);
-    let root_text = root
-        .to_str()
-        .ok_or_else(|| failure("scratch worktree path should be UTF-8"))?;
-    run_git(
-        repository.path(),
-        &["worktree", "add", "--quiet", "-b", name, root_text],
-    )?;
+    let (directory, root) = add_worktree_without_configuration(repository, name)?;
     let configuration_path = root.join(CONFIGURATION_PATH);
     let configuration_directory = configuration_path
         .parent()
@@ -1619,6 +1641,24 @@ fn add_worktree(repository: &TempDir, name: &str) -> TestResult<(TempDir, PathBu
     fs::copy(
         repository.path().join(CONFIGURATION_PATH),
         configuration_path,
+    )?;
+    Ok((directory, root))
+}
+
+/// Add a linked worktree exactly as `git worktree add` leaves it: without the untracked
+/// configuration file.
+fn add_worktree_without_configuration(
+    repository: &TempDir,
+    name: &str,
+) -> TestResult<(TempDir, PathBuf)> {
+    let directory = TempDir::new_in(SCRATCH_ROOT)?;
+    let root = directory.path().join(name);
+    let root_text = root
+        .to_str()
+        .ok_or_else(|| failure("scratch worktree path should be UTF-8"))?;
+    run_git(
+        repository.path(),
+        &["worktree", "add", "--quiet", "-b", name, root_text],
     )?;
     Ok((directory, root))
 }

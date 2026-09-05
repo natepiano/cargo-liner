@@ -19,8 +19,12 @@ use super::coordination_run_marker::CoordinationRunMarkerRemoval;
 use super::coordination_run_marker::DetachedCoordinationRunMarker;
 use super::error::LedgerError;
 use super::journal::WorktreeAdministrativeLocator;
+use crate::config::ConfigurationLookup;
 use crate::ids::CoordinationRunId;
 use crate::ids::WorktreeKind;
+
+/// The name of the administrative directory or file at a worktree root.
+const GIT_DIRECTORY_NAME: &str = ".git";
 
 /// Repository and administrative paths discovered without executing git.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,7 +66,7 @@ impl WorktreeContext {
     pub(crate) fn discover(invocation_directory: &Path) -> Result<Self, LedgerError> {
         let invocation_directory = fs::canonicalize(invocation_directory)?;
         for repository_root in invocation_directory.ancestors() {
-            let dot_git = repository_root.join(".git");
+            let dot_git = repository_root.join(GIT_DIRECTORY_NAME);
             if dot_git.is_dir() {
                 let common_git_directory = fs::canonicalize(&dot_git)?;
                 return Self::build(
@@ -103,7 +107,7 @@ impl WorktreeContext {
         let Ok(repository_root) = fs::canonicalize(repository_root) else {
             return Ok(RegisteredWorktreeAvailability::Unavailable);
         };
-        let dot_git = repository_root.join(".git");
+        let dot_git = repository_root.join(GIT_DIRECTORY_NAME);
         if dot_git.is_dir() {
             let Ok(registered_git_directory) = fs::canonicalize(&dot_git) else {
                 return Ok(RegisteredWorktreeAvailability::Unavailable);
@@ -241,6 +245,27 @@ impl WorktreeContext {
 
     /// Return whether this is the main or a linked worktree.
     pub(crate) const fn worktree_kind(&self) -> WorktreeKind { self.worktree_kind }
+
+    /// Return the files this worktree consults for its configuration.
+    ///
+    /// A linked worktree's common git directory is the main worktree's `.git`, so the
+    /// main worktree root is its parent. A bare repository's common directory carries
+    /// no such name and has no main worktree, so only the linked worktree's own file
+    /// counts.
+    pub(crate) fn configuration_lookup(&self) -> ConfigurationLookup<'_> {
+        if self.worktree_kind == WorktreeKind::Linked
+            && self.common_git_directory.file_name() == Some(GIT_DIRECTORY_NAME.as_ref())
+            && let Some(main_repository_root) = self.common_git_directory.parent()
+        {
+            return ConfigurationLookup::OwnThenMain {
+                repository_root: &self.repository_root,
+                main_repository_root,
+            };
+        }
+        ConfigurationLookup::Own {
+            repository_root: &self.repository_root,
+        }
+    }
 
     /// Atomically publish the successful claimant's coordination-run marker.
     pub(crate) fn publish_coordination_run_marker(

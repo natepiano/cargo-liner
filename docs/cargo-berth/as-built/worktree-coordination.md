@@ -465,7 +465,7 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - Branch deletion is expected and normal; the retention ref is what makes evidence survive it.
 - A projection that is ahead of the journal (`ProjectionError::CacheAhead`) indicates a stale or foreign cache, not journal damage. The response is rebuild, never truncate.
 - A clone starts with no ledger. Ledger state is deliberately not committed to the repository.
-- A second worktree needs `.claude/config/berth.toml` present, or the board reports `unconfigured`. That file is not tracked, so `git worktree add` does not bring it along.
+- `.claude/config/berth.toml` is not tracked, so `git worktree add` does not bring it along. A linked worktree without one reads the main worktree's file (`WorktreeContext::configuration_lookup` names both roots; `BerthConfig::read` tries them in that order), so a worktree added after `init` coordinates from its first edit. A file the linked worktree does have wins. Only when neither exists is the worktree `unconfigured`, and the path it reports is the main worktree's, because `init` there serves every worktree. A linked worktree of a bare repository has no main worktree and reads only its own file.
 - The `reference-transaction` hook fires for every ref update including ones no porcelain command names. Filtering on branch name alone is not sufficient; the trunk name comes from configuration.
 - Exit 3 is not a failure. It means the tool needs an answer and has produced a proposal; the caller re-invokes with the token.
 - An overlap proposal token that no longer matches is the correct outcome when state moved, not an error to retry through.
@@ -493,7 +493,6 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - A fixture edited until it passes stops proving its property. Call counts asserted without statuses, a helper filtering out the calls that had begun to scale, and a released fixture that could not show blocking status all went green while checking nothing. Every assertion change has to say what it still proves.
 - `normalize_absolute_path` collapses `..` textually, which is sound only when every component left of a `..` is a real directory. It applies to a working directory the harness reports itself sitting in, never to a path a payload names as an edit target — reversed, the hook coordinates a file the write never touches while the write lands outside the repository uncoordinated.
 - `Path::file_name()` is `None` for a path ending in `..`, so `<repo>/absent/../held.rs` reaches no existing ancestor and refuses visibly rather than resolving.
-- A linked git worktree does not inherit `.claude/config/berth.toml`, so an unenrolled requester answers exit 0 for every edit.
 - On macOS a worktree under `/tmp` is discovered as `/private/tmp/...`. The payload namespace and the canonical namespace genuinely differ, which is why `CoordinationDomain` carries both.
 - `hook/mod.rs` is a shared protocol across three events. A new hook event extends it rather than growing a fourth private copy.
 - Because the wrappers are pass-throughs, changing a hook's rendered text changes what users see with no front-end edit — and no front-end file to forget.

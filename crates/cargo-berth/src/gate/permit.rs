@@ -185,7 +185,7 @@ pub(crate) fn record_environment_bypass(
     let Ok(worktree_context) = WorktreeContext::discover(invocation_directory) else {
         return EnvironmentBypassRetentionOutcome::Unrecorded;
     };
-    match BerthConfig::read(worktree_context.repository_root()) {
+    match BerthConfig::read(&worktree_context.configuration_lookup()) {
         Ok(Enrollment::Unconfigured { .. }) => {
             return EnvironmentBypassRetentionOutcome::Unenrolled;
         },

@@ -543,7 +543,7 @@ fn acquire(
         },
         PhaseStartSelection::Protected(protected_phase_start_head) => protected_phase_start_head,
     };
-    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+    let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
             expected_configuration_path,
@@ -646,7 +646,7 @@ fn acquire_first_touch_with_reservation_selection(
     let source = ClaimSource::FirstTouch;
     let repository_facts = ClaimRepositoryFacts::read(&worktree_context, run_validation)?;
     let phase_start_head = ProtectedPhaseStartHead::from(repository_facts.current_head.clone());
-    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+    let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
             expected_configuration_path,

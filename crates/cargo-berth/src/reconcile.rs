@@ -775,7 +775,7 @@ where
     ConcurrentObservation: Send,
 {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
-    match BerthConfig::read(worktree_context.repository_root())? {
+    match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => {
             let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
             let observation_events =
@@ -865,7 +865,7 @@ fn reconcile_with_scope(
     recovered_bypass_reporting: RecoveredBypassReporting,
 ) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
-    match BerthConfig::read(worktree_context.repository_root())? {
+    match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => reconcile_enrolled(
             &worktree_context,
             &berth_config,

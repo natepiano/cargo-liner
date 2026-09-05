@@ -224,7 +224,7 @@ impl Ledger {
         invocation_directory: &Path,
     ) -> Result<Enrollment<EditCheckLedgerSnapshot>, LedgerError> {
         let worktree_context = WorktreeContext::discover(invocation_directory)?;
-        match BerthConfig::read(worktree_context.repository_root())? {
+        match BerthConfig::read(&worktree_context.configuration_lookup())? {
             Enrollment::Enrolled(_) => {},
             Enrollment::Unconfigured {
                 expected_configuration_path,

@@ -176,7 +176,7 @@ fn execute_release(
 ) -> Result<Enrollment<ReleasePayload>, ReleaseError> {
     let invocation_directory = std::env::current_dir()?;
     let worktree_context = WorktreeContext::discover(&invocation_directory)?;
-    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+    let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
             expected_configuration_path,

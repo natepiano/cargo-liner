@@ -14,6 +14,7 @@ use crate::git;
 use crate::ids::ReservationId;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
+use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::IntegratedGateOutcome;
 use crate::output::IntegrationPayload;
@@ -149,7 +150,9 @@ fn integration_directories() -> Result<(PathBuf, PathBuf), Box<OutputEnvelope>> 
 fn read_integration_configuration(
     repository_root: &Path,
 ) -> Result<BerthConfig, Box<OutputEnvelope>> {
-    match BerthConfig::read(repository_root) {
+    let worktree_context = WorktreeContext::discover(repository_root)
+        .map_err(|error| Box::new(OutputEnvelope::ledger_error(CommandVerb::Integrate, &error)))?;
+    match BerthConfig::read(&worktree_context.configuration_lookup()) {
         Ok(Enrollment::Enrolled(berth_config)) => Ok(berth_config),
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,

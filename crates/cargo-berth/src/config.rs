@@ -33,6 +33,29 @@ pub(crate) enum Enrollment<T> {
     },
 }
 
+/// The files one worktree consults for its configuration.
+///
+/// The configuration file is untracked and per-worktree, so `git worktree add` never
+/// carries it along. Trunk and gate policy are facts about the repository rather than
+/// about one checkout of it, so a linked worktree without a file of its own reads the
+/// main worktree's.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ConfigurationLookup<'a> {
+    /// Only the worktree's own file counts: a main worktree, or a linked worktree of a
+    /// bare repository, which has no main worktree to read from.
+    Own {
+        /// The worktree whose file is read.
+        repository_root: &'a Path,
+    },
+    /// The worktree's own file first, then the main worktree's.
+    OwnThenMain {
+        /// The linked worktree whose file is read first.
+        repository_root:      &'a Path,
+        /// The main worktree whose file answers when the linked worktree has none.
+        main_repository_root: &'a Path,
+    },
+}
+
 /// Per-repository policy read by future reservation and gate verbs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BerthConfig {
@@ -110,19 +133,45 @@ impl BerthConfig {
         Ok(InitializationState::Created)
     }
 
-    /// Read and validate this repository's configuration.
-    pub(crate) fn read(repository_root: &Path) -> Result<Enrollment<Self>, ConfigError> {
-        let configuration_path = Self::path(repository_root);
-        let contents = match fs::read_to_string(&configuration_path) {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Ok(Enrollment::Unconfigured {
-                    expected_configuration_path: configuration_path,
-                });
-            },
-            Err(error) => return Err(ConfigError::Io(error)),
+    /// Read and validate this worktree's configuration.
+    ///
+    /// When no file answers, the reported path is the one `cargo-berth init` should
+    /// create: a linked worktree names the main worktree's file, because a file written
+    /// there serves every worktree while one written in the linked worktree serves only
+    /// itself.
+    pub(crate) fn read(lookup: &ConfigurationLookup<'_>) -> Result<Enrollment<Self>, ConfigError> {
+        let (repository_root, main_repository_root) = match *lookup {
+            ConfigurationLookup::Own { repository_root } => (repository_root, None),
+            ConfigurationLookup::OwnThenMain {
+                repository_root,
+                main_repository_root,
+            } => (repository_root, Some(main_repository_root)),
         };
-        Self::from_toml(&contents).map(Enrollment::Enrolled)
+        let own_path = Self::path(repository_root);
+        if let Some(configuration) = Self::read_file(&own_path)? {
+            return Ok(Enrollment::Enrolled(configuration));
+        }
+        let Some(main_repository_root) = main_repository_root else {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path: own_path,
+            });
+        };
+        let main_path = Self::path(main_repository_root);
+        if let Some(configuration) = Self::read_file(&main_path)? {
+            return Ok(Enrollment::Enrolled(configuration));
+        }
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path: main_path,
+        })
+    }
+
+    /// Read and validate one configuration file, or report that it does not exist.
+    fn read_file(configuration_path: &Path) -> Result<Option<Self>, ConfigError> {
+        match fs::read_to_string(configuration_path) {
+            Ok(contents) => Self::from_toml(&contents).map(Some),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(ConfigError::Io(error)),
+        }
     }
 
     fn to_toml(&self) -> String {
@@ -331,13 +380,16 @@ impl From<std::io::Error> for ConfigError {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io::Error;
     use std::io::ErrorKind;
+    use std::path::Path;
 
     use tempfile::tempdir;
 
     use super::BerthConfig;
     use super::ConfigError;
+    use super::ConfigurationLookup;
     use super::Enrollment;
     use super::GateMode;
 
@@ -387,7 +439,9 @@ mod tests {
         let repository = tempdir()?;
         let expected_path = BerthConfig::path(repository.path());
 
-        match BerthConfig::read(repository.path()) {
+        match BerthConfig::read(&ConfigurationLookup::Own {
+            repository_root: repository.path(),
+        }) {
             Ok(Enrollment::Unconfigured {
                 expected_configuration_path,
             }) => assert_eq!(expected_configuration_path, expected_path),
@@ -398,6 +452,75 @@ mod tests {
             },
         }
 
+        Ok(())
+    }
+
+    fn write_configuration(repository_root: &Path, trunk: &str) -> Result<(), ConfigError> {
+        let configuration_path = BerthConfig::path(repository_root);
+        let parent = configuration_path
+            .parent()
+            .ok_or_else(|| ConfigError::InvalidPath(configuration_path.clone()))?;
+        fs::create_dir_all(parent)?;
+        fs::write(configuration_path, format!("trunk = \"{trunk}\"\n"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_linked_worktree_without_its_own_file_reads_the_main_worktree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let main = tempdir()?;
+        let linked = tempdir()?;
+        write_configuration(main.path(), "release")?;
+
+        let enrollment = BerthConfig::read(&ConfigurationLookup::OwnThenMain {
+            repository_root:      linked.path(),
+            main_repository_root: main.path(),
+        })?;
+
+        assert!(matches!(
+            enrollment,
+            Enrollment::Enrolled(configuration) if configuration.trunk == "release"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn a_linked_worktree_with_its_own_file_ignores_the_main_worktree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let main = tempdir()?;
+        let linked = tempdir()?;
+        write_configuration(main.path(), "release")?;
+        write_configuration(linked.path(), "develop")?;
+
+        let enrollment = BerthConfig::read(&ConfigurationLookup::OwnThenMain {
+            repository_root:      linked.path(),
+            main_repository_root: main.path(),
+        })?;
+
+        assert!(matches!(
+            enrollment,
+            Enrollment::Enrolled(configuration) if configuration.trunk == "develop"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn a_linked_worktree_with_no_file_anywhere_names_the_main_worktree_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let main = tempdir()?;
+        let linked = tempdir()?;
+
+        let enrollment = BerthConfig::read(&ConfigurationLookup::OwnThenMain {
+            repository_root:      linked.path(),
+            main_repository_root: main.path(),
+        })?;
+
+        assert_eq!(
+            enrollment,
+            Enrollment::Unconfigured {
+                expected_configuration_path: BerthConfig::path(main.path()),
+            }
+        );
         Ok(())
     }
 

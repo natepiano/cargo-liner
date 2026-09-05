@@ -141,7 +141,7 @@ fn execute_sequence(
         &worktree_context,
         recovery_command_line,
     );
-    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+    let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
             expected_configuration_path,

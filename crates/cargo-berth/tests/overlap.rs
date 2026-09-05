@@ -883,8 +883,11 @@ fn check_reports_unconfigured_when_an_initialized_repository_loses_its_configura
     }));
 }
 
+/// A linked worktree added after `init` has no configuration file of its own, because the
+/// file is untracked and `git worktree add` does not carry it. It reads the main
+/// worktree's file instead, so it coordinates from its first edit.
 #[test]
-fn check_does_not_replay_a_foreign_conflict_after_configuration_is_removed() {
+fn check_in_a_linked_worktree_without_its_own_configuration_reads_the_main_worktree() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
     let claim = run_berth(
         repository.path(),
@@ -902,10 +905,39 @@ fn check_does_not_replay_a_foreign_conflict_after_configuration_is_removed() {
         .expect("cargo-berth check should run");
     let envelope = json_output(&check);
 
+    assert_eq!(envelope["status"], "blocked_by_overlap");
+}
+
+/// With no configuration in the main worktree either, a linked worktree is unconfigured,
+/// says so, and names the main worktree's file as the one `init` should create.
+#[test]
+fn check_does_not_replay_a_foreign_conflict_after_configuration_is_removed() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let claim = run_berth(
+        repository.path(),
+        &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
+    );
+    assert!(claim.status.success());
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    fs::remove_file(second_root.join(CONFIGURATION_PATH)).expect("configuration should be removed");
+    let main_configuration_path = repository.path().join(CONFIGURATION_PATH);
+    fs::remove_file(&main_configuration_path).expect("main configuration should be removed");
+
+    let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["check", "file:src/lib.rs", "--json"])
+        .current_dir(&second_root)
+        .env_remove(RUN_ENVIRONMENT)
+        .output()
+        .expect("cargo-berth check should run");
+    let envelope = json_output(&check);
+
     assert_eq!(check.status.code(), Some(4));
     assert_eq!(envelope["status"], "unconfigured");
     assert_eq!(envelope["payload"]["kind"], "no_facts");
     assert_ne!(envelope["status"], "blocked_by_overlap");
+    assert!(envelope["message"].as_str().is_some_and(|message| {
+        message.contains(&main_configuration_path.display().to_string())
+    }));
 }
 
 #[test]

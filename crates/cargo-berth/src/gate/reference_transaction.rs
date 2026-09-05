@@ -292,7 +292,7 @@ pub(crate) fn evaluate_reference_transaction(
         return Ok(Vec::new());
     }
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
-    let berth_config = match BerthConfig::read(worktree_context.repository_root())? {
+    let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured { .. } => return Ok(Vec::new()),
     };
