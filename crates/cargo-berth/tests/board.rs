@@ -2049,7 +2049,6 @@ fn incursion_only_post_commit_runs_add_no_invented_widening_row() {
     );
     assert_eq!(data["recorded_overlap_answers"]["entries"], before);
     assert!(!data.to_string().contains("ambiguous"));
-    assert!(!data.to_string().contains("coordination_run_required"));
 }
 
 #[test]

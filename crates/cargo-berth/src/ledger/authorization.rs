@@ -237,9 +237,10 @@ mod tests {
         let session_reservation = ReservationId::new();
 
         let resolved = EditAuthorization::resolve_from_sources(
-            SessionIdentityLookup::Mapped(
-                crate::session::SessionReservationIdentity::new(session_run, session_reservation),
-            ),
+            SessionIdentityLookup::Mapped(crate::session::SessionReservationIdentity::new(
+                session_run,
+                session_reservation,
+            )),
             EnvironmentCoordinationRunSelection::Identified(environment_run),
             administrative_directory.path(),
             administrative_worktree,

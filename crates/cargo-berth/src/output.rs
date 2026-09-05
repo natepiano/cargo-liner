@@ -1936,7 +1936,6 @@ impl OutputEnvelope {
         } else if matches!(
             &report.path_attribution,
             DriftPathAttributionOutcome::Ambiguous { .. }
-                | DriftPathAttributionOutcome::CoordinationRunRequired { .. }
         ) {
             OutputStatus::DriftAttributionRequired
         } else if has_unknown_phase_start {
@@ -3920,8 +3919,7 @@ fn append_live_path_attribution_rendering(
         DriftPathAttributionOutcome::IncursionDetected { .. } => {
             immediate_stop_messages.push(format!("POST-WRITE INCURSION: {message}"));
         },
-        DriftPathAttributionOutcome::Ambiguous { .. }
-        | DriftPathAttributionOutcome::CoordinationRunRequired { .. } => {
+        DriftPathAttributionOutcome::Ambiguous { .. } => {
             immediate_stop_messages.push(format!("DRIFT ATTRIBUTION REQUIRED: {message}"));
         },
         DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. } => {
@@ -3971,10 +3969,7 @@ const fn drift_rendering_prefix(
             },
             PostWriteFreePathProtection::Acquired { .. } => ("POST-WRITE INCURSION: ", true),
         },
-        DriftPathAttributionOutcome::Ambiguous { .. }
-        | DriftPathAttributionOutcome::CoordinationRunRequired { .. } => {
-            ("DRIFT ATTRIBUTION REQUIRED: ", true)
-        },
+        DriftPathAttributionOutcome::Ambiguous { .. } => ("DRIFT ATTRIBUTION REQUIRED: ", true),
         DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. } => {
             match effect {
                 ObservedDriftEffect::Collision => ("COLLISION: ", true),
@@ -4080,15 +4075,6 @@ fn drift_path_attribution_message(attribution: &DriftPathAttributionOutcome) -> 
                 .collect::<Vec<_>>()
                 .join(", "),
             candidates
-                .as_slice()
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        DriftPathAttributionOutcome::CoordinationRunRequired { paths } => format!(
-            "Changed paths {} were not widened because no coordination run was identified. Set CARGO_BERTH_RUN to the run that owns the target reservation, then run `cargo-berth drift --reservation <id>`.",
-            paths
                 .as_slice()
                 .iter()
                 .map(ToString::to_string)

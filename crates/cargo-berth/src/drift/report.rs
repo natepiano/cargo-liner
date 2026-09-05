@@ -76,7 +76,6 @@ impl DriftReport {
         matches!(
             self.path_attribution,
             DriftPathAttributionOutcome::Ambiguous { .. }
-                | DriftPathAttributionOutcome::CoordinationRunRequired { .. }
                 | DriftPathAttributionOutcome::IncursionDetected { .. }
         ) || self.results.iter().any(ReservationDriftResult::blocks)
     }
@@ -88,7 +87,6 @@ impl DriftReport {
             DriftPathAttributionOutcome::FirstTouchReserved { .. }
                 | DriftPathAttributionOutcome::IncursionDetected { .. }
                 | DriftPathAttributionOutcome::Ambiguous { .. }
-                | DriftPathAttributionOutcome::CoordinationRunRequired { .. }
         ) || self
             .results
             .iter()
@@ -154,11 +152,6 @@ pub(crate) enum DriftPathAttributionOutcome {
         candidates: DriftAttributionCandidateSet,
         /// The exact paths left unassigned by this observation.
         paths:      UnattributedDriftPathSet,
-    },
-    /// No coordination run was identified, so no reservation can receive the paths.
-    CoordinationRunRequired {
-        /// The exact paths left unassigned by this observation.
-        paths: UnattributedDriftPathSet,
     },
 }
 

@@ -3269,24 +3269,6 @@
                 "paths"
               ],
               "type": "object"
-            },
-            {
-              "description": "No coordination run was identified, so no reservation can receive the paths.",
-              "properties": {
-                "paths": {
-                  "$ref": "#/$defs/UnattributedDriftPathSet",
-                  "description": "The exact paths left unassigned by this observation."
-                },
-                "status": {
-                  "const": "coordination_run_required",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
-                "paths"
-              ],
-              "type": "object"
             }
           ]
         },
@@ -10077,24 +10059,6 @@
               "required": [
                 "status",
                 "candidates",
-                "paths"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "No coordination run was identified, so no reservation can receive the paths.",
-              "properties": {
-                "paths": {
-                  "$ref": "#/$defs/UnattributedDriftPathSet",
-                  "description": "The exact paths left unassigned by this observation."
-                },
-                "status": {
-                  "const": "coordination_run_required",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
                 "paths"
               ],
               "type": "object"
