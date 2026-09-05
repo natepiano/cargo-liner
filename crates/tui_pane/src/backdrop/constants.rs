@@ -376,10 +376,9 @@ pub(super) const LANE_FRACTION_UNIT: u32 = 4096;
 pub(super) const CAPTURE_ATTEMPT_DEADLINE: Duration = Duration::from_secs(5);
 /// How often the worker takes a fresh capture.
 ///
-/// What a capture goes stale for is the desktop behind the window
-/// changing -- another window opening there, a Space switch, the
-/// wallpaper turning over -- and none of that happens at anything like
-/// the frame rate. The window moving does not go here: that is read
+/// The macOS image changes with the windows under the terminal, while
+/// the Linux image changes with Plasma's wallpaper. Neither needs
+/// frame-rate polling. The window moving does not go here: that is read
 /// every frame and costs a fraction of a millisecond.
 pub(super) const CAPTURE_REFRESH: Duration = Duration::from_millis(1000);
 /// How soon the worker is asked again after a capture that cannot be
@@ -400,8 +399,8 @@ pub(super) const CAPTURE_TEST_TERMINAL_PROGRAM_OWNER_PID: i32 = 2;
 ///
 /// The bound counts replacements since the last result the monitor received, so a worker that
 /// recovers does not spend the allowance. A worker abandoned after [`CAPTURE_ATTEMPT_DEADLINE`]
-/// can remain blocked in `ScreenCaptureKit` for the life of the process, and the bound still limits
-/// the threads retained by a run that never recovers.
+/// can remain blocked in a platform service for the life of the process, and the bound still
+/// limits the threads retained by a run that never recovers.
 pub(super) const MAX_CAPTURE_WORKER_REPLACEMENTS: usize = 3;
 /// Maximum number of completed capture attempt diagnostics retained between drains.
 ///
@@ -434,7 +433,7 @@ pub(super) const IDENTIFY_RETRY: Duration = Duration::from_millis(500);
 /// the process id that makes it this process's alone.
 pub(super) const IDENTIFY_MARKER: &str = "tui-pane-window-";
 /// The environment variable a terminal emulator names itself in.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) const TERM_PROGRAM_ENV: &str = "TERM_PROGRAM";
 /// How many letters a folded emulator name must carry before it is
 /// matched against another by containment.
@@ -481,7 +480,7 @@ pub(super) const POSITION_REPLY_END: u8 = b't';
 /// grid -- a title bar, a tab bar -- stands between them. Two hundred
 /// points clears all of that and is still far short of the distance
 /// between two windows the reader has put side by side.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) const POSITION_TOLERANCE: f64 = 200.0;
 /// How many pixels are captured across and down each character cell,
 /// which are then averaged into the cell's one colour.
@@ -491,7 +490,7 @@ pub(super) const POSITION_TOLERANCE: f64 = 200.0;
 /// reading four texels out of a fifteen-pixel cell gives a noisy
 /// answer. Capturing a small block per cell and averaging it here is
 /// the same box filter every time.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(super) const SAMPLES_PER_CELL: u32 = 4;
 
 // glyphs

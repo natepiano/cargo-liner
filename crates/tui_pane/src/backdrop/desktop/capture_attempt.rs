@@ -26,7 +26,7 @@ pub enum TerminalWindowCandidateSource {
 /// A synthetic capture situation used to exercise the production selection path.
 ///
 /// This support type exists for a client crate's acceptance tests, which cannot use the private
-/// window-server types that the macOS capture backend receives.
+/// window-server types that the platform capture backends receive.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureAttemptTestCase {
@@ -140,7 +140,6 @@ pub struct CaptureAttemptResult {
 
 impl CaptureAttemptResult {
     /// Build a completed attempt from the platform capture result.
-    #[cfg(target_os = "macos")]
     pub(in crate::backdrop::desktop) fn from_desktop_result(
         sequence: CaptureAttemptSequence,
         window_selection: CaptureAttemptWindowSelection,
@@ -184,14 +183,12 @@ impl CaptureAttemptResult {
     /// Returns the classified [`CaptureFailure`] when the attempt did not produce a desktop.
     pub const fn outcome(&self) -> Result<(), CaptureFailure> {
         match &self.outcome {
-            #[cfg(target_os = "macos")]
             CaptureAttemptOutcome::Succeeded(_) => Ok(()),
             CaptureAttemptOutcome::Failed(failure) => Err(*failure),
         }
     }
 
     /// Separate the lightweight diagnostic from the desktop retained by a successful attempt.
-    #[cfg(target_os = "macos")]
     pub(in crate::backdrop) fn into_diagnostic_and_desktop_result(
         self,
     ) -> (
@@ -204,27 +201,7 @@ impl CaptureAttemptResult {
             outcome:          self.outcome(),
         };
         let desktop_result = match self.outcome {
-            #[cfg(target_os = "macos")]
             CaptureAttemptOutcome::Succeeded(desktop) => Ok(desktop),
-            CaptureAttemptOutcome::Failed(failure) => Err(failure),
-        };
-        (completed_capture_attempt_diagnostic, desktop_result)
-    }
-
-    /// Separate the lightweight diagnostic from the failed attempt result.
-    #[cfg(not(target_os = "macos"))]
-    pub(in crate::backdrop) const fn into_diagnostic_and_desktop_result(
-        self,
-    ) -> (
-        CompletedCaptureAttemptDiagnostic,
-        Result<Arc<Desktop>, CaptureFailure>,
-    ) {
-        let completed_capture_attempt_diagnostic = CompletedCaptureAttemptDiagnostic {
-            sequence:         self.sequence,
-            window_selection: self.window_selection,
-            outcome:          self.outcome(),
-        };
-        let desktop_result = match self.outcome {
             CaptureAttemptOutcome::Failed(failure) => Err(failure),
         };
         (completed_capture_attempt_diagnostic, desktop_result)
@@ -246,7 +223,6 @@ impl fmt::Debug for CaptureAttemptResult {
 #[derive(Clone)]
 enum CaptureAttemptOutcome {
     /// The attempt produced this desktop.
-    #[cfg(target_os = "macos")]
     Succeeded(Arc<Desktop>),
     /// The attempt failed at this capture stage.
     Failed(CaptureFailure),

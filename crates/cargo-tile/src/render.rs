@@ -672,15 +672,15 @@ fn draw_summary(
     );
 }
 
-/// Every row the summary draws: one per command, and for a driver the
-/// commands it is driving instead.
+/// Every row the summary draws: one per command, and for an active
+/// driver the commands it is driving instead.
 ///
-/// A driver `commands.hidden_when_idle` names gives up its own row, the
-/// same as [`TrackedGroup::leads_as_ancestor`] gives it up in the
-/// driver's cell. It compiles nothing and sits in a directory of its
-/// own, so among rows gathered by working directory it would head a
-/// directory holding nothing else; the invocations it drives say where
-/// the work is, from the directories they are building in.
+/// A driver `commands.hidden_when_idle` names gives up its own row while
+/// it has work beneath it, the same as [`TrackedGroup::leads_as_ancestor`]
+/// gives it up in the driver's cell. The invocations it drives say where
+/// the work is, from the directories they are building in. With no such
+/// invocation, its own row remains so the summary still reports that the
+/// driver is running.
 ///
 /// Every other command gives its lead row and nothing under it. What a
 /// command started is its cell's business -- one `cargo nextest run`
@@ -695,7 +695,11 @@ fn summary_rows<'a>(roster: &'a Roster, hidden_when_idle: &[String]) -> Vec<&'a 
     let mut rows: Vec<&TrackedRow> = Vec::new();
     for group in roster.groups() {
         if group.leads_as_ancestor(hidden_when_idle) {
+            let before = rows.len();
             rows.extend(group.rows().skip(1).filter(|row| !row.process.nested));
+            if rows.len() == before {
+                rows.push(&group.lead);
+            }
         } else {
             rows.push(&group.lead);
         }
@@ -2470,6 +2474,35 @@ mod tests {
             rest,
             vec![ancestor(6218, "zed"), shell(36744, "-zsh")],
         )
+    }
+
+    #[test]
+    fn an_idle_driver_keeps_one_summary_row() {
+        let roster = roster_of(invocation(4100, &[SIBLING_SUBCOMMAND_NAME]), Vec::new());
+
+        let pids = summary_rows(&roster, &hidden_when_idle())
+            .into_iter()
+            .map(|row| row.process.pid)
+            .collect::<Vec<_>>();
+
+        assert_eq!(pids, vec![4100]);
+    }
+
+    #[test]
+    fn an_active_driver_summarizes_its_direct_work() {
+        let mut nested = invocation(4300, &["check"]);
+        nested.nested = true;
+        let roster = roster_of(
+            invocation(4100, &[SIBLING_SUBCOMMAND_NAME]),
+            vec![invocation(4200, &["build"]), nested],
+        );
+
+        let pids = summary_rows(&roster, &hidden_when_idle())
+            .into_iter()
+            .map(|row| row.process.pid)
+            .collect::<Vec<_>>();
+
+        assert_eq!(pids, vec![4200]);
     }
 
     /// The same, for the tests that care what stands above the command.

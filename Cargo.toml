@@ -21,6 +21,7 @@ crossterm = "0.29.0"
 dark-light = "3.0.0"
 dirs = "6.0.0"
 ignore = "0.4"
+image = { version = "0.25.10", default-features = false }
 indexmap = "2"
 itertools = "0.15.0"
 libc = "0.2.189"
@@ -64,8 +65,10 @@ tracing-subscriber = "0.3"
 # path by construction and is never edited by a release.
 tui_pane      = { path = "crates/tui_pane" }
 unicode-width = "0.2.2"
+url           = "2.5.8"
 uuid          = { version = "1", features = ["serde", "v7"] }
 walkdir       = "2.5"
+zbus          = "5.19.0"
 
 [workspace.lints.clippy]
 # Strict per-rule denies. Test modules opt back in via:

@@ -17,7 +17,14 @@ workspace = true
 [features]
 # Capture of the desktop behind the terminal window, and the attract-mode animation drawn from it.
 # Off by default because only an app that draws an idle screen has any use for it.
-backdrop  = ["dep:objc2-core-graphics", "dep:screencapturekit"]
+backdrop  = [
+  "dep:image",
+  "dep:objc2-core-graphics",
+  "dep:screencapturekit",
+  "dep:serde_json",
+  "dep:url",
+  "dep:zbus",
+]
 clipboard = ["crossterm/osc52"]
 default   = ["clipboard"]
 
@@ -35,6 +42,18 @@ toml               = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 unicode-width      = { workspace = true }
+
+# Reconstructs Plasma's wallpaper at the selected KScreen output geometry. Window geometry and
+# wallpaper configuration come from KWin and Plasma over the session D-Bus.
+[target.'cfg(target_os = "linux")'.dependencies]
+image      = { workspace = true, optional = true, default-features = false, features = [
+  "jpeg",
+  "png",
+  "webp",
+] }
+serde_json = { workspace = true, optional = true }
+url        = { workspace = true, optional = true }
+zbus       = { workspace = true, optional = true }
 
 # Used for the IOKit GPU sampler and the P/E core cluster map. Every feature
 # but "CFData" is already in the tree via sysinfo.

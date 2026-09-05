@@ -407,7 +407,7 @@ fn scan(
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing().with_cpu(),
+        process_discovery_refresh_kind(),
     );
 
     let mut census = Census::take(system);
@@ -421,10 +421,7 @@ fn scan(
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&detailed),
         false,
-        ProcessRefreshKind::nothing()
-            .with_cwd(UpdateKind::OnlyIfNotSet)
-            .with_cmd(UpdateKind::OnlyIfNotSet)
-            .with_exe(UpdateKind::OnlyIfNotSet),
+        process_detail_refresh_kind(),
     );
 
     // A process can carry the name `cargo` without being one, so the argv
@@ -465,6 +462,23 @@ fn scan(
             &Capture::take(|pid| system.process(Pid::from_u32(pid)).is_some().into()),
         ),
     }
+}
+
+/// Fields read for the full-system pass.
+///
+/// Tasks are Linux threads. They inherit a process's name and command,
+/// so including them would draw one cargo invocation more than once.
+fn process_discovery_refresh_kind() -> ProcessRefreshKind {
+    ProcessRefreshKind::nothing().without_tasks().with_cpu()
+}
+
+/// Fields read for cargo processes and their ancestors.
+fn process_detail_refresh_kind() -> ProcessRefreshKind {
+    ProcessRefreshKind::nothing()
+        .without_tasks()
+        .with_cwd(UpdateKind::OnlyIfNotSet)
+        .with_cmd(UpdateKind::OnlyIfNotSet)
+        .with_exe(UpdateKind::OnlyIfNotSet)
 }
 
 /// What the census worked out per cargo invocation, once every process
@@ -1329,6 +1343,40 @@ mod tests {
             compilers: Vec::new(),
             cpu:       HashMap::new(),
         }
+    }
+
+    #[test]
+    fn scanner_process_refreshes_exclude_tasks() {
+        assert!(!process_discovery_refresh_kind().tasks());
+        assert!(!process_detail_refresh_kind().tasks());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scanner_discovery_excludes_linux_tasks() -> std::io::Result<()> {
+        let process_pid = std::process::id();
+        let task_pids = fs::read_dir(format!("/proc/{process_pid}/task"))?
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
+            .filter(|pid| *pid != process_pid)
+            .map(Pid::from_u32)
+            .collect::<HashSet<_>>();
+        let mut system = System::new();
+
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            process_discovery_refresh_kind(),
+        );
+
+        let discovered_pids = system.processes().keys().copied().collect::<HashSet<_>>();
+        assert!(task_pids.is_disjoint(&discovered_pids));
+        assert!(
+            system
+                .process(Pid::from_u32(process_pid))
+                .is_some_and(|process| process.tasks().is_none())
+        );
+        Ok(())
     }
 
     /// A cell names what launched the command, so the walk has to

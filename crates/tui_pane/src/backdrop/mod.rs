@@ -1,13 +1,12 @@
 //! The desktop behind the terminal window, and the attract-mode
 //! animation drawn from it.
 //!
-//! [`Backdrop`] is what sits *behind* some rectangle of this terminal's
-//! grid -- the window server composites the terminal on top of
-//! everything else, so the capture excludes every window the terminal
-//! owns and what is left is whatever the window is drawn over --
-//! reduced to one colour per character cell. It is taken over a
-//! [`Rect`] of the grid, so the same call serves one pane or the whole
-//! screen.
+//! [`Backdrop`] is the desktop aligned under some rectangle of this
+//! terminal's grid, reduced to one colour per character cell. On macOS,
+//! the capture excludes the terminal's windows and includes other
+//! windows underneath. On KDE Wayland, it reconstructs Plasma's
+//! wallpaper instead. It is taken over a [`Rect`] of the grid, so the
+//! same call serves one pane or the whole screen.
 //!
 //! [`BackdropMonitor`] is what an app holds. It keeps two clocks: a
 //! capture of the whole display on a worker thread and a lazy timer,

@@ -30,7 +30,7 @@ impl RunningTargetTerminationCapability {
         system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
             true,
-            ProcessRefreshKind::nothing(),
+            ProcessRefreshKind::nothing().without_tasks(),
         );
         let Some(process) = system.process(pid) else {
             return RunningTargetTerminationOutcome::SignalNotDelivered;

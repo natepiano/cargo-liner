@@ -302,11 +302,17 @@ mod running_metrics_system {
 
                     process_table.refresh_processes_specifics(
                         &refresh_set,
-                        ProcessRefreshKind::nothing().with_cpu().with_memory(),
+                        ProcessRefreshKind::nothing()
+                            .without_tasks()
+                            .with_cpu()
+                            .with_memory(),
                     );
                     process_table.refresh_processes_specifics(
                         &refresh_set,
-                        ProcessRefreshKind::nothing().with_cpu().with_memory(),
+                        ProcessRefreshKind::nothing()
+                            .without_tasks()
+                            .with_cpu()
+                            .with_memory(),
                     );
 
                     assert_eq!(process_table.raw_process_refresh_count(), 2);
@@ -351,7 +357,10 @@ mod running_metrics_system {
             ) {
                 self.process_table.refresh_processes_specifics(
                     running_metrics_cycle_refresh_set,
-                    ProcessRefreshKind::nothing().with_cpu().with_memory(),
+                    ProcessRefreshKind::nothing()
+                        .without_tasks()
+                        .with_cpu()
+                        .with_memory(),
                 );
             }
 
@@ -1451,7 +1460,7 @@ impl ProcessRefreshHostSource for SysinfoProcessRefreshHostSource {
         let updated_processes = process_discovery_system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::nothing(),
+            process_discovery_refresh_kind(),
         );
         if updated_processes == 0 {
             FullProcessDiscoveryOutcome::NoProcessesUpdated
@@ -1732,8 +1741,13 @@ impl ProcessObserver {
     }
 }
 
+fn process_discovery_refresh_kind() -> ProcessRefreshKind {
+    ProcessRefreshKind::nothing().without_tasks()
+}
+
 fn process_field_refresh_kind() -> ProcessRefreshKind {
     ProcessRefreshKind::nothing()
+        .without_tasks()
         .with_exe(UpdateKind::Always)
         .with_cmd(UpdateKind::Always)
         .with_cwd(UpdateKind::Always)
@@ -1743,20 +1757,29 @@ fn process_field_refresh_kind() -> ProcessRefreshKind {
 mod tests {
     use std::cell::Cell;
     use std::collections::BTreeMap;
+    #[cfg(target_os = "linux")]
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::time::Instant;
 
     use sysinfo::Pid;
-    use sysinfo::UpdateKind;
 
+    #[cfg(target_os = "linux")]
+    use super::FullProcessDiscoveryOutcome;
     use super::FullRefreshDirectlySampledPids;
     use super::PlatformProcessObservation;
     use super::ProcessObserver;
+    #[cfg(target_os = "linux")]
+    use super::ProcessRefreshHostSource;
     use super::ProcessRefreshSamplingEvidence;
+    #[cfg(target_os = "linux")]
+    use super::SysinfoProcessRefreshHostSource;
     use super::identity::InsufficientProcessIdentity;
     use super::identity::ObservedProcessIdentity;
     use super::identity::ProcessCreationOrderEvidence;
     use super::identity::ProcessIdentity;
+    use super::process_discovery_refresh_kind;
+    use super::process_field_refresh_kind;
     use super::snapshot::FullProcessRefreshEvidence;
     use super::snapshot::ProcessFieldLifetimeBinding;
     use super::snapshot::ProcessFieldObservation;
@@ -1903,14 +1926,45 @@ mod tests {
     }
 
     #[test]
+    fn running_targets_process_refresh_kinds_exclude_tasks() {
+        assert!(!process_discovery_refresh_kind().tasks());
+        assert!(!process_field_refresh_kind().tasks());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn running_targets_observation_excludes_linux_tasks() -> std::io::Result<()> {
+        let process_task_pids = std::fs::read_dir(format!("/proc/{}/task", std::process::id()))?
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
+            .filter(|pid| *pid != std::process::id())
+            .map(Pid::from_u32)
+            .collect::<BTreeSet<_>>();
+        let process_observation_snapshot =
+            ProcessObserver::default().refresh_running_targets_cycle();
+        let observed_pids = process_observation_snapshot
+            .strongly_identified_processes()
+            .keys()
+            .map(|process_identity| Pid::from_u32(process_identity.pid()))
+            .collect::<BTreeSet<_>>();
+
+        assert!(process_task_pids.is_disjoint(&observed_pids));
+        let full_process_discovery = SysinfoProcessRefreshHostSource.full_process_discovery();
+        let FullProcessDiscoveryOutcome::Updated(discovered_pids) = full_process_discovery else {
+            return Err(std::io::Error::other(
+                "sysinfo did not update any processes",
+            ));
+        };
+        let discovered_pids = discovered_pids.into_iter().collect::<BTreeSet<_>>();
+        assert!(process_task_pids.is_disjoint(&discovered_pids));
+        Ok(())
+    }
+
+    #[test]
     fn production_field_adapter_uses_repeated_fresh_system_samples() -> std::io::Result<()> {
         let pid = sysinfo::Pid::from_u32(std::process::id());
-        let refresh_kind = sysinfo::ProcessRefreshKind::nothing()
-            .with_exe(UpdateKind::Always)
-            .with_cmd(UpdateKind::Always)
-            .with_cwd(UpdateKind::Always);
         let process_field_sources =
-            ProcessObserver::refresh_process_field_sources(&[pid], refresh_kind);
+            ProcessObserver::refresh_process_field_sources(&[pid], process_field_refresh_kind());
         let Some(process_field_source) = process_field_sources.get(&pid) else {
             return Err(std::io::Error::other(
                 "fresh process field system did not return the current process",

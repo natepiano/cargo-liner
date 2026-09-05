@@ -2,11 +2,11 @@
 //! running.
 //!
 //! A grid with nothing in it is a screen with nothing to say, so the
-//! app spends that time showing what is behind it. [`tui_pane`]
-//! captures the desktop under the terminal window and hands back one
-//! colour per character cell; [`TravelingBand`] draws a strip of
-//! characters crossing the grid in those colours, so the text reads as
-//! cut out of whatever the window is sitting on top of.
+//! app spends that time showing the desktop aligned under it.
+//! [`tui_pane`] hands back one colour per character cell, taken from
+//! the captured macOS desktop or the reconstructed KDE wallpaper;
+//! [`TravelingBand`] draws a strip of characters crossing the grid in
+//! those colours.
 //!
 //! The strip fades in when the roster empties and back out when
 //! something starts, which is why [`Attract::render`] is called every
@@ -343,7 +343,7 @@ enum AnimationArea {
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub(crate) enum AttractMode {
     /// A lit strip of characters crossing the grid, drawn in the
-    /// colours of the desktop behind the window.
+    /// colours of the desktop aligned under the window.
     MovingBand,
     /// The whole window filled with characters instead, every line of
     /// them drifting at a speed of its own, in those same colours.

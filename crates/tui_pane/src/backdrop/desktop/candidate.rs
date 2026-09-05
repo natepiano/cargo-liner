@@ -33,13 +33,6 @@ pub(in crate::backdrop) enum TerminalWindowSearchOutcome {
     /// No terminal window satisfied the lookup.
     NotFound,
     /// The lookup found this window-server id.
-    #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(
-            dead_code,
-            reason = "only the macOS backend constructs this outcome, because other platforms have no window server to find a window with; the unit tests construct it on every platform, so the expectation would go unfulfilled under cfg(test)"
-        )
-    )]
     Found { window_id: u32 },
 }
 
@@ -71,22 +64,8 @@ pub(in crate::backdrop) struct TitledWindow {
 pub(in crate::backdrop) enum WindowTitle {
     /// The window server would not say, which is what it does without
     /// Screen Recording permission. Nothing here can make it answer.
-    #[cfg_attr(
-        not(target_os = "macos"),
-        expect(
-            dead_code,
-            reason = "only the macOS backend reads window titles because other platforms have no window server"
-        )
-    )]
     Withheld,
     /// The window server reports this title.
-    #[cfg_attr(
-        not(target_os = "macos"),
-        expect(
-            dead_code,
-            reason = "only the macOS backend reads window titles because other platforms have no window server"
-        )
-    )]
     Reported(String),
 }
 
@@ -250,7 +229,7 @@ impl TerminalWindowCandidate for CaptureAttemptTestWindow {
     }
 }
 
-/// Run a client acceptance test through the same selection helper as the macOS capture backend.
+/// Run a client acceptance test through the same selection helper as the platform backends.
 pub(in crate::backdrop) fn capture_attempt_for_test(
     sequence: CaptureAttemptSequence,
     capture_window_target: CaptureWindowTarget,

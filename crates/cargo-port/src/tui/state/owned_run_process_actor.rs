@@ -235,7 +235,7 @@ fn signal_owned_process_group(
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[pid]),
         true,
-        ProcessRefreshKind::nothing(),
+        ProcessRefreshKind::nothing().without_tasks(),
     );
     if !matches!(
         identity::revalidate_strong_process_identity(process_identity),

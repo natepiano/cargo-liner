@@ -1,21 +1,19 @@
 //! The desktop behind this terminal window, one colour per character
 //! cell, for a whole display.
 //!
-//! [`Desktop`] answers what sits *behind* the window rather than what
-//! is on the screen: the window server composites this terminal on top
-//! of everything else, so a plain screenshot would hand back the app's
-//! own output and the attract animation would be drawing itself. The
-//! capture excludes every window the terminal owns, and what is left is
-//! whatever the window is drawn over -- the wallpaper where nothing
-//! else is there, and another application's window where one is.
+//! [`Desktop`] answers what is aligned under the window without
+//! capturing the terminal's own output. The macOS backend captures the
+//! display with the terminal application's windows excluded. The KDE
+//! Wayland backend reconstructs Plasma's wallpaper at the output's
+//! physical size and maps the terminal through `KWin`'s logical
+//! coordinates.
 //!
 //! It covers a whole display rather than the window's own rectangle,
 //! which is what separates the two clocks this module keeps apart:
 //!
-//! - [`Desktop::capture`] is a round trip to the window server and takes far longer than a frame,
-//!   so it runs on a worker thread. What makes it stale is the desktop behind the window changing
-//!   -- another window opening there, a Space switch, the wallpaper turning over -- and none of
-//!   that happens at anything like the frame rate.
+//! - [`Desktop::capture`] is a round trip to the desktop services and takes far longer than a
+//!   frame, so it runs on a worker thread. A captured desktop changes with macOS window contents or
+//!   when Plasma's wallpaper changes, neither of which needs frame-rate polling.
 //! - [`Desktop::placement`] asks only where the window is now. It costs a fraction of a millisecond
 //!   and runs every frame, so dragging the window slides the colours with it and nothing waits on a
 //!   capture.
@@ -23,6 +21,8 @@
 mod candidate;
 mod capture_attempt;
 mod platform;
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+mod reduction;
 
 use std::fmt::Formatter;
 
@@ -105,9 +105,8 @@ impl Metrics {
     /// is twice its size in both axes and the grid the capture reduces
     /// to covers half the window. See
     /// [`text_area`](Self#structfield.text_area) for the measurement.
-    #[cfg(any(target_os = "macos", test))]
-    fn cell_points(self, scale: u32) -> (f64, f64) {
-        let scale = f64::from(scale);
+    #[cfg(any(target_os = "linux", target_os = "macos", test))]
+    fn cell_points(self, scale: f64) -> (f64, f64) {
         (
             f64::from(self.text_area.0) / scale / f64::from(self.cells.0),
             f64::from(self.text_area.1) / scale / f64::from(self.cells.1),
@@ -178,14 +177,6 @@ impl Desktop {
     /// `capture_window_target` carries the exact window this app was found to be drawn in, or
     /// requests the terminal-window candidate heuristic. The heuristic cannot tell two windows of
     /// the same size apart.
-    #[cfg_attr(
-        not(target_os = "macos"),
-        allow(
-            clippy::missing_const_for_fn,
-            reason = "const only where `platform` is the do-nothing stub; the \
-                  macOS module this delegates to calls the window server"
-        )
-    )]
     pub(super) fn capture(
         metrics: Metrics,
         capture_window_target: CaptureWindowTarget,
@@ -270,14 +261,6 @@ impl Desktop {
 /// process's connection to it is serial and a capture in flight is
 /// ahead of this in the queue. That is why this is never called from
 /// the thread that is drawing.
-#[cfg_attr(
-    not(target_os = "macos"),
-    allow(
-        clippy::missing_const_for_fn,
-        reason = "const only where `platform` is the do-nothing stub; the \
-                  macOS module this delegates to calls the window server"
-    )
-)]
 pub(super) fn window_frame(window: u32) -> Option<Frame> { platform::window_frame(window) }
 
 /// Every window the emulator has open, as the window server numbers
@@ -286,14 +269,6 @@ pub(super) fn window_frame(window: u32) -> Option<Frame> { platform::window_fram
 /// Read before the terminal is asked to wear a marker title, so that
 /// whatever it was wearing can be put back once the marker has done
 /// its work.
-#[cfg_attr(
-    not(target_os = "macos"),
-    allow(
-        clippy::missing_const_for_fn,
-        reason = "const only where `platform` is the do-nothing stub; the \
-                  macOS module this delegates to calls the window server"
-    )
-)]
 pub(super) fn window_titles() -> Vec<TitledWindow> { platform::window_titles() }
 
 /// Whether the emulator has a window whose title holds `marker`.
@@ -304,14 +279,6 @@ pub(super) fn window_titles() -> Vec<TitledWindow> { platform::window_titles() }
 /// window of the emulator answers to the same application. A title
 /// only this process knows is unambiguous, and the terminal will wear
 /// one for as long as it takes to ask.
-#[cfg_attr(
-    not(target_os = "macos"),
-    allow(
-        clippy::missing_const_for_fn,
-        reason = "const only where `platform` is the do-nothing stub; the \
-                  macOS module this delegates to calls the window server"
-    )
-)]
 pub(super) fn window_titled(marker: &str) -> TerminalWindowSearchOutcome {
     platform::window_titled(marker)
 }
@@ -330,14 +297,6 @@ pub(super) fn window_titled(marker: &str) -> TerminalWindowSearchOutcome {
 /// Near enough rather than exactly, by [`POSITION_TOLERANCE`]: an
 /// emulator may report the corner of its text area where the window
 /// server reports the corner of the window around it.
-#[cfg_attr(
-    not(target_os = "macos"),
-    allow(
-        clippy::missing_const_for_fn,
-        reason = "const only where `platform` is the do-nothing stub; the \
-                  macOS module this delegates to calls the window server"
-    )
-)]
 pub(super) fn window_at(origin: (f64, f64)) -> TerminalWindowSearchOutcome {
     platform::window_at(origin)
 }
@@ -420,7 +379,7 @@ mod tests {
 
     #[test]
     fn the_reported_text_area_is_divided_by_the_display_scale() {
-        let (width, height) = RETINA.cell_points(SCALE);
+        let (width, height) = RETINA.cell_points(f64::from(SCALE));
         assert!(
             near(width, 7.0) && near(height, 16.0),
             "1708 by 2144 pixels over 122 by 67 cells is a cell of 14 \
@@ -431,7 +390,7 @@ mod tests {
 
     #[test]
     fn a_display_carrying_one_pixel_to_the_point_divides_by_nothing() {
-        let (width, height) = RETINA.cell_points(1);
+        let (width, height) = RETINA.cell_points(1.0);
         assert!(
             near(width, 14.0) && near(height, 32.0),
             "where a pixel is a point the report needs no converting, \
@@ -441,7 +400,7 @@ mod tests {
 
     #[test]
     fn the_converted_cell_fits_the_window_it_was_measured_in() {
-        let (width, height) = RETINA.cell_points(SCALE);
+        let (width, height) = RETINA.cell_points(f64::from(SCALE));
         assert!(
             width * f64::from(RETINA.cells.0) <= FRAME.size.0
                 && height * f64::from(RETINA.cells.1) <= FRAME.size.1,
@@ -453,7 +412,7 @@ mod tests {
 
     #[test]
     fn the_reduce_grid_covers_every_cell_the_window_has() {
-        let cell = RETINA.cell_points(SCALE);
+        let cell = RETINA.cell_points(f64::from(SCALE));
         let desktop = Desktop {
             window_id: 0,
             metrics: RETINA,
@@ -478,7 +437,7 @@ mod tests {
 
     #[test]
     fn an_undivided_report_leaves_the_grid_short() {
-        let cell = RETINA.cell_points(1);
+        let cell = RETINA.cell_points(1.0);
         assert!(
             grid_cells(DISPLAY.1, cell.1) < RETINA.cells.1,
             "this is the defect itself: a cell twice its height divides \

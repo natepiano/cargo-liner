@@ -28,11 +28,9 @@ pub(crate) const ATTRACT_RETURN_QUIET: Duration = Duration::from_secs(3);
 /// How long the attract screen may want a desktop capture and have none
 /// before it says so.
 ///
-/// A display not captured recently answers in about three seconds, against roughly two tenths
-/// when warm, and the first `SCShareableContent` call in a process costs seconds of its own. A cold
-/// start can spend the monitor's whole five-second attempt deadline before its retry succeeds. Ten
-/// seconds covers one stalled first attempt and the retry that follows it, so a gap shorter than
-/// this is the ordinary working of desktop capture and says nothing. A backdrop that never arrives
+/// The macOS backend may take several seconds to start its first capture, while the KDE wallpaper
+/// backend normally answers much sooner. Ten seconds covers one stalled first attempt and the
+/// retry that follows it, so a shorter gap is normal capture startup. A backdrop that never arrives
 /// is still reported promptly enough for an ambient screen.
 pub(crate) const ATTRACT_BACKDROP_GRACE: Duration = Duration::from_secs(10);
 /// What the screen says once unusable workers consume every automatic replacement.
