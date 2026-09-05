@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.21.2] - 2026-09-05
 
 ### Fixed
 - `prefer-module-import` no longer calls a module a function when it is reached through a `pub use` re-export. Path resolution walked files and inline `mod` blocks only, so a snake_case module re-exported from elsewhere looked like a function and `--fix` rewrote the import while leaving the call sites qualified, which does not compile. Re-exports are now followed, `self::` targets included.
