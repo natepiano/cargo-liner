@@ -319,17 +319,6 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
             .iter()
             .find(|&&(content, _)| content == placement.content)
             .map_or(0, |&(_, width)| width);
-        // The split behind that count, for the readout only: the summary
-        // has no block above its table, so its whole demand is the table.
-        let split = match placement.content {
-            TileContent::Group(id) => app
-                .roster
-                .groups()
-                .iter()
-                .find(|group| group.id == id)
-                .map(|group| group_height_parts(group, demand_width, hidden_when_idle, tree)),
-            TileContent::Summary | TileContent::Empty(_) => None,
-        };
         if contents == Contents::Shown {
             draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
                 draw_contents(
@@ -341,7 +330,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
                     hidden_when_idle,
                     tree,
                 );
-                draw_rows_readout(buffer, inner, content_rows, demand_width, split);
+                draw_rows_readout(buffer, inner, content_rows, demand_width);
             });
         }
         match placement.content {
@@ -434,22 +423,6 @@ fn group_height(
     hidden_when_idle: &[String],
     tree: ProcessTree,
 ) -> usize {
-    let (above, table) = group_height_parts(group, width, hidden_when_idle, tree);
-    above.saturating_add(table)
-}
-
-/// [`group_height`] split into the block above the table and the table
-/// itself, which is what the readout along the cell's foot writes out.
-///
-/// The two are worth telling apart: they are measured by different code
-/// against different rules, and a cell asking for far more than it draws
-/// is asking it in one of them rather than in both.
-fn group_height_parts(
-    group: &TrackedGroup,
-    width: u16,
-    hidden_when_idle: &[String],
-    tree: ProcessTree,
-) -> (usize, usize) {
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
     let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
     // The same steps [`draw_group`] draws, measured the same way: a
@@ -464,7 +437,7 @@ fn group_height_parts(
         Some(group.lead.process.path.as_str()),
         tree,
     );
-    (ancestry_demand(&ancestry, width), table)
+    ancestry_demand(&ancestry, width).saturating_add(table)
 }
 
 /// Rows the block above the table asks for: the whole chain, plus the
@@ -556,24 +529,16 @@ fn table_height(
 /// agreeing is worth no room at all, while the two disagreeing is the
 /// whole of what separates a cell asking for too much from a cell
 /// asking against the wrong ruler, and is written red where it appears.
-fn draw_rows_readout(
-    buffer: &mut Buffer,
-    inner: Rect,
-    rows: usize,
-    measured_at: u16,
-    split: Option<(usize, usize)>,
-) {
+fn draw_rows_readout(buffer: &mut Buffer, inner: Rect, rows: usize, measured_at: u16) {
     let asked = u16::try_from(rows).unwrap_or(u16::MAX);
     let reading = if asked <= inner.height {
         success_color()
     } else {
         error_color()
     };
-    let parts = split.map_or_else(String::new, |(above, table)| format!(" ({above}+{table})"));
     let mut spans = vec![
         Span::styled(TILE_ROWS_CONTENT_LABEL, Style::default().fg(label_color())),
         Span::styled(rows.to_string(), Style::default().fg(reading)),
-        Span::styled(parts, Style::default().fg(label_color())),
     ];
     if measured_at != inner.width {
         spans.push(Span::styled(
@@ -805,7 +770,7 @@ fn draw_group(
     // row there: the chain stands over the whole cell, and the cell
     // goes out when the command does.
     let faded = heading_fade(&rows).min(group.lead.faded());
-    // The same measurement [`group_height_parts`] made when the cell
+    // The same measurement [`group_height`] made when the cell
     // asked for its room, so the block is given back exactly what the
     // ask left it.
     let table_rows = table_height(
