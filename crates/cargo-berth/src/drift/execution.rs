@@ -285,6 +285,22 @@ fn execute_inner(
         );
         return Ok(Enrollment::Enrolled(report));
     }
+    // This branch returns before the lock that decides refusal, and states `Permitted` without
+    // asking. Two separate things make that right, and both are needed.
+    //
+    // The acquisition it performs is not unguarded: `claim_post_write_paths` goes through
+    // `claim::acquire_first_touch`, which asks the same occupancy question through the same
+    // `coordination_identity::validate_worktree_occupancy` from inside its own ledger
+    // transaction. A second presented run reaching here is refused by the claim, not waved
+    // through.
+    //
+    // The reported `Permitted` is a statement about this worktree, and it holds because
+    // `reporting` is empty. Post-commit subject selection matches every `Active` reservation
+    // whose actor worktree is this one, with the acting run deliberately dropped from the
+    // filter (`PostCommitWideningSelection::resolve_post_commit`), so an empty reporting set
+    // means no `Active` reservation exists here at all. Occupancy requires an `Active` holder,
+    // so there is no incumbent for the question to find. Widening the reporting filter to ask
+    // about the run would break that implication and this branch with it.
     if initial_subjects.reporting.is_empty()
         && matches!(
             initial_subjects.post_write_first_touch,

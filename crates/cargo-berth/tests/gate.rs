@@ -2551,10 +2551,17 @@ fn batched_git_path_distinguishes_spawn_failure_from_completed_failure() {
     );
     let unavailable_envelope = json_output(&unavailable);
     assert_eq!(unavailable_envelope["status"], "ledger_unreadable");
+    // Assert the spawn failure, not which git call happened to hit the removed wrapper first.
+    // Drift issues its fingerprint commands concurrently, so under a loaded suite the first
+    // call to find the wrapper gone is whichever the scheduler let through --- observed as
+    // `could not run drift fingerprint` alone and as `git cat-file failed while computing
+    // drift` under load. Both are the same event: the engine could not spawn git at all, which
+    // is what this test distinguishes from a git that ran and exited non-zero. Pinning one
+    // subcommand pinned the scheduler.
     assert!(
         unavailable_envelope["message"]
             .as_str()
-            .is_some_and(|message| message.contains("could not run drift fingerprint")),
+            .is_some_and(|message| message.contains("No such file or directory")),
         "spawn failure did not retain its typed diagnostic: {unavailable_envelope}"
     );
     assert!(
@@ -2594,6 +2601,12 @@ fn batched_git_path_distinguishes_spawn_failure_from_completed_failure() {
         "completed failure did not retain its typed diagnostic: {failed_envelope}"
     );
     assert_eq!(git_command_count(&failed_trace, "diff-tree"), 1);
+    assert!(
+        !failed_envelope["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("No such file or directory")),
+        "a git that ran and exited non-zero must not read as a spawn failure: {failed_envelope}"
+    );
     assert_ne!(unavailable_envelope["message"], failed_envelope["message"]);
 }
 

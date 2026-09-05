@@ -40,6 +40,7 @@ use crate::constants::OVERLAP_WHY_ARGUMENT_ID;
 use crate::constants::OVERLAP_WHY_VALUE_NAME;
 use crate::constants::PROPOSAL_ARGUMENT;
 use crate::constants::PROPOSAL_VALUE_NAME;
+use crate::coordination_identity::PresentedCoordinationRun;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::drift::DriftComparisonChoice;
 use crate::drift::DriftRequest;
@@ -1044,7 +1045,11 @@ impl ClaimArguments {
             purpose,
             coordination_run_selection: run.map_or(
                 ClaimCoordinationRunSelection::ContinueOrStart,
-                ClaimCoordinationRunSelection::Specified,
+                |coordination_run_id| {
+                    ClaimCoordinationRunSelection::Specified(
+                        PresentedCoordinationRun::from_run_argument(coordination_run_id),
+                    )
+                },
             ),
             phase_start,
             overlap_authorization,

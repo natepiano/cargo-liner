@@ -53,6 +53,7 @@ pub(crate) use retention::IncursionIncident;
 pub(crate) use retention::IncursionIncidentStatus;
 pub(crate) use retention::IncursionObservation;
 pub(crate) use retention::RetainedReservationSet;
+pub(crate) use retention::WorktreeOccupancy;
 pub(crate) use scoped_patch_evaluation::DurableScopedPatchComparison;
 pub(crate) use scoped_patch_evaluation::IntegrationProofSubjectRevision;
 pub(crate) use scoped_patch_evaluation::ScopedPatchEquivalenceVerdict;

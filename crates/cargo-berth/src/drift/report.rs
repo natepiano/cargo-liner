@@ -419,3 +419,136 @@ nonempty_drift_set!(
     "The non-empty path set left unassigned by an ambiguous widening attribution.",
     "an ambiguous widening attribution must name at least one path"
 );
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use serde_json::Value;
+    use serde_json::json;
+
+    use super::DriftReport;
+    use crate::output::OutputEnvelope;
+
+    const INCUMBENT_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
+    const INCUMBENT_RUN_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
+    const ISSUING_RUN_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
+    const PHASE_START: &str = "1111111111111111111111111111111111111111";
+    const SUBJECT_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a21";
+    const WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
+
+    /// A refusal is the status even when a lower-ranked condition is also present.
+    ///
+    /// Both of those conditions name a remedy this same rule would refuse --- an ambiguous
+    /// attribution says to rerun with `--reservation <id>`, an unreadable phase start says to
+    /// rerun with `--full` --- so ranking either above the refusal hands a refused caller a
+    /// command that cannot succeed. Neither combination arises from the claim path today,
+    /// because the occupancy rule prevents the two presented runs from both holding `Active`
+    /// reservations in one worktree, so the report is assembled directly: the ranking is the
+    /// unit under test, not the ledger state that would have to produce it.
+    ///
+    /// `a_completed_but_refused_run_carries_its_own_status` in `tests/drift.rs` covers the
+    /// other half: it drives a real refused run end to end, but passes under either ranking
+    /// because its fixture attributes nothing. That one pins the status, this one the order.
+    #[test]
+    fn a_refusal_outranks_the_conditions_whose_remedies_it_would_refuse() {
+        for (condition, report) in [
+            (
+                "ambiguous attribution",
+                refused_report(&ambiguous_attribution(), &json!([])),
+            ),
+            (
+                "unreadable phase start",
+                refused_report(&json!({"status": "not_needed"}), &unreadable_phase_start()),
+            ),
+            (
+                "both at once",
+                refused_report(&ambiguous_attribution(), &unreadable_phase_start()),
+            ),
+        ] {
+            let envelope = serde_json::to_value(OutputEnvelope::drift(report))
+                .expect("a drift envelope should serialize");
+            assert_eq!(
+                envelope["status"], "scope_acquisition_refused",
+                "the refusal must outrank {condition}: {envelope}"
+            );
+        }
+    }
+
+    /// The same lower-ranked conditions still decide the status when nothing was refused.
+    ///
+    /// Without this the test above would pass against a status that ignored the report
+    /// entirely, so it pins that the ranking reorders live answers rather than suppressing
+    /// them.
+    #[test]
+    fn the_outranked_conditions_still_decide_a_permitted_run() {
+        let attribution_only = permitted_report(&ambiguous_attribution(), &json!([]));
+        let envelope = serde_json::to_value(OutputEnvelope::drift(attribution_only))
+            .expect("a drift envelope should serialize");
+        assert_eq!(
+            envelope["status"], "drift_attribution_required",
+            "{envelope}"
+        );
+
+        let phase_start_only =
+            permitted_report(&json!({"status": "not_needed"}), &unreadable_phase_start());
+        let envelope = serde_json::to_value(OutputEnvelope::drift(phase_start_only))
+            .expect("a drift envelope should serialize");
+        assert_eq!(envelope["status"], "object_unknown", "{envelope}");
+    }
+
+    fn ambiguous_attribution() -> Value {
+        json!({
+            "status": "ambiguous",
+            "candidates": [SUBJECT_RESERVATION_ID, INCUMBENT_RESERVATION_ID],
+            "paths": ["src/lib.rs"],
+        })
+    }
+
+    fn unreadable_phase_start() -> Value {
+        json!([{
+            "status": "phase_start_object_unknown",
+            "reservation_id": SUBJECT_RESERVATION_ID,
+            "phase_start": PHASE_START,
+        }])
+    }
+
+    fn refused_report(path_attribution: &Value, results: &Value) -> DriftReport {
+        report(
+            path_attribution,
+            results,
+            &json!({
+                "status": "refused_to_second_run",
+                "rejection": {
+                    "kind": "worktree_held_by_another_run",
+                    "incumbent_coordination_run_id": INCUMBENT_RUN_ID,
+                    "incumbent_reservation_id": INCUMBENT_RESERVATION_ID,
+                    "issuing_coordination_run_id": ISSUING_RUN_ID,
+                    "issuing_worktree_id": WORKTREE_ID,
+                    "issuing_root": "/repo",
+                    "recovery_actions": [{
+                        "kind": "release_incumbent_reservation",
+                        "argv": ["cargo-berth", "release", INCUMBENT_RESERVATION_ID, "--json"],
+                        "cwd": "/repo",
+                    }],
+                },
+            }),
+        )
+    }
+
+    fn permitted_report(path_attribution: &Value, results: &Value) -> DriftReport {
+        report(path_attribution, results, &json!({"status": "permitted"}))
+    }
+
+    fn report(path_attribution: &Value, results: &Value, scope_acquisition: &Value) -> DriftReport {
+        serde_json::from_value(json!({
+            "comparison": "cheap_delta",
+            "widening": path_attribution,
+            "results": results,
+            "scope_acquisition": scope_acquisition,
+        }))
+        .expect("the drift report fixture should deserialize")
+    }
+}

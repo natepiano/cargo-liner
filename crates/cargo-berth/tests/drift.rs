@@ -2126,7 +2126,9 @@ fn a_refusal_with_nothing_entered_is_not_reported_as_a_failed_check() {
 ///
 /// This does not cover the ranking of that status against the attribution and unreadable
 /// phase-start conditions: attribution is `NotNeeded` here, so the refusal branch is reached
-/// under either ranking. See `docs/cargo-berth/refuse-foreign-same-worktree-reservation-next.md`.
+/// under either ranking. `a_refusal_outranks_the_conditions_whose_remedies_it_would_refuse` in
+/// `src/drift/report.rs` covers that, against reports assembled directly --- the occupancy rule
+/// keeps a ledger fixture from producing either combination.
 #[test]
 fn a_completed_but_refused_run_carries_its_own_status() {
     let repository = repository_with_uncommitted_berth_configuration();

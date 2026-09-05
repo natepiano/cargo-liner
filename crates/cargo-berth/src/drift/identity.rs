@@ -10,6 +10,7 @@ use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
+use crate::coordination_identity::PresentedCoordinationRun;
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
@@ -29,7 +30,7 @@ use crate::reservation::RetainedReservationSet;
 #[derive(Clone, Copy)]
 pub(super) enum DriftRunValidation {
     /// `CARGO_BERTH_RUN` named the run, so the same-worktree occupancy rule answers it.
-    IndependentWithPresentedIdentity(CoordinationRunId),
+    IndependentWithPresentedIdentity(PresentedCoordinationRun),
     /// Nothing identified the caller, so this process issued the run it acts under. That is
     /// not a coordination run and has no second run to be: refusing it would refuse the
     /// engine's own markerless post-commit work.
@@ -43,14 +44,16 @@ pub(super) enum DriftRunValidation {
 impl DriftRunValidation {
     pub(super) const fn resolve(resolved_edit_authorization: ResolvedEditAuthorization) -> Self {
         match resolved_edit_authorization.edit_authorization() {
-            EditAuthorization::Environment {
-                coordination_run_id,
-                ..
-            } => Self::IndependentWithPresentedIdentity(coordination_run_id),
             EditAuthorization::Session { .. } | EditAuthorization::Marker { .. } => {
                 Self::ResolvedIdentityRequired
             },
-            EditAuthorization::Unidentified => Self::IndependentWithoutPresentedIdentity,
+            // `Environment` and `Unidentified` split on exactly the question the constructor
+            // answers, so it decides them rather than a second variant match beside it.
+            authorization => match PresentedCoordinationRun::from_edit_authorization(authorization)
+            {
+                Some(acting_run) => Self::IndependentWithPresentedIdentity(acting_run),
+                None => Self::IndependentWithoutPresentedIdentity,
+            },
         }
     }
 
@@ -70,14 +73,14 @@ impl DriftRunValidation {
         identity_validation: &CoordinationIdentityValidationContext,
     ) -> Result<DriftScopeAcquisition, CoordinationIdentityValidationError> {
         match self {
-            Self::IndependentWithPresentedIdentity(actor_run_id) => {
+            Self::IndependentWithPresentedIdentity(acting_run) => {
                 match coordination_identity::validate_worktree_occupancy(
                     reservations,
                     worktree_context,
                     identity_validation
                         .resolved_edit_authorization()
                         .worktree_id,
-                    actor_run_id,
+                    acting_run,
                 ) {
                     Ok(()) => Ok(DriftScopeAcquisition::Permitted),
                     Err(CoordinationIdentityValidationError::Rejected(rejection)) => {

@@ -31,6 +31,7 @@ use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapScopeRevision;
+use crate::coordination_identity::PresentedCoordinationRun;
 use crate::ids::CoordinationRunId;
 use crate::ids::EventId;
 use crate::ids::GitObjectId;
@@ -135,6 +136,22 @@ enum IncursionPathCoverage {
     Answered,
     /// No incident accounts for this path yet.
     Uncovered,
+}
+
+/// Whether another presented coordination run occupies a worktree against the asking run.
+///
+/// The two answers are not a presence test dressed as one. `NoIncumbent` says this worktree
+/// admits the asking run --- which includes the case where the run's own reservation is the
+/// only one here --- and [`Self::Incumbent`] carries the holder because every fact the refusal
+/// publishes is read off it: the run to name, the reservation id the `release` recovery action
+/// takes as its argument. A bare `Option<&Reservation>` stated neither, so the sole caller
+/// recovered both from a `let`-`else` and the name it bound.
+#[derive(Debug)]
+pub(crate) enum WorktreeOccupancy<'reservations> {
+    /// No other presented run holds this worktree, so the asking run may take work in it.
+    NoIncumbent,
+    /// Another presented run holds it, in this reservation.
+    Incumbent(&'reservations Reservation),
 }
 
 impl RetainedReservationSet {
@@ -512,10 +529,10 @@ impl RetainedReservationSet {
         self.incursion_incidents.iter()
     }
 
-    /// Return the reservation whose run occupies this worktree, when another run occupies it.
+    /// Answer whether another coordination run occupies this worktree against `acting_run`.
     ///
     /// The worktree is the coordination unit, so one run holds it at a time. Two terms narrow
-    /// which holder counts as the occupant, and both live in
+    /// which holder counts as the incumbent, and both live in
     /// [`Reservation::occupies_worktree_for_another_coordination_run`] rather than here.
     /// `Active` only: an `Outstanding` holder has released and is awaiting integration, and
     /// blocking on it would lock a worktree out of paths its own previous session released.
@@ -523,15 +540,25 @@ impl RetainedReservationSet {
     /// only: occupancy is a rule between two
     /// coordination identities a caller presented, so a holder claimed under an identity this
     /// engine created for itself, and one predating the record, both decline to occupy.
-    pub(crate) fn active_reservation_held_by_another_run(
+    ///
+    /// `acting_run` is the other term of that same rule, and it arrives as a
+    /// [`PresentedCoordinationRun`] for the reason the holder's provenance is read at all: a
+    /// caller with only a bare [`CoordinationRunId`] has not shown that anyone presented it,
+    /// so it may not ask this question.
+    pub(crate) fn worktree_occupancy(
         &self,
         worktree_id: WorktreeId,
-        coordination_run_id: CoordinationRunId,
-    ) -> Option<&Reservation> {
-        self.reservations.iter().find(|reservation| {
-            reservation
-                .occupies_worktree_for_another_coordination_run(coordination_run_id, worktree_id)
-        })
+        acting_run: PresentedCoordinationRun,
+    ) -> WorktreeOccupancy<'_> {
+        self.reservations
+            .iter()
+            .find(|reservation| {
+                reservation.occupies_worktree_for_another_coordination_run(
+                    acting_run.coordination_run_id(),
+                    worktree_id,
+                )
+            })
+            .map_or(WorktreeOccupancy::NoIncumbent, WorktreeOccupancy::Incumbent)
     }
 
     /// Return whether the run still has another reservation in `Active`, in any worktree.
@@ -1338,7 +1365,9 @@ mod tests {
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
     use super::RetainedReservationSet;
+    use super::WorktreeOccupancy;
     use crate::coordination_identity::CoordinationIdentityProvenance;
+    use crate::coordination_identity::PresentedCoordinationRun;
     use crate::ids::CoordinationRunId;
     use crate::ids::GitObjectId;
     use crate::ids::ProjectionGeneration;
@@ -1879,11 +1908,13 @@ mod tests {
             EditBlockingStatus::Blocking
         );
 
-        assert!(
-            reservations
-                .active_reservation_held_by_another_run(worktree_id, second_run_id)
-                .is_none()
-        );
+        assert!(matches!(
+            reservations.worktree_occupancy(
+                worktree_id,
+                PresentedCoordinationRun::from_run_argument(second_run_id)
+            ),
+            WorktreeOccupancy::NoIncumbent
+        ));
         assert!(matches!(
             reservations.blocking_coverage_for_drift(
                 &candidate,
@@ -1918,23 +1949,28 @@ mod tests {
         let worktree_id = WORKTREE_ID.parse::<WorktreeId>()?;
         let second_worktree_id = SECOND_WORKTREE_ID.parse::<WorktreeId>()?;
 
-        let Some(incumbent) =
-            reservations.active_reservation_held_by_another_run(worktree_id, second_run_id)
-        else {
+        let WorktreeOccupancy::Incumbent(incumbent) = reservations.worktree_occupancy(
+            worktree_id,
+            PresentedCoordinationRun::from_run_argument(second_run_id),
+        ) else {
             return Err(std::io::Error::other("the active holder should be the incumbent").into());
         };
         assert_eq!(incumbent.id(), reservation_id);
         assert_eq!(incumbent.actor().run, holder_run_id);
-        assert!(
-            reservations
-                .active_reservation_held_by_another_run(worktree_id, holder_run_id)
-                .is_none()
-        );
-        assert!(
-            reservations
-                .active_reservation_held_by_another_run(second_worktree_id, second_run_id)
-                .is_none()
-        );
+        assert!(matches!(
+            reservations.worktree_occupancy(
+                worktree_id,
+                PresentedCoordinationRun::from_run_argument(holder_run_id)
+            ),
+            WorktreeOccupancy::NoIncumbent
+        ));
+        assert!(matches!(
+            reservations.worktree_occupancy(
+                second_worktree_id,
+                PresentedCoordinationRun::from_run_argument(second_run_id)
+            ),
+            WorktreeOccupancy::NoIncumbent
+        ));
         Ok(())
     }
 
@@ -1987,9 +2023,13 @@ mod tests {
                 "provenance decides occupancy, never whether an active holder blocks at all"
             );
             assert_eq!(
-                reservations
-                    .active_reservation_held_by_another_run(worktree_id, second_run_id)
-                    .is_some(),
+                matches!(
+                    reservations.worktree_occupancy(
+                        worktree_id,
+                        PresentedCoordinationRun::from_run_argument(second_run_id)
+                    ),
+                    WorktreeOccupancy::Incumbent(_)
+                ),
                 occupies,
                 "{stored:?} incumbent occupancy"
             );

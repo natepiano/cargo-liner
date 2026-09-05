@@ -14,9 +14,9 @@ use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
+use crate::coordination_identity::PresentedCoordinationRun;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::ledger;
-use crate::ledger::EditAuthorization;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
 use crate::ledger::ResolvedEditAuthorization;
@@ -288,9 +288,11 @@ fn decide(
 /// Refuse a pre-edit check whose run is not the one occupying the issuing worktree.
 ///
 /// The occupancy rule holds between two coordination runs that both presented an identity, so
-/// only [`EditAuthorization::Environment`] can reach it here. A session mapping and a worktree
-/// marker each require an active reservation of their own run in this worktree, which this same
-/// rule stops a second run from ever acquiring, and an unidentified caller presented nothing.
+/// only [`crate::ledger::EditAuthorization::Environment`] can reach it here --- which is what
+/// [`PresentedCoordinationRun::from_edit_authorization`] answers, rather than a variant match
+/// repeated at this site. A session mapping and a worktree marker each require an active
+/// reservation of their own run in this worktree, which this same rule stops a second run from
+/// ever acquiring, and an unidentified caller presented nothing.
 ///
 /// Deciding this before overlap is what makes the refusal repairable. Left to the overlap pass,
 /// a second run in an occupied worktree was refused with the generic overlap answer, whose
@@ -302,18 +304,15 @@ fn validate_edit_worktree_occupancy(
     worktree_context: &WorktreeContext,
     resolved_edit_authorization: ResolvedEditAuthorization,
 ) -> Result<(), CoordinationIdentityValidationError> {
-    match resolved_edit_authorization.edit_authorization() {
-        EditAuthorization::Environment {
-            coordination_run_id,
-            ..
-        } => coordination_identity::validate_worktree_occupancy(
-            reservations,
-            worktree_context,
-            resolved_edit_authorization.worktree_id,
-            coordination_run_id,
-        ),
-        EditAuthorization::Session { .. }
-        | EditAuthorization::Marker { .. }
-        | EditAuthorization::Unidentified => Ok(()),
-    }
+    let Some(acting_run) = PresentedCoordinationRun::from_edit_authorization(
+        resolved_edit_authorization.edit_authorization(),
+    ) else {
+        return Ok(());
+    };
+    coordination_identity::validate_worktree_occupancy(
+        reservations,
+        worktree_context,
+        resolved_edit_authorization.worktree_id,
+        acting_run,
+    )
 }

@@ -144,6 +144,17 @@ impl EditAuthorization {
         )
     }
 
+    /// Resolve one authorization from the three sources, in a fixed precedence.
+    ///
+    /// A live harness session mapping first, then `CARGO_BERTH_RUN`, then the worktree marker.
+    /// That order is a **precondition of the same-worktree occupancy rule**, not an arbitrary
+    /// tie-break. Occupancy is asked only of a run the caller presented, and
+    /// [`crate::coordination_identity::PresentedCoordinationRun::from_edit_authorization`]
+    /// admits [`Self::Environment`] alone --- so a caller inside a mapped session cannot present
+    /// a second coordination run here however it sets the environment, and is never asked the
+    /// occupancy question at all. Moving the environment above the session mapping would put
+    /// every mapped session one exported variable away from refusing itself in its own
+    /// worktree.
     fn resolve_from_sources(
         session_identity: SessionIdentityLookup,
         environment_run_selection: EnvironmentCoordinationRunSelection,
@@ -193,6 +204,7 @@ mod tests {
 
     use super::EditAuthorization;
     use super::EnvironmentCoordinationRunSelection;
+    use crate::coordination_identity::PresentedCoordinationRun;
     use crate::ids::CoordinationRunId;
     use crate::ids::ReservationId;
     use crate::ids::WorktreeKind;
@@ -200,6 +212,62 @@ mod tests {
     use crate::ledger::identity;
     use crate::ledger::test_support;
     use crate::ledger::worktree_context::WorktreeContext;
+    use crate::session::SessionIdentityLookup;
+
+    /// A live session mapping outranks `CARGO_BERTH_RUN`, so a mapped caller presents nothing.
+    ///
+    /// This is the precondition the occupancy refusal rests on. Occupancy is a rule between two
+    /// runs a caller presented, and only [`EditAuthorization::Environment`] counts as
+    /// presenting one. Because the mapping is consulted first, a caller inside a mapped session
+    /// resolves to [`EditAuthorization::Session`] no matter what it exports, so it can never
+    /// present a second run in a worktree its own session already occupies --- and the refusal
+    /// never fires against a session holding the reservation that authorized it.
+    ///
+    /// Asserted through `PresentedCoordinationRun` rather than on the variant alone, because
+    /// that is what the occupancy rule actually consults.
+    #[test]
+    fn a_live_session_mapping_outranks_a_presented_run() {
+        let administrative_directory = tempdir().expect("administrative directory should exist");
+        let administrative_worktree =
+            identity::worktree_identity(administrative_directory.path(), WorktreeKind::Linked)
+                .expect("worktree identity should be created")
+                .id;
+        let environment_run = CoordinationRunId::new();
+        let session_run = CoordinationRunId::new();
+        let session_reservation = ReservationId::new();
+
+        let resolved = EditAuthorization::resolve_from_sources(
+            SessionIdentityLookup::Mapped(
+                crate::session::SessionReservationIdentity::new(session_run, session_reservation),
+            ),
+            EnvironmentCoordinationRunSelection::Identified(environment_run),
+            administrative_directory.path(),
+            administrative_worktree,
+        );
+
+        assert_eq!(
+            resolved,
+            EditAuthorization::Session {
+                coordination_run_id: session_run,
+                reservation_id:      session_reservation,
+                worktree_id:         administrative_worktree,
+            },
+            "the environment run must not survive a live session mapping"
+        );
+        assert!(
+            PresentedCoordinationRun::from_edit_authorization(resolved).is_none(),
+            "a mapped caller presents no run to the occupancy rule"
+        );
+        assert_eq!(
+            PresentedCoordinationRun::from_edit_authorization(EditAuthorization::Environment {
+                coordination_run_id: environment_run,
+                worktree_id:         administrative_worktree,
+            })
+            .map(PresentedCoordinationRun::coordination_run_id),
+            Some(environment_run),
+            "the same environment run does present one once no mapping outranks it"
+        );
+    }
 
     #[test]
     fn edit_authorization_prefers_environment_then_marker_then_unidentified() {

@@ -200,27 +200,25 @@ impl Reservation {
     /// predicate treat the acting side differently.
     ///
     /// The **occupancy chain** --- `coordination_identity::validate_worktree_occupancy`
-    /// through `RetainedReservationSet::active_reservation_held_by_another_run` --- is
-    /// guarded on the acting side before it arrives. `ClaimRunValidation::validate`,
+    /// through `RetainedReservationSet::worktree_occupancy` --- carries its acting side in the
+    /// type. Both hops take a
+    /// [`PresentedCoordinationRun`](crate::coordination_identity::PresentedCoordinationRun),
+    /// whose field is private and whose only two constructors name the `--run` argument and
+    /// `CARGO_BERTH_RUN`, so a caller holding a bare [`CoordinationRunId`] cannot reach this
+    /// question at all. `ClaimRunValidation::validate`,
     /// `DriftRunValidation::authorize_scope_acquisition`, and
-    /// `check::validate_edit_worktree_occupancy` each match the acting identity source first
-    /// and answer without asking when the caller presented none, so only
-    /// `EditAuthorization::Environment` reaches the question. There the rule is symmetric in
-    /// effect while its two terms live apart, and a fourth occupancy call site added without
-    /// that variant match would apply the rule to one side only.
+    /// `check::validate_edit_worktree_occupancy` obtain theirs there, and a fourth site has no
+    /// other way to obtain one --- which is why the rule is symmetric by construction rather
+    /// than by a variant match each site is asked to remember.
     ///
     /// The **overlap chain** applies no acting-side term at all.
     /// [`Self::is_foreign_to_coordination_run_in_worktree`] reaches this predicate from
     /// `conflicts_for_drift`, `blocking_coverage_for_drift`, `bind_widened_scopes`, and ---
     /// through `AuthorizedEditingIdentity::is_foreign` --- `conflicts_for_edit` and
     /// `conflicts_for_first_touch`, and every hop carries a bare `CoordinationRunId` with no
-    /// provenance beside it. A same-worktree holder that presented an identity is foreign to
-    /// any other run there, whatever that run presented.
-    ///
-    /// The asymmetry stands because closing it is a data-flow change, not a predicate change:
-    /// putting both terms here means carrying the acting side's provenance through
-    /// `RetainedReservationSet` and `AuthorizedEditingIdentity`, which no caller supplies
-    /// today.
+    /// provenance beside it. That asymmetry is deliberate and stays: a same-worktree holder
+    /// that presented an identity is foreign to any other run there, whatever that run
+    /// presented.
     pub(super) fn occupies_worktree_for_another_coordination_run(
         &self,
         coordination_run_id: CoordinationRunId,

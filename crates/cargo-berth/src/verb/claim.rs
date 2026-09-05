@@ -29,6 +29,7 @@ use crate::coordination_identity::CoordinationIdentityProvenance;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
+use crate::coordination_identity::PresentedCoordinationRun;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingGraph;
@@ -108,7 +109,7 @@ pub(crate) struct ClaimRequest {
 /// How a claim chooses the coordination run that will own its reservation.
 pub(crate) enum ClaimCoordinationRunSelection {
     /// Use the run identity supplied through `--run`.
-    Specified(CoordinationRunId),
+    Specified(PresentedCoordinationRun),
     /// Continue the active run from process or worktree context, or start one.
     ContinueOrStart,
 }
@@ -117,7 +118,7 @@ pub(crate) enum ClaimCoordinationRunSelection {
 #[derive(Clone, Copy)]
 enum ClaimRunValidation {
     /// An explicit argument or process environment identifies a marker-independent caller.
-    IndependentWithPresentedIdentity(CoordinationRunId),
+    IndependentWithPresentedIdentity(PresentedCoordinationRun),
     /// A marker-independent caller presented no identity, so only its actor run is issued.
     IndependentWithoutPresentedIdentity {
         /// The concrete run stamped on the new reservation and transaction.
@@ -1404,20 +1405,24 @@ impl ClaimCoordinationRunSelection {
         resolved_edit_authorization: ResolvedEditAuthorization,
     ) -> ClaimRunValidation {
         match self {
-            Self::Specified(coordination_run_id) => {
-                ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id)
+            Self::Specified(acting_run) => {
+                ClaimRunValidation::IndependentWithPresentedIdentity(acting_run)
             },
             Self::ContinueOrStart => match resolved_edit_authorization.edit_authorization() {
                 EditAuthorization::Session { .. } | EditAuthorization::Marker { .. } => {
                     ClaimRunValidation::ResolvedIdentityRequired(resolved_edit_authorization)
                 },
-                EditAuthorization::Environment {
-                    coordination_run_id,
-                    ..
-                } => ClaimRunValidation::IndependentWithPresentedIdentity(coordination_run_id),
-                EditAuthorization::Unidentified => {
-                    ClaimRunValidation::IndependentWithoutPresentedIdentity {
-                        actor_run_id: resolved_edit_authorization.coordination_run_id,
+                // `Environment` and `Unidentified` split on exactly the question the
+                // constructor answers, so it decides them rather than a second variant match
+                // that could drift from it.
+                authorization => {
+                    match PresentedCoordinationRun::from_edit_authorization(authorization) {
+                        Some(acting_run) => {
+                            ClaimRunValidation::IndependentWithPresentedIdentity(acting_run)
+                        },
+                        None => ClaimRunValidation::IndependentWithoutPresentedIdentity {
+                            actor_run_id: resolved_edit_authorization.coordination_run_id,
+                        },
                     }
                 },
             },
@@ -1432,8 +1437,8 @@ impl ClaimRunValidation {
 
     const fn actor_run_id(self) -> CoordinationRunId {
         match self {
-            Self::IndependentWithPresentedIdentity(actor_run_id)
-            | Self::IndependentWithoutPresentedIdentity { actor_run_id } => actor_run_id,
+            Self::IndependentWithPresentedIdentity(acting_run) => acting_run.coordination_run_id(),
+            Self::IndependentWithoutPresentedIdentity { actor_run_id } => actor_run_id,
             Self::ResolvedIdentityRequired(resolved_edit_authorization) => {
                 resolved_edit_authorization.coordination_run_id
             },
@@ -1442,8 +1447,8 @@ impl ClaimRunValidation {
 
     const fn presented_coordination_identity(self) -> RequesterCoordinationIdentity {
         match self {
-            Self::IndependentWithPresentedIdentity(coordination_run_id) => {
-                RequesterCoordinationIdentity::Presented(coordination_run_id)
+            Self::IndependentWithPresentedIdentity(acting_run) => {
+                RequesterCoordinationIdentity::Presented(acting_run.coordination_run_id())
             },
             Self::IndependentWithoutPresentedIdentity { .. } => {
                 RequesterCoordinationIdentity::NotPresented
@@ -1492,12 +1497,12 @@ impl ClaimRunValidation {
         recovery_command_line: &RecoveryCommandLine,
     ) -> Result<(), ClaimRunValidationError> {
         match self {
-            Self::IndependentWithPresentedIdentity(actor_run_id) => {
+            Self::IndependentWithPresentedIdentity(acting_run) => {
                 coordination_identity::validate_worktree_occupancy(
                     reservations,
                     worktree_context,
                     worktree_id,
-                    actor_run_id,
+                    acting_run,
                 )
                 .map_err(ClaimRunValidationError::from)
             },

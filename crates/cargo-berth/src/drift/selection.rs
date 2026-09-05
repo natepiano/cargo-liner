@@ -293,3 +293,132 @@ impl Display for DriftSelectionError {
 }
 
 impl Error for DriftSelectionError {}
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use serde_json::Value;
+    use serde_json::json;
+
+    use super::DriftReservationSelection;
+    use super::PostCommitWideningSelection;
+    use super::PostWriteFirstTouchRequirement;
+    use crate::coordination_identity::PresentedCoordinationRun;
+    use crate::drift::identity::DriftActingIdentity;
+    use crate::ids::CoordinationRunId;
+    use crate::ids::ReservationId;
+    use crate::ids::WorktreeId;
+    use crate::ledger::JournalEvent;
+    use crate::reservation::RetainedReservationSet;
+    use crate::reservation::WorktreeOccupancy;
+
+    const HOLDER_RUN_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
+    const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
+    const SECOND_RUN_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
+    const WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
+
+    /// An empty post-commit reporting set is the same fact as "this worktree has no incumbent".
+    ///
+    /// `execute::execute_inner` has one branch that returns before the lock which decides
+    /// refusal --- the post-write first touch taken when nothing is reported --- and states
+    /// `DriftScopeAcquisition::Permitted` without asking the occupancy question. It may do that
+    /// only because reaching it rules the incumbent out: post-commit selection drops the acting
+    /// run from its filter and matches every `Active` reservation in the worktree, and occupancy
+    /// requires an `Active` holder. So the two are the same test of the same worktree, and this
+    /// pins them moving together --- an incumbent puts a reservation in `reporting`, and an
+    /// empty `reporting` leaves the occupancy question nothing to find.
+    ///
+    /// Re-adding a run term to that filter would break the implication silently: the branch
+    /// would keep compiling and start reporting `Permitted` for a run the rule refuses.
+    #[test]
+    fn an_empty_post_commit_reporting_set_means_this_worktree_has_no_incumbent() {
+        let reservation_id = RESERVATION_ID
+            .parse::<ReservationId>()
+            .expect("reservation id should parse");
+        let holder_run_id = HOLDER_RUN_ID
+            .parse::<CoordinationRunId>()
+            .expect("holder run id should parse");
+        let second_run_id = SECOND_RUN_ID
+            .parse::<CoordinationRunId>()
+            .expect("second run id should parse");
+        let worktree = WORKTREE_ID
+            .parse::<WorktreeId>()
+            .expect("worktree id should parse");
+        let second_run = PresentedCoordinationRun::from_run_argument(second_run_id);
+        let post_commit = DriftReservationSelection::EveryActiveForPostCommit {
+            widening: PostCommitWideningSelection::SessionMappingOrSingleCandidate,
+        };
+        let acting = DriftActingIdentity::Run {
+            run: second_run_id,
+            worktree,
+        };
+
+        let occupied = RetainedReservationSet::replay(&[presented_claim()])
+            .expect("the claim fixture should replay");
+        let subjects = post_commit
+            .resolve(&occupied, acting)
+            .expect("post-commit selection should resolve against an occupied worktree");
+        assert_eq!(subjects.reporting.as_slice(), [reservation_id]);
+        assert!(matches!(
+            subjects.post_write_first_touch,
+            PostWriteFirstTouchRequirement::Required
+        ));
+        assert!(
+            matches!(
+                occupied.worktree_occupancy(worktree, second_run),
+                WorktreeOccupancy::Incumbent(incumbent)
+                    if incumbent.actor().run == holder_run_id
+            ),
+            "the claim's run should occupy the worktree against a second run"
+        );
+
+        let vacant = RetainedReservationSet::default();
+        let subjects = post_commit
+            .resolve(&vacant, acting)
+            .expect("post-commit selection should resolve against a vacant worktree");
+        assert!(subjects.reporting.as_slice().is_empty());
+        assert!(matches!(
+            subjects.post_write_first_touch,
+            PostWriteFirstTouchRequirement::Required
+        ));
+        assert!(matches!(
+            vacant.worktree_occupancy(worktree, second_run),
+            WorktreeOccupancy::NoIncumbent
+        ));
+    }
+
+    /// One `Active` claim in `WORKTREE_ID`, recorded under a presented identity.
+    fn presented_claim() -> JournalEvent {
+        let event: Value = json!({
+            "schema_version": 1,
+            "event_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",
+            "actor": {
+                "repository": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c",
+                "worktree": WORKTREE_ID,
+                "run": HOLDER_RUN_ID,
+            },
+            "at": "2026-08-23T17:34:54.123Z",
+            "projection_generation": 1,
+            "op": "claim",
+            "reservation_id": RESERVATION_ID,
+            "scopes": [{"path": "src", "kind": "tree"}],
+            "source": {"kind": "explicit"},
+            "purpose": {"kind": "not_provided_by_caller"},
+            "trunk_at_claim": "1111111111111111111111111111111111111111",
+            "head_snapshot": {
+                "kind": "branch",
+                "full_ref": "refs/heads/phase",
+                "head": "2222222222222222222222222222222222222222",
+            },
+            "phase_start_head": "1111111111111111111111111111111111111111",
+            "worktree_root": "/repo",
+            "worktree_administrative_locator": ".",
+            "authorization": {"kind": "no_conflict"},
+            "coordination_identity_provenance": "presented",
+        });
+        serde_json::from_value(event).expect("the claim fixture should deserialize")
+    }
+}

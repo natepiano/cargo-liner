@@ -20,6 +20,7 @@ use crate::ledger::EditAuthorization;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::WorktreeContext;
 use crate::reservation::RetainedReservationSet;
+use crate::reservation::WorktreeOccupancy;
 
 /// Whether a caller presented the coordination identity a claim was recorded under.
 ///
@@ -42,6 +43,67 @@ pub(crate) enum CoordinationIdentityProvenance {
     /// The claim predates this record, so how its identity was obtained is unrecoverable.
     #[default]
     Unknown,
+}
+
+/// A coordination run whose identity the caller presented, and the acting side of occupancy.
+///
+/// The occupancy rule holds between two coordination runs that *both* presented an identity.
+/// The holder's half is read from the record it was claimed under, as
+/// [`CoordinationIdentityProvenance`]. The acting half has no record to read from, so it is
+/// carried in the type instead: the field is private and the only two constructors each name
+/// the one place a caller can present a run --- the `--run` argument
+/// ([`Self::from_run_argument`]) and `CARGO_BERTH_RUN`
+/// ([`Self::from_edit_authorization`], which yields `Some` for
+/// [`EditAuthorization::Environment`] and nothing else).
+///
+/// That is the whole point of the type. A run read off a holder record, off a session
+/// mapping, off a worktree marker, or issued by this process for an unidentified caller is a
+/// bare [`CoordinationRunId`], and no bare id converts. So a fourth site that wants to ask the
+/// occupancy question cannot ask it one-sidedly: it has to obtain the acting side through a
+/// constructor that states where the identity came from, and the three that exist today ---
+/// `ClaimRunValidation::validate`, `DriftRunValidation::authorize_scope_acquisition`, and
+/// `check::validate_edit_worktree_occupancy` --- each do exactly that. Before this type the
+/// guard was a variant match repeated at each site with a comment asking the next author to
+/// repeat it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PresentedCoordinationRun(CoordinationRunId);
+
+impl PresentedCoordinationRun {
+    /// Accept the run named by the `--run` argument.
+    ///
+    /// Reached from one place, the claim argument conversion in [`crate::cli`]. A `--run` on
+    /// the command line is a caller presenting an identity in the most literal sense the
+    /// engine has.
+    pub(crate) const fn from_run_argument(coordination_run_id: CoordinationRunId) -> Self {
+        Self(coordination_run_id)
+    }
+
+    /// Accept the run named by `CARGO_BERTH_RUN`, and refuse every other authorization source.
+    ///
+    /// A session mapping and a worktree marker each require an active reservation of their own
+    /// run in this worktree, which this same rule stops a second run from ever acquiring, and
+    /// an unidentified caller presented nothing at all --- refusing it would refuse the
+    /// engine's own markerless post-commit work. All three answer `None`, and a caller that
+    /// gets `None` has its answer: there is no occupancy question to ask.
+    pub(crate) const fn from_edit_authorization(
+        edit_authorization: EditAuthorization,
+    ) -> Option<Self> {
+        match edit_authorization {
+            EditAuthorization::Environment {
+                coordination_run_id,
+                ..
+            } => Some(Self(coordination_run_id)),
+            EditAuthorization::Session { .. }
+            | EditAuthorization::Marker { .. }
+            | EditAuthorization::Unidentified => None,
+        }
+    }
+
+    /// Return the run itself, for recording it and for comparing it against a holder's.
+    ///
+    /// Reading is unguarded on purpose: the invariant is about where a presented run comes
+    /// from, not about what may be done with one once a constructor has admitted it.
+    pub(crate) const fn coordination_run_id(self) -> CoordinationRunId { self.0 }
 }
 
 /// A complete process argument vector that always contains an executable.
@@ -664,14 +726,19 @@ impl Error for CoordinationIdentityValidationError {}
 /// question through the same predicate, so the
 /// [`CoordinationIdentityProvenance`] term is read in exactly one place and no path can grow a
 /// second foreignness answer of its own.
+///
+/// Both terms of the rule arrive here in the types: the holder's provenance on the record
+/// [`RetainedReservationSet::worktree_occupancy`] reads, and the acting side as
+/// [`PresentedCoordinationRun`], which a caller holding only a bare [`CoordinationRunId`]
+/// cannot produce.
 pub(crate) fn validate_worktree_occupancy(
     reservations: &RetainedReservationSet,
     worktree_context: &WorktreeContext,
     worktree_id: WorktreeId,
-    actor_run_id: CoordinationRunId,
+    acting_run: PresentedCoordinationRun,
 ) -> Result<(), CoordinationIdentityValidationError> {
-    let Some(incumbent) =
-        reservations.active_reservation_held_by_another_run(worktree_id, actor_run_id)
+    let WorktreeOccupancy::Incumbent(incumbent) =
+        reservations.worktree_occupancy(worktree_id, acting_run)
     else {
         return Ok(());
     };
@@ -681,7 +748,7 @@ pub(crate) fn validate_worktree_occupancy(
             reservation_id:      incumbent.id(),
         },
         IssuingWorktreeRun {
-            coordination_run_id: actor_run_id,
+            coordination_run_id: acting_run.coordination_run_id(),
             worktree_id,
         },
         worktree_context,
@@ -917,6 +984,7 @@ mod tests {
     use super::CoordinationIdentityRecoveryActions;
     use super::CoordinationIdentityRejection;
     use super::OriginalCommandRecovery;
+    use super::PresentedCoordinationRun;
     use super::RecoveryCommandLine;
     use super::RunnableRecoveryCommandLine;
     use super::SessionWorktreeMismatchRejection;
@@ -926,6 +994,57 @@ mod tests {
     use crate::ids::ReservationId;
     use crate::ids::WorktreeId;
     use crate::ledger::CanonicalWorktreeRoot;
+    use crate::ledger::EditAuthorization;
+
+    /// Only `CARGO_BERTH_RUN` presents a run to the occupancy rule's acting side.
+    ///
+    /// The other three authorization sources are not merely uninteresting here --- each is a
+    /// reason the rule must not fire. A session mapping and a marker both require an active
+    /// reservation of their own run in this worktree, which this same rule stops a second run
+    /// from acquiring, so asking about them would refuse a run for holding the very thing that
+    /// authorized it. `Unidentified` carries a run this process issued to stand in for a caller
+    /// that named none, and post-commit drift first-touches under exactly that, so refusing it
+    /// refuses the engine's own work.
+    ///
+    /// This pins the constructor rather than a variant match at a call site, which is the whole
+    /// change: the three sites that ask the occupancy question now read their acting side from
+    /// here, and a fourth cannot obtain one any other way --- the field is private and the only
+    /// other constructor is the `--run` argument.
+    #[test]
+    fn only_an_environment_authorization_presents_a_run_for_the_occupancy_rule() {
+        let coordination_run_id = CoordinationRunId::new();
+        let worktree_id = WorktreeId::new();
+
+        assert_eq!(
+            PresentedCoordinationRun::from_edit_authorization(EditAuthorization::Environment {
+                coordination_run_id,
+                worktree_id,
+            })
+            .map(PresentedCoordinationRun::coordination_run_id),
+            Some(coordination_run_id)
+        );
+        for unpresented in [
+            EditAuthorization::Session {
+                coordination_run_id,
+                reservation_id: ReservationId::new(),
+                worktree_id,
+            },
+            EditAuthorization::Marker {
+                coordination_run_id,
+                worktree_id,
+            },
+            EditAuthorization::Unidentified,
+        ] {
+            assert!(
+                PresentedCoordinationRun::from_edit_authorization(unpresented).is_none(),
+                "{unpresented:?} must not reach the occupancy question"
+            );
+        }
+        assert_eq!(
+            PresentedCoordinationRun::from_run_argument(coordination_run_id).coordination_run_id(),
+            coordination_run_id
+        );
+    }
 
     #[test]
     fn recovery_domain_rejects_empty_commands_and_action_sets() {
