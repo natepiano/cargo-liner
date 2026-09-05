@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   edit before any engine invocation and leaves a pending-bypass marker whose
   `action` is `editing`; the engine honors the variable the same way when
   invoked directly, and marker recovery records the action a marker names.
+- The recovery command an ambiguous first touch prints resolves that ambiguity
+  when run verbatim. The printed `cargo-berth check --reservation <id> <path>`
+  had no session, so from a plain shell it selected the reservation for that one
+  invocation, published no mapping, and the next edit was refused identically.
+  The command now carries `CARGO_BERTH_SESSION_ID=<session>` for the session
+  that was refused.
 - An incursion observation pairs each entered path with the holders that block
   it. The observation and the retained incident carried paths and holders as two
   independent sets, so a caller could report every path under the union of all

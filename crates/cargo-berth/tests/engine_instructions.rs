@@ -476,7 +476,7 @@ fn inspect_rendered_block(scenario: &str, block_index: usize, block: &Value) -> 
     let offending_shell_commands = shell_commands
         .iter()
         .copied()
-        .filter(|command| !command.starts_with("cargo-berth"))
+        .filter(|command| !executable_after_engine_environment(command).starts_with("cargo-berth"))
         .collect::<Vec<_>>();
     if !offending_shell_commands.is_empty() {
         return Err(failure(format!(
@@ -513,8 +513,26 @@ fn inline_code_spans(line: &str) -> impl Iterator<Item = &str> {
     })
 }
 
+/// The command after any leading `CARGO_BERTH_*=value` assignments.
+///
+/// An engine environment assignment before the executable still invokes the engine: the
+/// recovery command for an ambiguous first touch carries the session it selects for.
+fn executable_after_engine_environment(span: &str) -> &str {
+    let mut rest = span.trim_start();
+    while let Some(word) = rest.split_whitespace().next() {
+        if !word.starts_with("CARGO_BERTH_") || !word.contains('=') {
+            break;
+        }
+        rest = rest[word.len()..].trim_start();
+    }
+    rest
+}
+
 fn is_shell_command(span: &str) -> bool {
-    let Some(executable) = span.split_whitespace().next() else {
+    let Some(executable) = executable_after_engine_environment(span)
+        .split_whitespace()
+        .next()
+    else {
         return false;
     };
     executable.starts_with("PYTHONPATH=")

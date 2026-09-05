@@ -501,9 +501,11 @@ no harness-session mapping.
 
 The response names
 `cargo-berth check --reservation <reservation-id> <path>...` as the recovery
-command. The user chooses an id from `candidate_reservation_ids`; the named
-reservation must already be active for the acting coordination run and
-worktree. A valid explicit selection publishes the harness-session mapping
+command, prefixed with `CARGO_BERTH_SESSION_ID=<session>` whenever the refusing
+invocation had a harness session, so the command runs verbatim from a plain
+shell that has none. The user chooses an id from `candidate_reservation_ids`;
+the named reservation must already be active for the acting coordination run
+and worktree. A valid explicit selection publishes the harness-session mapping
 onto that reservation, so the next ordinary `check` selects it without
 returning this ambiguity.
 

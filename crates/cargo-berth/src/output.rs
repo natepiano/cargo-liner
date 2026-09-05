@@ -25,6 +25,7 @@ use crate::board::BoardModel;
 use crate::board::LiveIncursionMembership;
 use crate::config::InitializationState;
 use crate::coordination_identity::CoordinationIdentityRejection;
+use crate::coordination_identity::shell_quote;
 use crate::drift::DriftEffect;
 use crate::drift::DriftPathAttributionOutcome;
 use crate::drift::DriftReport;
@@ -57,6 +58,7 @@ use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
 use crate::ledger::CollisionPathSet;
 use crate::ledger::ForeignReservationIdSet;
+use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerInitialization;
@@ -78,6 +80,7 @@ use crate::reservation::ReservationLifecycleSnapshot;
 use crate::reservation::ReservationReplayError;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
+use crate::session;
 use crate::session::CurrentSessionMappingRemoval;
 use crate::session::SessionIdentityMappingPublication;
 use crate::verb::claim::FirstTouchReservationAcquisition;
@@ -90,6 +93,24 @@ const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
 const AMBIGUOUS_RESERVATION_RECOVERY_COMMAND: &str =
     "cargo-berth check --reservation <reservation-id> <path>...";
+
+/// The command that selects one candidate, runnable verbatim from a plain shell.
+///
+/// An ambiguity is printed to a harness session, but a hand-run `check` has no session
+/// unless the environment names one, and without a session the explicit selection binds
+/// nothing and the next edit is refused identically. So the command carries the session
+/// this process has, quoted for `sh`.
+fn ambiguous_reservation_recovery_command() -> String {
+    session::current_process_harness_session_id().map_or_else(
+        || AMBIGUOUS_RESERVATION_RECOVERY_COMMAND.to_owned(),
+        |harness_session_id| {
+            format!(
+                "{HARNESS_SESSION_ENVIRONMENT}={} {AMBIGUOUS_RESERVATION_RECOVERY_COMMAND}",
+                shell_quote(harness_session_id.as_str())
+            )
+        },
+    )
+}
 /// The one sentence a fail-open edit decision states, wherever it is rendered.
 pub(crate) const LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE: &str = "cargo-berth could not establish edit safety; editing is allowed because ledger loss fails open.";
 const CHECK_INVALID_INPUT_SUMMARY: &str =
@@ -2259,8 +2280,9 @@ impl OutputEnvelope {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
+        let recovery_command = ambiguous_reservation_recovery_command();
         let message = format!(
-            "No usable harness-session mapping selects one active reservation among {rendered_candidates}. Run `{AMBIGUOUS_RESERVATION_RECOVERY_COMMAND}` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published."
+            "No usable harness-session mapping selects one active reservation among {rendered_candidates}. Run `{recovery_command}` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published."
         );
         let candidate_reservation_id_strings = candidate_reservation_ids
             .as_slice()

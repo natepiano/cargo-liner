@@ -540,6 +540,80 @@ fn explicit_check_selection_republishes_mapping_for_subsequent_checks() {
 }
 
 #[test]
+fn the_rendered_recovery_command_resolves_the_ambiguity_that_printed_it() {
+    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let session_id = "recovery command's session";
+    let reservations = claim_overlapping_reservations(repository.path(), session_id);
+    fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
+        .expect("session mapping should be removed before ambiguous first touch");
+
+    let ambiguous = run_berth_with_session(
+        repository.path(),
+        &["check", "file:shared/child.rs", "--json"],
+        session_id,
+    );
+    let envelope = json_output(&ambiguous);
+    assert_eq!(envelope["status"], "ambiguous_active_run_reservations");
+    let message = envelope["message"]
+        .as_str()
+        .expect("ambiguity should carry a message");
+    let rendered_command = message
+        .split("Run `")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next())
+        .expect("ambiguity should print its recovery command in backticks");
+    let command = format!(
+        "{} --json",
+        rendered_command
+            .replace("<reservation-id>", &reservations.older)
+            .replace("<path>...", "file:shared/child.rs")
+    );
+
+    let binary_directory = Path::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .parent()
+        .expect("built binary should sit in a directory");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut search_path = std::env::split_paths(&path).collect::<Vec<_>>();
+    search_path.insert(0, binary_directory.to_path_buf());
+    let selected = Command::new("sh")
+        .args(["-c", &command])
+        .current_dir(repository.path())
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(
+            "PATH",
+            std::env::join_paths(search_path).expect("search path should join"),
+        )
+        .output()
+        .expect("rendered recovery command should run");
+    let selected_envelope = json_output(&selected);
+    assert!(
+        selected.status.success(),
+        "rendered recovery command `{command}` failed: {}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    assert_eq!(selected_envelope["status"], "clear");
+    assert_eq!(
+        selected_envelope["payload"]["data"]["acquisition"]["session_mapping_publication"]["status"],
+        "published"
+    );
+    assert_session_mapping(
+        repository.path(),
+        session_id,
+        FIRST_RUN,
+        &reservations.older,
+    );
+
+    let ordinary = run_berth_with_session(
+        repository.path(),
+        &["check", "file:shared/child.rs", "--json"],
+        session_id,
+    );
+    assert!(ordinary.status.success());
+    assert_eq!(json_output(&ordinary)["status"], "clear");
+}
+
+#[test]
 fn explicit_check_without_harness_session_reports_invocation_only_selection() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
     let reservations =

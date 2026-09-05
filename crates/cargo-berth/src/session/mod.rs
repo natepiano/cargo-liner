@@ -34,6 +34,8 @@ impl HarnessSessionId {
     /// Maximum number of characters accepted from a private hook boundary.
     pub(crate) const MAXIMUM_CHARACTERS: usize = 256;
 
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
+
     fn from_current_process() -> HarnessSessionIdentity {
         match CURRENT_PROCESS_HARNESS_SESSION.get() {
             Some(HookHarnessSessionSelection::Session(harness_session_id)) => {
@@ -68,6 +70,16 @@ pub(crate) enum HookHarnessSessionSelection {
 /// binary makes exactly one before any reservation lookup.
 pub(crate) fn select_current_process_harness_session(selection: HookHarnessSessionSelection) {
     std::mem::drop(CURRENT_PROCESS_HARNESS_SESSION.set(selection));
+}
+
+/// The harness session id this process runs under, when it has one.
+///
+/// A hook boundary's selection wins; otherwise `HARNESS_SESSION_ENVIRONMENT` is consulted.
+pub(crate) fn current_process_harness_session_id() -> Option<HarnessSessionId> {
+    match HarnessSessionId::from_current_process() {
+        HarnessSessionIdentity::Available(harness_session_id) => Some(harness_session_id),
+        HarnessSessionIdentity::Unavailable => None,
+    }
 }
 
 impl FromStr for HarnessSessionId {

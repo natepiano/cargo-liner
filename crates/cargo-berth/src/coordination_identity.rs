@@ -944,7 +944,8 @@ fn canonical_issuing_root(
         .map_err(|_| CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot)
 }
 
-fn shell_quote(argument: &str) -> String {
+/// Quote one word for `sh` so a printed command runs verbatim.
+pub(crate) fn shell_quote(argument: &str) -> String {
     if !argument.is_empty()
         && argument.chars().all(|character| {
             character.is_ascii_alphanumeric()

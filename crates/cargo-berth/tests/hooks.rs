@@ -84,7 +84,8 @@ const UNCONFIGURED_DRIFT_SESSION: &str = "unconfigured-drift-session";
 const UNMAPPED_DRIFT_SESSION: &str = "unmapped-drift-session";
 const UNREADABLE_DRIFT_SESSION: &str = "unreadable-drift-session";
 const WIDENING_SESSION: &str = "widening-session";
-const AMBIGUITY_SESSION: &str = "ambiguous-session";
+/// The session the frozen corpus payload carried; the rendered recovery command names it.
+const AMBIGUITY_SESSION: &str = "fixture-session";
 const COORDINATION_IDENTITY_EDIT_SUMMARY: &str =
     "cargo-berth rejected this edit under the current coordination identity.";
 /// The rejection kind a reservation whose session mapping outlived it is refused under.

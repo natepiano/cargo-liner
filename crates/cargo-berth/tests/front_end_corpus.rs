@@ -27,6 +27,9 @@ const CARGO_BERTH_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 /// The one corpus entry this suite compares against the real binary itself.
 const AMBIGUOUS_FIRST_TOUCH_ENTRY: &str =
     "test_pre_edit_renders_an_ambiguous_first_touch_from_the_engine_message";
+/// The session the frozen entry's hook payload carried; the rendered recovery command
+/// names it, so the real check runs under the same one.
+const AMBIGUOUS_FIRST_TOUCH_SESSION_ID: &str = "fixture-session";
 /// Corpus entries whose frozen text this suite compares, each named beside the test
 /// that drives it.
 const THIS_SUITE_TEXT_COMPARED_ENTRIES: [(&str, &str); 1] = [(
@@ -620,7 +623,7 @@ fn ambiguous_first_touch_envelope() -> ShellOracleResult<Value> {
     let ambiguous = run_berth(
         repository.path(),
         &["check", "file:shared/child.rs", "--json"],
-        "shell-selection",
+        AMBIGUOUS_FIRST_TOUCH_SESSION_ID,
     )?;
     if ambiguous.status.code() != Some(1) {
         return Err(failure(format!(

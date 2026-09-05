@@ -2110,7 +2110,7 @@
           "body": {
             "blocked_by": [],
             "exit_code": 1,
-            "message": "No usable harness-session mapping selects one active reservation among 01a054d8-6797-7ec2-8907-07a71169d947, 01a054d8-67f0-7d73-b6af-1c5016b1e9ef. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published.",
+            "message": "No usable harness-session mapping selects one active reservation among 01a054d8-6797-7ec2-8907-07a71169d947, 01a054d8-67f0-7d73-b6af-1c5016b1e9ef. Run `CARGO_BERTH_SESSION_ID=fixture-session cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published.",
             "payload": {
               "alerts": [],
               "data": {
@@ -2134,7 +2134,7 @@
       },
       "expected": {
         "exit_code": 2,
-        "stderr": "No usable harness-session mapping selects one active reservation among 01a054d8-6797-7ec2-8907-07a71169d947, 01a054d8-67f0-7d73-b6af-1c5016b1e9ef. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published.\n\nReservations named by this response:\n\n- `01a054d8-6797-7ec2-8907-07a71169d947`\n- `01a054d8-67f0-7d73-b6af-1c5016b1e9ef`\n",
+        "stderr": "No usable harness-session mapping selects one active reservation among 01a054d8-6797-7ec2-8907-07a71169d947, 01a054d8-67f0-7d73-b6af-1c5016b1e9ef. Run `CARGO_BERTH_SESSION_ID=fixture-session cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no harness-session mapping was published.\n\nReservations named by this response:\n\n- `01a054d8-6797-7ec2-8907-07a71169d947`\n- `01a054d8-67f0-7d73-b6af-1c5016b1e9ef`\n",
         "stdout": ""
       },
       "expected_cargo_berth_calls": [
