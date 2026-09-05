@@ -1,9 +1,11 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
 use proc_macro2::LineColumn;
 use quote::quote;
+use syn::File;
 use syn::Item;
 use syn::ItemMod;
 use syn::ItemUse;
@@ -39,12 +41,26 @@ pub(super) fn resolve_to_absolute(
 }
 
 pub(super) fn leaf_is_module(source_root: &Path, absolute_segments: &[String]) -> bool {
-    if absolute_segments.is_empty() {
+    let mut visited = BTreeSet::new();
+    resolves_to_module(source_root, absolute_segments, &mut visited)
+}
+
+/// Walks `absolute_segments` from the crate root through file-backed modules,
+/// then through inline `mod` blocks and `use` re-exports inside the last
+/// file-backed module. `visited` holds the paths already under resolution, so a
+/// re-export cycle ends instead of recursing forever.
+fn resolves_to_module(
+    source_root: &Path,
+    absolute_segments: &[String],
+    visited: &mut BTreeSet<Vec<String>>,
+) -> bool {
+    if absolute_segments.is_empty() || !visited.insert(absolute_segments.to_vec()) {
         return false;
     }
 
     let mut dir = source_root.to_path_buf();
     let mut module_file = crate_root_file(source_root);
+    let mut module_path: Vec<String> = Vec::new();
     for (index, segment) in absolute_segments.iter().enumerate() {
         let file = dir.join(format!("{segment}.rs"));
         let dir_mod = dir.join(segment).join("mod.rs");
@@ -54,14 +70,43 @@ pub(super) fn leaf_is_module(source_root: &Path, absolute_segments: &[String]) -
             module_file = Some(dir_mod);
         } else {
             // No file backs this segment, so the remaining path can only exist
-            // as inline `mod` blocks inside the last file-backed module.
+            // as inline `mod` blocks or a `use` re-export inside the last
+            // file-backed module.
+            let remainder = &absolute_segments[index..];
             return module_file.is_some_and(|module_file| {
-                declares_inline_mod_path(&module_file, &absolute_segments[index..])
+                declares_module(source_root, &module_file, &module_path, remainder, visited)
             });
         }
+        module_path.push(segment.clone());
         dir.push(segment);
     }
     true
+}
+
+/// True when the module defined by `file` — whose absolute path is
+/// `module_path` — makes `segments` reachable, either as inline `mod` blocks or
+/// through a `use` re-export naming the first segment.
+fn declares_module(
+    source_root: &Path,
+    file: &Path,
+    module_path: &[String],
+    segments: &[String],
+    visited: &mut BTreeSet<Vec<String>>,
+) -> bool {
+    let Some(first) = segments.first() else {
+        return false;
+    };
+    let Ok(text) = fs::read_to_string(file) else {
+        return false;
+    };
+    if !text.contains(first.as_str()) {
+        return false;
+    }
+    let Ok(syntax) = syn::parse_file(&text) else {
+        return false;
+    };
+    declares_inline_mod_path(&syntax, segments)
+        || reexports_module(source_root, &syntax, module_path, segments, visited)
 }
 
 fn crate_root_file(source_root: &Path) -> Option<PathBuf> {
@@ -71,24 +116,12 @@ fn crate_root_file(source_root: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// True when `file` declares `segments` as a chain of nested `mod` items, e.g.
-/// `["parameter_fields"]` matches an inline `pub mod parameter_fields { ... }`.
-/// Intermediate segments must be inline blocks (`mod x { ... }`); the final
-/// segment may also be a boundary declaration (`mod x;`).
-fn declares_inline_mod_path(file: &Path, segments: &[String]) -> bool {
+/// True when `syntax` declares `segments` as a chain of nested `mod` items,
+/// e.g. `["parameter_fields"]` matches an inline `pub mod parameter_fields
+/// { ... }`. Intermediate segments must be inline blocks (`mod x { ... }`); the
+/// final segment may also be a boundary declaration (`mod x;`).
+fn declares_inline_mod_path(syntax: &File, segments: &[String]) -> bool {
     let Some((leaf, parents)) = segments.split_last() else {
-        return false;
-    };
-    let Some(first) = segments.first() else {
-        return false;
-    };
-    let Ok(text) = fs::read_to_string(file) else {
-        return false;
-    };
-    if !text.contains(&format!("mod {first}")) {
-        return false;
-    }
-    let Ok(syntax) = syn::parse_file(&text) else {
         return false;
     };
 
@@ -100,6 +133,53 @@ fn declares_inline_mod_path(file: &Path, segments: &[String]) -> bool {
         }
     }
     find_mod_item(items, leaf).is_some()
+}
+
+/// True when `syntax` re-exports `segments[0]` with a `use` whose target
+/// resolves to a module, e.g. `pub(crate) use self::plane::proof_fixture;`
+/// naming the inline `mod proof_fixture` a file further down. A private `use`
+/// binds nothing outside its own module, so only a `pub`-flavoured one counts.
+fn reexports_module(
+    source_root: &Path,
+    syntax: &File,
+    module_path: &[String],
+    segments: &[String],
+    visited: &mut BTreeSet<Vec<String>>,
+) -> bool {
+    let Some((name, tail)) = segments.split_first() else {
+        return false;
+    };
+
+    syntax.items.iter().any(|item| match item {
+        Item::Use(item_use) if !matches!(item_use.vis, Visibility::Inherited) => {
+            reexport_target(item_use, module_path, name).is_some_and(|target| {
+                let mut target = target;
+                target.extend(tail.iter().cloned());
+                resolves_to_module(source_root, &target, visited)
+            })
+        },
+        _ => false,
+    })
+}
+
+/// The absolute crate path `item_use` binds `name` to, when it binds `name` at
+/// all. `module_path` is the module holding the `use`, which anchors `self::`
+/// and `super::` targets; a bare-name target is another crate and resolves to
+/// `None`.
+fn reexport_target(item_use: &ItemUse, module_path: &[String], name: &str) -> Option<Vec<String>> {
+    let flat = flatten_use_tree(&item_use.tree)?;
+    let bound = flat.rename.as_ref().or_else(|| flat.segments.last())?;
+    if bound != name {
+        return None;
+    }
+    match PathAnchor::first(&flat.segments)? {
+        PathAnchor::SelfMod => {
+            let mut absolute = module_path.to_vec();
+            absolute.extend(flat.segments[1..].iter().cloned());
+            Some(absolute)
+        },
+        _ => resolve_to_absolute(&flat.segments, module_path),
+    }
 }
 
 fn find_mod_item<'a>(items: &'a [Item], name: &str) -> Option<&'a ItemMod> {

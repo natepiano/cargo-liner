@@ -1232,6 +1232,64 @@ edition = "2024"
 }
 
 #[test]
+fn skips_module_reached_through_pub_use_reexports() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "reexported_module_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/video_plane/plane")).expect("create dirs");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod screens;\nmod video_plane;\n\nfn main() { screens::run(); }\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/screens.rs"),
+        "use crate::video_plane::proof_fixture;\n\npub(crate) fn run() { proof_fixture::app(); }\n",
+    )
+    .expect("write screens");
+    fs::write(
+        temp.path().join("src/video_plane/mod.rs"),
+        "mod plane;\n\npub(crate) use self::plane::proof_fixture;\n",
+    )
+    .expect("write video_plane mod");
+    fs::write(
+        temp.path().join("src/video_plane/plane/mod.rs"),
+        "mod camera_panel;\n\npub(crate) use self::camera_panel::proof_fixture;\n",
+    )
+    .expect("write plane mod");
+    fs::write(
+        temp.path().join("src/video_plane/plane/camera_panel.rs"),
+        "pub(crate) mod proof_fixture {\n    pub(crate) fn app() {}\n}\n",
+    )
+    .expect("write camera_panel");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+        "an inline module reached through two pub(crate) use re-exports is a module, not a \
+         function, got: {:?}",
+        report
+            .findings
+            .iter()
+            .filter(|f| f.code == DiagnosticCode::PreferModuleImport)
+            .map(|f| &f.path)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn fix_qualifies_bare_refs_inside_macros() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
