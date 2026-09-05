@@ -22,15 +22,13 @@ use super::report::ReservationDriftResult;
 use crate::edge::RepositoryTrunk;
 use crate::git;
 use crate::git::IncursionPathLogInvocation;
+use crate::ids::CommitterTime;
 use crate::ids::GitObjectId;
+use crate::ids::RecordedAt;
+use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::IncursionPathSet;
 use crate::reservation::RetainedReservationSet;
-
-enum IncursionAttributionSubjectState {
-    NoCommittedIncursion,
-    Ready(IncursionAttributionSubjects),
-}
 
 struct IncursionAttributionSubjectAnchor {
     object_id: GitObjectId,
@@ -48,7 +46,12 @@ struct IncursionAnchorAttribution {
     range_commits: HashSet<GitObjectId>,
 }
 
-struct IncursionAttributionBatch {
+/// The commits behind every path a phase committed into a foreign holder's scope.
+///
+/// Read once, before the ledger lock, over the paths the pre-lock pass found foreign holders
+/// for. Classification asks it when each such path was last committed, and the report is
+/// named from it afterwards, so the three batched git reads happen once per invocation.
+pub(super) struct IncursionAttributionBatch {
     anchors:           HashMap<GitObjectId, IncursionAnchorAttribution>,
     commits:           Vec<IncursionPathCommit>,
     origin_membership: IncursionCommitOriginMembership,
@@ -73,6 +76,88 @@ impl IncursionCommitOriginMembership {
     }
 }
 
+/// Read the commits behind the paths a phase committed into a foreign holder's scope.
+///
+/// `committed_foreign_paths` names each such path with the reservation whose phase range
+/// carried it. Nothing is read when there are none, or when the observation is not a full
+/// comparison with an anchored target — a cheap comparison reads no committed history.
+pub(super) fn read_committed_foreign_paths(
+    repository_root: &Path,
+    reservations: &RetainedReservationSet,
+    changes: &ObservedDriftChanges,
+    repository_trunk: &RepositoryTrunk,
+    committed_foreign_paths: &[(ReservationId, ReservationScopePath)],
+) -> Result<Option<IncursionAttributionBatch>, DriftFingerprintError> {
+    let mut anchors = Vec::new();
+    let mut paths = Vec::new();
+    for (reservation_id, path) in committed_foreign_paths {
+        let Ok(reservation) = reservations.reservation(*reservation_id) else {
+            continue;
+        };
+        let phase_start = reservation.phase_start_head().as_ref();
+        if !anchors.contains(phase_start) {
+            anchors.push(phase_start.clone());
+        }
+        paths.push(path.clone());
+    }
+    ordering::normalize_paths(&mut paths);
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let ObservedDriftChanges::Full(full_changes) = changes else {
+        return Ok(None);
+    };
+    let FullPhaseHistoryObservation::Anchored {
+        target,
+        anchor_states,
+    } = full_changes.phase_history()
+    else {
+        return Ok(None);
+    };
+    let anchors = anchors
+        .into_iter()
+        .map(|object_id| IncursionAttributionSubjectAnchor {
+            state: anchor_states
+                .get(&object_id)
+                .copied()
+                .unwrap_or(IncursionAttributionAnchorState::ObjectUnknown),
+            object_id,
+        })
+        .collect();
+    attribution_batch(
+        repository_root,
+        repository_trunk,
+        &IncursionAttributionSubjects {
+            target: target.clone(),
+            anchors,
+            paths,
+        },
+    )
+    .map(Some)
+}
+
+/// When one path was last committed to inside the phase range starting at `phase_start`.
+///
+/// `None` when the batch did not read that range — its phase start is unknown to git or is
+/// not an ancestor of the target — or when no commit in it touched the path.
+pub(super) fn latest_commit(
+    batch: &IncursionAttributionBatch,
+    phase_start: &GitObjectId,
+    path: &ReservationScopePath,
+) -> Option<CommitterTime> {
+    let anchor = batch.anchors.get(phase_start)?;
+    if anchor.state != IncursionAttributionAnchorState::UsableAncestor {
+        return None;
+    }
+    batch
+        .commits
+        .iter()
+        .filter(|commit| anchor.range_commits.contains(&commit.commit))
+        .filter(|commit| commit.paths.contains(path))
+        .map(|commit| commit.committed_at)
+        .max()
+}
+
 /// Name the commits behind every entered path an incursion took from the phase range.
 ///
 /// The message a reader acts on names paths and reservation ids only, so a path that
@@ -80,18 +165,14 @@ impl IncursionCommitOriginMembership {
 /// Only the committed component can carry a path the worktree never opened, so only
 /// those paths are looked up, and a working-tree incursion is left as it was.
 pub(super) fn name_incursion_commits(
-    repository_root: &Path,
     reservations: &RetainedReservationSet,
     changes: &ObservedDriftChanges,
-    repository_trunk: &RepositoryTrunk,
+    batch: Option<&IncursionAttributionBatch>,
     report: &mut DriftReport,
-) -> Result<(), DriftFingerprintError> {
-    let IncursionAttributionSubjectState::Ready(subjects) =
-        attribution_subjects(reservations, changes, report)
-    else {
-        return Ok(());
+) {
+    let Some(batch) = batch else {
+        return;
     };
-    let batch = attribution_batch(repository_root, repository_trunk, &subjects)?;
     for result in &mut report.results {
         let ReservationDriftResult::Changed {
             reservation_id,
@@ -110,87 +191,26 @@ pub(super) fn name_incursion_commits(
             continue;
         };
         for effect in effects.as_mut_slice() {
-            let DriftEffect::Incursion { paths, commits, .. } = effect else {
-                continue;
-            };
-            let selected_paths = committed_incursion_paths(committed, paths);
-            *commits = commits_for_paths(&batch, phase_start, &selected_paths);
-        }
-    }
-    Ok(())
-}
-
-fn attribution_subjects(
-    reservations: &RetainedReservationSet,
-    changes: &ObservedDriftChanges,
-    report: &DriftReport,
-) -> IncursionAttributionSubjectState {
-    let mut anchors = Vec::new();
-    let mut paths = Vec::new();
-    for result in &report.results {
-        let ReservationDriftResult::Changed {
-            reservation_id,
-            effects,
-        } = result
-        else {
-            continue;
-        };
-        let Ok(reservation) = reservations.reservation(*reservation_id) else {
-            continue;
-        };
-        let ReservationPhaseHistory::Compared(committed) =
-            changes.reservation_phase_history(*reservation_id)
-        else {
-            continue;
-        };
-        for effect in effects.as_slice() {
             let DriftEffect::Incursion {
-                paths: entered_paths,
+                paths,
+                commits,
+                foreign_reservation_ids,
                 ..
             } = effect
             else {
                 continue;
             };
-            let selected_paths = committed_incursion_paths(committed, entered_paths);
-            if selected_paths.is_empty() {
-                continue;
-            }
-            let phase_start = reservation.phase_start_head().as_ref();
-            if !anchors.contains(phase_start) {
-                anchors.push(phase_start.clone());
-            }
-            paths.extend(selected_paths);
+            let selected_paths = committed_incursion_paths(committed, paths);
+            let earliest_claim = foreign_reservation_ids
+                .as_slice()
+                .iter()
+                .filter_map(|holder_id| reservations.reservation(*holder_id).ok())
+                .map(|holder| holder.claimed_at().clone())
+                .min();
+            *commits =
+                commits_for_paths(batch, phase_start, &selected_paths, earliest_claim.as_ref());
         }
     }
-    ordering::normalize_paths(&mut paths);
-    if paths.is_empty() {
-        return IncursionAttributionSubjectState::NoCommittedIncursion;
-    }
-    let ObservedDriftChanges::Full(full_changes) = changes else {
-        return IncursionAttributionSubjectState::NoCommittedIncursion;
-    };
-    let FullPhaseHistoryObservation::Anchored {
-        target,
-        anchor_states,
-    } = full_changes.phase_history()
-    else {
-        return IncursionAttributionSubjectState::NoCommittedIncursion;
-    };
-    let anchors = anchors
-        .into_iter()
-        .map(|object_id| IncursionAttributionSubjectAnchor {
-            state: anchor_states
-                .get(&object_id)
-                .copied()
-                .unwrap_or(IncursionAttributionAnchorState::ObjectUnknown),
-            object_id,
-        })
-        .collect();
-    IncursionAttributionSubjectState::Ready(IncursionAttributionSubjects {
-        target: target.clone(),
-        anchors,
-        paths,
-    })
 }
 
 fn committed_incursion_paths(
@@ -288,10 +308,16 @@ fn attribution_batch(
     })
 }
 
+/// The commits behind the selected paths that were made while a named holder stood.
+///
+/// `earliest_claim` is the oldest claim among the incursion's holders. A commit older than
+/// it entered nobody the incident names — that holder is kept for a later commit on the
+/// same path — so the message does not accuse it.
 fn commits_for_paths(
     batch: &IncursionAttributionBatch,
     phase_start: &GitObjectId,
     selected_paths: &[ReservationScopePath],
+    earliest_claim: Option<&RecordedAt>,
 ) -> Vec<IncursionCommit> {
     let Some(anchor) = batch.anchors.get(phase_start) else {
         return Vec::new();
@@ -303,6 +329,7 @@ fn commits_for_paths(
         .commits
         .iter()
         .filter(|commit| anchor.range_commits.contains(&commit.commit))
+        .filter(|commit| !earliest_claim.is_some_and(|claim| claim.follows(commit.committed_at)))
         .filter_map(|commit| {
             let mut paths = commit
                 .paths

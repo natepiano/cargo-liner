@@ -1,12 +1,12 @@
 //! Classification of observed paths into widening, incursion, and collision effects.
 
-use std::collections::HashSet;
-
 use super::identity::DriftScopeAcquisition;
 use super::identity::DriftWideningAuthorization;
 use super::observation::ObservedDriftChanges;
 use super::observation::ReservationPhaseHistory;
 use super::ordering;
+use super::provenance;
+use super::provenance::IncursionAttributionBatch;
 use super::report::DriftComparisonMode;
 use super::report::DriftEffect;
 use super::report::DriftEffectSet;
@@ -18,6 +18,7 @@ use super::report::UnattributedDriftPathSet;
 use super::selection::DriftWideningSelection;
 use super::selection::ResolvedDriftSubjects;
 use crate::coordination_identity::IssuingWorktreeRun;
+use crate::ids::CommitterTime;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ids::WireOrderedReservationIds;
@@ -44,8 +45,24 @@ enum WideningAttempt {
     Attributed,
 }
 
+/// One observed path the ledger's present holders would call foreign.
+struct ForeignPathCandidate {
+    reservation_id: ReservationId,
+    path:           ReservationScopePath,
+    /// The path reached the observation only through the subject's phase range.
+    committed_only: bool,
+}
+
+/// What the pre-lock pass established about each subject's observed paths.
+///
+/// Two things are settled here and read again under the lock. Which paths already had a
+/// foreign holder when the invocation began, which separates an incursion from a
+/// collision; and, for the paths a phase committed into such a holder's scope, when each
+/// was last committed — read from git once, before the lock, so the locked pass asks the
+/// ledger nothing it cannot answer from memory.
 pub(super) struct PreLockForeignPathClassification {
-    foreign_paths: HashSet<(ReservationId, String)>,
+    candidates:        Vec<ForeignPathCandidate>,
+    committed_history: Option<IncursionAttributionBatch>,
 }
 
 impl PreLockForeignPathClassification {
@@ -55,28 +72,95 @@ impl PreLockForeignPathClassification {
         changes: &ObservedDriftChanges,
         path_case: PathCase,
     ) -> Result<Self, ReservationReplayError> {
-        let mut foreign_paths = HashSet::new();
+        let mut candidates = Vec::new();
         for reservation_id in subject_ids {
             let reservation = reservations.reservation(*reservation_id)?;
             changes.visit_paths(*reservation_id, |path| {
                 if reservation_covers_path(reservation, path, path_case) {
                     return;
                 }
-                match blocking_coverage(reservations, reservation, path, path_case) {
+                match blocking_coverage(reservations, reservation, None, path, path_case) {
                     DriftBlockingCoverage::NoForeignStanding | DriftBlockingCoverage::Unclaimed => {
                     },
                     DriftBlockingCoverage::Foreign(_) => {
-                        foreign_paths.insert((*reservation_id, path.to_string()));
+                        candidates.push(ForeignPathCandidate {
+                            reservation_id: *reservation_id,
+                            path:           path.clone(),
+                            committed_only: changes.committed_only(*reservation_id, path),
+                        });
                     },
                 }
             });
         }
-        Ok(Self { foreign_paths })
+        Ok(Self {
+            candidates,
+            committed_history: None,
+        })
     }
 
+    /// The paths a phase committed into a present foreign holder's scope, by subject.
+    pub(super) fn committed_foreign_paths(&self) -> Vec<(ReservationId, ReservationScopePath)> {
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.committed_only)
+            .map(|candidate| (candidate.reservation_id, candidate.path.clone()))
+            .collect()
+    }
+
+    /// Attach the commits read for [`Self::committed_foreign_paths`].
+    pub(super) fn with_committed_history(
+        mut self,
+        committed_history: Option<IncursionAttributionBatch>,
+    ) -> Self {
+        self.committed_history = committed_history;
+        self
+    }
+
+    pub(super) const fn committed_history(&self) -> Option<&IncursionAttributionBatch> {
+        self.committed_history.as_ref()
+    }
+
+    /// Which holders block the path, as of the moment the subject wrote it.
+    fn blocking_coverage(
+        &self,
+        reservations: &RetainedReservationSet,
+        subject: &Reservation,
+        path: &ReservationScopePath,
+        path_case: PathCase,
+    ) -> DriftBlockingCoverage {
+        blocking_coverage(
+            reservations,
+            subject,
+            self.written_at(subject, path),
+            path,
+            path_case,
+        )
+    }
+
+    /// When the subject last committed to a path it reached only through its phase range.
+    fn written_at(
+        &self,
+        subject: &Reservation,
+        path: &ReservationScopePath,
+    ) -> Option<CommitterTime> {
+        let batch = self.committed_history.as_ref()?;
+        self.candidates
+            .iter()
+            .find(|candidate| {
+                candidate.committed_only
+                    && candidate.reservation_id == subject.id()
+                    && candidate.path == *path
+            })
+            .and_then(|_| {
+                provenance::latest_commit(batch, subject.phase_start_head().as_ref(), path)
+            })
+    }
+
+    /// Whether a present foreign holder stood on the path when the invocation began.
     fn was_foreign(&self, reservation_id: ReservationId, path: &ReservationScopePath) -> bool {
-        self.foreign_paths
-            .contains(&(reservation_id, path.to_string()))
+        self.candidates
+            .iter()
+            .any(|candidate| candidate.reservation_id == reservation_id && candidate.path == *path)
     }
 }
 
@@ -258,7 +342,7 @@ pub(super) fn classify_locked(
             if reservation_covers_path(reservation, path, path_case) {
                 return;
             }
-            match blocking_coverage(reservations, reservation, path, path_case) {
+            match prior.blocking_coverage(reservations, reservation, path, path_case) {
                 DriftBlockingCoverage::NoForeignStanding => {},
                 DriftBlockingCoverage::Unclaimed => {
                     if !changes.carries_work(path) {
@@ -485,9 +569,24 @@ fn reservation_covers_path(
         .any(|scope| scope.contains(&candidate, path_case))
 }
 
+/// Which holders block one observed path, as of the moment the subject wrote it.
+///
+/// The ledger answers for the present. A path that reached the observation only through
+/// a commit was written when that commit was made — `written_at` — and a holder whose
+/// claim postdates that commit was not entered by it: the claim that "entered" it did not
+/// exist yet. Asking the present instead let any new claim over a long-lived shared file
+/// manufacture an incursion against every reservation that had ever committed to it, and
+/// stop the operator on an overlap that never happened. A path the working tree still
+/// holds open was written just now, so it arrives with no `written_at` and the present is
+/// the right moment.
+///
+/// A holder's `claimed_at` stands in for when it began covering the path. A scope widened
+/// onto later is dated by the claim, earlier than it should be, so such a holder is kept
+/// rather than dropped: the error is on the reporting side.
 fn blocking_coverage(
     reservations: &RetainedReservationSet,
     subject: &Reservation,
+    written_at: Option<CommitterTime>,
     path: &ReservationScopePath,
     path_case: PathCase,
 ) -> DriftBlockingCoverage {
@@ -497,12 +596,27 @@ fn blocking_coverage(
     }]) else {
         return DriftBlockingCoverage::Unclaimed;
     };
-    reservations.blocking_coverage_for_drift(
+    let coverage = reservations.blocking_coverage_for_drift(
         &candidate,
         subject.actor().worktree,
         subject.actor().run,
         path_case,
-    )
+    );
+    let DriftBlockingCoverage::Foreign(conflicts) = coverage else {
+        return coverage;
+    };
+    let Some(committed_at) = written_at else {
+        return DriftBlockingCoverage::Foreign(conflicts);
+    };
+    let in_force_when_written = conflicts
+        .into_iter()
+        .filter(|conflict| !conflict.claimed_at().follows(committed_at))
+        .collect::<Vec<_>>();
+    if in_force_when_written.is_empty() {
+        DriftBlockingCoverage::NoForeignStanding
+    } else {
+        DriftBlockingCoverage::Foreign(in_force_when_written)
+    }
 }
 
 #[cfg(test)]

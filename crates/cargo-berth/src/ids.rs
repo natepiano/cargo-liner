@@ -401,7 +401,8 @@ impl<'de> Deserialize<'de> for WorkPlanPhase {
 }
 
 /// An RFC 3339 UTC timestamp with millisecond precision.
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq)]
+// The representation is fixed-width and UTC, so its derived text order is its time order.
+#[derive(Clone, Debug, Eq, JsonSchema, Ord, PartialEq, PartialOrd)]
 #[schemars(transparent)]
 pub(crate) struct RecordedAt(#[schemars(length(min = 1))] String);
 
@@ -436,6 +437,16 @@ impl RecordedAt {
         Duration::from_millis(u64::try_from(elapsed).unwrap_or(u64::MAX))
     }
 
+    /// Whether this record was made after the second a commit was made in.
+    ///
+    /// Git keeps committer time to the second, so a record and a commit from the same
+    /// second cannot be ordered, and the record is not said to follow the commit.
+    pub(crate) fn follows(&self, committed_at: CommitterTime) -> bool {
+        const MILLISECONDS_PER_SECOND: i64 = 1_000;
+
+        self.unix_milliseconds().div_euclid(MILLISECONDS_PER_SECOND) > committed_at.0
+    }
+
     fn unix_milliseconds(&self) -> i64 {
         const MILLISECONDS_PER_DAY: i64 = 86_400_000;
         const MILLISECONDS_PER_HOUR: i64 = 3_600_000;
@@ -457,6 +468,16 @@ impl RecordedAt {
             .saturating_add(second.saturating_mul(MILLISECONDS_PER_SECOND))
             .saturating_add(millisecond)
     }
+}
+
+/// A git committer time, in whole seconds since the Unix epoch as `%ct` prints it.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct CommitterTime(i64);
+
+impl FromStr for CommitterTime {
+    type Err = ParseIntError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> { value.parse().map(Self) }
 }
 
 impl Display for RecordedAt {

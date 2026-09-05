@@ -15,6 +15,7 @@ use crate::git::GitCommandOutputAvailability;
 use crate::git::GitError;
 use crate::git::INCURSION_ATTRIBUTION_RECORD_MARKER;
 use crate::git::Reachability;
+use crate::ids::CommitterTime;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 
@@ -100,9 +101,10 @@ impl From<Reachability> for IncursionAttributionAnchorState {
 
 /// One commit and its selected paths from the batched incursion log.
 pub(super) struct IncursionPathCommit {
-    pub(super) commit:  GitObjectId,
-    pub(super) subject: String,
-    pub(super) paths:   Vec<ReservationScopePath>,
+    pub(super) commit:       GitObjectId,
+    pub(super) committed_at: CommitterTime,
+    pub(super) subject:      String,
+    pub(super) paths:        Vec<ReservationScopePath>,
 }
 
 /// A git fingerprint could not be computed or interpreted.
@@ -250,6 +252,12 @@ pub(super) fn parse_incursion_path_log(
             ));
         };
         index += 1;
+        let Some(committed_at_field) = fields.get(index) else {
+            return Err(DriftFingerprintError::MalformedGitOutput(
+                "incursion log ended before its committer time".to_owned(),
+            ));
+        };
+        index += 1;
         let Some(subject_field) = fields.get(index) else {
             return Err(DriftFingerprintError::MalformedGitOutput(
                 "incursion log ended before its subject".to_owned(),
@@ -259,6 +267,10 @@ pub(super) fn parse_incursion_path_log(
         let commit = std::str::from_utf8(commit_field)
             .map_err(|error| DriftFingerprintError::MalformedGitOutput(error.to_string()))?
             .parse::<GitObjectId>()
+            .map_err(|error| DriftFingerprintError::MalformedGitOutput(error.to_string()))?;
+        let committed_at = std::str::from_utf8(committed_at_field)
+            .map_err(|error| DriftFingerprintError::MalformedGitOutput(error.to_string()))?
+            .parse::<CommitterTime>()
             .map_err(|error| DriftFingerprintError::MalformedGitOutput(error.to_string()))?;
         let subject = std::str::from_utf8(subject_field)
             .map_err(|error| DriftFingerprintError::MalformedGitOutput(error.to_string()))?
@@ -286,6 +298,7 @@ pub(super) fn parse_incursion_path_log(
         }
         commits.push(IncursionPathCommit {
             commit,
+            committed_at,
             subject,
             paths,
         });
@@ -562,6 +575,8 @@ mod tests {
         output.push(0);
         output.extend_from_slice(COMMIT_OBJECT_ID.as_bytes());
         output.push(0);
+        output.extend_from_slice(b"1700000000");
+        output.push(0);
         output.extend_from_slice(b"literal paths");
         output.push(0);
         output.push(0);
@@ -576,6 +591,7 @@ mod tests {
         let commits = parse_incursion_path_log(&output)?;
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].commit.to_string(), COMMIT_OBJECT_ID);
+        assert_eq!(commits[0].committed_at, "1700000000".parse()?);
         assert_eq!(commits[0].subject, "literal paths");
         assert_eq!(
             commits[0]

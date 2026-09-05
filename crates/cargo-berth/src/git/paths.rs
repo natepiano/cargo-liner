@@ -65,12 +65,16 @@ pub(crate) fn phase_committed_path_diffs(
 }
 
 /// Read every selected path's commits for later per-anchor membership filtering.
+///
+/// Each record carries the commit, its committer time in whole seconds, and its subject,
+/// then the selected paths it touched.
 pub(crate) fn incursion_path_log(
     repository_root: &Path,
     target: &GitObjectId,
     paths: &[ReservationScopePath],
 ) -> IncursionPathLogInvocation {
-    let record_format = format!("--format=%x00{INCURSION_ATTRIBUTION_RECORD_MARKER}%x00%H%x00%s");
+    let record_format =
+        format!("--format=%x00{INCURSION_ATTRIBUTION_RECORD_MARKER}%x00%H%x00%ct%x00%s");
     let mut arguments = Vec::with_capacity(paths.len() + 8);
     arguments.extend([
         GIT_LOG_COMMAND.to_owned(),

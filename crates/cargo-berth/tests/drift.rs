@@ -1127,6 +1127,106 @@ fn a_committed_incursion_names_the_commits_that_introduced_its_paths() {
     assert!(rendered.contains(&holder_id));
 }
 
+/// A holder that claimed after a commit was not entered by that commit.
+///
+/// A phase range keeps a commit until the phase advances, so a claim taken days later over
+/// a long-lived shared path once turned every earlier commit to it into an incursion the
+/// operator was told to stop and resolve. The holders asked about a committed path are the
+/// ones in force when it was committed.
+#[test]
+fn a_claim_taken_after_a_commit_is_not_entered_by_it() {
+    let repository = initialized_repository();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "late-holder");
+    // Two reservations under one run leave the commit's widening ambiguous, so the shared
+    // path stays outside every scope, as an unattributed commit does in practice.
+    let subject_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
+    claim(repository.path(), "file:second.txt", FIRST_RUN);
+    fs::write(
+        repository.path().join("shared.txt"),
+        "written before any holder\n",
+    )
+    .expect("shared path should write");
+    git(repository.path(), &["add", "shared.txt"]);
+    let committed = git_output_with_environment(
+        repository.path(),
+        &["commit", "--quiet", "-m", "write the shared path"],
+        "GIT_COMMITTER_DATE",
+        "2020-01-01T00:00:00Z",
+    );
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    let late_holder_id = claim(&foreign_root, "file:shared.txt", SECOND_RUN);
+
+    let reported = run_berth_with_run(
+        repository.path(),
+        &["drift", "--full", "--reservation", &subject_id, "--json"],
+        FIRST_RUN,
+    );
+    let envelope = json_output(&reported);
+
+    assert_eq!(envelope["status"], "clear", "{envelope}");
+    let incursions = envelope["payload"]["data"]["results"]
+        .as_array()
+        .map_or(0, |results| {
+            results
+                .iter()
+                .filter_map(|result| result["effects"].as_array())
+                .flatten()
+                .filter(|effect| effect["kind"] == "incursion")
+                .count()
+        });
+    assert_eq!(
+        incursions, 0,
+        "a claim taken after the commit was not entered by it: {envelope}"
+    );
+    assert!(
+        !journal_events(repository.path())
+            .iter()
+            .any(|event| event["op"] == "incursion"),
+        "no incident may be recorded against {late_holder_id}"
+    );
+}
+
+/// A holder that claimed before a commit is entered by it, and the commit is named.
+#[test]
+fn a_claim_taken_before_a_commit_is_entered_by_it() {
+    let repository = initialized_repository();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "early-holder");
+    let subject_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
+    claim(repository.path(), "file:second.txt", FIRST_RUN);
+    let holder_id = claim(&foreign_root, "file:shared.txt", SECOND_RUN);
+    fs::write(repository.path().join("shared.txt"), "written while held\n")
+        .expect("shared path should write");
+    git(repository.path(), &["add", "shared.txt"]);
+    git(
+        repository.path(),
+        &["commit", "--quiet", "-m", "enter the held path"],
+    );
+    let entering_commit = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+
+    let reported = run_berth_with_run(
+        repository.path(),
+        &["drift", "--full", "--reservation", &subject_id, "--json"],
+        FIRST_RUN,
+    );
+    let envelope = json_output(&reported);
+
+    assert_eq!(envelope["status"], "incursion", "{envelope}");
+    let effects = incursion_effects(&envelope);
+    let incursion = incursion_for(&effects, "shared.txt");
+    assert_eq!(
+        incursion["foreign_reservation_ids"],
+        serde_json::json!([holder_id])
+    );
+    assert_eq!(
+        incursion["commits"][0]["commit"], entering_commit,
+        "the commit made while the holder stood is named: {incursion}"
+    );
+}
+
 #[test]
 fn incursion_attribution_treats_pathspec_magic_as_literal_path_text() {
     let repository = initialized_repository();

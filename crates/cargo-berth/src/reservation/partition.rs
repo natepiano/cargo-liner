@@ -27,7 +27,8 @@ pub(crate) enum DriftBlockingCoverage {
     /// claimed under an identity the engine created for itself rather than one a caller
     /// presented. The probe is the exact inverse of the foreignness the conflict pass applies,
     /// so both read [`Reservation::is_foreign_to_coordination_run_in_worktree`] and cannot
-    /// disagree.
+    /// disagree. Drift classification also files a path here when every foreign holder of it
+    /// claimed after the commit that wrote it, in `drift/classification.rs`.
     NoForeignStanding,
     /// Reservations from another run or worktree currently block the path.
     Foreign(Vec<ReservationConflict>),

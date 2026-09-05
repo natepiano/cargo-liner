@@ -228,6 +228,30 @@ impl ObservedDriftChanges {
         }
     }
 
+    /// Whether a path reached this observation only through the reservation's phase range.
+    ///
+    /// A path still open in the working tree was written by the reader just now. A path
+    /// that arrived only through a commit was written when that commit was made, which is
+    /// when the question of who held it has to be asked.
+    pub(super) fn committed_only(
+        &self,
+        reservation_id: ReservationId,
+        path: &ReservationScopePath,
+    ) -> bool {
+        let Self::Full(changes) = self else {
+            return false;
+        };
+        let Some(FullReservationPhaseHistory::Compared(committed)) =
+            changes.committed.get(&reservation_id)
+        else {
+            return false;
+        };
+        committed.as_slice().contains(path)
+            && !changes.staged.as_slice().contains(path)
+            && !changes.unstaged.as_slice().contains(path)
+            && !changes.untracked.as_slice().contains(path)
+    }
+
     /// Return the committed-history state observed for one reservation.
     pub(super) fn reservation_phase_history(
         &self,

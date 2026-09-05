@@ -326,6 +326,15 @@ fn execute_inner(
         &observation.changes,
         path_case,
     )?;
+    let committed_history = provenance::read_committed_foreign_paths(
+        worktree_context.repository_root(),
+        &initial_reservations,
+        &observation.changes,
+        repository_trunk,
+        &pre_lock_foreign_path_classification.committed_foreign_paths(),
+    )?;
+    let pre_lock_foreign_path_classification =
+        pre_lock_foreign_path_classification.with_committed_history(committed_history);
     let mutation_context = DriftMutationContext {
         request,
         ledger,
@@ -339,12 +348,11 @@ fn execute_inner(
     };
     let mut report = transact_classification(&mutation_context)?;
     provenance::name_incursion_commits(
-        worktree_context.repository_root(),
         &initial_reservations,
         &observation.changes,
-        repository_trunk,
+        pre_lock_foreign_path_classification.committed_history(),
         &mut report,
-    )?;
+    );
     // From here the refusal withholds every acquisition this invocation could still make: the
     // post-write first touch below, and the fingerprint publication that would move the
     // worktree's shared comparison baseline under the run that does occupy it. Nothing else
