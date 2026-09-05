@@ -1752,7 +1752,8 @@ impl OutputEnvelope {
         output_envelope
     }
 
-    /// Build the recovery response for a reference-transaction hook installed before v1.
+    /// Build the recovery response for a reference-transaction hook that predates issuing-checkout
+    /// capture.
     pub(crate) fn legacy_hook_outdated() -> Self {
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,

@@ -2468,11 +2468,6 @@
               "type": "string"
             },
             {
-              "const": "reblocked_active_constraint",
-              "description": "Reserved v1 wire value no longer produced for released reservations.",
-              "type": "string"
-            },
-            {
               "const": "resolved_audit",
               "description": "A cleanly released reservation belongs only to retained audit history.",
               "type": "string"
@@ -9316,11 +9311,6 @@
             {
               "const": "active_constraint",
               "description": "Live or outstanding work still participates in active constraints.",
-              "type": "string"
-            },
-            {
-              "const": "reblocked_active_constraint",
-              "description": "Reserved v1 wire value no longer produced for released reservations.",
               "type": "string"
             },
             {

@@ -85,7 +85,7 @@ struct JournalSchemaHeader {
 }
 
 impl JournalEvent {
-    /// Build a new v1 journal fact for one mutation transaction.
+    /// Build a new journal fact for one mutation transaction.
     pub(super) fn for_operation(
         actor: JournalActor,
         projection_generation: ProjectionGeneration,
@@ -326,7 +326,7 @@ macro_rules! declare_journal_operations {
 }
 
 declare_journal_operations! {
-/// Every v1 operation a journal can contain.
+/// Every operation a journal can contain.
 ///
 /// New behavior must use one of these variants. Older binaries reject an
 /// unknown operation rather than silently replaying an incomplete state.

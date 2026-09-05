@@ -193,8 +193,6 @@ enum BoardIntegrationEvidence {
 pub(super) enum BoardReservationVisibility {
     /// Live or outstanding work still participates in active constraints.
     ActiveConstraint,
-    /// Reserved v1 wire value no longer produced for released reservations.
-    ReblockedActiveConstraint,
     /// A cleanly released reservation belongs only to retained audit history.
     ResolvedAudit,
 }

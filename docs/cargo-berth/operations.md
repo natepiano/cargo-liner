@@ -108,7 +108,7 @@ discarded and how many pending bypass markers remain reportable, for example:
 Reinitialized cargo-berth after confirmed order review; discarded 45 journal bytes across 1 complete record(s). 0 environment bypass marker(s) remain reportable.
 ```
 
-A malformed v1 record looks like this and is the case for confirmed
+A malformed record looks like this and is the case for confirmed
 reinitialization:
 
 ```text
