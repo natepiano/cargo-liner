@@ -58,7 +58,7 @@ use crate::backdrop::desktop::candidate;
 use crate::backdrop::desktop::candidate::TerminalWindowCandidate;
 use crate::backdrop::desktop::candidate::TerminalWindowCandidates;
 use crate::backdrop::desktop::candidate::TerminalWindowOwner;
-use crate::backdrop::desktop::reduction::reduce_capture;
+use crate::backdrop::desktop::reduction;
 use crate::process;
 
 /// How many bytes one pixel of the captured image occupies.
@@ -252,7 +252,7 @@ fn capture_selected_window(
         u32::try_from(width).map_err(|_| CaptureFailure::DisplayCaptureFailed)?,
         u32::try_from(height).map_err(|_| CaptureFailure::DisplayCaptureFailed)?,
     );
-    let (columns, rows, colors) = reduce_capture(&rgba, image, cell)?;
+    let (columns, rows, colors) = reduction::reduce_capture(&rgba, image, cell)?;
     Ok(Desktop {
         window_id,
         metrics,

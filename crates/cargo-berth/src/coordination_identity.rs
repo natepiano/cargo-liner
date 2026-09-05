@@ -26,23 +26,14 @@ use crate::reservation::WorktreeOccupancy;
 ///
 /// The same-worktree occupancy refusal is a rule between two *presented* coordination runs.
 /// An identity this process created for itself, because nothing identified the caller, is not
-/// a coordination run and never refuses anyone. Claims written before this fact was recorded
-/// carry [`Self::Unknown`] and also never refuse, so upgrading a repository can never lock a
-/// worktree against its own work.
-///
-/// [`Self::NotPresented`] and [`Self::Unknown`] stay distinct even though both decline to
-/// refuse today: "nobody presented one" is a recorded fact, "we do not know" is the absence
-/// of one.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+/// a coordination run and never refuses anyone.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CoordinationIdentityProvenance {
     /// An argument, environment value, or honored marker identified the claimant.
     Presented,
     /// Nothing identified the claimant, so this process issued an identity to stand in for it.
     NotPresented,
-    /// The claim predates this record, so how its identity was obtained is unrecoverable.
-    #[default]
-    Unknown,
 }
 
 /// A coordination run whose identity the caller presented, and the acting side of occupancy.

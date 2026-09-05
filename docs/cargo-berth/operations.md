@@ -116,15 +116,15 @@ The reservation ledger could not be read: journal replay failed: journal record 
 [exit 4]
 ```
 
-A record from a newer schema is different:
+A record with a schema version this executable does not write is different:
 
 ```text
 The reservation ledger could not be read: journal replay failed: journal schema version 2 is unsupported
 [exit 4]
 ```
 
-Upgrade `cargo-berth` for an unsupported schema version. Never reinitialize that
-journal merely because the current executable is older.
+Upgrade `cargo-berth` for an unsupported schema version rather than
+reinitializing that journal.
 
 `resolve` records one of these explicit decisions:
 

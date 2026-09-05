@@ -1464,8 +1464,7 @@ impl ClaimRunValidation {
     /// Record whether the caller presented the coordination identity this claim carries.
     ///
     /// Derived from [`Self::presented_coordination_identity`] so the requester answer and the
-    /// stored incumbent fact can never disagree. [`CoordinationIdentityProvenance::Unknown`] is
-    /// unreachable here: it exists only for claims written before the fact was recorded.
+    /// stored incumbent fact can never disagree.
     const fn coordination_identity_provenance(self) -> CoordinationIdentityProvenance {
         match self.presented_coordination_identity() {
             RequesterCoordinationIdentity::Presented(_) => {

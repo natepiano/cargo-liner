@@ -6,7 +6,6 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::path::Path;
-use std::path::PathBuf;
 use std::str::FromStr;
 
 use super::audit;
@@ -87,15 +86,6 @@ pub(crate) enum ManagedTrunkDeletion {
         reference:    FullRefName,
         previous_tip: GitObjectId,
     },
-}
-
-/// Whether the managed hook preserved the checkout that issued this transaction.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ReferenceTransactionIssuingDirectory {
-    /// A current managed hook exported its issuing checkout before changing directory.
-    CapturedByManagedHook(PathBuf),
-    /// A managed hook installed before issuing-directory capture exported no checkout.
-    MissingFromLegacyHook,
 }
 
 /// One parsed old-object, new-object, and full-reference update.
@@ -252,7 +242,7 @@ fn parse_reference_object(value: &str) -> Result<ReferenceObject, ()> {
 /// Evaluate prepared trunk updates and commit their approved permit audits after Git moves the ref.
 pub(crate) fn evaluate_reference_transaction(
     invocation_directory: &Path,
-    issuing_directory: &ReferenceTransactionIssuingDirectory,
+    issuing_directory: Option<&Path>,
     transaction: &ReferenceTransaction,
     trunk_reference: &FullRefName,
 ) -> Result<Vec<GateResult>, GateError> {
@@ -267,6 +257,12 @@ pub(crate) fn evaluate_reference_transaction(
     ) {
         return Ok(Vec::new());
     }
+    // The managed hook exports the checkout that issued the transaction before it changes
+    // directory. A hook that did not is not one this binary installed, and there is no
+    // fallback to the process's own working directory.
+    let Some(issuing_directory) = issuing_directory else {
+        return Err(GateError::HookReportedNoIssuingDirectory);
+    };
     let local_branch_updates = transaction
         .entries
         .iter()
@@ -317,7 +313,7 @@ pub(crate) fn evaluate_reference_transaction(
                             &update,
                             &GatePurpose::Hook {
                                 phase:             ReferenceTransactionPhase::Prepared,
-                                issuing_directory: issuing_directory.clone(),
+                                issuing_directory: issuing_directory.to_path_buf(),
                             },
                         )? {
                             Enrollment::Enrolled(result) => results.push(result),

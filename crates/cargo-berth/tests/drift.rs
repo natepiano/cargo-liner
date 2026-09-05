@@ -22,8 +22,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
 use std::fs::File;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -2659,17 +2657,15 @@ fn drift_widen_records_existing_answer_coverage_for_a_scope_bound_answer() {
 ///
 /// A widening asks the one foreignness question the pre-edit hook asks, so a same-worktree
 /// holder is foreign only while another *presented* run holds it `Active`. These are the
-/// three same-worktree standings that question declines --- released and awaiting
-/// integration, claimed under an identity the engine issued for itself, and claimed before
-/// provenance was recorded at all --- and the one standing it accepts.
+/// two same-worktree standings that question declines --- released and awaiting
+/// integration, and claimed under an identity the engine issued for itself --- and the one
+/// standing it accepts.
 #[derive(Clone, Copy, Debug)]
 enum OverlappedHolderStanding {
     /// This worktree, another run, released and awaiting integration.
     HereAwaitingIntegration,
     /// This worktree, claimed by post-commit drift under an identity nobody presented.
     HereUnderAnEngineIssuedIdentity,
-    /// This worktree, claimed by a build that recorded no identity provenance at all.
-    HereFromBeforeProvenanceWasRecorded,
     /// Another worktree, held `Active` by a run that presented its identity.
     InAnotherWorktreeUnderAPresentedRun,
 }
@@ -2708,7 +2704,7 @@ struct WideningOverAHolder {
 /// provenance term, so it demanded an answer from a same-worktree holder the pre-edit hook
 /// had already decided this identity may edit. It now asks
 /// `Reservation::is_foreign_to_coordination_run_in_worktree`, the same predicate every other
-/// site asks, which relaxes exactly three same-worktree standings: their overlaps stop
+/// site asks, which relaxes exactly two same-worktree standings: their overlaps stop
 /// forcing an answer and stop appearing among the authorized overlaps the widen records.
 ///
 /// The contrast is drawn on the worktree because the same-worktree `Active` and `Presented`
@@ -2720,7 +2716,6 @@ fn widening_asks_an_overlap_answer_only_of_a_holder_foreign_to_it() {
     for standing in [
         OverlappedHolderStanding::HereAwaitingIntegration,
         OverlappedHolderStanding::HereUnderAnEngineIssuedIdentity,
-        OverlappedHolderStanding::HereFromBeforeProvenanceWasRecorded,
     ] {
         let widening = widening_over_an_overlapped_holder(standing);
 
@@ -2811,17 +2806,6 @@ fn widening_over_an_overlapped_holder(standing: OverlappedHolderStanding) -> Wid
                 claim(repository.path(), "tree:shared", SECOND_RUN),
             )
         },
-        OverlappedHolderStanding::HereFromBeforeProvenanceWasRecorded => {
-            let subject_id = claim(repository.path(), "tree:shared", SECOND_RUN);
-            (
-                append_claim_recording_no_provenance(
-                    repository.path(),
-                    FIRST_RUN,
-                    "shared/held.txt",
-                ),
-                subject_id,
-            )
-        },
         OverlappedHolderStanding::InAnotherWorktreeUnderAPresentedRun => {
             let holder_id = claim(&holder_root, "file:shared/held.txt", FIRST_RUN);
             let subject_id =
@@ -2897,73 +2881,6 @@ fn holder_edit_blocking(probe_root: &Path, scope: &str, holder_id: &str) -> Hold
     } else {
         HolderEditBlocking::DoesNotBlockAForeignEdit
     }
-}
-
-/// Append the claim a build that predates provenance recording left behind.
-///
-/// No verb can write one any more --- the field is recorded at every claim site --- so the
-/// record an upgraded repository replays is appended directly. It is copied from a real
-/// claim in the same journal so every other field stays exactly what the engine wrote, and
-/// only the reservation, its scope, its run, and the absent provenance differ.
-fn append_claim_recording_no_provenance(
-    repository_root: &Path,
-    run: &str,
-    scope_path: &str,
-) -> String {
-    let events = journal_events(repository_root);
-    let previous = events
-        .last()
-        .expect("the fixture should have written one event")
-        .clone();
-    let mut event = events
-        .iter()
-        .find(|event| event["op"] == "claim")
-        .expect("the fixture should have written one claim")
-        .as_object()
-        .expect("a journal event should be an object")
-        .clone();
-    let reservation_id = uuid::Uuid::now_v7().to_string();
-    event.insert(
-        "event_id".to_owned(),
-        serde_json::json!(uuid::Uuid::now_v7().to_string()),
-    );
-    event.insert(
-        "reservation_id".to_owned(),
-        serde_json::json!(reservation_id),
-    );
-    event.insert(
-        "scopes".to_owned(),
-        serde_json::json!([{"path": scope_path, "kind": "file"}]),
-    );
-    event.remove("coordination_identity_provenance");
-    event.insert(
-        "actor".to_owned(),
-        serde_json::json!({
-            "repository": previous["actor"]["repository"],
-            "worktree": previous["actor"]["worktree"],
-            "run": run,
-        }),
-    );
-    event.insert("at".to_owned(), previous["at"].clone());
-    event.insert(
-        "projection_generation".to_owned(),
-        serde_json::json!(
-            previous["projection_generation"]
-                .as_u64()
-                .expect("a projection generation should be numeric")
-                + 1
-        ),
-    );
-    let mut journal = OpenOptions::new()
-        .append(true)
-        .open(repository_root.join(JOURNAL_PATH))
-        .expect("the journal should open for the provenance-free claim");
-    serde_json::to_writer(&mut journal, &serde_json::Value::Object(event))
-        .expect("the provenance-free claim should serialize");
-    journal
-        .write_all(b"\n")
-        .expect("the provenance-free claim terminator should write");
-    reservation_id
 }
 
 #[test]

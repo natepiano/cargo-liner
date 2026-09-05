@@ -506,7 +506,7 @@ fn render_reference_transaction_template(substitutions: &[(&str, &str)]) -> Stri
     rendered
 }
 
-/// Render the reference-transaction script for marker compatibility tests.
+/// Render the reference-transaction script for the marker-writer agreement tests.
 #[cfg(test)]
 pub(super) fn reference_transaction_hook_script_for_test(
     common_git_directory: &Path,

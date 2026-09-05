@@ -12,7 +12,9 @@ mod window;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
+use display::Output;
 use ratatui::style::Color;
+use window::ListedWindow;
 use zbus::blocking::Connection;
 
 use self::wallpaper::WallpaperSnapshot;
@@ -27,7 +29,7 @@ use crate::backdrop::desktop::Metrics;
 use crate::backdrop::desktop::TerminalWindowSearchOutcome;
 use crate::backdrop::desktop::TitledWindow;
 use crate::backdrop::desktop::candidate;
-use crate::backdrop::desktop::reduction::reduce_capture;
+use crate::backdrop::desktop::reduction;
 
 /// The shared session-bus connection used by the capture and position workers.
 static SESSION_CONNECTION: OnceLock<Connection> = OnceLock::new();
@@ -94,8 +96,8 @@ pub(in crate::backdrop::desktop) fn capture(
 /// Reconstruct the wallpaper for the output holding `chosen`.
 fn capture_selected_window(
     metrics: Metrics,
-    chosen: &window::ListedWindow,
-    outputs: &[display::Output],
+    chosen: &ListedWindow,
+    outputs: &[Output],
 ) -> Result<Desktop, CaptureFailure> {
     let output = display::under(outputs, chosen.frame).ok_or(CaptureFailure::DisplayNotFound)?;
     let wallpaper = wallpaper::snapshot(output.screen_index, output.size)
@@ -117,7 +119,7 @@ fn capture_selected_window(
 /// Return a cached color grid or render and reduce a new one.
 fn reduced_wallpaper(
     metrics: Metrics,
-    output: &display::Output,
+    output: &Output,
     wallpaper: WallpaperSnapshot,
     cell: (f64, f64),
 ) -> Result<(u16, u16, Vec<Color>), CaptureFailure> {
@@ -137,7 +139,7 @@ fn reduced_wallpaper(
         .wallpaper
         .render(key.output)
         .ok_or(CaptureFailure::DisplayCaptureFailed)?;
-    let reduced = reduce_capture(image.as_raw(), key.output, cell)?;
+    let reduced = reduction::reduce_capture(image.as_raw(), key.output, cell)?;
     if let Ok(mut cache) = WALLPAPER_CACHE.lock() {
         *cache = Some(CachedWallpaper {
             key,

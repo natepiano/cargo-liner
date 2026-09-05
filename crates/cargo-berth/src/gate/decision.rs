@@ -1,6 +1,7 @@
 //! The locked gate decision: who is entering, what holds them, and what that permits.
 
 use std::path::Path;
+use std::path::PathBuf;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -11,7 +12,6 @@ use super::error::GateTransactionRejection;
 use super::permit;
 use super::reference_transaction::PreviousMain;
 use super::reference_transaction::ProposedMainMove;
-use super::reference_transaction::ReferenceTransactionIssuingDirectory;
 use super::reference_transaction::ReferenceTransactionPhase;
 use crate::alert::Alert;
 use crate::config::BerthConfig;
@@ -126,7 +126,7 @@ pub(crate) struct GateResult {
 pub(super) enum GatePurpose {
     Hook {
         phase:             ReferenceTransactionPhase,
-        issuing_directory: ReferenceTransactionIssuingDirectory,
+        issuing_directory: PathBuf,
     },
     Integrate {
         reservation_id:      ReservationId,
@@ -584,14 +584,6 @@ impl GatePurpose {
             Self::Hook {
                 issuing_directory, ..
             } => {
-                let issuing_directory = match issuing_directory {
-                    ReferenceTransactionIssuingDirectory::CapturedByManagedHook(
-                        issuing_directory,
-                    ) => issuing_directory,
-                    ReferenceTransactionIssuingDirectory::MissingFromLegacyHook => {
-                        return Err(GateError::LegacyReferenceTransactionHook);
-                    },
-                };
                 let worktree_context = WorktreeContext::discover(issuing_directory)?;
                 let resolved_edit_authorization = ledger::resolve_identity(&worktree_context)?;
                 Ok(CoordinationIdentityValidationContext::for_git_gate(

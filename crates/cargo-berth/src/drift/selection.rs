@@ -393,7 +393,7 @@ mod tests {
     /// One `Active` claim in `WORKTREE_ID`, recorded under a presented identity.
     fn presented_claim() -> JournalEvent {
         let event: Value = json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "event_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",
             "actor": {
                 "repository": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c",

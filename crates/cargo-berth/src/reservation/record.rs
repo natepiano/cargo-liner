@@ -191,10 +191,6 @@ impl Reservation {
     /// A holder recorded as [`CoordinationIdentityProvenance::NotPresented`] was claimed under
     /// an identity this engine created for itself --- post-commit drift first-touches that way
     /// --- and treating it as an occupant locks a checkout out against its own `--run`.
-    /// [`CoordinationIdentityProvenance::Unknown`] predates provenance recording and declines
-    /// for the same reason, so upgrading a repository never arrives as a lockout. The two
-    /// stay distinct on the record: not knowing is not the same as knowing nobody presented
-    /// one.
     ///
     /// Only the *holder's* provenance is read here, and the two chains that reach this
     /// predicate treat the acting side differently.

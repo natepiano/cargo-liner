@@ -182,7 +182,8 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         },
         GateError::ReservationNotEntering(_)
         | GateError::NoHoldToForce(_)
-        | GateError::MissingSkippedHold => {
+        | GateError::MissingSkippedHold
+        | GateError::HookReportedNoIssuingDirectory => {
             OutputEnvelope::invalid_input(CommandVerb::Integrate, &error.to_string())
         },
         GateError::Config(error) => {
@@ -192,7 +193,6 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         | GateError::Transaction(LedgerTransactionError::LedgerUnreadable(error)) => {
             OutputEnvelope::ledger_error(CommandVerb::Integrate, &error)
         },
-        GateError::LegacyReferenceTransactionHook => OutputEnvelope::legacy_hook_outdated(),
         GateError::Reconciliation(ReconcileError::Replay(error)) => {
             OutputEnvelope::replay_failure(CommandVerb::Integrate, &error)
         },

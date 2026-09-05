@@ -23,9 +23,7 @@ Journal replay invariant failures use `status = "ledger_unreadable"`, exit code
 `4`, and `payload.kind = "replay_failure"`. The payload carries an exhaustive
 typed `reason`, a tagged `subject` identifying either a reservation or an
 incursion incident, and `effect = "hard_stop"`. No reconciling command can
-continue from one of these outcomes. An installed reference-transaction hook
-that predates issuing-checkout capture instead uses
-`status = "legacy_hook_outdated"`; its repair is rerunning `cargo-berth init`.
+continue from one of these outcomes.
 
 ## Stable front-end shell
 
@@ -554,12 +552,11 @@ or found a durable disposition from a coordination actor:
   The envelope has `status = "invalid_input"` and `exit_code = 5`.
 
 The actor comparison describes only the ids recorded in the journal. It does
-not assert that two calls were the same process or that a historical actor was
+not assert that two calls were the same process or that an earlier actor was
 physically attributed to the correct worktree. A same-actor repeat does not
 append another journal event.
 
-The historical `incursion_resolved` payload alternative remains decodable for
-wire compatibility. `every_incursion_resolved` remains the successful payload
+`every_incursion_resolved` is the successful payload
 for `resolve --every-incursion` and carries `reservation_id` plus
 `incident_ids`.
 
@@ -568,15 +565,13 @@ for `resolve --every-incursion` and carries `reservation_id` plus
 `.git/cargo-berth/journal.ndjson` contains one complete JSON object per line.
 Every record has this envelope:
 
-- `schema_version`: the integer `2` on every new record. Records carrying the
-  integer `1` are historical and still accepted; `1` is the oldest version this
-  binary decodes.
+- `schema_version`: the integer `2` on every record.
 - `event_id`: the record's UUID-v7 string.
 - `actor`: `{ "repository": <uuid-v7>, "worktree": <uuid-v7>, "run":
   <uuid-v7> }`.
-- `identity_inputs`: the process inputs captured for actor diagnosis. Historical
-  records written before this field omit it. Every new mutation writes the
-  `recorded` form described below.
+- `identity_inputs`: the process inputs captured for actor diagnosis, absent
+  when no inputs were captured. Every mutation writes the `recorded` form
+  described below.
 - `at`: an RFC 3339 UTC string with millisecond precision.
 - `projection_generation`: the integer generation published by this append.
 - `op`: the operation discriminator. Operation fields are flattened into the
@@ -664,24 +659,22 @@ These operation fields use the following tagged values:
   `overlaps`. `direction` is `requester_before_holder` or
   `holder_before_requester`. Each `overlaps` entry is `{ "reservation_id":
   <uuid-v7>, "scope_revision": [scope...], "scopes": [scope...] }`.
-- `coordination_identity_provenance` is `presented`, `not_presented`, or
-  `unknown`. It records whether a caller presented the coordination identity the
-  claim was made under, or whether the engine issued one because nothing
-  identified the caller. `claim` records written before the field omit it and
-  decode as `unknown`. The same-worktree occupancy refusal is a rule between two
-  `presented` identities, so a `not_presented` or `unknown` holder refuses
-  nobody and upgrading a repository never arrives as a lockout.
+- `coordination_identity_provenance` is `presented` or `not_presented`. It
+  records whether a caller presented the coordination identity the claim was
+  made under, or whether the engine issued one because nothing identified the
+  caller. The same-worktree occupancy refusal is a rule between two `presented`
+  identities, so a `not_presented` holder refuses nobody.
 - Widen `cause.kind` is `drift` or `explicit`; `explicit` adds `reason`.
 - `edit_blocking_status` is `blocking` or `clear`. `widen` and
   `evidence_revalidated` records carry it for audit, but replay treats it as
   informational. Effective blocking is derived from the
   replayed lifecycle and integration evidence, and a released reservation is
-  always effectively `clear` even if a historical record says `blocking`.
+  always effectively `clear` even when the record it replays says `blocking`.
 - `snapshot.stage` is `active` with `claim_snapshot`, or `outstanding` with
   `protected_tip` and `trunk_oid`.
   A resnapshot can update only an active claim snapshot or an outstanding
-  protected tip. Legacy records that resnapshot an already released
-  reservation are consumed without reopening its terminal lifecycle.
+  protected tip. A resnapshot of a released reservation makes the journal
+  unreadable.
 - A release disposition is `{ "kind": "integrated" }`, or has `kind` equal to
   `rewritten_integration`, `abandoned`, or `retired_orphan` plus a scalar
   `evidence` field containing the commit or reason. `superseded` and
@@ -737,9 +730,5 @@ These operation fields use the following tagged values:
 
 An unknown `schema_version` or `op`, an omitted field required for that record,
 an empty field whose type is documented as non-empty, or an invalid tagged
-alternative makes the journal unreadable. The only backward-compatible envelope
-omission is `identity_inputs` on records written before identity instrumentation,
-and the only backward-compatible operation-field omission is
-`coordination_identity_provenance` on `claim` records written before provenance
-was recorded;
-an older binary never skips an operation it cannot replay.
+alternative makes the journal unreadable. `identity_inputs` is the one envelope
+field a record may omit; replay never skips an operation it cannot decode.

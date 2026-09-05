@@ -8,7 +8,6 @@ use super::decision::GatePurpose;
 use super::error::GateError;
 use super::error::GateTransactionRejection;
 use super::reference_transaction::ProposedMainMove;
-use super::reference_transaction::ReferenceTransactionIssuingDirectory;
 use super::reference_transaction::ReferenceTransactionPhase;
 use crate::config::BerthConfig;
 use crate::ids::CoordinationRunId;
@@ -25,11 +24,11 @@ pub(super) fn commit_forced_permit_audits(
     worktree_context: &WorktreeContext,
     berth_config: &BerthConfig,
     update: &ProposedMainMove,
-    issuing_directory: &ReferenceTransactionIssuingDirectory,
+    issuing_directory: &Path,
 ) -> Result<(), GateError> {
     let purpose = GatePurpose::Hook {
         phase:             ReferenceTransactionPhase::Committed,
-        issuing_directory: issuing_directory.clone(),
+        issuing_directory: issuing_directory.to_path_buf(),
     };
     purpose.identity_validation()?;
     let ledger = Ledger::open(invocation_directory)?;

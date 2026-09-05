@@ -567,8 +567,6 @@ declare_output_contract_metadata! {
         Reinitialized => ("reinitialized", Clear);
         /// The journal or its projection could not be safely read or published.
         LedgerUnreadable => ("ledger_unreadable", LedgerUnreadable);
-        /// The installed reference-transaction hook predates issuing-checkout capture.
-        LegacyHookOutdated => ("legacy_hook_outdated", LedgerUnreadable);
         /// This repository has no berth configuration, so it is not participating in coordination.
         Unconfigured => ("unconfigured", LedgerUnreadable);
         /// The board was handed a terminal and the terminal failed.
@@ -945,14 +943,6 @@ pub(crate) enum IntegratedGateOutcome {
 #[schemars(rename = "resolve_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ResolvePayload {
-    /// A user disposition answered an outstanding incursion incident.
-    IncursionResolved {
-        /// The reservation whose drift produced the incident.
-        reservation_id: ReservationId,
-        /// The incident answered by the appended disposition.
-        #[schemars(with = "String")]
-        incident_id:    IncursionIncidentId,
-    },
     /// This invocation appended the requested incursion disposition.
     RecordedNow {
         /// The reservation whose drift produced the incident.
@@ -1752,22 +1742,6 @@ impl OutputEnvelope {
         output_envelope
     }
 
-    /// Build the recovery response for a reference-transaction hook that predates issuing-checkout
-    /// capture.
-    pub(crate) fn legacy_hook_outdated() -> Self {
-        Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            verb:         CommandVerb::Integrate,
-            status:       OutputStatus::LegacyHookOutdated,
-            exit_code:    BerthExit::LedgerUnreadable,
-            reservations: Vec::new(),
-            blocked_by:   Vec::new(),
-            message:      "The installed reference-transaction hook is out of date; run `cargo-berth init` to replace it, then retry integration.".to_owned(),
-            presentation: EnvelopePresentation::NotProvided,
-            payload:      OutputPayload::from_facts(OutputFacts::NoFacts),
-        }
-    }
-
     /// Build a response for a repository that is not participating in coordination.
     pub(crate) fn unconfigured(
         command_verb: CommandVerb,
@@ -2387,7 +2361,6 @@ impl OutputEnvelope {
             | OutputStatus::Initialized
             | OutputStatus::ProjectionRepaired
             | OutputStatus::Reinitialized
-            | OutputStatus::LegacyHookOutdated
             | OutputStatus::TerminalViewFailed
             | OutputStatus::Claimed
             | OutputStatus::DriftAttributionRequired
@@ -2509,14 +2482,6 @@ impl OutputEnvelope {
     /// Build a successful recovery response.
     pub(crate) fn resolved(resolve_payload: ResolvePayload) -> Self {
         let (reservation_id, status, message) = match &resolve_payload {
-            ResolvePayload::IncursionResolved {
-                reservation_id,
-                incident_id,
-            } => (
-                *reservation_id,
-                OutputStatus::IncursionResolved,
-                format!("Incursion incident {incident_id} is resolved."),
-            ),
             ResolvePayload::RecordedNow {
                 reservation_id,
                 incident_id,

@@ -135,8 +135,7 @@ fn resolve_reservation(resolve_request: ResolveRequest) -> OutputEnvelope {
         Ok(Enrollment::Enrolled(resolve_payload)) => {
             if !matches!(
                 resolve_payload,
-                ResolvePayload::IncursionResolved { .. }
-                    | ResolvePayload::RecordedNow { .. }
+                ResolvePayload::RecordedNow { .. }
                     | ResolvePayload::AlreadyRecordedBySameCoordinationActor { .. }
             ) {
                 reconciliation_report

@@ -42,7 +42,7 @@ const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const MAIN_COORDINATION_RUN_ID: &str = "01a03f63-03e7-7fb2-ae63-5b297177f59f";
 const MAIN_WORKTREE_ID: &str = "01a03f08-e197-7a83-9b7c-bc7c555d0c00";
 const OVERSIZED_IDENTITY_INPUT_BYTES: usize = 32 * 1_024;
-const PREVIOUS_PROJECTION_SCHEMA_VERSION: u64 = 2;
+const MISMATCHED_PROJECTION_SCHEMA_VERSION: u64 = 2;
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const PROJECTION_REPLAY_METADATA_FIELDS: [&str; 3] =
     ["generation", "journal_end_offset", "journal_fingerprint"];
@@ -260,7 +260,7 @@ fn projection_size_does_not_grow_with_journal_event_count() -> Result<(), Box<dy
 }
 
 #[test]
-fn previous_projection_schema_rebuilds_without_changing_the_journal()
+fn a_projection_with_a_different_schema_version_rebuilds_without_changing_the_journal()
 -> Result<(), Box<dyn std::error::Error>> {
     let repository = initialized_repository();
     let reservation_id = claim(
@@ -281,7 +281,7 @@ fn previous_projection_schema_rebuilds_without_changing_the_journal()
     let mut previous_projection: serde_json::Value =
         serde_json::from_slice(&fs::read(&projection_path)?)?;
     assert_eq!(previous_projection["schema_version"], 3);
-    previous_projection["schema_version"] = serde_json::json!(PREVIOUS_PROJECTION_SCHEMA_VERSION);
+    previous_projection["schema_version"] = serde_json::json!(MISMATCHED_PROJECTION_SCHEMA_VERSION);
     previous_projection["events"] = serde_json::Value::Array(events_before.clone());
     let mut serialized_previous_projection = serde_json::to_vec_pretty(&previous_projection)?;
     serialized_previous_projection.push(b'\n');

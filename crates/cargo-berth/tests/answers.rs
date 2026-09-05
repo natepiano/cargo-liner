@@ -1875,7 +1875,7 @@ fn append_widen(repository_root: &Path, reservation_id: &str, added_scope: &str)
         .expect("journal should contain a claim")
         + 1;
     let event = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": claim["schema_version"].clone(),
         "event_id": MANUAL_EVENT_ID,
         "actor": claim["actor"].clone(),
         "at": "2026-08-23T17:34:54.123Z",

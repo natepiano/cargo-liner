@@ -44,7 +44,7 @@ pub(crate) enum GateError {
     NoHoldToForce(ReservationId),
     MissingSkippedHold,
     MissingConstraintFact(MissingReadinessFact),
-    LegacyReferenceTransactionHook,
+    HookReportedNoIssuingDirectory,
     UnsupportedSymbolicTrunkUpdate,
 }
 
@@ -71,8 +71,8 @@ impl Display for GateError {
                 formatter.write_str("a forced integration found no hold to record")
             },
             Self::MissingConstraintFact(error) => error.fmt(formatter),
-            Self::LegacyReferenceTransactionHook => formatter.write_str(
-                "the managed reference-transaction hook did not capture its issuing directory",
+            Self::HookReportedNoIssuingDirectory => formatter.write_str(
+                "the managed reference-transaction hook did not report its issuing directory",
             ),
             Self::UnsupportedSymbolicTrunkUpdate => formatter.write_str(
                 "the configured trunk received a symbolic-ref update instead of a commit update",

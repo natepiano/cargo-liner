@@ -42,5 +42,3 @@ pub(super) const LEDGER_DIRECTORY_NAME: &str = "cargo-berth";
 pub(super) const CURRENT_PROJECTION_SCHEMA_VERSION: u32 = 3;
 /// The schema version written by new append-only journal records.
 pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;
-/// The oldest journal and projection schema this binary can decode.
-pub(super) const MINIMUM_SUPPORTED_SCHEMA_VERSION: u32 = 1;

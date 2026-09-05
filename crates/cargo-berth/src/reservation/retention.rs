@@ -1024,10 +1024,6 @@ impl RetainedReservationSet {
                 protected_tip,
                 trunk_oid,
             } => {
-                if matches!(reservation.lifecycle, ReservationLifecycle::Released { .. }) {
-                    reservation.advance_integration_proof_subject_revision()?;
-                    return reservation.advance_revision();
-                }
                 reservation
                     .lifecycle
                     .resnapshot(protected_tip.clone())
@@ -1461,19 +1457,16 @@ mod tests {
                 .edit_blocking_status(),
             EditBlockingStatus::Clear
         );
-        let legacy_resnapshot = RetainedReservationSet::replay(&[
-            claim, checkpoint, integrated, release, rewritten, resnapshot,
-        ])?;
-        assert!(matches!(
-            legacy_resnapshot
-                .reservation(reservation_id)
-                .and_then(super::Reservation::evidence_state),
-            Ok(ReservationEvidenceState::Released {
-                protected_tip,
-                integration_status: IntegrationEvidenceStatus::TrunkRewritten,
-                ..
-            }) if protected_tip.to_string() == PROTECTED_TIP
-        ));
+        assert!(
+            matches!(
+                RetainedReservationSet::replay(&[
+                    claim, checkpoint, integrated, release, rewritten, resnapshot,
+                ]),
+                Err(super::ReservationReplayError::InvalidLifecycleTransition(candidate, _))
+                    if candidate == reservation_id
+            ),
+            "a resnapshot of a released reservation must make the journal unreadable"
+        );
         Ok(())
     }
 
@@ -1517,7 +1510,7 @@ mod tests {
                 "op": "widen",
                 "reservation_id": RESERVATION_ID,
                 "added_scopes": [{"path": "added.rs", "kind": "file"}],
-                "cause": {"kind": "explicit", "reason": "legacy invalid sequence"},
+                "cause": {"kind": "explicit", "reason": "widen after release"},
                 "authorization": {"kind": "no_conflict"},
                 "edit_blocking_status": "blocking"
             }),
@@ -1978,10 +1971,8 @@ mod tests {
     ///
     /// `NotPresented` is the post-commit drift holder: claimed under an identity this engine
     /// created because nobody supplied one, and refusing on it locked a checkout out against
-    /// its own `--run`. `Unknown` declines for a different reason --- the record predates
-    /// provenance recording and nothing is known --- so upgrading a repository never arrives
-    /// as a lockout. Both decline today and both stay distinct on the record, which is why
-    /// the stored value is asserted alongside the refusal.
+    /// its own `--run`. The stored value is asserted alongside the refusal so the record and
+    /// the rule cannot drift apart.
     #[test]
     fn only_a_presented_incumbent_occupies_its_worktree_against_another_run()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1993,24 +1984,10 @@ mod tests {
         ]))?;
 
         for (recorded, stored, occupies) in [
+            ("presented", CoordinationIdentityProvenance::Presented, true),
             (
-                RecordedProvenance::Recorded("presented"),
-                CoordinationIdentityProvenance::Presented,
-                true,
-            ),
-            (
-                RecordedProvenance::Recorded("not_presented"),
+                "not_presented",
                 CoordinationIdentityProvenance::NotPresented,
-                false,
-            ),
-            (
-                RecordedProvenance::Recorded("unknown"),
-                CoordinationIdentityProvenance::Unknown,
-                false,
-            ),
-            (
-                RecordedProvenance::Absent,
-                CoordinationIdentityProvenance::Unknown,
                 false,
             ),
         ] {
@@ -2070,9 +2047,7 @@ mod tests {
     #[test]
     fn an_unpresented_holder_stays_foreign_to_every_other_worktree()
     -> Result<(), Box<dyn std::error::Error>> {
-        let reservations = RetainedReservationSet::replay(&[claim_event(
-            RecordedProvenance::Recorded("not_presented"),
-        )?])?;
+        let reservations = RetainedReservationSet::replay(&[claim_event("not_presented")?])?;
         let candidate = serde_json::from_value::<ReservationScopeSet>(json!([
             {"path": "src/lib.rs", "kind": "file"}
         ]))?;
@@ -2374,12 +2349,8 @@ mod tests {
     }
 
     /// Build the shared claim event, recording the provenance of the identity it was made under.
-    ///
-    /// Passing the wire spelling rather than the enum keeps the omitted-field case reachable:
-    /// [`RecordedProvenance::Absent`] writes no key at all, which is exactly the shape a
-    /// repository claimed before provenance was recorded replays from.
-    fn claim_event(provenance: RecordedProvenance) -> Result<JournalEvent, Error> {
-        let mut claim = json!({
+    fn claim_event(provenance: &str) -> Result<JournalEvent, Error> {
+        let claim = json!({
             "op": "claim",
             "reservation_id": RESERVATION_ID,
             "scopes": [{"path": "src", "kind": "tree"}],
@@ -2391,29 +2362,13 @@ mod tests {
             "worktree_root": "/repo",
             "worktree_administrative_locator": ".",
             "authorization": {"kind": "no_conflict"},
+            "coordination_identity_provenance": provenance,
         });
-        if let (Some(claim), RecordedProvenance::Recorded(wire)) =
-            (claim.as_object_mut(), provenance)
-        {
-            claim.insert(
-                "coordination_identity_provenance".to_owned(),
-                Value::String(wire.to_owned()),
-            );
-        }
         journal_event(1, &claim)
     }
 
-    /// Whether a fixture claim carries a provenance key at all, and which one.
-    #[derive(Clone, Copy)]
-    enum RecordedProvenance {
-        /// The claim records this wire spelling of the provenance.
-        Recorded(&'static str),
-        /// The claim predates provenance recording and writes no key.
-        Absent,
-    }
-
     fn lifecycle_events() -> Result<[JournalEvent; 6], Error> {
-        let claim = claim_event(RecordedProvenance::Recorded("presented"))?;
+        let claim = claim_event("presented")?;
         let checkpoint = journal_event(
             2,
             &json!({
@@ -2468,7 +2423,7 @@ mod tests {
 
     fn journal_event(projection_generation: u64, operation: &Value) -> Result<JournalEvent, Error> {
         let mut event = json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "event_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",
             "actor": {
                 "repository": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c",

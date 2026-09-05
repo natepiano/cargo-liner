@@ -2607,87 +2607,6 @@ fn lost_evidence_alert_covers_an_unknown_protected_tip() {
 }
 
 #[test]
-fn legacy_release_then_resnapshot_replays_to_a_lost_evidence_alert() {
-    let legacy_repository = initialized_repository();
-    let legacy_id = reservation_id(&claim(
-        legacy_repository.path(),
-        "file:legacy-resnapshot.rs",
-        FIRST_RUN,
-    ));
-    fs::write(
-        legacy_repository.path().join("legacy-resnapshot.rs"),
-        "legacy work\n",
-    )
-    .expect("legacy protected work should write");
-    git(legacy_repository.path(), &["add", "legacy-resnapshot.rs"]);
-    git(
-        legacy_repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "legacy protected work",
-        ],
-    );
-    let protected_tip = git_stdout(legacy_repository.path(), &["rev-parse", "HEAD"]);
-    for operation in [
-        serde_json::json!({
-            "op": "checkpoint",
-            "reservation_id": legacy_id,
-            "protected_tip": protected_tip,
-            "trunk_snapshot": protected_tip,
-        }),
-        serde_json::json!({
-            "op": "evidence_revalidated",
-            "reservation_id": legacy_id,
-            "status": {"status": "integrated", "trunk_oid": protected_tip},
-            "edit_blocking_status": "clear",
-        }),
-        serde_json::json!({
-            "op": "release",
-            "reservation_id": legacy_id,
-            "disposition": {"kind": "integrated"},
-        }),
-        serde_json::json!({
-            "op": "resnapshot",
-            "reservation_id": legacy_id,
-            "snapshot": {
-                "stage": "outstanding",
-                "protected_tip": protected_tip,
-                "trunk_oid": protected_tip,
-            },
-        }),
-    ] {
-        append_journal_operation(legacy_repository.path(), &operation);
-    }
-    git(
-        legacy_repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "reset",
-            "--hard",
-            "--quiet",
-            "HEAD^",
-        ],
-    );
-
-    let legacy_board = board_data(legacy_repository.path());
-    let legacy_row = board_reservation_snapshot(&legacy_board, &legacy_id);
-    assert_eq!(legacy_row["lifecycle"]["stage"], "released");
-    assert_eq!(legacy_row["edit_blocking_status"], "clear");
-    assert!(
-        legacy_board["alerts"]["entries"]
-            .as_array()
-            .is_some_and(|alerts| alerts.iter().any(|alert| {
-                alert["kind"] == "lost_integration_evidence" && alert["reservation_id"] == legacy_id
-            }))
-    );
-}
-
-#[test]
 fn deferred_comparison_preserves_a_scoped_patch_equivalence_proof() {
     let fixture =
         rewritten_reservation_fixture(TargetRewrite::Equivalent, ReservationCompletion::Released);
@@ -4095,6 +4014,7 @@ fn append_released_reservations(
                 "worktree_root": claim["worktree_root"],
                 "worktree_administrative_locator": claim["worktree_administrative_locator"],
                 "authorization": {"kind": "no_conflict"},
+                "coordination_identity_provenance": claim["coordination_identity_provenance"],
             }),
         );
         append_journal_operation(
@@ -4487,7 +4407,10 @@ fn append_journal_operation_with_actor(
         .as_object()
         .expect("operation should be an object")
         .clone();
-    event.insert("schema_version".to_owned(), serde_json::json!(1));
+    event.insert(
+        "schema_version".to_owned(),
+        previous["schema_version"].clone(),
+    );
     event.insert(
         "event_id".to_owned(),
         serde_json::json!(uuid::Uuid::now_v7().to_string()),

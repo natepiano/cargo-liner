@@ -13,7 +13,6 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::constants::CURRENT_PROJECTION_SCHEMA_VERSION;
-use super::constants::MINIMUM_SUPPORTED_SCHEMA_VERSION;
 use super::constants::PROJECTION_TEMPORARY_FILE_NAME;
 use super::journal::JournalFingerprint;
 use super::journal::JournalReplay;
@@ -182,9 +181,7 @@ fn read_once(projection_path: &Path) -> Result<ProjectionRead, ProjectionError> 
 fn validate_projection_schema_version(
     schema_version: SchemaVersion,
 ) -> Result<(), ProjectionError> {
-    let minimum_schema_version = SchemaVersion::from(MINIMUM_SUPPORTED_SCHEMA_VERSION);
-    let current_schema_version = SchemaVersion::from(CURRENT_PROJECTION_SCHEMA_VERSION);
-    if schema_version < minimum_schema_version || schema_version > current_schema_version {
+    if schema_version != SchemaVersion::from(CURRENT_PROJECTION_SCHEMA_VERSION) {
         return Err(ProjectionError::UnsupportedSchemaVersion(schema_version));
     }
     Ok(())

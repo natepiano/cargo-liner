@@ -17,7 +17,6 @@ pub(crate) use error::GateError;
 pub(crate) use reference_transaction::ManagedTrunkDeletion;
 pub(crate) use reference_transaction::REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT;
 pub(crate) use reference_transaction::ReferenceTransaction;
-pub(crate) use reference_transaction::ReferenceTransactionIssuingDirectory;
 pub(crate) use reference_transaction::ReferenceTransactionParseError;
 pub(crate) use reference_transaction::ReferenceTransactionPhase;
 pub(crate) use reference_transaction::TrunkReferencePresence;

@@ -706,27 +706,27 @@ fn managed_gate_accepts_a_linked_worktree_session_owned_by_that_worktree() {
 }
 
 #[test]
-fn legacy_managed_hook_without_issuing_directory_capture_requires_reinitialization() {
+fn a_managed_hook_that_does_not_report_its_issuing_directory_requires_reinitialization() {
     let repository = initialized_repository();
     let previous = git_stdout(repository.path(), &["rev-parse", "refs/heads/main"]);
     let proposed = commit_work(
         repository.path(),
-        "tests/legacy-hook.rs",
-        "// legacy hook gate\n",
-        "legacy hook gate",
+        "tests/uncaptured-hook.rs",
+        "// uncaptured hook gate\n",
+        "uncaptured hook gate",
     );
     let worktrees = tempdir().expect("worktree parent should exist");
-    let linked_root = add_worktree(repository.path(), worktrees.path(), "legacy-hook-gate");
-    let session_id = "legacy-reference-transaction-session";
+    let linked_root = add_worktree(repository.path(), worktrees.path(), "uncaptured-hook-gate");
+    let session_id = "uncaptured-reference-transaction-session";
     let linked_claim = run_berth_with_session(
         &linked_root,
         &[
             "claim",
-            "file:legacy-hook-holder",
+            "file:uncaptured-hook-holder",
             "--run",
             FIRST_RUN,
             "--why",
-            "hold the legacy hook issuing session",
+            "hold the uncaptured hook issuing session",
             "--json",
         ],
         session_id,
@@ -737,9 +737,9 @@ fn legacy_managed_hook_without_issuing_directory_capture_requires_reinitializati
     let issuing_directory_capture = format!(
         "{REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT}=$PWD\nexport {REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT}\n"
     );
-    let legacy_hook = managed_hook.replace(&issuing_directory_capture, "");
-    assert_ne!(legacy_hook, managed_hook);
-    fs::write(&hook_path, legacy_hook).expect("legacy hook fixture should write");
+    let uncaptured_hook = managed_hook.replace(&issuing_directory_capture, "");
+    assert_ne!(uncaptured_hook, managed_hook);
+    fs::write(&hook_path, uncaptured_hook).expect("uncaptured hook fixture should write");
     let input = format!("{previous} {proposed} refs/heads/main\n");
 
     let rejected = run_managed_hook_with_session(

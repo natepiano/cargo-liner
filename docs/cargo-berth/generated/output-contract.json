@@ -7471,11 +7471,6 @@
               "type": "string"
             },
             {
-              "const": "legacy_hook_outdated",
-              "description": "The installed reference-transaction hook predates issuing-checkout capture.",
-              "type": "string"
-            },
-            {
               "const": "unconfigured",
               "description": "This repository has no berth configuration, so it is not participating in coordination.",
               "type": "string"
@@ -8227,29 +8222,6 @@
         "resolve_payload": {
           "description": "Typed outcomes returned by `resolve`.",
           "oneOf": [
-            {
-              "description": "A user disposition answered an outstanding incursion incident.",
-              "properties": {
-                "incident_id": {
-                  "description": "The incident answered by the appended disposition.",
-                  "type": "string"
-                },
-                "reservation_id": {
-                  "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation whose drift produced the incident."
-                },
-                "status": {
-                  "const": "incursion_resolved",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
-                "reservation_id",
-                "incident_id"
-              ],
-              "type": "object"
-            },
             {
               "description": "This invocation appended the requested incursion disposition.",
               "properties": {
@@ -14219,29 +14191,6 @@
           "description": "Typed outcomes returned by `resolve`.",
           "oneOf": [
             {
-              "description": "A user disposition answered an outstanding incursion incident.",
-              "properties": {
-                "incident_id": {
-                  "description": "The incident answered by the appended disposition.",
-                  "type": "string"
-                },
-                "reservation_id": {
-                  "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation whose drift produced the incident."
-                },
-                "status": {
-                  "const": "incursion_resolved",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
-                "reservation_id",
-                "incident_id"
-              ],
-              "type": "object"
-            },
-            {
               "description": "This invocation appended the requested incursion disposition.",
               "properties": {
                 "incident_id": {
@@ -15667,29 +15616,6 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Typed outcomes returned by `resolve`.",
       "oneOf": [
-        {
-          "description": "A user disposition answered an outstanding incursion incident.",
-          "properties": {
-            "incident_id": {
-              "description": "The incident answered by the appended disposition.",
-              "type": "string"
-            },
-            "reservation_id": {
-              "$ref": "#/$defs/uuid_v7_identifier",
-              "description": "The reservation whose drift produced the incident."
-            },
-            "status": {
-              "const": "incursion_resolved",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status",
-            "reservation_id",
-            "incident_id"
-          ],
-          "type": "object"
-        },
         {
           "description": "This invocation appended the requested incursion disposition.",
           "properties": {

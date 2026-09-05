@@ -306,7 +306,7 @@ fn append_unknown_release(repository_root: &Path) -> TestResult {
         .ok_or_else(|| failure("journal generation should be numeric"))?
         + 1;
     let event = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": previous["schema_version"],
         "event_id": uuid::Uuid::now_v7().to_string(),
         "actor": previous["actor"],
         "at": previous["at"],

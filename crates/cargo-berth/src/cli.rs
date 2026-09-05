@@ -56,7 +56,6 @@ use crate::gate::IntegrationRequest;
 use crate::gate::ManagedTrunkDeletion;
 use crate::gate::REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT;
 use crate::gate::ReferenceTransaction;
-use crate::gate::ReferenceTransactionIssuingDirectory;
 use crate::gate::ReferenceTransactionParseError;
 use crate::gate::ReferenceTransactionPhase;
 use crate::gate::TrunkReferencePresence;
@@ -1538,22 +1537,15 @@ fn run_reference_transaction(
             return BerthExit::LedgerUnreadable.into();
         },
     };
-    let issuing_directory = env::var_os(REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT)
-        .map_or(
-            ReferenceTransactionIssuingDirectory::MissingFromLegacyHook,
-            |issuing_directory| {
-                ReferenceTransactionIssuingDirectory::CapturedByManagedHook(PathBuf::from(
-                    issuing_directory,
-                ))
-            },
-        );
+    let issuing_directory =
+        env::var_os(REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT).map(PathBuf::from);
     let remaining = TOTAL_GATE_DEADLINE.saturating_sub(started_at.elapsed());
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     let gate_invocation_directory = invocation_directory.clone();
     let gate_worker = std::thread::spawn(move || {
         let result = gate::evaluate_reference_transaction(
             &gate_invocation_directory,
-            &issuing_directory,
+            issuing_directory.as_deref(),
             &transaction,
             &trunk_reference,
         );
@@ -1909,7 +1901,7 @@ fn reference_transaction_error(error: &GateError) -> ExitCode {
             ));
             BerthExit::BlockedByContention.into()
         },
-        GateError::LegacyReferenceTransactionHook => {
+        GateError::HookReportedNoIssuingDirectory => {
             write_reference_transaction_diagnostic(format_args!(
                 "cargo-berth trunk gate refused this ref transaction because the managed reference-transaction hook did not report the issuing worktree. Run cargo-berth init to reinstall the hook, then retry the git command. To proceed immediately, rerun the git command with CARGO_BERTH_BYPASS=1."
             ));

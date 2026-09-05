@@ -25,7 +25,6 @@ use super::constants::GIT_DIRECTORY_ENVIRONMENT;
 use super::constants::HARNESS_SESSION_ENVIRONMENT;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
-use super::constants::MINIMUM_SUPPORTED_SCHEMA_VERSION;
 use crate::answer::ConflictAuthorization;
 use crate::config::InitializationState;
 use crate::coordination_identity::CoordinationIdentityProvenance;
@@ -140,7 +139,7 @@ impl JournalActor {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum JournalMutationIdentityInputs {
-    /// Records written before identity instrumentation carry no process inputs.
+    /// No process inputs were captured for this record.
     #[default]
     Unrecorded,
     /// A new mutation captured the invocation, session, run, and Git environment inputs.
@@ -328,8 +327,8 @@ macro_rules! declare_journal_operations {
 declare_journal_operations! {
 /// Every operation a journal can contain.
 ///
-/// New behavior must use one of these variants. Older binaries reject an
-/// unknown operation rather than silently replaying an incomplete state.
+/// New behavior must use one of these variants. An unknown operation makes the
+/// journal unreadable rather than replaying an incomplete state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub(crate) enum JournalOperation {
@@ -356,10 +355,6 @@ pub(crate) enum JournalOperation {
         /// The overlap result that authorized this acquisition.
         authorization:                   ConflictAuthorization,
         /// Whether a caller presented the coordination identity this claim was made under.
-        ///
-        /// Absent on claims written before the field existed, which decode as
-        /// [`CoordinationIdentityProvenance::Unknown`].
-        #[serde(default)]
         coordination_identity_provenance: CoordinationIdentityProvenance,
     },
     /// Enlarge an existing reservation and any conflict answer that authorized it.
@@ -1671,11 +1666,7 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
                     error: error.to_string(),
                 }
             })?;
-        let minimum_schema_version = SchemaVersion::from(MINIMUM_SUPPORTED_SCHEMA_VERSION);
-        let current_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
-        if schema_header.schema_version < minimum_schema_version
-            || schema_header.schema_version > current_schema_version
-        {
+        if schema_header.schema_version != SchemaVersion::from(CURRENT_SCHEMA_VERSION) {
             return Err(JournalError::UnsupportedSchemaVersion(
                 schema_header.schema_version,
             ));
@@ -1806,6 +1797,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::BypassedMergeIdentity;
+    use super::CURRENT_SCHEMA_VERSION;
     use super::CanonicalWorktreeRoot;
     use super::ClaimHeadCommit;
     use super::ClaimHeadSnapshot;
@@ -1989,11 +1981,13 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_supported_schema_record_remains_corrupt() {
-        let malformed_v1_record = b"{\"schema_version\":1,\"op\":\"future_operation\"}\n";
+    fn a_malformed_current_schema_record_remains_corrupt() {
+        let malformed_record = format!(
+            "{{\"schema_version\":{CURRENT_SCHEMA_VERSION},\"op\":\"future_operation\"}}\n"
+        );
 
         assert!(matches!(
-            replay_complete_records(malformed_v1_record),
+            replay_complete_records(malformed_record.as_bytes()),
             Err(JournalError::CorruptInteriorRecord { line: 1, .. })
         ));
     }
@@ -2034,7 +2028,7 @@ mod tests {
         assert_eq!(
             serialized,
             serde_json::json!({
-                "schema_version": 1,
+                "schema_version": CURRENT_SCHEMA_VERSION,
                 "event_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",
                 "actor": {
                     "repository": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c",
@@ -2210,7 +2204,7 @@ mod tests {
 
     fn fully_populated_claim_event() -> JournalEvent {
         JournalEvent {
-            schema_version:        SchemaVersion::from(1),
+            schema_version:        SchemaVersion::from(CURRENT_SCHEMA_VERSION),
             event_id:              "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b"
                 .parse::<EventId>()
                 .expect("event identifier should parse"),

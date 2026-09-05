@@ -10,6 +10,7 @@ use zbus::blocking::Proxy;
 use zbus::zvariant::OwnedValue;
 
 use super::display;
+use super::display::Output;
 use super::session_connection;
 use crate::backdrop::constants::POSITION_TOLERANCE;
 use crate::backdrop::constants::TERM_PROGRAM_ENV;
@@ -117,7 +118,7 @@ pub(super) fn candidates(windows: &[ListedWindow]) -> TerminalWindowCandidates<'
 /// The terminal window whose frame most nearly contains the reported text area.
 pub(super) fn closest_size_match<'a>(
     windows: &[&'a ListedWindow],
-    outputs: &[display::Output],
+    outputs: &[Output],
     metrics: Metrics,
 ) -> Option<&'a ListedWindow> {
     let score = |window: &ListedWindow| {
