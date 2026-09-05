@@ -45,6 +45,32 @@ Remove or repair the stale session mapping, set `CARGO_BERTH_RUN` to the named
 run, and pass `--reservation <id>` where the verb accepts it. Recovery is
 explicit; the command never retries under a different identity silently.
 
+## One coordination run per worktree
+
+A worktree admits one coordination run at a time. A caller that presents its own
+run identity — through `CARGO_BERTH_RUN`, since a live session mapping outranks
+it — in a checkout where another presented run already holds an active
+reservation is refused the ability to take or widen a reservation there, at
+`claim`, at the pre-edit hook, and at post-commit drift. The response has
+`status = "invalid_input"` and exit 5, names the incumbent reservation, and
+offers one runnable repair:
+
+```text
+cargo-berth release <incumbent-reservation-id> --json
+```
+
+Run it in the occupied worktree. It checkpoints the incumbent out of `Active`,
+which is the state the refusal names. A marker sweep does not repair this: the
+sweep preserves every marker whose run still holds an active reservation, so it
+returns the caller to the same refusal. When the incumbent is still working, the
+remedy is a separate checkout, and no command performs it.
+
+The refusal withholds acquisition and nothing else. Post-commit drift observes,
+classifies, and records first, so a refused invocation still reports what its
+commit did — including an incursion into paths another reservation holds — and
+then reports that it may take nothing here. A run that presents no identity is
+never refused, so an existing repository never meets this rule as a lockout.
+
 ## Bypass audit
 
 `CARGO_BERTH_BYPASS=1` permits a trunk update no matter what other gate input is

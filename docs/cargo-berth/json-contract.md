@@ -418,6 +418,14 @@ The rejection object is one of these tagged alternatives:
   `reservation_id`, and `recovery_actions`.
 - `kind = "stale_marker_run"` carries `coordination_run_id`,
   `issuing_worktree_id`, `issuing_root`, and `recovery_actions`.
+- `kind = "worktree_held_by_another_run"` carries
+  `incumbent_coordination_run_id`, `incumbent_reservation_id`,
+  `issuing_coordination_run_id`, `issuing_worktree_id`, `issuing_root`, and
+  `recovery_actions`. One coordination run occupies a worktree at a time, so a
+  second run presenting its own identity is refused the ability to take or widen
+  a reservation there. The refusal governs acquisition alone: on the post-commit
+  drift path the invocation has already observed and classified, so one response
+  can report an incursion beside this rejection.
 - `kind = "session_worktree_mismatch"` carries `coordination_run_id`,
   `reservation_id`, `holding_worktree_id`, `issuing_worktree_id`,
   `holding_root`, `issuing_root`, and `recovery_actions`.
@@ -435,14 +443,21 @@ alternatives are:
   `["cargo-berth", "board", "--json"]`;
 - `rerun_from_holding_worktree`, whose command is the original process argv and
   whose `cwd` is `holding_root`;
+- `release_incumbent_reservation`, whose command is
+  `["cargo-berth", "release", "<incumbent-reservation-id>", "--json"]` and whose
+  `cwd` is the occupied worktree;
 - `claim_separately_here`, whose command is
   `["cargo-berth", "identity", "clear-session", "--json"]` and whose `cwd` is
   `issuing_root`. After it succeeds, the caller starts a separate harness
   session, claims work in that checkout, and reruns the rejected command.
 
 A stale session mapping has only `clear_session_mapping`; a stale marker has
-only `reconcile_and_sweep_marker`; and a worktree mismatch has both
-`rerun_from_holding_worktree` and `claim_separately_here`, in that order. A
+only `reconcile_and_sweep_marker`; a worktree held by another run has only
+`release_incumbent_reservation`, which checkpoints the incumbent out of `Active`
+and so ends the occupancy the refusal names, and when the incumbent is still
+working the remedy is a separate checkout, which the message states and no argv
+performs; and a worktree mismatch has both `rerun_from_holding_worktree` and
+`claim_separately_here`, in that order. A
 consumer executes the supplied argv in the supplied cwd without adding flags or
 paths. A managed reference-transaction hook cannot replay Git's stdin-backed
 private command. Its mismatch response therefore supplies only
@@ -508,6 +523,17 @@ no higher-priority drift status is present, the envelope has
 `status = "object_unknown"` and `exit_code = 1`. It is never represented as an
 empty committed-path set, does not append a drift consequence to the journal,
 and does not publish a fingerprint cache entry.
+
+`payload.data.scope_acquisition` reports whether the invocation may still take
+or widen reservation scopes in the worktree it ran in. It is
+`{ "status": "permitted" }`, or `{ "status": "refused_to_second_run",
+"rejection": <coordination identity rejection> }` carrying the
+`worktree_held_by_another_run` object described above. The refusal travels beside
+the report rather than replacing it: observation and classification ran either
+way, so the response still states every drift result and every incursion the
+commit made. A refused invocation carrying no drift effect has
+`status = "invalid_input"` and `exit_code = 5`; one carrying a drift effect keeps
+that effect's status and exit code.
 
 ## Resolve incursion outcomes
 
@@ -595,7 +621,7 @@ The v1 operation union is:
 
 | `op` | Operation fields |
 | --- | --- |
-| `claim` | `reservation_id`, `scopes`, `source`, `purpose`, `trunk_at_claim`, `head_snapshot`, `phase_start_head`, `worktree_root`, `worktree_administrative_locator`, `authorization` |
+| `claim` | `reservation_id`, `scopes`, `source`, `purpose`, `trunk_at_claim`, `head_snapshot`, `phase_start_head`, `worktree_root`, `worktree_administrative_locator`, `authorization`, `coordination_identity_provenance` |
 | `widen` | `reservation_id`, `added_scopes`, `cause`, `authorization`, `edit_blocking_status` |
 | `checkpoint` | `reservation_id`, `protected_tip`, `trunk_snapshot` |
 | `resnapshot` | `reservation_id`, `snapshot` |
@@ -637,6 +663,13 @@ These operation fields use the following tagged values:
   `overlaps`. `direction` is `requester_before_holder` or
   `holder_before_requester`. Each `overlaps` entry is `{ "reservation_id":
   <uuid-v7>, "scope_revision": [scope...], "scopes": [scope...] }`.
+- `coordination_identity_provenance` is `presented`, `not_presented`, or
+  `unknown`. It records whether a caller presented the coordination identity the
+  claim was made under, or whether the engine issued one because nothing
+  identified the caller. `claim` records written before the field omit it and
+  decode as `unknown`. The same-worktree occupancy refusal is a rule between two
+  `presented` identities, so a `not_presented` or `unknown` holder refuses
+  nobody and upgrading a repository never arrives as a lockout.
 - Widen `cause.kind` is `drift` or `explicit`; `explicit` adds `reason`.
 - `edit_blocking_status` is `blocking` or `clear`. The field remains in v1
   `widen` and `evidence_revalidated` records for compatibility and audit, but
@@ -704,5 +737,8 @@ These operation fields use the following tagged values:
 An unknown `schema_version` or `op`, an omitted field required for that record,
 an empty field whose type is documented as non-empty, or an invalid tagged
 alternative makes the journal unreadable. The only backward-compatible envelope
-omission is `identity_inputs` on records written before identity instrumentation;
+omission is `identity_inputs` on records written before identity instrumentation,
+and the only backward-compatible operation-field omission is
+`coordination_identity_provenance` on `claim` records written before provenance
+was recorded;
 an older binary never skips an operation it cannot replay.
