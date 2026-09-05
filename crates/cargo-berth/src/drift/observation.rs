@@ -228,6 +228,19 @@ impl ObservedDriftChanges {
         }
     }
 
+    /// Whether `HEAD`'s own commit introduced this path.
+    ///
+    /// A path that reached the observation only through the phase range and not through
+    /// `HEAD`'s own commit was committed by an earlier commit, whose own post-commit check
+    /// already asked who it belonged to. Asking again at every later commit re-raises the
+    /// same answer, or the same ambiguity, for a path nobody touched this time.
+    pub(super) fn head_commit_introduced(&self, path: &ReservationScopePath) -> bool {
+        match self {
+            Self::Cheap(_) => false,
+            Self::Full(changes) => changes.head_commit.as_slice().contains(path),
+        }
+    }
+
     /// Whether a path reached this observation only through the reservation's phase range.
     ///
     /// A path still open in the working tree was written by the reader just now. A path

@@ -24,8 +24,8 @@ use crate::board;
 use crate::board::BoardModel;
 use crate::board::LiveIncursionMembership;
 use crate::config::InitializationState;
+use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
-use crate::coordination_identity::shell_quote;
 use crate::drift::DriftEffect;
 use crate::drift::DriftPathAttributionOutcome;
 use crate::drift::DriftReport;
@@ -106,7 +106,7 @@ fn ambiguous_reservation_recovery_command() -> String {
         |harness_session_id| {
             format!(
                 "{HARNESS_SESSION_ENVIRONMENT}={} {AMBIGUOUS_RESERVATION_RECOVERY_COMMAND}",
-                shell_quote(harness_session_id.as_str())
+                coordination_identity::shell_quote(harness_session_id.as_str())
             )
         },
     )

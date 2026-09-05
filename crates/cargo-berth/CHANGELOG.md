@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   edit before any engine invocation and leaves a pending-bypass marker whose
   `action` is `editing`; the engine honors the variable the same way when
   invoked directly, and marker recovery records the action a marker names.
+- A post-commit drift check names only the paths the commit under observation
+  introduced or the working tree holds open. The full comparison ranges from
+  each reservation's phase start, so a path one commit left unclaimed was
+  reported again, as ambiguous drift, at every later commit on the branch
+  whether or not that commit touched it.
 - The recovery command an ambiguous first touch prints resolves that ambiguity
   when run verbatim. The printed `cargo-berth check --reservation <id> <path>`
   had no session, so from a plain shell it selected the reservation for that one

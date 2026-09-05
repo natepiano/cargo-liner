@@ -367,7 +367,10 @@ pub(super) fn classify_locked(
             match prior.blocking_coverage(reservations, reservation, path, path_case) {
                 DriftBlockingCoverage::NoForeignStanding => {},
                 DriftBlockingCoverage::Unclaimed => {
-                    if !changes.carries_work(path) {
+                    if !changes.carries_work(path)
+                        || changes.committed_only(*reservation_id, path)
+                            && !changes.head_commit_introduced(path)
+                    {
                         return;
                     }
                     match widening_authorization {

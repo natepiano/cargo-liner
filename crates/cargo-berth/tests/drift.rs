@@ -2552,6 +2552,64 @@ fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
 }
 
 #[test]
+fn post_commit_drift_does_not_name_a_path_an_earlier_commit_touched() {
+    let repository = initialized_repository();
+    let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
+    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
+    fs::write(
+        repository.path().join("outside.txt"),
+        "outside both scopes\n",
+    )
+    .expect("outside path should write");
+    git(repository.path(), &["add", "outside.txt"]);
+    git(repository.path(), &["commit", "--quiet", "-m", "one"]);
+
+    let first_check = post_commit_drift(repository.path(), &[]);
+    let first_attribution = &json_output(&first_check)["payload"]["data"]["widening"];
+    assert_eq!(first_check.status.code(), Some(1));
+    assert_eq!(first_attribution["status"], "ambiguous");
+    assert_eq!(
+        first_attribution["candidates"],
+        serde_json::json!([first_id, second_id])
+    );
+    assert_eq!(
+        first_attribution["paths"],
+        serde_json::json!(["outside.txt"])
+    );
+
+    fs::write(repository.path().join("later.txt"), "a later commit\n")
+        .expect("later path should write");
+    git(repository.path(), &["add", "later.txt"]);
+    git(repository.path(), &["commit", "--quiet", "-m", "two"]);
+
+    let second_check = post_commit_drift(repository.path(), &[]);
+    let second_attribution = &json_output(&second_check)["payload"]["data"]["widening"];
+    assert_eq!(second_check.status.code(), Some(1));
+    assert_eq!(second_attribution["status"], "ambiguous");
+    assert_eq!(
+        second_attribution["paths"],
+        serde_json::json!(["later.txt"]),
+        "a path only an earlier commit touched must not be named again: {}",
+        String::from_utf8_lossy(&second_check.stdout)
+    );
+
+    fs::write(repository.path().join("first.txt"), "own scope\n").expect("first path should write");
+    git(repository.path(), &["add", "first.txt"]);
+    git(repository.path(), &["commit", "--quiet", "-m", "three"]);
+
+    let third_check = post_commit_drift(repository.path(), &[]);
+    assert!(
+        third_check.status.success(),
+        "a commit inside a held scope must not re-raise earlier commits' paths: {}",
+        String::from_utf8_lossy(&third_check.stdout)
+    );
+    assert_eq!(
+        json_output(&third_check)["payload"]["data"]["widening"]["status"],
+        "not_needed"
+    );
+}
+
+#[test]
 fn post_commit_attribution_candidates_belong_to_the_identified_run() {
     let repository = initialized_repository();
     let (_other_run_directory, other_run_root) = foreign_worktree(&repository, "other-run");
