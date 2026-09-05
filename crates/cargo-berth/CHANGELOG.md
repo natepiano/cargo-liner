@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unconfigured`: every verb stopped there, and the edit hook allowed every write
   in silence. A file the linked worktree does have still wins, and a worktree with
   no file anywhere names the main worktree's path as the one `init` should create.
+- The batched-attribution benchmark no longer sits in the test suite. It timed
+  two hand-copied git command lines against each other with a 25ms margin, so
+  it went red whenever the machine was busy and never ran cargo-berth at all.
+  The property it meant to pin, one `git log` for any number of paths and
+  commits, is already asserted by the post-commit cardinality matrix through
+  the real engine.
 
 ### Notes
 

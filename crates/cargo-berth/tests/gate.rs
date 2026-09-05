@@ -2501,34 +2501,6 @@ fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
 }
 
 #[test]
-fn batched_attribution_benchmark_covers_short_and_long_ranges() {
-    let matrix = [
-        attribution_benchmark_row(25),
-        attribution_benchmark_row(500),
-    ];
-    for row in matrix {
-        eprintln!(
-            "range={} one-path reference={:?} batched={:?}; 33-path reference={:?} batched={:?}",
-            row.range_commits,
-            row.one_path.reference,
-            row.one_path.batched,
-            row.thirty_three_paths.reference,
-            row.thirty_three_paths.batched,
-        );
-        assert!(
-            row.one_path.batched <= row.one_path.reference + Duration::from_millis(25),
-            "one-path batching regressed at {} commits: {row:?}",
-            row.range_commits
-        );
-        assert!(
-            row.thirty_three_paths.batched < row.thirty_three_paths.reference,
-            "33-path batching did not improve at {} commits: {row:?}",
-            row.range_commits
-        );
-    }
-}
-
-#[test]
 fn batched_git_path_distinguishes_spawn_failure_from_completed_failure() {
     let unavailable_repository = initialized_repository();
     let unavailable_reservation = reservation_id(&claim(
@@ -2767,25 +2739,6 @@ impl RawGitBehavior {
             Self::FailOriginClassification => "fail_origin_classification",
         }
     }
-}
-
-#[derive(Debug)]
-struct AttributionBenchmarkCell {
-    reference: Duration,
-    batched:   Duration,
-}
-
-#[derive(Debug)]
-struct AttributionBenchmarkRow {
-    range_commits:      usize,
-    one_path:           AttributionBenchmarkCell,
-    thirty_three_paths: AttributionBenchmarkCell,
-}
-
-#[derive(Clone, Copy)]
-enum AttributionImplementation {
-    PerPathReference,
-    Batched,
 }
 
 #[derive(Clone, Copy)]
@@ -3665,138 +3618,6 @@ fn post_commit_path_commit_cardinality_trace(
         String::from_utf8_lossy(&output.stderr)
     );
     invocations
-}
-
-fn attribution_benchmark_row(range_commits: usize) -> AttributionBenchmarkRow {
-    const PATH_COUNT: usize = 33;
-
-    let repository = initialized_repository();
-    fs::create_dir_all(repository.path().join("benchmark"))
-        .expect("benchmark directory should exist");
-    let phase_start = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    let paths = (0..PATH_COUNT)
-        .map(|index| format!("benchmark/path-{index}.txt"))
-        .collect::<Vec<_>>();
-    for commit_index in 0..range_commits {
-        let path = &paths[commit_index % paths.len()];
-        fs::write(
-            repository.path().join(path),
-            format!("benchmark version {commit_index}\n"),
-        )
-        .expect("benchmark path should write");
-        git(repository.path(), &["add", path]);
-        git(
-            repository.path(),
-            &[
-                "-c",
-                "core.hooksPath=/dev/null",
-                "commit",
-                "--quiet",
-                "-m",
-                &format!("benchmark commit {commit_index}"),
-            ],
-        );
-    }
-    AttributionBenchmarkRow {
-        range_commits,
-        one_path: benchmark_attribution_cell(repository.path(), &phase_start, &paths[..1]),
-        thirty_three_paths: benchmark_attribution_cell(repository.path(), &phase_start, &paths),
-    }
-}
-
-fn benchmark_attribution_cell(
-    repository_root: &Path,
-    phase_start: &str,
-    paths: &[String],
-) -> AttributionBenchmarkCell {
-    const SAMPLE_COUNT: usize = 3;
-
-    run_attribution_implementation(
-        repository_root,
-        phase_start,
-        paths,
-        AttributionImplementation::PerPathReference,
-    );
-    run_attribution_implementation(
-        repository_root,
-        phase_start,
-        paths,
-        AttributionImplementation::Batched,
-    );
-    let reference = (0..SAMPLE_COUNT)
-        .map(|_| {
-            timed_attribution_implementation(
-                repository_root,
-                phase_start,
-                paths,
-                AttributionImplementation::PerPathReference,
-            )
-        })
-        .min()
-        .expect("benchmark should have a reference sample");
-    let batched = (0..SAMPLE_COUNT)
-        .map(|_| {
-            timed_attribution_implementation(
-                repository_root,
-                phase_start,
-                paths,
-                AttributionImplementation::Batched,
-            )
-        })
-        .min()
-        .expect("benchmark should have a batched sample");
-    AttributionBenchmarkCell { reference, batched }
-}
-
-fn timed_attribution_implementation(
-    repository_root: &Path,
-    phase_start: &str,
-    paths: &[String],
-    attribution_implementation: AttributionImplementation,
-) -> Duration {
-    let started_at = Instant::now();
-    run_attribution_implementation(
-        repository_root,
-        phase_start,
-        paths,
-        attribution_implementation,
-    );
-    started_at.elapsed()
-}
-
-fn run_attribution_implementation(
-    repository_root: &Path,
-    phase_start: &str,
-    paths: &[String],
-    attribution_implementation: AttributionImplementation,
-) {
-    let range = format!("{phase_start}..HEAD");
-    match attribution_implementation {
-        AttributionImplementation::PerPathReference => {
-            for path in paths {
-                let literal_path = format!(":(top,literal){path}");
-                git(
-                    repository_root,
-                    &["log", "--format=%H%x1f%s", &range, "--", &literal_path],
-                );
-            }
-        },
-        AttributionImplementation::Batched => {
-            let mut arguments = vec![
-                "log".to_owned(),
-                "-z".to_owned(),
-                "--name-only".to_owned(),
-                "--no-renames".to_owned(),
-                "--diff-merges=dense-combined".to_owned(),
-                "--format=%x00cargo-berth-incursion-commit%x00%H%x00%s".to_owned(),
-                range,
-                "--".to_owned(),
-            ];
-            arguments.extend(paths.iter().map(|path| format!(":(top,literal){path}")));
-            let argument_refs = arguments.iter().map(String::as_str).collect::<Vec<_>>();
-            git(repository_root, &argument_refs);
-        },
-    }
 }
 
 fn run_berth_with_raw_git_trace(
