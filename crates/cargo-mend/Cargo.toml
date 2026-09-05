@@ -9,7 +9,7 @@ license.workspace    = true
 name                 = "cargo-mend"
 readme               = "README.md"
 repository.workspace = true
-version              = "0.21.2"
+version              = "0.22.0-dev"
 
 [[test]]
 name = "diagnostics"

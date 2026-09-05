@@ -454,7 +454,7 @@ version = "0.1.0-dev"
 
 [[package]]
 name = "cargo-mend"
-version = "0.21.2"
+version = "0.22.0-dev"
 dependencies = [
  "anyhow",
  "cargo_metadata",
