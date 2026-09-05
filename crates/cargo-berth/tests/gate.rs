@@ -1597,6 +1597,54 @@ fn managed_hook_journals_an_environment_bypass_when_the_journal_is_writable() {
 }
 
 #[test]
+fn pending_markers_import_the_action_they_name_and_default_to_integration() {
+    let repository = initialized_repository();
+    let common_git_directory = repository.path().join(".git");
+    fs::write(
+        common_git_directory.join("cargo-berth-pending-bypass-edit-test.json"),
+        concat!(
+            r#"{"action":"editing","cause":{"kind":"environment_override","#,
+            r#""bypassed_merge":"edit-hook-1"},"occurrence_time":{"status":"unavailable"}}"#,
+            "\n"
+        ),
+    )
+    .expect("editing marker should write");
+    fs::write(
+        common_git_directory.join("cargo-berth-pending-bypass-git-test.json"),
+        concat!(
+            r#"{"cause":{"kind":"environment_override","bypassed_merge":"git-process-1"},"#,
+            r#""occurrence_time":{"status":"unavailable"}}"#,
+            "\n"
+        ),
+    )
+    .expect("integration marker should write");
+    assert_eq!(pending_bypass_count(repository.path()), 2);
+
+    let board = run_berth(repository.path(), &["board", "--json"]);
+    assert!(
+        board.status.success(),
+        "board should import the pending markers: {}",
+        String::from_utf8_lossy(&board.stderr)
+    );
+
+    let mut actions: Vec<String> = journal_text(repository.path())
+        .lines()
+        .filter_map(|record| serde_json::from_str::<serde_json::Value>(record).ok())
+        .filter(|record| record["op"] == "bypass")
+        .map(|record| {
+            assert_eq!(record["cause"]["kind"], "environment_override");
+            record["action"]
+                .as_str()
+                .expect("bypass record should name its action")
+                .to_owned()
+        })
+        .collect();
+    actions.sort();
+    assert_eq!(actions, ["editing", "integration"]);
+    assert_eq!(pending_bypass_count(repository.path()), 0);
+}
+
+#[test]
 fn bypassed_non_trunk_transactions_leave_no_audit_fact() {
     let repository = initialized_repository();
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);

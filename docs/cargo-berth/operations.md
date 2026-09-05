@@ -82,6 +82,13 @@ a pending marker for a later session to recover. The fact names
 specific hold that it skipped, because nothing else had been read yet. If
 neither destination is writable, the tool warns and still permits the update.
 
+The same variable is the escape hatch for the edit gate. The pre-edit wrapper
+honors `CARGO_BERTH_BYPASS=1` before it reaches the engine, so an engine that
+hangs or crashes, or is missing, never stands between a user and a write. The
+wrapper allows the edit, leaves a pending marker whose `action` is `editing`,
+and the next journal write imports it. The engine honors the variable the same
+way when it is invoked directly.
+
 ## Recovery
 
 `init` has three branches:

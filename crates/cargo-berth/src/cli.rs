@@ -67,6 +67,7 @@ use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::WorkPlanPhase;
+use crate::ledger::BypassedAction;
 use crate::ledger::ClaimSource;
 use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::FullRefName;
@@ -1787,7 +1788,8 @@ fn retain_environment_bypass_audit(audit_basis: EnvironmentBypassAuditBasis) -> 
             return BerthExit::LedgerUnreadable.into();
         },
     };
-    let retention = gate::permit::record_environment_bypass(&invocation_directory);
+    let retention =
+        gate::permit::record_environment_bypass(&invocation_directory, BypassedAction::Integration);
     match (audit_basis, retention) {
         (
             EnvironmentBypassAuditBasis::ConfirmedTrunkReference,

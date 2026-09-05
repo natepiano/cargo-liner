@@ -75,11 +75,17 @@ pub(crate) enum EnvironmentBypassRetentionOutcome {
 /// The shared marker schema used when an environment bypass cannot reach the journal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct PendingEnvironmentBypass {
-    /// Why ordinary integration validation was bypassed.
+    /// The operation the bypass allowed; markers written before edits could be bypassed
+    /// name no action and were always left by a trunk update.
+    #[serde(default = "integration_bypass")]
+    action:          BypassedAction,
+    /// Why ordinary validation was bypassed.
     cause:           BypassCause,
     /// Whether the marker writer retained the override's occurrence time.
     occurrence_time: PendingEnvironmentBypassOccurrenceTime,
 }
+
+const fn integration_bypass() -> BypassedAction { BypassedAction::Integration }
 
 /// The only occurrence-time states a pending marker is permitted to record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -181,6 +187,7 @@ pub(crate) fn environment_bypass_requested() -> bool {
 /// destination, and nothing is written.
 pub(crate) fn record_environment_bypass(
     invocation_directory: &Path,
+    action: BypassedAction,
 ) -> EnvironmentBypassRetentionOutcome {
     let Ok(worktree_context) = WorktreeContext::discover(invocation_directory) else {
         return EnvironmentBypassRetentionOutcome::Unrecorded;
@@ -204,10 +211,10 @@ pub(crate) fn record_environment_bypass(
                     journal_mutation_actor.coordination_run_id,
                     |_| {
                         TransactionValidation::<()>::Append(Box::new(JournalOperation::Bypass {
-                            action:          BypassedAction::Integration,
-                            cause:           cause.clone(),
+                            action,
+                            cause: cause.clone(),
                             occurrence_time: BypassOccurrenceTime::EventRecordedAt,
-                            recording:       BypassRecording::Direct,
+                            recording: BypassRecording::Direct,
                         }))
                     },
                 )
@@ -224,7 +231,7 @@ pub(crate) fn record_environment_bypass(
     if journalled {
         return EnvironmentBypassRetentionOutcome::Journalled;
     }
-    if write_pending_marker(worktree_context.common_git_directory(), cause).is_ok() {
+    if write_pending_marker(worktree_context.common_git_directory(), action, cause).is_ok() {
         EnvironmentBypassRetentionOutcome::PendingMarker
     } else {
         EnvironmentBypassRetentionOutcome::Unrecorded
@@ -240,6 +247,7 @@ fn bypassed_merge_identity() -> BypassedMergeIdentity {
 
 fn write_pending_marker(
     common_git_directory: &Path,
+    action: BypassedAction,
     cause: BypassCause,
 ) -> Result<(), std::io::Error> {
     let marker_path = common_git_directory.join(format!(
@@ -247,6 +255,7 @@ fn write_pending_marker(
         Uuid::now_v7()
     ));
     let marker = PendingEnvironmentBypass {
+        action,
         cause,
         occurrence_time: PendingEnvironmentBypassOccurrenceTime::Known {
             at: RecordedAt::now(),
@@ -324,7 +333,7 @@ pub(crate) fn prepare_pending_bypass_recovery(
         } else {
             let occurrence_time = BypassOccurrenceTime::from(marker.occurrence_time);
             let operation = JournalOperation::Bypass {
-                action:          BypassedAction::Integration,
+                action:          marker.action,
                 cause:           marker.cause,
                 occurrence_time: occurrence_time.clone(),
                 recording:       BypassRecording::PendingMarker {
@@ -492,6 +501,7 @@ mod tests {
     use super::write_pending_marker;
     use crate::gate::install;
     use crate::ledger::BypassCause;
+    use crate::ledger::BypassedAction;
     use crate::ledger::BypassedMergeIdentity;
 
     #[test]
@@ -499,6 +509,7 @@ mod tests {
         let rust_directory = tempdir().expect("Rust marker directory should exist");
         write_pending_marker(
             rust_directory.path(),
+            BypassedAction::Integration,
             environment_bypass_cause("rust-writer"),
         )
         .expect("Rust marker should write");

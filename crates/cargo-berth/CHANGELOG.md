@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unconfigured`: every verb stopped there, and the edit hook allowed every write
   in silence. A file the linked worktree does have still wins, and a worktree with
   no file anywhere names the main worktree's path as the one `init` should create.
+- The pre-edit hook honors `CARGO_BERTH_BYPASS=1`. The wrapper only checked that
+  the engine was on `PATH` and then replaced itself with it, so a hung or crashed
+  engine blocked every write with no escape hatch. The wrapper now allows the
+  edit before any engine invocation and leaves a pending-bypass marker whose
+  `action` is `editing`; the engine honors the variable the same way when
+  invoked directly, and marker recovery records the action a marker names.
 - An incursion observation pairs each entered path with the holders that block
   it. The observation and the retained incident carried paths and holders as two
   independent sets, so a caller could report every path under the union of all

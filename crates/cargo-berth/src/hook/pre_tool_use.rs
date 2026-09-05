@@ -21,8 +21,11 @@ use super::process_binding::HarnessSessionIdentityAvailability;
 use super::process_binding::HookWorkingDirectorySelection;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::exit::BerthExit;
+use crate::gate::permit;
+use crate::gate::permit::EnvironmentBypassRetentionOutcome;
 use crate::ledger;
 use crate::ledger::AncestorCanonicalizationError;
+use crate::ledger::BypassedAction;
 use crate::ledger::LedgerError;
 use crate::ledger::WorktreeContext;
 use crate::output::LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE;
@@ -40,6 +43,8 @@ const AUTHORIZED_SYSTEM_MESSAGE: &str =
     "cargo-berth authorized this edit and stated the detail below itself.";
 const FAIL_OPEN_SYSTEM_MESSAGE: &str =
     "cargo-berth could not establish edit safety and stated the detail below itself.";
+const BYPASSED_SYSTEM_MESSAGE: &str =
+    "cargo-berth was bypassed for this edit and stated the detail below itself.";
 
 /// Serde-only representation of one raw harness payload.
 #[derive(Deserialize)]
@@ -182,7 +187,15 @@ impl PayloadEditTarget {
 }
 
 /// Read and execute one raw `PreToolUse` edit-authorization payload.
+///
+/// `CARGO_BERTH_BYPASS=1` is honored before the payload is read or any ledger state is
+/// touched, so an engine that cannot finish a check is never the thing standing between a
+/// user and a write. The bypass is still audited, through the journal when it accepts
+/// the event and through a pending marker otherwise.
 pub(crate) fn execute() -> ExitCode {
+    if permit::environment_bypass_requested() {
+        return render_environment_bypass();
+    }
     let request = match read_request() {
         Ok(request) => request,
         Err(error) => return refuse(&error.to_string()),
@@ -463,6 +476,33 @@ fn check_recovery_command_line(
 fn refuse(reason: &str) -> ExitCode {
     refuse_hook_request(reason);
     ExitCode::from(BLOCKING_EXIT_CODE)
+}
+
+fn render_environment_bypass() -> ExitCode {
+    let retention = std::env::current_dir().map_or(
+        EnvironmentBypassRetentionOutcome::Unrecorded,
+        |invocation_directory| {
+            permit::record_environment_bypass(&invocation_directory, BypassedAction::Editing)
+        },
+    );
+    let audit = match retention {
+        EnvironmentBypassRetentionOutcome::Journalled => "the bypass was recorded in the journal",
+        EnvironmentBypassRetentionOutcome::PendingMarker => {
+            "a pending-bypass marker records it for the next journal write"
+        },
+        EnvironmentBypassRetentionOutcome::Unenrolled => {
+            "the repository is not enrolled, so nothing was recorded"
+        },
+        EnvironmentBypassRetentionOutcome::Unrecorded => {
+            "the bypass could not be recorded; rerun cargo-berth init after restoring cargo-berth"
+        },
+    };
+    write_allow_notice(
+        BYPASSED_SYSTEM_MESSAGE,
+        &format!(
+            "CARGO_BERTH_BYPASS=1 is set, so this write was allowed without a check; {audit}."
+        ),
+    )
 }
 
 /// The stdout object returned when a `PreToolUse` request remains allowed with a notice.

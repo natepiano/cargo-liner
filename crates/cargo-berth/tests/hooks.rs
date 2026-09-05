@@ -1519,6 +1519,49 @@ fn run_pre_tool_use(repository_root: &Path, payload: &Value) -> TestResult<Outpu
     spawn_pre_tool_use(repository_root, payload, &AmbientHarnessSession::Absent)
 }
 
+/// `CARGO_BERTH_BYPASS=1` allows the edit before any ledger access and is still audited.
+#[test]
+fn pre_tool_use_honors_the_environment_bypass_and_records_it() -> TestResult<()> {
+    let repository = initialized_repository()?;
+    let payload = edit_payload(repository.path(), "src/lib.rs", Some("bypass-session"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(["hook", "pre-tool-use"])
+        .current_dir(repository.path())
+        .env("CARGO_BERTH_BYPASS", "1")
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut piped_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| failure("hook stdin should be piped"))?;
+    piped_stdin.write_all(&serde_json::to_vec(&payload)?)?;
+    drop(piped_stdin);
+    let output = child.wait_with_output()?;
+
+    assert!(output.status.success(), "{output:?}");
+    let notice: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(notice["hookSpecificOutput"]["permissionDecision"], "allow");
+    assert!(
+        notice["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("CARGO_BERTH_BYPASS=1")),
+        "{notice}"
+    );
+    let journal = fs::read_to_string(repository.path().join(".git/cargo-berth/journal.ndjson"))?;
+    let bypass = journal
+        .lines()
+        .filter_map(|record| serde_json::from_str::<Value>(record).ok())
+        .find(|record| record["op"] == "bypass")
+        .ok_or_else(|| failure("the bypass should be journalled"))?;
+    assert_eq!(bypass["action"], "editing");
+    assert_eq!(bypass["cause"]["kind"], "environment_override");
+    Ok(())
+}
+
 fn spawn_pre_tool_use(
     repository_root: &Path,
     payload: &Value,

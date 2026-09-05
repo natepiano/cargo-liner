@@ -354,7 +354,7 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 | Variable | Effect |
 | --- | --- |
 | `CARGO_BERTH_RUN` | Supplies the coordination run id, consulted after the session mapping. |
-| `CARGO_BERTH_BYPASS=1` | Skips gate evaluation; read before any ledger access, and honored by both hooks. |
+| `CARGO_BERTH_BYPASS=1` | Skips gate evaluation; read before any ledger access, and honored by both git hooks and by the pre-edit wrapper before it reaches the engine. |
 | `CARGO_BERTH_POST_COMMIT=1` | Marks a `drift` run as hook-invoked, selecting warning rendering. |
 | `CARGO_BERTH_SESSION_ID` | Supplies the harness session id, consulted only when a hook payload named none. |
 | `CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY` | Exported by the managed `reference-transaction` hook before it changes directory; the gate reads the issuing checkout from it and has no fallback. |
@@ -403,7 +403,7 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - Nothing is auto-removed. Reconciliation raises an alert; a user action retires a reservation. A live holder proven clean is no exception; the block message names the verbs that clear it.
 - A reconciliation failure never relaxes a block.
 - Editing fails open and integration fails closed when the ledger is unreadable.
-- `CARGO_BERTH_BYPASS` is read before any ledger access so a broken ledger can never trap a user.
+- `CARGO_BERTH_BYPASS` is read before any ledger access so a broken ledger can never trap a user. The pre-edit wrapper `berth_pre_edit.sh` reads it before its `exec`, because after the `exec` no shell is left to time out a hung engine; it writes a pending marker with `"action":"editing"` in pure shell, and `prepare_pending_bypass_recovery` imports the marker's action, defaulting to `integration` for markers written before the field existed.
 - A bypass is recorded, never forgiven — `Bypass` records go in the journal and surface on the board.
 - Forced permits are single-use and their consumption is journalled.
 - Every `GateDecision` carries the generation it was decided against.
