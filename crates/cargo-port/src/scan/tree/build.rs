@@ -113,7 +113,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
         result.push(item.clone());
     }
 
-    result.sort_by(|a, b| a.path().cmp(b.path()));
+    result.sort_by(RootItem::list_order);
 
     extract_vendored_new(&mut result);
     merge_worktrees_new(&mut result);
@@ -222,6 +222,27 @@ mod tests {
             worktree_status: status_for(is_linked_worktree, primary_abs),
             ..Package::default()
         }))
+    }
+
+    #[test]
+    fn roots_sort_by_directory_name_across_include_dirs() {
+        let claude = make_package(Some("claude"), "/home/u/.claude", false, None);
+        let nateroids = make_package(Some("nateroids"), "/home/u/rust/nateroids", false, None);
+        let nixos = make_package(Some("nixos"), "/etc/nixos", false, None);
+        let knife = make_package(
+            Some("obsidian_knife"),
+            "/home/u/rust/Obsidian_knife",
+            false,
+            None,
+        );
+
+        let items = build_tree(&[knife, nateroids, nixos, claude], &[]);
+
+        let order: Vec<String> = items
+            .iter()
+            .map(|item| item.root_directory_name().into_string())
+            .collect();
+        assert_eq!(order, [".claude", "nateroids", "nixos", "Obsidian_knife"]);
     }
 
     #[test]

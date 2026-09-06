@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::path::Path;
 
 use super::cargo::Package;
@@ -75,6 +76,24 @@ impl RootItem {
     }
 
     pub(crate) fn git_directory(&self) -> Option<AbsolutePath> { git::resolve_git_dir(self.path()) }
+
+    /// Project-list order for top-level roots: alphabetical by the label the
+    /// list shows (the directory leaf, case-insensitive), then by absolute
+    /// path so two roots with the same leaf keep a stable order. Ordering by
+    /// path alone grouped roots by include directory, which put every
+    /// `~/.claude` root ahead of every `~/rust` root.
+    pub(crate) fn list_order(&self, other: &Self) -> Ordering {
+        let leaf = |item: &Self| {
+            item.root_directory_name()
+                .into_string()
+                .chars()
+                .flat_map(char::to_lowercase)
+                .collect::<Vec<char>>()
+        };
+        leaf(self)
+            .cmp(&leaf(other))
+            .then_with(|| self.path().cmp(other.path()))
+    }
 
     /// Directory leaf name for top-level root labels and disambiguation.
     pub(crate) fn root_directory_name(&self) -> RootDirectoryName {

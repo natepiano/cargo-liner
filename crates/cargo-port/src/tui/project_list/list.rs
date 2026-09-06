@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::Index;
@@ -886,12 +887,12 @@ impl ProjectList {
             }
         }
         // No parent workspace found — add as top-level peer, keeping the
-        // `IndexMap` in ascending path order (matches the pre-IndexMap
-        // binary-search behavior).
+        // `IndexMap` in `RootItem::list_order` (the same order the scan's
+        // tree build produces).
         let insert_index = self
             .roots
-            .keys()
-            .position(|existing| existing.as_path() > item_path.as_path())
+            .values()
+            .position(|existing| existing.root_item.list_order(&item) == Ordering::Greater)
             .unwrap_or(self.roots.len());
         let key = item.path().clone();
         self.roots
