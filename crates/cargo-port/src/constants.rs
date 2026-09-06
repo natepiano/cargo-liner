@@ -53,6 +53,10 @@ pub(crate) const CARGO_MAIN_TARGET: &str = "src/main.rs";
 /// conventional `src/` layout.
 pub(crate) const CARGO_TARGET_TABLES: [&str; 5] = ["bench", "bin", "example", "lib", "test"];
 pub(crate) const CARGO_TOML: &str = "Cargo.toml";
+/// direnv's per-directory environment file; a project carrying one has its
+/// lint commands run through `direnv exec` so they see the same environment a
+/// terminal opened there would.
+pub(crate) const ENVRC: &str = ".envrc";
 pub(crate) const DOT_CARGO_DIR: &str = ".cargo";
 pub(crate) const GIT_DIR: &str = ".git";
 pub(crate) const GIT_REMOTE_SUFFIX: &str = ".git";

@@ -12,6 +12,7 @@ use super::BackgroundMsg;
 use super::BufRead;
 use super::BufReader;
 use super::CARGO_TOML;
+use super::ENVRC;
 use super::CachedLintStatus;
 use super::ChildSlot;
 use super::Command;
@@ -519,15 +520,33 @@ fn expand_lint_placeholders(
 /// outer quote pair: `cmd` strips the outer pair and preserves inner quotes
 /// (e.g. around a manifest path with spaces) that its default arg quoting
 /// would otherwise pass through to the program literally.
+///
+/// On Unix a project carrying an `.envrc` runs through `direnv exec`, so the
+/// lint sees the same environment a terminal opened in that project would: a
+/// flake devShell's pkg-config and library paths, for one. cargo-port itself
+/// inherits only the environment of the shell that launched it, which is the
+/// wrong one for any project whose native dependencies come from its own
+/// devShell rather than the system. direnv is required in that case; a
+/// missing binary surfaces as the spawn error in the lint log.
 #[cfg(windows)]
-fn lint_shell(command_line: &str) -> Command {
+fn lint_shell(command_line: &str, _project_root: &Path) -> Command {
     let mut shell = Command::new("cmd");
     shell.raw_arg(format!("/C \"{command_line}\""));
     shell
 }
 
 #[cfg(not(windows))]
-fn lint_shell(command_line: &str) -> Command {
+fn lint_shell(command_line: &str, project_root: &Path) -> Command {
+    if project_root.join(ENVRC).is_file() {
+        let mut direnv = Command::new("direnv");
+        direnv
+            .arg("exec")
+            .arg(project_root)
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg(command_line);
+        return direnv;
+    }
     let mut shell = Command::new("/bin/sh");
     shell.arg("-c").arg(command_line);
     shell
@@ -594,7 +613,7 @@ fn run_command(
         context.manifest_path,
         output_dir,
     );
-    let mut shell = lint_shell(&expanded);
+    let mut shell = lint_shell(&expanded, project_root);
     shell
         .current_dir(project_root)
         .env("PROJECT_DIR", project_root)

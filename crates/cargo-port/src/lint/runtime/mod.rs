@@ -50,6 +50,7 @@ use crate::config::DiscoveryLint;
 use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
 use crate::constants::CARGO_TOML;
+use crate::constants::ENVRC;
 use crate::constants::LINTS_HISTORY_JSONL;
 use crate::constants::LINTS_LATEST_JSON;
 use crate::project;
