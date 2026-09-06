@@ -106,18 +106,22 @@ jobs:
       - name: Install mold linker
         uses: rui314/setup-mold@v1
 
-      - name: Install and cache Linux dependencies
-        uses: natepiano/cache-apt-pkgs-action@1a93bf1cfca3126459c9aea5af90d717f9ea216f
-        with:
-          packages: libudev-dev libasound2-dev pkg-config clang libwayland-dev libxkbcommon-dev
-          version: 1.0
+      - name: Install Nix
+        if: runner.os == 'Linux'
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Cache the Nix store
+        if: runner.os == 'Linux'
+        uses: DeterminateSystems/magic-nix-cache-action@v9
 
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ hashFiles('flake.lock') }}
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: nix develop -c cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   build:
     name: Build Check
@@ -136,18 +140,22 @@ jobs:
       - name: Install mold linker
         uses: rui314/setup-mold@v1
 
-      - name: Install and cache Linux dependencies
-        uses: natepiano/cache-apt-pkgs-action@1a93bf1cfca3126459c9aea5af90d717f9ea216f
-        with:
-          packages: libudev-dev libasound2-dev pkg-config clang libwayland-dev libxkbcommon-dev
-          version: 1.0
+      - name: Install Nix
+        if: runner.os == 'Linux'
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Cache the Nix store
+        if: runner.os == 'Linux'
+        uses: DeterminateSystems/magic-nix-cache-action@v9
 
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ hashFiles('flake.lock') }}
 
       - name: Build release examples
-        run: cargo build --release --all-features --workspace --exclude cargo-mend --examples
+        run: nix develop -c cargo build --release --all-features --workspace --exclude cargo-mend --examples
 
   test:
     name: Test Suite
@@ -169,15 +177,19 @@ jobs:
       - name: Install mold linker
         uses: rui314/setup-mold@v1
 
-      - name: Install and cache Linux dependencies
-        uses: natepiano/cache-apt-pkgs-action@1a93bf1cfca3126459c9aea5af90d717f9ea216f
-        with:
-          packages: libudev-dev libasound2-dev pkg-config clang libwayland-dev libxkbcommon-dev
-          version: 1.0
+      - name: Install Nix
+        if: runner.os == 'Linux'
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Cache the Nix store
+        if: runner.os == 'Linux'
+        uses: DeterminateSystems/magic-nix-cache-action@v9
 
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ hashFiles('flake.lock') }}
 
       - name: Free disk space
         run: |
@@ -188,7 +200,7 @@ jobs:
 
       # Build only test targets here. Example compilation belongs in Build Check.
       - name: Run test targets
-        run: cargo nextest run --all-features --workspace --exclude cargo-mend --tests
+        run: nix develop -c cargo nextest run --all-features --workspace --exclude cargo-mend --tests
 
         env:
           WGPU_BACKEND: "gl"
@@ -263,15 +275,19 @@ jobs:
       - name: Install mold linker
         uses: rui314/setup-mold@v1
 
-      - name: Install and cache Linux dependencies
-        uses: natepiano/cache-apt-pkgs-action@1a93bf1cfca3126459c9aea5af90d717f9ea216f
-        with:
-          packages: libudev-dev libasound2-dev pkg-config clang libwayland-dev libxkbcommon-dev
-          version: 1.0
+      - name: Install Nix
+        if: runner.os == 'Linux'
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Cache the Nix store
+        if: runner.os == 'Linux'
+        uses: DeterminateSystems/magic-nix-cache-action@v9
 
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ hashFiles('flake.lock') }}
 
       # Build the mend in this repo rather than pulling the last crates.io
       # release, so the workspace is linted by the tool it develops. The
@@ -282,7 +298,7 @@ jobs:
           RUSTC_BOOTSTRAP: 1
 
       - name: Run cargo mend
-        run: cargo mend --workspace --all-targets --fail-on-warn
+        run: nix develop -c cargo mend --workspace --all-targets --fail-on-warn
         env:
           CARGO_TERM_COLOR: never
 
@@ -311,17 +327,21 @@ jobs:
       - name: Install mold linker
         uses: rui314/setup-mold@v1
 
-      - name: Install and cache Linux dependencies
-        uses: natepiano/cache-apt-pkgs-action@1a93bf1cfca3126459c9aea5af90d717f9ea216f
-        with:
-          packages: libudev-dev libasound2-dev pkg-config clang libwayland-dev libxkbcommon-dev
-          version: 1.0
+      - name: Install Nix
+        if: runner.os == 'Linux'
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Cache the Nix store
+        if: runner.os == 'Linux'
+        uses: DeterminateSystems/magic-nix-cache-action@v9
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ hashFiles('flake.lock') }}
 
       - name: Check without the nightly escape hatch
-        run: cargo check --workspace --exclude cargo-mend --all-targets
+        run: nix develop -c cargo check --workspace --exclude cargo-mend --all-targets
 
   # cargo-port ships to Windows users via `cargo install`, and the Unix-only
   # jobs above cannot see a `#[cfg]` mistake in a Windows code path. Compile
