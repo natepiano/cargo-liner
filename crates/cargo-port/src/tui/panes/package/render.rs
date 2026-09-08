@@ -1131,6 +1131,7 @@ fn lint_display_style(display: &LintDisplay) -> Style {
             LintStatus::Running(_, phase) => {
                 Style::default().fg(state::lint_running_spinner_color(*phase))
             },
+            LintStatus::EnvUnavailable(_) => Style::default().fg(warning_color()),
             LintStatus::Stale => Style::default().fg(accent_color()),
             LintStatus::NoLog => Style::default(),
         },

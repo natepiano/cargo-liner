@@ -280,7 +280,9 @@ You can select and hit enter on a run to open the stdout from each command in yo
 1. Run dates are grouped to make this pane less busy.
 2. Runtime duration.
 3. Cached output file size. Total Lint run storage space is configurable. Oldest runs are automatically evicted when they exceed the configured limit.
-4. Pass/fail result.
+4. Pass/fail result, or `no env` — see below.
+
+A project with an `.envrc` runs its lints through `direnv exec`, so the lint sees the same environment a terminal opened in that project would. Before the lints, one no-op command checks that direnv can actually build that environment. If it can't — the `.envrc` is blocked, a flake fails to evaluate, an input is missing, direnv isn't installed — the run stops there and reports `no env` (🟡 in the project tree), the configured commands are recorded as skipped, and direnv's own error is in the run's `direnv` log. This is deliberately not a failure: nothing examined your code, so nothing can be wrong with it.
 
 ### CI runs
 

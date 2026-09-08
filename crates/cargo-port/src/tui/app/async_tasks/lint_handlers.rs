@@ -72,7 +72,11 @@ impl App {
         let owner_abs = owner_path;
         let status_is_terminal = matches!(
             status,
-            LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
+            LintStatus::Passed(_)
+                | LintStatus::Failed(_)
+                | LintStatus::EnvUnavailable(_)
+                | LintStatus::Stale
+                | LintStatus::NoLog
         );
         let eligible = lint::project_is_eligible(
             &self.config.current().lint,

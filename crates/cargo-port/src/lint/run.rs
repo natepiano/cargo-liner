@@ -27,6 +27,11 @@ pub enum LintRunStatus {
     Running,
     Passed,
     Failed,
+    /// The project's environment could not be prepared, so none of its lint
+    /// commands ran. Distinct from `Failed`: nothing was found wrong with the
+    /// code, because nothing examined it. Only `direnv exec` projects can
+    /// reach this — see `crate::lint::runtime::command::env_probe`.
+    EnvUnavailable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,6 +40,9 @@ pub enum LintCommandStatus {
     Pending,
     Passed,
     Failed,
+    /// The run ended before this command started, so it has no result and no
+    /// log. Written when the environment probe fails.
+    Skipped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

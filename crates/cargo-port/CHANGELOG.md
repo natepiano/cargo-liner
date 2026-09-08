@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A project whose `direnv` environment cannot be loaded no longer reports every lint command as a failure. Lints in a project with an `.envrc` run through `direnv exec`, and a direnv that refuses — a blocked `.envrc`, a flake that fails to evaluate, a missing input, direnv not installed — exits nonzero before the shell starts, which is the same exit Clippy uses for findings, so the whole project turned red with logs that never mentioned Cargo. Such a run is now marked `no env` in the Lint runs pane and shown yellow (🟡) rather than red in the project tree, the configured commands are recorded as skipped instead of run, and direnv's own error is in the run's `direnv` log.
 - The settings overlay now moves with `j`/`k` when `navigation_keys` enables vim keys. It was handed the untranslated key, so only the arrows ever reached it, while the keymap and global-shortcuts overlays already received the translated one.
 - While a framework overlay is open, `h`/`l` always mean left/right. They were being folded into up/down whenever the pane underneath the overlay was one of the panes that fold horizontal keys, so `h`/`l` scrolled settings instead of adjusting the selected value.
 - A settings key that arrives in the same input batch as the key that opened the overlay is no longer dropped. The overlay's row count was only known after its first frame, and the event loop drains every queued key before it draws.

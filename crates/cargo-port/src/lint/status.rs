@@ -36,6 +36,7 @@ pub enum LintStatusKind {
     Running(LintRunPhase),
     Passed,
     Failed,
+    EnvUnavailable,
     Stale,
     NoLog,
 }
@@ -46,6 +47,10 @@ pub enum LintStatus {
     Running(DateTime<FixedOffset>, LintRunPhase),
     Passed(DateTime<FixedOffset>),
     Failed(DateTime<FixedOffset>),
+    /// The last run could not load the project's environment, so no lint
+    /// command ran. Held apart from `Failed` so a `direnv` problem never
+    /// reads as a finding about the code.
+    EnvUnavailable(DateTime<FixedOffset>),
     Stale,
     #[default]
     NoLog,
@@ -58,18 +63,24 @@ impl LintStatus {
             Self::Running(_, phase) => LintStatusKind::Running(*phase),
             Self::Passed(_) => LintStatusKind::Passed,
             Self::Failed(_) => LintStatusKind::Failed,
+            Self::EnvUnavailable(_) => LintStatusKind::EnvUnavailable,
             Self::Stale => LintStatusKind::Stale,
             Self::NoLog => LintStatusKind::NoLog,
         }
     }
 
+    /// `EnvUnavailable` outranks `Running` so a group rollup surfaces a
+    /// project whose environment is broken instead of hiding it behind a
+    /// sibling's spinner, and sits below `Failed` because a finding about the
+    /// code is the more specific result of the two.
     const fn severity_rank(&self) -> u8 {
         match self {
             Self::NoLog => 0,
             Self::Passed(_) => 1,
             Self::Stale => 2,
             Self::Running(..) => 3,
-            Self::Failed(_) => 4,
+            Self::EnvUnavailable(_) => 4,
+            Self::Failed(_) => 5,
         }
     }
 
@@ -83,6 +94,9 @@ impl LintStatus {
                     Self::Running(lhs_at.max(rhs_at), lhs_phase.max(rhs_phase))
                 },
                 (Self::Failed(lhs), Self::Failed(rhs)) => Self::Failed(lhs.max(rhs)),
+                (Self::EnvUnavailable(lhs), Self::EnvUnavailable(rhs)) => {
+                    Self::EnvUnavailable(lhs.max(rhs))
+                },
                 (Self::Stale, Self::Stale) => Self::Stale,
                 (Self::NoLog, Self::NoLog) => Self::NoLog,
                 (lhs, _) => lhs,
@@ -110,6 +124,7 @@ impl LintStatus {
 pub enum CachedLintStatus {
     Passed(DateTime<FixedOffset>),
     Failed(DateTime<FixedOffset>),
+    EnvUnavailable(DateTime<FixedOffset>),
     #[default]
     NoLog,
 }
@@ -119,6 +134,7 @@ impl CachedLintStatus {
         match status {
             LintStatus::Passed(timestamp) => Some(Self::Passed(*timestamp)),
             LintStatus::Failed(timestamp) => Some(Self::Failed(*timestamp)),
+            LintStatus::EnvUnavailable(timestamp) => Some(Self::EnvUnavailable(*timestamp)),
             LintStatus::NoLog => Some(Self::NoLog),
             LintStatus::Running(..) | LintStatus::Stale => None,
         }
@@ -128,6 +144,7 @@ impl CachedLintStatus {
         match self {
             Self::Passed(timestamp) => LintStatus::Passed(timestamp),
             Self::Failed(timestamp) => LintStatus::Failed(timestamp),
+            Self::EnvUnavailable(timestamp) => LintStatus::EnvUnavailable(timestamp),
             Self::NoLog => LintStatus::NoLog,
         }
     }
@@ -136,9 +153,9 @@ impl CachedLintStatus {
     ///
     /// - `NoLog` (never linted) is the discovery case, gated by `on_discovery` so turning discovery
     ///   linting off does not lint every project on the first launch.
-    /// - A terminal result (`Passed`/`Failed`) re-lints only when a source file changed since that
-    ///   run began — `max_source_mtime` newer than `last_started_at`. This staleness check is
-    ///   independent of `on_discovery`: an edited project always re-lints.
+    /// - A terminal result (`Passed`/`Failed`/`EnvUnavailable`) re-lints only when a source file
+    ///   changed since that run began — `max_source_mtime` newer than `last_started_at`. This
+    ///   staleness check is independent of `on_discovery`: an edited project always re-lints.
     pub fn should_lint_on_startup(
         &self,
         last_started_at: Option<DateTime<FixedOffset>>,
@@ -147,9 +164,11 @@ impl CachedLintStatus {
     ) -> bool {
         match self {
             Self::NoLog => on_discovery.is_immediate(),
-            Self::Passed(_) | Self::Failed(_) => match (last_started_at, max_source_mtime) {
-                (Some(started), Some(mtime)) => source_is_newer(mtime, started),
-                _ => false,
+            Self::Passed(_) | Self::Failed(_) | Self::EnvUnavailable(_) => {
+                match (last_started_at, max_source_mtime) {
+                    (Some(started), Some(mtime)) => source_is_newer(mtime, started),
+                    _ => false,
+                }
             },
         }
     }
@@ -194,6 +213,7 @@ pub(super) fn parse_run(run: &LintRun) -> LintStatus {
     match run.status {
         LintRunStatus::Passed => LintStatus::Passed(ts),
         LintRunStatus::Failed => LintStatus::Failed(ts),
+        LintRunStatus::EnvUnavailable => LintStatus::EnvUnavailable(ts),
         LintRunStatus::Running => {
             let elapsed = Utc::now().signed_duration_since(ts);
             if elapsed > chrono::Duration::from_std(STALE_TIMEOUT).unwrap_or_default() {
@@ -260,6 +280,7 @@ mod tests {
         let cases = [
             ("passed", run(LintRunStatus::Passed)),
             ("failed", run(LintRunStatus::Failed)),
+            ("env_unavailable", run(LintRunStatus::EnvUnavailable)),
             ("running", running),
             ("stale", stale),
             ("garbage", garbage),
@@ -271,6 +292,9 @@ mod tests {
             match name {
                 "passed" => assert!(matches!(status, LintStatus::Passed(_)), "{name}"),
                 "failed" => assert!(matches!(status, LintStatus::Failed(_)), "{name}"),
+                "env_unavailable" => {
+                    assert!(matches!(status, LintStatus::EnvUnavailable(_)), "{name}");
+                },
                 "running" => assert!(
                     matches!(status, LintStatus::Running(_, LintRunPhase::Executing)),
                     "{name}"
@@ -292,6 +316,24 @@ mod tests {
             LintStatus::Failed(ts),
         ]);
         assert!(matches!(status, LintStatus::Failed(_)));
+    }
+
+    /// A group rollup must show a broken environment over a sibling still
+    /// running, and a real finding over a broken environment.
+    #[test]
+    fn aggregate_places_env_unavailable_between_running_and_failed() {
+        let ts = DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("timestamp");
+        assert!(matches!(
+            LintStatus::aggregate([
+                LintStatus::Running(ts, LintRunPhase::Executing),
+                LintStatus::EnvUnavailable(ts),
+            ]),
+            LintStatus::EnvUnavailable(_)
+        ));
+        assert!(matches!(
+            LintStatus::aggregate([LintStatus::EnvUnavailable(ts), LintStatus::Failed(ts)]),
+            LintStatus::Failed(_)
+        ));
     }
 
     #[test]

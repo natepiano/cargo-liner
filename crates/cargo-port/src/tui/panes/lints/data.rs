@@ -114,7 +114,11 @@ const fn phase_of(status: Option<&LintStatus>) -> LintRunPhase {
     match status {
         Some(LintStatus::Running(_, phase)) => *phase,
         Some(
-            LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog,
+            LintStatus::Passed(_)
+            | LintStatus::Failed(_)
+            | LintStatus::EnvUnavailable(_)
+            | LintStatus::Stale
+            | LintStatus::NoLog,
         )
         | None => LintRunPhase::Executing,
     }
@@ -125,7 +129,9 @@ const fn phase_of(status: Option<&LintStatus>) -> LintRunPhase {
 const fn run_phase(run: &LintRun, live_phase: LintRunPhase) -> LintRunPhase {
     match run.status {
         LintRunStatus::Running => live_phase,
-        LintRunStatus::Passed | LintRunStatus::Failed => LintRunPhase::Executing,
+        LintRunStatus::Passed | LintRunStatus::Failed | LintRunStatus::EnvUnavailable => {
+            LintRunPhase::Executing
+        },
     }
 }
 

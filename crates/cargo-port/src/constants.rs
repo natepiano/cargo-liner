@@ -16,6 +16,9 @@ pub(crate) const SYNC_DOWN: &str = "↓";
 pub(crate) const LINT_PASSED: &str = "🟢";
 pub(crate) const LINT_FAILED: &str = "🔴";
 pub(crate) const LINT_STALE: &str = "⚫";
+/// The project's environment could not be loaded, so no lint ran. Deliberately
+/// not the red of a finding — nothing examined the code.
+pub(crate) const LINT_ENV_UNAVAILABLE: &str = "🟡";
 pub(crate) const LINT_NO_LOG: &str = " ";
 
 // ── Git UI constants ─────────────────────────────────────────────────

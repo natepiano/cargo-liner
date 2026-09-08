@@ -191,6 +191,7 @@ impl Lint {
             },
             LintStatusKind::Passed
             | LintStatusKind::Failed
+            | LintStatusKind::EnvUnavailable
             | LintStatusKind::Stale
             | LintStatusKind::NoLog => self.clear_running_path(path.as_path()),
         }
@@ -414,6 +415,9 @@ pub(in crate::tui) fn lint_cell_for(
     let style = match status {
         LintStatus::Running(_, phase) => {
             ratatui::style::Style::default().fg(running_spinner_color(*phase))
+        },
+        LintStatus::EnvUnavailable(_) => {
+            ratatui::style::Style::default().fg(tui_pane::warning_color())
         },
         LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog => {
             ratatui::style::Style::default()

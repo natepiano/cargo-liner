@@ -336,6 +336,7 @@ pub(super) fn run_commands_for_project(
     run.duration_ms = Some(u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX));
     run.status = match result {
         CommandsResult::AllPassed => LintRunStatus::Passed,
+        CommandsResult::EnvUnavailable => LintRunStatus::EnvUnavailable,
         CommandsResult::SomeFailed
         | CommandsResult::ProjectRemoved
         | CommandsResult::Interrupted => LintRunStatus::Failed,
@@ -400,6 +401,9 @@ fn write_terminal_run(
 enum CommandsResult {
     AllPassed,
     SomeFailed,
+    /// The environment probe failed, so no lint command ran. Reported apart
+    /// from `SomeFailed` because nothing examined the code.
+    EnvUnavailable,
     ProjectRemoved,
     /// Lint was paused mid-run; the child was killed. The caller leaves no
     /// terminal record so the project reverts to its prior status.
@@ -424,6 +428,19 @@ fn execute_commands(
     pause_state: &PauseState,
 ) -> io::Result<CommandsResult> {
     let project_root = context.project_root;
+    // The probe spawns a child, so it answers to the same two guards every
+    // command in the loop below does: a project deleted or paused between the
+    // run being scheduled and starting runs nothing at all.
+    if !project_still_runnable(project_root) {
+        return Ok(CommandsResult::ProjectRemoved);
+    }
+    if pause_state.is_project_paused(&AbsolutePath::from(project_root)) {
+        return Ok(CommandsResult::Interrupted);
+    }
+    if let Some(execution) = env_probe(context)? {
+        record_env_unavailable(run, project_root, &execution);
+        return Ok(CommandsResult::EnvUnavailable);
+    }
     let mut failed = false;
     for (index, command) in commands.iter().enumerate() {
         if !project_still_runnable(project_root) {
@@ -526,8 +543,9 @@ fn expand_lint_placeholders(
 /// flake devShell's pkg-config and library paths, for one. cargo-port itself
 /// inherits only the environment of the shell that launched it, which is the
 /// wrong one for any project whose native dependencies come from its own
-/// devShell rather than the system. direnv is required in that case; a
-/// missing binary surfaces as the spawn error in the lint log.
+/// devShell rather than the system. direnv is required in that case; when it
+/// cannot supply an environment the run stops at [`env_probe`] instead of
+/// reporting every command as a lint failure.
 #[cfg(windows)]
 fn lint_shell(command_line: &str, _project_root: &Path) -> Command {
     let mut shell = Command::new("cmd");
@@ -537,7 +555,7 @@ fn lint_shell(command_line: &str, _project_root: &Path) -> Command {
 
 #[cfg(not(windows))]
 fn lint_shell(command_line: &str, project_root: &Path) -> Command {
-    if project_root.join(ENVRC).is_file() {
+    if uses_direnv(project_root) {
         let mut direnv = Command::new("direnv");
         direnv
             .arg("exec")
@@ -550,6 +568,80 @@ fn lint_shell(command_line: &str, project_root: &Path) -> Command {
     let mut shell = Command::new("/bin/sh");
     shell.arg("-c").arg(command_line);
     shell
+}
+
+/// True when this project's lint commands will be wrapped in `direnv exec` —
+/// the one case where the environment can fail before any lint program runs.
+/// `cmd.exe` has no direnv wrapper, so on Windows an `.envrc` changes nothing.
+#[cfg(windows)]
+const fn uses_direnv(_project_root: &Path) -> bool { false }
+
+#[cfg(not(windows))]
+fn uses_direnv(project_root: &Path) -> bool { project_root.join(ENVRC).is_file() }
+
+/// Name of the environment probe in the run record, and the shell no-op it
+/// runs. `:` exits 0 without doing anything, so the probe measures only
+/// whether `direnv exec` can build the environment and hand it to `/bin/sh`.
+const ENV_PROBE_NAME: &str = "direnv";
+const ENV_PROBE_COMMAND: &str = ":";
+
+/// The command line as it is actually spawned, read back off the `Command`
+/// that [`lint_shell`] builds so the run record cannot drift from what ran.
+fn spawned_display(command_line: &str, project_root: &Path) -> String {
+    let shell = lint_shell(command_line, project_root);
+    std::iter::once(shell.get_program())
+        .chain(shell.get_args())
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Run the environment probe for a `direnv` project, returning `None` when the
+/// environment loaded and the lints can proceed.
+///
+/// Without this, a direnv that refuses — a blocked `.envrc`, a flake that fails
+/// to evaluate, a missing flake input, direnv not installed — makes every lint
+/// command exit nonzero, which is the same exit clippy uses to report findings.
+/// The whole project turns red and the log says nothing about cargo, because
+/// cargo never ran. One no-op command separates the two: if the environment
+/// cannot be built, nothing after it would have measured the code anyway.
+///
+/// The probe goes through [`run_command`], so it shares the process group, the
+/// pause handling and the log file every other command gets; its log holds
+/// direnv's own error text under the name `direnv-latest.log`.
+fn env_probe(context: &CommandContext<'_>) -> io::Result<Option<CommandExecution>> {
+    if !uses_direnv(context.project_root) {
+        return Ok(None);
+    }
+    let probe = LintCommandConfig {
+        name:    ENV_PROBE_NAME.to_string(),
+        command: ENV_PROBE_COMMAND.to_string(),
+    };
+    let execution = run_command(context, &probe, 0)?;
+    Ok((!execution.outcome.succeeded()).then_some(execution))
+}
+
+/// Rewrite the run record for a project whose environment could not be loaded:
+/// the probe first, carrying direnv's output in its log, then every configured
+/// command marked `Skipped` — none of them ran, and none of them has a log from
+/// this run to open.
+fn record_env_unavailable(run: &mut LintRun, project_root: &Path, execution: &CommandExecution) {
+    for command in &mut run.commands {
+        command.status = LintCommandStatus::Skipped;
+        command.duration_ms = None;
+        command.exit_code = None;
+    }
+    run.commands.insert(
+        0,
+        LintCommand {
+            name:        ENV_PROBE_NAME.to_string(),
+            command:     spawned_display(ENV_PROBE_COMMAND, project_root),
+            status:      LintCommandStatus::Failed,
+            duration_ms: Some(execution.duration_ms),
+            exit_code:   execution.exit_code,
+            log_file:    format!("{ENV_PROBE_NAME}-latest.log"),
+        },
+    );
 }
 
 /// Make the lint command its own process-group leader (group id == child pid)
@@ -910,6 +1002,99 @@ mod tests {
             published_phases(&background_rx).contains(&LintRunPhase::Blocked),
             "the wait notice on the command's output should reach the UI"
         );
+    }
+
+    /// An `.envrc` that direnv cannot load, whichever way direnv is set up
+    /// here: a fresh temp directory is never in direnv's allowlist, and the
+    /// `exit 1` fails the load even if it somehow were. If direnv is not
+    /// installed at all the probe fails at spawn, which is the same condition.
+    #[cfg(not(windows))]
+    fn write_unloadable_envrc(project_dir: &Path) {
+        std::fs::write(project_dir.join(ENVRC), "exit 1\n").expect("write .envrc");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unloadable_env_reports_env_unavailable_and_runs_no_lint() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        write_unloadable_envrc(project_dir.path());
+
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
+        let commands = vec![LintCommandConfig {
+            name:    "clippy".to_string(),
+            command: "touch ran.txt".to_string(),
+        }];
+
+        let (tx, _rx) = channel::unbounded();
+        let pause_state = PauseState::default();
+        run_commands_for_project(
+            project_dir.path(),
+            "~/rust/demo",
+            &RunCommandsConfig {
+                cache_root:       cache_root.as_path(),
+                commands:         &commands,
+                cache_size_bytes: None,
+                pause_state:      &pause_state,
+            },
+            &Arc::new(Mutex::new(HashMap::new())),
+            &tx,
+            &Arc::new(Mutex::new(None)),
+            LintRunOrigin::Normal,
+        )
+        .expect("run commands");
+
+        assert!(
+            !project_dir.path().join("ran.txt").exists(),
+            "no lint command may run once the environment probe fails"
+        );
+
+        let run = read_write::read_latest_file(&paths::latest_path_under(
+            &cache_root,
+            project_dir.path(),
+        ))
+        .expect("read latest");
+        assert_eq!(run.status, LintRunStatus::EnvUnavailable);
+        assert!(
+            matches!(status::parse_run(&run), LintStatus::EnvUnavailable(_)),
+            "the project status must not read as a lint failure"
+        );
+
+        let probe = run.commands.first().expect("probe entry");
+        assert_eq!(probe.name, ENV_PROBE_NAME);
+        assert_eq!(probe.status, LintCommandStatus::Failed);
+        assert!(
+            probe.command.starts_with("direnv exec "),
+            "the record should name the line that ran: {}",
+            probe.command
+        );
+        assert_eq!(run.commands[1].name, "clippy");
+        assert_eq!(run.commands[1].status, LintCommandStatus::Skipped);
+        assert_eq!(run.commands[1].duration_ms, None);
+        assert_eq!(run.commands[1].exit_code, None);
+
+        let probe_log =
+            paths::output_dir_under(&cache_root, project_dir.path()).join(&probe.log_file);
+        assert!(
+            probe_log.exists(),
+            "direnv's own error must be readable from the run"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_project_without_an_envrc_skips_the_probe() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        assert!(!uses_direnv(project_dir.path()));
+        write_unloadable_envrc(project_dir.path());
+        assert!(uses_direnv(project_dir.path()));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use tui_pane::ACTIVITY_SPINNER;
 use tui_pane::Icon;
 
+use crate::constants::LINT_ENV_UNAVAILABLE;
 use crate::constants::LINT_FAILED;
 use crate::constants::LINT_NO_LOG;
 use crate::constants::LINT_PASSED;
@@ -18,6 +19,7 @@ pub(in crate::tui) const fn icon_for(kind: LintStatusKind) -> Icon {
         LintStatusKind::Running(_) => Icon::Animated(ACTIVITY_SPINNER),
         LintStatusKind::Passed => Icon::Static(LINT_PASSED),
         LintStatusKind::Failed => Icon::Static(LINT_FAILED),
+        LintStatusKind::EnvUnavailable => Icon::Static(LINT_ENV_UNAVAILABLE),
         LintStatusKind::Stale => Icon::Static(LINT_STALE),
         LintStatusKind::NoLog => Icon::Static(LINT_NO_LOG),
     }
