@@ -106,36 +106,31 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
     // reading sources — would trigger a lint, which then reads those files
     // again: a self-perpetuating loop. macOS (`FSEvents`) and Windows never
     // emit access events, so this is a no-op there.
-    let config = Config::default().with_event_kinds(EventKindMask::CORE);
-    let Ok(mut watcher) = RecommendedWatcher::new(handler, config) else {
+    //
+    // Symlink following is off to match discovery: `scan::discovery` and
+    // `scan::disk_usage` walk with `WalkDir`'s default `follow_links(false)`,
+    // so a tree reachable only through a symlink is never a project cargo-port
+    // shows, and watching it is pure cost. `notify` defaults the other way, and
+    // on Linux that cost is paid twice over — its inotify backend hands the
+    // flag to `WalkDir`, so one symlink into a large store (a NixOS
+    // `/etc/nixos/result` system closure, say) turns a few hundred directories
+    // into tens of thousands, and a single `Permission denied` anywhere in the
+    // walk aborts the whole root, so the tree is charged for and then dropped
+    // unwatched. `FSEvents` and the Windows backend never read the flag.
+    let config = Config::default()
+        .with_event_kinds(EventKindMask::CORE)
+        .with_follow_symlinks(false);
+    let Ok(watcher) = RecommendedWatcher::new(handler, config) else {
         return watch_tx;
     };
-    let started = Instant::now();
-    let (registered_roots, failures) = roots::register_watch_roots(&mut watcher, watch_roots);
-    for failure in &failures {
-        tracing::error!(
-            dir = %failure.dir.display(),
-            reason = %failure.reason,
-            "watcher_root_registration_failed"
-        );
-    }
-    tracing::trace!(
-        target: PERF_LOG_TARGET,
-        requested = watch_roots.len(),
-        registered = registered_roots.dirs().len(),
-        failed = failures.len(),
-        elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
-        "watcher_root_registration_complete"
-    );
-    roots::register_cargo_home_watch(&mut watcher, &registered_roots);
     let metadata_dispatch = MetadataDispatchContext {
         handle: client.handle.clone(),
         sender: background_tx.clone(),
         metadata_store,
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
     };
-    let watcher_loop_context = WatcherLoopContext {
-        watch_roots: registered_roots,
+    let startup = WatcherLoopStartup {
+        watch_roots: watch_roots.to_vec(),
         background_tx,
         ci_run_count,
         non_rust,
@@ -145,9 +140,69 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
         metadata_dispatch,
     };
 
-    spawn_watcher_thread(watcher_loop_context, watch_rx, notify_rx, watcher);
+    spawn_watcher_thread(startup, watch_rx, notify_rx, watcher);
 
     watch_tx
+}
+
+/// The watcher-loop inputs before the roots are registered — the raw
+/// `watch_roots` request rather than the [`RegisteredRoots`] witness the loop
+/// consumes. [`spawn_watcher_thread`] turns one into a [`WatcherLoopContext`]
+/// on the watcher thread, which is what keeps registration off the caller.
+struct WatcherLoopStartup {
+    watch_roots:       Vec<AbsolutePath>,
+    background_tx:     Sender<BackgroundMsg>,
+    ci_run_count:      u32,
+    non_rust:          NonRustInclusion,
+    exclude_dirs:      ExcludeDirs,
+    client:            HttpClient,
+    lint_runtime:      Option<RuntimeHandle>,
+    metadata_dispatch: MetadataDispatchContext,
+}
+
+impl WatcherLoopStartup {
+    /// Subscribe `watcher` to the watch roots and the cargo home, then hand
+    /// back the loop context carrying the registration witness.
+    ///
+    /// Runs on the watcher thread, never the caller's. `notify`'s inotify
+    /// backend has no recursive watch, so `RecursiveMode::Recursive` walks the
+    /// whole tree and adds one inotify watch per directory — roughly a second
+    /// for a large `include_dirs` set, and syscall-bound, so a faster machine
+    /// does not shorten it. macOS `FSEvents` subscribes to a root in a single
+    /// call, which is why leaving this on the calling thread delayed the first
+    /// frame on Linux alone. Watch registration finishes shortly after startup;
+    /// the `WatcherMsg`s the app sends meanwhile queue on the unbounded channel
+    /// and are drained once the loop begins.
+    fn register(self, watcher: &mut impl Watcher) -> WatcherLoopContext {
+        let started = Instant::now();
+        let (registered_roots, failures) = roots::register_watch_roots(watcher, &self.watch_roots);
+        for failure in &failures {
+            tracing::error!(
+                dir = %failure.dir.display(),
+                reason = %failure.reason,
+                "watcher_root_registration_failed"
+            );
+        }
+        tracing::trace!(
+            target: PERF_LOG_TARGET,
+            requested = self.watch_roots.len(),
+            registered = registered_roots.dirs().len(),
+            failed = failures.len(),
+            elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
+            "watcher_root_registration_complete"
+        );
+        roots::register_cargo_home_watch(watcher, &registered_roots);
+        WatcherLoopContext {
+            watch_roots:       registered_roots,
+            background_tx:     self.background_tx,
+            ci_run_count:      self.ci_run_count,
+            non_rust:          self.non_rust,
+            exclude_dirs:      self.exclude_dirs,
+            client:            self.client,
+            lint_runtime:      self.lint_runtime,
+            metadata_dispatch: self.metadata_dispatch,
+        }
+    }
 }
 
 struct WatcherLoopContext {
@@ -162,12 +217,13 @@ struct WatcherLoopContext {
 }
 
 fn spawn_watcher_thread<W: Watcher + Send + 'static>(
-    ctx: WatcherLoopContext,
+    startup: WatcherLoopStartup,
     watch_rx: Receiver<WatcherMsg>,
     notify_rx: StdReceiver<notify::Result<Event>>,
-    watcher_guard: W,
+    mut watcher_guard: W,
 ) {
     thread::spawn(move || {
+        let ctx = startup.register(&mut watcher_guard);
         watcher_loop(&ctx, &watch_rx, &notify_rx, watcher_guard);
     });
 }
@@ -1233,8 +1289,8 @@ mod tests {
 
         let client_for_dispatch = client.clone();
         spawn_watcher_thread(
-            WatcherLoopContext {
-                watch_roots: RegisteredRoots::default(),
+            WatcherLoopStartup {
+                watch_roots: Vec::new(),
                 background_tx,
                 ci_run_count: 0,
                 non_rust: NonRustInclusion::Exclude,
