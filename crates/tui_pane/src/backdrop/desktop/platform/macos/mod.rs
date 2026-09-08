@@ -42,7 +42,6 @@ use sysinfo::System;
 use crate::backdrop::constants::EMULATOR_NAME_FLOOR;
 use crate::backdrop::constants::POSITION_TOLERANCE;
 use crate::backdrop::constants::TERM_PROGRAM_ENV;
-use crate::backdrop::desktop;
 use crate::backdrop::desktop::CaptureAttemptResult;
 use crate::backdrop::desktop::CaptureAttemptSequence;
 use crate::backdrop::desktop::CaptureAttemptWindowSelection;
@@ -952,7 +951,6 @@ impl CaptureFailure {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use super::CaptureFailure;
 
     /// The three names iTerm2 answers to, as
     /// [`named_emulator_windows`](super::named_emulator_windows)
