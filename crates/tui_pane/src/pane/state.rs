@@ -78,6 +78,14 @@ pub const fn selection_state(
 /// For callers whose cursor lives outside this viewport. The hovered-row
 /// check still reads the viewport's own hovered field because hover is
 /// always per pane.
+///
+/// Both cursor states outrank hover. Hover is transient — it follows the
+/// pointer and means only "a click would land here" — so it must never
+/// repaint the row that actually holds the cursor. Ranking it above
+/// `Remembered` made an unfocused pane lie about its own selection: the
+/// remembered row is the dimmest of the three backgrounds, so the hover
+/// bar became the only visible highlight and appeared to be a selection
+/// tracking the mouse.
 #[must_use]
 pub const fn selection_state_for(
     viewport: &Viewport,
@@ -87,10 +95,10 @@ pub const fn selection_state_for(
 ) -> PaneSelectionState {
     if row == cursor && matches!(focus, PaneFocusState::Active) {
         PaneSelectionState::Active
-    } else if matches!(viewport.hovered(), Some(hovered_row) if hovered_row == row) {
-        PaneSelectionState::Hovered
     } else if row == cursor && matches!(focus, PaneFocusState::Remembered) {
         PaneSelectionState::Remembered
+    } else if matches!(viewport.hovered(), Some(hovered_row) if hovered_row == row) {
+        PaneSelectionState::Hovered
     } else {
         PaneSelectionState::Unselected
     }
@@ -200,6 +208,19 @@ mod tests {
         assert_eq!(
             super::selection_state(&pane, 1, PaneFocusState::Active),
             PaneSelectionState::Active
+        );
+    }
+
+    #[test]
+    fn selection_state_prefers_remembered_cursor_over_hovered_row() {
+        let mut pane = Viewport::new();
+        pane.set_len(3);
+        pane.set_pos(1);
+        pane.set_hovered(Some(1));
+
+        assert_eq!(
+            super::selection_state(&pane, 1, PaneFocusState::Remembered),
+            PaneSelectionState::Remembered
         );
     }
 
