@@ -18,7 +18,7 @@ pub(super) fn spawn_priority_fetch(app: &App, path: &str, abs_path: &str, name: 
     processes::spawn_priority_fetch(app, path, abs_path, name);
 }
 
-pub(super) fn rearm_input_modes() -> std::io::Result<()> { run::rearm_input_modes() }
+pub(super) fn rearm_mouse_capture() -> std::io::Result<()> { run::rearm_mouse_capture() }
 
 pub(super) fn load_tree_state() -> (Option<AbsolutePath>, Vec<ExpandTarget>) {
     tree_state::load_tree_state()

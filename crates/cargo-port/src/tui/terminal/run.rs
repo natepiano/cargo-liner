@@ -87,14 +87,36 @@ fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
                 | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
         )
     )?;
-    rearm_input_modes()?;
+    enable_input_modes()?;
     let backend = CrosstermBackend::new(stdout);
     Terminal::new(backend)
 }
 
-pub(super) fn rearm_input_modes() -> io::Result<()> {
+/// Enable the input modes the TUI reads: mouse reporting and focus-change
+/// reporting. Safe from startup and from the one-shot re-arm after the
+/// first draw, neither of which runs in response to a focus event.
+///
+/// Never call this from the focus-gain handler — use
+/// [`rearm_mouse_capture`] there, and see its note for why.
+pub(super) fn enable_input_modes() -> io::Result<()> {
     execute!(io::stdout(), EnableMouseCapture, EnableFocusChange)
 }
+
+/// Re-enable mouse reporting after a focus gain, for terminals that drop
+/// it while the window is unfocused.
+///
+/// Deliberately does **not** re-send `EnableFocusChange`. Ghostty answers
+/// that sequence with a focus-in report, so re-arming focus reporting from
+/// inside the focus-gain handler is self-sustaining: report → re-arm →
+/// report, indefinitely. Every pass re-ran the synthetic click at
+/// `last_mouse_pos()`, walking the project-list selection across the tree
+/// as the pointer moved.
+///
+/// Nothing is lost by dropping it. Focus reporting can only be re-armed
+/// here when a focus event has already arrived, which is proof it was
+/// still armed — so this call could never recover a terminal that had
+/// actually stopped reporting focus.
+pub(super) fn rearm_mouse_capture() -> io::Result<()> { execute!(io::stdout(), EnableMouseCapture) }
 
 /// Probe the terminal for its actual background appearance via an OSC 11
 /// query. Returns `None` when the terminal doesn't answer —

@@ -63,7 +63,7 @@ pub fn handle_event(app: &mut App, event: &Event) {
             handle_mouse_event(app, mouse.kind, mouse.column, mouse.row);
         },
         Event::FocusGained => {
-            let _ = terminal::rearm_input_modes();
+            let _ = terminal::rearm_mouse_capture();
             if let Some((column, row)) = tui_pane::last_mouse_pos() {
                 app.mouse_pos = Some(Position::new(column, row));
                 handle_mouse_click(app, column, row, ClickMode::FocusOnly);

@@ -113,7 +113,7 @@ pub(super) fn event_loop(
         let detail_elapsed = measure(|| app.ensure_detail_cached());
         let draw_elapsed = draw_frame(terminal, app)?;
         if !rearmed_after_first_draw {
-            let _ = run::rearm_input_modes();
+            let _ = run::enable_input_modes();
             rearmed_after_first_draw = true;
         }
 
