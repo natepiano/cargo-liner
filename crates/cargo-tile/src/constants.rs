@@ -727,6 +727,37 @@ pub(crate) const DEFAULT_CAPTURE_AUTO_INSTALL: bool = true;
 /// the machine and the command that reverses it.
 pub(crate) const CAPTURE_INSTALLED_TOAST_VISIBLE: Duration = Duration::from_secs(12);
 
+// birth stamps
+/// Linux exposes a boot UUID independently of process ownership.
+#[cfg(target_os = "linux")]
+pub(crate) const BIRTH_BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
+/// The numeric portion of Darwin's sysctl output is independent of its date suffix.
+pub(crate) const BIRTH_MACOS_BOOT_PREFIX: &str = "{ sec = ";
+/// Preserve the boot timeval's microseconds even though process births use seconds.
+pub(crate) const BIRTH_MACOS_BOOT_SEPARATOR: &str = ", usec = ";
+/// Everything after this delimiter is sysctl's localized display date.
+pub(crate) const BIRTH_MACOS_BOOT_SUFFIX: &str = " }";
+/// A timeval has strictly fewer than one million fractional microseconds.
+pub(crate) const BIRTH_MICROSECONDS_PER_SECOND: u32 = 1_000_000;
+/// Process stat files supply the unrounded kernel start counter.
+#[cfg(target_os = "linux")]
+pub(crate) const BIRTH_PROC_DIRECTORY: &str = "/proc";
+/// The process name ends at the final parenthesis, even if it contains spaces.
+#[cfg(target_os = "linux")]
+pub(crate) const BIRTH_STAT_COMM_END: u8 = b')';
+/// Each pid directory exposes its birth counter in this kernel-generated file.
+#[cfg(target_os = "linux")]
+pub(crate) const BIRTH_STAT_FILENAME: &str = "stat";
+/// Field 22 is index 19 after removing fields 1 and 2 (pid and comm).
+#[cfg(target_os = "linux")]
+pub(crate) const BIRTH_STAT_START_INDEX: usize = 19;
+/// A failed or incomplete kernel response cannot prove process identity.
+#[cfg(target_os = "macos")]
+pub(crate) const BIRTH_SYSCTL_INCOMPLETE: &str = "incomplete process birth sysctl response";
+/// Bound the kernel's `kinfo_proc` reply without duplicating its opaque ABI layout.
+#[cfg(target_os = "macos")]
+pub(crate) const BIRTH_SYSCTL_MAX_BYTES: usize = 4096;
+
 // build progress
 /// Bound each directory sample, including unrelated entries, before consulting
 /// liveness. Reaching this count means incomplete enumeration and forbids sweep.
@@ -747,6 +778,8 @@ pub(crate) const CAPTURE_STATE_DIR: &str = "state";
 pub(crate) const CAPTURE_PIDS_DIR: &str = "pids";
 /// Reject non-regular entries before seeking or reading their contents.
 pub(crate) const CAPTURE_NOT_REGULAR: &str = "capture entry is not a regular file";
+/// A record may name only a single file beneath the inspected root handle.
+pub(crate) const CAPTURE_INVALID_BASENAME: &str = "capture log name is not a single basename";
 /// Oversize registrations cannot establish a complete readable live set.
 pub(crate) const CAPTURE_REGISTRATION_TOO_LARGE: &str =
     "capture registration exceeds its byte limit";
@@ -773,6 +806,12 @@ pub(crate) const REGISTRATION_SEPARATOR: char = '.';
 /// Unpublished registration files never establish liveness, even when
 /// a killed setup leaves one beside the published registrations.
 pub(crate) const REGISTRATION_TEMP_SUFFIX: &str = ".tmp";
+/// Distinguish framed registrations from older display-only command text.
+pub(crate) const REGISTRATION_MAGIC: &[u8] = b"cargo-tile-v2";
+/// NUL preserves shell argument and path boundaries, including whitespace.
+pub(crate) const REGISTRATION_FIELD_SEPARATOR: u8 = 0;
+/// Legacy records separate their directory from unrecoverable command text.
+pub(crate) const REGISTRATION_LEGACY_SEPARATOR: u8 = b'\t';
 /// Shown in `state` for a run waiting on another cargo to give up the
 /// build directory. A word rather than a bar: there is no reading to
 /// draw, which is the whole of what it says.
@@ -805,8 +844,8 @@ pub(crate) const PROGRESS_HEADING_PHASE_MARGIN: u16 = 1;
 /// bar's last redraw across a burst of diagnostics printed over it.
 pub(crate) const RUN_LOG_TAIL_BYTES: u64 = 64 * 1024;
 /// Shared cleanup allowance across every owned root in one scan: registration
-/// and log removal attempts, plus recognized staging records kept for identity
-/// verification. Foreign and incompletely enumerated roots consume none.
+/// and log removal attempts. Retained staging records, foreign roots, and
+/// incompletely enumerated roots consume none.
 ///
 /// The shim removes ordinary captures on exit; runs killed outright leave
 /// artifacts behind. Limiting work avoids clearing a large backlog in one scan.

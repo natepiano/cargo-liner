@@ -527,6 +527,9 @@ mod tests {
     fn process(pid: u32) -> CargoProcess {
         CargoProcess {
             path: "~/rust/project".to_string(),
+            directory_identity: crate::registration::DirectoryIdentity::Absolute(
+                "/test-home/rust/project".into(),
+            ),
             pid,
             parent: None,
             start: "10:00".to_string(),
@@ -534,7 +537,7 @@ mod tests {
             duration: "00:01".to_string(),
             cpu: "0%".to_string(),
             compiler: None,
-            state: None,
+            state: crate::progress::CaptureLookup::Unregistered,
             managed: 0,
             nested: false,
             command: CommandText::of("cargo", &["build"]),

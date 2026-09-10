@@ -123,8 +123,11 @@ use crate::processes;
 use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
 use crate::processes::SummaryDetail;
+use crate::progress::CaptureLookup;
+use crate::progress::CaptureRead;
 use crate::progress::Progress;
 use crate::progress::RunState;
+use crate::registration::DirectoryIdentity;
 use crate::roster::Roster;
 use crate::roster::TrackedGroup;
 use crate::roster::TrackedRow;
@@ -1207,9 +1210,9 @@ impl TableKind {
     }
 }
 
-/// The invocations sharing one working directory.
+/// The invocations sharing one absolute directory, independent of displayed labels.
 struct PathGroup<'a> {
-    /// The working directory, as it heads the group.
+    /// The first member's display label; directory identity alone selects members.
     path: &'a str,
     /// Every invocation running there, newest first.
     rows: Vec<&'a TrackedRow>,
@@ -1347,10 +1350,14 @@ fn draw_process_table(
 fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: Option<&str>) -> Vec<PathGroup<'a>> {
     let mut groups: Vec<PathGroup<'a>> = Vec::new();
     for row in rows {
-        if let Some(group) = groups
-            .iter_mut()
-            .find(|group| group.path == row.process.path)
-        {
+        if let Some(group) = groups.iter_mut().find(|group| {
+            matches!(
+                row.process.directory_identity,
+                DirectoryIdentity::Absolute(_)
+            ) && group.rows.first().is_some_and(|first| {
+                first.process.directory_identity == row.process.directory_identity
+            })
+        }) {
             group.rows.push(row);
             continue;
         }
@@ -1388,8 +1395,11 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: Option<&str>) -> Vec<PathG
     // Whatever the rest sort to, the pinned directory heads the cell.
     // The others keep the order they had under it, so a group that
     // comes and goes moves nothing but itself.
-    let Some(at) = pinned.and_then(|path| groups.iter().position(|group| group.path == path))
-    else {
+    let Some(at) = pinned.and_then(|path| {
+        groups
+            .iter()
+            .position(|group| group.rows.iter().any(|row| row.process.path == path))
+    }) else {
         return groups;
     };
     groups[..=at].rotate_right(1);
@@ -1473,7 +1483,7 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
         widths.observe_cell_usize(START_COLUMN, process.start.chars().count());
         widths.observe_cell_usize(DURATION_COLUMN, process.duration.chars().count());
         widths.observe_cell_usize(CPU_COLUMN, process.cpu.chars().count());
-        widths.observe_cell_usize(STATE_COLUMN, state_width(process.state));
+        widths.observe_cell_usize(STATE_COLUMN, state_width(&process.state));
         widths.observe_cell_usize(COMPILER_COLUMN, compiler_width(process));
         widths.observe_cell_usize(MANAGED_COLUMN, managed_text(process).chars().count());
     }
@@ -1656,9 +1666,12 @@ fn command_column_width(width: u16, constraints: &[Constraint], columns: &[usize
 /// ruling that -- and an empty column costs a narrow tile the width its
 /// command line needs while reporting nothing.
 fn visible_columns(rows: &[&TrackedRow], kind: TableKind) -> Vec<usize> {
-    let carries_state = rows
-        .iter()
-        .any(|row| matches!(row.process.state, Some(RunState::Blocked)));
+    let carries_state = rows.iter().any(|row| {
+        matches!(
+            row.process.state,
+            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
+        )
+    });
     (0..TABLE_HEADERS.len())
         .filter(|column| *column != STATE_COLUMN || carries_state)
         .filter(|column| kind.shows_invocation_detail() || !SUMMARY_HIDDEN_COLUMNS.contains(column))
@@ -1679,7 +1692,8 @@ fn visible_columns(rows: &[&TrackedRow], kind: TableKind) -> Vec<usize> {
 /// lock, so two commands in one directory are never both reporting at
 /// once -- the heading has room for the one that is.
 fn state_cell(row: &TrackedRow, layout: &TableLayout) -> Line<'static> {
-    let Some(RunState::Blocked) = row.process.state else {
+    let CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)) = row.process.state
+    else {
         return Line::default();
     };
     // Waiting is not failing, and it is not work either. The warning
@@ -1694,10 +1708,17 @@ fn state_cell(row: &TrackedRow, layout: &TableLayout) -> Line<'static> {
 /// Cells the `state` column needs for one row, which follows what
 /// [`state_cell`] draws: the word for a wait, and nothing at all
 /// otherwise.
-fn state_width(state: Option<RunState>) -> usize {
+fn state_width(state: &CaptureLookup) -> usize {
     match state {
-        Some(RunState::Blocked) => STATE_BLOCKED.chars().count(),
-        None | Some(RunState::Working { .. }) => 0,
+        CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)) => {
+            STATE_BLOCKED.chars().count()
+        },
+        CaptureLookup::Unregistered
+        | CaptureLookup::Registered(
+            CaptureRead::Progress(RunState::Working { .. })
+            | CaptureRead::NoCurrentProgress
+            | CaptureRead::Unreadable(_),
+        ) => 0,
     }
 }
 
@@ -1742,7 +1763,7 @@ fn heading_gauge(group: &PathGroup<'_>, width: u16, layout: &TableLayout) -> Vec
     let Some((row, (phase, progress))) = group
         .rows
         .iter()
-        .find_map(|row| Some((row, row.process.state?.working()?)))
+        .find_map(|row| Some((row, row.process.state.working()?)))
     else {
         return Vec::new();
     };
@@ -2013,6 +2034,9 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
     use std::time::Instant;
 
     use super::*;
@@ -2101,6 +2125,7 @@ mod tests {
     fn started_at(path: &str, state: Option<RunState>, started: u64) -> TrackedRow {
         TrackedRow::from(CargoProcess {
             path: path.to_string(),
+            directory_identity: DirectoryIdentity::Absolute(Path::new("/test-home").join(path)),
             pid: 41233,
             parent: None,
             start: "11:04".to_string(),
@@ -2108,7 +2133,9 @@ mod tests {
             duration: "00:18".to_string(),
             cpu: "12%".to_string(),
             compiler: None,
-            state,
+            state: state.map_or(CaptureLookup::Unregistered, |state| {
+                CaptureLookup::Registered(CaptureRead::Progress(state))
+            }),
             managed: 0,
             nested: false,
             command: CommandText::of("cargo", &["build"]),
@@ -2415,6 +2442,7 @@ mod tests {
     fn invocation(pid: u32, arguments: &[&str]) -> CargoProcess {
         CargoProcess {
             path: "~/rust/cargo-liner".to_string(),
+            directory_identity: DirectoryIdentity::Absolute("/test-home/rust/cargo-liner".into()),
             pid,
             parent: None,
             start: "11:04".to_string(),
@@ -2422,7 +2450,7 @@ mod tests {
             duration: "00:18".to_string(),
             cpu: "12%".to_string(),
             compiler: None,
-            state: None,
+            state: CaptureLookup::Unregistered,
             managed: 0,
             nested: false,
             command: CommandText::of("cargo", arguments),
@@ -2862,6 +2890,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn display_shortening_does_not_split_a_directorys_progress_group() {
+        let mut ordinary = started_at("~/project", Some(compiling(1, 2)), 100);
+        let mut custom_home = started_at("/writer/project", Some(compiling(1, 2)), 101);
+        ordinary.process.directory_identity = DirectoryIdentity::Absolute("/writer/project".into());
+        custom_home.process.directory_identity = ordinary.process.directory_identity.clone();
+        let rows = [&ordinary, &custom_home];
+
+        let groups = group_by_path(&rows, None);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].rows.len(), 2);
+        assert_eq!(groups[0].path, "~/project");
+        assert_eq!(groups[0].rows[1].process.path, "/writer/project");
+        let area = Rect::new(0, 0, 80, 10);
+        let layout = TableLayout::of(
+            &rows,
+            TableKind::Summary,
+            area,
+            pane_background(false),
+            ProcessTree::Long,
+        );
+        assert_eq!(
+            groups
+                .iter()
+                .filter(|group| !heading_gauge(group, area.width, &layout).is_empty())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn identical_display_labels_do_not_merge_distinct_absolute_directories() {
+        let mut first = row_at("~/project", None);
+        let mut second = row_at("~/project", None);
+        first.process.directory_identity = DirectoryIdentity::Absolute("/first/project".into());
+        second.process.directory_identity = DirectoryIdentity::Absolute("/second/project".into());
+
+        assert_eq!(group_by_path(&[&first, &second], None).len(), 2);
+    }
+
+    #[test]
+    fn lossy_display_does_not_merge_distinct_raw_directory_bytes() {
+        let first_path = Path::new(OsStr::from_bytes(b"/writer/\xff"));
+        let second_path = Path::new(OsStr::from_bytes(b"/writer/\xfe"));
+        let mut first = row_at(&first_path.display().to_string(), None);
+        let mut second = row_at(&second_path.display().to_string(), None);
+        first.process.directory_identity = DirectoryIdentity::from(first_path);
+        second.process.directory_identity = DirectoryIdentity::from(second_path);
+
+        assert_eq!(first.process.path, second.process.path);
+        assert_eq!(group_by_path(&[&first, &second], None).len(), 2);
+    }
+
+    #[test]
+    fn missing_directory_identity_does_not_group_by_placeholder_text() {
+        let mut first = row_at("unavailable", None);
+        let mut second = row_at("unavailable", None);
+        first.process.directory_identity = DirectoryIdentity::Unavailable;
+        second.process.directory_identity = DirectoryIdentity::Unavailable;
+
+        assert_eq!(group_by_path(&[&first, &second], None).len(), 2);
+    }
+
+    #[test]
+    fn pinning_finds_a_group_through_any_members_display_label() {
+        let mut ordinary = started_at("~/project", None, 100);
+        let mut custom_home = started_at("/writer/project", None, 101);
+        ordinary.process.directory_identity = DirectoryIdentity::Absolute("/writer/project".into());
+        custom_home.process.directory_identity = ordinary.process.directory_identity.clone();
+        let older = started_at("/other/project", None, 1);
+        let rows = [&older, &custom_home, &ordinary];
+
+        let groups = group_by_path(&rows, Some("~/project"));
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].rows.len(), 2);
+        assert_eq!(groups[0].rows[0].process.path, "~/project");
+    }
+
     /// The summary is about no one directory, so nothing is pinned and
     /// the directories fall in the order their work began.
     #[test]
@@ -3045,14 +3153,18 @@ mod tests {
     /// width of that one word however many rows are drawn beside it.
     #[test]
     fn only_a_wait_is_worth_any_width_in_the_state_column() {
-        assert_eq!(state_width(None), 0);
+        assert_eq!(state_width(&CaptureLookup::Unregistered), 0);
         assert_eq!(
-            state_width(Some(compiling(149, 403))),
+            state_width(&CaptureLookup::Registered(CaptureRead::Progress(
+                compiling(149, 403)
+            ))),
             0,
             "a reading is the heading's to say",
         );
         assert_eq!(
-            state_width(Some(RunState::Blocked)),
+            state_width(&CaptureLookup::Registered(CaptureRead::Progress(
+                RunState::Blocked
+            ))),
             STATE_BLOCKED.chars().count()
         );
     }

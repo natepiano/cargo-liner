@@ -532,6 +532,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "libc",
  "ratatui",
  "rustix",
  "serde",
