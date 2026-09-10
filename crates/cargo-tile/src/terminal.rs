@@ -407,7 +407,9 @@ fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
         return false;
     };
     app.sccache.observe_server(scan.sccache);
-    app.roster.observe(scan.groups, Instant::now())
+    let status_changed = app.root_status != scan.root_status;
+    app.root_status = scan.root_status;
+    app.roster.observe(scan.groups, Instant::now()) || status_changed
 }
 
 /// Take whatever the sccache workers have replied, reporting whether the
@@ -725,6 +727,115 @@ fraying = "leading"
             .collect()
     }
 
+    /// Every recovery here leaves the command grid empty while settings changes.
+    fn deliver_capture(app: &mut App, capture: Capture) -> bool {
+        let (sender, scans) = mpsc::channel();
+        sender
+            .send(Scan {
+                groups:      Vec::new(),
+                sccache:     SccacheServer::Stopped,
+                root_status: capture.root_status,
+            })
+            .expect("retained scan receiver");
+        drain_scans(app, &scans)
+    }
+
+    #[test]
+    fn missing_configured_root_appears_and_redraws_an_unchanged_empty_grid() {
+        let mut app = App::new_for_test().expect("test app");
+        let parent = TempDir::new().expect("fixture directory");
+        let path = parent.path().join("later");
+        let mut roots = CaptureRoots::resolve(std::slice::from_ref(&path));
+        roots.roots.retain(|root| {
+            root.sources
+                .iter()
+                .any(|source| matches!(source, CaptureRootSource::Configuration { .. }))
+        });
+        let observe = |pid| KernelObservation::for_test(pid, Observation::Unknown);
+        assert!(deliver_capture(
+            &mut app,
+            Capture::take_roots(&roots, &observe)
+        ));
+        assert!(matches!(
+            app.root_status[0].state,
+            crate::processes::RootReadStatus::Unavailable(_)
+        ));
+        fs::create_dir_all(path.join(CAPTURE_LIVE_RUNS_DIR)).expect("create configured root");
+        assert!(deliver_capture(
+            &mut app,
+            Capture::take_roots(&roots, &observe)
+        ));
+        assert_eq!(
+            app.root_status[0].state,
+            crate::processes::RootReadStatus::Readable
+        );
+        assert!(app.roster.groups().is_empty());
+        // Recovery conservatively disables one sweep; allow that observation to settle.
+        deliver_capture(&mut app, Capture::take_roots(&roots, &observe));
+        assert!(!deliver_capture(
+            &mut app,
+            Capture::take_roots(&roots, &observe)
+        ));
+    }
+
+    #[test]
+    fn unreadable_capture_recovers_and_redraws_without_any_process_row() {
+        let mut app = App::new_for_test().expect("test app");
+        let root = TempDir::new().expect("root fixture");
+        let registrations = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        fs::create_dir_all(&registrations).expect("registration directory");
+        fs::write(
+            registrations.join("10.live"),
+            [
+                "cargo-tile-v2",
+                "live",
+                "boot",
+                "100",
+                "exact.log",
+                "/work",
+                "/home",
+                "0",
+                "",
+            ]
+            .join("\0"),
+        )
+        .expect("versioned record");
+        let log = root
+            .path()
+            .canonicalize()
+            .expect("resolved capture root")
+            .join("exact.log");
+        std::os::unix::fs::symlink("inaccessible", &log).expect("refused log target");
+        let observe = |pid| {
+            let observation = match crate::birth_stamp::BirthStamp::from_fields("boot", "100") {
+                crate::birth_stamp::IdentityEvidence::Available(stamp) => {
+                    Observation::Present(stamp)
+                },
+                crate::birth_stamp::IdentityEvidence::Unavailable => Observation::Unknown,
+            };
+            KernelObservation::for_test(pid, observation)
+        };
+        assert!(deliver_capture(
+            &mut app,
+            Capture::take_from(root.path(), observe)
+        ));
+        assert!(app.root_status[0].diagnostics.iter().any(|diagnostic| matches!(diagnostic, crate::processes::CaptureDiagnostic::LogUnreadable(failure) if failure.path == log)));
+        assert!(app.roster.groups().is_empty());
+        fs::remove_file(&log).expect("remove refused target");
+        fs::write(&log, "readable").expect("recover log");
+        assert!(deliver_capture(
+            &mut app,
+            Capture::take_from(root.path(), observe)
+        ));
+        assert_eq!(app.root_status[0].confirmed, 1);
+        assert!(app.root_status[0].diagnostics.is_empty());
+        assert!(app.roster.groups().is_empty());
+        assert!(!deliver_capture(
+            &mut app,
+            Capture::take_from(root.path(), observe)
+        ));
+    }
+
     #[test]
     fn a_configured_roots_capture_reaches_the_roster_through_the_scan_channel() {
         let mut app = App::new_for_test().expect("test app should build");
@@ -773,12 +884,13 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
-                groups:  vec![CargoGroup {
+                groups:      vec![CargoGroup {
                     lead:     process.clone(),
                     rest:     Vec::new(),
                     ancestry: Vec::new(),
                 }],
-                sccache: SccacheServer::Stopped,
+                sccache:     SccacheServer::Stopped,
+                root_status: capture.root_status,
             })
             .expect("scan receiver is alive");
 

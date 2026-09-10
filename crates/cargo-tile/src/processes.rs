@@ -39,6 +39,8 @@ use sysinfo::System;
 use sysinfo::UpdateKind;
 use tui_pane::kernel_parent;
 
+use crate::capture_root::CleanupRefusal;
+use crate::capture_root::RootOwner;
 use crate::config::Config;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DISPLAY_NAME;
@@ -63,9 +65,12 @@ use crate::constants::TRANSPARENT_PROCESS_NAMES;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
 use crate::progress::Capture;
+use crate::progress::CaptureFailure;
 use crate::progress::CaptureKey;
 use crate::progress::CaptureLookup;
+use crate::progress::CaptureRoot;
 use crate::progress::CaptureRoots;
+use crate::progress::PathFailure;
 use crate::registration::DirectoryIdentity;
 use crate::registration::VersionedRegistration;
 use crate::registration::WriterHome;
@@ -351,9 +356,81 @@ impl CargoGroup {
 /// from having to start a server to discover whether one is running.
 pub(crate) struct Scan {
     /// The commands running, newest first.
-    pub(crate) groups:  Vec<CargoGroup>,
+    pub(crate) groups:      Vec<CargoGroup>,
     /// Whether a process named [`SCCACHE_BINARY`] was among them.
-    pub(crate) sccache: SccacheServer,
+    pub(crate) sccache:     SccacheServer,
+    /// Settings reads these observations without reopening any capture path.
+    pub(crate) root_status: Vec<RootStatus>,
+}
+
+/// One effective root's access, identity and capture observations for this scan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RootStatus {
+    /// Startup resolution retains every original source spelling, including errors.
+    pub(crate) root:         CaptureRoot,
+    /// Descriptor metadata identifies the owner independently of cleanup eligibility.
+    pub(crate) owner:        RootOwner,
+    /// Every reason removal is refused; an empty list permits identity-based cleanup.
+    pub(crate) cleanup:      Vec<CleanupRefusal>,
+    /// Opening a root and validating its configured path have different retry rules.
+    pub(crate) state:        RootReadStatus,
+    /// Published, verified registrations whose logs were readable in this scan.
+    pub(crate) confirmed:    usize,
+    /// Failures and retained artifacts remain visible without process-table rows.
+    pub(crate) diagnostics:  Vec<CaptureDiagnostic>,
+    /// Each association names its process and any competing proof left unused.
+    pub(crate) associations: Vec<CaptureAssociation>,
+}
+
+/// A missing directory can recover next scan; invalid startup resolution cannot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RootReadStatus {
+    /// The root handle opened; diagnostics describe any incomplete contents.
+    Readable,
+    /// The implicit default has no capture directory yet and needs no operator action.
+    DefaultNotCreated,
+    /// Reopening this absolute path failed in the current scan.
+    Unavailable(PathFailure),
+    /// Correcting the original entry and restarting is required to retry resolution.
+    Invalid(CaptureFailure),
+}
+
+/// Path-qualified observations supplement the count of verified, readable captures.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CaptureDiagnostic {
+    /// A short directory inventory can omit runs and prohibits cleanup this scan.
+    EnumerationIncomplete(PathBuf),
+    /// An inaccessible directory must never read as an empty inventory.
+    EnumerationFailed(PathFailure),
+    /// An individual registration failed to read; sibling evidence stays available.
+    RegistrationUnreadable(PathFailure),
+    /// Malformed bytes or mismatched generation cannot establish an association.
+    RegistrationInvalid(PathBuf),
+    /// A legacy record can annotate a process row but supplies no verifiable identity.
+    AnnotationOnly(PathBuf),
+    /// Missing identity fields cannot authorize cleanup, even after the pid ends.
+    Unverifiable(PathBuf),
+    /// The record supplies identity, but this scan could not observe the live process.
+    IdentityUnknown(PathBuf),
+    /// The cached boot failure prevents checking this record until a restart.
+    IdentityBlockedByBoot(PathBuf),
+    /// An unpublished artifact stays outside the active capture count.
+    Staging(PathBuf),
+    /// Retain the exact named log and its I/O failure even without a process row.
+    LogUnreadable(PathFailure),
+    /// The cached boot read disables verification until a restart retries it.
+    BootUnavailable(PathFailure),
+}
+
+/// The containing root supplied this process's capture; other roots supply no fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureAssociation {
+    /// Process-table row whose ancestor walk selected the containing root.
+    pub(crate) pid:              u32,
+    /// The selected shim may be above the displayed cargo process.
+    pub(crate) registration_pid: u32,
+    /// Confirmed proofs in these roots lost to the preferred unconfirmed reading.
+    pub(crate) suppressed:       Vec<PathBuf>,
 }
 
 /// The nearest registered ancestor retains its root for every annotation lookup.
@@ -478,11 +555,14 @@ fn scan(
     census.collapse_shims(system);
 
     let attributed = census.attribute(smoothing, now);
+    // Identity is read live, independently of the earlier process snapshot.
+    let mut capture = Capture::take(roots);
+    let groups = census.groups(system, &attributed, home, &capture);
+    census.associate_status(&mut capture, &groups);
     Scan {
         sccache: census.sccache(),
-        // Registration identity is read live; a pid missing from the earlier
-        // process snapshot cannot authorize deleting a newly published run.
-        groups:  census.groups(system, &attributed, home, &Capture::take(roots)),
+        groups,
+        root_status: capture.root_status,
     }
 }
 
@@ -949,6 +1029,52 @@ impl Census {
             walking = *parent;
         }
         CapturedRun::Unregistered
+    }
+
+    /// Settings names the supplying root for every displayed association, including
+    /// a preferred unconfirmed reading that prevented using another root's proof.
+    fn associate_status(&self, capture: &mut Capture, groups: &[CargoGroup]) {
+        for row in groups
+            .iter()
+            .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
+        {
+            let CapturedRun::Registered(key) = self.captured_run(capture, Pid::from_u32(row.pid))
+            else {
+                continue;
+            };
+            let mut suppressed = Vec::new();
+            if !capture
+                .confirmed()
+                .iter()
+                .any(|confirmed| confirmed.key == key)
+            {
+                let mut walking = Pid::from_u32(row.pid);
+                for _ in 0..PARENT_WALK_LIMIT {
+                    for confirmed in capture.confirmed().iter().filter(|confirmed| {
+                        confirmed.key.pid == walking.as_u32() && confirmed.key.root != key.root
+                    }) {
+                        if let Some(status) = capture.root_status.get(confirmed.key.root.0)
+                            && let Ok(path) = &status.root.path
+                            && !suppressed.contains(path)
+                        {
+                            suppressed.push(path.clone());
+                        }
+                    }
+                    let Some(parent) = self.parents.get(&walking) else {
+                        break;
+                    };
+                    walking = *parent;
+                }
+            }
+            suppressed.sort();
+            if let Some(status) = capture.root_status.get_mut(key.root.0) {
+                status.associations.push(CaptureAssociation {
+                    pid: row.pid,
+                    registration_pid: key.pid,
+                    suppressed,
+                });
+            }
+        }
     }
 
     /// Captures annotate rows already established by the process table. A verified
@@ -1680,6 +1806,62 @@ mod tests {
             );
             assert_eq!(row.command, CommandText::of("cargo", &[command]));
             assert_eq!(row.state, expected_state);
+        }
+    }
+
+    #[test]
+    fn associated_root_names_proofs_suppressed_by_precedence_or_nearer_ancestry() {
+        for (preferred_index, confirmed_pid) in [(0, 10), (1, 20)] {
+            let preferred = capture_root(&[(10, "")]);
+            let confirmed = tempdir().expect("confirmed root");
+            write_versioned_capture(
+                confirmed.path(),
+                confirmed_pid,
+                "verified",
+                "/writer/project",
+                "/writer",
+                "build",
+                "",
+            );
+            let record = directory_record("/writer");
+            let stamp = match record.identity() {
+                IdentityEvidence::Available(stamp) => Ok(stamp),
+                IdentityEvidence::Unavailable => Err("fixture has no identity"),
+            }
+            .expect("complete fixture birth");
+            let paths = if preferred_index == 0 {
+                [preferred.path(), confirmed.path()]
+            } else {
+                [confirmed.path(), preferred.path()]
+            };
+            let roots = resolved_test_roots(&paths);
+            let mut capture = Capture::take_roots(&roots, &|pid| {
+                KernelObservation::for_test(pid, Observation::Present(stamp.clone()))
+            });
+            let groups = vec![CargoGroup {
+                lead:     directory_row(),
+                rest:     Vec::new(),
+                ancestry: Vec::new(),
+            }];
+            census_of(&[(10, 20)]).associate_status(&mut capture, &groups);
+            assert_eq!(
+                capture.root_status[preferred_index].associations,
+                vec![super::CaptureAssociation {
+                    pid:              10,
+                    registration_pid: 10,
+                    suppressed:       vec![
+                        confirmed
+                            .path()
+                            .canonicalize()
+                            .expect("absolute confirmed root")
+                    ],
+                }]
+            );
+            assert!(
+                capture.root_status[1 - preferred_index]
+                    .associations
+                    .is_empty()
+            );
         }
     }
 

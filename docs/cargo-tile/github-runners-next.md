@@ -16,9 +16,11 @@
   - Revealed by: Phase 1
 
 - [ ] **The ownership check closes the macOS ACL hole it currently documents**
-  - Target: `crates/cargo-tile/src/capture_root.rs` — cleanup eligibility,
-    currently `DirectoryIdentity::exclusive_owner` (`:363`) and
-    `RootScan::access` (`:228`), including phase 6's diagnostic classification.
+  - Target: `crates/cargo-tile/src/capture_root.rs` —
+    `DirectoryIdentity::refusals` (`:458`) and
+    `RootScan::cleanup_refusals` (`:279`), which gate private
+    `RootScan::access` (`:328`); preserve `RootOwner` and add a
+    path-qualified `CleanupRefusal` for ACL write access.
   - Why needed: the ownership prerequisite still checks uid and mode bits
     alone. A macOS ACL granting another account write access can pass that
     check; phase 4's registration verification does not close this ownership
@@ -28,3 +30,15 @@
     and its log. The retained status identifies the directory and ACL reason
     cleanup is disabled while preserving the separately observed owner.
   - Revealed by: Phase 3
+
+- [ ] **Every configured-root status remains reachable in Settings**
+  - Target: `crates/cargo-tile/src/render.rs` — `draw_settings` (`:1984`),
+    including viewport-to-rendered-line positioning.
+  - Why needed: configured-root rows and their wrapped diagnostics can exceed
+    the popup height, but the paragraph does not follow the settings viewport,
+    so rows past the bottom edge cannot be reached.
+  - Completion condition: with enough configured roots to overflow a small
+    terminal, navigation reveals every root and the settings rows below them,
+    keeps the selected row visible after resizing or status updates, and
+    leaves root controls inert.
+  - Revealed by: Phase 6

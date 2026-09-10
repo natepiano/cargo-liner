@@ -650,6 +650,88 @@ pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
 /// Shown in place of the table when no cargo is running.
 pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
 
+// capture root status
+/// Each process association names the root that supplied all capture fields.
+pub(crate) const CAPTURE_ASSOCIATION: &str = "capture association";
+/// Root precedence deliberately leaves a competing confirmed proof unused.
+pub(crate) const CAPTURE_ASSOCIATION_SUPPRESSED: &str = "another root's proof went unused";
+/// An empty refusal list authorizes only cleanup justified by process identity.
+pub(crate) const CAPTURE_CLEANUP_ALLOWED: &str = "cleanup allowed for proven ended captures";
+/// Directory replacement prevents removal until another stable scan observes it.
+pub(crate) const CAPTURE_CLEANUP_CHANGED: &str = "directory changed — cleanup disabled this scan";
+/// A read failure must not imply that an empty inventory authorized cleanup.
+pub(crate) const CAPTURE_CLEANUP_DISABLED: &str = "cleanup disabled";
+/// The effective-user failure is cached, so another scan cannot retry it.
+pub(crate) const CAPTURE_CLEANUP_EFFECTIVE_USER: &str = "ownership unavailable — cleanup disabled for this session; restart to retry effective-user lookup";
+/// Short enumeration hides runs, unlike a complete list with an unreadable record.
+pub(crate) const CAPTURE_CLEANUP_ENUMERATION: &str = "partial enumeration — cleanup disabled";
+/// A readable root owned by another account requires no permission repair.
+pub(crate) const CAPTURE_CLEANUP_FOREIGN: &str = "read-only";
+/// Missing record contents prevent cleanup despite a complete directory listing.
+pub(crate) const CAPTURE_CLEANUP_REGISTRATION: &str =
+    "incomplete registration inventory — cleanup disabled";
+/// Unlike a foreign root, this owner can repair the directory's write permissions.
+pub(crate) const CAPTURE_CLEANUP_WRITABLE: &str = "group/other writable — cleanup disabled";
+/// Preserve denial as an access failure instead of describing an empty root.
+pub(crate) const CAPTURE_FAILURE_PERMISSION: &str = "permission denied";
+/// A uid names the observed account without performing a render-time lookup.
+pub(crate) const CAPTURE_OWNER_UID: &str = "owner uid";
+/// The root could not be inspected, so there is no retained uid to display.
+pub(crate) const CAPTURE_OWNER_UNAVAILABLE: &str = "owner unavailable";
+/// A root's ordinal follows the scanner's retained deduplication order.
+pub(crate) const CAPTURE_SETTINGS_ROOT: &str = "root";
+/// Identify every configured spelling after several entries resolve to one root.
+pub(crate) const CAPTURE_SOURCE_CONFIG: &str = "config";
+/// Empty and unset environment overrides both select this source.
+pub(crate) const CAPTURE_SOURCE_DEFAULT: &str = "default";
+/// Preserve the override's original spelling beside its resolved absolute path.
+pub(crate) const CAPTURE_SOURCE_ENVIRONMENT: &str = "environment";
+/// Only confirmed published registrations with readable logs count as active.
+pub(crate) const CAPTURE_STATUS_ACTIVE: &str = "active";
+/// Legacy records may annotate a process without supplying verified identity.
+pub(crate) const CAPTURE_STATUS_ANNOTATION: &str = "annotation-only record";
+/// The boot observation is cached, so another scan cannot retry verification.
+pub(crate) const CAPTURE_STATUS_BOOT: &str = "boot identity unavailable — verification disabled for this session; restart to retry boot read";
+/// Count cached boot failures separately from per-scan process identity failures.
+pub(crate) const CAPTURE_STATUS_BOOT_FAILURE: &str = "cached boot failure";
+/// The displayed count excludes annotations, unreadable logs and staging files.
+pub(crate) const CAPTURE_STATUS_CAPTURE: &str = "capture";
+/// The implicit default needs no repair before any capture has created it.
+pub(crate) const CAPTURE_STATUS_DEFAULT_NOT_CREATED: &str = "default root has not been created yet";
+/// A completed read with no captures must remain distinct from failed access.
+pub(crate) const CAPTURE_STATUS_EMPTY: &str = "readable — no active captures";
+/// A short inventory can omit runs even when every returned entry is readable.
+pub(crate) const CAPTURE_STATUS_ENUMERATION: &str = "short directory listing";
+/// Failed enumeration can leave a readable root with no visible registrations.
+pub(crate) const CAPTURE_STATUS_ENUMERATION_FAILED: &str = "failed directory listing";
+/// Unconfirmed registrations share a count while their details name the retry rule.
+pub(crate) const CAPTURE_STATUS_IDENTITY: &str = "unconfirmed registration";
+/// A cached boot failure prevents retrying this registration during the session.
+pub(crate) const CAPTURE_STATUS_IDENTITY_BOOT: &str = "identity unknown — retained; verification disabled for this session; restart to retry boot read";
+/// Another scan may establish identity, without promising that it will.
+pub(crate) const CAPTURE_STATUS_IDENTITY_RETRY: &str =
+    "identity unknown this scan — retained; identity is checked again next scan";
+/// Startup resolution is never repeated by the scanner's periodic reads.
+pub(crate) const CAPTURE_STATUS_INVALID: &str =
+    "invalid root — correct the path and restart to retry resolution";
+/// Invalid record bytes do not establish a safe capture association.
+pub(crate) const CAPTURE_STATUS_INVALID_REGISTRATION: &str = "invalid registration";
+/// Unlike invalid configuration, a missing directory is reopened next scan.
+pub(crate) const CAPTURE_STATUS_MISSING: &str = "missing directory";
+/// Retained contents include failures or artifacts outside the confirmed count.
+pub(crate) const CAPTURE_STATUS_PARTIAL: &str = "partial";
+/// Unknown identity never becomes permission to delete through age alone.
+pub(crate) const CAPTURE_STATUS_RETAINED: &str =
+    "retained — identity cannot be established; cleanup cannot remove this artifact";
+/// A staging artifact has not published a capture registration.
+pub(crate) const CAPTURE_STATUS_STAGING: &str = "staging file";
+/// Retain log access failures independently of process-table visibility.
+pub(crate) const CAPTURE_STATUS_UNREADABLE_LOG: &str = "unreadable log";
+/// A listed registration whose bytes were unavailable is not an empty inventory.
+pub(crate) const CAPTURE_STATUS_UNREADABLE_REGISTRATION: &str = "unreadable registration";
+/// Missing identity fields can permanently prevent safe deletion.
+pub(crate) const CAPTURE_STATUS_UNVERIFIABLE: &str = "unverifiable artifact";
+
 // capture shim
 /// Name of the real cargo once the shim takes its place beside it. The
 /// shim resolves it as a sibling, so a hardcoded-path invocation of a
@@ -733,9 +815,14 @@ pub(crate) const DEFAULT_CAPTURE_AUTO_INSTALL: bool = true;
 pub(crate) const CAPTURE_INSTALLED_TOAST_VISIBLE: Duration = Duration::from_secs(12);
 
 // birth stamps
+/// An empty cached boot response cannot verify any registration in this session.
+pub(crate) const BIRTH_BOOT_EMPTY: &str = "empty boot identity";
 /// Linux exposes a boot UUID independently of process ownership.
 #[cfg(target_os = "linux")]
 pub(crate) const BIRTH_BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
+/// Name the kernel interface that supplied a retained macOS boot failure.
+#[cfg(target_os = "macos")]
+pub(crate) const BIRTH_MACOS_BOOT_NAME: &str = "kern.boottime";
 /// The numeric portion of Darwin's sysctl output is independent of its date suffix.
 pub(crate) const BIRTH_MACOS_BOOT_PREFIX: &str = "{ sec = ";
 /// Preserve the boot timeval's microseconds even though process births use seconds.
@@ -794,7 +881,6 @@ pub(crate) const CAPTURE_DIRECTORY_CHANGED: &str = "capture directory changed du
 pub(crate) const CAPTURE_DIRECTORY_INCOMPLETE: &str = "capture directory inventory is incomplete";
 /// Directory under [`CAPTURE_ROOT`], one file per run still in flight,
 /// each named for the pid of the shim that captured it.
-#[cfg(test)]
 pub(crate) const CAPTURE_LIVE_RUNS_DIR: &str = "state/pids";
 /// Where the cargo shim mirrors each run's output. Under `/tmp` rather
 /// than the home directory because a sandboxed caller can write there.
