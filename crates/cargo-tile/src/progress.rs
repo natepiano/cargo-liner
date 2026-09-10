@@ -307,7 +307,7 @@ pub(crate) enum CaptureSelection {
     /// Root precedence and identity evidence leave one possible capture.
     Selected(CaptureKey),
     /// Competing generations forbid ownership and fallback to another root or ancestor.
-    Ambiguous,
+    Ambiguous(Vec<CaptureKey>),
 }
 
 /// Preserve the operator's pathname and its origin after root deduplication.
@@ -557,10 +557,12 @@ impl Capture {
     ) -> Self {
         let mut capture = Self::default();
         let mut budget = SweepBudget::default();
+        let users = sysinfo::Users::new_with_refreshed_list();
         for (index, root) in roots.roots.iter().enumerate() {
             let mut status = RootStatus {
                 root:         root.clone(),
                 owner:        RootOwner::Unavailable,
+                account:      crate::processes::AccountName::Unavailable,
                 cleanup:      Vec::new(),
                 state:        RootReadStatus::Readable,
                 confirmed:    0,
@@ -601,6 +603,7 @@ impl Capture {
                     }
                 },
             }
+            status.account = crate::processes::AccountName::resolve(status.owner, &users);
             capture.root_status.push(status);
         }
         capture
@@ -737,13 +740,29 @@ impl Capture {
                         && matches!(key.generation, CaptureGeneration::Published(_))
                 })
             {
-                return CaptureSelection::Ambiguous;
+                return CaptureSelection::Ambiguous(
+                    self.readings
+                        .keys()
+                        .filter(|key| {
+                            key.pid == pid
+                                && key.root == root
+                                && matches!(key.generation, CaptureGeneration::Published(_))
+                        })
+                        .cloned()
+                        .collect(),
+                );
             }
             return CaptureSelection::Selected(confirmed_capture.key.clone());
         }
         match (candidates.next(), candidates.next()) {
             (Some(key), None) => CaptureSelection::Selected(key.clone()),
-            (Some(_), Some(_)) => CaptureSelection::Ambiguous,
+            (Some(_), Some(_)) => CaptureSelection::Ambiguous(
+                self.readings
+                    .keys()
+                    .filter(|key| key.pid == pid && key.root == root)
+                    .cloned()
+                    .collect(),
+            ),
             (None, _) => CaptureSelection::Unregistered,
         }
     }
@@ -763,6 +782,24 @@ impl Capture {
             )
         });
         keys.into_iter().cloned()
+    }
+
+    /// Retained reading pids support selection reporting even without any process row.
+    pub(crate) fn registered_pids(&self) -> std::collections::BTreeSet<u32> {
+        self.readings.keys().map(|key| key.pid).collect()
+    }
+
+    /// Only the selected, confirmed publication grants registration row ownership.
+    pub(crate) fn row_source(&self, pid: u32) -> crate::processes::DirectAssociation {
+        let CaptureSelection::Selected(key) = self.select(pid) else {
+            return crate::processes::DirectAssociation::None;
+        };
+        self.confirmed
+            .iter()
+            .find(|confirmed| confirmed.key == key)
+            .map_or(crate::processes::DirectAssociation::None, |confirmed| {
+                crate::processes::DirectAssociation::Direct(Box::new(confirmed.into()))
+            })
     }
 
     /// Consumers receive proofs that only the registration verifier can construct.
@@ -1164,6 +1201,7 @@ fn leading_number(text: &str) -> Option<(usize, &str)> {
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
+    clippy::panic,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
@@ -1179,6 +1217,51 @@ mod tests {
     use crate::constants::CAPTURE_INVENTORY_LIMIT;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
+
+    #[test]
+    fn row_source_requires_the_selected_proof_and_survives_timestamp_or_log_failure() {
+        let root = capture_root();
+        publish(root.path(), 10, "first", "100", CAPTURED_REDRAW);
+        let mut capture = Capture::take_with_observations(root.path(), |_| present("100"));
+        capture.confirmed[0].modified =
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
+        let crate::processes::DirectAssociation::Direct(source) = capture.row_source(10) else {
+            panic!("timestamp failure retains proof");
+        };
+        assert_eq!(source.registration().pid(), 10);
+        let log = root.path().join("run-first-10.log");
+        fs::remove_file(&log).unwrap();
+        fs::create_dir(&log).unwrap();
+        let unreadable = Capture::take_with_observations(root.path(), |_| present("100"));
+        assert_eq!(unreadable.root_status[0].confirmed, 0);
+        assert!(matches!(
+            unreadable.row_source(10),
+            crate::processes::DirectAssociation::Direct(_)
+        ));
+        let unknown = Capture::take_with_observations(root.path(), |_| Observation::Unknown);
+        assert!(matches!(
+            unknown.row_source(10),
+            crate::processes::DirectAssociation::None
+        ));
+        publish(root.path(), 10, "second", "100", CAPTURED_WAIT);
+        fs::write(
+            root.path().join(CAPTURE_LIVE_RUNS_DIR).join("10"),
+            "/writer/project\tcargo build",
+        )
+        .unwrap();
+        let ambiguous = Capture::take_with_observations(root.path(), |_| present("100"));
+        assert!(matches!(
+            ambiguous.row_source(10),
+            crate::processes::DirectAssociation::None
+        ));
+        assert!(
+            matches!(ambiguous.select(10), CaptureSelection::Ambiguous(keys) if keys.len() == 2 && keys.iter().all(|key| matches!(key.generation, CaptureGeneration::Published(_))))
+        );
+        assert!(matches!(
+            ambiguous.row_source(11),
+            crate::processes::DirectAssociation::None
+        ));
+    }
 
     #[test]
     fn aliased_legacy_and_versioned_registrations_read_one_log_once_per_scan() {
@@ -1268,21 +1351,21 @@ mod tests {
             publish(root.path(), 10, replacement, "100", CAPTURED_WAIT);
             let mut capture = Capture::take_with_observations(root.path(), |_| present("100"));
             assert_eq!(capture.confirmed().len(), 2);
-            assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+            assert!(matches!(capture.select(10), CaptureSelection::Ambiguous(_)));
             for reverse in [false, true] {
                 for confirmed in &mut capture.confirmed {
                     let current = confirmed.registration.record().generation() == replacement;
                     confirmed.modified = Ok(SystemTime::UNIX_EPOCH
                         + std::time::Duration::from_secs(u64::from(current != reverse)));
                 }
-                assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+                assert!(matches!(capture.select(10), CaptureSelection::Ambiguous(_)));
             }
             capture.confirmed.reverse();
             for confirmed in &mut capture.confirmed {
                 confirmed.modified =
                     Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
             }
-            assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+            assert!(matches!(capture.select(10), CaptureSelection::Ambiguous(_)));
         }
     }
 
@@ -1325,7 +1408,7 @@ mod tests {
                 });
                 assert_eq!(capture.confirmed().len(), 1);
                 assert_eq!(capture.keys(10).count(), 2);
-                assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+                assert!(matches!(capture.select(10), CaptureSelection::Ambiguous(_)));
             }
         }
     }
@@ -1342,7 +1425,7 @@ mod tests {
             present(if first { "100" } else { "101" })
         });
         assert_eq!(capture.confirmed().len(), 2);
-        assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+        assert!(matches!(capture.select(10), CaptureSelection::Ambiguous(_)));
     }
 
     #[test]
@@ -1377,7 +1460,10 @@ mod tests {
         );
         publish(root.path(), 10, "second", "100", CAPTURED_WAIT);
         let competing = Capture::take_with_observations(root.path(), |_| Observation::Unknown);
-        assert_eq!(competing.select(10), CaptureSelection::Ambiguous);
+        assert!(matches!(
+            competing.select(10),
+            CaptureSelection::Ambiguous(_)
+        ));
     }
 
     #[test]
@@ -1395,7 +1481,7 @@ mod tests {
             KernelObservation::for_test(pid, present("100"))
         });
         assert_eq!(capture.confirmed().len(), 3);
-        assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+        assert!(matches!(capture.select(10), CaptureSelection::Ambiguous(_)));
     }
 
     #[test]
@@ -1557,6 +1643,7 @@ mod tests {
                         sources: vec![CaptureRootSource::Default],
                     },
                     owner:        scan.owner(),
+                    account:      crate::processes::AccountName::Unavailable,
                     cleanup:      Vec::new(),
                     state:        RootReadStatus::Readable,
                     confirmed:    0,

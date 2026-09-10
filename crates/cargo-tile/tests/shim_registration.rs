@@ -17,13 +17,17 @@ mod tests {
     use tempfile::TempDir;
 
     /// Exercise the built binary using actual shim publications and a reconstructed PTY screen.
-    const READER_SCENARIO_SCRIPT: &str = r#"import errno
+    const READER_SCENARIO_SCRIPT: &str = r#"from datetime import datetime, timezone
+import errno
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
+import pwd
 import re
 import select
+import shlex
 import shutil
 import signal
 import struct
@@ -34,19 +38,32 @@ import time
 
 root = Path(sys.argv[1]).resolve()
 binary, source, scenario = sys.argv[2:]
+# Parallel reader tests share the host census; leave room for every fixture's rows.
+terminal_rows = 300
+terminal_columns = 300
 home = root / 'home'
 work = home / ('repair-group-' + root.name)
 capture = root / 'capture'
+other_capture = root / 'other-capture'
 pids = capture / 'state/pids'
 bin_directory = root / 'bin'
 for directory in (work, pids, bin_directory, root / 'config/cargo-tile',
                   home / 'Library/Application Support/cargo-tile', root / 'rustup/toolchains'):
     directory.mkdir(parents=True)
-configuration = '[capture]\nauto_install = false\n[tiles]\ninitial_rows = 100\n'
-if scenario == 'excluded':
+configuration = '[capture]\nauto_install = false\n'
+if scenario in ('root-headings', 'summary-root-headings', 'root-duplicate', 'fallback-root-duplicate',
+                'fallback-selected-unknown'):
+    (other_capture / 'state/pids').mkdir(parents=True)
+    configuration += 'roots = [' + json.dumps(str(other_capture)) + ']\n'
+configuration += '[tiles]\ninitial_rows = 100\n'
+if scenario in ('excluded', 'fallback-excluded'):
     configuration += '[commands]\nexcluded = ["clippy"]\n'
 elif scenario == 'exec-excluded':
     configuration += '[commands]\nexcluded = ["run"]\n'
+elif scenario in ('summary-root-headings', 'fallback-summary', 'child-source-switch'):
+    # These rows must lead their own groups to appear in the summary. Exclude
+    # the outer test driver, using the operator's ordinary configuration surface.
+    configuration += '[commands]\nexcluded = ["nextest"]\n'
 for directory in (root / 'config/cargo-tile', home / 'Library/Application Support/cargo-tile'):
     (directory / 'config.toml').write_text(configuration)
 shutil.copyfile(source, bin_directory / 'cargo')
@@ -55,6 +72,8 @@ shutil.copyfile(shutil.which('sh'), bin_directory / 'cargo-tile-real')
 (work / 'build').write_text('''printf '%s\\0' "$LC_ALL" "$TZ" "$LANG" "$HOME" > "$OBSERVED/environment"
 printf '%s' "$$" > "$OBSERVED/cargo-pid"
 printf '%s' "${CARGOTILE_NESTED-}" > "$OBSERVED/enclosing-pid"
+printf '%s\\0' "$@" > "$OBSERVED/arguments"
+printf 'process' > "$OBSERVED/source"
 printf 'Blocking waiting for file lock on build directory\\n' >&2
 if [ -n "${NESTED_WORK-}" ]; then
     for command in check test; do
@@ -66,6 +85,14 @@ if [ -n "${NESTED_WORK-}" ]; then
 fi
 remaining=1000
 while [ ! -f "$OBSERVED/release" ] && [ "$remaining" -gt 0 ]; do
+    if [ -f "$OBSERVED/spawn-child" ] && [ ! -f "$OBSERVED/child-started" ]; then
+        sh "$OBSERVED/spawn-child" &
+        printf '%s' "$!" > "$OBSERVED/child-started"
+    fi
+    if [ -n "${REGISTRATION_CARRIER-}" ] && [ -f "$OBSERVED/retire" ]; then
+        rm "$OBSERVED/activate" "$OBSERVED/retire"
+        exec "$CARRIER_PYTHON" "$REGISTRATION_CARRIER"
+    fi
     if [ -f "$OBSERVED/pulse" ]; then
         printf 'writer remains captured after reader scan\\n' >&2
         rm "$OBSERVED/pulse"
@@ -78,6 +105,7 @@ wait
 exit 37
 ''')
 shutil.copyfile(work / 'build', work / 'clippy')
+shutil.copyfile(work / 'build', work / 'check')
 shutil.copyfile(work / 'build', work / 'application')
 (work / 'run').write_text('exec sh "$APPLICATION"\n')
 
@@ -94,6 +122,7 @@ environment.update(HOME=str(home), XDG_CONFIG_HOME=str(root / 'config'),
                    LC_ALL=writer_locale, LANG=writer_locale,
                    TZ='EST5EDT,M3.2.0,M11.1.0', TERM='xterm-256color')
 writers = []
+parent_owned_children = []
 reader = None
 terminal = None
 transcript = bytearray()
@@ -104,13 +133,15 @@ def wait_for(predicate, description):
         if predicate():
             return
         time.sleep(0.02)
-    raise AssertionError(description)
+    raise AssertionError(description + ('\n' + screen() if transcript else ''))
 
-def start_writer(name, writer_home, command='build', nested_directory=None):
+def start_writer(name, writer_home, command='build', nested_directory=None,
+                 capture_root=capture, directory=work, arguments=()):
     name += '-' + root.name
     observations = root / name
     observations.mkdir()
-    child_environment = dict(environment, HOME=str(writer_home), OBSERVED=str(observations))
+    child_environment = dict(environment, HOME=str(writer_home), OBSERVED=str(observations),
+                             CARGO_TILE_ROOT=str(capture_root))
     if command == 'run':
         child_environment['APPLICATION'] = str(work / 'application')
     if nested_directory is not None:
@@ -121,15 +152,16 @@ def start_writer(name, writer_home, command='build', nested_directory=None):
         child_environment.update(NESTED_WORK=str(nested_directory),
                                  NESTED_MARKER='probe-nested-' + root.name)
     with (observations / 'output').open('wb') as output:
-        child = subprocess.Popen(['sh', str(bin_directory / 'cargo'), command, name],
-                                 cwd=work, env=child_environment, stdin=subprocess.DEVNULL,
+        child = subprocess.Popen(['sh', str(bin_directory / 'cargo'), command, name, *arguments],
+                                 cwd=directory, env=child_environment, stdin=subprocess.DEVNULL,
                                  stdout=output, stderr=output, start_new_session=True)
     writers.append((child, observations))
     wait_for(lambda: (observations / 'cargo-pid').exists(), 'cargo does not start')
-    wait_for(lambda: any(pids.glob(str(child.pid) + '.*')), 'shim does not publish')
-    registration = next(pids.glob(str(child.pid) + '.*'))
+    publications = capture_root / 'state/pids'
+    wait_for(lambda: any(publications.glob(str(child.pid) + '.*')), 'shim does not publish')
+    registration = next(publications.glob(str(child.pid) + '.*'))
     fields = registration.read_bytes().split(b'\0')
-    log = capture / os.fsdecode(fields[4])
+    log = capture_root / os.fsdecode(fields[4])
     wait_for(lambda: log.exists() and b'Blocking waiting' in log.read_bytes(),
              'writer does not capture progress')
     inherited = (observations / 'environment').read_bytes().split(b'\0')
@@ -160,6 +192,97 @@ def start_writer(name, writer_home, command='build', nested_directory=None):
                 assert application_pid in ancestry, ancestry
     return child, observations, registration, fields, log
 
+class ParentOwnedChild:
+    # The enclosing writer owns wait and process-group cleanup for this child.
+    def __init__(self, pid):
+        self.pid = pid
+
+def start_registration_carrier(template, command='build', writer_home=home):
+    # A live Python process has kernel identity but no cargo argv. Publish the
+    # shim's wire format for that lifetime, then exec cargo without changing pid.
+    observations = root / ('probe-carrier-' + root.name)
+    observations.mkdir()
+    directory = writer_home / ('registered-directory-' + root.name)
+    directory.mkdir(parents=True)
+    shutil.copyfile(work / 'build', directory / command)
+    carrier_script = observations / 'carrier.py'
+    carrier_script.write_text('''import os
+from pathlib import Path
+import subprocess
+import time
+observations = Path(os.environ['OBSERVED'])
+(observations / 'source').write_text('registration')
+while not (observations / 'release').exists():
+    if (observations / 'start-children').exists() and not (observations / 'children-started').exists():
+        for command in ('check', 'test'):
+            child_environment = dict(os.environ, OBSERVED=str(observations / command),
+                                     CARGOTILE_NESTED=str(os.getpid()))
+            subprocess.Popen(['sh', os.environ['CARRIER_SHIM'], command,
+                              os.environ['CARRIER_NESTED_MARKER'] + '-' + command],
+                             cwd=os.environ['CARRIER_NESTED_WORK'], env=child_environment)
+        (observations / 'children-started').touch()
+    if (observations / 'activate').exists():
+        program = os.environ['CARRIER_CARGO']
+        os.execv(program, [program, os.environ['CARRIER_COMMAND'], observations.name])
+    time.sleep(0.02)
+''')
+    child_environment = dict(environment, HOME=str(writer_home), OBSERVED=str(observations),
+                             REGISTRATION_CARRIER=str(carrier_script), CARRIER_PYTHON=sys.executable,
+                             CARRIER_CARGO=str(bin_directory / 'cargo-tile-real'),
+                             CARRIER_COMMAND=command)
+    if scenario == 'fallback-nested-source-switch':
+        nested_directory = home / ('nested-carrier-' + root.name)
+        nested_directory.mkdir()
+        for nested_command in ('check', 'test'):
+            (observations / nested_command).mkdir()
+            shutil.copyfile(work / 'build', nested_directory / nested_command)
+        child_environment.update(CARRIER_SHIM=str(bin_directory / 'cargo'),
+                                 CARRIER_NESTED_WORK=str(nested_directory),
+                                 CARRIER_NESTED_MARKER='probe-nested-' + root.name)
+    if scenario == 'child-source-switch':
+        parent_owned_children.append(observations)
+        launch = ['env', *(key + '=' + value for key, value in child_environment.items()
+                          if environment.get(key) != value), sys.executable, str(carrier_script)]
+        launch_file = template[1] / 'spawn-child.tmp'
+        launch_file.write_text(
+            'cd ' + shlex.quote(str(directory)) + '\nexec ' + shlex.join(launch) + '\n')
+        launch_file.rename(template[1] / 'spawn-child')
+        observed_pid = template[1] / 'child-started'
+        wait_for(lambda: observed_pid.exists() and observed_pid.read_text().isdigit(),
+                 'readable parent does not spawn its only child')
+        child = ParentOwnedChild(int(observed_pid.read_text()))
+    else:
+        with (observations / 'output').open('wb') as output:
+            child = subprocess.Popen([sys.executable, str(carrier_script)], cwd=directory,
+                                     env=child_environment, stdin=subprocess.DEVNULL,
+                                     stdout=output, stderr=output, start_new_session=True)
+        writers.append((child, observations))
+    wait_for(lambda: (observations / 'source').exists(), 'registration carrier does not start')
+    fields = list(template[3])
+    if sys.platform == 'linux':
+        fields[3] = Path('/proc/' + str(child.pid) + '/stat').read_bytes().rsplit(b') ', 1)[1].split()[19]
+    else:
+        started = subprocess.run(['ps', '-p', str(child.pid), '-o', 'lstart='], check=True,
+                                 capture_output=True, text=True,
+                                 env=dict(environment, LC_ALL='C', TZ='UTC0')).stdout.strip()
+        fields[3] = str(int(datetime.strptime(started, '%a %b %d %H:%M:%S %Y')
+                           .replace(tzinfo=timezone.utc).timestamp())).encode()
+    fields[1] += b'-carrier'
+    fields[4] = b'run-' + fields[1] + b'-' + str(child.pid).encode() + b'.log'
+    fields[5:8] = [os.fsencode(directory), os.fsencode(writer_home), b'2']
+    fields[8:] = [command.encode(), observations.name.encode(), b'']
+    registration = pids / (str(child.pid) + '.' + fields[1].decode())
+    log = capture / os.fsdecode(fields[4])
+    log.write_bytes(b'Blocking waiting for file lock on build directory\n')
+    registration.write_bytes(b'\0'.join(fields))
+    if scenario == 'fallback-nested-source-switch':
+        (observations / 'start-children').touch()
+        for nested_command in ('check', 'test'):
+            observed_parent = observations / nested_command / 'enclosing-pid'
+            wait_for(lambda: observed_parent.exists() and observed_parent.read_text() == str(child.pid),
+                     'nested carrier command does not inherit registration')
+    return child, observations, registration, fields, log
+
 def end_writer(writer):
     child, observations = writer[:2]
     for nested_command in ('check', 'test'):
@@ -182,10 +305,12 @@ def read_terminal(duration):
                 break
             transcript.extend(data)
 
-def screen():
+def terminal_snapshot():
     # Ratatui positions each changed run with CSI row;column H. Reconstruct cells
     # so repeated refreshes cannot manufacture extra headings or stale progress.
-    cells = [[' '] * 300 for _ in range(100)]
+    cells = [[' '] * terminal_columns for _ in range(terminal_rows)]
+    colors = [[None] * terminal_columns for _ in range(terminal_rows)]
+    foreground = None
     row = column = 0
     tokens = re.split(r'(\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))',
                       transcript.decode('utf-8', 'replace'))
@@ -198,14 +323,31 @@ def screen():
                 row = int(position[0] or 1) - 1
                 column = int(position[1] or 1) - 1 if len(position) > 1 else 0
             elif command == 'J' and parameters in ('2', '3'):
-                cells = [[' '] * 300 for _ in range(100)]
+                cells = [[' '] * terminal_columns for _ in range(terminal_rows)]
+                colors = [[None] * terminal_columns for _ in range(terminal_rows)]
             elif command == 'K':
                 if 0 <= row < len(cells):
-                    cells[row][column:] = [' '] * (300 - column)
+                    cells[row][column:] = [' '] * (terminal_columns - column)
+                    colors[row][column:] = [None] * (terminal_columns - column)
             elif command == 'C':
                 column += int(parameters or 1)
             elif command == 'G':
                 column = int(parameters or 1) - 1
+            elif command == 'm':
+                attributes = [int(value or 0) for value in parameters.split(';')]
+                index = 0
+                while index < len(attributes):
+                    attribute = attributes[index]
+                    if attribute in (0, 39):
+                        foreground = None
+                    elif 30 <= attribute <= 37 or 90 <= attribute <= 97:
+                        foreground = (attribute,)
+                    elif attribute in (38, 48) and index + 1 < len(attributes):
+                        count = 3 if attributes[index + 1] == 2 else 1
+                        if attribute == 38:
+                            foreground = tuple(attributes[index + 1:index + 2 + count])
+                        index += 1 + count
+                    index += 1
             continue
         if token.startswith('\x1b]'):
             continue
@@ -215,10 +357,14 @@ def screen():
             elif character == '\n':
                 row += 1
             elif character >= ' ':
-                if 0 <= row < 100 and 0 <= column < 300:
+                if 0 <= row < terminal_rows and 0 <= column < terminal_columns:
                     cells[row][column] = character
+                    colors[row][column] = foreground
                 column += 1
-    return '\n'.join(''.join(line).rstrip() for line in cells)
+    return '\n'.join(''.join(line).rstrip() for line in cells), colors
+
+def screen():
+    return terminal_snapshot()[0]
 
 def command_panes(rendered):
     lines = rendered.splitlines()
@@ -238,11 +384,226 @@ def fixture_pane(rendered, markers):
     assert len(matches) == 1, 'fixture must occupy one command pane\n' + rendered
     return matches[0]
 
+def summary_pane(rendered):
+    lines = rendered.splitlines()
+    beginning = next(index for index, line in enumerate(lines) if '┌ summary' in line)
+    ending = next(index for index in range(beginning + 1, len(lines))
+                  if re.match(r'^\s*[└├╰╞╘].*[─━═]{3}', lines[index]))
+    return lines[beginning + 1:ending]
+
+def summary_row_is_unobscured(rendered, marker, following_marker):
+    global terminal_rows
+    summary = summary_pane(rendered)
+    rows = [index for index, line in enumerate(summary) if marker in line]
+    following = [index for index, line in enumerate(summary) if following_marker in line]
+    if (rows and following and max(rows) < min(following)
+            and all(index < len(summary) - 1 and 'content rows:' not in summary[index]
+                    for index in rows)):
+        return True
+    # Marker visibility alone can accept the footer after its sizing readout
+    # overwrites compiler/runs. Give the summary more room, then await a redraw.
+    # Keep readiness geometric: incorrect measurements must still fail below.
+    if terminal_rows < 2400:
+        terminal_rows *= 2
+        fcntl.ioctl(terminal, termios.TIOCSWINSZ,
+                    struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
+        read_terminal(0.1)
+    return False
+
+def assert_registered_row(rendered, writer):
+    commands = (summary_pane(rendered) if scenario == 'fallback-summary'
+                else fixture_pane(rendered, (writer[1].name,)))
+    rows = [line for line in commands if writer[1].name in line]
+    assert len(rows) == 1, 'registration duplicates its invocation\n' + rendered
+    assert 'cargo ' + writer[3][8].decode() + ' ' + writer[1].name in rows[0], rendered
+    assert re.match(r'^\s*│\s*' + str(writer[0].pid) + r'\s', rows[0]), rendered
+    directory = Path(os.fsdecode(writer[3][5]))
+    headings = [line for line in commands if directory.name in line]
+    assert len(headings) == 1, 'registration loses or duplicates its heading\n' + rendered
+    account = pwd.getpwuid(capture.stat().st_uid).pw_name
+    display = ('~/' + str(directory.relative_to(home))
+               if writer[3][6] == os.fsencode(home) else str(directory))
+    assert '[' + account + '] ' + display in headings[0], rendered
+    # Other tests share this process tree and can add rows before this fixture.
+    # Compare the fixture's directory order across scans, not its screen offset.
+    directories = (work.name, directory.name, 'nested-carrier-' + root.name)
+    fixture_headings = [line for line in commands if any(name in line for name in directories)]
+    return rows[0], fixture_headings.index(headings[0])
+
+def unavailable_measurements(row):
+    # The final runs cell can touch the pane border without trailing padding.
+    # A border delimits that cell just as whitespace delimits the inner cells.
+    return row.replace('│', ' ').split().count('--')
+
+def carrier_source_is_rendered(writer, source):
+    read_terminal(0.1)
+    rows = [line for pane in command_panes(screen()) for line in pane if writer[1].name in line]
+    if len(rows) != 1:
+        return False
+    # A sleeping process may never earn a CPU baseline. Its observed compiler
+    # absence and managed count still distinguish it from registration-only data.
+    unavailable = unavailable_measurements(rows[0])
+    expected = 2 if scenario == 'fallback-nested-source-switch' else 3
+    return unavailable == expected if source == 'registration' else unavailable < expected
+
+def assert_child_family(parent, child):
+    rendered, colors = terminal_snapshot()
+    commands = fixture_pane(rendered, (parent[1].name, child[1].name))
+    rows = {}
+    for writer in (parent, child):
+        matching = [line for line in commands if writer[1].name in line]
+        assert len(matching) == 1, 'source change duplicates an invocation\n' + rendered
+        rows[writer[0].pid] = matching[0]
+    parent_row, child_row = rows[parent[0].pid], rows[child[0].pid]
+    parent_pid = (parent[1] / 'cargo-pid').read_text()
+    assert re.match(r'^\s*│\s*' + parent_pid + r'\s', parent_row), rendered
+    assert re.match(r'^\s*│\s*' + str(child[0].pid) + r'\s+' + parent_pid + r'\s',
+                    child_row), rendered
+    # The readable lead counts its only assembled child, whichever source supplies it.
+    assert re.search(r'\s1\s*│\s*$', parent_row), 'parent loses its managed child\n' + rendered
+    lines = rendered.splitlines()
+    parent_line, child_line = lines.index(parent_row), lines.index(child_row)
+    parent_column = parent_row.index(parent_pid)
+    child_column = child_row.index(str(child[0].pid))
+    reference_column = child_row.index(parent_pid, child_column + len(str(child[0].pid)))
+    family = colors[parent_line][parent_column]
+    assert family is not None, 'terminal parser does not observe the family color'
+    assert family == colors[child_line][reference_column], 'child loses its parent family color'
+    assert family != colors[child_line][child_column], 'parent has plain pid color instead of a family'
+    child_header = next(line for line in reversed(lines[:child_line])
+                        if 'parent' in line and 'command' in line)
+    starts = tuple(row[child_header.index('start'):child_header.index('dur')].strip()
+                   for row in (parent_row, child_row))
+    assert all(starts), 'start cells are absent\n' + rendered
+    headings = tuple(line.strip() for line in commands
+                     if work.name in line or Path(os.fsdecode(child[3][5])).name in line)
+    assert len(headings) == 2, 'source change loses a directory heading\n' + rendered
+    return family, starts, headings
+
+def assert_carrier_children(rendered, writer):
+    markers = ['probe-nested-' + root.name + '-' + command for command in ('check', 'test')]
+    commands = fixture_pane(rendered, (writer[1].name, *markers))
+    parent_row = next(line for line in commands if writer[1].name in line)
+    assert re.search(r'\s2\s*│\s*$', parent_row), 'parent must count both assembled children\n' + rendered
+    for command, marker in zip(('check', 'test'), markers):
+        rows = [line for line in commands if marker in line]
+        assert len(rows) == 1, 'source transition duplicates a nested row\n' + rendered
+        assert 'cargo ' + command + ' ' + marker in rows[0], rendered
+        pid = (writer[1] / command / 'cargo-pid').read_text()
+        assert re.match(r'^\s*│\s*' + pid + r'\s+' + str(writer[0].pid) + r'\s', rows[0]), rendered
+    heading = '[' + pwd.getpwuid(capture.stat().st_uid).pw_name + '] ~/nested-carrier-' + root.name
+    assert sum(heading in line for line in commands) == 1, rendered
+
+def publish_other_root(writer):
+    fields = list(writer[3])
+    fields[5] = os.fsencode(home / ('unused-directory-' + root.name))
+    fields[8:] = [b'test', ('probe-unused-' + root.name).encode(), b'']
+    (other_capture / 'state/pids' / writer[2].name).write_bytes(b'\0'.join(fields))
+    shutil.copyfile(writer[4], other_capture / writer[4].name)
+
+def settings_screen():
+    os.write(terminal, b's')
+    def settings_are_visible():
+        read_terminal(0.1)
+        rendered = screen()
+        return 'Capture:' in rendered and 'auto install' in rendered and 'Commands:' in rendered
+    wait_for(settings_are_visible, 'settings do not open')
+    rendered = screen()
+    os.write(terminal, b'\x1b')
+    def settings_are_closed():
+        read_terminal(0.1)
+        return 'Capture' not in screen()
+    wait_for(settings_are_closed, 'settings do not close')
+    return rendered
+
 try:
     first = start_writer('probe-first', home)
     retained = []
     removed = []
-    if scenario in ('grouping', 'grouping-earlier-pane'):
+    if scenario.startswith('quiet-json'):
+        quiet = '--quiet' if scenario == 'quiet-json-long' else '-q'
+        json_format = (('--message-format', 'json') if scenario == 'quiet-json-separate'
+                       else ('--message-format=json',))
+        arguments = (quiet, *json_format, quiet, '--', '--quiet', '-q')
+        quiet_writer = start_writer('probe-json', home, command='check', arguments=arguments)
+        observed = (quiet_writer[1] / 'arguments').read_bytes().split(b'\0')
+        assert observed == [quiet_writer[1].name.encode(), *(value.encode() for value in json_format),
+                            b'--', b'--quiet', b'-q', b''], observed
+        retained.extend((quiet_writer[2], quiet_writer[4]))
+    elif scenario.startswith('rejected-rewrite'):
+        executed_arguments, registered_arguments = {
+            'rejected-rewrite-non-json-long': ((), ('--quiet',)),
+            'rejected-rewrite-non-json-short': ((), ('-q',)),
+            'rejected-rewrite-post-long': (
+                ('--message-format=json', '--'),
+                ('--quiet', '--message-format=json', '--', '--quiet')),
+            'rejected-rewrite-post-short': (
+                ('--message-format=json', '--'),
+                ('-q', '--message-format=json', '--', '-q')),
+            'rejected-rewrite-unrelated': (
+                ('--message-format=json', '--release'),
+                ('--quiet', '--message-format=json', '--workspace')),
+        }[scenario]
+        mismatched = start_writer('probe-mismatch', home, command='check',
+                                  arguments=executed_arguments)
+        observed = (mismatched[1] / 'arguments').read_bytes().split(b'\0')
+        assert observed == [mismatched[1].name.encode(),
+                            *(value.encode() for value in executed_arguments), b''], observed
+        # Change only the external record's argv, retaining its live kernel proof.
+        # An unrecognized rewrite must not give the live cargo direct ownership.
+        fields = list(mismatched[3])
+        fields[7] = str(2 + len(registered_arguments)).encode()
+        fields[8:] = [b'check', mismatched[1].name.encode(),
+                      *(value.encode() for value in registered_arguments), b'']
+        mismatched[2].write_bytes(b'\0'.join(fields))
+        retained.extend((mismatched[2], mismatched[4]))
+    elif scenario == 'child-source-switch':
+        carrier = start_registration_carrier(first)
+        retained.extend((carrier[2], carrier[4]))
+    elif scenario.startswith('fallback'):
+        command = 'clippy' if scenario == 'fallback-excluded' else 'build'
+        writer_home = root / 'writer-home' if scenario == 'fallback-other-home' else home
+        carrier = start_registration_carrier(first, command, writer_home)
+        retained.extend((carrier[2], carrier[4]))
+        if scenario == 'fallback-summary':
+            # A newer live row in the same directory keeps the carrier above
+            # the footer without relying on unrelated host processes.
+            sentinel = start_writer('probe-summary-tail', home,
+                                    directory=Path(os.fsdecode(carrier[3][5])))
+            retained.extend((sentinel[2], sentinel[4]))
+            started = first[2].stat().st_mtime - 60
+            os.utime(carrier[2], (started, started))
+            os.utime(sentinel[2], (started + 60, started + 60))
+        if scenario == 'fallback-selected-unknown':
+            publish_other_root(carrier)
+        if scenario in ('fallback-unknown', 'fallback-selected-unknown'):
+            fields = list(carrier[3])
+            fields[3] = b''
+            carrier[2].write_bytes(b'\0'.join(fields))
+        elif scenario == 'fallback-unreadable-log':
+            carrier[4].unlink()
+            carrier[4].mkdir()  # Non-regular log is unreadable even for a privileged test user.
+        elif scenario == 'fallback-root-duplicate':
+            publish_other_root(carrier)
+        elif scenario == 'fallback-ambiguous':
+            competing = list(carrier[3])
+            competing[1] += b'-competing'
+            competing[4] = b'run-' + competing[1] + b'-' + str(carrier[0].pid).encode() + b'.log'
+            competing_name = pids / (str(carrier[0].pid) + '.' + competing[1].decode())
+            competing_log = capture / os.fsdecode(competing[4])
+            competing_log.write_bytes(b'PASS [0.010s] (7/13) competing-test\n')
+            competing_name.write_bytes(b'\0'.join(competing))
+            retained.extend((competing_name, competing_log))
+    elif scenario in ('root-headings', 'summary-root-headings'):
+        second = start_writer('probe-second', home, capture_root=other_capture)
+    elif scenario == 'root-duplicate':
+        publish_other_root(first)
+    elif scenario == 'two-directories':
+        other_directory = home / ('other-directory-' + root.name)
+        other_directory.mkdir()
+        shutil.copyfile(work / 'build', other_directory / 'build')
+        second = start_writer('probe-second', home, directory=other_directory)
+    elif scenario in ('grouping', 'grouping-earlier-pane'):
         second = start_writer('probe-second', root / 'custom-home')
     elif scenario in ('nested', 'excluded', 'exec-nested', 'exec-excluded'):
         nested_directory = home / ('nested-directory-' + root.name)
@@ -321,9 +682,11 @@ try:
         retained.extend((first[2], first[4], competing_name, competing_log))
 
     reader_environment = dict(environment, LC_ALL='C', LANG='POSIX', TZ='UTC-11')
+    # Family assertions observe ANSI foregrounds even when the outer test runner is uncolored.
+    reader_environment.pop('NO_COLOR', None)
     reader, terminal = pty.fork()
     if reader == 0:
-        fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', 100, 300, 0, 0))
+        fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
         os.chdir(root)
         os.execve(binary, [binary], reader_environment)
     def reader_has_scanned():
@@ -335,6 +698,136 @@ try:
     read_terminal(1)
     rendered = screen()
     assert 'summary' in rendered, rendered
+    if scenario.startswith('quiet-json'):
+        os.write(terminal, b'p')
+        read_terminal(0.3)
+        rendered = screen()
+        commands = fixture_pane(rendered, (first[1].name, quiet_writer[1].name))
+        rows = [line for line in commands if quiet_writer[1].name in line]
+        assert len(rows) == 1, 'quiet JSON produces multiple invocation rows\n' + rendered
+        cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
+        assert re.match(r'^\s*│\s*' + cargo_pid + r'\s', rows[0]), rendered
+        assert 'cargo check ' + quiet_writer[1].name + ' ' + ' '.join(arguments) in rows[0], rendered
+        assert 'blocked' in rows[0], rendered
+        settings = settings_screen()
+        association = 'capture association: pid ' + cargo_pid + ' via registration ' + str(quiet_writer[0].pid)
+        assert association in ' '.join(settings.replace('│', ' ').split()), settings
+    if scenario.startswith('rejected-rewrite'):
+        os.write(terminal, b'p')
+        read_terminal(0.3)
+        rendered = screen()
+        rows = [line for commands in command_panes(rendered) for line in commands
+                if mismatched[1].name in line]
+        assert len(rows) == 2, 'unsupported argv rewrite gains direct ownership\n' + rendered
+        cargo_pid = (mismatched[1] / 'cargo-pid').read_text()
+        for pid, arguments in ((cargo_pid, executed_arguments),
+                               (str(mismatched[0].pid), registered_arguments)):
+            matching = [line for line in rows if re.match(r'^\s*│\s*' + pid + r'\s', line)]
+            assert len(matching) == 1, 'process and registration lose distinct identities\n' + rendered
+            expected = ' '.join(('cargo', 'check', mismatched[1].name, *arguments))
+            assert expected in matching[0], 'row takes another invocation source command\n' + rendered
+    if scenario == 'child-source-switch':
+        wait_for(lambda: carrier_source_is_rendered(carrier, 'registration'),
+                 'parent does not display its registration-only child')
+        initial = assert_child_family(first, carrier)
+        for source, trigger in (('process', 'activate'), ('registration', 'retire')):
+            (carrier[1] / trigger).touch()
+            wait_for(lambda: (carrier[1] / 'source').read_text() == source,
+                     'child does not switch to ' + source)
+            wait_for(lambda: carrier_source_is_rendered(carrier, source),
+                     'reader does not observe child source ' + source)
+            assert assert_child_family(first, carrier) == initial, \
+                'child source change alters family color, start, or headings\n' + screen()
+    if scenario.startswith('fallback'):
+        if scenario in ('fallback-unknown', 'fallback-excluded', 'fallback-ambiguous',
+                        'fallback-selected-unknown'):
+            assert carrier[1].name not in rendered, 'ineligible registration sources a row\n' + rendered
+        else:
+            def carrier_is_visible():
+                read_terminal(0.1)
+                rendered = screen()
+                if scenario == 'fallback-summary':
+                    return summary_row_is_unobscured(rendered, carrier[1].name,
+                                                     sentinel[1].name)
+                return carrier[1].name in rendered
+            wait_for(carrier_is_visible,
+                     'verified registration does not supply an unobscured command row')
+            rendered = screen()
+            row, heading = assert_registered_row(rendered, carrier)
+            expected_unavailable = 2 if scenario == 'fallback-nested-source-switch' else 3
+            assert unavailable_measurements(row) == expected_unavailable, \
+                'registration invents CPU, compiler, or managed measurements: ' + repr(row) + '\n' + rendered
+            if scenario != 'fallback-unreadable-log':
+                assert 'blocked' in row, rendered
+            if scenario in ('fallback-source-switch', 'fallback-nested-source-switch'):
+                if scenario == 'fallback-nested-source-switch':
+                    assert_carrier_children(rendered, carrier)
+                initial_heading = heading
+                (carrier[1] / 'activate').touch()
+                wait_for(lambda: (carrier[1] / 'source').read_text() == 'process',
+                         'carrier does not exec cargo')
+                wait_for(lambda: carrier_source_is_rendered(carrier, 'process'),
+                         'process source never supplies compiler and managed observations')
+                rendered = screen()
+                row, heading = assert_registered_row(rendered, carrier)
+                assert heading == initial_heading, 'source change moves the heading\n' + rendered
+                if scenario == 'fallback-nested-source-switch':
+                    assert_carrier_children(rendered, carrier)
+                (carrier[1] / 'retire').touch()
+                wait_for(lambda: (carrier[1] / 'source').read_text() == 'registration',
+                         'cargo does not return to registration-only visibility')
+                wait_for(lambda: carrier_source_is_rendered(carrier, 'registration'),
+                         'registration source never returns to unavailable measurements')
+                rendered = screen()
+                row, heading = assert_registered_row(rendered, carrier)
+                assert heading == initial_heading, 'reverse source change moves the heading\n' + rendered
+                assert unavailable_measurements(row) == expected_unavailable, repr(row) + '\n' + rendered
+                if scenario == 'fallback-nested-source-switch':
+                    assert_carrier_children(rendered, carrier)
+        if scenario == 'fallback-excluded':
+            (carrier[1] / 'activate').touch()
+            wait_for(lambda: (carrier[1] / 'source').read_text() == 'process', 'excluded cargo does not start')
+            read_terminal(1)
+            rendered = screen()
+            assert carrier[1].name not in rendered, 'excluded process sources a row\n' + rendered
+    if scenario in ('root-headings', 'two-directories', 'root-duplicate'):
+        markers = (first[1].name,) if scenario == 'root-duplicate' else (first[1].name, second[1].name)
+        commands = fixture_pane(rendered, markers)
+        for marker in markers:
+            assert sum(marker in line for line in commands) == 1, rendered
+        account = pwd.getpwuid(capture.stat().st_uid).pw_name
+        heading = '[' + account + '] ~/' + work.name
+        expected = 2 if scenario == 'root-headings' else 1
+        assert sum(heading in line for line in commands) == expected, rendered
+        if scenario == 'two-directories':
+            assert sum('[' + account + '] ~/' + other_directory.name in line
+                       for line in commands) == 1, rendered
+    if scenario == 'summary-root-headings':
+        summary = summary_pane(rendered)
+        heading = '[' + pwd.getpwuid(capture.stat().st_uid).pw_name + '] ~/' + work.name
+        assert sum(heading in line for line in summary) == 2, rendered
+        for writer in (first, second):
+            assert sum(writer[1].name in line for line in summary) == 1, rendered
+    if scenario in ('root-duplicate', 'fallback-root-duplicate', 'fallback-selected-unknown'):
+        assert 'probe-unused-' + root.name not in rendered, 'unused proof supplies command\n' + rendered
+        assert 'unused-directory-' + root.name not in rendered, 'unused proof supplies directory\n' + rendered
+        settings = settings_screen()
+        assert 'capture association' in settings and 'unused' in settings, settings
+        assert str(capture) in settings and str(other_capture) in settings, settings
+        publication = carrier[2] if scenario.startswith('fallback') else first[2]
+        assert publication.exists() and (other_capture / 'state/pids' / publication.name).exists()
+        diagnostics = ' '.join(settings.replace('│', ' ').split())
+        assert ': ' + publication.name + ')' in diagnostics, 'selected basename differs from file\n' + settings
+        assert '(' + publication.name + '; ' in diagnostics, 'unused basename differs from file\n' + settings
+    if scenario == 'fallback-unreadable-log':
+        settings = settings_screen()
+        assert carrier[4].name in settings and 'unreadable' in settings, settings
+        assert '1 capture' in settings and '2 captures' not in settings, settings
+    if scenario == 'fallback-ambiguous':
+        settings = settings_screen()
+        assert 'ambiguous' in settings.lower(), settings
+        assert carrier[2].name in settings and competing_name.name in settings, \
+            'ambiguous diagnostics omit the actual publication basenames\n' + settings
     if scenario in ('locale', 'grouping', 'grouping-earlier-pane', 'forged'):
         assert first[1].name in rendered, rendered
         assert any(first[1].name in line and 'blocked' in line
@@ -400,6 +893,17 @@ try:
         assert not path.exists(), 'reader retains ended artifact: ' + str(path) + '\n' + rendered
     for path in retained:
         assert path.exists(), 'reader removes unknown or live artifact: ' + str(path)
+    if scenario == 'fallback-ambiguous':
+        competing_name.unlink()
+        competing_log.unlink()
+        def fallback_recovers():
+            read_terminal(0.1)
+            return any(carrier[1].name in line and 'blocked' in line
+                       for line in screen().splitlines())
+        wait_for(fallback_recovers, 'resolved ambiguity does not redraw the registration row')
+        rendered = screen()
+        assert_registered_row(rendered, carrier)
+        assert 'ambiguous' not in settings_screen().lower(), 'resolved ambiguity remains in settings'
     if scenario in ('ambiguous-generation', 'unverifiable-generation'):
         competing_name.unlink()
         competing_log.unlink()
@@ -425,6 +929,8 @@ finally:
                     os.waitpid(reader, 0)
             os.close(terminal)
     finally:
+        for observations in parent_owned_children:
+            (observations / 'release').touch()
         for child, observations in writers:
             for nested_command in ('check', 'test'):
                 if (observations / nested_command).is_dir():
@@ -824,9 +1330,23 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
         assert!(
             output.status.success(),
             "{scenario}: {}\n{}",
-            String::from_utf8_lossy(&output.stderr),
-            String::from_utf8_lossy(&output.stdout)
+            reader_diagnostics(&output.stderr),
+            reader_diagnostics(&output.stdout)
         );
+    }
+
+    /// Keep failed assertions readable without hundreds of empty terminal cells.
+    fn reader_diagnostics(output: &[u8]) -> String {
+        String::from_utf8_lossy(output)
+            .lines()
+            .filter(|line| {
+                !line
+                    .chars()
+                    .all(|character| character.is_whitespace() || "│┌┐└┘├┤─".contains(character))
+            })
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Two HOME values cannot split one physical directory into separate headings.
@@ -839,6 +1359,141 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
     #[test]
     fn reader_grouping_finds_fixture_markers_after_an_unrelated_pane() {
         reader_regression("grouping-earlier-pane");
+    }
+
+    /// A verified live registration supplies fields absent from the process census.
+    #[test]
+    fn reader_displays_a_registration_without_a_cargo_process_row() {
+        reader_regression("fallback");
+    }
+
+    /// The registration's home cannot abbreviate a different scanner's directory.
+    #[test]
+    fn reader_keeps_a_registration_from_another_home_absolute() {
+        reader_regression("fallback-other-home");
+    }
+
+    /// A log read failure cannot erase the separately verified registration's row.
+    #[test]
+    fn reader_displays_a_verified_registration_with_an_unreadable_log() {
+        reader_regression("fallback-unreadable-log");
+    }
+
+    /// Missing kernel proof permits retention, never a registration-sourced row.
+    #[test]
+    fn reader_does_not_source_a_row_from_an_unknown_registration() {
+        reader_regression("fallback-unknown");
+    }
+
+    /// Exclusion applies before either registration or process row construction.
+    #[test]
+    fn reader_excludes_both_sources_of_the_same_invocation() {
+        reader_regression("fallback-excluded");
+    }
+
+    /// Exec preserves the invocation's single row and heading in both directions.
+    #[test]
+    fn reader_keeps_one_row_when_registration_and_process_sources_switch() {
+        reader_regression("fallback-source-switch");
+    }
+
+    /// Nested invocations keep their own rows and their parent's tile through both source changes.
+    #[test]
+    fn reader_keeps_process_children_with_a_parent_that_changes_row_source() {
+        reader_regression("fallback-nested-source-switch");
+    }
+
+    /// The shim's quiet rewrite still produces one directly registered JSON invocation.
+    #[test]
+    fn reader_keeps_one_direct_row_for_quiet_json() { reader_regression("quiet-json-long"); }
+
+    /// Short quiet options are removed only before the argument passthrough boundary.
+    #[test]
+    fn reader_keeps_one_direct_row_for_short_quiet_json() { reader_regression("quiet-json-short"); }
+
+    /// Separate message-format arguments authorize the same exact quiet rewrite.
+    #[test]
+    fn reader_keeps_one_direct_row_for_separate_json_format() {
+        reader_regression("quiet-json-separate");
+    }
+
+    /// Quiet removal without a JSON registration cannot acquire direct ownership.
+    #[test]
+    fn reader_rejects_quiet_removal_from_non_json_registrations() {
+        for scenario in [
+            "rejected-rewrite-non-json-long",
+            "rejected-rewrite-non-json-short",
+        ] {
+            reader_regression(scenario);
+        }
+    }
+
+    /// Quiet arguments after -- belong to the invoked program and must match exactly.
+    #[test]
+    fn reader_rejects_quiet_removal_after_the_passthrough_separator() {
+        for scenario in ["rejected-rewrite-post-long", "rejected-rewrite-post-short"] {
+            reader_regression(scenario);
+        }
+    }
+
+    /// JSON quiet normalization never authorizes another argument to change.
+    #[test]
+    fn reader_rejects_unrelated_argument_changes_during_quiet_removal() {
+        reader_regression("rejected-rewrite-unrelated");
+    }
+
+    /// A readable parent retains its family when its only child changes row source.
+    #[test]
+    fn reader_keeps_parent_family_across_its_only_childs_source_switch() {
+        reader_regression("child-source-switch");
+    }
+
+    /// Equal accounts and raw directories still identify separate roots.
+    #[test]
+    fn reader_prefixes_two_root_qualified_headings_for_the_same_directory() {
+        reader_regression("root-headings");
+    }
+
+    /// The summary preserves the account-qualified root headings tested in command panes.
+    #[test]
+    fn reader_prefixes_root_qualified_headings_in_the_summary() {
+        reader_regression("summary-root-headings");
+    }
+
+    /// The summary cannot hide any of a registration's three unavailable measurements.
+    #[test]
+    fn reader_shows_unavailable_registration_measurements_in_the_summary() {
+        reader_regression("fallback-summary");
+    }
+
+    /// Account qualification does not combine independent checkout directories.
+    #[test]
+    fn reader_keeps_two_directories_under_one_account_and_root_separate() {
+        reader_regression("two-directories");
+    }
+
+    /// Another root's proof never adds a second view of the process invocation.
+    #[test]
+    fn reader_keeps_one_process_row_when_two_roots_confirm_the_same_pid() {
+        reader_regression("root-duplicate");
+    }
+
+    /// Selection also prevents duplication without any eligible process row.
+    #[test]
+    fn reader_keeps_one_registration_row_when_two_roots_confirm_the_same_pid() {
+        reader_regression("fallback-root-duplicate");
+    }
+
+    /// A later root's confirmed proof cannot supply a selected but unconfirmed row.
+    #[test]
+    fn reader_does_not_borrow_metadata_past_an_unconfirmed_selected_root() {
+        reader_regression("fallback-selected-unknown");
+    }
+
+    /// Competing generations remain explained without a row and recover on the next scan.
+    #[test]
+    fn reader_reports_and_recovers_ambiguity_without_a_process_row() {
+        reader_regression("fallback-ambiguous");
     }
 
     /// One enclosing capture supplies progress without replacing nested commands or pids.

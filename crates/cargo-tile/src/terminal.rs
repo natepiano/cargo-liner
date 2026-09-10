@@ -757,9 +757,10 @@ fraying = "leading"
             pid: 11,
             invocation_id,
             capture_membership: CaptureMembership::Outside,
+            provenance: crate::processes::RowProvenance::Uncaptured,
             parent: VisibleParent::None,
             start: "10:00".to_owned(),
-            started: 0,
+            started: crate::processes::RunStart::Known(0),
             duration: "00:01".to_owned(),
             cpu: Measurement::Reading("0%".to_owned()),
             compiler: CompilerObservation::None,
@@ -940,6 +941,53 @@ fraying = "leading"
             &mut app,
             Capture::take_from(root.path(), observe)
         ));
+    }
+
+    #[test]
+    fn capture_selection_and_account_changes_redraw_even_without_process_rows() {
+        let mut app = App::new_for_test().expect("test app");
+        let root = TempDir::new().expect("root");
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        fs::create_dir_all(&markers).expect("registration directory");
+        for pid in [10, 11] {
+            fs::write(markers.join(pid.to_string()), "/work\tcargo build").expect("registration");
+        }
+        let observe = |pid| KernelObservation::for_test(pid, Observation::Unknown);
+        let mut capture = Capture::take_from(root.path(), observe);
+        let keys: Vec<_> = [10, 11]
+            .into_iter()
+            .flat_map(|pid| capture.keys(pid))
+            .collect();
+        let association = crate::processes::CaptureAssociation {
+            pid:       10,
+            selection: crate::processes::AssociationSelection::Ambiguous {
+                candidates: keys.clone(),
+            },
+        };
+        capture.root_status[0]
+            .associations
+            .push(association.clone());
+        assert!(deliver_capture(&mut app, capture));
+        assert_eq!(app.root_status[0].associations, [association]);
+        let mut recovered = Capture::take_from(root.path(), observe);
+        recovered.root_status[0]
+            .associations
+            .push(crate::processes::CaptureAssociation {
+                pid:       10,
+                selection: crate::processes::AssociationSelection::Selected {
+                    key:    keys[0].clone(),
+                    proof:  crate::processes::SelectedProof::Unconfirmed,
+                    unused: Vec::new(),
+                },
+            });
+        recovered.root_status[0].account = crate::processes::AccountName::Resolved("runner".into());
+        let expected = recovered.root_status.clone();
+        assert!(deliver_capture(&mut app, recovered));
+        assert_eq!(app.root_status, expected);
+        assert!(app.roster.groups().is_empty());
+        let mut unchanged = Capture::take_from(root.path(), observe);
+        unchanged.root_status = expected;
+        assert!(!deliver_capture(&mut app, unchanged));
     }
 
     #[test]

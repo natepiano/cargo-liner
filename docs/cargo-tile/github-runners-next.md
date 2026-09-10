@@ -32,7 +32,7 @@
   - Revealed by: Phase 3
 
 - [ ] **Every configured-root status remains reachable in Settings**
-  - Target: `crates/cargo-tile/src/render.rs` — `draw_settings` (`:2022`),
+  - Target: `crates/cargo-tile/src/render.rs` — `draw_settings` (`:2128`),
     including viewport-to-rendered-line positioning.
   - Why needed: configured-root rows and their wrapped diagnostics can exceed
     the popup height, but the paragraph does not follow the settings viewport,
@@ -55,3 +55,16 @@
     whole subtree, and an unavailable descendant makes that total unavailable
     rather than a number.
   - Revealed by: Phase 7
+
+- [ ] **The reader harness waits for the fixture's command pane instead of asserting it on the first frame**
+  - Target: `crates/cargo-tile/tests/shim_registration.rs` — the `reader_regression`
+    harness and its `fixture must occupy one command pane` assertion, on the
+    exec-excluded scenario `reader_keeps_application_spawned_cargo_when_run_is_excluded`.
+  - Why needed: the assertion fires on the first captured frame, so a slow first
+    scan fails a scenario whose source is unchanged; observed once in three
+    consecutive package runs on the same tree, passing on rerun. A gate that
+    fails without a code change blocks checkpoints for nothing.
+  - Completion condition: the harness polls for the expected pane count up to
+    the scenario's existing deadline before asserting, and the exec-excluded
+    scenario passes ten consecutive runs on the Linux machine.
+  - Revealed by: Phase 9

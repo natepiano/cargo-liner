@@ -1,6 +1,7 @@
 //! Frame rendering: the app's panes, the framework status line along the
 //! bottom, and whichever framework overlay is open above them.
 
+use std::path::Path;
 use std::time::Instant;
 
 use ratatui::Frame;
@@ -64,6 +65,9 @@ use crate::attract;
 use crate::attract::BackdropNotice;
 use crate::attract::Grid;
 use crate::attract::Work;
+use crate::capture_root::RootIncarnation;
+use crate::constants::ACCOUNT_HEADING_CLOSE;
+use crate::constants::ACCOUNT_HEADING_OPEN;
 use crate::constants::ANCESTRY_ELISION;
 use crate::constants::ANCESTRY_GAP_HEIGHT;
 use crate::constants::ANCESTRY_LEVEL_INDENT;
@@ -121,15 +125,19 @@ use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::globals::AppGlobalAction;
 use crate::probe;
 use crate::processes;
+use crate::processes::AccountName;
 use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
 use crate::processes::CompilerObservation;
 use crate::processes::InvocationId;
 use crate::processes::Measurement;
+use crate::processes::RowProvenance;
+use crate::processes::RunStart;
 use crate::processes::SummaryDetail;
 use crate::processes::VisibleParent;
 use crate::progress::CaptureLookup;
 use crate::progress::CaptureRead;
+use crate::progress::CaptureRootIndex;
 use crate::progress::CounterState;
 use crate::progress::Progress;
 use crate::progress::RunState;
@@ -401,7 +409,7 @@ fn tile_demands(
             &summary_rows(roster, hidden_when_idle),
             TableKind::Summary,
             width_of(TileContent::Summary),
-            None,
+            PinnedGroup::Unpinned,
             tree,
         ),
         groups:  roster
@@ -445,7 +453,7 @@ fn group_height(
         &rows,
         TableKind::Command,
         width,
-        Some(group.lead.process.path.as_str()),
+        PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
         tree,
     );
     ancestry_demand(&ancestry, width).saturating_add(table)
@@ -486,7 +494,7 @@ fn table_height(
     rows: &[&TrackedRow],
     kind: TableKind,
     width: u16,
-    pinned: Option<&str>,
+    pinned: PinnedGroup<'_>,
     tree: ProcessTree,
 ) -> usize {
     if rows.is_empty() {
@@ -643,7 +651,7 @@ fn draw_summary(
         &summary_rows(roster, hidden_when_idle),
         TableKind::Summary,
         ground,
-        None,
+        PinnedGroup::Unpinned,
         tree,
     );
 }
@@ -786,7 +794,7 @@ fn draw_group(
         &rows,
         TableKind::Command,
         inner.width,
-        Some(group.lead.process.path.as_str()),
+        PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
         tree,
     );
     let used = draw_ancestry(buffer, inner, &ancestry, faded, ground, foot, table_rows);
@@ -804,7 +812,7 @@ fn draw_group(
         &rows,
         TableKind::Command,
         ground,
-        Some(group.lead.process.path.as_str()),
+        PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
         tree,
     );
 }
@@ -1232,12 +1240,106 @@ impl TableKind {
     }
 }
 
-/// The invocations sharing one absolute directory, independent of displayed labels.
+/// Whether the command's own directory must head the cell.
+#[derive(Clone, Copy)]
+enum PinnedGroup<'a> {
+    /// The lead supplies the complete directory qualification; its text is only a label.
+    Lead(GroupingIdentity<'a>),
+    /// The summary has no preferred directory.
+    Unpinned,
+}
+
+/// Only numeric ownership and root incarnation determine capture grouping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GroupQualification {
+    /// No verified capture supplies an account or root.
+    Uncaptured,
+    /// Direct and enclosing membership share the same directory qualification.
+    Captured {
+        /// A name lookup cannot change the account identity.
+        uid:         u32,
+        /// Root order alone cannot identify a replacement directory object.
+        root:        CaptureRootIndex,
+        /// Retained rows from an earlier root object remain separate.
+        incarnation: RootIncarnation,
+    },
+}
+
+impl From<&RowProvenance> for GroupQualification {
+    fn from(provenance: &RowProvenance) -> Self {
+        match provenance {
+            RowProvenance::Uncaptured => Self::Uncaptured,
+            RowProvenance::Direct(context) | RowProvenance::Enclosing(context) => Self::Captured {
+                uid:         context.account.uid,
+                root:        context.root,
+                incarnation: context.incarnation,
+            },
+        }
+    }
+}
+
+/// An unobserved working directory cannot make unrelated invocations neighbors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GroupDirectory<'a> {
+    /// Compare raw Unix path bytes independently from the heading text.
+    Absolute(&'a Path),
+    /// Pin an unavailable-directory row by its stable invocation identity.
+    Unavailable(&'a InvocationId),
+}
+
+/// The same complete identity selects group members and the pinned heading.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GroupingIdentity<'a> {
+    /// Ownership remains independent from source and account-name resolution.
+    qualification: GroupQualification,
+    /// Keep the raw working directory through display shortening and source changes.
+    directory:     GroupDirectory<'a>,
+}
+
+impl<'a> From<&'a CargoProcess> for GroupingIdentity<'a> {
+    fn from(process: &'a CargoProcess) -> Self {
+        Self {
+            qualification: GroupQualification::from(&process.provenance),
+            directory:     match &process.directory_identity {
+                WorkingDirectoryIdentity::Absolute(path) => GroupDirectory::Absolute(path),
+                WorkingDirectoryIdentity::Unavailable => {
+                    GroupDirectory::Unavailable(&process.invocation_id)
+                },
+            },
+        }
+    }
+}
+
+/// Invocations sharing an account, root incarnation and absolute working directory.
 struct PathGroup<'a> {
-    /// The first member's display label; directory identity alone selects members.
-    path: &'a str,
-    /// Every invocation running there, newest first.
-    rows: Vec<&'a TrackedRow>,
+    /// Display text never participates in membership or pin selection.
+    identity: GroupingIdentity<'a>,
+    /// The first member's display label preserves the existing heading choice.
+    path:     &'a str,
+    /// Every invocation running there, oldest known start first.
+    rows:     Vec<&'a TrackedRow>,
+}
+
+impl PathGroup<'_> {
+    /// Qualify the heading once; unresolved account names retain their numeric uid.
+    fn heading(&self) -> String {
+        let Some(row) = self.rows.first() else {
+            return self.path.to_string();
+        };
+        match &row.process.provenance {
+            RowProvenance::Uncaptured => self.path.to_string(),
+            RowProvenance::Direct(context) | RowProvenance::Enclosing(context) => {
+                let account = match &context.account.name {
+                    AccountName::Resolved(name) => name.clone(),
+                    AccountName::Unavailable => context.account.uid.to_string(),
+                };
+                format!(
+                    "{ACCOUNT_HEADING_OPEN}{account}{ACCOUNT_HEADING_CLOSE}{}",
+                    self.path
+                )
+            },
+        }
+    }
 }
 
 /// How one cell's tables are laid out, settled once for the whole cell.
@@ -1316,7 +1418,7 @@ fn draw_process_table(
     rows: &[&TrackedRow],
     kind: TableKind,
     ground: Color,
-    pinned: Option<&str>,
+    pinned: PinnedGroup<'_>,
     tree: ProcessTree,
 ) {
     if rows.is_empty() {
@@ -1359,31 +1461,24 @@ fn draw_process_table(
     }
 }
 
-/// Collect the rows by working directory, groups ordered by path.
+/// Collect rows by account, root incarnation and raw working directory.
 ///
-/// Ordering the groups by recency instead would rank each one by its
-/// newest invocation, which moves a directory down the cell when the
-/// build holding its place finishes -- a reshuffle triggered by the most
-/// routine event on this screen. Path order never moves on its own.
-///
-/// A linear search per row is enough: the grouping key is a path a
-/// developer is building in, and there are only ever a handful of those
-/// at once.
-fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: Option<&str>) -> Vec<PathGroup<'a>> {
+/// The oldest invocation orders each group; the pinned identity keeps the
+/// command's own directory first even when another heading has identical text.
+/// A linear search preserves arrival order for ties across the handful of
+/// working directories normally visible at once.
+fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<PathGroup<'a>> {
     let mut groups: Vec<PathGroup<'a>> = Vec::new();
     for row in rows {
+        let identity = GroupingIdentity::from(&row.process);
         if let Some(group) = groups.iter_mut().find(|group| {
-            matches!(
-                row.process.directory_identity,
-                WorkingDirectoryIdentity::Absolute(_)
-            ) && group.rows.first().is_some_and(|first| {
-                first.process.directory_identity == row.process.directory_identity
-            })
+            matches!(identity.directory, GroupDirectory::Absolute(_)) && group.identity == identity
         }) {
             group.rows.push(row);
             continue;
         }
         groups.push(PathGroup {
+            identity,
             path: &row.process.path,
             rows: vec![row],
         });
@@ -1410,18 +1505,20 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: Option<&str>) -> Vec<PathG
             .sort_by_key(|row| (row.process.started, row.process.pid));
     }
     groups.sort_by_key(|group| {
-        group.rows.first().map_or((u64::MAX, u32::MAX), |row| {
-            (row.process.started, row.process.pid)
-        })
+        group
+            .rows
+            .first()
+            .map_or((RunStart::Unavailable, u32::MAX), |row| {
+                (row.process.started, row.process.pid)
+            })
     });
     // Whatever the rest sort to, the pinned directory heads the cell.
     // The others keep the order they had under it, so a group that
     // comes and goes moves nothing but itself.
-    let Some(at) = pinned.and_then(|path| {
-        groups
-            .iter()
-            .position(|group| group.rows.iter().any(|row| row.process.path == path))
-    }) else {
+    let PinnedGroup::Lead(lead) = pinned else {
+        return groups;
+    };
+    let Some(at) = groups.iter().position(|group| group.identity == lead) else {
         return groups;
     };
     groups[..=at].rotate_right(1);
@@ -1440,7 +1537,7 @@ fn draw_path_group(
     let mut heading = vec![
         Span::raw(SECTION_HEADER_INDENT),
         Span::styled(
-            group.path.to_string(),
+            group.heading(),
             Style::default().fg(layout.ink(accent_color(), faded)),
         ),
     ];
@@ -1685,8 +1782,9 @@ fn command_column_width(width: u16, constraints: &[Constraint], columns: &[usize
 
 /// The columns a cell draws, in table order.
 ///
-/// Every column but `state` is always there. That one joins only for a
-/// row waiting on a lock: a heading is per directory and a wait is per
+/// The summary omits observed compiler and managed counts, but preserves
+/// unavailable measurements. The `state` column joins only for a row waiting
+/// on a lock: a heading is per directory and a wait is per
 /// row, so nothing but the column can say which row is waiting. A
 /// reading never brings it in -- the heading over the row is already
 /// ruling that -- and an empty column costs a narrow tile the width its
@@ -1700,7 +1798,15 @@ fn visible_columns(rows: &[&TrackedRow], kind: TableKind) -> Vec<usize> {
     });
     (0..TABLE_HEADERS.len())
         .filter(|column| *column != STATE_COLUMN || carries_state)
-        .filter(|column| kind.shows_invocation_detail() || !SUMMARY_HIDDEN_COLUMNS.contains(column))
+        .filter(|column| {
+            kind.shows_invocation_detail()
+                || !SUMMARY_HIDDEN_COLUMNS.contains(column)
+                || rows.iter().any(|row| match *column {
+                    COMPILER_COLUMN => matches!(row.process.compiler, CompilerObservation::Unknown),
+                    MANAGED_COLUMN => matches!(row.process.managed, Measurement::Unavailable(_)),
+                    _ => false,
+                })
+        })
         .collect()
 }
 
@@ -1802,7 +1908,7 @@ fn heading_gauge(group: &PathGroup<'_>, width: u16, layout: &TableLayout) -> Vec
     };
     let reading = percent_reading(progress);
     let fixed = cell_width(SECTION_HEADER_INDENT)
-        .saturating_add(cell_width(group.path))
+        .saturating_add(cell_width(&group.heading()))
         .saturating_add(cell_width(&reading))
         .saturating_add(PROGRESS_HEADING_MARGINS);
     let labelled = fixed
@@ -2068,6 +2174,7 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
+    clippy::panic,
     clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
@@ -2084,6 +2191,7 @@ mod tests {
     use crate::constants::COMPILER_PROCESS_NAMES;
     use crate::constants::PHASE_TESTING;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
+    use crate::constants::UNRESOLVED_TIME;
     use crate::processes::CargoGroup;
     use crate::processes::CargoProcess;
     use crate::processes::CommandText;
@@ -2142,8 +2250,9 @@ mod tests {
             ProcessTree::Long,
         );
         let group = PathGroup {
-            path: GAUGE_PATH,
-            rows: rows.to_vec(),
+            identity: GroupingIdentity::from(&row.process),
+            path:     GAUGE_PATH,
+            rows:     rows.to_vec(),
         };
         heading_gauge(&group, width, &layout)
             .iter()
@@ -2329,6 +2438,32 @@ mod tests {
         assert!(text.ends_with(UNAVAILABLE_MEASUREMENT), "{text:?}");
     }
 
+    /// A registration cannot supply process measurements in either table layout.
+    #[test]
+    fn all_unproven_measurements_render_in_command_and_summary_views() {
+        let mut row = row(None);
+        row.process.cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
+        row.process.compiler = CompilerObservation::Unknown;
+        row.process.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
+
+        for kind in [TableKind::Command, TableKind::Summary] {
+            let buffer = measurement_row_buffer(&row, kind);
+            let header = buffer_line(&buffer, 0);
+            let text = buffer_line(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT);
+            for column in [CPU_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN] {
+                let start = header
+                    .find(TABLE_HEADERS[column])
+                    .expect("measurement column");
+                let end = TABLE_HEADERS[column + 1..]
+                    .iter()
+                    .filter_map(|label| header.find(label))
+                    .min()
+                    .unwrap_or(text.len());
+                assert_eq!(text[start..end].trim(), UNAVAILABLE_MEASUREMENT, "{kind:?}");
+            }
+        }
+    }
+
     #[test]
     fn observed_idle_compilers_and_zero_managed_runs_keep_their_cells_empty() {
         let row = row(None);
@@ -2363,25 +2498,26 @@ mod tests {
     /// epoch -- which is what orders one directory against another.
     fn started_at(path: &str, state: Option<RunState>, started: u64) -> TrackedRow {
         TrackedRow::from(CargoProcess {
-            path: path.to_string(),
+            path:               path.to_string(),
             directory_identity: WorkingDirectoryIdentity::Absolute(
                 Path::new("/test-home").join(path),
             ),
-            pid: 41233,
-            invocation_id: InvocationId::for_test(41233),
+            pid:                41233,
+            invocation_id:      InvocationId::for_test(41233),
             capture_membership: crate::processes::CaptureMembership::Outside,
-            parent: VisibleParent::None,
-            start: "11:04".to_string(),
-            started,
-            duration: "00:18".to_string(),
-            cpu: Measurement::Reading("12%".to_string()),
-            compiler: CompilerObservation::None,
-            state: state.map_or(CaptureLookup::Unregistered, |state| {
+            provenance:         RowProvenance::Uncaptured,
+            parent:             VisibleParent::None,
+            start:              "11:04".to_string(),
+            started:            RunStart::Known(started),
+            duration:           "00:18".to_string(),
+            cpu:                Measurement::Reading("12%".to_string()),
+            compiler:           CompilerObservation::None,
+            state:              state.map_or(CaptureLookup::Unregistered, |state| {
                 CaptureLookup::Registered(CaptureRead::Progress(state))
             }),
-            managed: Measurement::Reading(0),
-            nested: false,
-            command: CommandText::of("cargo", &["build"]),
+            managed:            Measurement::Reading(0),
+            nested:             false,
+            command:            CommandText::of("cargo", &["build"]),
         })
     }
 
@@ -2695,9 +2831,10 @@ mod tests {
             pid,
             invocation_id: InvocationId::for_test(pid),
             capture_membership: crate::processes::CaptureMembership::Outside,
+            provenance: RowProvenance::Uncaptured,
             parent: VisibleParent::None,
             start: "11:04".to_string(),
-            started: 0,
+            started: RunStart::Known(0),
             duration: "00:18".to_string(),
             cpu: Measurement::Reading("12%".to_string()),
             compiler: CompilerObservation::None,
@@ -3196,7 +3333,10 @@ mod tests {
         let second = row_at("/private/var/folders/T/case-2", None);
         let rows = [&lead, &first, &second];
 
-        let pinned = group_by_path(&rows, Some("~/rust/cargo-berth-init"));
+        let pinned = group_by_path(
+            &rows,
+            PinnedGroup::Lead(GroupingIdentity::from(&lead.process)),
+        );
 
         assert_eq!(
             pinned.iter().map(|group| group.path).collect::<Vec<&str>>(),
@@ -3208,6 +3348,316 @@ mod tests {
         );
     }
 
+    /// A real directory supplies an incarnation without requiring a second account.
+    fn capture_context() -> crate::processes::CaptureContext {
+        let root = tempfile::tempdir().expect("capture root");
+        let scan = crate::capture_root::RootScan::open(
+            root.path(),
+            &mut crate::capture_root::RootHistory::default(),
+        )
+        .expect("open capture root");
+        crate::processes::CaptureContext {
+            root:        CaptureRootIndex(0),
+            incarnation: scan.incarnation(),
+            account:     crate::processes::CaptureAccount {
+                uid:  1000,
+                name: AccountName::Resolved("runner-one".into()),
+            },
+        }
+    }
+
+    /// Exercise the shared production heading renderer with enough room for every group.
+    fn grouped_table_text(
+        rows: &[&TrackedRow],
+        kind: TableKind,
+        pinned: PinnedGroup<'_>,
+    ) -> String {
+        let area = Rect::new(0, 0, 140, 16);
+        let mut buffer = Buffer::empty(area);
+        draw_process_table(
+            &mut buffer,
+            area,
+            rows,
+            kind,
+            Color::Reset,
+            pinned,
+            ProcessTree::Long,
+        );
+        (0..area.height)
+            .map(|y| buffer_line(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Each component must distinguish groups while the other two remain equal.
+    #[test]
+    fn account_root_and_raw_directory_independently_separate_headings() {
+        let context = capture_context();
+        let mut first = same_second("/workspace/project", 40);
+        first.process.provenance = RowProvenance::Direct(context.clone());
+        let mut other_account = same_second("/workspace/project", 41);
+        let mut account_context = context.clone();
+        account_context.account.uid += 1;
+        other_account.process.provenance = RowProvenance::Direct(account_context);
+        let mut other_root = same_second("/workspace/project", 42);
+        let mut root_context = context.clone();
+        root_context.root = CaptureRootIndex(1);
+        other_root.process.provenance = RowProvenance::Direct(root_context);
+        let mut other_directory = same_second("/workspace/other", 43);
+        other_directory.process.provenance = RowProvenance::Direct(context);
+
+        for other in [&other_account, &other_root, &other_directory] {
+            let rows = [&first, other];
+            assert_eq!(group_by_path(&rows, PinnedGroup::Unpinned).len(), 2);
+            for kind in [TableKind::Command, TableKind::Summary] {
+                let text = grouped_table_text(&rows, kind, PinnedGroup::Unpinned);
+                assert_eq!(text.matches("[runner-one]").count(), 2, "{kind:?}: {text}");
+            }
+        }
+    }
+
+    /// Display resolution and direct representation are independent from membership.
+    #[test]
+    fn account_name_and_enclosing_membership_do_not_split_a_group() {
+        let context = capture_context();
+        let mut direct = same_second("/workspace/project", 40);
+        direct.process.provenance = RowProvenance::Direct(context.clone());
+        let mut enclosing = same_second("/workspace/project", 41);
+        let mut unresolved = context;
+        unresolved.account.name = AccountName::Unavailable;
+        enclosing.process.provenance = RowProvenance::Enclosing(unresolved);
+        let rows = [&direct, &enclosing];
+        let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].rows.len(), 2);
+        assert_eq!(groups[0].heading(), "[runner-one] /workspace/project");
+    }
+
+    /// Prefixes distinguish identical shortened headings in both production views.
+    #[test]
+    fn two_roots_render_their_own_account_prefixes_on_identical_labels() {
+        let context = capture_context();
+        let mut first = same_second("~/x", 40);
+        first.process.provenance = RowProvenance::Direct(context.clone());
+        first.process.directory_identity = WorkingDirectoryIdentity::Absolute("/one/x".into());
+        let mut second = same_second("~/x", 41);
+        let mut second_context = context;
+        second_context.root = CaptureRootIndex(1);
+        second_context.account.uid = 2000;
+        second_context.account.name = AccountName::Resolved("runner-two".into());
+        second.process.provenance = RowProvenance::Direct(second_context);
+        second.process.directory_identity = WorkingDirectoryIdentity::Absolute("/two/x".into());
+        for kind in [TableKind::Command, TableKind::Summary] {
+            let text = grouped_table_text(&[&first, &second], kind, PinnedGroup::Unpinned);
+            assert!(text.contains("[runner-one] ~/x"), "{text}");
+            assert!(text.contains("[runner-two] ~/x"), "{text}");
+        }
+    }
+
+    /// Missing passwd entries display the same numeric identity that settings reports.
+    #[test]
+    fn unresolved_account_names_render_numbers_and_keep_owners_separate() {
+        let mut context = capture_context();
+        context.account.name = AccountName::Unavailable;
+        let mut first = same_second("/workspace/project", 40);
+        first.process.provenance = RowProvenance::Direct(context.clone());
+        let mut second = same_second("/workspace/project", 41);
+        context.account.uid = 2000;
+        second.process.provenance = RowProvenance::Direct(context);
+        let rows = [&first, &second];
+        assert_eq!(group_by_path(&rows, PinnedGroup::Unpinned).len(), 2);
+        for kind in [TableKind::Command, TableKind::Summary] {
+            let text = grouped_table_text(&rows, kind, PinnedGroup::Unpinned);
+            assert!(text.contains("[1000] /workspace/project"), "{text}");
+            assert!(text.contains("[2000] /workspace/project"), "{text}");
+            assert!(!text.contains("[]"), "{text}");
+        }
+    }
+
+    /// The old root stays allocated while a replacement acquires a new incarnation.
+    #[test]
+    fn retained_rows_under_a_replaced_root_keep_separate_groups_and_pins() {
+        let parent = tempfile::tempdir().expect("root parent");
+        let path = parent.path().join("capture");
+        std::fs::create_dir(&path).expect("first root");
+        let mut history = crate::capture_root::RootHistory::default();
+        let first_scan =
+            crate::capture_root::RootScan::open(&path, &mut history).expect("scan first root");
+        let mut context = capture_context();
+        context.incarnation = first_scan.incarnation();
+        let mut retained = same_second("~/x", 40);
+        retained.process.provenance = RowProvenance::Direct(context.clone());
+        std::fs::rename(&path, parent.path().join("previous")).expect("retain previous root");
+        std::fs::create_dir(&path).expect("replacement root");
+        let replacement_scan = crate::capture_root::RootScan::open(&path, &mut history)
+            .expect("scan replacement root");
+        context.incarnation = replacement_scan.incarnation();
+        let mut current = same_second("~/x", 41);
+        current.process.provenance = RowProvenance::Direct(context);
+        let rows = [&retained, &current];
+        let groups = group_by_path(
+            &rows,
+            PinnedGroup::Lead(GroupingIdentity::from(&current.process)),
+        );
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].rows[0].process.pid, current.process.pid);
+        assert_eq!(groups[1].rows[0].process.pid, retained.process.pid);
+    }
+
+    /// A changed process pid and newly available measurements cannot repin a label collision.
+    #[test]
+    fn source_transition_preserves_the_intended_lead_among_identical_headings() {
+        let context = capture_context();
+        let mut registration = same_second("~/x", 40);
+        let crate::birth_stamp::IdentityEvidence::Available(birth) =
+            crate::birth_stamp::BirthStamp::from_fields("test-boot", "40")
+        else {
+            panic!("valid fixture birth stamp");
+        };
+        registration.process.invocation_id = InvocationId::Captured(crate::processes::RunId {
+            root: context.root,
+            incarnation: context.incarnation,
+            shim_pid: 40,
+            generation: "source-switch".into(),
+            birth,
+        });
+        registration.process.provenance = RowProvenance::Direct(context.clone());
+        registration.process.cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
+        registration.process.compiler = CompilerObservation::Unknown;
+        registration.process.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
+        let mut competing = same_second("~/x", 30);
+        let mut competing_context = context.clone();
+        competing_context.root = CaptureRootIndex(1);
+        competing.process.provenance = RowProvenance::Direct(competing_context);
+        let mut other_directory = same_second("~/x", 31);
+        other_directory.process.provenance = RowProvenance::Direct(context);
+        other_directory.process.directory_identity =
+            WorkingDirectoryIdentity::Absolute("/other/x".into());
+        let mut process = TrackedRow::from(registration.process.clone());
+        process.process.pid = 50;
+        process.process.cpu = Measurement::Reading("12%".into());
+        process.process.compiler = CompilerObservation::None;
+        process.process.managed = Measurement::Reading(0);
+        let pinned = PinnedGroup::Lead(GroupingIdentity::from(&registration.process));
+        assert_eq!(
+            GroupingIdentity::from(&registration.process),
+            GroupingIdentity::from(&process.process)
+        );
+        for lead in [&registration, &process] {
+            let rows = [&competing, &other_directory, lead];
+            let groups = group_by_path(&rows, pinned);
+            assert_eq!(groups.len(), 3);
+            assert_eq!(groups[0].rows[0].process.pid, lead.process.pid);
+            assert_eq!(groups[0].heading(), groups[1].heading());
+        }
+    }
+
+    /// Unknown timestamps sort after observed starts and still retain a duration cell.
+    #[test]
+    fn unavailable_start_sorts_deterministically_and_renders_its_duration() {
+        let mut unavailable = same_second("/unknown/start", 40);
+        unavailable.process.started = RunStart::Unavailable;
+        unavailable.process.start = UNRESOLVED_TIME.into();
+        unavailable.process.duration = UNRESOLVED_TIME.into();
+        let known = started_at("/known/start", None, 100);
+        let rows = [&unavailable, &known];
+        let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+        assert_eq!(groups[0].path, "/known/start");
+        assert_eq!(groups[1].path, "/unknown/start");
+        for kind in [TableKind::Command, TableKind::Summary] {
+            let buffer = measurement_row_buffer(&unavailable, kind);
+            let header = buffer_line(&buffer, 0);
+            let text = buffer_line(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT);
+            let start = header
+                .find(TABLE_HEADERS[DURATION_COLUMN])
+                .expect("duration column");
+            let end = header.find(TABLE_HEADERS[CPU_COLUMN]).expect("CPU column");
+            assert_eq!(text[start..end].trim(), UNRESOLVED_TIME);
+        }
+    }
+
+    /// The renderer preserves the absolute label supplied for a different writer home.
+    #[test]
+    fn qualified_absolute_heading_is_preserved_in_command_and_summary_cells() {
+        let mut row = row_at("/writer-home/project", None);
+        row.process.provenance = RowProvenance::Direct(capture_context());
+        for kind in [TableKind::Command, TableKind::Summary] {
+            let buffer = measurement_row_buffer(&row, kind);
+            let heading = buffer_line(&buffer, TABLE_HEADER_HEIGHT);
+            assert_eq!(heading.trim(), "[runner-one] /writer-home/project");
+        }
+    }
+
+    /// Enclosing capture qualifies only the heading; nested fields remain the row's own.
+    #[test]
+    fn enclosing_and_uncaptured_rows_keep_their_own_directory_and_command() {
+        let context = capture_context();
+        let mut enclosing = same_second("/nested/check", 41);
+        enclosing.process.provenance = RowProvenance::Enclosing(context);
+        enclosing.process.command = CommandText::of("cargo", &["check"]);
+        let uncaptured = same_second("/nested/check", 42);
+        let rows = [&enclosing, &uncaptured];
+        let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].heading(), "[runner-one] /nested/check");
+        assert_eq!(groups[1].heading(), "/nested/check");
+        assert_eq!(
+            groups[1].identity.qualification,
+            GroupQualification::Uncaptured
+        );
+        for kind in [TableKind::Command, TableKind::Summary] {
+            let text = grouped_table_text(&rows, kind, PinnedGroup::Unpinned);
+            assert!(text.contains("cargo check"), "{text}");
+            assert!(text.contains("cargo build"), "{text}");
+        }
+    }
+
+    /// An unavailable cwd remains a drawable row and keeps its own pin.
+    #[test]
+    fn unavailable_directory_rows_render_and_pin_by_invocation() {
+        let mut first = same_second("unavailable", 40);
+        first.process.directory_identity = WorkingDirectoryIdentity::Unavailable;
+        let mut second = same_second("unavailable", 41);
+        second.process.directory_identity = WorkingDirectoryIdentity::Unavailable;
+        let rows = [&first, &second];
+        let pinned = PinnedGroup::Lead(GroupingIdentity::from(&second.process));
+        let groups = group_by_path(&rows, pinned);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].rows[0].process.pid, 41);
+        for kind in [TableKind::Command, TableKind::Summary] {
+            let text = grouped_table_text(&rows, kind, pinned);
+            assert_eq!(text.matches("unavailable").count(), 2, "{text}");
+            assert_eq!(text.matches("cargo build").count(), 2, "{text}");
+        }
+    }
+
+    /// Prefix width is included before the gauge chooses how much room remains.
+    #[test]
+    fn account_prefix_reduces_gauge_room_without_changing_counter_absences() {
+        let mut row = row_at(GAUGE_PATH, Some(compiling(1, 2)));
+        let mut context = capture_context();
+        context.account.name = AccountName::Resolved("long-runner-account-name".into());
+        row.process.provenance = RowProvenance::Direct(context);
+        let rows = [&row];
+        let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+        let layout = TableLayout::of(
+            &rows,
+            TableKind::Command,
+            Rect::new(0, 0, 60, 5),
+            Color::Reset,
+            ProcessTree::Long,
+        );
+        let gauge = heading_gauge(&groups[0], 60, &layout);
+        let width = cell_width(SECTION_HEADER_INDENT)
+            + cell_width(&groups[0].heading())
+            + gauge
+                .iter()
+                .map(|span| cell_width(&span.content))
+                .sum::<u16>();
+        assert!(width <= 60);
+        assert!(heading_gauge(&groups[0], 40, &layout).is_empty());
+    }
+
     #[test]
     fn display_shortening_does_not_split_a_directorys_progress_group() {
         let mut ordinary = started_at("~/project", Some(compiling(1, 2)), 100);
@@ -3217,7 +3667,7 @@ mod tests {
         custom_home.process.directory_identity = ordinary.process.directory_identity.clone();
         let rows = [&ordinary, &custom_home];
 
-        let groups = group_by_path(&rows, None);
+        let groups = group_by_path(&rows, PinnedGroup::Unpinned);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].rows.len(), 2);
@@ -3249,7 +3699,10 @@ mod tests {
         second.process.directory_identity =
             WorkingDirectoryIdentity::Absolute("/second/project".into());
 
-        assert_eq!(group_by_path(&[&first, &second], None).len(), 2);
+        assert_eq!(
+            group_by_path(&[&first, &second], PinnedGroup::Unpinned).len(),
+            2
+        );
     }
 
     #[test]
@@ -3262,7 +3715,10 @@ mod tests {
         second.process.directory_identity = WorkingDirectoryIdentity::from(second_path);
 
         assert_eq!(first.process.path, second.process.path);
-        assert_eq!(group_by_path(&[&first, &second], None).len(), 2);
+        assert_eq!(
+            group_by_path(&[&first, &second], PinnedGroup::Unpinned).len(),
+            2
+        );
     }
 
     #[test]
@@ -3272,11 +3728,14 @@ mod tests {
         first.process.directory_identity = WorkingDirectoryIdentity::Unavailable;
         second.process.directory_identity = WorkingDirectoryIdentity::Unavailable;
 
-        assert_eq!(group_by_path(&[&first, &second], None).len(), 2);
+        assert_eq!(
+            group_by_path(&[&first, &second], PinnedGroup::Unpinned).len(),
+            2
+        );
     }
 
     #[test]
-    fn pinning_finds_a_group_through_any_members_display_label() {
+    fn pinning_finds_a_group_through_any_members_directory_identity() {
         let mut ordinary = started_at("~/project", None, 100);
         let mut custom_home = started_at("/writer/project", None, 101);
         ordinary.process.directory_identity =
@@ -3285,7 +3744,10 @@ mod tests {
         let older = started_at("/other/project", None, 1);
         let rows = [&older, &custom_home, &ordinary];
 
-        let groups = group_by_path(&rows, Some("~/project"));
+        let groups = group_by_path(
+            &rows,
+            PinnedGroup::Lead(GroupingIdentity::from(&ordinary.process)),
+        );
 
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].rows.len(), 2);
@@ -3300,7 +3762,7 @@ mod tests {
         let other = row_at("/private/var/folders/T/case-1", None);
         let rows = [&lead, &other];
 
-        let sorted = group_by_path(&rows, None);
+        let sorted = group_by_path(&rows, PinnedGroup::Unpinned);
 
         assert_eq!(
             sorted.first().map(|group| group.path),
@@ -3320,7 +3782,7 @@ mod tests {
         let blocked = started_at("~/rust/hana_recovery", Some(RunState::Blocked), 160);
         let rows = [&blocked, &building];
 
-        let sorted = group_by_path(&rows, None);
+        let sorted = group_by_path(&rows, PinnedGroup::Unpinned);
 
         assert_eq!(
             sorted.iter().map(|group| group.path).collect::<Vec<&str>>(),
@@ -3337,15 +3799,15 @@ mod tests {
         let queued = started_at("~/rust/cargo-liner", Some(RunState::Blocked), 160);
         let rows = [&queued, &building];
 
-        let sorted = group_by_path(&rows, None);
+        let sorted = group_by_path(&rows, PinnedGroup::Unpinned);
 
         assert_eq!(
             sorted.first().map(|group| group
                 .rows
                 .iter()
                 .map(|row| row.process.started)
-                .collect::<Vec<u64>>()),
-            Some(vec![100, 160])
+                .collect::<Vec<RunStart>>()),
+            Some(vec![RunStart::Known(100), RunStart::Known(160)])
         );
     }
 
@@ -3358,7 +3820,7 @@ mod tests {
         let driver = same_second("~/rust/cargo-liner", 93738);
         let rows = [&nested, &driver];
 
-        let sorted = group_by_path(&rows, None);
+        let sorted = group_by_path(&rows, PinnedGroup::Unpinned);
 
         assert_eq!(
             sorted.first().map(|group| group
@@ -3558,7 +4020,7 @@ mod tests {
             &rows.iter().collect::<Vec<&TrackedRow>>(),
             TableKind::Command,
             Color::Reset,
-            None,
+            PinnedGroup::Unpinned,
             ProcessTree::Long,
         );
 
@@ -3602,7 +4064,7 @@ mod tests {
             &rows.iter().collect::<Vec<&TrackedRow>>(),
             TableKind::Command,
             Color::Reset,
-            None,
+            PinnedGroup::Unpinned,
             ProcessTree::Long,
         );
 
