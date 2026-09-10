@@ -21,6 +21,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::fmt;
+use std::ops::Add;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -62,6 +64,7 @@ use crate::constants::SELF_PROCESS_NAME;
 use crate::constants::START_TIME_FORMAT;
 use crate::constants::SUMMARY_HIDDEN_VALUED_FLAGS;
 use crate::constants::TRANSPARENT_PROCESS_NAMES;
+use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
 use crate::progress::Capture;
@@ -75,6 +78,69 @@ use crate::registration::DirectoryIdentity;
 use crate::registration::VersionedRegistration;
 use crate::registration::WriterHome;
 use crate::sccache::SccacheServer;
+
+/// A reading remains distinct from every reason the scanner cannot establish one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Measurement<T> {
+    /// The scanner has evidence for this value, including a measured zero.
+    Reading(T),
+    /// No value may be published while this reason applies.
+    Unavailable(MeasurementAbsence),
+}
+
+/// Why a measurement cannot currently be published.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MeasurementAbsence {
+    /// A rate requires a previous observation of the same process.
+    FirstObservation,
+    /// The collected sample establishes that a usable reading failed.
+    ReadFailed,
+    /// The available evidence cannot distinguish a reading from an unread value.
+    Unproven,
+}
+
+impl<T> Measurement<T> {
+    /// Transform a reading without manufacturing a value for an unavailable sample.
+    pub(crate) fn map<U>(self, map: impl FnOnce(T) -> U) -> Measurement<U> {
+        match self {
+            Self::Reading(reading) => Measurement::Reading(map(reading)),
+            Self::Unavailable(reason) => Measurement::Unavailable(reason),
+        }
+    }
+}
+
+impl<T: fmt::Display> fmt::Display for Measurement<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reading(reading) => reading.fmt(formatter),
+            Self::Unavailable(_) => formatter.write_str(UNAVAILABLE_MEASUREMENT),
+        }
+    }
+}
+
+impl<T: Add<Output = T>> Add for Measurement<T> {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Reading(left), Self::Reading(right)) => Self::Reading(left + right),
+            (Self::Unavailable(reason), _) | (_, Self::Unavailable(reason)) => {
+                Self::Unavailable(reason)
+            },
+        }
+    }
+}
+
+/// Compiler absence is an observed idle state; an unknown observation is separate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CompilerObservation {
+    /// The scanner cannot establish which compilers are running.
+    Unknown,
+    /// The scanner observed no compiler running for this invocation.
+    None,
+    /// The scanner observed this driver and count.
+    Running(Compiler),
+}
 
 /// One running `cargo` invocation, preformatted for the table.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,21 +172,22 @@ pub(crate) struct CargoProcess {
     /// Share of a core this invocation and everything running under it
     /// are using, as a whole-number percent. `top`'s scale rather than a
     /// share of the machine, so a build across eight cores reads past
-    /// 100% instead of flattening to a tenth of one.
-    pub(crate) cpu:                String,
-    /// Compiler processes this invocation currently owns, if any. On the
+    /// 100% instead of flattening to a tenth of one. An unavailable
+    /// contributor makes the invocation's whole measurement unavailable.
+    pub(crate) cpu:                Measurement<String>,
+    /// Compiler processes this invocation currently owns, when observed. On the
     /// invocation leading a group this is the whole group's tally, so
     /// the summary reports the build rather than the driver process.
-    pub(crate) compiler:           Option<Compiler>,
+    pub(crate) compiler:           CompilerObservation,
     /// What the command is doing, when a capture of its output is there
     /// to read it from. Read off the nearest capture at or above the
     /// invocation, so a cargo the enclosing run started -- which the
     /// shim declines to capture a second time -- reports the run it is
     /// inside rather than nothing at all.
     pub(crate) state:              CaptureLookup,
-    /// Cargo invocations running under this one. Zero for a plain
-    /// command, which is what most rows are.
-    pub(crate) managed:            usize,
+    /// Cargo invocations running under this one. A measured zero names
+    /// a plain command; an unavailable count cannot establish that it is idle.
+    pub(crate) managed:            Measurement<usize>,
     /// Whether another cargo stands between this invocation and the
     /// lead of its group. False for the lead itself and for the
     /// invocations it started directly.
@@ -500,6 +567,11 @@ fn scan(
     excluded: &[String],
     roots: &CaptureRoots,
 ) -> Scan {
+    let previous = system
+        .processes()
+        .iter()
+        .map(|(&pid, process)| (pid, CpuBaseline::from(process)))
+        .collect();
     // Phase one: pid, name, parent and start time for everything. None of
     // the fields this asks for require a per-process read of the argument
     // area, which is what makes it cheap enough to poll continuously.
@@ -507,15 +579,15 @@ fn scan(
     // work a cargo command is doing runs in the `rustc` and `sccache`
     // processes under it, and phase two never looks at those. sysinfo
     // reads a share as the delta between two refreshes of the same
-    // process, so the first scan reports nought and every scan after it
-    // reports the `PROCESS_POLL_MILLIS` just gone.
+    // process. Census keeps a first observation unavailable because it
+    // has no preceding sample from which to establish a rate.
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
         process_discovery_refresh_kind(),
     );
 
-    let mut census = Census::take(system);
+    let mut census = Census::take(system, &previous);
 
     // Phase two: the costly fields, for the cargo processes and for the
     // handful standing above each of them. The ancestors are read for
@@ -586,12 +658,39 @@ fn process_detail_refresh_kind() -> ProcessRefreshKind {
 /// What the census worked out per cargo invocation, once every process
 /// under one has been walked up to it.
 struct Attributed {
-    /// The compiler driver each invocation directly owns, and how many
-    /// of it. Absent for an invocation compiling nothing.
-    compilers: HashMap<Pid, Compiler>,
+    /// Every invocation has an observation, including one compiling nothing.
+    compilers: HashMap<Pid, CompilerObservation>,
     /// The settled CPU share each invocation and everything under it
-    /// add up to. Absent for an invocation using none.
-    cpu:       HashMap<Pid, f32>,
+    /// add up to, including unavailable contributors.
+    cpu:       HashMap<Pid, Measurement<f32>>,
+}
+
+/// Evidence retained across a refresh to establish identity and monotonic CPU time.
+#[derive(Clone, Copy)]
+struct CpuBaseline {
+    /// A reused pid must begin a fresh rate observation.
+    started:     u64,
+    /// A decrease for the same process proves the samples cannot form a valid rate.
+    accumulated: u64,
+}
+
+impl From<&Process> for CpuBaseline {
+    fn from(process: &Process) -> Self {
+        Self {
+            started:     process.start_time(),
+            accumulated: process.accumulated_cpu_time(),
+        }
+    }
+}
+
+/// Whether the smoother has ever published a snapshot and when it last did so.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum CpuPublication {
+    /// No previous publication exists to retain.
+    #[default]
+    NeverPublished,
+    /// Readings may be held until the reporting interval expires.
+    Published(Instant),
 }
 
 /// Each cargo invocation's CPU share as the table reports it, carried
@@ -611,49 +710,59 @@ struct CpuSmoothing {
     /// Where each invocation's reading has settled, moved on every scan.
     /// Keyed by the cargo pid, so an invocation that ends takes its
     /// history with it.
-    settled:  HashMap<Pid, f32>,
+    settled:     HashMap<Pid, Measurement<f32>>,
     /// What the table is carrying, taken from
     /// [`settled`](Self::settled) when a reading falls due.
-    reported: HashMap<Pid, f32>,
-    /// When [`reported`](Self::reported) was last taken, or `None`
-    /// before the first scan has taken one.
-    taken:    Option<Instant>,
+    reported:    HashMap<Pid, Measurement<f32>>,
+    /// A never-published smoother has no previous snapshot to hold.
+    publication: CpuPublication,
 }
 
 impl CpuSmoothing {
     /// Carry every invocation's reading toward what this scan sampled,
     /// and hand back what the table should show at `now`.
     ///
-    /// An invocation the scan sampled nothing for is settled toward
-    /// nought rather than left where it was: absent from the sample
-    /// means it used no CPU, which is a reading like any other. One that
-    /// has ended is let go of by both maps.
+    /// An unavailable sample immediately replaces any published reading,
+    /// even between reporting deadlines. Recovery starts at its own value
+    /// because a sample gap cannot contribute to a smoothed rate.
     fn settle(
         &mut self,
-        sampled: &HashMap<Pid, f32>,
+        sampled: &HashMap<Pid, Measurement<f32>>,
         cargo: &[Pid],
         now: Instant,
-    ) -> HashMap<Pid, f32> {
+    ) -> HashMap<Pid, Measurement<f32>> {
         self.settled.retain(|pid, _| cargo.contains(pid));
         self.reported.retain(|pid, _| cargo.contains(pid));
         let alpha = smoothing_alpha();
         for &pid in cargo {
-            let sample = sampled.get(&pid).copied().unwrap_or_default();
-            // A pid met for the first time opens at its own sample, so a
-            // command that starts busy is not drawn climbing to it.
+            let sample = sampled
+                .get(&pid)
+                .copied()
+                .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven));
             let settled = self.settled.entry(pid).or_insert(sample);
-            *settled = (sample - *settled).mul_add(alpha, *settled);
+            *settled = match (sample, *settled) {
+                (Measurement::Reading(sample), Measurement::Reading(previous)) => {
+                    Measurement::Reading((sample - previous).mul_add(alpha, previous))
+                },
+                (sample, _) => sample,
+            };
+            if matches!(sample, Measurement::Unavailable(_)) {
+                self.reported.insert(pid, sample);
+            }
         }
         if self.is_due(now) {
             self.reported.clone_from(&self.settled);
-            self.taken = Some(now);
+            self.publication = CpuPublication::Published(now);
         } else {
             // An invocation that has only just started has nothing being
             // held for it, and waiting out the rest of somebody else's
             // second would draw it idle. Its opening reading goes
             // straight through.
             for (&pid, &settled) in &self.settled {
-                self.reported.entry(pid).or_insert(settled);
+                let reported = self.reported.entry(pid).or_insert(settled);
+                if matches!(reported, Measurement::Unavailable(_)) {
+                    *reported = settled;
+                }
             }
         }
         self.reported.clone()
@@ -661,9 +770,12 @@ impl CpuSmoothing {
 
     /// Whether the table is due a fresh reading at `now`.
     fn is_due(&self, now: Instant) -> bool {
-        self.taken.is_none_or(|taken| {
-            now.duration_since(taken) >= Duration::from_millis(CPU_REPORT_MILLIS)
-        })
+        match self.publication {
+            CpuPublication::NeverPublished => true,
+            CpuPublication::Published(taken) => {
+                now.duration_since(taken) >= Duration::from_millis(CPU_REPORT_MILLIS)
+            },
+        }
     }
 }
 
@@ -686,16 +798,13 @@ struct Census {
     cargo:     Vec<Pid>,
     /// Compiler processes paired with which driver they are.
     compilers: Vec<(Pid, &'static str)>,
-    /// What each process that is using any CPU at all is using, ready to
-    /// be attributed to the cargo above it. Processes reading nought are
-    /// left out: they are the great majority of a machine, and they add
-    /// nothing to the sum.
-    cpu:       HashMap<Pid, f32>,
+    /// Every process contributes a reading or an absence reason to its owner.
+    cpu:       HashMap<Pid, Measurement<f32>>,
 }
 
 impl Census {
     /// Classify every process the last refresh saw.
-    fn take(system: &System) -> Self {
+    fn take(system: &System, previous: &HashMap<Pid, CpuBaseline>) -> Self {
         let mut census = Self {
             parents:   HashMap::new(),
             cargo:     Vec::new(),
@@ -706,10 +815,15 @@ impl Census {
             if let Some(parent) = process.parent().or_else(|| kernel_parent(pid)) {
                 census.parents.insert(pid, parent);
             }
-            let cpu = process.cpu_usage();
-            if cpu > 0.0 {
-                census.cpu.insert(pid, cpu);
-            }
+            census.cpu.insert(
+                pid,
+                Self::measure_cpu(
+                    pid,
+                    process.cpu_usage(),
+                    CpuBaseline::from(process),
+                    previous,
+                ),
+            );
             let name = process.name();
             if is_cargo_name(name) {
                 census.cargo.push(pid);
@@ -721,6 +835,41 @@ impl Census {
             }
         }
         census
+    }
+
+    /// Classify sysinfo's sample before a zero can lose its availability meaning.
+    ///
+    /// A positive previous accumulated counter is required before trusting
+    /// sysinfo's rate: without it, the rate can retain an earlier value. A failed
+    /// macOS task-info read resets the counter to zero but leaves the rate intact.
+    /// Quantized zero counters cannot prove either a reading or a failed read.
+    /// A regression is also unproven: sysinfo exposes start time only in seconds,
+    /// so a replacement within that second cannot be distinguished from failure.
+    /// An unchanged counter cannot prove a positive rate: macOS retains the old one.
+    /// Nonzero counters on both samples still support a measured zero rate.
+    fn measure_cpu(
+        pid: Pid,
+        cpu: f32,
+        baseline: CpuBaseline,
+        previous: &HashMap<Pid, CpuBaseline>,
+    ) -> Measurement<f32> {
+        let Some(previous) = previous
+            .get(&pid)
+            .filter(|previous| previous.started == baseline.started)
+        else {
+            return Measurement::Unavailable(MeasurementAbsence::FirstObservation);
+        };
+        if !cpu.is_finite() || cpu < 0.0 {
+            return Measurement::Unavailable(MeasurementAbsence::ReadFailed);
+        }
+        if baseline.started == 0
+            || previous.accumulated == 0
+            || baseline.accumulated < previous.accumulated
+            || (baseline.accumulated == previous.accumulated && cpu > 0.0)
+        {
+            return Measurement::Unavailable(MeasurementAbsence::Unproven);
+        }
+        Measurement::Reading(cpu)
     }
 
     /// Whether phase one saw an sccache server.
@@ -747,26 +896,28 @@ impl Census {
     /// `sccache` outranks `rustc` because when a wrapper is in use every
     /// `rustc` is a child of one, and reporting both would double-count
     /// the same compile.
-    fn attribute_compilers(&self) -> HashMap<Pid, Compiler> {
+    fn attribute_compilers(&self) -> HashMap<Pid, CompilerObservation> {
         let mut tallies: HashMap<Pid, HashMap<&'static str, usize>> = HashMap::new();
         for &(pid, driver) in &self.compilers {
             if let Some(owner) = self.owning_cargo(pid) {
                 *tallies.entry(owner).or_default().entry(driver).or_default() += 1;
             }
         }
-        tallies
-            .into_iter()
-            .filter_map(|(owner, tally)| {
-                let driver = COMPILER_PROCESS_NAMES
-                    .iter()
-                    .find_map(|driver| tally.get(driver).map(|count| (*driver, *count)))?;
-                Some((
-                    owner,
-                    Compiler {
-                        name:  driver.0,
-                        count: driver.1,
-                    },
-                ))
+        self.cargo
+            .iter()
+            .map(|&owner| {
+                let compiler = tallies
+                    .get(&owner)
+                    .and_then(|tally| {
+                        COMPILER_PROCESS_NAMES.iter().find_map(|driver| {
+                            tally.get(driver).map(|&count| Compiler {
+                                name: driver,
+                                count,
+                            })
+                        })
+                    })
+                    .map_or(CompilerObservation::None, CompilerObservation::Running);
+                (owner, compiler)
             })
             .collect()
     }
@@ -796,16 +947,26 @@ impl Census {
     /// lead.
     ///
     /// [`attribute_compilers`]: Self::attribute_compilers
-    fn attribute_cpu(&self) -> HashMap<Pid, f32> {
-        let mut tallies: HashMap<Pid, f32> = HashMap::new();
+    fn attribute_cpu(&self) -> HashMap<Pid, Measurement<f32>> {
+        let mut tallies: HashMap<Pid, Measurement<f32>> = self
+            .cargo
+            .iter()
+            .map(|&pid| {
+                (
+                    pid,
+                    self.cpu
+                        .get(&pid)
+                        .copied()
+                        .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven)),
+                )
+            })
+            .collect();
         for (&pid, &cpu) in &self.cpu {
-            let owner = self
-                .cargo
-                .contains(&pid)
-                .then_some(pid)
-                .or_else(|| self.owning_cargo(pid));
-            if let Some(owner) = owner {
-                *tallies.entry(owner).or_default() += cpu;
+            if !self.cargo.contains(&pid)
+                && let Some(owner) = self.owning_cargo(pid)
+                && let Some(total) = tallies.get_mut(&owner)
+            {
+                *total = *total + cpu;
             }
         }
         tallies
@@ -1154,8 +1315,12 @@ impl Census {
         let mut lead = row(
             system.process(root)?,
             root,
-            attributed.compilers.get(&root).cloned(),
-            managed.len(),
+            attributed
+                .compilers
+                .get(&root)
+                .cloned()
+                .unwrap_or(CompilerObservation::Unknown),
+            Measurement::Reading(managed.len()),
             home,
             aggregate_cpu(&attributed.cpu, whole_group.clone()),
         )
@@ -1178,8 +1343,12 @@ impl Census {
                 let mut managed_row = row(
                     process,
                     pid,
-                    attributed.compilers.get(&pid).cloned(),
-                    under,
+                    attributed
+                        .compilers
+                        .get(&pid)
+                        .cloned()
+                        .unwrap_or(CompilerObservation::Unknown),
+                    Measurement::Reading(under),
                     home,
                     aggregate_cpu(&attributed.cpu, std::iter::once(pid)),
                 )
@@ -1212,14 +1381,24 @@ impl Census {
 /// One compiler tally across a whole group: the highest-priority driver
 /// any member is running, totalled over all of them.
 fn aggregate_compilers(
-    counts: &HashMap<Pid, Compiler>,
+    counts: &HashMap<Pid, CompilerObservation>,
     members: impl Iterator<Item = Pid>,
-) -> Option<Compiler> {
-    let running: Vec<&Compiler> = members.filter_map(|pid| counts.get(&pid)).collect();
-    let name = COMPILER_PROCESS_NAMES
+) -> CompilerObservation {
+    let mut running = Vec::new();
+    for pid in members {
+        match counts.get(&pid).unwrap_or(&CompilerObservation::Unknown) {
+            CompilerObservation::Unknown => return CompilerObservation::Unknown,
+            CompilerObservation::None => {},
+            CompilerObservation::Running(compiler) => running.push(compiler),
+        }
+    }
+    let Some(name) = COMPILER_PROCESS_NAMES
         .iter()
-        .find(|driver| running.iter().any(|compiler| compiler.name == **driver))?;
-    Some(Compiler {
+        .find(|driver| running.iter().any(|compiler| compiler.name == **driver))
+    else {
+        return CompilerObservation::None;
+    };
+    CompilerObservation::Running(Compiler {
         name,
         count: running
             .iter()
@@ -1229,20 +1408,29 @@ fn aggregate_compilers(
     })
 }
 
-/// One CPU share across a whole group: what every member and everything
-/// under it add up to.
-fn aggregate_cpu(shares: &HashMap<Pid, f32>, members: impl Iterator<Item = Pid>) -> f32 {
-    members.filter_map(|pid| shares.get(&pid)).sum()
+/// One CPU share across a whole group; an unavailable or missing member
+/// prevents publishing a partial total as a measured value.
+pub(crate) fn aggregate_cpu(
+    shares: &HashMap<Pid, Measurement<f32>>,
+    members: impl Iterator<Item = Pid>,
+) -> Measurement<f32> {
+    members.fold(Measurement::Reading(0.0), |total, pid| {
+        total
+            + shares
+                .get(&pid)
+                .copied()
+                .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven))
+    })
 }
 
 /// Format one cargo process into its table row.
 fn row(
     process: &Process,
     pid: Pid,
-    compiler: Option<Compiler>,
-    managed: usize,
+    compiler: CompilerObservation,
+    managed: Measurement<usize>,
     home: Option<&Path>,
-    cpu: f32,
+    cpu: Measurement<f32>,
 ) -> Result<CargoProcess, RowAbsence> {
     Ok(CargoProcess {
         path: process.cwd().map_or_else(
@@ -1257,7 +1445,7 @@ fn row(
         start: start_label(process.start_time()),
         started: process.start_time(),
         duration: duration_label(process.run_time()),
-        cpu: cpu_label(cpu),
+        cpu: cpu.map(cpu_label),
         compiler,
         state: CaptureLookup::Unregistered,
         managed,
@@ -1271,7 +1459,7 @@ fn row(
 /// Rounded rather than truncated, and never below nought: a quarter of a
 /// second of sampling has no meaningful resolution under one percent,
 /// and a column of decimals costs width the command line wants.
-fn cpu_label(cpu: f32) -> String {
+pub(crate) fn cpu_label(cpu: f32) -> String {
     let percent = cpu.max(0.0);
     format!("{percent:.0}%")
 }
@@ -1669,10 +1857,10 @@ mod tests {
             start:              "10:00".to_owned(),
             started:            0,
             duration:           "00:01".to_owned(),
-            cpu:                "0%".to_owned(),
-            compiler:           None,
+            cpu:                Measurement::Reading("0%".to_owned()),
+            compiler:           CompilerObservation::None,
             state:              CaptureLookup::Unregistered,
-            managed:            0,
+            managed:            Measurement::Reading(0),
             nested:             false,
             command:            CommandText::of("cargo", &["build"]),
         }
@@ -2606,25 +2794,304 @@ mod tests {
         assert_eq!(cpu_label(-0.4), "0%");
     }
 
-    /// What the lead row carries: its own share and every one under it,
-    /// with the pids that used nothing simply absent from the tally.
+    /// Every group member contributes explicitly, including measured zero.
     #[test]
     fn a_group_adds_up_the_shares_of_everything_under_it() {
-        let shares = HashMap::from([(Pid::from(1), 90.4), (Pid::from(2), 300.2)]);
+        let shares = HashMap::from([
+            (Pid::from(1), Measurement::Reading(90.4)),
+            (Pid::from(2), Measurement::Reading(300.2)),
+            (Pid::from(3), Measurement::Reading(0.0)),
+        ]);
         let members = [1, 2, 3].into_iter().map(Pid::from);
 
-        assert_eq!(cpu_label(aggregate_cpu(&shares, members)), "391%");
+        assert_eq!(
+            aggregate_cpu(&shares, members).map(cpu_label).to_string(),
+            "391%"
+        );
     }
 
-    /// A cargo that owns nothing and is doing nothing itself has no
-    /// entry to find, which is idle rather than missing.
+    /// Missing entries cannot silently subtract a contributor from the total.
     #[test]
-    fn a_group_with_no_shares_at_all_reads_as_idle() {
-        let shares = HashMap::new();
-
+    fn a_group_with_a_missing_share_is_unavailable() {
         assert_eq!(
-            cpu_label(aggregate_cpu(&shares, std::iter::once(Pid::from(1)))),
-            "0%"
+            aggregate_cpu(&HashMap::new(), std::iter::once(Pid::from(1))),
+            Measurement::Unavailable(MeasurementAbsence::Unproven),
+        );
+    }
+
+    #[test]
+    fn a_group_of_measured_zero_shares_reads_as_idle() {
+        let pid = Pid::from(1);
+        let shares = HashMap::from([(pid, Measurement::Reading(0.0))]);
+        assert_eq!(
+            aggregate_cpu(&shares, std::iter::once(pid))
+                .map(cpu_label)
+                .to_string(),
+            "0%",
+        );
+    }
+
+    #[test]
+    fn an_unknown_cpu_contributor_makes_the_group_total_unknown() {
+        for reason in [
+            MeasurementAbsence::FirstObservation,
+            MeasurementAbsence::ReadFailed,
+            MeasurementAbsence::Unproven,
+        ] {
+            let shares = HashMap::from([
+                (Pid::from(1), Measurement::Reading(100.0)),
+                (Pid::from(2), Measurement::Unavailable(reason)),
+            ]);
+            for members in [[Pid::from(1), Pid::from(2)], [Pid::from(2), Pid::from(1)]] {
+                assert_eq!(
+                    aggregate_cpu(&shares, members.into_iter()),
+                    Measurement::Unavailable(reason)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_descendant_invalidates_its_owning_cargos_cpu() {
+        let owner = Pid::from(1);
+        let descendant = Pid::from(2);
+        let mut census = census_of(&[(2, 1)]);
+        census.cargo.push(owner);
+        census.cpu = HashMap::from([
+            (owner, Measurement::Reading(10.0)),
+            (
+                descendant,
+                Measurement::Unavailable(MeasurementAbsence::Unproven),
+            ),
+        ]);
+        assert_eq!(
+            census.attribute_cpu()[&owner],
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+    }
+
+    #[test]
+    fn unknown_compiler_contributors_invalidate_the_group_tally() {
+        let first = Pid::from(1);
+        let second = Pid::from(2);
+        for unknown in [
+            HashMap::new(),
+            HashMap::from([(second, CompilerObservation::Unknown)]),
+        ] {
+            let mut counts = unknown;
+            counts.insert(
+                first,
+                CompilerObservation::Running(Compiler {
+                    name:  "rustc",
+                    count: 2,
+                }),
+            );
+            assert_eq!(
+                aggregate_compilers(&counts, [first, second].into_iter()),
+                CompilerObservation::Unknown
+            );
+        }
+    }
+
+    #[test]
+    fn compiler_totals_preserve_measured_absence_and_driver_priority() {
+        let first = Pid::from(1);
+        let second = Pid::from(2);
+        let third = Pid::from(3);
+        let mut counts = HashMap::from([
+            (first, CompilerObservation::None),
+            (second, CompilerObservation::None),
+        ]);
+        assert_eq!(
+            aggregate_compilers(&counts, [first, second].into_iter()),
+            CompilerObservation::None
+        );
+        counts.insert(
+            first,
+            CompilerObservation::Running(Compiler {
+                name:  "rustc",
+                count: 9,
+            }),
+        );
+        counts.insert(
+            second,
+            CompilerObservation::Running(Compiler {
+                name:  "sccache",
+                count: 2,
+            }),
+        );
+        counts.insert(
+            third,
+            CompilerObservation::Running(Compiler {
+                name:  "sccache",
+                count: 3,
+            }),
+        );
+        assert_eq!(
+            aggregate_compilers(&counts, [first, second, third].into_iter()),
+            CompilerObservation::Running(Compiler {
+                name:  "sccache",
+                count: 5,
+            })
+        );
+    }
+
+    /// Same process identity for CPU boundary fixtures; only the counter changes.
+    fn cpu_baseline(accumulated: u64) -> CpuBaseline {
+        CpuBaseline {
+            started: 1,
+            accumulated,
+        }
+    }
+
+    #[test]
+    fn collection_names_the_first_observation_before_publishing_a_rate() {
+        assert_eq!(
+            Census::measure_cpu(Pid::from(1), 0.0, cpu_baseline(10), &HashMap::new()),
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        );
+    }
+
+    #[test]
+    fn collection_keeps_a_regressing_counter_unproven() {
+        let pid = Pid::from(1);
+        let previous = HashMap::from([(pid, cpu_baseline(10))]);
+        for cpu in [0.0, 50.0] {
+            assert_eq!(
+                Census::measure_cpu(pid, cpu, cpu_baseline(0), &previous),
+                Measurement::Unavailable(MeasurementAbsence::Unproven)
+            );
+        }
+    }
+
+    #[test]
+    fn collection_keeps_consecutive_failed_reads_and_recovery_unproven() {
+        let pid = Pid::from(1);
+        let mut previous = HashMap::from([(pid, cpu_baseline(10))]);
+        // Failed task-info reads keep the old rate. The first successful read
+        // after them also keeps it because sysinfo's previous counter was zero.
+        for accumulated in [0, 0, 0, 20] {
+            let baseline = cpu_baseline(accumulated);
+            assert_eq!(
+                Census::measure_cpu(pid, 0.4, baseline, &previous),
+                Measurement::Unavailable(MeasurementAbsence::Unproven)
+            );
+            previous.insert(pid, baseline);
+        }
+        assert_eq!(
+            Census::measure_cpu(pid, 0.5, cpu_baseline(30), &previous),
+            Measurement::Reading(0.5)
+        );
+    }
+
+    #[test]
+    fn collection_waits_for_a_positive_baseline_after_an_initial_failed_read() {
+        let pid = Pid::from(1);
+        let mut previous = HashMap::new();
+        let initial = cpu_baseline(0);
+        assert_eq!(
+            Census::measure_cpu(pid, 0.0, initial, &previous),
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        );
+        previous.insert(pid, initial);
+        let recovered = cpu_baseline(20);
+        assert_eq!(
+            Census::measure_cpu(pid, 0.0, recovered, &previous),
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        previous.insert(pid, recovered);
+        assert_eq!(
+            Census::measure_cpu(pid, 0.0, recovered, &previous),
+            Measurement::Reading(0.0)
+        );
+    }
+
+    #[test]
+    fn collection_preserves_a_measured_zero_with_nonzero_accumulated_time() {
+        let pid = Pid::from(1);
+        let previous = HashMap::from([(pid, cpu_baseline(10))]);
+        let measured = Census::measure_cpu(pid, 0.0, cpu_baseline(10), &previous);
+        assert_eq!(measured, Measurement::Reading(0.0));
+        assert_eq!(measured.map(cpu_label).to_string(), "0%");
+    }
+
+    #[test]
+    fn collection_keeps_a_retained_rate_unproven_when_cpu_time_is_unchanged() {
+        let pid = Pid::from(1);
+        let previous = HashMap::from([(pid, cpu_baseline(10))]);
+        assert_eq!(
+            Census::measure_cpu(pid, 80.0, cpu_baseline(10), &previous),
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+    }
+
+    #[test]
+    fn readable_quantized_zero_is_unproven_instead_of_failed() {
+        let pid = Pid::from(1);
+        let previous = HashMap::from([(pid, cpu_baseline(0))]);
+        assert_eq!(
+            Census::measure_cpu(pid, 0.0, cpu_baseline(0), &previous),
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        // A nonzero rate cannot establish a fresh computation from a zero baseline.
+        assert_eq!(
+            Census::measure_cpu(pid, 0.5, cpu_baseline(0), &previous),
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+    }
+
+    #[test]
+    fn collection_rejects_invalid_rates() {
+        let pid = Pid::from(1);
+        let previous = HashMap::from([(pid, cpu_baseline(10))]);
+        for cpu in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
+            assert_eq!(
+                Census::measure_cpu(pid, cpu, cpu_baseline(10), &previous),
+                Measurement::Unavailable(MeasurementAbsence::ReadFailed)
+            );
+        }
+    }
+
+    #[test]
+    fn a_reused_pid_starts_a_new_cpu_observation() {
+        let pid = Pid::from(1);
+        let previous = HashMap::from([(pid, cpu_baseline(10))]);
+        let replacement = CpuBaseline {
+            started:     2,
+            accumulated: 0,
+        };
+        assert_eq!(
+            Census::measure_cpu(pid, 0.0, replacement, &previous),
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        );
+    }
+
+    #[test]
+    fn a_pid_reused_within_the_same_second_leaves_the_cpu_sample_unproven() {
+        let pid = Pid::from(1);
+        let previous = HashMap::from([(pid, cpu_baseline(10))]);
+        let replacement = cpu_baseline(5);
+        assert_eq!(
+            Census::measure_cpu(pid, 0.0, replacement, &previous),
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+    }
+
+    #[test]
+    fn census_keeps_first_observations_instead_of_dropping_zero_samples() {
+        let pid = Pid::from_u32(std::process::id());
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            process_discovery_refresh_kind(),
+        );
+        let census = Census::take(&system, &HashMap::new());
+        assert_eq!(
+            census.cpu.get(&pid),
+            Some(&Measurement::Unavailable(
+                MeasurementAbsence::FirstObservation
+            ))
         );
     }
 
@@ -2638,11 +3105,16 @@ mod tests {
     /// `now`.
     fn settle_one(smoothing: &mut CpuSmoothing, sampled: f32, now: Instant) -> f32 {
         let pid = Pid::from(1);
-        smoothing
-            .settle(&HashMap::from([(pid, sampled)]), &[pid], now)
-            .get(&pid)
-            .copied()
-            .unwrap_or_default()
+        match smoothing.settle(
+            &HashMap::from([(pid, Measurement::Reading(sampled))]),
+            &[pid],
+            now,
+        )[&pid]
+        {
+            Measurement::Reading(reading) => Ok(reading),
+            Measurement::Unavailable(reason) => Err(reason),
+        }
+        .expect("supplied reading must remain available")
     }
 
     /// One invocation settled at `sampled` for `over`, reporting where
@@ -2743,15 +3215,25 @@ mod tests {
         let mut smoothing = CpuSmoothing::default();
         let now = start();
         let (running, arriving) = (Pid::from(1), Pid::from(2));
-        smoothing.settle(&HashMap::from([(running, 10.0)]), &[running], now);
+        smoothing.settle(
+            &HashMap::from([(running, Measurement::Reading(10.0))]),
+            &[running],
+            now,
+        );
 
         let reported = smoothing.settle(
-            &HashMap::from([(running, 10.0), (arriving, 400.0)]),
+            &HashMap::from([
+                (running, Measurement::Reading(10.0)),
+                (arriving, Measurement::Reading(400.0)),
+            ]),
             &[running, arriving],
             now + poll(),
         );
 
-        assert_eq!(reported.get(&arriving).copied(), Some(400.0));
+        assert_eq!(
+            reported.get(&arriving).copied(),
+            Some(Measurement::Reading(400.0))
+        );
     }
 
     /// An invocation the scan no longer carries takes its history with
@@ -2765,6 +3247,79 @@ mod tests {
 
         assert!(smoothing.settled.is_empty());
         assert!(smoothing.reported.is_empty());
+    }
+
+    #[test]
+    fn a_never_published_smoother_is_distinct_from_one_holding_a_reading() {
+        let mut smoothing = CpuSmoothing::default();
+        assert_eq!(smoothing.publication, CpuPublication::NeverPublished);
+        let now = start();
+        settle_one(&mut smoothing, 40.0, now);
+        assert_eq!(smoothing.publication, CpuPublication::Published(now));
+        assert_eq!(
+            smoothing.reported[&Pid::from(1)],
+            Measurement::Reading(40.0)
+        );
+    }
+
+    #[test]
+    fn unavailable_cpu_replaces_a_stale_reading_before_its_publication_deadline() {
+        for reason in [
+            MeasurementAbsence::FirstObservation,
+            MeasurementAbsence::ReadFailed,
+            MeasurementAbsence::Unproven,
+        ] {
+            let mut smoothing = CpuSmoothing::default();
+            let now = start();
+            let pid = Pid::from(1);
+            settle_one(&mut smoothing, 400.0, now);
+            assert!(!smoothing.is_due(now + poll()));
+            let reported = smoothing.settle(
+                &HashMap::from([(pid, Measurement::Unavailable(reason))]),
+                &[pid],
+                now + poll(),
+            );
+            assert_eq!(reported[&pid], Measurement::Unavailable(reason));
+            assert_eq!(smoothing.settled[&pid], Measurement::Unavailable(reason));
+            assert_eq!(smoothing.publication, CpuPublication::Published(now));
+            let later = smoothing.settle(
+                &HashMap::from([(pid, Measurement::Unavailable(reason))]),
+                &[pid],
+                now + Duration::from_millis(CPU_REPORT_MILLIS),
+            );
+            assert_eq!(later[&pid], Measurement::Unavailable(reason));
+        }
+    }
+
+    #[test]
+    fn a_missing_cpu_sample_never_becomes_a_measured_zero() {
+        let mut smoothing = CpuSmoothing::default();
+        let now = start();
+        let pid = Pid::from(1);
+        settle_one(&mut smoothing, 400.0, now);
+        let reported = smoothing.settle(&HashMap::new(), &[pid], now + poll());
+        assert_eq!(
+            reported[&pid],
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+    }
+
+    #[test]
+    fn cpu_recovery_starts_fresh_without_the_value_from_before_the_gap() {
+        let mut smoothing = CpuSmoothing::default();
+        let now = start();
+        let pid = Pid::from(1);
+        settle_one(&mut smoothing, 400.0, now);
+        smoothing.settle(
+            &HashMap::from([(
+                pid,
+                Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+            )]),
+            &[pid],
+            now + poll(),
+        );
+        let recovered = settle_one(&mut smoothing, 20.0, now + poll() * 2);
+        assert!((recovered - 20.0).abs() < f32::EPSILON);
     }
 
     /// The short display keeps the words that name what runs and stops

@@ -18,6 +18,7 @@ use std::time::Instant;
 use crate::processes::Ancestor;
 use crate::processes::CargoGroup;
 use crate::processes::CargoProcess;
+use crate::processes::Measurement;
 use crate::theme;
 
 /// One table row, once it has stopped when that happened, and how far
@@ -375,16 +376,33 @@ impl Roster {
     /// gives its index back, so the palette is spent on what is
     /// actually running.
     ///
+    /// An unavailable managed count keeps an established family, or
+    /// confirms a new one when a retained child names the row as its
+    /// parent. Without either, it establishes no family. A measured
+    /// zero releases the index.
+    ///
     /// More families at once than the palette holds is the one case
     /// this cannot serve, and it wraps rather than leaving the extra
     /// ones unmarked -- a repeated colour still pairs correctly far
     /// more often than none does.
     fn assign_families(&mut self) {
+        let parents: HashSet<u32> = self
+            .groups
+            .iter()
+            .flat_map(TrackedGroup::rows)
+            .filter_map(|row| row.process.parent)
+            .collect();
         let heads: Vec<u32> = self
             .groups
             .iter()
             .flat_map(TrackedGroup::rows)
-            .filter(|row| row.process.managed > 0)
+            .filter(|row| match row.process.managed {
+                Measurement::Reading(managed) => managed > 0,
+                Measurement::Unavailable(_) => {
+                    self.families.contains_key(&row.process.pid)
+                        || parents.contains(&row.process.pid)
+                },
+            })
             .map(|row| row.process.pid)
             .collect();
         let mut families = std::mem::take(&mut self.families);
@@ -442,6 +460,8 @@ mod tests {
     use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::processes::CommandText;
+    use crate::processes::CompilerObservation;
+    use crate::processes::MeasurementAbsence;
 
     /// The colour is a tie between a row and the rows under it, so a
     /// row's `parent` stamp has to be the very index its parent's own
@@ -523,6 +543,68 @@ mod tests {
         assert_eq!(stamps(&roster), [(64432, None, None)]);
     }
 
+    /// An unknown count alone supplies no evidence that a family exists.
+    #[test]
+    fn an_unknown_managed_count_does_not_create_a_family_without_evidence() {
+        let mut roster = Roster::new();
+        let mut group = group(64432, &[]);
+        group.lead.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
+
+        roster.observe(vec![group], start());
+
+        assert_eq!(stamps(&roster), [(64432, None, None)]);
+    }
+
+    /// A child's parent link proves the family even when its size is unknown.
+    #[test]
+    fn an_unknown_managed_count_assigns_a_family_when_a_child_names_its_parent() {
+        let mut roster = Roster::new();
+        let mut group = family(64432, &[4003]);
+        group.lead.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
+
+        roster.observe(vec![group], start());
+
+        let lead = roster.groups()[0].lead.family();
+        assert!(lead.is_some());
+        assert_eq!(roster.groups()[0].rest[0].parent_family(), lead);
+    }
+
+    /// Losing a count does not prove that an established family has ended.
+    #[test]
+    fn an_unknown_managed_count_keeps_an_established_family_without_a_child_link() {
+        let mut roster = Roster::new();
+        let mut group = group(64432, &[]);
+        group.lead.managed = Measurement::Reading(1);
+        roster.observe(vec![group.clone()], start());
+        let before = roster.groups()[0].lead.family();
+        assert!(before.is_some());
+
+        group.lead.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
+        assert!(roster.observe(vec![group.clone()], start()));
+
+        assert_eq!(roster.groups()[0].lead.family(), before);
+        assert!(!roster.observe(vec![group], start()));
+    }
+
+    /// A measured zero ends the family retained during an unavailable scan.
+    #[test]
+    fn a_measured_zero_releases_a_family_after_an_unknown_managed_count() {
+        let mut roster = Roster::new();
+        let mut group = group(64432, &[]);
+        group.lead.managed = Measurement::Reading(1);
+        roster.observe(vec![group.clone()], start());
+        assert!(roster.groups()[0].lead.family().is_some());
+        group.lead.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
+        roster.observe(vec![group.clone()], start());
+        assert!(roster.groups()[0].lead.family().is_some());
+
+        group.lead.managed = Measurement::Reading(0);
+        assert!(roster.observe(vec![group], start()));
+
+        assert_eq!(stamps(&roster), [(64432, None, None)]);
+        assert!(roster.families.is_empty());
+    }
+
     /// A process row carrying nothing but the pid the tests key on.
     fn process(pid: u32) -> CargoProcess {
         CargoProcess {
@@ -535,10 +617,10 @@ mod tests {
             start: "10:00".to_string(),
             started: 0,
             duration: "00:01".to_string(),
-            cpu: "0%".to_string(),
-            compiler: None,
+            cpu: Measurement::Reading("0%".to_string()),
+            compiler: CompilerObservation::None,
             state: crate::progress::CaptureLookup::Unregistered,
-            managed: 0,
+            managed: Measurement::Reading(0),
             nested: false,
             command: CommandText::of("cargo", &["build"]),
         }
@@ -558,7 +640,7 @@ mod tests {
     /// what makes the lead a family.
     fn family(lead: u32, rest: &[u32]) -> CargoGroup {
         let mut group = group(lead, rest);
-        group.lead.managed = rest.len();
+        group.lead.managed = Measurement::Reading(rest.len());
         for row in &mut group.rest {
             row.parent = Some(lead);
         }

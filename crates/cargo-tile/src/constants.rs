@@ -533,6 +533,8 @@ pub(crate) const SECONDS_PER_MINUTE: u64 = 60;
 pub(crate) const SECONDS_PER_HOUR: u64 = 3600;
 /// Shown in `start` when a process's timestamp cannot be interpreted.
 pub(crate) const UNRESOLVED_TIME: &str = "--:--";
+/// CPU, compiler and managed columns share this marker when no reading is established.
+pub(crate) const UNAVAILABLE_MEASUREMENT: &str = "--";
 /// Home directory stand-in in the working-directory header.
 pub(crate) const HOME_ALIAS: &str = "~";
 /// The argument the summary leaves out, in either of the two spellings
