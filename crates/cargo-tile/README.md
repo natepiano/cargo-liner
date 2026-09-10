@@ -394,6 +394,7 @@ name:
 
 ```bash
 cargo-tile install      # put the shim in front of cargo
+sudo cargo-tile install --all-accounts   # the same, for every account's toolchains
 cargo-tile status       # report what stands in front of each toolchain
 cargo-tile uninstall    # give cargo its name back
 ```
@@ -414,8 +415,8 @@ other terminals — and a process's output belongs to the terminal that started
 it. Nothing outside can read it. So `cargo-tile install` moves each toolchain's
 real cargo aside to `cargo-tile-real` and puts a small script in its place,
 which runs the real binary under a pty and mirrors the output to
-`/tmp/cargo-tile/run-<timestamp>-<pid>.log`. The grid reads the last counter out
-of the tail of that log.
+`/tmp/cargo-tile/<uid>/run-<timestamp>-<pid>.log`, under a directory the account
+owns. The grid reads the last counter out of the tail of that log.
 
 Without the shim nothing breaks: the `state` column simply stays out and
 headings draw no rule. What a command is doing is the only thing it adds.
@@ -466,9 +467,12 @@ such check on every save. What is left behind is the logs of runs that actually
 reported something, and whatever cleans `/tmp` on the system is what bounds
 those: macOS sweeps files after a few days, and many Linux systems clear it at
 boot. A run counts as live only while its marker file under
-`/tmp/cargo-tile/state/pids/` exists, so deleting the logs is safe at any
-time. `CARGO_TILE_ROOT` moves the whole
-directory, which is how a second grid runs on captures of its own.
+`/tmp/cargo-tile/<uid>/state/pids/` exists, so deleting the logs is safe at any
+time. Every account on the machine writes under its own numbered directory in
+`/tmp/cargo-tile`, and the grid reads all of them, so a build started by a
+runner account shows up under that account's name with nothing to configure.
+`cargo-tile install --all-accounts`, run as root, puts the shim in front of
+every account's toolchains in one go.
 
 ### keys
 

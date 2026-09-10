@@ -43,32 +43,35 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::env;
-use std::ffi::OsString;
-use std::path::Component;
+use std::collections::BTreeSet;
+use std::io::Error;
+use std::io::ErrorKind;
+#[cfg(test)]
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use sysinfo::Users;
+
 use crate::birth_stamp;
 use crate::birth_stamp::IdentityEvidence;
 use crate::birth_stamp::KernelObservation;
+use crate::capture_root;
 use crate::capture_root::CleanupRefusal;
+use crate::capture_root::EffectiveUser;
 use crate::capture_root::Enumeration;
 use crate::capture_root::RootHistory;
 use crate::capture_root::RootIncarnation;
 use crate::capture_root::RootOwner;
 use crate::capture_root::RootScan;
+use crate::capture_root::SharedCaptureDirectory;
 use crate::capture_root::SweepBudget;
 use crate::capture_root::SweepDisposition;
 use crate::constants::BAR_GLYPH_FIRST;
 use crate::constants::BAR_GLYPH_LAST;
 use crate::constants::BUILD_FINISHED_MARKER;
 use crate::constants::CAPTURE_LIVE_RUNS_DIR;
-use crate::constants::CAPTURE_ROOT;
-use crate::constants::CAPTURE_ROOT_ENV;
-use crate::constants::CAPTURE_ROOT_NOT_ABSOLUTE;
-use crate::constants::CONFIG_KEY_CAPTURE_ROOTS;
 use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::PHASE_BUILDING;
 use crate::constants::PHASE_TESTING;
@@ -83,9 +86,11 @@ use crate::constants::TEST_PHASE_MARKER;
 use crate::constants::UNIT_COUNTER_LEAD;
 use crate::constants::UNIT_COUNTER_SEPARATOR;
 use crate::constants::UNIT_COUNTER_TRAILER;
+use crate::processes::AccountCaptureDirectory;
+use crate::processes::AccountName;
 use crate::processes::CaptureDiagnostic;
+use crate::processes::DirectAssociation;
 use crate::processes::RootReadStatus;
-use crate::processes::RootStatus;
 use crate::registration::Registration;
 use crate::registration::RegistrationVerification;
 use crate::registration::VerifiedRegistration;
@@ -189,7 +194,7 @@ pub(crate) enum CounterState {
 
 impl RunState {
     /// Expose counter availability without dropping the blocked state.
-    pub(crate) const fn working(self) -> CounterState {
+    const fn working(self) -> CounterState {
         match self {
             Self::Working { phase, progress } => CounterState::Working { phase, progress },
             Self::Blocked => CounterState::Blocked,
@@ -242,13 +247,13 @@ impl From<std::io::Result<String>> for CaptureRead {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CaptureFailure {
     /// Allows later rendering to distinguish denial, absence, and other failures.
-    pub(crate) kind:    std::io::ErrorKind,
+    pub(crate) kind:    ErrorKind,
     /// The error is observed once, without reopening the path during rendering.
     pub(crate) message: String,
 }
 
-impl From<std::io::Error> for CaptureFailure {
-    fn from(error: std::io::Error) -> Self {
+impl From<Error> for CaptureFailure {
+    fn from(error: Error) -> Self {
         Self {
             kind:    error.kind(),
             message: error.to_string(),
@@ -278,7 +283,7 @@ pub(crate) struct CaptureRootIndex(pub(crate) usize);
 /// A shim pid belongs to one root even when another root registers the same pid.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct CaptureKey {
-    /// Interned at scanner startup, without retaining an owned-root capability.
+    /// Assigned on first account discovery, without retaining cleanup authority.
     pub(crate) root:        CaptureRootIndex,
     /// The shim process named by the registration in this root.
     pub(crate) pid:         u32,
@@ -310,131 +315,137 @@ pub(crate) enum CaptureSelection {
     Ambiguous(Vec<CaptureKey>),
 }
 
-/// Preserve the operator's pathname and its origin after root deduplication.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CaptureRootSource {
-    /// Unset and empty environments both select the built-in shim root.
-    Default,
-    /// A nonempty `CARGO_TILE_ROOT` selects the reader's own shim root.
-    Environment {
-        /// Kept exactly as supplied, including relative spellings.
-        path: PathBuf,
-    },
-    /// Additional discovery roots are named by entries in `capture.roots`.
-    Configuration {
-        /// Zero-based position in the original configuration list.
-        entry: usize,
-        /// Kept exactly as configured, even when another spelling is interned first.
-        path:  PathBuf,
-    },
+/// Which account is responsible for removing ended captures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CaptureCleanup {
+    /// This reader can prove and remove its own ended registrations.
+    Here,
+    /// Another account's next shim invocation removes its ended registrations.
+    AccountNextRun,
 }
 
-/// One interned pathname with every source that selected it.
+/// One account's directory below the shared parent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CaptureRoot {
-    /// Absolute scan path, or a retained validation failure for later reporting.
-    pub(crate) path:    Result<PathBuf, CaptureFailure>,
-    /// Deduplication never discards the spelling needed by the settings view.
-    pub(crate) sources: Vec<CaptureRootSource>,
+    /// Absolute pathname; the final component is checked without following links.
+    pub(crate) path:    PathBuf,
+    /// The numeric directory name must match its owner before it supplies captures.
+    pub(crate) uid:     u32,
+    /// Cleanup is permitted only in the reader's own uid directory.
+    pub(crate) cleanup: CaptureCleanup,
 }
 
-/// Root identity resolved once at scanner startup; access is rechecked each scan.
+impl CaptureRoot {
+    fn account(path: PathBuf, uid: u32) -> Self {
+        Self {
+            path,
+            uid,
+            cleanup: if capture_root::effective_user() == EffectiveUser::Known(uid) {
+                CaptureCleanup::Here
+            } else {
+                CaptureCleanup::AccountNextRun
+            },
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(path: &Path) -> Self {
+        let uid = std::fs::metadata(path).map_or_else(
+            |_| match capture_root::effective_user() {
+                EffectiveUser::Known(uid) => uid,
+                EffectiveUser::Unavailable => u32::MAX,
+            },
+            |metadata| metadata.uid(),
+        );
+        Self::account(capture_root::canonical_capture_path(path), uid)
+    }
+}
+
+/// Shared machine discovery and isolated descriptor tests have distinct path semantics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CaptureParent {
+    /// Numeric account children are discovered beneath this canonical parent.
+    Shared(PathBuf),
+    /// Unit fixtures already name the account directories whose races they exercise.
+    #[cfg(test)]
+    IsolatedAccounts,
+}
+
+/// One shared parent, with stable account indices across subsequent scans.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CaptureRoots {
-    /// Index order gives the reader's own root precedence over additional roots.
-    pub(crate) roots: Vec<CaptureRoot>,
+    parent:   CaptureParent,
+    accounts: RefCell<Vec<CaptureRoot>>,
 }
 
 impl CaptureRoots {
-    /// Snapshot the environment and configuration before the first process scan.
-    pub(crate) fn resolve(configured: &[PathBuf]) -> Self {
-        Self::resolve_environment(configured, env::var_os(CAPTURE_ROOT_ENV).into())
+    /// Tests supply their own parent; production always supplies `CAPTURE_ROOT`.
+    pub(crate) fn from_parent(parent: &Path) -> Self {
+        let _ = capture_root::prepare_shared_directory(parent);
+        Self {
+            parent:   CaptureParent::Shared(capture_root::canonical_capture_path(parent)),
+            accounts: RefCell::default(),
+        }
     }
 
-    /// Keep the environment boundary separate so resolution tests need no mutation.
-    fn resolve_environment(configured: &[PathBuf], environment: CaptureRootEnvironment) -> Self {
-        let (path, source) = match environment {
-            CaptureRootEnvironment::Default => {
-                (Ok(PathBuf::from(CAPTURE_ROOT)), CaptureRootSource::Default)
-            },
-            CaptureRootEnvironment::Override(path) => (
-                std::path::absolute(&path).map_err(CaptureFailure::from),
-                CaptureRootSource::Environment { path },
-            ),
+    /// Refresh discovery every scan so an account's first run appears immediately.
+    fn discover(&self, users: &Users) -> Vec<AccountCaptureDirectory> {
+        let accounts = match &self.parent {
+            CaptureParent::Shared(parent) => self.discover_accounts(parent),
+            #[cfg(test)]
+            CaptureParent::IsolatedAccounts => self.accounts.borrow().clone(),
         };
-        let mut roots = Self { roots: Vec::new() };
-        roots.intern(path, source);
-        for (entry, path) in configured.iter().enumerate() {
-            let resolved = if path.is_absolute() {
-                Ok(path.clone())
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "capture.{CONFIG_KEY_CAPTURE_ROOTS}[{entry}]: {CAPTURE_ROOT_NOT_ABSOLUTE}"
-                    ),
-                )
-                .into())
-            };
-            roots.intern(
-                resolved,
-                CaptureRootSource::Configuration {
-                    entry,
-                    path: path.clone(),
-                },
-            );
-        }
-        roots
+        accounts
+            .into_iter()
+            .map(|root| AccountCaptureDirectory::inspect(root, users))
+            .collect()
     }
 
-    /// Resolve ancestor aliases while leaving the final component for `O_NOFOLLOW`.
-    fn intern(&mut self, path: Result<PathBuf, CaptureFailure>, source: CaptureRootSource) {
-        let path = path.map(|path| {
-            let path: PathBuf = path.components().collect();
-            match (path.parent(), path.components().next_back()) {
-                (Some(parent), Some(component)) => parent.canonicalize().map_or_else(
-                    |_| path.clone(),
-                    |mut parent| {
-                        if component == Component::ParentDir {
-                            // Resolve ancestor symlinks before applying the final `..`.
-                            parent.pop();
-                        } else {
-                            parent.push(component);
-                        }
-                        parent
-                    },
-                ),
-                _ => path,
+    fn discover_accounts(&self, parent: &Path) -> Vec<CaptureRoot> {
+        let mut accounts = self.accounts.borrow_mut();
+        // Final parent symlinks must not redirect the account inventory.
+        if !matches!(
+            SharedCaptureDirectory::inspect(parent).state,
+            crate::capture_root::SharedDirectoryState::Shared { .. }
+                | crate::capture_root::SharedDirectoryState::NotShared { .. }
+        ) {
+            return Vec::new();
+        }
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            let mut discovered = entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let name = entry.file_name();
+                    let name = name.to_str()?;
+                    let uid: u32 = name.parse().ok()?;
+                    if name != uid.to_string() || !entry.file_type().ok()?.is_dir() {
+                        return None;
+                    }
+                    Some(CaptureRoot::account(parent.join(name), uid))
+                })
+                .collect::<Vec<_>>();
+            discovered.sort_by_key(|root| (root.cleanup != CaptureCleanup::Here, root.uid));
+            for root in discovered {
+                if !accounts.iter().any(|known| known.path == root.path) {
+                    accounts.push(root);
+                }
             }
-        });
-        if let Some(root) = self
-            .roots
-            .iter_mut()
-            .find(|root| path.is_ok() && root.path == path)
-        {
-            root.sources.push(source);
-        } else {
-            self.roots.push(CaptureRoot {
-                path,
-                sources: vec![source],
-            });
         }
+        accounts.clone()
     }
-}
 
-/// The shim treats an empty environment override just like an unset variable.
-enum CaptureRootEnvironment {
-    /// Use the built-in write root.
-    Default,
-    /// Preserve the nonempty environment pathname.
-    Override(PathBuf),
-}
-
-impl From<Option<OsString>> for CaptureRootEnvironment {
-    fn from(value: Option<OsString>) -> Self {
-        value
-            .filter(|value| !value.is_empty())
-            .map_or(Self::Default, |value| Self::Override(PathBuf::from(value)))
+    /// Isolated account scans exercise descriptor and process-identity races directly.
+    #[cfg(test)]
+    pub(crate) fn for_test(paths: &[&Path]) -> Self {
+        Self {
+            parent:   CaptureParent::IsolatedAccounts,
+            accounts: RefCell::new(
+                paths
+                    .iter()
+                    .map(|path| CaptureRoot::for_test(path))
+                    .collect(),
+            ),
+        }
     }
 }
 
@@ -506,11 +517,12 @@ enum RegistrationName<'name> {
 #[derive(Default)]
 pub(crate) struct Capture {
     /// Absence from this map differs from an accepted but unreadable capture.
-    readings:               BTreeMap<CaptureKey, CaptureRead>,
+    readings:                    BTreeMap<CaptureKey, CaptureRead>,
     /// Only identity-confirmed records can supply future registration-sourced rows.
-    confirmed:              Vec<ConfirmedCapture>,
+    confirmed:                   Vec<ConfirmedCapture>,
     /// One observation per effective root, including missing and invalid paths.
-    pub(crate) root_status: Vec<RootStatus>,
+    pub(crate) root_status:      Vec<AccountCaptureDirectory>,
+    pub(crate) shared_directory: SharedCaptureDirectory,
 }
 
 impl Capture {
@@ -543,10 +555,7 @@ impl Capture {
     /// The observer is invoked again immediately before each deletion attempt.
     #[cfg(test)]
     pub(crate) fn take_from(root: &Path, observe: impl Fn(u32) -> KernelObservation) -> Self {
-        let roots = CaptureRoots::resolve_environment(
-            &[],
-            CaptureRootEnvironment::Override(root.to_owned()),
-        );
+        let roots = CaptureRoots::for_test(&[root]);
         Self::take_roots(&roots, &observe)
     }
 
@@ -555,55 +564,61 @@ impl Capture {
         roots: &CaptureRoots,
         observe: &impl Fn(u32) -> KernelObservation,
     ) -> Self {
-        let mut capture = Self::default();
+        let shared_directory = match &roots.parent {
+            CaptureParent::Shared(parent) => {
+                let _ = capture_root::prepare_shared_directory(parent);
+                SharedCaptureDirectory::inspect(parent)
+            },
+            #[cfg(test)]
+            CaptureParent::IsolatedAccounts => SharedCaptureDirectory::default(),
+        };
+        let mut capture = Self {
+            shared_directory,
+            ..Self::default()
+        };
         let mut budget = SweepBudget::default();
         let users = sysinfo::Users::new_with_refreshed_list();
-        for (index, root) in roots.roots.iter().enumerate() {
-            let mut status = RootStatus {
-                root:         root.clone(),
-                owner:        RootOwner::Unavailable,
-                account:      crate::processes::AccountName::Unavailable,
-                cleanup:      Vec::new(),
-                state:        RootReadStatus::Readable,
-                confirmed:    0,
-                diagnostics:  Vec::new(),
-                associations: Vec::new(),
-            };
-            match &root.path {
-                Err(failure) => status.state = RootReadStatus::Invalid(failure.clone()),
-                Ok(path) => {
-                    match ROOT_HISTORY.with_borrow_mut(|history| RootScan::open(path, history)) {
-                        Err(error)
-                            if error.kind() == std::io::ErrorKind::NotFound
-                                && matches!(
-                                    root.sources.as_slice(),
-                                    [CaptureRootSource::Default]
-                                ) =>
-                        {
-                            status.state = RootReadStatus::DefaultNotCreated;
-                        },
-                        Err(error) => {
-                            let failure = PathFailure {
-                                path:    path.clone(),
-                                failure: error.into(),
-                            };
-                            status.cleanup.push(CleanupRefusal::Access(failure.clone()));
-                            status.state = RootReadStatus::Unavailable(failure);
-                        },
-                        Ok(scan) => {
-                            status.owner = scan.owner();
-                            capture.scan_root(
-                                CaptureRootIndex(index),
-                                &scan,
-                                observe,
-                                &mut budget,
-                                &mut status,
-                            );
-                        },
+        for (index, mut status) in roots.discover(&users).into_iter().enumerate() {
+            if matches!(status.state, RootReadStatus::ForeignOwned { .. }) {
+                capture.root_status.push(status);
+                continue;
+            }
+            let path = &status.root.path;
+            match ROOT_HISTORY.with_borrow_mut(|history| RootScan::open(path, history)) {
+                Err(error) => {
+                    let failure = PathFailure {
+                        path:    path.clone(),
+                        failure: error.into(),
+                    };
+                    status.cleanup.push(CleanupRefusal::Access(failure.clone()));
+                    status.state = RootReadStatus::Unavailable(failure);
+                },
+                Ok(scan) => {
+                    status.state = RootReadStatus::Readable;
+                    status.owner = scan.owner();
+                    // The descriptor must still belong to the account checked at discovery.
+                    if status.owner != RootOwner::Uid(status.root.uid) {
+                        status.state = RootReadStatus::ForeignOwned {
+                            owner: AccountName::resolve(status.owner, &users),
+                        };
+                        capture.root_status.push(status);
+                        continue;
                     }
+                    if let Enumeration::Failed(error) = scan.registration_outcome() {
+                        status.state = RootReadStatus::Unavailable(PathFailure {
+                            path:    scan.registration_path(),
+                            failure: std::io::Error::new(error.kind(), error.to_string()).into(),
+                        });
+                    }
+                    capture.scan_root(
+                        CaptureRootIndex(index),
+                        &scan,
+                        observe,
+                        &mut budget,
+                        &mut status,
+                    );
                 },
             }
-            status.account = crate::processes::AccountName::resolve(status.owner, &users);
             capture.root_status.push(status);
         }
         capture
@@ -617,7 +632,7 @@ impl Capture {
         scan: &RootScan,
         observe: &impl Fn(u32) -> KernelObservation,
         budget: &mut SweepBudget,
-        status: &mut RootStatus,
+        status: &mut AccountCaptureDirectory,
     ) {
         let RegisteredRuns {
             generations,
@@ -698,7 +713,9 @@ impl Capture {
             }
             return;
         }
-        sweep_ended(scan, &generations, observe, budget);
+        if status.root.cleanup == CaptureCleanup::Here {
+            sweep_ended(scan, &generations, observe, budget);
+        }
     }
 
     /// Membership survives empty or unreadable output without claiming current progress.
@@ -785,20 +802,20 @@ impl Capture {
     }
 
     /// Retained reading pids support selection reporting even without any process row.
-    pub(crate) fn registered_pids(&self) -> std::collections::BTreeSet<u32> {
+    pub(crate) fn registered_pids(&self) -> BTreeSet<u32> {
         self.readings.keys().map(|key| key.pid).collect()
     }
 
     /// Only the selected, confirmed publication grants registration row ownership.
-    pub(crate) fn row_source(&self, pid: u32) -> crate::processes::DirectAssociation {
+    pub(crate) fn row_source(&self, pid: u32) -> DirectAssociation {
         let CaptureSelection::Selected(key) = self.select(pid) else {
-            return crate::processes::DirectAssociation::None;
+            return DirectAssociation::None;
         };
         self.confirmed
             .iter()
             .find(|confirmed| confirmed.key == key)
-            .map_or(crate::processes::DirectAssociation::None, |confirmed| {
-                crate::processes::DirectAssociation::Direct(Box::new(confirmed.into()))
+            .map_or(DirectAssociation::None, |confirmed| {
+                DirectAssociation::Direct(Box::new(confirmed.into()))
             })
     }
 
@@ -1206,6 +1223,7 @@ fn leading_number(text: &str) -> Option<(usize, &str)> {
 )]
 mod tests {
     use std::fs;
+    use std::io::ErrorKind;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::fs::symlink;
 
@@ -1213,10 +1231,13 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::Observation;
     use crate::constants::CAPTURE_INVENTORY_LIMIT;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
+    use crate::processes::AccountName;
+    use crate::processes::DirectAssociation;
 
     #[test]
     fn row_source_requires_the_selected_proof_and_survives_timestamp_or_log_failure() {
@@ -1224,8 +1245,8 @@ mod tests {
         publish(root.path(), 10, "first", "100", CAPTURED_REDRAW);
         let mut capture = Capture::take_with_observations(root.path(), |_| present("100"));
         capture.confirmed[0].modified =
-            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
-        let crate::processes::DirectAssociation::Direct(source) = capture.row_source(10) else {
+            Err(std::io::Error::from(ErrorKind::PermissionDenied).into());
+        let DirectAssociation::Direct(source) = capture.row_source(10) else {
             panic!("timestamp failure retains proof");
         };
         assert_eq!(source.registration().pid(), 10);
@@ -1362,8 +1383,7 @@ mod tests {
             }
             capture.confirmed.reverse();
             for confirmed in &mut capture.confirmed {
-                confirmed.modified =
-                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
+                confirmed.modified = Err(std::io::Error::from(ErrorKind::PermissionDenied).into());
             }
             assert!(matches!(capture.select(10), CaptureSelection::Ambiguous(_)));
         }
@@ -1473,10 +1493,7 @@ mod tests {
         publish(preferred.path(), 10, "first", "100", CAPTURED_REDRAW);
         publish(preferred.path(), 10, "second", "100", CAPTURED_WAIT);
         publish(other.path(), 10, "third", "100", CAPTURED_TALLY);
-        let roots = CaptureRoots::resolve_environment(
-            &[other.path().to_owned()],
-            CaptureRootEnvironment::Override(preferred.path().to_owned()),
-        );
+        let roots = CaptureRoots::for_test(&[preferred.path(), other.path()]);
         let capture = Capture::take_roots(&roots, &|pid| {
             KernelObservation::for_test(pid, present("100"))
         });
@@ -1490,10 +1507,7 @@ mod tests {
         let other = capture_root();
         publish(preferred.path(), 10, "unknown", "", CAPTURED_WAIT);
         publish(other.path(), 10, "confirmed", "100", CAPTURED_REDRAW);
-        let roots = CaptureRoots::resolve_environment(
-            &[other.path().to_owned()],
-            CaptureRootEnvironment::Override(preferred.path().to_owned()),
-        );
+        let roots = CaptureRoots::for_test(&[preferred.path(), other.path()]);
         let capture = Capture::take_roots(&roots, &|pid| {
             KernelObservation::for_test(pid, present("100"))
         });
@@ -1637,13 +1651,10 @@ mod tests {
                 scan,
                 &|pid| KernelObservation::for_test(pid, observe(pid)),
                 budget,
-                &mut RootStatus {
-                    root:         CaptureRoot {
-                        path:    Ok(scan.path().to_owned()),
-                        sources: vec![CaptureRootSource::Default],
-                    },
+                &mut AccountCaptureDirectory {
+                    root:         CaptureRoot::for_test(scan.path()),
                     owner:        scan.owner(),
-                    account:      crate::processes::AccountName::Unavailable,
+                    account:      AccountName::Unavailable,
                     cleanup:      Vec::new(),
                     state:        RootReadStatus::Readable,
                     confirmed:    0,
@@ -1652,131 +1663,6 @@ mod tests {
                 },
             );
         }
-    }
-
-    #[test]
-    fn missing_default_only_root_stays_quiet_and_recovers_next_scan() {
-        let parent = tempdir().unwrap();
-        let root = parent.path().join("unused-default");
-        let roots = CaptureRoots {
-            roots: vec![CaptureRoot {
-                path:    Ok(root.clone()),
-                sources: vec![CaptureRootSource::Default],
-            }],
-        };
-        let first = Capture::take_roots(&roots, &|pid| {
-            KernelObservation::for_test(pid, Observation::Unknown)
-        });
-        assert_eq!(first.root_status.len(), 1);
-        let status = &first.root_status[0];
-        assert_eq!(status.root, roots.roots[0]);
-        assert_eq!(status.state, RootReadStatus::DefaultNotCreated);
-        assert!(status.cleanup.is_empty());
-        assert!(status.diagnostics.is_empty());
-        assert_eq!(status.confirmed, 0);
-
-        fs::create_dir_all(root.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
-        let second = Capture::take_roots(&roots, &|pid| {
-            KernelObservation::for_test(pid, Observation::Unknown)
-        });
-        assert_eq!(second.root_status.len(), 1);
-        assert_eq!(second.root_status[0].state, RootReadStatus::Readable);
-    }
-
-    #[test]
-    fn explicitly_named_missing_roots_keep_access_failures() {
-        let parent = tempdir().unwrap();
-        let root = parent.path().join("explicit-missing");
-        let environment = CaptureRootSource::Environment { path: root.clone() };
-        let configuration = CaptureRootSource::Configuration {
-            entry: 0,
-            path:  root.clone(),
-        };
-        for sources in [
-            vec![environment.clone()],
-            vec![configuration.clone()],
-            vec![CaptureRootSource::Default, environment],
-            vec![CaptureRootSource::Default, configuration],
-        ] {
-            let roots = CaptureRoots {
-                roots: vec![CaptureRoot {
-                    path: Ok(root.clone()),
-                    sources,
-                }],
-            };
-            let capture = Capture::take_roots(&roots, &|pid| {
-                KernelObservation::for_test(pid, Observation::Unknown)
-            });
-            assert_eq!(capture.root_status.len(), 1);
-            let status = &capture.root_status[0];
-            assert!(matches!(
-                &status.state,
-                RootReadStatus::Unavailable(failure)
-                    if failure.path == root
-                        && failure.failure.kind == std::io::ErrorKind::NotFound
-            ));
-            assert!(matches!(
-                status.cleanup.as_slice(),
-                [CleanupRefusal::Access(failure)]
-                    if status.state == RootReadStatus::Unavailable(failure.clone())
-            ));
-        }
-    }
-
-    #[test]
-    fn default_only_root_keeps_failures_other_than_missing() {
-        let parent = tempdir().unwrap();
-        let root = parent.path().join("default-file");
-        fs::write(&root, "not a directory").unwrap();
-        let roots = CaptureRoots {
-            roots: vec![CaptureRoot {
-                path:    Ok(root.clone()),
-                sources: vec![CaptureRootSource::Default],
-            }],
-        };
-        let capture = Capture::take_roots(&roots, &|pid| {
-            KernelObservation::for_test(pid, Observation::Unknown)
-        });
-        let status = &capture.root_status[0];
-        assert!(matches!(
-            &status.state,
-            RootReadStatus::Unavailable(failure)
-                if failure.path == root
-                    && failure.failure.kind != std::io::ErrorKind::NotFound
-        ));
-        assert!(matches!(
-            status.cleanup.as_slice(),
-            [CleanupRefusal::Access(failure)]
-                if status.state == RootReadStatus::Unavailable(failure.clone())
-        ));
-    }
-
-    #[test]
-    fn missing_root_recovers_without_resolving_again() {
-        let parent = tempdir().unwrap();
-        let root = parent.path().join("later");
-        let roots = CaptureRoots {
-            roots: vec![CaptureRoot {
-                path:    Ok(root.clone()),
-                sources: vec![CaptureRootSource::Configuration {
-                    entry: 0,
-                    path:  root.clone(),
-                }],
-            }],
-        };
-        let first = Capture::take_roots(&roots, &|pid| {
-            KernelObservation::for_test(pid, Observation::Unknown)
-        });
-        assert!(
-            matches!(&first.root_status[0].state, RootReadStatus::Unavailable(failure) if failure.path == root && failure.failure.kind == std::io::ErrorKind::NotFound)
-        );
-        fs::create_dir_all(root.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
-        let second = Capture::take_roots(&roots, &|pid| {
-            KernelObservation::for_test(pid, Observation::Unknown)
-        });
-        assert_eq!(second.root_status[0].state, RootReadStatus::Readable);
-        assert!(second.root_status[0].diagnostics.is_empty());
-        assert!(first.readings.is_empty() && second.readings.is_empty());
     }
 
     #[test]
@@ -1955,7 +1841,7 @@ mod tests {
         .unwrap();
         let boot_failure = PathFailure {
             path:    path.join("kernel-boot"),
-            failure: std::io::Error::from(std::io::ErrorKind::PermissionDenied).into(),
+            failure: std::io::Error::from(ErrorKind::PermissionDenied).into(),
         };
 
         for _ in 0..2 {
@@ -2058,8 +1944,8 @@ mod tests {
     /// Inject complete kernel evidence without depending on host pid allocation.
     fn present(birth: &str) -> Observation {
         match crate::birth_stamp::BirthStamp::from_fields("boot", birth) {
-            crate::birth_stamp::IdentityEvidence::Available(stamp) => Observation::Present(stamp),
-            crate::birth_stamp::IdentityEvidence::Unavailable => Observation::Unknown,
+            IdentityEvidence::Available(stamp) => Observation::Present(stamp),
+            IdentityEvidence::Unavailable => Observation::Unknown,
         }
     }
 
@@ -2072,231 +1958,81 @@ mod tests {
     }
 
     #[test]
-    fn unset_root_environment_selects_default_source() {
-        let roots = CaptureRoots::resolve_environment(&[], None.into());
-        assert_eq!(roots.roots.len(), 1);
-        assert_eq!(roots.roots[0].sources, [CaptureRootSource::Default]);
-        let path = roots.roots[0].path.as_ref().unwrap();
-        assert_eq!(path.file_name(), Path::new(CAPTURE_ROOT).file_name());
-        assert_eq!(
-            path.parent().unwrap(),
-            Path::new(CAPTURE_ROOT)
-                .parent()
-                .unwrap()
-                .canonicalize()
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn empty_root_environment_selects_default_source() {
-        assert_eq!(
-            CaptureRoots::resolve_environment(&[], Some(OsString::new()).into()),
-            CaptureRoots::resolve_environment(&[], None.into()),
-        );
-    }
-
-    #[test]
-    fn nonempty_root_environment_selects_environment_source() {
-        let root = capture_root();
-        let path = root.path().to_path_buf();
-        let roots =
-            CaptureRoots::resolve_environment(&[], Some(path.clone().into_os_string()).into());
-        assert_eq!(roots.roots.len(), 1);
-        assert_eq!(
-            roots.roots[0].path.as_ref().unwrap(),
-            &path.canonicalize().unwrap()
-        );
-        assert_eq!(
-            roots.roots[0].sources,
-            [CaptureRootSource::Environment { path }]
-        );
-    }
-
-    #[test]
-    fn config_without_roots_keeps_exactly_the_readers_own_root() {
-        let config: crate::config::Config =
-            toml::from_str("[capture]\nauto_install = false\n").unwrap();
-        let root = capture_root();
-        let roots = CaptureRoots::resolve_environment(
-            &config.capture.roots,
-            CaptureRootEnvironment::Override(root.path().to_owned()),
-        );
-        assert_eq!(roots.roots.len(), 1);
-        assert_eq!(
-            roots.roots[0].path.as_ref().unwrap(),
-            &root.path().canonicalize().unwrap()
-        );
-    }
-
-    #[test]
-    fn missing_configured_root_retains_its_source_and_path() {
-        let own = capture_root();
-        let configured = own.path().join("not-created");
-        let roots = CaptureRoots::resolve_environment(
-            std::slice::from_ref(&configured),
-            CaptureRootEnvironment::Override(own.path().to_owned()),
-        );
-        assert_eq!(roots.roots.len(), 2);
-        assert_eq!(
-            roots.roots[1].path.as_ref().unwrap(),
-            &own.path().canonicalize().unwrap().join("not-created")
-        );
-        assert_eq!(
-            roots.roots[1].sources,
-            [CaptureRootSource::Configuration {
-                entry: 0,
-                path:  configured,
-            }]
-        );
-    }
-
-    #[test]
-    fn relative_configured_root_retains_a_validation_failure() {
-        let own = capture_root();
-        let configured = PathBuf::from("runner/cargo-tile");
-        let roots = CaptureRoots::resolve_environment(
-            std::slice::from_ref(&configured),
-            CaptureRootEnvironment::Override(own.path().to_owned()),
-        );
-        assert_eq!(roots.roots.len(), 2);
-        assert_eq!(
-            roots.roots[1].path.as_ref().unwrap_err().kind,
-            std::io::ErrorKind::InvalidInput
-        );
-        assert_eq!(
-            roots.roots[1].sources,
-            [CaptureRootSource::Configuration {
-                entry: 0,
-                path:  configured,
-            }]
-        );
-    }
-
-    #[test]
-    fn deduplication_preserves_every_configured_spelling() {
-        let own = capture_root();
+    fn shared_parent_discovers_accounts_each_scan_and_ignores_foreign_owned_directories() {
         let parent = tempdir().unwrap();
-        let real = parent.path().join("real");
-        let alias = parent.path().join("alias");
-        fs::create_dir(&real).unwrap();
-        symlink(&real, &alias).unwrap();
-        let configured = [alias.join("capture"), real.join("capture")];
-        let roots = CaptureRoots::resolve_environment(
-            &configured,
-            CaptureRootEnvironment::Override(own.path().to_owned()),
-        );
-        assert_eq!(roots.roots.len(), 2);
-        assert_eq!(
-            roots.roots[1].path.as_ref().unwrap(),
-            &real.canonicalize().unwrap().join("capture")
-        );
-        assert_eq!(
-            roots.roots[1].sources,
-            [
-                CaptureRootSource::Configuration {
-                    entry: 0,
-                    path:  configured[0].clone(),
-                },
-                CaptureRootSource::Configuration {
-                    entry: 1,
-                    path:  configured[1].clone(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn trailing_parent_deduplicates_a_populated_root_and_preserves_both_sources() {
-        let root = capture_root();
-        publish(root.path(), 10, "live", "100", CAPTURED_REDRAW);
-        let configured = root.path().join("state/..");
-        let roots = CaptureRoots::resolve_environment(
-            std::slice::from_ref(&configured),
-            CaptureRootEnvironment::Override(root.path().to_owned()),
-        );
-        assert_eq!(roots.roots.len(), 1);
-        assert_eq!(
-            roots.roots[0].path.as_ref().unwrap(),
-            &root.path().canonicalize().unwrap()
-        );
-        assert_eq!(
-            roots.roots[0].sources,
-            [
-                CaptureRootSource::Environment {
-                    path: root.path().to_owned(),
-                },
-                CaptureRootSource::Configuration {
-                    entry: 0,
-                    path:  configured,
-                },
-            ]
-        );
-        let capture = Capture::take_roots(&roots, &|pid| {
+        let roots = CaptureRoots::from_parent(parent.path());
+        let uid = match capture_root::effective_user() {
+            EffectiveUser::Known(uid) => uid,
+            EffectiveUser::Unavailable => panic!("reader uid"),
+        };
+        let own = parent.path().join(uid.to_string());
+        fs::create_dir_all(own.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        publish(&own, 10, "own", "100", CAPTURED_REDRAW);
+        let first = Capture::take_roots(&roots, &|pid| {
             KernelObservation::for_test(pid, present("100"))
         });
-        assert_eq!(capture.readings.len(), 1);
-        assert_eq!(capture.confirmed().len(), 1);
-        assert_eq!(capture.confirmed()[0].key, capture_key(&capture, 0, 10));
+        assert_eq!(first.root_status.len(), 1);
+        assert_eq!(first.root_status[0].root.cleanup, CaptureCleanup::Here);
+        let foreign_uid = uid.checked_add(1).unwrap();
+        let foreign = parent.path().join(foreign_uid.to_string());
+        fs::create_dir_all(foreign.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        let stale = publish(&foreign, 20, "stale", "100", "");
+        publish(&foreign, 21, "foreign", "100", CAPTURED_TALLY);
+        let second = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(
+                pid,
+                if pid == 20 {
+                    Observation::Ended
+                } else {
+                    present("100")
+                },
+            )
+        });
+        assert_eq!(second.root_status.len(), 2);
+        assert_eq!(second.root_status[1].root.uid, foreign_uid);
         assert_eq!(
-            capture.lookup(0, 10),
-            CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
+            second.root_status[1].root.cleanup,
+            CaptureCleanup::AccountNextRun
         );
+        assert!(matches!(
+            second.root_status[1].state,
+            RootReadStatus::ForeignOwned { .. }
+        ));
+        assert_eq!(second.root_status[1].owner, RootOwner::Uid(uid));
+        assert_eq!(second.root_status[1].confirmed, 0);
+        assert_eq!(second.lookup(1, 21), CaptureLookup::Unregistered);
+        assert!(stale.0.exists());
+        assert!(stale.1.exists());
+        assert_eq!(first.confirmed()[0].key, second.confirmed()[0].key);
     }
 
     #[test]
-    fn trailing_parents_resolve_ancestor_symlinks_before_deduplication() {
-        let root = capture_root();
-        let parent = tempdir().unwrap();
-        let alias = parent.path().join("alias");
-        symlink(root.path().join(CAPTURE_LIVE_RUNS_DIR), &alias).unwrap();
-        let roots = CaptureRoots::resolve_environment(
-            &[alias.join("../..")],
-            CaptureRootEnvironment::Override(root.path().to_owned()),
-        );
-        assert_eq!(roots.roots.len(), 1);
-        assert_eq!(
-            roots.roots[0].path.as_ref().unwrap(),
-            &root.path().canonicalize().unwrap()
-        );
+    fn shared_parent_ignores_nonnumeric_children_and_resolves_ancestor_aliases() {
+        let directory = tempdir().unwrap();
+        let parent = directory.path().join("parent");
+        fs::create_dir(&parent).unwrap();
+        let alias = directory.path().join("alias");
+        symlink(&parent, &alias).unwrap();
+        let actual = parent.join("captures");
+        let roots = CaptureRoots::from_parent(&alias.join("captures"));
+        assert_eq!(roots.parent, CaptureParent::Shared(actual.clone()));
+        fs::create_dir_all(actual.join("123").join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        fs::create_dir(actual.join("not-an-account")).unwrap();
+        fs::create_dir(actual.join("0123")).unwrap();
+        symlink(actual.join("123"), actual.join("456")).unwrap();
+        let accounts = roots.discover(&sysinfo::Users::new());
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].root.uid, 123);
     }
 
     #[test]
-    fn unresolved_ancestors_retain_configured_roots_including_trailing_parents() {
-        let own = capture_root();
-        for suffix in [
-            "not-created/capture",
-            "not-created/..",
-            "not-created/state/../..",
-        ] {
-            let configured = own.path().join(suffix);
-            let roots = CaptureRoots::resolve_environment(
-                std::slice::from_ref(&configured),
-                CaptureRootEnvironment::Override(own.path().to_owned()),
-            );
-            assert_eq!(roots.roots.len(), 2);
-            assert_eq!(roots.roots[1].path.as_ref().unwrap(), &configured);
-            assert_eq!(
-                roots.roots[1].sources,
-                [CaptureRootSource::Configuration {
-                    entry: 0,
-                    path:  configured,
-                }]
-            );
-        }
-    }
-
-    #[test]
-    fn configured_final_symlink_never_becomes_a_scan_capability() {
+    fn account_final_symlink_never_becomes_a_scan_capability() {
         let own = capture_root();
         let target = capture_root();
         let (registration, log) = publish(target.path(), 10, "ended", "100", "");
         let alias = own.path().join("alias");
         symlink(target.path(), &alias).unwrap();
-        let roots = CaptureRoots::resolve_environment(
-            &[alias],
-            CaptureRootEnvironment::Override(own.path().to_owned()),
-        );
+        let roots = CaptureRoots::for_test(&[own.path(), &alias]);
         let capture = Capture::take_roots(&roots, &|pid| {
             KernelObservation::for_test(pid, Observation::Ended)
         });
@@ -2315,10 +2051,7 @@ mod tests {
             .unwrap()
             .replace("/writer/project", "/runner/worktree");
         fs::write(registration, record).unwrap();
-        let roots = CaptureRoots::resolve_environment(
-            &[second.path().to_owned()],
-            CaptureRootEnvironment::Override(first.path().to_owned()),
-        );
+        let roots = CaptureRoots::for_test(&[first.path(), second.path()]);
         let capture = Capture::take_roots(&roots, &|pid| {
             KernelObservation::for_test(pid, present("100"))
         });
@@ -2362,10 +2095,7 @@ mod tests {
             publish(first.path(), 10, &format!("first-{index}"), "100", "");
             publish(second.path(), 20, &format!("second-{index}"), "100", "");
         }
-        let roots = CaptureRoots::resolve_environment(
-            &[second.path().to_owned()],
-            CaptureRootEnvironment::Override(first.path().to_owned()),
-        );
+        let roots = CaptureRoots::for_test(&[first.path(), second.path()]);
         Capture::take_roots(&roots, &|pid| {
             KernelObservation::for_test(pid, Observation::Ended)
         });

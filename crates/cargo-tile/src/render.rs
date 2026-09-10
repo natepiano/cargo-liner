@@ -2181,6 +2181,7 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
 mod tests {
     use std::collections::HashMap;
     use std::ffi::OsStr;
+    use std::io::ErrorKind;
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
     use std::time::Instant;
@@ -2188,19 +2189,23 @@ mod tests {
     use sysinfo::Pid;
 
     use super::*;
+    use crate::birth_stamp::IdentityEvidence;
     use crate::constants::COMPILER_PROCESS_NAMES;
     use crate::constants::PHASE_TESTING;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::UNRESOLVED_TIME;
+    use crate::processes;
+    use crate::processes::CaptureAccount;
+    use crate::processes::CaptureContext;
+    use crate::processes::CaptureMembership;
     use crate::processes::CargoGroup;
     use crate::processes::CargoProcess;
     use crate::processes::CommandText;
     use crate::processes::Compiler;
     use crate::processes::InvocationId;
     use crate::processes::MeasurementAbsence;
+    use crate::processes::RunId;
     use crate::processes::VisibleParent;
-    use crate::processes::aggregate_cpu;
-    use crate::processes::cpu_label;
     use crate::progress::Phase;
 
     /// The state of a command compiling `done` of `total` units.
@@ -2275,7 +2280,7 @@ mod tests {
             ),
             (
                 CaptureLookup::Registered(CaptureRead::Unreadable(
-                    std::io::Error::from(std::io::ErrorKind::PermissionDenied).into(),
+                    std::io::Error::from(ErrorKind::PermissionDenied).into(),
                 )),
                 CounterState::Unavailable,
             ),
@@ -2379,7 +2384,8 @@ mod tests {
             let mut row = row(None);
             let pid = Pid::from_u32(row.process.pid);
             let shares = HashMap::from([(pid, Measurement::Unavailable(reason))]);
-            row.process.cpu = aggregate_cpu(&shares, std::iter::once(pid)).map(cpu_label);
+            row.process.cpu =
+                processes::aggregate_cpu(&shares, std::iter::once(pid)).map(processes::cpu_label);
 
             for kind in [TableKind::Command, TableKind::Summary] {
                 let buffer = measurement_row_buffer(&row, kind);
@@ -2400,7 +2406,8 @@ mod tests {
             let mut row = row(None);
             let pid = Pid::from_u32(row.process.pid);
             let shares = HashMap::from([(pid, Measurement::Reading(reading))]);
-            row.process.cpu = aggregate_cpu(&shares, std::iter::once(pid)).map(cpu_label);
+            row.process.cpu =
+                processes::aggregate_cpu(&shares, std::iter::once(pid)).map(processes::cpu_label);
 
             for kind in [TableKind::Command, TableKind::Summary] {
                 let buffer = measurement_row_buffer(&row, kind);
@@ -2504,7 +2511,7 @@ mod tests {
             ),
             pid:                41233,
             invocation_id:      InvocationId::for_test(41233),
-            capture_membership: crate::processes::CaptureMembership::Outside,
+            capture_membership: CaptureMembership::Outside,
             provenance:         RowProvenance::Uncaptured,
             parent:             VisibleParent::None,
             start:              "11:04".to_string(),
@@ -2830,7 +2837,7 @@ mod tests {
             ),
             pid,
             invocation_id: InvocationId::for_test(pid),
-            capture_membership: crate::processes::CaptureMembership::Outside,
+            capture_membership: CaptureMembership::Outside,
             provenance: RowProvenance::Uncaptured,
             parent: VisibleParent::None,
             start: "11:04".to_string(),
@@ -2895,12 +2902,12 @@ mod tests {
         ];
         let shares: HashMap<_, _> = members.into_iter().zip(samples).collect();
         let mut lead = invocation(4100, &["test"]);
-        lead.cpu = aggregate_cpu(&shares, members.into_iter()).map(cpu_label);
+        lead.cpu = processes::aggregate_cpu(&shares, members.into_iter()).map(processes::cpu_label);
         let rest = members[1..]
             .iter()
             .map(|pid| {
                 let mut child = invocation(pid.as_u32(), &["build"]);
-                child.cpu = shares[pid].map(cpu_label);
+                child.cpu = shares[pid].map(processes::cpu_label);
                 child
             })
             .collect();
@@ -3349,17 +3356,17 @@ mod tests {
     }
 
     /// A real directory supplies an incarnation without requiring a second account.
-    fn capture_context() -> crate::processes::CaptureContext {
+    fn capture_context() -> CaptureContext {
         let root = tempfile::tempdir().expect("capture root");
         let scan = crate::capture_root::RootScan::open(
             root.path(),
             &mut crate::capture_root::RootHistory::default(),
         )
         .expect("open capture root");
-        crate::processes::CaptureContext {
+        CaptureContext {
             root:        CaptureRootIndex(0),
             incarnation: scan.incarnation(),
-            account:     crate::processes::CaptureAccount {
+            account:     CaptureAccount {
                 uid:  1000,
                 name: AccountName::Resolved("runner-one".into()),
             },
@@ -3509,12 +3516,12 @@ mod tests {
     fn source_transition_preserves_the_intended_lead_among_identical_headings() {
         let context = capture_context();
         let mut registration = same_second("~/x", 40);
-        let crate::birth_stamp::IdentityEvidence::Available(birth) =
+        let IdentityEvidence::Available(birth) =
             crate::birth_stamp::BirthStamp::from_fields("test-boot", "40")
         else {
             panic!("valid fixture birth stamp");
         };
-        registration.process.invocation_id = InvocationId::Captured(crate::processes::RunId {
+        registration.process.invocation_id = InvocationId::Captured(RunId {
             root: context.root,
             incarnation: context.incarnation,
             shim_pid: 40,

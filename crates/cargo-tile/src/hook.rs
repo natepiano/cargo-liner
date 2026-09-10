@@ -23,16 +23,25 @@
 //! terminals need it whether or not a grid is open.
 
 use std::env;
+use std::ffi::CStr;
+use std::ffi::OsStr;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::ErrorKind;
 use std::io::Read;
+use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Output;
 use std::thread;
 
+use crate::constants::ACCOUNT_INSTALL_REPORT_FLAG;
 use crate::constants::CARGO_NAME;
 use crate::constants::REAL_CARGO_NAME;
 use crate::constants::RUSTUP_DIRNAME;
@@ -51,6 +60,39 @@ use crate::constants::TOOLCHAINS_DIR;
 /// The shim script, compiled in so the binary carries everything it
 /// installs and a copy on disk can never drift from it.
 const SHIM_SOURCE: &str = include_str!("cargo-capture-shim.sh");
+
+/// The account database identity whose default rustup home is inspected.
+#[derive(Debug)]
+pub(crate) struct InstallAccount {
+    /// The system database's display name.
+    pub(crate) name: String,
+    /// User identity under which the installer child runs.
+    pub(crate) uid:  u32,
+    /// Primary group under which the installer child runs.
+    pub(crate) gid:  u32,
+    /// The home recorded in the account database, independent of HOME.
+    pub(crate) home: PathBuf,
+}
+
+/// The result of handling all discovered toolchains for one account.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum AccountInstallOutcome {
+    /// At least one shim was installed or refreshed.
+    Installed,
+    /// Every shim already had this binary's contents.
+    AlreadyInstalled,
+    /// The account could not be fully handled, with an actionable reason.
+    Skipped(String),
+}
+
+/// One account with a rustup home, including an installation or skip reason.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct AccountInstallReport {
+    /// The account name used for this single report line.
+    pub(crate) account: String,
+    /// The aggregate result across this account's toolchains.
+    pub(crate) outcome: AccountInstallOutcome,
+}
 
 /// One toolchain's cargo, and whatever stands in front of it.
 pub(crate) struct Hook {
@@ -163,8 +205,11 @@ impl Hook {
     /// its own name or the saved real binary's name.
     ///
     /// Sorted by name so a report reads the same twice running.
-    pub(crate) fn all() -> io::Result<Vec<Self>> {
-        let mut hooks: Vec<Self> = fs::read_dir(rustup_home()?.join(TOOLCHAINS_DIR))?
+    pub(crate) fn all() -> io::Result<Vec<Self>> { Self::in_rustup_home(&rustup_home()?) }
+
+    /// Discover toolchains without consulting the installer's environment.
+    fn in_rustup_home(home: &Path) -> io::Result<Vec<Self>> {
+        let mut hooks: Vec<Self> = fs::read_dir(home.join(TOOLCHAINS_DIR))?
             .flatten()
             .filter_map(|entry| Self::at(&entry.path()))
             .collect();
@@ -214,7 +259,7 @@ impl Hook {
     /// can leave `cargo` missing. Retrying writes the shim directly and
     /// leaves the saved real binary in place. The per-toolchain lock
     /// covers state inspection and every write, including repair.
-    pub(crate) fn install(&self) -> io::Result<Change> {
+    fn install(&self) -> io::Result<Change> {
         let _installation_lock =
             HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
         match self.state() {
@@ -255,8 +300,14 @@ impl Hook {
     /// beside it and is renamed across: the running `sh` keeps the inode
     /// it opened, and the name changes hands in one step.
     fn write_shim(&self) -> io::Result<()> {
-        fs::write(&self.staging, SHIM_SOURCE)?;
-        fs::set_permissions(&self.staging, fs::Permissions::from_mode(SHIM_MODE))?;
+        let mut staging = OpenOptions::new()
+            .write(true)
+            .mode(SHIM_MODE)
+            .create(true)
+            .truncate(true)
+            .open(&self.staging)?;
+        staging.write_all(SHIM_SOURCE.as_bytes())?;
+        staging.set_permissions(fs::Permissions::from_mode(SHIM_MODE))?;
         fs::rename(&self.staging, &self.cargo)
     }
 
@@ -319,6 +370,130 @@ impl Drop for HookInstallationLock {
     fn drop(&mut self) { drop(fs::remove_file(&self.path)); }
 }
 
+/// Read the system account database before the CLI starts any worker threads.
+/// `getpwent` includes Directory Services accounts on macOS and NSS on Linux.
+#[allow(
+    unsafe_code,
+    reason = "system account enumeration and home directories require libc getpwent; called only by the single-threaded admin command"
+)]
+pub(crate) fn system_accounts() -> io::Result<Vec<InstallAccount>> {
+    let mut accounts = Vec::new();
+    // SAFETY: the admin CLI calls this before starting threads or other account
+    // lookups. Every passwd string is copied before the next getpwent call, and
+    // endpwent runs on both success and error before returning owned values.
+    unsafe {
+        libc::setpwent();
+        let result = loop {
+            #[cfg(target_os = "linux")]
+            let errno = libc::__errno_location();
+            #[cfg(target_os = "macos")]
+            let errno = libc::__error();
+            *errno = 0;
+            let entry = libc::getpwent();
+            if entry.is_null() {
+                break if *errno == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                };
+            }
+            let entry = &*entry;
+            if entry.pw_name.is_null() || entry.pw_dir.is_null() {
+                break Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "account database returned an incomplete account",
+                ));
+            }
+            accounts.push(InstallAccount {
+                name: CStr::from_ptr(entry.pw_name).to_string_lossy().into_owned(),
+                uid:  entry.pw_uid,
+                gid:  entry.pw_gid,
+                home: PathBuf::from(OsStr::from_bytes(CStr::from_ptr(entry.pw_dir).to_bytes())),
+            });
+        };
+        libc::endpwent();
+        result?;
+    }
+    accounts.sort_by(|left, right| left.name.cmp(&right.name).then(left.uid.cmp(&right.uid)));
+    Ok(accounts)
+}
+
+/// Install from explicit account records so fixtures need neither root nor a
+/// replacement system account database. Accounts without rustup are omitted.
+pub(crate) fn install_accounts(
+    accounts: &[InstallAccount],
+    installer: &Path,
+) -> Vec<AccountInstallReport> {
+    let mut reports = Vec::new();
+    for account in accounts {
+        let home = account.home.join(RUSTUP_DIRNAME);
+        if fs::metadata(&home).is_err_and(|error| error.kind() == ErrorKind::NotFound) {
+            continue;
+        }
+        reports.push(AccountInstallReport {
+            account: account.name.clone(),
+            outcome: install_account(account, installer),
+        });
+    }
+    reports
+}
+
+/// Drop privileges before any toolchain discovery, lock, or installation.
+fn install_account(account: &InstallAccount, installer: &Path) -> AccountInstallOutcome {
+    Command::new(installer)
+        .uid(account.uid)
+        .gid(account.gid)
+        .env("HOME", &account.home)
+        .env(RUSTUP_HOME_ENV, account.home.join(RUSTUP_DIRNAME))
+        .arg("install")
+        .arg(format!("--{ACCOUNT_INSTALL_REPORT_FLAG}"))
+        .output()
+        .map_or_else(
+            |error| AccountInstallOutcome::Skipped(error.to_string()),
+            AccountInstallOutcome::from,
+        )
+}
+
+impl From<Output> for AccountInstallOutcome {
+    fn from(output: Output) -> Self {
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Self::Skipped(stderr.lines().next().map_or_else(
+                || format!("installer exited with {}", output.status),
+                str::to_owned,
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.is_empty() {
+            return Self::Skipped("no toolchains".to_owned());
+        }
+        let mut outcome = Self::AlreadyInstalled;
+        for line in stdout.lines() {
+            let Some((toolchain, result)) = line.split_once('\t') else {
+                return Self::Skipped(format!("invalid installer report: {line}"));
+            };
+            match result {
+                "installed" | "refreshed" => outcome = Self::Installed,
+                "already installed" => {},
+                "orphaned" => {
+                    if outcome == Self::AlreadyInstalled {
+                        outcome = Self::Skipped(format!(
+                            "{toolchain}: the shim is installed but the real cargo is missing"
+                        ));
+                    }
+                },
+                result => {
+                    return Self::Skipped(result.strip_prefix("error\t").map_or_else(
+                        || format!("invalid installer report: {line}"),
+                        |message| format!("{toolchain}: {message}"),
+                    ));
+                },
+            }
+        }
+        outcome
+    }
+}
+
 /// Where rustup keeps its toolchains.
 fn rustup_home() -> io::Result<PathBuf> {
     if let Some(home) = env::var_os(RUSTUP_HOME_ENV) {
@@ -359,7 +534,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::constants::CAPTURE_ROOT_ENV;
     use crate::constants::HOOK_TEST_DIRECTORY_COLLISION_CARGO;
     use crate::constants::HOOK_TEST_DIRECTORY_COLLISION_LINK;
     use crate::constants::HOOK_TEST_REAL_CARGO;
@@ -367,6 +541,33 @@ mod tests {
     use crate::constants::LOCK_WAIT_MARKER;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::SUBCOMMAND_NAME;
+
+    /// Enumerate the host database in an isolated process, without installing
+    /// anything or sharing libc's enumeration cursor with another test.
+    #[test]
+    fn system_account_database_includes_the_running_account() {
+        if env::var_os("CARGO_TILE_TEST_ACCOUNT_DATABASE").is_some() {
+            let accounts = system_accounts().unwrap();
+            let uid = rustix::process::getuid().as_raw();
+            assert!(accounts.iter().any(|account| account.uid == uid));
+            assert!(accounts.iter().all(|account| !account.name.is_empty()));
+            return;
+        }
+        let output = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "hook::tests::system_account_database_includes_the_running_account",
+                "--nocapture",
+            ])
+            .env("CARGO_TILE_TEST_ACCOUNT_DATABASE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     /// A rustup home holding one toolchain whose cargo is `contents`.
     fn toolchain(contents: &str) -> (TempDir, Hook) {
@@ -437,7 +638,16 @@ mod tests {
         hook.install().unwrap();
         let observations = home.path().join("observations");
         let tools = home.path().join("tools");
-        let root = home.path().join("capture");
+        let parent = home.path().join("capture");
+        let root = parent.join(rustix::process::getuid().as_raw().to_string());
+        fs::write(
+            &hook.cargo,
+            SHIM_SOURCE.replace(
+                "capture_parent=/tmp/cargo-tile",
+                &format!("capture_parent='{}'", parent.display()),
+            ),
+        )
+        .unwrap();
         fs::create_dir(&observations).unwrap();
         fs::create_dir(&tools).unwrap();
         let link = tools.join("ln");
@@ -459,7 +669,6 @@ mod tests {
             .args(arguments)
             .env("PATH", search_path)
             .env("POSIXLY_CORRECT", "1")
-            .env(CAPTURE_ROOT_ENV, &root)
             .env("HOOK_TEST_OBSERVATIONS", &observations)
             .env("HOOK_TEST_REAL_LINK", real_link.trim_end())
             .env_remove("CARGOTILE_NESTED")

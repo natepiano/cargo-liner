@@ -6,6 +6,7 @@ mod linux;
 mod macos;
 
 use std::io;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::OnceLock;
 #[cfg(any(target_os = "macos", test))]
@@ -83,7 +84,7 @@ impl BirthStamp {
     }
 
     /// Compare complete identities; a missing observation preserves uncertainty.
-    pub(crate) fn compare(&self, observation: &Observation) -> Verification {
+    fn compare(&self, observation: &Observation) -> Verification {
         match observation {
             Observation::Present(live) if self == live => Verification::Confirmed,
             Observation::Present(_) | Observation::Ended => Verification::Ended,
@@ -163,7 +164,7 @@ pub(crate) enum IdentityEvidence {
 
 impl IdentityEvidence {
     /// Even a missing live pid cannot authorize deletion of an unverified record.
-    pub(crate) fn compare(&self, observation: &Observation) -> Verification {
+    fn compare(&self, observation: &Observation) -> Verification {
         match self {
             Self::Available(stamp) => stamp.compare(observation),
             Self::Unavailable => Verification::Unknown,
@@ -235,7 +236,7 @@ fn cached_boot(
     cache.get_or_init(|| {
         let boot = read()?;
         if boot.trim().is_empty() {
-            Err(io::Error::new(io::ErrorKind::InvalidData, BIRTH_BOOT_EMPTY))
+            Err(io::Error::new(ErrorKind::InvalidData, BIRTH_BOOT_EMPTY))
         } else {
             Ok(boot)
         }
@@ -297,6 +298,7 @@ fn decimal(value: &str) -> Result<u64, ()> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::io::ErrorKind;
     use std::time::Duration;
 
     use super::BirthStamp;
@@ -304,6 +306,7 @@ mod tests {
     use super::Observation;
     use super::Verification;
     use super::observe;
+    use crate::constants::BIRTH_BOOT_EMPTY;
     use crate::constants::BIRTH_MICROSECONDS_PER_SECOND;
     use crate::registration::Registration;
     use crate::registration::RegistrationVerification;
@@ -330,7 +333,7 @@ mod tests {
         for _ in 0..2 {
             let boot = super::cached_boot(&cache, || {
                 reads.set(reads.get() + 1);
-                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                Err(std::io::Error::from(ErrorKind::PermissionDenied))
             });
             let diagnostic = super::boot_read_result(boot, std::path::Path::new("kernel/boot"))
                 .expect_err("cached boot failure");
@@ -353,7 +356,7 @@ mod tests {
             .as_ref()
             .expect_err("empty first boot remains invalid");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-        assert_eq!(error.to_string(), crate::constants::BIRTH_BOOT_EMPTY);
+        assert_eq!(error.to_string(), BIRTH_BOOT_EMPTY);
     }
 
     #[test]

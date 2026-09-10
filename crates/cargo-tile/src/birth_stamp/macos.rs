@@ -8,6 +8,8 @@
 //! and <https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc.h>.
 
 use std::io;
+use std::io::Error;
+use std::io::ErrorKind;
 use std::mem::offset_of;
 use std::mem::size_of;
 use std::ptr;
@@ -15,6 +17,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use super::BirthStamp;
+use super::LifetimeEvidence;
 use super::Observation;
 use crate::constants::BIRTH_MACOS_BOOT_PREFIX;
 use crate::constants::BIRTH_MACOS_BOOT_SEPARATOR;
@@ -52,16 +55,16 @@ pub(super) fn observe(pid: u32) -> Observation {
 /// Process rows retain fractional birth precision even though registrations cannot.
 pub(super) fn lifetime(pid: u32) -> super::LifetimeEvidence {
     let Ok(boot) = boot() else {
-        return super::LifetimeEvidence::Unavailable;
+        return LifetimeEvidence::Unavailable;
     };
     let Ok(pid) = libc::c_int::try_from(pid) else {
-        return super::LifetimeEvidence::Unavailable;
+        return LifetimeEvidence::Unavailable;
     };
     let mut name = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
     let mut bytes = [0; BIRTH_SYSCTL_MAX_BYTES];
     read_sysctl(&mut name, &mut bytes)
         .and_then(|length| decode_timeval(&bytes[..length]))
-        .map_or(super::LifetimeEvidence::Unavailable, |birth| {
+        .map_or(LifetimeEvidence::Unavailable, |birth| {
             super::ProcessLifetime::macos(boot.clone(), birth)
         })
 }
@@ -140,7 +143,7 @@ fn decode_timeval(bytes: &[u8]) -> io::Result<Duration> {
 }
 
 /// A partial or invalid reply preserves the record instead of claiming it ended.
-fn incomplete() -> io::Error { io::Error::new(io::ErrorKind::InvalidData, BIRTH_SYSCTL_INCOMPLETE) }
+fn incomplete() -> Error { io::Error::new(ErrorKind::InvalidData, BIRTH_SYSCTL_INCOMPLETE) }
 
 #[cfg(test)]
 mod tests {

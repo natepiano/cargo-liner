@@ -22,13 +22,18 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::io::ErrorKind;
 use std::ops::Add;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
@@ -44,11 +49,16 @@ use sysinfo::System;
 use sysinfo::UpdateKind;
 use sysinfo::Users;
 use tui_pane::kernel_parent;
+use uuid::Uuid;
 
 use crate::birth_stamp;
+use crate::birth_stamp::BirthStamp;
 use crate::birth_stamp::LifetimeEvidence;
+use crate::birth_stamp::ProcessLifetime;
 use crate::capture_root::CleanupRefusal;
+use crate::capture_root::RootIncarnation;
 use crate::capture_root::RootOwner;
+use crate::capture_root::SharedCaptureDirectory;
 use crate::config::Config;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DISPLAY_NAME;
@@ -82,6 +92,7 @@ use crate::progress::CaptureFailure;
 use crate::progress::CaptureKey;
 use crate::progress::CaptureLookup;
 use crate::progress::CaptureRoot;
+use crate::progress::CaptureRootIndex;
 use crate::progress::CaptureRoots;
 use crate::progress::CaptureSelection;
 use crate::progress::ConfirmedCapture;
@@ -105,15 +116,15 @@ pub(crate) enum InvocationId {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct RunId {
     /// Startup root position alone cannot detect a replaced directory.
-    pub(crate) root:        crate::progress::CaptureRootIndex,
+    pub(crate) root:        CaptureRootIndex,
     /// Descriptor identity changes when the directory itself is replaced.
-    pub(crate) incarnation: crate::capture_root::RootIncarnation,
+    pub(crate) incarnation: RootIncarnation,
     /// The registration describes the shim, even when cargo supplies the row.
     pub(crate) shim_pid:    u32,
     /// Publication generations separate even identical pid and birth observations.
     pub(crate) generation:  String,
     /// Kernel comparison qualifies the generation without reducing its precision.
-    pub(crate) birth:       crate::birth_stamp::BirthStamp,
+    pub(crate) birth:       BirthStamp,
 }
 
 /// Process lifetime evidence never substitutes registration comparison seconds.
@@ -124,14 +135,14 @@ pub(crate) enum ProcessIdentity {
         /// A birth stamp belongs to the process whose kernel entry was read.
         pid:      u32,
         /// Linux start ticks or the full Darwin start timeval, qualified by boot.
-        lifetime: crate::birth_stamp::ProcessLifetime,
+        lifetime: ProcessLifetime,
     },
     /// Continuous presence permits row retention without proving a kernel lifetime.
     Unavailable {
         /// Retain the displayed process even when its lifetime cannot be read.
         pid:         u32,
         /// Retired once this pid disappears from a scan, even if the pid returns.
-        observation: uuid::Uuid,
+        observation: Uuid,
     },
 }
 
@@ -234,8 +245,8 @@ impl<T> Measurement<T> {
     }
 }
 
-impl<T: fmt::Display> fmt::Display for Measurement<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<T: fmt::Display> Display for Measurement<T> {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Reading(reading) => reading.fmt(formatter),
             Self::Unavailable(_) => formatter.write_str(UNAVAILABLE_MEASUREMENT),
@@ -316,10 +327,10 @@ pub(crate) struct CaptureAccount {
 /// Root incarnation and owner qualify a captured working directory.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CaptureContext {
-    /// Interned root position distinguishes configured roots.
-    pub(crate) root:        crate::progress::CaptureRootIndex,
+    /// Stable account position distinguishes capture directories.
+    pub(crate) root:        CaptureRootIndex,
     /// Replacing a directory invalidates its retained grouping identity.
-    pub(crate) incarnation: crate::capture_root::RootIncarnation,
+    pub(crate) incarnation: RootIncarnation,
     /// Numeric identity remains separate from its display name.
     pub(crate) account:     CaptureAccount,
 }
@@ -341,9 +352,7 @@ impl RowProvenance {
         let Some(status) = capture.root_status.get(key.root.0) else {
             return Self::Uncaptured;
         };
-        let RootOwner::Uid(uid) = status.owner else {
-            return Self::Uncaptured;
-        };
+        let uid = status.root.uid;
         Self::Direct(CaptureContext {
             root:        key.root,
             incarnation: key.incarnation,
@@ -674,25 +683,26 @@ impl CargoGroup {
 /// from having to start a server to discover whether one is running.
 pub(crate) struct Scan {
     /// The commands running, newest first.
-    pub(crate) groups:      Vec<CargoGroup>,
+    pub(crate) groups:           Vec<CargoGroup>,
     /// Whether a process named [`SCCACHE_BINARY`] was among them.
-    pub(crate) sccache:     SccacheServer,
+    pub(crate) sccache:          SccacheServer,
     /// Settings reads these observations without reopening any capture path.
-    pub(crate) root_status: Vec<RootStatus>,
+    pub(crate) root_status:      Vec<AccountCaptureDirectory>,
+    pub(crate) shared_directory: SharedCaptureDirectory,
 }
 
 /// One effective root's access, identity and capture observations for this scan.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RootStatus {
-    /// Startup resolution retains every original source spelling, including errors.
+pub(crate) struct AccountCaptureDirectory {
+    /// The directory name claims an account; `state` records owner verification.
     pub(crate) root:         CaptureRoot,
-    /// Descriptor metadata identifies the owner independently of cleanup eligibility.
+    /// Nofollow metadata identifies rejected owners; accepted roots use their descriptor.
     pub(crate) owner:        RootOwner,
     /// Resolved on the scan worker; rendering performs no account lookup.
     pub(crate) account:      AccountName,
-    /// Every reason removal is refused; an empty list permits identity-based cleanup.
+    /// Access refusals supplement `state`; only accepted roots permit cleanup.
     pub(crate) cleanup:      Vec<CleanupRefusal>,
-    /// Opening a root and validating its configured path have different retry rules.
+    /// Each scan reopens the directory and reports current access.
     pub(crate) state:        RootReadStatus,
     /// Published, verified registrations whose logs were readable in this scan.
     pub(crate) confirmed:    usize,
@@ -702,17 +712,57 @@ pub(crate) struct RootStatus {
     pub(crate) associations: Vec<CaptureAssociation>,
 }
 
-/// A missing directory can recover next scan; invalid startup resolution cannot.
+/// Access to an account directory is observed again on every scan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RootReadStatus {
     /// The root handle opened; diagnostics describe any incomplete contents.
     Readable,
-    /// The implicit default has no capture directory yet and needs no operator action.
-    DefaultNotCreated,
     /// Reopening this absolute path failed in the current scan.
     Unavailable(PathFailure),
-    /// Correcting the original entry and restarting is required to retry resolution.
-    Invalid(CaptureFailure),
+    /// A real directory owned by a different uid supplies no captures.
+    ForeignOwned { owner: AccountName },
+}
+
+impl AccountCaptureDirectory {
+    /// Inspect the final component without following links before reading captures.
+    pub(crate) fn inspect(root: CaptureRoot, users: &Users) -> Self {
+        let mut status = Self {
+            account: AccountName::resolve(RootOwner::Uid(root.uid), users),
+            root,
+            owner: RootOwner::Unavailable,
+            cleanup: Vec::new(),
+            state: RootReadStatus::Readable,
+            confirmed: 0,
+            diagnostics: Vec::new(),
+            associations: Vec::new(),
+        };
+        let metadata = std::fs::symlink_metadata(&status.root.path).and_then(|metadata| {
+            if metadata.is_dir() {
+                Ok(metadata)
+            } else {
+                Err(ErrorKind::NotADirectory.into())
+            }
+        });
+        match metadata {
+            Ok(metadata) => {
+                status.owner = RootOwner::Uid(metadata.uid());
+                if metadata.uid() != status.root.uid {
+                    status.state = RootReadStatus::ForeignOwned {
+                        owner: AccountName::resolve(status.owner, users),
+                    };
+                }
+            },
+            Err(error) => {
+                let failure = PathFailure {
+                    path:    status.root.path.clone(),
+                    failure: error.into(),
+                };
+                status.cleanup.push(CleanupRefusal::Access(failure.clone()));
+                status.state = RootReadStatus::Unavailable(failure);
+            },
+        }
+        status
+    }
 }
 
 /// Path-qualified observations supplement the count of verified, readable captures.
@@ -793,7 +843,7 @@ pub(crate) struct UnusedCapture {
 /// A preferred root remains authoritative whether or not its key was verified.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UnusedCaptureReason {
-    /// The selected confirmed publication wins the configured root order.
+    /// The selected confirmed publication wins account discovery order.
     RootPrecedence,
     /// The preferred reading is unconfirmed, so another root cannot repair it.
     SelectedUnconfirmed,
@@ -840,9 +890,7 @@ impl DirectCapture {
     pub(crate) const fn registration(&self) -> &VerifiedRegistration { &self.registration }
 
     /// A change of row source cannot change the registered invocation's identity.
-    pub(crate) fn invocation_id(&self) -> InvocationId {
-        InvocationId::Captured(self.run_id.clone())
-    }
+    fn invocation_id(&self) -> InvocationId { InvocationId::Captured(self.run_id.clone()) }
 }
 
 /// Only the direct arm permits access to verified row metadata.
@@ -884,24 +932,19 @@ impl ProcessIdentity {
 ///
 /// The thread ends when the receiver is dropped.
 ///
-/// The caller only snapshots configuration. Root resolution runs once inside
+/// The caller only snapshots command exclusions. Parent resolution runs once inside
 /// the worker before its scan loop, so a slow filesystem cannot block terminal
 /// startup; each scan still opens every root to recheck access and ownership.
-pub(crate) fn spawn(config: &Config) -> Receiver<Scan> {
-    spawn_with_resolver(config, CaptureRoots::resolve).0
-}
-
 /// Keep root resolution on the worker even when it stalls. The resolver and
 /// join handle let tests hold resolution and observe repeated scans and shutdown.
-fn spawn_with_resolver(
+pub(crate) fn spawn_with_resolver(
     config: &Config,
-    resolve: impl FnOnce(&[PathBuf]) -> CaptureRoots + Send + 'static,
-) -> (Receiver<Scan>, thread::JoinHandle<()>) {
-    let configured = config.capture.roots.clone();
+    resolve: impl FnOnce() -> CaptureRoots + Send + 'static,
+) -> (Receiver<Scan>, JoinHandle<()>) {
     let excluded = config.commands.excluded.clone();
     let (sender, receiver) = mpsc::channel();
     let worker = thread::spawn(move || {
-        let roots = resolve(&configured);
+        let roots = resolve();
         let mut system = System::new();
         let mut smoothing = CpuSmoothing::default();
         let home = dirs::home_dir();
@@ -1003,6 +1046,7 @@ fn scan(
         sccache: census.sccache(),
         groups,
         root_status: capture.root_status,
+        shared_directory: capture.shared_directory,
     }
 }
 
@@ -1681,7 +1725,7 @@ impl Census {
                         .filter(|confirmed| confirmed.key.pid == key.pid && confirmed.key != key)
                         .filter_map(|confirmed| {
                             let status = capture.root_status.get(confirmed.key.root.0)?;
-                            let root = status.root.path.as_ref().ok()?.clone();
+                            let root = status.root.path.clone();
                             Some(UnusedCapture {
                                 key: confirmed.key.clone(),
                                 root,
@@ -2775,9 +2819,11 @@ mod tests {
     use std::fs;
     use std::io::BufRead;
     use std::io::BufReader;
+    use std::io::ErrorKind;
     use std::io::Write;
     use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::symlink;
+    use std::process::Child;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -2797,16 +2843,18 @@ mod tests {
     use crate::constants::RUN_LOG_PREFIX;
     use crate::constants::RUN_LOG_SUFFIX;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
+    use crate::constants::TABLE_CELL;
     use crate::progress::CaptureRead;
     use crate::progress::CaptureRootIndex;
-    use crate::progress::CaptureRootSource;
     use crate::progress::RunState;
     use crate::registration::Registration;
+    use crate::roster::FamilyHead;
+    use crate::tiles::TileDemands;
 
     /// Reap the metadata fixture even if an assertion fails before its exec transition.
     struct MetadataProcess {
         /// The test owns stdin, lifetime, and cleanup of the sampled process.
-        child: std::process::Child,
+        child: Child,
     }
 
     impl Drop for MetadataProcess {
@@ -2942,7 +2990,7 @@ mod tests {
         let DirectAssociation::Direct(mut direct) = capture.row_source(10) else {
             panic!("verified source");
         };
-        direct.modified = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
+        direct.modified = Err(std::io::Error::from(ErrorKind::PermissionDenied).into());
         let unknown = registration_row(
             &direct,
             &capture,
@@ -3329,7 +3377,7 @@ mod tests {
         let mut roster = crate::roster::Roster::new();
         let mut grid = crate::tiles::TileGrid::new();
         grid.set_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 1);
-        let mut expected_family = crate::roster::FamilyHead::NoChildren;
+        let mut expected_family = FamilyHead::NoChildren;
         for (index, scan) in scans.iter().enumerate() {
             roster.observe(scan.clone(), Instant::now());
             assert_eq!(roster.groups().len(), 1);
@@ -3344,7 +3392,7 @@ mod tests {
                 expected_family,
                 crate::roster::FamilyHead::Heads(_)
             ));
-            let demands = crate::tiles::TileDemands {
+            let demands = TileDemands {
                 summary: 3,
                 groups:  vec![crate::tiles::TileDemand {
                     id:   tracked.id.clone(),
@@ -3353,7 +3401,7 @@ mod tests {
             };
             grid.sync(&demands, 1);
             if index == 0 {
-                grid.focus_cell(crate::constants::TABLE_CELL + 1);
+                grid.focus_cell(TABLE_CELL + 1);
             }
             assert!(
                 grid.placements(ratatui::layout::Rect::new(0, 0, 120, 40), 1)
@@ -3936,8 +3984,7 @@ mod tests {
                 .map(OsString::from)
                 .chain([OsString::from_vec(b"package\xff".to_vec())])
                 .collect();
-            let rewritten: Vec<OsString> = ["check"]
-                .into_iter()
+            let rewritten: Vec<OsString> = std::iter::once("check")
                 .chain(format.iter().copied())
                 .chain(["--", "--quiet", "-q"])
                 .map(OsString::from)
@@ -4047,27 +4094,24 @@ mod tests {
 
     #[test]
     fn spawn_returns_while_root_resolution_waits_and_resolves_once_across_scans() {
-        let mut config = Config::default();
-        config.capture.roots = vec![PathBuf::from("/configured/capture")];
-        let configured = config.capture.roots.clone();
+        let config = Config::default();
+        let parent = tempdir().expect("isolated capture parent");
         let caller = thread::current().id();
         let resolutions = Arc::new(AtomicUsize::new(0));
         let worker_resolutions = Arc::clone(&resolutions);
         let (started, resolution_started) = mpsc::channel();
         let (release, resolution_release) = mpsc::channel();
-        let (scans, worker) = spawn_with_resolver(&config, move |roots| {
+        let (scans, worker) = spawn_with_resolver(&config, move || {
             assert_ne!(thread::current().id(), caller);
             worker_resolutions.fetch_add(1, Ordering::SeqCst);
             started.send(()).expect("startup observer is alive");
             resolution_release
                 .recv_timeout(WORKER_REPLY_TIMEOUT)
                 .expect("spawn must return before resolution is released");
-            assert_eq!(roots, configured);
             // No capture root is scanned; this test owns only worker scheduling.
-            CaptureRoots { roots: Vec::new() }
+            CaptureRoots::from_parent(parent.path())
         });
 
-        config.capture.roots.clear();
         resolution_started
             .recv_timeout(WORKER_REPLY_TIMEOUT)
             .expect("worker must reach root resolution");
@@ -4188,20 +4232,7 @@ mod tests {
     }
 
     /// Resolve fixture paths through production code without scanning the user's root.
-    fn resolved_test_roots(paths: &[&Path]) -> CaptureRoots {
-        let mut roots = CaptureRoots::resolve(
-            &paths
-                .iter()
-                .map(|path| (*path).to_owned())
-                .collect::<Vec<_>>(),
-        );
-        roots.roots.retain(|root| {
-            root.sources
-                .iter()
-                .any(|source| matches!(source, CaptureRootSource::Configuration { .. }))
-        });
-        roots
-    }
+    fn resolved_test_roots(paths: &[&Path]) -> CaptureRoots { CaptureRoots::for_test(paths) }
 
     /// Different roots may name different logs and commands for the same shim pid.
     fn write_versioned_capture(

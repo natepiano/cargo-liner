@@ -56,6 +56,8 @@ use crate::presentation::RenderedOutputBlock;
 use crate::reconcile::ReconciliationReport;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::MergeExtent;
+use crate::reservation::RaceExtent;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationFreshness;
 use crate::reservation::ReservationLifecycle;
@@ -157,9 +159,9 @@ pub(super) struct BoardReservationSnapshot {
     purpose:                   ReservationPurpose,
     scopes:                    ReservationScopeSet,
     /// The run's effective editing scope, independent of branch integration.
-    race_extent:               crate::reservation::RaceExtent,
+    race_extent:               RaceExtent,
     /// The exact derived branch surface or the evidence retained on failure.
-    merge_extent:              crate::reservation::MergeExtent,
+    merge_extent:              MergeExtent,
     lifecycle:                 ReservationLifecycle,
     integration_evidence:      BoardIntegrationEvidence,
     edit_blocking_status:      EditBlockingStatus,

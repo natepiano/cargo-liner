@@ -10,7 +10,9 @@ mod tests {
     use std::env;
     use std::fs;
     use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::symlink;
     use std::path::Path;
     use std::path::PathBuf;
     use std::process::Command;
@@ -26,17 +28,6 @@ mod tests {
         Pty,
         /// Piped output and null input select stderr mirroring through a FIFO.
         NoTerminal,
-    }
-
-    /// Keep the deployment-root decision independent of its directory mode.
-    #[derive(Clone, Copy)]
-    enum RootSelection {
-        /// Exercise the built-in fallback after redirecting it inside the fixture.
-        Default,
-        /// An empty override also selects the built-in fallback.
-        Empty,
-        /// A deployment selects the root through `CARGO_TILE_ROOT`.
-        Explicit,
     }
 
     /// Isolate an absent home from the test runner's own environment.
@@ -56,6 +47,8 @@ mod tests {
         directory:    TempDir,
         /// The selected capture directory is independent of the real `/tmp` root.
         root:         PathBuf,
+        /// Every numeric account directory lives under this sticky parent.
+        parent:       PathBuf,
         /// Cargo saves artifact permissions before the shim's exit trap removes them.
         observations: PathBuf,
         /// The launcher sets the caller's umask without modifying the test process.
@@ -66,7 +59,9 @@ mod tests {
         /// Copy the shim beside a recording cargo executable, as installation does.
         fn new() -> Self {
             let directory = tempfile::tempdir().expect("create isolated toolchain");
-            let root = directory.path().join("capture");
+            let parent = directory.path().join("capture");
+            let uid = fs::metadata(directory.path()).expect("fixture owner").uid();
+            let root = parent.join(uid.to_string());
             let observations = directory.path().join("observations");
             let bin = directory.path().join("toolchain/bin");
             let launcher = directory.path().join("invoke-shim");
@@ -74,10 +69,15 @@ mod tests {
             fs::create_dir(&observations).expect("create cargo observations directory");
             fs::create_dir(directory.path().join("home")).expect("create isolated HOME");
             let source = include_str!("../src/cargo-capture-shim.sh");
-            assert!(source.contains("/tmp/cargo-tile"), "locate built-in root");
-            // Only redirect the fallback pathname in the fixture copy. The root
-            // selection and permission code still sees the requested override state.
-            let source = source.replace("/tmp/cargo-tile", "${SHIM_TEST_DEFAULT_ROOT}");
+            let assignment = "capture_parent=/tmp/cargo-tile";
+            assert_eq!(source.lines().filter(|line| *line == assignment).count(), 1);
+            let source = source.replace(
+                assignment,
+                &format!(
+                    "capture_parent={}",
+                    shell_word(parent.to_str().expect("UTF-8 parent"))
+                ),
+            );
             write_executable(&bin.join("cargo"), &source);
             write_executable(
                 &bin.join("cargo-tile-real"),
@@ -110,6 +110,7 @@ exit "$SHIM_TEST_EXIT_STATUS"
             Self {
                 directory,
                 root,
+                parent,
                 observations,
                 launcher,
             }
@@ -119,7 +120,6 @@ exit "$SHIM_TEST_EXIT_STATUS"
         fn run(
             &self,
             capture_path: CapturePath,
-            root_selection: RootSelection,
             home_selection: HomeSelection,
             caller_umask: u32,
             arguments: &[&str],
@@ -144,15 +144,11 @@ exit "$SHIM_TEST_EXIT_STATUS"
                 .env("PATH", search_path)
                 .env("POSIXLY_CORRECT", "1")
                 .env("SHELL", "/bin/sh")
+                .env_remove("CARGO_TILE_ROOT")
                 .env_remove("CARGOTILE_NESTED")
                 .env_remove("CARGO_TERM_PROGRESS_WHEN")
                 .env_remove("CARGO_TERM_PROGRESS_WIDTH")
                 .stdin(Stdio::null());
-            match root_selection {
-                RootSelection::Default => command.env_remove("CARGO_TILE_ROOT"),
-                RootSelection::Empty => command.env("CARGO_TILE_ROOT", ""),
-                RootSelection::Explicit => command.env("CARGO_TILE_ROOT", &self.root),
-            };
             match home_selection {
                 HomeSelection::Present => command.env("HOME", self.directory.path().join("home")),
                 HomeSelection::Relative(home) => command.env("HOME", home),
@@ -227,11 +223,14 @@ exit "$SHIM_TEST_EXIT_STATUS"
         /// Inspect copies whose metadata was preserved while the registration was live.
         fn assert_capture_modes(&self, capture_path: CapturePath) {
             let snapshot = self.observations.join("root");
-            assert_mode(&snapshot.join("state"), 0o750);
-            assert_mode(&snapshot.join("state/pids"), 0o750);
+            assert_mode(&self.parent, 0o1777);
+            assert_mode(&self.root, 0o755);
+            assert_mode(&snapshot, 0o755);
+            assert_mode(&snapshot.join("state"), 0o755);
+            assert_mode(&snapshot.join("state/pids"), 0o755);
             let registrations = entries(&snapshot.join("state/pids"));
             assert_eq!(registrations.len(), 1, "exactly one published registration");
-            assert_mode(&registrations[0], 0o640);
+            assert_mode(&registrations[0], 0o644);
             let registration = fs::read(&registrations[0]).expect("read extended registration");
             let terminated = registration
                 .strip_suffix(&[0])
@@ -260,7 +259,7 @@ exit "$SHIM_TEST_EXIT_STATUS"
                 .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
                 .collect();
             assert_eq!(logs.len(), 1, "cargo observes its pre-created log");
-            assert_mode(&logs[0], 0o640);
+            assert_mode(&logs[0], 0o644);
             let fifos: Vec<_> = entries(&snapshot.join("state"))
                 .into_iter()
                 .filter(|path| {
@@ -335,14 +334,13 @@ exit "$SHIM_TEST_EXIT_STATUS"
         let arguments = ["run", "--", "a b", "single'quote", "tab\tand\nnewline", ""];
         let output = toolchain.run(
             capture_path,
-            RootSelection::Explicit,
             HomeSelection::Present,
             caller_umask,
             &arguments,
         );
         toolchain.assert_cargo(&output, caller_umask, &arguments);
         toolchain.assert_capture_modes(capture_path);
-        assert_mode(&toolchain.root, 0o750);
+        assert_mode(&toolchain.root, 0o755);
     }
 
     /// Delete orphan logs synchronously before publication, then inspect the writer's mode.
@@ -389,13 +387,7 @@ done
 "#
             ),
         );
-        let output = toolchain.run(
-            capture_path,
-            RootSelection::Explicit,
-            HomeSelection::Present,
-            0o066,
-            &["build"],
-        );
+        let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
         toolchain.assert_cargo(&output, 0o066, &["build"]);
         assert_eq!(
             fs::read(toolchain.observations.join("sweep"))
@@ -408,28 +400,28 @@ done
                 fs::read(&log).expect("tee captures cargo stderr"),
                 b"cargo-stderr\n"
             );
-            assert_mode(&log, 0o640);
+            assert_mode(&log, 0o644);
             assert_eq!(output.stdout, b"cargo-stdout\n");
             assert_eq!(output.stderr, b"cargo-stderr\n");
         }
         toolchain.assert_capture_modes(capture_path);
     }
 
-    /// F001: script must retain group-readable output after a sweep before publication.
+    /// F001: script must retain world-readable output after a sweep before publication.
     #[test]
-    fn pty_log_stays_group_readable_after_publication_boundary_sweep() {
+    fn pty_log_stays_world_readable_after_publication_boundary_sweep() {
         assert_log_mode_after_sweep(CapturePath::Pty);
     }
 
-    /// F001: tee must retain group-readable output after a sweep before publication.
+    /// F001: tee must retain world-readable output after a sweep before publication.
     #[test]
-    fn no_terminal_log_stays_group_readable_after_publication_boundary_sweep() {
+    fn no_terminal_log_stays_world_readable_after_publication_boundary_sweep() {
         assert_log_mode_after_sweep(CapturePath::NoTerminal);
     }
 
     /// The additional identity fields are readable by the group before publication too.
     #[test]
-    fn extended_registration_is_group_readable_before_publication() {
+    fn extended_registration_is_world_readable_before_publication() {
         for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
             let toolchain = InstalledToolchain::new();
             let link = Command::new("sh")
@@ -449,17 +441,11 @@ exec {} "$@"
                     shell_word(link.trim_end())
                 ),
             );
-            let output = toolchain.run(
-                capture_path,
-                RootSelection::Explicit,
-                HomeSelection::Present,
-                0o066,
-                &["build"],
-            );
+            let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
             toolchain.assert_cargo(&output, 0o066, &["build"]);
             toolchain.assert_capture_modes(capture_path);
             let staged = toolchain.observations.join("staged-registration");
-            assert_mode(&staged, 0o640);
+            assert_mode(&staged, 0o644);
             let published = entries(&toolchain.observations.join("root/state/pids"));
             assert_eq!(
                 fs::read(staged).expect("complete staging record"),
@@ -495,7 +481,6 @@ exec {} "$@"
         let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
         let output = toolchain.run(
             CapturePath::NoTerminal,
-            RootSelection::Explicit,
             HomeSelection::Present,
             0o066,
             &arguments,
@@ -517,11 +502,11 @@ exec {} "$@"
     #[test]
     fn pty_keeps_caller_umask_0022() { assert_umask(CapturePath::Pty, 0o022); }
 
-    /// The runner mask must not prevent group-readable terminal capture.
+    /// The runner mask must not prevent world-readable terminal capture.
     #[test]
     fn pty_keeps_caller_umask_0066() { assert_umask(CapturePath::Pty, 0o066); }
 
-    /// An owner-only caller still gets group-readable terminal capture artifacts.
+    /// An owner-only caller still gets world-readable terminal capture artifacts.
     #[test]
     fn pty_keeps_caller_umask_0077() { assert_umask(CapturePath::Pty, 0o077); }
 
@@ -529,7 +514,7 @@ exec {} "$@"
     #[test]
     fn no_terminal_keeps_caller_umask_0022() { assert_umask(CapturePath::NoTerminal, 0o022); }
 
-    /// Stderr capture exposes runner artifacts to its group without changing cargo.
+    /// Stderr capture exposes runner artifacts to every account without changing cargo.
     #[test]
     fn no_terminal_keeps_caller_umask_0066() { assert_umask(CapturePath::NoTerminal, 0o066); }
 
@@ -539,7 +524,7 @@ exec {} "$@"
 
     /// Upgrading a runner hierarchy must repair directories as well as files.
     #[test]
-    fn existing_0711_hierarchy_gains_group_access_without_changing_cargo_umask() {
+    fn existing_0711_hierarchy_gains_read_access_without_changing_cargo_umask() {
         for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
             let toolchain = InstalledToolchain::new();
             fs::create_dir_all(toolchain.root.join("state/pids")).expect("create old hierarchy");
@@ -550,173 +535,186 @@ exec {} "$@"
             ] {
                 set_mode(path, 0o711);
             }
-            let output = toolchain.run(
-                capture_path,
-                RootSelection::Explicit,
-                HomeSelection::Present,
-                0o066,
-                &["build"],
-            );
+            let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
             toolchain.assert_cargo(&output, 0o066, &["build"]);
             toolchain.assert_capture_modes(capture_path);
-            assert_mode(&toolchain.root, 0o711);
+            assert_mode(&toolchain.root, 0o755);
         }
     }
 
-    /// The fallback root protects desktop captures from other users on either path.
+    /// The first captured run creates a sticky parent and world-readable account data.
     #[test]
-    fn default_root_is_created_owner_only() {
+    fn shared_parent_is_created_without_configuration() {
         for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
-            for root_selection in [RootSelection::Default, RootSelection::Empty] {
-                let toolchain = InstalledToolchain::new();
-                let output = toolchain.run(
-                    capture_path,
-                    root_selection,
-                    HomeSelection::Present,
-                    0o022,
-                    &["build"],
-                );
-                toolchain.assert_cargo(&output, 0o022, &["build"]);
-                toolchain.assert_capture_modes(capture_path);
-                assert_mode(&toolchain.root, 0o700);
-                assert_mode(&toolchain.observations.join("root"), 0o700);
-            }
+            let toolchain = InstalledToolchain::new();
+            let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
+            toolchain.assert_cargo(&output, 0o066, &["build"]);
+            toolchain.assert_capture_modes(capture_path);
         }
     }
 
-    /// Root and state corrections preserve permissions of unrelated descendants.
+    /// Repair the owned parent and hierarchy without chmod of unrelated descendants.
     #[test]
-    fn default_root_correction_leaves_unrelated_descendants_alone() {
-        for root_selection in [RootSelection::Default, RootSelection::Empty] {
+    fn owner_repairs_parent_and_account_modes_without_touching_other_data() {
+        for parent_mode in [0o700, 0o755, 0o777] {
             let toolchain = InstalledToolchain::new();
             let unrelated = toolchain.root.join("state/unrelated/nested");
-            fs::create_dir_all(&unrelated).expect("create unrelated directory");
-            set_mode(&toolchain.root, 0o755);
+            fs::create_dir_all(&unrelated).expect("create old hierarchy");
+            set_mode(&toolchain.parent, parent_mode);
+            set_mode(&toolchain.root, 0o700);
             set_mode(&unrelated, 0o711);
             let sentinel = unrelated.join("sentinel");
             fs::write(&sentinel, "keep these permissions").expect("create unrelated file");
             set_mode(&sentinel, 0o600);
             let output = toolchain.run(
                 CapturePath::NoTerminal,
-                root_selection,
                 HomeSelection::Present,
                 0o066,
                 &["build"],
             );
             toolchain.assert_cargo(&output, 0o066, &["build"]);
-            assert_mode(&toolchain.root, 0o700);
-            assert_mode(&toolchain.observations.join("root"), 0o700);
-            assert_mode(&toolchain.root.join("state"), 0o750);
-            assert_mode(&toolchain.root.join("state/pids"), 0o750);
+            assert_mode(&toolchain.parent, 0o1777);
+            for directory in [
+                &toolchain.root,
+                &toolchain.root.join("state"),
+                &toolchain.root.join("state/pids"),
+            ] {
+                assert_mode(directory, 0o755);
+            }
             assert_mode(&unrelated, 0o711);
             assert_mode(&sentinel, 0o600);
         }
     }
 
-    /// An explicit root retains the deployment permission policy.
+    /// Account, state, and registration symlinks must never redirect a write.
     #[test]
-    fn explicit_root_keeps_the_deployments_mode() {
-        for root_mode in [0o700, 0o750, 0o755] {
-            let toolchain = InstalledToolchain::new();
-            fs::create_dir(&toolchain.root).expect("create deployment root");
-            set_mode(&toolchain.root, root_mode);
-            let output = toolchain.run(
-                CapturePath::NoTerminal,
-                RootSelection::Explicit,
-                HomeSelection::Present,
-                0o066,
-                &["build"],
-            );
-            toolchain.assert_cargo(&output, 0o066, &["build"]);
-            toolchain.assert_capture_modes(CapturePath::NoTerminal);
-            assert_mode(&toolchain.root, root_mode);
-            assert_mode(&toolchain.observations.join("root"), root_mode);
-        }
-    }
-
-    /// Failing the first directory write still runs cargo without capture settings.
-    #[test]
-    fn unwritable_root_runs_original_cargo_and_returns_its_status() {
-        for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
-            let toolchain = InstalledToolchain::new();
-            fs::create_dir(&toolchain.root).expect("create unwritable root");
-            set_mode(&toolchain.root, 0o500);
-            let probe = toolchain.root.join("write-probe");
-            let denied =
-                fs::write(&probe, "must fail").expect_err("test requires an unprivileged uid");
-            assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
-            let arguments = [
-                "check",
-                "--quiet",
-                "--message-format=json",
-                "--",
-                "a b",
-                "",
-                "-q",
-            ];
-            let output = toolchain.run(
-                capture_path,
-                RootSelection::Explicit,
-                HomeSelection::Present,
-                0o066,
-                &arguments,
-            );
-            set_mode(&toolchain.root, 0o700);
-            toolchain.assert_cargo(&output, 0o066, &arguments);
-            assert_eq!(
-                fs::read(toolchain.observations.join("environment"))
-                    .expect("cargo records environment"),
-                b"unset\0unset\0unset\0",
-                "failed setup must not export capture settings"
-            );
-            assert!(
-                entries(&toolchain.root).is_empty(),
-                "failed setup leaves no artifacts"
-            );
-            if matches!(capture_path, CapturePath::NoTerminal) {
-                assert_eq!(output.stdout, b"cargo-stdout\n");
-                assert_eq!(output.stderr, b"cargo-stderr\n");
+    fn symlinked_capture_directories_preserve_cargo_and_target_contents() {
+        for relative in ["", "state", "state/pids"] {
+            for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
+                let toolchain = InstalledToolchain::new();
+                let target = toolchain.directory.path().join("unrelated");
+                fs::create_dir(&target).expect("create symlink target");
+                fs::write(target.join("keep"), b"untouched").expect("seed target");
+                let link = if relative.is_empty() {
+                    toolchain.root.clone()
+                } else {
+                    toolchain.root.join(relative)
+                };
+                fs::create_dir_all(link.parent().expect("symlink parent")).expect("create parent");
+                symlink(&target, &link).expect("replace capture directory with symlink");
+                let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
+                let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &arguments);
+                toolchain.assert_cargo(&output, 0o066, &arguments);
+                assert_eq!(
+                    entries(&target).len(),
+                    1,
+                    "no capture reaches symlink target"
+                );
+                assert_eq!(
+                    fs::read(target.join("keep")).expect("read sentinel"),
+                    b"untouched"
+                );
+                assert_eq!(
+                    fs::read(toolchain.observations.join("environment"))
+                        .expect("cargo environment"),
+                    b"unset\0unset\0unset\0"
+                );
             }
         }
     }
 
-    /// Writable staging must not hide a fatal log-redirection regression.
+    /// Inject the account identity while all processes retain the test runner's uid.
     #[test]
-    fn denied_log_creation_does_not_exit_the_posix_shell_before_cargo() {
+    fn foreign_owned_account_is_refused_without_changing_cargo() {
         for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
             let toolchain = InstalledToolchain::new();
-            fs::create_dir_all(toolchain.root.join("state/pids"))
-                .expect("registration staging remains writable");
-            set_mode(&toolchain.root, 0o500);
-            let denied = fs::write(toolchain.root.join("write-probe"), "must fail")
-                .expect_err("test requires an unprivileged uid");
-            assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
+            assert_ne!(
+                fs::metadata(toolchain.directory.path())
+                    .expect("fixture owner")
+                    .uid(),
+                0
+            );
+            let foreign = toolchain.parent.join("0");
+            fs::create_dir_all(&foreign).expect("create directory owned by fixture uid");
+            fs::write(foreign.join("keep"), b"untouched").expect("seed foreign directory");
+            write_executable(
+                &toolchain.directory.path().join("toolchain/bin/id"),
+                "#!/bin/sh\ncase \"$1\" in -u) printf '0\\n' ;; -un) printf 'root\\n' ;; *) exit 93 ;; esac\n",
+            );
             let arguments = ["check", "--quiet", "--message-format=json", "--", "a b"];
-            let output = toolchain.run(
-                capture_path,
-                RootSelection::Explicit,
-                HomeSelection::Present,
-                0o077,
-                &arguments,
-            );
-            set_mode(&toolchain.root, 0o700);
-            toolchain.assert_cargo(&output, 0o077, &arguments);
+            let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &arguments);
+            toolchain.assert_cargo(&output, 0o066, &arguments);
             assert_eq!(
-                fs::read(toolchain.observations.join("environment"))
-                    .expect("cargo records environment"),
-                b"unset\0unset\0unset\0",
-                "log setup failure must reach uncaptured cargo"
-            );
-            assert!(
-                entries(&toolchain.root.join("state/pids")).is_empty(),
-                "staging cleanup"
-            );
-            assert_eq!(
-                entries(&toolchain.root).len(),
+                entries(&foreign).len(),
                 1,
-                "only the pre-existing state directory remains"
+                "no registration in differently owned directory"
+            );
+            assert_eq!(
+                fs::read(foreign.join("keep")).expect("read sentinel"),
+                b"untouched"
+            );
+            assert_eq!(
+                fs::read(toolchain.observations.join("environment")).expect("cargo environment"),
+                b"unset\0unset\0unset\0"
             );
         }
+    }
+
+    /// A non-directory parent cannot abort cargo or change its argument handling.
+    #[test]
+    fn unusable_shared_parent_runs_original_cargo_and_returns_its_status() {
+        for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
+            let toolchain = InstalledToolchain::new();
+            fs::write(&toolchain.parent, b"keep parent file").expect("block parent creation");
+            let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
+            let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &arguments);
+            toolchain.assert_cargo(&output, 0o066, &arguments);
+            assert_eq!(
+                fs::read(&toolchain.parent).expect("parent file survives"),
+                b"keep parent file"
+            );
+            assert_eq!(
+                fs::read(toolchain.observations.join("environment")).expect("cargo environment"),
+                b"unset\0unset\0unset\0"
+            );
+        }
+    }
+
+    /// Failure to create the log is isolated inside setup even after directory repair.
+    #[test]
+    fn denied_log_creation_does_not_exit_the_posix_shell_before_cargo() {
+        let toolchain = InstalledToolchain::new();
+        let chmod = Command::new("sh")
+            .args(["-c", "command -v chmod"])
+            .output()
+            .expect("locate chmod");
+        assert!(chmod.status.success());
+        let chmod = String::from_utf8(chmod.stdout).expect("UTF-8 chmod");
+        write_executable(
+            &toolchain.directory.path().join("toolchain/bin/chmod"),
+            &format!(
+                r#"#!/bin/sh
+{} "$@" || exit $?
+case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
+"#,
+                shell_word(chmod.trim()),
+                shell_word(chmod.trim())
+            ),
+        );
+        let arguments = ["check", "--quiet", "--message-format=json"];
+        let output = toolchain.run(
+            CapturePath::NoTerminal,
+            HomeSelection::Present,
+            0o077,
+            &arguments,
+        );
+        set_mode(&toolchain.root, 0o755);
+        toolchain.assert_cargo(&output, 0o077, &arguments);
+        assert_eq!(
+            fs::read(toolchain.observations.join("environment")).expect("cargo environment"),
+            b"unset\0unset\0unset\0"
+        );
+        assert!(entries(&toolchain.root.join("state/pids")).is_empty());
     }
 
     /// FIFO failure must precede argument rewriting and capture exports.
@@ -738,7 +736,6 @@ exec {} "$@"
         ];
         let output = toolchain.run(
             CapturePath::NoTerminal,
-            RootSelection::Explicit,
             HomeSelection::Present,
             0o066,
             &arguments,
@@ -772,7 +769,6 @@ exec {} "$@"
                 let toolchain = InstalledToolchain::new();
                 let output = toolchain.run(
                     capture_path,
-                    RootSelection::Explicit,
                     HomeSelection::Relative(home),
                     0o066,
                     &["build"],
@@ -801,22 +797,10 @@ exec {} "$@"
     #[test]
     fn unset_home_does_not_abort_either_capture_path() {
         for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
-            for root_selection in [
-                RootSelection::Default,
-                RootSelection::Empty,
-                RootSelection::Explicit,
-            ] {
-                let toolchain = InstalledToolchain::new();
-                let output = toolchain.run(
-                    capture_path,
-                    root_selection,
-                    HomeSelection::Unset,
-                    0o077,
-                    &["build"],
-                );
-                toolchain.assert_cargo(&output, 0o077, &["build"]);
-                toolchain.assert_capture_modes(capture_path);
-            }
+            let toolchain = InstalledToolchain::new();
+            let output = toolchain.run(capture_path, HomeSelection::Unset, 0o077, &["build"]);
+            toolchain.assert_cargo(&output, 0o077, &["build"]);
+            toolchain.assert_capture_modes(capture_path);
         }
     }
 }

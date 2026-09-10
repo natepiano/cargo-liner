@@ -187,7 +187,7 @@ impl LegacyRegistration {
     pub(crate) fn directory(&self) -> &Path { &self.directory }
 
     /// Preserve display text; shell word boundaries are irrecoverable here.
-    pub(crate) fn command(&self) -> &OsStr { &self.command }
+    fn command(&self) -> &OsStr { &self.command }
 }
 
 /// Only one outcome contains the type accepted by registration-sourced rows.

@@ -20,7 +20,7 @@ clap          = { workspace = true }
 crossterm     = { workspace = true }
 dirs          = { workspace = true }
 ratatui       = { workspace = true }
-rustix        = { workspace = true, features = ["fs"] }
+rustix        = { workspace = true, features = ["fs", "process"] }
 serde         = { workspace = true, features = ["derive"] }
 sysinfo       = { workspace = true }
 toml          = { workspace = true }
@@ -31,13 +31,8 @@ uuid          = { workspace = true }
 # captures the desktop behind the window for the attract screen.
 tui_pane = { workspace = true, features = ["backdrop"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-
-# rustix exposes no FIFO constructor on Apple targets, so the special-file tests
-# reach for mkfifo directly.
-[target.'cfg(unix)'.dev-dependencies]
-libc = { workspace = true }

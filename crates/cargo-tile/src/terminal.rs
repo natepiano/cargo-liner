@@ -53,8 +53,10 @@ use crate::app::AppPaneId;
 use crate::app::Updates;
 use crate::capture;
 use crate::config;
+use crate::config::Config;
 use crate::constants::ATTRACT_FRAME_INTERVAL;
 use crate::constants::BINARY_NAME;
+use crate::constants::CAPTURE_ROOT;
 use crate::constants::FULL_REPAINT_SECONDS;
 use crate::constants::PROBE_THRESHOLD;
 use crate::constants::REPAINT_SENTINEL;
@@ -118,7 +120,19 @@ impl From<ToastVisualDeadline> for VisualDeadline {
 
 /// Load configuration, install the theme, build the keymap, and run the
 /// event loop with the terminal in the alternate screen.
-pub(crate) fn run() -> ExitCode {
+pub(crate) fn run() -> ExitCode { run_with_capture_parent(std::path::PathBuf::from(CAPTURE_ROOT)) }
+
+/// The executable supplies the fixed parent; PTY tests supply an isolated path.
+pub(crate) fn run_with_capture_parent(parent: PathBuf) -> ExitCode {
+    run_with_scanner(move |config| {
+        processes::spawn_with_resolver(config, move || {
+            crate::progress::CaptureRoots::from_parent(&parent)
+        })
+        .0
+    })
+}
+
+fn run_with_scanner(spawn: impl FnOnce(&Config) -> Receiver<Scan>) -> ExitCode {
     let loaded_config = config::load();
     let startup_note = theme::install(&loaded_config.config, config::themes_dir().as_deref());
     // Read before the config is handed to the app, which takes it.
@@ -142,7 +156,8 @@ pub(crate) fn run() -> ExitCode {
             return ExitCode::FAILURE;
         },
     };
-    let loop_result = event_loop(&mut terminal, &mut app);
+    let scans = spawn(&app.loaded_config.config);
+    let loop_result = event_loop(&mut terminal, &mut app, &scans);
     app.attract.record_completed_backdrop_attempts_before_exit();
     let restart_requested = app.framework.restart_requested();
     let restore_result = restore_terminal(&mut terminal, profile_switch.as_ref());
@@ -204,9 +219,12 @@ fn restore_terminal(
 /// arrived or the process scan came back different. With nothing
 /// building and nobody typing there is nothing to repaint, so an idle
 /// app costs essentially nothing.
-fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()> {
+fn event_loop(
+    terminal: &mut Terminal<Backend>,
+    app: &mut App,
+    scans: &Receiver<Scan>,
+) -> io::Result<()> {
     let input = spawn_input_thread();
-    let scans = processes::spawn(&app.loaded_config.config);
     // Each due read runs on a worker of its own and replies here, so a
     // server that has wedged parks that one thread rather than the loop.
     let (sccache_reads, sccache_replies) = mpsc::channel();
@@ -306,9 +324,9 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
         // freeze and the first scan after it describes the world as it
         // is then rather than as it was when `f` was pressed.
         if app.updates == Updates::Frozen {
-            discard_scans(&scans, &sccache_replies);
+            discard_scans(scans, &sccache_replies);
         } else {
-            if drain_scans(app, &scans) {
+            if drain_scans(app, scans) {
                 dirty = true;
             }
             // The scan above is what says whether a server is up, so
@@ -407,7 +425,9 @@ fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
         return false;
     };
     app.sccache.observe_server(scan.sccache);
-    let status_changed = app.root_status != scan.root_status;
+    let status_changed =
+        app.root_status != scan.root_status || app.shared_directory != scan.shared_directory;
+    app.shared_directory = scan.shared_directory;
     app.root_status = scan.root_status;
     app.roster.observe(scan.groups, Instant::now()) || status_changed
 }
@@ -684,6 +704,7 @@ mod tests {
 
     use super::*;
     use crate::attract::SettingsApplicationOutcome;
+    use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::KernelObservation;
     use crate::birth_stamp::Observation;
     use crate::birth_stamp::ProcessLifetime;
@@ -691,6 +712,9 @@ mod tests {
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
     use crate::favorites::FavoritesFileState;
+    use crate::processes::AccountName;
+    use crate::processes::AssociationSelection;
+    use crate::processes::CaptureAssociation;
     use crate::processes::CaptureMembership;
     use crate::processes::CargoGroup;
     use crate::processes::CargoProcess;
@@ -700,12 +724,14 @@ mod tests {
     use crate::processes::Measurement;
     use crate::processes::MeasurementAbsence;
     use crate::processes::ProcessIdentity;
+    use crate::processes::RowProvenance;
+    use crate::processes::RunStart;
+    use crate::processes::SelectedProof;
     use crate::processes::VisibleParent;
     use crate::progress::Capture;
     use crate::progress::CaptureLookup;
     use crate::progress::CaptureRead;
     use crate::progress::CaptureRootIndex;
-    use crate::progress::CaptureRootSource;
     use crate::progress::CaptureRoots;
     use crate::progress::RunState;
     use crate::registration::WorkingDirectoryIdentity;
@@ -741,9 +767,10 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
-                groups:      Vec::new(),
-                sccache:     SccacheServer::Stopped,
-                root_status: capture.root_status,
+                groups:           Vec::new(),
+                sccache:          SccacheServer::Stopped,
+                root_status:      capture.root_status,
+                shared_directory: capture.shared_directory,
             })
             .expect("retained scan receiver");
         drain_scans(app, &scans)
@@ -757,10 +784,10 @@ fraying = "leading"
             pid: 11,
             invocation_id,
             capture_membership: CaptureMembership::Outside,
-            provenance: crate::processes::RowProvenance::Uncaptured,
+            provenance: RowProvenance::Uncaptured,
             parent: VisibleParent::None,
             start: "10:00".to_owned(),
-            started: crate::processes::RunStart::Known(0),
+            started: RunStart::Known(0),
             duration: "00:01".to_owned(),
             cpu: Measurement::Reading("0%".to_owned()),
             compiler: CompilerObservation::None,
@@ -791,13 +818,14 @@ fraying = "leading"
         for process in [&first, &replacement] {
             sender
                 .send(Scan {
-                    groups:      vec![CargoGroup {
+                    groups:           vec![CargoGroup {
                         lead:     process.clone(),
                         rest:     Vec::new(),
                         ancestry: Vec::new(),
                     }],
-                    sccache:     SccacheServer::Stopped,
-                    root_status: Vec::new(),
+                    sccache:          SccacheServer::Stopped,
+                    root_status:      Vec::new(),
+                    shared_directory: crate::capture_root::SharedCaptureDirectory::default(),
                 })
                 .expect("scan receiver is alive");
             assert!(drain_scans(&mut app, &scans));
@@ -832,13 +860,14 @@ fraying = "leading"
         ] {
             sender
                 .send(Scan {
-                    groups:      vec![CargoGroup {
+                    groups:           vec![CargoGroup {
                         lead:     process.clone(),
                         rest:     Vec::new(),
                         ancestry: Vec::new(),
                     }],
-                    sccache:     SccacheServer::Stopped,
-                    root_status: Vec::new(),
+                    sccache:          SccacheServer::Stopped,
+                    root_status:      Vec::new(),
+                    shared_directory: crate::capture_root::SharedCaptureDirectory::default(),
                 })
                 .expect("scan receiver is alive");
 
@@ -848,16 +877,11 @@ fraying = "leading"
     }
 
     #[test]
-    fn missing_configured_root_appears_and_redraws_an_unchanged_empty_grid() {
+    fn missing_account_directory_appears_and_redraws_an_unchanged_empty_grid() {
         let mut app = App::new_for_test().expect("test app");
         let parent = TempDir::new().expect("fixture directory");
         let path = parent.path().join("later");
-        let mut roots = CaptureRoots::resolve(std::slice::from_ref(&path));
-        roots.roots.retain(|root| {
-            root.sources
-                .iter()
-                .any(|source| matches!(source, CaptureRootSource::Configuration { .. }))
-        });
+        let roots = CaptureRoots::for_test(&[&path]);
         let observe = |pid| KernelObservation::for_test(pid, Observation::Unknown);
         assert!(deliver_capture(
             &mut app,
@@ -867,7 +891,7 @@ fraying = "leading"
             app.root_status[0].state,
             crate::processes::RootReadStatus::Unavailable(_)
         ));
-        fs::create_dir_all(path.join(CAPTURE_LIVE_RUNS_DIR)).expect("create configured root");
+        fs::create_dir_all(path.join(CAPTURE_LIVE_RUNS_DIR)).expect("create account directory");
         assert!(deliver_capture(
             &mut app,
             Capture::take_roots(&roots, &observe)
@@ -915,10 +939,8 @@ fraying = "leading"
         std::os::unix::fs::symlink("inaccessible", &log).expect("refused log target");
         let observe = |pid| {
             let observation = match crate::birth_stamp::BirthStamp::from_fields("boot", "100") {
-                crate::birth_stamp::IdentityEvidence::Available(stamp) => {
-                    Observation::Present(stamp)
-                },
-                crate::birth_stamp::IdentityEvidence::Unavailable => Observation::Unknown,
+                IdentityEvidence::Available(stamp) => Observation::Present(stamp),
+                IdentityEvidence::Unavailable => Observation::Unknown,
             };
             KernelObservation::for_test(pid, observation)
         };
@@ -958,9 +980,9 @@ fraying = "leading"
             .into_iter()
             .flat_map(|pid| capture.keys(pid))
             .collect();
-        let association = crate::processes::CaptureAssociation {
+        let association = CaptureAssociation {
             pid:       10,
-            selection: crate::processes::AssociationSelection::Ambiguous {
+            selection: AssociationSelection::Ambiguous {
                 candidates: keys.clone(),
             },
         };
@@ -972,15 +994,15 @@ fraying = "leading"
         let mut recovered = Capture::take_from(root.path(), observe);
         recovered.root_status[0]
             .associations
-            .push(crate::processes::CaptureAssociation {
+            .push(CaptureAssociation {
                 pid:       10,
-                selection: crate::processes::AssociationSelection::Selected {
+                selection: AssociationSelection::Selected {
                     key:    keys[0].clone(),
-                    proof:  crate::processes::SelectedProof::Unconfirmed,
+                    proof:  SelectedProof::Unconfirmed,
                     unused: Vec::new(),
                 },
             });
-        recovered.root_status[0].account = crate::processes::AccountName::Resolved("runner".into());
+        recovered.root_status[0].account = AccountName::Resolved("runner".into());
         let expected = recovered.root_status.clone();
         assert!(deliver_capture(&mut app, recovered));
         assert_eq!(app.root_status, expected);
@@ -991,7 +1013,7 @@ fraying = "leading"
     }
 
     #[test]
-    fn a_configured_roots_capture_reaches_the_roster_through_the_scan_channel() {
+    fn an_account_capture_reaches_the_roster_through_the_scan_channel() {
         let mut app = App::new_for_test().expect("test app should build");
         let directory = TempDir::new().expect("temporary capture root");
         let markers = directory.path().join(CAPTURE_LIVE_RUNS_DIR);
@@ -1002,20 +1024,14 @@ fraying = "leading"
             "    Blocking waiting for file lock on build directory",
         )
         .expect("captured output");
-        app.loaded_config.config.capture.roots = vec![directory.path().to_owned()];
-        let mut roots = CaptureRoots::resolve(&app.loaded_config.config.capture.roots);
-        roots.roots.retain(|root| {
-            root.sources
-                .iter()
-                .any(|source| matches!(source, CaptureRootSource::Configuration { .. }))
-        });
+        let roots = CaptureRoots::for_test(&[directory.path()]);
         let capture = Capture::take_roots(&roots, &|pid| {
             KernelObservation::for_test(pid, Observation::Unknown)
         });
         let key = capture
             .keys(10)
             .find(|key| key.root == CaptureRootIndex(0))
-            .expect("configured root retains its full capture key");
+            .expect("account directory retains its full capture key");
         let state = capture.read(&key);
         assert_eq!(
             state,
@@ -1025,13 +1041,14 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
-                groups:      vec![CargoGroup {
+                groups:           vec![CargoGroup {
                     lead:     process.clone(),
                     rest:     Vec::new(),
                     ancestry: Vec::new(),
                 }],
-                sccache:     SccacheServer::Stopped,
-                root_status: capture.root_status,
+                sccache:          SccacheServer::Stopped,
+                root_status:      capture.root_status,
+                shared_directory: capture.shared_directory,
             })
             .expect("scan receiver is alive");
 

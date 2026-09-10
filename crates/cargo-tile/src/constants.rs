@@ -1,6 +1,5 @@
 //! Constants for `cargo-tile`.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use ratatui::style::Modifier;
@@ -117,10 +116,6 @@ pub(crate) const HELD_KEY_PRESSES_PER_STEP: u32 = 4;
 pub(crate) const CONFIG_DIRNAME: &str = "cargo-tile";
 /// App configuration file, read at startup for its `[appearance]` section.
 pub(crate) const CONFIG_FILENAME: &str = "config.toml";
-/// Additive capture discovery key, independent of the shim's write root.
-pub(crate) const CONFIG_KEY_CAPTURE_ROOTS: &str = "roots";
-/// Without additional roots the scanner reads only its own shim's root.
-pub(crate) const DEFAULT_CAPTURE_ROOTS: [PathBuf; 0] = [];
 /// Id of the built-in dark variant, and the `appearance.dark_theme`
 /// default. Defined in [`crate::theme`], not in `tui_pane`: theme
 /// content belongs to the app.
@@ -682,11 +677,9 @@ pub(crate) const CAPTURE_ASSOCIATION_SUPPRESSED: &str = "another root's proof we
 /// An annotation-only selection must not borrow fields from another root's proof.
 pub(crate) const CAPTURE_ASSOCIATION_UNCONFIRMED: &str =
     "unconfirmed selection — annotation only; no registration fields";
-/// An empty refusal list authorizes only cleanup justified by process identity.
-pub(crate) const CAPTURE_CLEANUP_ALLOWED: &str = "cleanup allowed for proven ended captures";
 /// Directory replacement prevents removal until another stable scan observes it.
 pub(crate) const CAPTURE_CLEANUP_CHANGED: &str = "directory changed — cleanup disabled this scan";
-/// A read failure must not imply that an empty inventory authorized cleanup.
+/// A read failure cannot authorize cleanup from an empty inventory.
 pub(crate) const CAPTURE_CLEANUP_DISABLED: &str = "cleanup disabled";
 /// The effective-user failure is cached, so another scan cannot retry it.
 pub(crate) const CAPTURE_CLEANUP_EFFECTIVE_USER: &str = "ownership unavailable — cleanup disabled for this session; restart to retry effective-user lookup";
@@ -705,14 +698,8 @@ pub(crate) const CAPTURE_FAILURE_PERMISSION: &str = "permission denied";
 pub(crate) const CAPTURE_OWNER_UID: &str = "owner uid";
 /// The root could not be inspected, so there is no retained uid to display.
 pub(crate) const CAPTURE_OWNER_UNAVAILABLE: &str = "owner unavailable";
-/// A root's ordinal follows the scanner's retained deduplication order.
-pub(crate) const CAPTURE_SETTINGS_ROOT: &str = "root";
-/// Identify every configured spelling after several entries resolve to one root.
-pub(crate) const CAPTURE_SOURCE_CONFIG: &str = "config";
-/// Empty and unset environment overrides both select this source.
-pub(crate) const CAPTURE_SOURCE_DEFAULT: &str = "default";
-/// Preserve the override's original spelling beside its resolved absolute path.
-pub(crate) const CAPTURE_SOURCE_ENVIRONMENT: &str = "environment";
+/// Account ordinals remain stable as more directories are discovered.
+pub(crate) const CAPTURE_SETTINGS_ROOT: &str = "account";
 /// Only confirmed published registrations with readable logs count as active.
 pub(crate) const CAPTURE_STATUS_ACTIVE: &str = "active";
 /// Legacy records may annotate a process without supplying verified identity.
@@ -723,8 +710,6 @@ pub(crate) const CAPTURE_STATUS_BOOT: &str = "boot identity unavailable — veri
 pub(crate) const CAPTURE_STATUS_BOOT_FAILURE: &str = "cached boot failure";
 /// The displayed count excludes annotations, unreadable logs and staging files.
 pub(crate) const CAPTURE_STATUS_CAPTURE: &str = "capture";
-/// The implicit default needs no repair before any capture has created it.
-pub(crate) const CAPTURE_STATUS_DEFAULT_NOT_CREATED: &str = "default root has not been created yet";
 /// A completed read with no captures must remain distinct from failed access.
 pub(crate) const CAPTURE_STATUS_EMPTY: &str = "readable — no active captures";
 /// A short inventory can omit runs even when every returned entry is readable.
@@ -738,12 +723,9 @@ pub(crate) const CAPTURE_STATUS_IDENTITY_BOOT: &str = "identity unknown — reta
 /// Another scan may establish identity, without promising that it will.
 pub(crate) const CAPTURE_STATUS_IDENTITY_RETRY: &str =
     "identity unknown this scan — retained; identity is checked again next scan";
-/// Startup resolution is never repeated by the scanner's periodic reads.
-pub(crate) const CAPTURE_STATUS_INVALID: &str =
-    "invalid root — correct the path and restart to retry resolution";
 /// Invalid record bytes do not establish a safe capture association.
 pub(crate) const CAPTURE_STATUS_INVALID_REGISTRATION: &str = "invalid registration";
-/// Unlike invalid configuration, a missing directory is reopened next scan.
+/// Missing account directories are reopened on the next scan.
 pub(crate) const CAPTURE_STATUS_MISSING: &str = "missing directory";
 /// Retained contents include failures or artifacts outside the confirmed count.
 pub(crate) const CAPTURE_STATUS_PARTIAL: &str = "partial";
@@ -765,6 +747,8 @@ pub(crate) const CAPTURE_UNUSED_SELECTED_UNCONFIRMED: &str =
     "selected root is unconfirmed; another root cannot supply its fields";
 
 // capture shim
+/// Hidden child-install protocol shared by the admin command and account process.
+pub(crate) const ACCOUNT_INSTALL_REPORT_FLAG: &str = "account-install-report";
 /// Name of the real cargo once the shim takes its place beside it. The
 /// shim resolves it as a sibling, so a hardcoded-path invocation of a
 /// toolchain's cargo is captured the same as one found through `PATH`.
@@ -914,14 +898,11 @@ pub(crate) const CAPTURE_DIRECTORY_INCOMPLETE: &str = "capture directory invento
 /// Directory under [`CAPTURE_ROOT`], one file per run still in flight,
 /// each named for the pid of the shim that captured it.
 pub(crate) const CAPTURE_LIVE_RUNS_DIR: &str = "state/pids";
-/// Where the cargo shim mirrors each run's output. Under `/tmp` rather
-/// than the home directory because a sandboxed caller can write there.
+/// Shared parent of numeric uid directories containing each account's captures.
+/// The shim, reader, and installer all use this fixed machine location.
 pub(crate) const CAPTURE_ROOT: &str = "/tmp/cargo-tile";
-/// Environment variable moving [`CAPTURE_ROOT`], which is what puts a
-/// second grid on captures of its own.
-pub(crate) const CAPTURE_ROOT_ENV: &str = "CARGO_TILE_ROOT";
-/// Configured roots cannot depend on the directory that launched the grid.
-pub(crate) const CAPTURE_ROOT_NOT_ABSOLUTE: &str = "capture root must be an absolute path";
+/// Sticky world-writable shared parent permissions.
+pub(crate) const CAPTURE_SHARED_MODE: u32 = 0o1777;
 /// What separates the pid at the end of a run log's name from the
 /// timestamp in front of it.
 pub(crate) const PID_SEPARATOR: char = '-';

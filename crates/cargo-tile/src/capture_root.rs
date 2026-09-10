@@ -1,6 +1,6 @@
 //! Capture reads and cleanup tied to the directories inspected in one scan.
 //!
-//! The configured root's final component must be a directory, never a symlink.
+//! The account directory's final component must be a directory, never a symlink.
 //! Ancestor symlinks remain supported, including macOS `/tmp` -> `/private/tmp`.
 //! `state` and `pids` are opened separately without following symlinks. Every
 //! entry is a sampled or validated basename opened relative to its directory handle.
@@ -8,17 +8,24 @@
 //! Cleanup requires the effective user to own every inspected directory, with
 //! no group or other write mode bits, on both Linux and macOS.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::fs;
 use std::fs::File;
 use std::fs::Metadata;
 use std::io;
+use std::io::Error;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 #[cfg(target_os = "linux")]
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -35,15 +42,12 @@ use rustix::fs::OFlags;
 #[cfg(target_os = "linux")]
 use rustix::fs::RawDir;
 use rustix::fs::Stat;
+use rustix::fs::fchmod;
 use rustix::fs::fstat;
 use rustix::fs::openat;
 use rustix::fs::unlinkat;
-use sysinfo::Pid;
-use sysinfo::Process;
-use sysinfo::ProcessRefreshKind;
-use sysinfo::ProcessesToUpdate;
-use sysinfo::System;
-use sysinfo::UpdateKind;
+use rustix::process::geteuid;
+use uuid::Uuid;
 
 #[cfg(target_os = "linux")]
 use crate::constants::CAPTURE_DIRECTORY_BUFFER_BYTES;
@@ -57,15 +61,121 @@ use crate::constants::CAPTURE_NOT_REGULAR;
 use crate::constants::CAPTURE_PIDS_DIR;
 use crate::constants::CAPTURE_REGISTRATION_BYTES;
 use crate::constants::CAPTURE_REGISTRATION_TOO_LARGE;
+use crate::constants::CAPTURE_ROOT;
+use crate::constants::CAPTURE_SHARED_MODE;
 use crate::constants::CAPTURE_STATE_DIR;
 use crate::constants::CAPTURE_SWEEP_LIMIT;
 use crate::constants::RUN_LOG_TAIL_BYTES;
+use crate::progress::CaptureFailure;
 use crate::progress::PathFailure;
+
+/// The shared parent either admits all accounts or retains why it cannot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SharedDirectoryState {
+    /// No parent exists yet.
+    Missing,
+    /// Sticky world-writable permissions allow every account to create its directory.
+    Shared { owner: RootOwner },
+    /// Existing permissions need repair by the owner or administrator.
+    NotShared { mode: u32, owner: RootOwner },
+    /// The parent could not be opened as a real directory.
+    Unavailable(CaptureFailure),
+}
+
+/// Path and permissions sampled by the worker for the settings pane.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SharedCaptureDirectory {
+    pub(crate) path:  PathBuf,
+    pub(crate) state: SharedDirectoryState,
+}
+
+impl SharedCaptureDirectory {
+    /// Inspection performs no mutation and resolves ancestor aliases on both platforms.
+    pub(crate) fn inspect(parent: &Path) -> Self {
+        let path = canonical_capture_path(parent);
+        let state = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => {
+                let owner = RootOwner::Uid(metadata.uid());
+                let mode = Mode::from_raw_mode(metadata.mode()).bits();
+                if mode == CAPTURE_SHARED_MODE {
+                    SharedDirectoryState::Shared { owner }
+                } else {
+                    SharedDirectoryState::NotShared { mode, owner }
+                }
+            },
+            Ok(_) => {
+                SharedDirectoryState::Unavailable(Error::from(ErrorKind::NotADirectory).into())
+            },
+            Err(error) if error.kind() == ErrorKind::NotFound => SharedDirectoryState::Missing,
+            Err(error) => SharedDirectoryState::Unavailable(error.into()),
+        };
+        Self { path, state }
+    }
+}
+
+impl Default for SharedCaptureDirectory {
+    fn default() -> Self {
+        Self {
+            path:  PathBuf::from(CAPTURE_ROOT),
+            state: SharedDirectoryState::Missing,
+        }
+    }
+}
+
+/// Create the parent; its owner or root repairs permissions through the open handle.
+/// Other callers require an existing shared mode and never change its permissions.
+pub(crate) fn prepare_shared_directory(parent: &Path) -> io::Result<()> {
+    match fs::create_dir(parent) {
+        Ok(()) => {},
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {},
+        Err(error) => return Err(error),
+    }
+    let path = canonical_capture_path(parent);
+    let directory = match InspectedDirectory::open_root(&path) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == ErrorKind::PermissionDenied => {
+            // An owner can chmod a directory even when its current mode forbids
+            // opening it. Only its own real directory permits this recovery;
+            // the sticky system parent prevents another account replacing it.
+            let metadata = fs::symlink_metadata(&path)?;
+            if !metadata.is_dir() || effective_user() != EffectiveUser::Known(metadata.uid()) {
+                return Err(error);
+            }
+            fs::set_permissions(&path, fs::Permissions::from_mode(CAPTURE_SHARED_MODE))?;
+            InspectedDirectory::open_root(&path)?
+        },
+        Err(error) => return Err(error),
+    };
+    repair_shared_mode(&directory, effective_user())
+}
+
+/// Ownership authorizes repair; an already shared mode requires no authority.
+fn repair_shared_mode(directory: &InspectedDirectory, user: EffectiveUser) -> io::Result<()> {
+    if directory.identity.mode.bits() == CAPTURE_SHARED_MODE {
+        return Ok(());
+    }
+    if !matches!(user, EffectiveUser::Known(uid) if uid == 0 || uid == directory.identity.owner) {
+        return Err(ErrorKind::PermissionDenied.into());
+    }
+    fchmod(&directory.handle, Mode::from_raw_mode(CAPTURE_SHARED_MODE))?;
+    Ok(())
+}
+
+/// Resolve aliases in ancestors while retaining the final component for NOFOLLOW.
+pub(crate) fn canonical_capture_path(path: &Path) -> PathBuf {
+    let path: PathBuf = path.components().collect();
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => parent
+            .canonicalize()
+            .map_or_else(|_| path.clone(), |parent| parent.join(name)),
+        _ => path,
+    }
+}
 
 /// Filesystem ownership is independent of this scan's authority to remove data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RootOwner {
-    /// The uid read from the root's open descriptor.
+    /// The uid read from nofollow metadata or the root's open descriptor.
     Uid(u32),
     /// Opening the root failed before its owner could be inspected.
     Unavailable,
@@ -98,7 +208,7 @@ pub(crate) enum Enumeration {
     /// A count or filename limit stopped the inventory before end of directory.
     Incomplete,
     /// Keep the actual access or enumeration failure for the caller to observe.
-    Failed(io::Error),
+    Failed(Error),
 }
 
 impl Enumeration {
@@ -139,7 +249,7 @@ enum RegistrationAccess {
 pub(crate) struct RootScan {
     /// Count descriptor log reads, including failures, in scan-deduplication tests.
     #[cfg(test)]
-    log_reads:           std::cell::Cell<usize>,
+    log_reads:           Cell<usize>,
     /// An opaque value identifies the directory independently of cleanup eligibility.
     incarnation:         RootIncarnation,
     /// Reopened before sweeping so a replacement at this pathname is detected.
@@ -157,10 +267,10 @@ pub(crate) struct RootScan {
 }
 
 impl RootScan {
-    /// Reopen the configured pathname and sample registrations; legacy logs are lazy.
+    /// Reopen the account pathname and sample registrations; legacy logs are lazy.
     pub(crate) fn open(path: &Path, history: &mut RootHistory) -> io::Result<Self> {
         // Removing trailing separators and `.` prevents them bypassing NOFOLLOW
-        // on the configured root's final symlink. Ancestors retain OS resolution.
+        // on the account directory's final symlink. Ancestors retain OS resolution.
         let path: PathBuf = path.components().collect();
         let root = match InspectedDirectory::open_root(&path) {
             Ok(root) => root,
@@ -247,7 +357,7 @@ impl RootScan {
 
     /// A bounded root sample must be complete before cleanup is possible.
     #[cfg(test)]
-    pub(crate) fn log_outcome(&self) -> &Enumeration {
+    fn log_outcome(&self) -> &Enumeration {
         &self
             .logs
             .get_or_init(|| Inventory::sample(&self.root))
@@ -360,12 +470,12 @@ impl RootScan {
         }
     }
 
-    /// Fresh traversal catches renamed or replaced directories at the configured
+    /// Fresh traversal catches renamed or replaced directories at the account
     /// pathname; fstat also catches permission changes on the held handles.
     fn revalidate(&self) -> io::Result<()> { self.revalidate_paths().map_err(|(_, error)| error) }
 
     /// A fresh failure names the changed directory rather than only the root.
-    fn revalidate_paths(&self) -> Result<(), (PathBuf, io::Error)> {
+    fn revalidate_paths(&self) -> Result<(), (PathBuf, Error)> {
         let current_root = InspectedDirectory::open_root(&self.path)
             .map_err(|error| (self.path.clone(), error))?;
         let (current_state, current_pids) = open_registration_paths(&current_root, &self.path)?;
@@ -442,7 +552,7 @@ enum PreviousRoot {
 /// Detect root and registration-ancestor replacement across successive scans.
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct TreeIdentity {
-    /// The configured root itself may change without its pathname changing.
+    /// The account directory itself may change without its pathname changing.
     root:          InspectedDirectoryMetadata,
     /// Missing registration ancestors also matter when they become available.
     registrations: RegistrationIdentity,
@@ -481,7 +591,7 @@ enum RegistrationIdentity {
 
 /// Identity of a directory object, without permissions or removal authority.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct RootIncarnation(uuid::Uuid);
+pub(crate) struct RootIncarnation(Uuid);
 
 /// Device, inode, owner and permissions describe the inspected directory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -573,7 +683,7 @@ struct Inventory {
 
 impl Inventory {
     /// Failed traversal has no entries and is never reported as complete.
-    const fn failed(error: io::Error) -> Self {
+    const fn failed(error: Error) -> Self {
         Self {
             entries: Vec::new(),
             outcome: Enumeration::Failed(error),
@@ -690,7 +800,7 @@ impl<'scan> ScanEntry<'scan> {
     /// Metadata chooses only the starting position; `Read::take` enforces the byte
     /// bound even when the file grows after that metadata was inspected.
     #[cfg(test)]
-    pub(crate) fn read_log(&self) -> io::Result<String> {
+    fn read_log(&self) -> io::Result<String> {
         let file = self.open_regular()?;
         let length = file.metadata()?.len();
         read_tail(file, length)
@@ -736,7 +846,7 @@ fn named_entry<'scan>(
         )
     {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
+            ErrorKind::InvalidInput,
             CAPTURE_INVALID_BASENAME,
         ));
     }
@@ -858,7 +968,7 @@ fn directory_flags() -> OFlags {
 fn open_registration_paths(
     root: &InspectedDirectory,
     path: &Path,
-) -> Result<(InspectedDirectory, InspectedDirectory), (PathBuf, io::Error)> {
+) -> Result<(InspectedDirectory, InspectedDirectory), (PathBuf, Error)> {
     let state = root
         .child(CAPTURE_STATE_DIR)
         .map_err(|error| (path.join(CAPTURE_STATE_DIR), error))?;
@@ -870,10 +980,10 @@ fn open_registration_paths(
 
 /// A missing own-process uid disables cleanup instead of selecting a default uid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EffectiveUser {
+pub(crate) enum EffectiveUser {
     /// Read from this process's effective identity, rather than its real uid.
     Known(u32),
-    /// The safe platform process API could not establish the effective owner.
+    /// No effective identity is established, so filesystem cleanup is disabled.
     Unavailable,
 }
 
@@ -885,29 +995,14 @@ impl EffectiveUser {
 }
 
 /// The effective identity is fixed for this process; failed reads stay unavailable.
-fn effective_user() -> EffectiveUser {
+pub(crate) fn effective_user() -> EffectiveUser {
     /// Share one observation across all roots and scans, including a failed read.
     static EFFECTIVE_USER: OnceLock<EffectiveUser> = OnceLock::new();
     EffectiveUser::cached(&EFFECTIVE_USER, read_effective_user)
 }
 
-/// Refresh only our process through the existing safe sysinfo dependency. rustix
-/// fs has no geteuid, and this avoids relying on unrelated process feature flags.
-fn read_effective_user() -> EffectiveUser {
-    let mut system = System::new();
-    let pid = Pid::from_u32(std::process::id());
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        ProcessRefreshKind::nothing().with_user(UpdateKind::Always),
-    );
-    system
-        .process(pid)
-        .and_then(Process::effective_user_id)
-        .map_or(EffectiveUser::Unavailable, |uid| {
-            EffectiveUser::Known(**uid)
-        })
-}
+/// Query the kernel directly without depending on process-table visibility.
+fn read_effective_user() -> EffectiveUser { EffectiveUser::Known(geteuid().as_raw()) }
 
 /// `Read::take` remains authoritative when a file grows after the length sample.
 fn read_tail(mut file: File, length: u64) -> io::Result<String> {
@@ -929,8 +1024,10 @@ mod tests {
     use std::fs::File;
     use std::fs::OpenOptions;
     use std::io;
+    use std::io::ErrorKind;
     use std::io::Write;
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::fs::symlink;
     use std::os::unix::net::UnixListener;
@@ -1018,10 +1115,91 @@ mod tests {
                 .contains(&super::CleanupRefusal::EnumerationIncomplete(path.clone()))
         );
         scan.registrations.outcome =
-            Enumeration::Failed(io::Error::from(io::ErrorKind::PermissionDenied));
+            Enumeration::Failed(io::Error::from(ErrorKind::PermissionDenied));
         assert!(scan.cleanup_refusals().iter().any(|reason| matches!(reason, super::CleanupRefusal::Access(failure) if failure.path == path && failure.failure.kind == io::ErrorKind::PermissionDenied)));
         scan.registrations.outcome = Enumeration::Complete;
         assert!(scan.cleanup_refusals().is_empty());
+    }
+
+    #[test]
+    fn shared_parent_owner_repairs_modes_that_prevent_opening_the_directory() {
+        let fixture = tempdir().expect("parent fixture");
+        let parent = fixture.path().join("capture");
+        super::prepare_shared_directory(&parent).expect("create shared parent");
+        for mode in [0o000, 0o111, 0o750, 0o1777] {
+            fs::set_permissions(&parent, fs::Permissions::from_mode(mode))
+                .expect("set parent mode");
+            let status = super::SharedCaptureDirectory::inspect(&parent);
+            if mode != super::CAPTURE_SHARED_MODE {
+                assert!(
+                    matches!(status.state, super::SharedDirectoryState::NotShared { mode: observed, .. } if observed == mode)
+                );
+            }
+            super::prepare_shared_directory(&parent).expect("owner repairs parent");
+            assert!(matches!(
+                super::SharedCaptureDirectory::inspect(&parent).state,
+                super::SharedDirectoryState::Shared { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn foreign_parent_requires_shared_mode_unless_the_caller_is_root() {
+        let parent = tempdir().expect("shared parent fixture");
+        let owner = fs::metadata(parent.path()).expect("parent owner").uid();
+        let foreign = owner.checked_add(1).expect("foreign fixture uid");
+        fs::set_permissions(parent.path(), fs::Permissions::from_mode(0o755))
+            .expect("unshared mode");
+        let directory = super::InspectedDirectory::open_root(parent.path()).expect("open parent");
+        for user in [EffectiveUser::Known(foreign), EffectiveUser::Unavailable] {
+            assert_eq!(
+                super::repair_shared_mode(&directory, user)
+                    .expect_err("foreign mode must be rejected")
+                    .kind(),
+                ErrorKind::PermissionDenied
+            );
+        }
+        assert_eq!(
+            fs::metadata(parent.path())
+                .expect("unchanged parent")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o755
+        );
+        super::repair_shared_mode(&directory, EffectiveUser::Known(0))
+            .expect("root may repair foreign parent");
+        let shared =
+            super::InspectedDirectory::open_root(parent.path()).expect("reopen shared parent");
+        super::repair_shared_mode(&shared, EffectiveUser::Known(foreign))
+            .expect("foreign shared parent is accepted");
+        assert!(matches!(
+            super::SharedCaptureDirectory::inspect(parent.path()).state,
+            super::SharedDirectoryState::Shared { .. }
+        ));
+    }
+
+    #[test]
+    fn shared_parent_symlink_is_never_repaired_or_used_as_a_directory() {
+        let fixture = tempdir().expect("parent fixture");
+        let target = fixture.path().join("target");
+        fs::create_dir(&target).expect("target directory");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).expect("target mode");
+        let parent = fixture.path().join("capture");
+        symlink(&target, &parent).expect("parent symlink");
+        assert!(super::prepare_shared_directory(&parent).is_err());
+        assert!(matches!(
+            super::SharedCaptureDirectory::inspect(&parent).state,
+            super::SharedDirectoryState::Unavailable(_)
+        ));
+        assert_eq!(
+            fs::metadata(&target)
+                .expect("target metadata")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700
+        );
     }
 
     /// Use one account and explicit directory modes independent of its umask.

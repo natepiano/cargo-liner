@@ -1,4 +1,107 @@
-//! Exercise the installed shell shim's registration protocol without crate linkage.
+//! Exercise shim publications and the production reader with an explicit fixture parent.
+
+#[path = "../src/app.rs"]
+mod app;
+#[path = "../src/attract/mod.rs"]
+mod attract;
+#[path = "../src/birth_stamp/mod.rs"]
+mod birth_stamp;
+#[path = "../src/capture.rs"]
+mod capture;
+#[path = "../src/capture_root.rs"]
+mod capture_root;
+#[path = "../src/cli.rs"]
+mod cli;
+#[path = "../src/config.rs"]
+mod config;
+#[path = "../src/constants.rs"]
+mod constants;
+#[path = "../src/favorites/mod.rs"]
+mod favorites;
+#[path = "../src/favorites_overlay/mod.rs"]
+mod favorites_overlay;
+#[path = "../src/globals.rs"]
+mod globals;
+#[path = "../src/hook.rs"]
+mod hook;
+#[path = "../src/interaction.rs"]
+mod interaction;
+#[path = "../src/iterm2.rs"]
+mod iterm2;
+#[path = "../src/keymap.rs"]
+mod keymap;
+#[path = "../src/navigation.rs"]
+mod navigation;
+#[path = "../src/probe.rs"]
+mod probe;
+#[path = "../src/processes.rs"]
+mod processes;
+#[path = "../src/progress.rs"]
+mod progress;
+#[path = "../src/random.rs"]
+mod random;
+#[path = "../src/registration.rs"]
+mod registration;
+#[path = "../src/render.rs"]
+mod render;
+#[path = "../src/roster.rs"]
+mod roster;
+#[path = "../src/sccache.rs"]
+mod sccache;
+#[path = "../src/settings.rs"]
+mod settings;
+#[path = "../src/terminal.rs"]
+mod terminal;
+#[path = "../src/theme/mod.rs"]
+mod theme;
+#[path = "../src/tiles.rs"]
+mod tiles;
+#[path = "../src/wrap.rs"]
+mod wrap;
+
+#[cfg(test)]
+#[path = "support/shared_capture.rs"]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod shared_capture;
+
+/// The child receives a parent path through this constructor, never application configuration.
+#[test]
+fn reader_child() -> std::io::Result<()> {
+    if std::env::var_os("CARGO_TILE_TEST_READER").is_some() {
+        let parent = std::env::current_dir()?.join("capture");
+        assert_eq!(
+            terminal::run_with_capture_parent(parent),
+            std::process::ExitCode::SUCCESS
+        );
+    }
+    Ok(())
+}
+
+/// Read actual process arguments and reject unsupported options before any installation.
+#[test]
+fn cli_rejects_unknown_process_arguments() -> std::io::Result<()> {
+    if std::env::var_os("CARGO_TILE_TEST_ARGUMENTS").is_some() {
+        // Libtest accepts --exact to enter this child, while cargo-tile must reject it.
+        let result = cli::Cli::parse_arguments().run();
+        assert_eq!(result, std::process::ExitCode::FAILURE);
+        return Ok(());
+    }
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "cli_rejects_unknown_process_arguments",
+            "--nocapture",
+        ])
+        .env("CARGO_TILE_TEST_ARGUMENTS", "1")
+        .output()?;
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("unexpected argument '--exact'"), "{error}");
+    Ok(())
+}
 
 #[cfg(test)]
 #[allow(
@@ -7,6 +110,7 @@
 )]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::path::PathBuf;
@@ -20,7 +124,6 @@ mod tests {
     const READER_SCENARIO_SCRIPT: &str = r#"from datetime import datetime, timezone
 import errno
 import fcntl
-import json
 import os
 from pathlib import Path
 import pty
@@ -43,8 +146,10 @@ terminal_rows = 300
 terminal_columns = 300
 home = root / 'home'
 work = home / ('repair-group-' + root.name)
-capture = root / 'capture'
-other_capture = root / 'other-capture'
+capture_parent = root / 'capture'
+capture = capture_parent / str(os.getuid())
+other_uid = 4294967294
+other_capture = capture_parent / str(other_uid)
 pids = capture / 'state/pids'
 bin_directory = root / 'bin'
 for directory in (work, pids, bin_directory, root / 'config/cargo-tile',
@@ -52,9 +157,9 @@ for directory in (work, pids, bin_directory, root / 'config/cargo-tile',
     directory.mkdir(parents=True)
 configuration = '[capture]\nauto_install = false\n'
 if scenario in ('root-headings', 'summary-root-headings', 'root-duplicate', 'fallback-root-duplicate',
-                'fallback-selected-unknown'):
+                'fallback-selected-unknown', 'fallback-foreign-owned'):
     (other_capture / 'state/pids').mkdir(parents=True)
-    configuration += 'roots = [' + json.dumps(str(other_capture)) + ']\n'
+    # Account discovery is automatic; no roots configuration is written.
 configuration += '[tiles]\ninitial_rows = 100\n'
 if scenario in ('excluded', 'fallback-excluded'):
     configuration += '[commands]\nexcluded = ["clippy"]\n'
@@ -66,7 +171,10 @@ elif scenario in ('summary-root-headings', 'fallback-summary', 'child-source-swi
     configuration += '[commands]\nexcluded = ["nextest"]\n'
 for directory in (root / 'config/cargo-tile', home / 'Library/Application Support/cargo-tile'):
     (directory / 'config.toml').write_text(configuration)
-shutil.copyfile(source, bin_directory / 'cargo')
+shim_source = Path(source).read_text()
+assignment = 'capture_parent=/tmp/cargo-tile'
+assert shim_source.splitlines().count(assignment) == 1
+(bin_directory / 'cargo').write_text(shim_source.replace(assignment, 'capture_parent=' + shlex.quote(str(capture_parent))))
 shutil.copyfile(shutil.which('sh'), bin_directory / 'cargo-tile-real')
 (bin_directory / 'cargo-tile-real').chmod(0o755)
 (work / 'build').write_text('''printf '%s\\0' "$LC_ALL" "$TZ" "$LANG" "$HOME" > "$OBSERVED/environment"
@@ -114,11 +222,11 @@ locales = subprocess.run(['locale', '-a'], check=True, capture_output=True, text
 writer_locale = next((name for name in locales if name not in ('C', 'POSIX')
                       and not name.lower().startswith('c.')), 'POSIX')
 for key in ('CARGOTILE_NESTED', 'CARGO_TILE_FRAME_LOG', 'CARGO_TERM_PROGRESS_WHEN',
-            'CARGO_TERM_PROGRESS_WIDTH', 'ITERM_SESSION_ID', 'NESTED_WORK', 'NESTED_MARKER'):
+            'CARGO_TERM_PROGRESS_WIDTH', 'CARGO_TILE_ROOT', 'ITERM_SESSION_ID', 'NESTED_WORK', 'NESTED_MARKER'):
     environment.pop(key, None)
 environment.update(HOME=str(home), XDG_CONFIG_HOME=str(root / 'config'),
                    XDG_CACHE_HOME=str(root / 'cache'), XDG_DATA_HOME=str(root / 'data'),
-                   RUSTUP_HOME=str(root / 'rustup'), CARGO_TILE_ROOT=str(capture),
+                   RUSTUP_HOME=str(root / 'rustup'),
                    LC_ALL=writer_locale, LANG=writer_locale,
                    TZ='EST5EDT,M3.2.0,M11.1.0', TERM='xterm-256color')
 writers = []
@@ -140,8 +248,7 @@ def start_writer(name, writer_home, command='build', nested_directory=None,
     name += '-' + root.name
     observations = root / name
     observations.mkdir()
-    child_environment = dict(environment, HOME=str(writer_home), OBSERVED=str(observations),
-                             CARGO_TILE_ROOT=str(capture_root))
+    child_environment = dict(environment, HOME=str(writer_home), OBSERVED=str(observations))
     if command == 'run':
         child_environment['APPLICATION'] = str(work / 'application')
     if nested_directory is not None:
@@ -157,13 +264,22 @@ def start_writer(name, writer_home, command='build', nested_directory=None,
                                  stdout=output, stderr=output, start_new_session=True)
     writers.append((child, observations))
     wait_for(lambda: (observations / 'cargo-pid').exists(), 'cargo does not start')
-    publications = capture_root / 'state/pids'
+    publications = capture / 'state/pids'
     wait_for(lambda: any(publications.glob(str(child.pid) + '.*')), 'shim does not publish')
     registration = next(publications.glob(str(child.pid) + '.*'))
     fields = registration.read_bytes().split(b'\0')
-    log = capture_root / os.fsdecode(fields[4])
+    log = capture / os.fsdecode(fields[4])
     wait_for(lambda: log.exists() and b'Blocking waiting' in log.read_bytes(),
              'writer does not capture progress')
+    if capture_root != capture:
+        # The directory claims a different uid but still belongs to this process.
+        # Its valid publication must be ignored; process census can still see cargo.
+        destination = capture_root / 'state/pids' / registration.name
+        registration.rename(destination)
+        registration = destination
+        destination = capture_root / log.name
+        log.rename(destination)
+        log = destination
     inherited = (observations / 'environment').read_bytes().split(b'\0')
     assert inherited == [writer_locale.encode(), environment['TZ'].encode(),
                          writer_locale.encode(), os.fsencode(writer_home), b'']
@@ -501,6 +617,16 @@ def publish_other_root(writer):
     (other_capture / 'state/pids' / writer[2].name).write_bytes(b'\0'.join(fields))
     shutil.copyfile(writer[4], other_capture / writer[4].name)
 
+def expand_arguments(expected_rows):
+    os.write(terminal, b'p')
+    def arguments_are_rendered():
+        read_terminal(0.1)
+        rows = [line for commands in command_panes(screen()) for line in commands]
+        return all(any(re.match(r'^\s*│\s*' + str(pid) + r'\s', line) and command in line
+                       for line in rows) for pid, command in expected_rows)
+    wait_for(arguments_are_rendered, 'full command arguments do not finish rendering')
+    return screen()
+
 def settings_screen():
     os.write(terminal, b's')
     def settings_are_visible():
@@ -574,6 +700,14 @@ try:
             started = first[2].stat().st_mtime - 60
             os.utime(carrier[2], (started, started))
             os.utime(sentinel[2], (started + 60, started + 60))
+        if scenario == 'fallback-foreign-owned':
+            foreign_registration = other_capture / 'state/pids' / carrier[2].name
+            foreign_log = other_capture / carrier[4].name
+            retained.remove(carrier[2])
+            retained.remove(carrier[4])
+            carrier[2].rename(foreign_registration)
+            carrier[4].rename(foreign_log)
+            retained.extend((foreign_registration, foreign_log))
         if scenario == 'fallback-selected-unknown':
             publish_other_root(carrier)
         if scenario in ('fallback-unknown', 'fallback-selected-unknown'):
@@ -623,6 +757,7 @@ try:
             ended[4].write_bytes(b'Blocking waiting for file lock on build directory\n')
             removed.extend((ended[2], ended[4]))
     elif scenario == 'staging':
+        live = start_writer('probe-live', home)
         child, observations, registration, fields, log = first
         contents = registration.read_bytes()
         ended_staging = Path(str(registration) + '.tmp')
@@ -643,7 +778,6 @@ try:
             name.write_bytes(b'\0'.join(sibling) if suffix == 'unknown' else b'incomplete\0')
             sibling_log.write_bytes(b'preserve unknown writer\n')
             retained.extend((name, sibling_log))
-        live = start_writer('probe-live', home)
         live_staging = Path(str(live[2]) + '.tmp')
         live[2].rename(live_staging)
         retained.extend((live_staging, live[4]))
@@ -688,7 +822,8 @@ try:
     if reader == 0:
         fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
         os.chdir(root)
-        os.execve(binary, [binary], reader_environment)
+        reader_environment['CARGO_TILE_TEST_READER'] = '1'
+        os.execve(binary, [binary, '--exact', 'reader_child', '--nocapture'], reader_environment)
     def reader_has_scanned():
         read_terminal(0.1)
         rendered = screen()
@@ -699,9 +834,8 @@ try:
     rendered = screen()
     assert 'summary' in rendered, rendered
     if scenario.startswith('quiet-json'):
-        os.write(terminal, b'p')
-        read_terminal(0.3)
-        rendered = screen()
+        cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
+        rendered = expand_arguments([(cargo_pid, 'cargo check ' + quiet_writer[1].name + ' ' + ' '.join(arguments))])
         commands = fixture_pane(rendered, (first[1].name, quiet_writer[1].name))
         rows = [line for line in commands if quiet_writer[1].name in line]
         assert len(rows) == 1, 'quiet JSON produces multiple invocation rows\n' + rendered
@@ -713,9 +847,10 @@ try:
         association = 'capture association: pid ' + cargo_pid + ' via registration ' + str(quiet_writer[0].pid)
         assert association in ' '.join(settings.replace('│', ' ').split()), settings
     if scenario.startswith('rejected-rewrite'):
-        os.write(terminal, b'p')
-        read_terminal(0.3)
-        rendered = screen()
+        cargo_pid = (mismatched[1] / 'cargo-pid').read_text()
+        rendered = expand_arguments([(pid, ' '.join(('cargo', 'check', mismatched[1].name, *arguments)))
+                                     for pid, arguments in ((cargo_pid, executed_arguments),
+                                                            (str(mismatched[0].pid), registered_arguments))])
         rows = [line for commands in command_panes(rendered) for line in commands
                 if mismatched[1].name in line]
         assert len(rows) == 2, 'unsupported argv rewrite gains direct ownership\n' + rendered
@@ -740,7 +875,7 @@ try:
                 'child source change alters family color, start, or headings\n' + screen()
     if scenario.startswith('fallback'):
         if scenario in ('fallback-unknown', 'fallback-excluded', 'fallback-ambiguous',
-                        'fallback-selected-unknown'):
+                        'fallback-selected-unknown', 'fallback-foreign-owned'):
             assert carrier[1].name not in rendered, 'ineligible registration sources a row\n' + rendered
         else:
             def carrier_is_visible():
@@ -797,28 +932,48 @@ try:
             assert sum(marker in line for line in commands) == 1, rendered
         account = pwd.getpwuid(capture.stat().st_uid).pw_name
         heading = '[' + account + '] ~/' + work.name
-        expected = 2 if scenario == 'root-headings' else 1
-        assert sum(heading in line for line in commands) == expected, rendered
+        assert sum(heading in line for line in commands) == 1, rendered
+        if scenario == 'root-headings':
+            assert not any('[' + str(other_uid) + ']' in line for line in commands), rendered
+            settings = settings_screen()
+            assert str(capture_parent) in settings and '1777' in settings, settings
+            account_lines = [line for line in settings.splitlines() if 'active captures' in line]
+            assert any(account in line and 'yours' in line and 'readable' in line
+                       and '1 active captures' in line and 'cleanup: here' in line
+                       for line in account_lines), settings
+            ignored = str(other_capture) + ': owned by ' + account + ', not by ' + str(other_uid) + ' — ignored'
+            assert ignored in settings, settings
+            assert 'configured' not in settings.lower(), settings
+
         if scenario == 'two-directories':
             assert sum('[' + account + '] ~/' + other_directory.name in line
                        for line in commands) == 1, rendered
     if scenario == 'summary-root-headings':
         summary = summary_pane(rendered)
         heading = '[' + pwd.getpwuid(capture.stat().st_uid).pw_name + '] ~/' + work.name
-        assert sum(heading in line for line in summary) == 2, rendered
+        assert sum(heading in line for line in summary) == 1, rendered
+        assert not any('[' + str(other_uid) + ']' in line for line in summary), rendered
         for writer in (first, second):
             assert sum(writer[1].name in line for line in summary) == 1, rendered
     if scenario in ('root-duplicate', 'fallback-root-duplicate', 'fallback-selected-unknown'):
         assert 'probe-unused-' + root.name not in rendered, 'unused proof supplies command\n' + rendered
         assert 'unused-directory-' + root.name not in rendered, 'unused proof supplies directory\n' + rendered
         settings = settings_screen()
-        assert 'capture association' in settings and 'unused' in settings, settings
-        assert str(capture) in settings and str(other_capture) in settings, settings
+        owner = pwd.getpwuid(other_capture.stat().st_uid).pw_name
+        ignored = str(other_capture) + ': owned by ' + owner + ', not by ' + str(other_uid) + ' — ignored'
+        assert ignored in settings, settings
+        assert 'unused directory' not in settings, settings
         publication = carrier[2] if scenario.startswith('fallback') else first[2]
         assert publication.exists() and (other_capture / 'state/pids' / publication.name).exists()
         diagnostics = ' '.join(settings.replace('│', ' ').split())
         assert ': ' + publication.name + ')' in diagnostics, 'selected basename differs from file\n' + settings
-        assert '(' + publication.name + '; ' in diagnostics, 'unused basename differs from file\n' + settings
+        assert '(' + publication.name + '; ' not in diagnostics, 'ignored account supplies competing proof\n' + settings
+    if scenario == 'fallback-foreign-owned':
+        settings = settings_screen()
+        owner = pwd.getpwuid(other_capture.stat().st_uid).pw_name
+        assert str(other_capture) + ': owned by ' + owner + ', not by ' + str(other_uid) + ' — ignored' in settings, settings
+        assert foreign_registration.exists() and foreign_log.exists(), 'reader cleans rejected account'
+        assert carrier[1].name not in rendered, 'foreign-owned registration contributes a row\n' + rendered
     if scenario == 'fallback-unreadable-log':
         settings = settings_screen()
         assert carrier[4].name in settings and 'unreadable' in settings, settings
@@ -963,24 +1118,44 @@ finally:
             ] {
                 fs::create_dir_all(fixture.path(directory)).expect("create fixture directory");
             }
-            fs::copy(
-                concat!(env!("CARGO_MANIFEST_DIR"), "/src/cargo-capture-shim.sh"),
-                fixture.path("bin/cargo"),
-            )
-            .expect("copy shim into installed toolchain layout");
+            let source = include_str!("../src/cargo-capture-shim.sh");
+            let assignment = "capture_parent=/tmp/cargo-tile";
+            assert_eq!(source.lines().filter(|line| *line == assignment).count(), 1);
+            let parent = fixture.directory.path().join("capture");
+            let parent = parent
+                .to_str()
+                .expect("UTF-8 parent")
+                .replace('\'', "'\\''");
+            executable(
+                &fixture.path("bin/cargo"),
+                &source.replace(assignment, &format!("capture_parent='{parent}'")),
+            );
             install_cargo(&fixture.path("bin/cargo-tile-real"));
             install_date(&fixture.path("tools/date"));
+            install_fifo_removal_observer(&fixture.path("tools/rm"));
             install_publication_observer(&fixture.path("tools/ln"));
             fixture
         }
 
         /// Resolve fixture paths without depending on the developer's home or capture root.
         fn path(&self, relative: &str) -> PathBuf {
-            self.directory
+            let directory = self
+                .directory
                 .path()
                 .canonicalize()
-                .expect("physical fixture root")
-                .join(relative)
+                .expect("physical fixture root");
+            Path::new(relative).strip_prefix("capture").map_or_else(
+                |_| directory.join(relative),
+                |suffix| {
+                    let uid = fs::metadata(&directory).expect("fixture owner").uid();
+                    let account = directory.join("capture").join(uid.to_string());
+                    if suffix.as_os_str().is_empty() {
+                        account
+                    } else {
+                        account.join(suffix)
+                    }
+                },
+            )
         }
 
         /// Run with an independently recorded shim pid and a restrictive caller umask.
@@ -993,7 +1168,7 @@ finally:
         /// Allow tests to change only the child environment and invocation schedule.
         fn command(&self, arguments: &[&str]) -> Command {
             let utilities = Command::new("sh")
-                .args(["-c", "command -v ln; command -v date"])
+                .args(["-c", "command -v ln; command -v date; command -v rm"])
                 .output()
                 .expect("locate system utilities before changing the child PATH");
             assert!(utilities.status.success());
@@ -1011,6 +1186,20 @@ finally:
                     // systems exposing process start time at one-second resolution.
                     r#"umask 0066
 printf '%s' "$$" > "$SHIM_TEST_OBSERVATIONS/shim-pid"
+if [ -f "$SHIM_TEST_OBSERVATIONS/seed-predecessor" ]; then
+    mkdir -p "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids"
+    for generation in predecessor staging-only; do
+        publication=$$.$generation
+        log=run-$generation-$$.log
+        staging="$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids/$publication.tmp"
+        printf '%s\000' cargo-tile-v2 "$generation" old-boot birth "$log" /work /home 1 build > "$staging"
+        if [ "$generation" = predecessor ]; then
+            cp "$staging" "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids/$publication"
+        fi
+        printf 'old progress\n' > "$SHIM_TEST_ACCOUNT_DIRECTORY/$log"
+        mkfifo "$SHIM_TEST_ACCOUNT_DIRECTORY/state/stderr-$publication"
+    done
+fi
 sleep 1
 if [ -f "$SHIM_TEST_OBSERVATIONS/repeat" ]; then
     for invocation in first second; do
@@ -1032,7 +1221,8 @@ exec sh "$0" "$@""#,
                 .args(arguments)
                 .current_dir(self.path("home/work tree\twith\nlines"))
                 .env("HOME", self.path("home"))
-                .env("CARGO_TILE_ROOT", self.path("capture"))
+                .env("SHIM_TEST_ACCOUNT_DIRECTORY", self.path("capture"))
+                .env_remove("CARGO_TILE_ROOT")
                 .env("SHIM_TEST_OBSERVATIONS", self.path("observations"))
                 .env(
                     "SHIM_TEST_REAL_LN",
@@ -1042,6 +1232,7 @@ exec sh "$0" "$@""#,
                     "SHIM_TEST_REAL_DATE",
                     utilities.next().expect("system date path"),
                 )
+                .env("SHIM_TEST_REAL_RM", utilities.next().expect("system rm path"))
                 .env("SHIM_TEST_GENERATION", "20260909-204000")
                 .env("SHIM_TEST_NATIVE_PLATFORM", std::env::consts::OS)
                 .env_remove("SHIM_TEST_PENDING_DELETE")
@@ -1141,19 +1332,22 @@ if [ -n "${SHIM_TEST_PENDING_DELETE-}" ] && [ -f "$SHIM_TEST_PENDING_DELETE" ]; 
     rm -f "$old_registration" "$old_log"
     printf 'delayed unlink attempted\n' > "$observations/delayed-delete"
 fi
-if [ -d "$CARGO_TILE_ROOT/state/pids" ]; then
-    cp -R "$CARGO_TILE_ROOT/state/pids" "$observations/pids"
+if [ -d "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids" ]; then
+    cp -R "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids" "$observations/pids"
 fi
+for fifo in "$SHIM_TEST_ACCOUNT_DIRECTORY"/state/stderr-*; do
+    if [ -p "$fifo" ]; then printf '%s\n' "${fifo##*/}" >> "$observations/fifos"; fi
+done
 printf 'cargo stdout\n'
 printf 'registration log marker\n' >&2
 if [ -n "${CARGOTILE_NESTED-}" ]; then
     remaining=200
     while [ "$remaining" -gt 0 ]; do
-        for log in "$CARGO_TILE_ROOT"/run-*.log; do
+        for log in "$SHIM_TEST_ACCOUNT_DIRECTORY"/run-*.log; do
             if [ -f "$log" ] && grep -q 'registration log marker' "$log"; then
                 cp "$log" "$observations/${log##*/}"
                 if [ -n "${SHIM_TEST_PENDING_DELETE-}" ] && [ ! -f "$SHIM_TEST_PENDING_DELETE" ]; then
-                    for registration in "$CARGO_TILE_ROOT/state/pids"/*; do
+                    for registration in "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids"/*; do
                         case $registration in *.tmp) continue ;; esac
                         printf '%s\n' "$registration" "$log" > "$SHIM_TEST_PENDING_DELETE"
                     done
@@ -1192,22 +1386,37 @@ if [ "$1" != +%Y%m%d-%H%M%S ]; then
     fi
     exec "$SHIM_TEST_REAL_DATE" "$@"
 fi
-if [ -f "$SHIM_TEST_OBSERVATIONS/leave-stale-fifo" ]; then
-    shim_pid=$(cat "$SHIM_TEST_OBSERVATIONS/shim-pid")
-    mkdir -p "$CARGO_TILE_ROOT/state"
-    fifo="$CARGO_TILE_ROOT/state/stderr-$shim_pid"
-    mkfifo "$fifo"
-    [ -p "$fifo" ]
-    printf '%s' "$fifo" > "$SHIM_TEST_OBSERVATIONS/stale-fifo"
-fi
-if [ -f "$SHIM_TEST_OBSERVATIONS/block-fifo-removal" ]; then
-    shim_pid=$(cat "$SHIM_TEST_OBSERVATIONS/shim-pid")
-    directory="$CARGO_TILE_ROOT/state/stderr-$shim_pid"
-    mkdir -p "$directory"
-    printf 'keep this directory\n' > "$directory/keep"
-fi
 printf '%s\n' "$SHIM_TEST_GENERATION"
 printf '%s' "$SHIM_TEST_GENERATION" > "$SHIM_TEST_OBSERVATIONS/calendar"
+"#,
+        );
+    }
+
+    /// Seed the full FIFO name immediately before the shim's real removal attempt.
+    fn install_fifo_removal_observer(path: &Path) {
+        executable(
+            path,
+            r#"#!/bin/sh
+set -eu
+for candidate in "$@"; do
+    case $candidate in
+        "$SHIM_TEST_ACCOUNT_DIRECTORY"/state/stderr-*)
+            if [ -f "$SHIM_TEST_OBSERVATIONS/leave-stale-fifo" ]; then
+                "$SHIM_TEST_REAL_RM" -f "$SHIM_TEST_OBSERVATIONS/leave-stale-fifo"
+                mkfifo "$candidate"
+                [ -p "$candidate" ]
+                printf '%s' "$candidate" > "$SHIM_TEST_OBSERVATIONS/stale-fifo"
+            fi
+            if [ -f "$SHIM_TEST_OBSERVATIONS/block-fifo-removal" ]; then
+                "$SHIM_TEST_REAL_RM" -f "$SHIM_TEST_OBSERVATIONS/block-fifo-removal"
+                mkdir "$candidate"
+                printf 'keep this directory\n' > "$candidate/keep"
+                printf '%s' "$candidate" > "$SHIM_TEST_OBSERVATIONS/blocked-fifo"
+            fi
+            ;;
+    esac
+done
+exec "$SHIM_TEST_REAL_RM" "$@"
 "#,
         );
     }
@@ -1225,7 +1434,7 @@ if [ -f "$SHIM_TEST_OBSERVATIONS/occupy-at-publication" ] || [ -f "$SHIM_TEST_OB
 fi
 if [ -f "$SHIM_TEST_OBSERVATIONS/occupy-log" ]; then
     name=${2##*/}
-    printf 'previous log\n' > "$CARGO_TILE_ROOT/run-${name#*.}-${name%%.*}.log"
+    printf 'previous log\n' > "$SHIM_TEST_ACCOUNT_DIRECTORY/run-${name#*.}-${name%%.*}.log"
 fi
 if [ -f "$SHIM_TEST_OBSERVATIONS/occupy-directory" ]; then
     mkdir "$2"
@@ -1312,14 +1521,14 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
         assert_eq!(output.stderr, b"registration log marker\n");
     }
 
-    /// Drive the production binary through a PTY; Python owns every child and terminal fd.
+    /// Drive the production terminal loop through a PTY; Python owns every child and terminal fd.
     /// The reader receives the shim's actual records, with no copied Rust implementation.
     fn reader_regression(scenario: &str) {
         let directory = tempfile::tempdir().expect("isolate writer and reader processes");
         let output = Command::new("python3")
             .args(["-c", READER_SCENARIO_SCRIPT])
             .arg(directory.path())
-            .arg(env!("CARGO_BIN_EXE_cargo-tile"))
+            .arg(std::env::current_exe().expect("integration reader executable"))
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/cargo-capture-shim.sh"
@@ -1448,15 +1657,22 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
         reader_regression("child-source-switch");
     }
 
-    /// Equal accounts and raw directories still identify separate roots.
+    /// A foreign-owned uid directory cannot relabel a live cargo process and is explained in
+    /// settings.
     #[test]
-    fn reader_prefixes_two_root_qualified_headings_for_the_same_directory() {
+    fn reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings() {
         reader_regression("root-headings");
     }
 
-    /// The summary preserves the account-qualified root headings tested in command panes.
+    /// A valid live registration with no process row cannot enter through another uid's name.
     #[test]
-    fn reader_prefixes_root_qualified_headings_in_the_summary() {
+    fn reader_never_sources_a_row_from_a_foreign_owned_account_directory() {
+        reader_regression("fallback-foreign-owned");
+    }
+
+    /// The summary keeps real process ownership when a capture directory claims another uid.
+    #[test]
+    fn reader_summary_ignores_foreign_owned_account_attribution() {
         reader_regression("summary-root-headings");
     }
 
@@ -1472,21 +1688,21 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
         reader_regression("two-directories");
     }
 
-    /// Another root's proof never adds a second view of the process invocation.
+    /// A forged account directory never adds a second view of the process invocation.
     #[test]
-    fn reader_keeps_one_process_row_when_two_roots_confirm_the_same_pid() {
+    fn reader_keeps_one_process_row_when_a_foreign_owned_directory_copies_its_proof() {
         reader_regression("root-duplicate");
     }
 
     /// Selection also prevents duplication without any eligible process row.
     #[test]
-    fn reader_keeps_one_registration_row_when_two_roots_confirm_the_same_pid() {
+    fn reader_keeps_one_registration_row_when_a_foreign_owned_directory_copies_its_proof() {
         reader_regression("fallback-root-duplicate");
     }
 
-    /// A later root's confirmed proof cannot supply a selected but unconfirmed row.
+    /// A foreign-owned directory cannot supply confirmation for an unconfirmed account capture.
     #[test]
-    fn reader_does_not_borrow_metadata_past_an_unconfirmed_selected_root() {
+    fn reader_does_not_borrow_confirmation_from_a_foreign_owned_directory() {
         reader_regression("fallback-selected-unknown");
     }
 
@@ -1683,7 +1899,7 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
 
     /// The filename and log field identify the same live run and are removed on exit.
     #[test]
-    fn registration_filename_and_written_log_share_pid_and_generation() {
+    fn registration_log_and_live_fifo_share_pid_and_generation() {
         let fixture = InstalledShim::new();
         assert_cargo_result(&fixture.run(&["build"]));
         let registration = fixture.registration();
@@ -1692,6 +1908,13 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
         assert!(pid.parse::<u32>().expect("shim pid is numeric") > 0);
         let generation = std::str::from_utf8(fields[1]).expect("generation is ASCII");
         assert_eq!(registration.name, format!("{pid}.{generation}"));
+        let fifo_name = format!("stderr-{}", registration.name);
+        assert_eq!(
+            fs::read_to_string(fixture.path("observations/fifos"))
+                .expect("cargo observes the live FIFO"),
+            format!("{fifo_name}\n")
+        );
+        assert!(!fixture.path("capture/state").join(fifo_name).exists());
         let log = std::str::from_utf8(fields[4]).expect("log basename is ASCII");
         assert_eq!(log, format!("run-{generation}-{pid}.log"));
         assert_eq!(
@@ -1708,9 +1931,9 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
         );
     }
 
-    /// F002: a FIFO left by a dead run with this pid must not disable capture.
+    /// The full invocation FIFO is removed before mkfifo, even when it already exists.
     #[test]
-    fn stale_pid_fifo_still_publishes_registration_and_captures_stderr() {
+    fn stale_invocation_fifo_still_publishes_registration_and_captures_stderr() {
         let fixture = InstalledShim::new();
         fs::write(fixture.path("observations/leave-stale-fifo"), b"")
             .expect("seed the FIFO at the generation boundary before capture setup");
@@ -1718,7 +1941,8 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
         assert_cargo_result(&fixture.run(&arguments));
         let pid = fs::read_to_string(fixture.path("observations/shim-pid"))
             .expect("read independently recorded shim pid");
-        let fifo = fixture.path(&format!("capture/state/stderr-{pid}"));
+        let registration = fixture.registration();
+        let fifo = fixture.path(&format!("capture/state/stderr-{}", registration.name));
         assert_eq!(
             fs::read_to_string(fixture.path("observations/stale-fifo"))
                 .expect("the boundary fixture creates a real FIFO"),
@@ -1790,7 +2014,19 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
             "removal failure reaches fallback before capture exports"
         );
         let pid = fs::read_to_string(fixture.path("observations/shim-pid")).expect("read shim pid");
-        let directory = fixture.path(&format!("capture/state/stderr-{pid}"));
+        let directory = PathBuf::from(
+            fs::read_to_string(fixture.path("observations/blocked-fifo"))
+                .expect("observe blocked invocation FIFO"),
+        );
+        let name = directory
+            .file_name()
+            .expect("FIFO basename")
+            .to_str()
+            .expect("ASCII name");
+        assert!(
+            name.starts_with(&format!("stderr-{pid}.20260909-204000-")),
+            "{name}"
+        );
         assert_eq!(
             fs::read(directory.join("keep")).expect("preserve the unowned directory sentinel"),
             b"keep this directory\n"
@@ -2174,6 +2410,116 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
                 "only the pids directory remains"
             );
         }
+    }
+
+    /// Each shim sweeps dead registrations, staging, logs, and FIFOs only in its account.
+    #[test]
+    fn dead_pid_captures_are_reaped_before_publication_without_touching_another_account() {
+        let fixture = InstalledShim::new();
+        let mut exited = Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("create known pid");
+        let pid = exited.id();
+        assert!(exited.wait().expect("reap fixture child").success());
+        assert!(
+            !Command::new("sh")
+                .args(["-c", "kill -0 \"$1\" 2>/dev/null", "sh", &pid.to_string()])
+                .status()
+                .expect("verify dead pid")
+                .success()
+        );
+        let account = fixture.path("capture");
+        let other = account.parent().expect("shared parent").join("4294967294");
+        let mut removed = Vec::new();
+        let mut retained = Vec::new();
+        for directory in [&account, &other] {
+            fs::create_dir_all(directory.join("state/pids")).expect("create account hierarchy");
+            let mut paths = Vec::new();
+            for generation in ["old", "staging-only"] {
+                let name = format!("{pid}.{generation}");
+                let log = format!("run-{generation}-{pid}.log");
+                let bytes = format!(
+                    "cargo-tile-v2\0{generation}\0old-boot\0birth\0{log}\0/work\0/home\x001\0build\0"
+                );
+                if generation == "old" {
+                    let registration = directory.join("state/pids").join(&name);
+                    fs::write(&registration, &bytes).expect("seed dead registration");
+                    paths.push(registration);
+                }
+                let staging = directory.join("state/pids").join(format!("{name}.tmp"));
+                fs::write(&staging, &bytes).expect("seed dead staging");
+                paths.push(staging);
+                let log = directory.join(log);
+                fs::write(&log, b"old progress").expect("seed dead log");
+                paths.push(log);
+                let fifo = directory.join(format!("state/stderr-{name}"));
+                assert!(
+                    Command::new("mkfifo")
+                        .arg(&fifo)
+                        .status()
+                        .expect("seed stale FIFO")
+                        .success()
+                );
+                paths.push(fifo);
+            }
+            if directory == &account {
+                removed = paths;
+            } else {
+                retained = paths;
+            }
+        }
+        let unrelated_fifo = account.join(format!("state/stderr-{pid}.unregistered-generation"));
+        assert!(
+            Command::new("mkfifo")
+                .arg(&unrelated_fifo)
+                .status()
+                .expect("seed another invocation FIFO")
+                .success()
+        );
+        retained.push(unrelated_fifo);
+        assert_cargo_result(&fixture.run(&["build"]));
+        assert!(
+            !fixture.registration().contents.is_empty(),
+            "fresh cargo still registers"
+        );
+        for path in removed {
+            assert!(!path.exists(), "dead artifact survives: {}", path.display());
+        }
+        for path in retained {
+            assert!(path.exists(), "another account loses {}", path.display());
+        }
+    }
+
+    /// A shell seeds its predecessor and execs the shim without changing pid.
+    #[test]
+    fn same_pid_predecessor_is_reaped_before_the_new_invocation_registers() {
+        let fixture = InstalledShim::new();
+        fs::write(fixture.path("observations/seed-predecessor"), b"")
+            .expect("seed stale captures from the invoking shell");
+        assert_cargo_result(&fixture.run(&["build"]));
+        let pid = fs::read_to_string(fixture.path("observations/shim-pid"))
+            .expect("same shell and shim pid");
+        let fresh = fixture.registration();
+        assert!(fresh.name.starts_with(&format!("{pid}.")));
+        for generation in ["predecessor", "staging-only"] {
+            for relative in [
+                format!("state/pids/{pid}.{generation}"),
+                format!("state/pids/{pid}.{generation}.tmp"),
+                format!("run-{generation}-{pid}.log"),
+                format!("state/stderr-{pid}.{generation}"),
+            ] {
+                assert!(
+                    !fixture.path("capture").join(&relative).exists(),
+                    "predecessor artifact survives: {relative}"
+                );
+            }
+        }
+        assert_eq!(
+            fs::read_to_string(fixture.path("observations/fifos"))
+                .expect("fresh FIFO observed during cargo"),
+            format!("stderr-{}\n", fresh.name)
+        );
     }
 
     /// Publishing v2 alongside an older shim must leave that shim's registration intact.

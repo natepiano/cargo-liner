@@ -12,7 +12,6 @@ use serde::Serialize;
 use crate::constants::CONFIG_DIRNAME;
 use crate::constants::CONFIG_FILENAME;
 use crate::constants::DEFAULT_CAPTURE_AUTO_INSTALL;
-use crate::constants::DEFAULT_CAPTURE_ROOTS;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_EXCLUDED;
 use crate::constants::DEFAULT_FADE_SECONDS;
@@ -134,7 +133,8 @@ impl TilesConfig {
     }
 }
 
-/// How the grid installs the capture shim and finds additional capture roots.
+/// How the grid installs the capture shim. The former `roots` key no longer
+/// exists; old entries are ignored because every account uses the shared parent.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct CaptureConfig {
@@ -145,18 +145,12 @@ pub(crate) struct CaptureConfig {
     /// `cargo tile install` and `cargo tile uninstall`. The grid never
     /// takes the shim out on its own either way.
     pub(crate) auto_install: bool,
-    /// Additional capture roots the grid reads alongside its own root.
-    /// The scanner resolves these absolute paths once at startup; keeping
-    /// them as configured lets settings report the operator's pathname.
-    /// An empty list preserves capture from only the grid's own root.
-    pub(crate) roots:        Vec<PathBuf>,
 }
 
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             auto_install: DEFAULT_CAPTURE_AUTO_INSTALL,
-            roots:        DEFAULT_CAPTURE_ROOTS.to_vec(),
         }
     }
 }
@@ -168,7 +162,7 @@ impl Default for CaptureConfig {
 pub(crate) struct Config {
     /// `[appearance]` — theme selection.
     pub(crate) appearance: AppearanceConfig,
-    /// `[capture]` — shim installation and additional roots to read.
+    /// `[capture]` — automatic shim installation.
     pub(crate) capture:    CaptureConfig,
     /// `[commands]` — which commands the grid holds back while idle.
     pub(crate) commands:   CommandsConfig,
@@ -287,7 +281,6 @@ fn config_root() -> Option<PathBuf> { dirs::config_dir().map(|dir| dir.join(CONF
 )]
 mod tests {
     use super::*;
-    use crate::constants::CONFIG_KEY_CAPTURE_ROOTS;
 
     /// What [`restate`] compares against, for a config that has been
     /// through the file and back.
@@ -314,7 +307,7 @@ mod tests {
         let restated = round_trip(old);
         assert_ne!(restated, old);
         assert!(restated.contains("[capture]"));
-        assert!(restated.contains(&format!("{CONFIG_KEY_CAPTURE_ROOTS} = []")));
+        assert!(!restated.contains("roots ="));
         assert!(restated.contains("[commands]"));
         assert!(restated.contains("[tiles]"));
         // What the file did say survives the rewrite; only what it left
@@ -322,53 +315,15 @@ mod tests {
         assert!(restated.contains("mode = \"dark\""));
     }
 
-    /// Files predating additional capture roots keep the scanner's own
-    /// root as their only capture source.
     #[test]
-    fn missing_capture_roots_default_to_an_empty_list() {
-        assert!(CaptureConfig::default().roots.is_empty());
-        for text in ["", "[capture]\n"] {
-            let config: Config = toml::from_str(text).expect("old configuration should parse");
-            assert!(config.capture.roots.is_empty());
-            assert_eq!(config.capture.auto_install, DEFAULT_CAPTURE_AUTO_INSTALL);
+    fn obsolete_roots_are_ignored_and_auto_install_is_preserved() {
+        for roots in ["[]", "[\"/old/captures\"]", "42"] {
+            let text = format!("[capture]\nauto_install = false\nroots = {roots}\n");
+            let config: Config = toml::from_str(&text).expect("obsolete keys should be ignored");
+            assert!(!config.capture.auto_install);
+            let restated = round_trip(&text);
+            assert!(!restated.contains("roots"));
+            assert_eq!(round_trip(&restated), restated);
         }
-    }
-
-    /// An existing capture section gains the new key without changing
-    /// the operator's shim installation preference.
-    #[test]
-    fn a_capture_section_missing_roots_gains_an_empty_list() {
-        let old = "[capture]\nauto_install = false\n";
-        let restated = round_trip(old);
-        assert!(restated.contains(&format!("{CONFIG_KEY_CAPTURE_ROOTS} = []")));
-        let config: Config =
-            toml::from_str(&restated).expect("restated configuration should parse");
-        assert!(!config.capture.auto_install);
-        assert!(config.capture.roots.is_empty());
-        assert_eq!(round_trip(&restated), restated);
-    }
-
-    /// Restating configuration preserves each supplied pathname and its
-    /// order; path resolution belongs to scanner startup.
-    #[test]
-    fn configured_capture_roots_survive_restatement() {
-        let text = r#"
-[capture]
-roots = [
-    "/var/lib/hana-ci/hana-linux-1/cargo-tile",
-    "/var/lib/hana-ci/hana-linux-2/../hana-linux-2/cargo-tile",
-]
-"#;
-        let config: Config = toml::from_str(text).expect("configured roots should parse");
-        let expected = [
-            PathBuf::from("/var/lib/hana-ci/hana-linux-1/cargo-tile"),
-            PathBuf::from("/var/lib/hana-ci/hana-linux-2/../hana-linux-2/cargo-tile"),
-        ];
-        assert_eq!(config.capture.roots, expected);
-        assert_eq!(config.capture.auto_install, DEFAULT_CAPTURE_AUTO_INSTALL);
-        let restated = round_trip(text);
-        let reloaded: Config = toml::from_str(&restated).expect("restated roots should parse");
-        assert_eq!(reloaded.capture.roots, expected);
-        assert_eq!(round_trip(&restated), restated);
     }
 }
