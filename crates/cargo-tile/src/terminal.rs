@@ -691,6 +691,9 @@ mod tests {
     use crate::processes::CargoGroup;
     use crate::processes::CargoProcess;
     use crate::processes::CommandText;
+    use crate::processes::CompilerObservation;
+    use crate::processes::Measurement;
+    use crate::processes::MeasurementAbsence;
     use crate::progress::Capture;
     use crate::progress::CaptureKey;
     use crate::progress::CaptureLookup;
@@ -738,6 +741,61 @@ fraying = "leading"
             })
             .expect("retained scan receiver");
         drain_scans(app, &scans)
+    }
+
+    /// A measured idle row isolates scan delivery from live process collection.
+    fn scan_process(state: CaptureLookup) -> CargoProcess {
+        CargoProcess {
+            path: "/runner/project".to_owned(),
+            directory_identity: DirectoryIdentity::Absolute("/runner/project".into()),
+            pid: 11,
+            parent: None,
+            start: "10:00".to_owned(),
+            started: 0,
+            duration: "00:01".to_owned(),
+            cpu: Measurement::Reading("0%".to_owned()),
+            compiler: CompilerObservation::None,
+            state,
+            managed: Measurement::Reading(0),
+            nested: false,
+            command: CommandText::of("cargo", &["test"]),
+        }
+    }
+
+    /// Availability changes must redraw and reach the roster without a stale value.
+    #[test]
+    fn unavailable_measurements_replace_readings_through_the_scan_channel() {
+        let mut app = App::new_for_test().expect("test app");
+        let reading = scan_process(CaptureLookup::Unregistered);
+        let unavailable = CargoProcess {
+            cpu: Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+            compiler: CompilerObservation::Unknown,
+            managed: Measurement::Unavailable(MeasurementAbsence::Unproven),
+            ..reading.clone()
+        };
+        let (sender, scans) = mpsc::channel();
+
+        for (process, redraw) in [
+            (&reading, true),
+            (&unavailable, true),
+            (&unavailable, false),
+            (&reading, true),
+        ] {
+            sender
+                .send(Scan {
+                    groups:      vec![CargoGroup {
+                        lead:     process.clone(),
+                        rest:     Vec::new(),
+                        ancestry: Vec::new(),
+                    }],
+                    sccache:     SccacheServer::Stopped,
+                    root_status: Vec::new(),
+                })
+                .expect("scan receiver is alive");
+
+            assert_eq!(drain_scans(&mut app, &scans), redraw);
+            assert_eq!(&app.roster.groups()[0].lead.process, process);
+        }
     }
 
     #[test]
@@ -866,21 +924,7 @@ fraying = "leading"
             state,
             CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
         );
-        let process = CargoProcess {
-            path: "/runner/project".to_owned(),
-            directory_identity: DirectoryIdentity::Absolute("/runner/project".into()),
-            pid: 11,
-            parent: None,
-            start: "10:00".to_owned(),
-            started: 0,
-            duration: "00:01".to_owned(),
-            cpu: "0%".to_owned(),
-            compiler: None,
-            state,
-            managed: 0,
-            nested: false,
-            command: CommandText::of("cargo", &["test"]),
-        };
+        let process = scan_process(state);
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {

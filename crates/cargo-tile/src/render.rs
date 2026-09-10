@@ -117,11 +117,14 @@ use crate::constants::TILE_ROWS_CONTENT_LABEL;
 use crate::constants::TILE_ROWS_READOUT_HEIGHT;
 use crate::constants::TILE_ROWS_RIGHT_INSET;
 use crate::constants::TILE_ROWS_WIDTH_LABEL;
+use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::globals::AppGlobalAction;
 use crate::probe;
 use crate::processes;
 use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
+use crate::processes::CompilerObservation;
+use crate::processes::Measurement;
 use crate::processes::SummaryDetail;
 use crate::progress::CaptureLookup;
 use crate::progress::CaptureRead;
@@ -1482,7 +1485,7 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
         widths.observe_cell_usize(PARENT_COLUMN, parent_text(process).chars().count());
         widths.observe_cell_usize(START_COLUMN, process.start.chars().count());
         widths.observe_cell_usize(DURATION_COLUMN, process.duration.chars().count());
-        widths.observe_cell_usize(CPU_COLUMN, process.cpu.chars().count());
+        widths.observe_cell_usize(CPU_COLUMN, process.cpu.to_string().chars().count());
         widths.observe_cell_usize(STATE_COLUMN, state_width(&process.state));
         widths.observe_cell_usize(COMPILER_COLUMN, compiler_width(process));
         widths.observe_cell_usize(MANAGED_COLUMN, managed_text(process).chars().count());
@@ -1577,7 +1580,7 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
         )),
         Text::from(Span::styled(process.start.clone(), muted)),
         Text::from(Span::styled(process.duration.clone(), muted)),
-        Text::from(Span::styled(process.cpu.clone(), muted)),
+        Text::from(Span::styled(process.cpu.to_string(), muted)),
         Text::from(state_cell(row, layout)),
         command,
         Text::from(compiler_cell(row, layout)),
@@ -1817,16 +1820,18 @@ fn heading_gauge(group: &PathGroup<'_>, width: u16, layout: &TableLayout) -> Vec
 }
 
 /// The `runs` cell: how many cargo invocations this command is managing,
-/// and nothing at all for the rows that manage none.
+/// nothing for a measured zero, and a marker when the count is unavailable.
 fn managed_text(process: &CargoProcess) -> String {
-    if process.managed == 0 {
-        return String::new();
+    match process.managed {
+        Measurement::Reading(0) => String::new(),
+        Measurement::Reading(count) => count.to_string(),
+        Measurement::Unavailable(_) => UNAVAILABLE_MEASUREMENT.to_string(),
     }
-    process.managed.to_string()
 }
 
 /// The `compiler` cell: driver name in the active color, its count muted
-/// beside it, and nothing at all when no compile is in flight.
+/// beside it, a marker when observation is unknown, and nothing when no
+/// compile is in flight.
 fn compiler_cell(row: &TrackedRow, layout: &TableLayout) -> Line<'static> {
     let faded = row.faded();
     let driver = if row.is_ended() {
@@ -1836,24 +1841,27 @@ fn compiler_cell(row: &TrackedRow, layout: &TableLayout) -> Line<'static> {
     };
     let name = Style::default().fg(layout.ink(driver, faded));
     let count = Style::default().fg(layout.ink(label_color(), faded));
-    row.process
-        .compiler
-        .as_ref()
-        .map_or_else(Line::default, |compiler| {
-            Line::from(vec![
-                Span::styled(compiler.name, name),
-                Span::styled(format!("\u{d7}{}", compiler.count), count),
-            ])
-        })
+    match &row.process.compiler {
+        CompilerObservation::Unknown => Line::from(Span::styled(UNAVAILABLE_MEASUREMENT, count)),
+        CompilerObservation::None => Line::default(),
+        CompilerObservation::Running(compiler) => Line::from(vec![
+            Span::styled(compiler.name, name),
+            Span::styled(format!("\u{d7}{}", compiler.count), count),
+        ]),
+    }
 }
 
 /// Cells the `compiler` column needs for one row.
 fn compiler_width(process: &CargoProcess) -> usize {
-    process.compiler.as_ref().map_or(0, |compiler| {
-        compiler.name.chars().count()
-            + COMPILER_SEPARATOR_WIDTH
-            + compiler.count.to_string().chars().count()
-    })
+    match &process.compiler {
+        CompilerObservation::Unknown => UNAVAILABLE_MEASUREMENT.chars().count(),
+        CompilerObservation::None => 0,
+        CompilerObservation::Running(compiler) => {
+            compiler.name.chars().count()
+                + COMPILER_SEPARATOR_WIDTH
+                + compiler.count.to_string().chars().count()
+        },
+    }
 }
 
 /// `area` indented one level, where the column labels and every group's
@@ -2034,17 +2042,25 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::collections::HashMap;
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
     use std::time::Instant;
 
+    use sysinfo::Pid;
+
     use super::*;
+    use crate::constants::COMPILER_PROCESS_NAMES;
     use crate::constants::PHASE_TESTING;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::processes::CargoGroup;
     use crate::processes::CargoProcess;
     use crate::processes::CommandText;
+    use crate::processes::Compiler;
+    use crate::processes::MeasurementAbsence;
+    use crate::processes::aggregate_cpu;
+    use crate::processes::cpu_label;
     use crate::progress::Phase;
 
     /// The state of a command compiling `done` of `total` units.
@@ -2117,6 +2133,162 @@ mod tests {
         line.trim_end().to_string()
     }
 
+    /// Draw the complete table so measurement assertions include column fitting.
+    fn measurement_row_buffer(row: &TrackedRow, kind: TableKind) -> Buffer {
+        measurement_group_buffer(row.process.clone(), Vec::new(), kind)
+    }
+
+    /// Keep ancestry empty so both production layouts draw CPU below the same headers.
+    fn measurement_group_buffer(
+        lead: CargoProcess,
+        rest: Vec<CargoProcess>,
+        kind: TableKind,
+    ) -> Buffer {
+        let id = lead.pid;
+        let roster = roster_with_ancestry(lead, rest, Vec::new());
+        let area = Rect::new(0, 0, 120, 6);
+        let mut buffer = Buffer::empty(area);
+        match kind {
+            TableKind::Command => draw_group(
+                &mut buffer,
+                &roster,
+                id,
+                area,
+                Color::Reset,
+                &hidden_when_idle(),
+                ProcessTree::Long,
+            ),
+            TableKind::Summary => draw_summary(
+                &mut buffer,
+                &roster,
+                area,
+                Color::Reset,
+                &hidden_when_idle(),
+                ProcessTree::Long,
+            ),
+        }
+        buffer
+    }
+
+    /// Read the invocation below the column labels and directory heading.
+    fn measurement_row_text(row: &TrackedRow, kind: TableKind) -> String {
+        buffer_line(
+            &measurement_row_buffer(row, kind),
+            TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT,
+        )
+    }
+
+    /// Locate CPU by the drawn column labels so markers in other cells cannot pass.
+    fn cpu_cell_text(buffer: &Buffer, y: u16) -> String {
+        let header = buffer_line(buffer, 0);
+        let start = header
+            .find(TABLE_HEADERS[CPU_COLUMN])
+            .expect("the table draws a CPU column");
+        let end = TABLE_HEADERS[CPU_COLUMN + 1..]
+            .iter()
+            .filter_map(|label| header.find(label))
+            .min()
+            .expect("the table draws a column after CPU");
+        buffer_line(buffer, y)[start..end].trim().to_string()
+    }
+
+    /// Each absence reason occupies the CPU cell in both table layouts.
+    #[test]
+    fn unavailable_cpu_never_renders_as_a_measurement() {
+        for reason in [
+            MeasurementAbsence::FirstObservation,
+            MeasurementAbsence::ReadFailed,
+            MeasurementAbsence::Unproven,
+        ] {
+            let mut row = row(None);
+            let pid = Pid::from_u32(row.process.pid);
+            let shares = HashMap::from([(pid, Measurement::Unavailable(reason))]);
+            row.process.cpu = aggregate_cpu(&shares, std::iter::once(pid)).map(cpu_label);
+
+            for kind in [TableKind::Command, TableKind::Summary] {
+                let buffer = measurement_row_buffer(&row, kind);
+
+                assert_eq!(
+                    cpu_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+                    UNAVAILABLE_MEASUREMENT,
+                    "{reason:?} in {kind:?}"
+                );
+            }
+        }
+    }
+
+    /// Availability must not suppress measured zero or positive CPU shares.
+    #[test]
+    fn measured_cpu_including_zero_remains_visible() {
+        for (reading, expected) in [(0.0, "0%"), (137.0, "137%")] {
+            let mut row = row(None);
+            let pid = Pid::from_u32(row.process.pid);
+            let shares = HashMap::from([(pid, Measurement::Reading(reading))]);
+            row.process.cpu = aggregate_cpu(&shares, std::iter::once(pid)).map(cpu_label);
+
+            for kind in [TableKind::Command, TableKind::Summary] {
+                let buffer = measurement_row_buffer(&row, kind);
+
+                assert_eq!(
+                    cpu_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+                    expected,
+                    "{reading} in {kind:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_compiler_observation_has_a_visible_cell() {
+        let mut row = row(None);
+        row.process.compiler = CompilerObservation::Unknown;
+
+        let text = measurement_row_text(&row, TableKind::Command);
+
+        assert!(text.ends_with(UNAVAILABLE_MEASUREMENT), "{text:?}");
+        assert_eq!(
+            compiler_width(&row.process),
+            UNAVAILABLE_MEASUREMENT.chars().count()
+        );
+    }
+
+    #[test]
+    fn an_unknown_managed_count_has_a_visible_cell() {
+        let mut row = row(None);
+        row.process.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
+
+        let text = measurement_row_text(&row, TableKind::Command);
+
+        assert!(text.ends_with(UNAVAILABLE_MEASUREMENT), "{text:?}");
+    }
+
+    #[test]
+    fn observed_idle_compilers_and_zero_managed_runs_keep_their_cells_empty() {
+        let row = row(None);
+
+        let text = measurement_row_text(&row, TableKind::Command);
+
+        assert!(text.ends_with("cargo build"), "{text:?}");
+        assert_eq!(compiler_width(&row.process), 0);
+        assert!(managed_text(&row.process).is_empty());
+    }
+
+    #[test]
+    fn observed_compilers_and_managed_runs_keep_their_counts() {
+        let mut row = row(None);
+        let driver = COMPILER_PROCESS_NAMES[0];
+        row.process.compiler = CompilerObservation::Running(Compiler {
+            name:  driver,
+            count: 2,
+        });
+        row.process.managed = Measurement::Reading(3);
+
+        let text = measurement_row_text(&row, TableKind::Command);
+
+        assert!(text.contains(&format!("{driver}\u{d7}2")), "{text:?}");
+        assert!(text.ends_with('3'), "{text:?}");
+    }
+
     /// A row for a command running in `path`.
     fn row_at(path: &str, state: Option<RunState>) -> TrackedRow { started_at(path, state, 0) }
 
@@ -2131,12 +2303,12 @@ mod tests {
             start: "11:04".to_string(),
             started,
             duration: "00:18".to_string(),
-            cpu: "12%".to_string(),
-            compiler: None,
+            cpu: Measurement::Reading("12%".to_string()),
+            compiler: CompilerObservation::None,
             state: state.map_or(CaptureLookup::Unregistered, |state| {
                 CaptureLookup::Registered(CaptureRead::Progress(state))
             }),
-            managed: 0,
+            managed: Measurement::Reading(0),
             nested: false,
             command: CommandText::of("cargo", &["build"]),
         })
@@ -2448,10 +2620,10 @@ mod tests {
             start: "11:04".to_string(),
             started: 0,
             duration: "00:18".to_string(),
-            cpu: "12%".to_string(),
-            compiler: None,
+            cpu: Measurement::Reading("12%".to_string()),
+            compiler: CompilerObservation::None,
             state: CaptureLookup::Unregistered,
-            managed: 0,
+            managed: Measurement::Reading(0),
             nested: false,
             command: CommandText::of("cargo", arguments),
         }
@@ -2496,6 +2668,73 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(pids, vec![4200]);
+    }
+
+    /// Aggregate member samples before the roster carries them to either layout.
+    fn group_cpu_buffer(samples: [Measurement<f32>; 3], kind: TableKind) -> Buffer {
+        let members = [
+            Pid::from_u32(4100),
+            Pid::from_u32(4200),
+            Pid::from_u32(4300),
+        ];
+        let shares: HashMap<_, _> = members.into_iter().zip(samples).collect();
+        let mut lead = invocation(4100, &["test"]);
+        lead.cpu = aggregate_cpu(&shares, members.into_iter()).map(cpu_label);
+        let rest = members[1..]
+            .iter()
+            .map(|pid| {
+                let mut child = invocation(pid.as_u32(), &["build"]);
+                child.cpu = shares[pid].map(cpu_label);
+                child
+            })
+            .collect();
+        measurement_group_buffer(lead, rest, kind)
+    }
+
+    /// An unknown member at either end or in the middle prevents a partial total.
+    #[test]
+    fn an_unavailable_group_contributor_never_renders_a_partial_total() {
+        for reason in [
+            MeasurementAbsence::FirstObservation,
+            MeasurementAbsence::ReadFailed,
+            MeasurementAbsence::Unproven,
+        ] {
+            let readings = [
+                Measurement::Reading(12.0),
+                Measurement::Reading(18.0),
+                Measurement::Reading(7.0),
+            ];
+            for unknown in 0..readings.len() {
+                let mut samples = readings;
+                samples[unknown] = Measurement::Unavailable(reason);
+
+                for kind in [TableKind::Command, TableKind::Summary] {
+                    let buffer = group_cpu_buffer(samples, kind);
+
+                    assert_eq!(
+                        cpu_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+                        UNAVAILABLE_MEASUREMENT,
+                        "{reason:?} at member {unknown} in {kind:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A known zero contributes normally and does not hide the other members' total.
+    #[test]
+    fn a_fully_measured_group_renders_its_total_including_zero() {
+        for (samples, expected) in [([12.0, 18.0, 0.0], "30%"), ([0.0, 0.0, 0.0], "0%")] {
+            for kind in [TableKind::Command, TableKind::Summary] {
+                let buffer = group_cpu_buffer(samples.map(Measurement::Reading), kind);
+
+                assert_eq!(
+                    cpu_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+                    expected,
+                    "{samples:?} in {kind:?}"
+                );
+            }
+        }
     }
 
     /// The same, for the tests that care what stands above the command.
