@@ -863,20 +863,20 @@ fn read_tail(mut file: File, length: u64) -> io::Result<String> {
 )]
 mod tests {
     use std::cell::Cell;
+    use std::ffi::CString;
     use std::fs;
     use std::fs::File;
     use std::fs::OpenOptions;
     use std::io;
     use std::io::Write;
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::fs::symlink;
     use std::os::unix::net::UnixListener;
     use std::path::Path;
     use std::sync::OnceLock;
 
-    use rustix::fs::CWD;
     use rustix::fs::Mode;
-    use rustix::fs::mkfifoat;
     use tempfile::TempDir;
     use tempfile::tempdir;
 
@@ -1141,11 +1141,26 @@ mod tests {
         }
     }
 
+    /// rustix omits `mkfifoat` on Apple targets, which have no such syscall, and
+    /// offers no other FIFO constructor there.
+    #[allow(
+        unsafe_code,
+        reason = "creating a FIFO portably requires libc, which rustix does not wrap on Apple"
+    )]
+    fn make_fifo(path: &Path) {
+        let raw = CString::new(path.as_os_str().as_bytes()).expect("path without interior NUL");
+        // SAFETY: raw is a live NUL-terminated C string that outlives the call, and
+        // mkfifo retains no pointer past it. The mode argument is a permission bit
+        // set with no pointer content. The result is checked before the path is used.
+        let created = unsafe { libc::mkfifo(raw.as_ptr(), 0o600) };
+        assert_eq!(created, 0, "create FIFO: {}", io::Error::last_os_error());
+    }
+
     /// NONBLOCK lets FIFO open return without a writer; fstat then rejects it.
     #[test]
     fn fifo_directory_and_socket_entries_are_not_regular_files() {
         let root = capture_root();
-        mkfifoat(CWD, root.path().join("fifo"), Mode::RUSR | Mode::WUSR).expect("create FIFO");
+        make_fifo(&root.path().join("fifo"));
         fs::create_dir(root.path().join("directory")).expect("create directory");
         let socket = UnixListener::bind(root.path().join("socket")).expect("create socket");
         let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
