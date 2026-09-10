@@ -41,25 +41,24 @@
 //! directory` and then nothing, which from outside looks exactly like a
 //! build that has not reached its first unit.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::env;
-use std::fs;
-use std::fs::File;
-use std::io::Read;
-use std::io::Seek;
-use std::io::SeekFrom;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::capture_root::Enumeration;
+use crate::capture_root::RootHistory;
+use crate::capture_root::RootScan;
+use crate::capture_root::SweepBudget;
+use crate::capture_root::SweepDisposition;
 use crate::constants::BAR_GLYPH_FIRST;
 use crate::constants::BAR_GLYPH_LAST;
 use crate::constants::BUILD_FINISHED_MARKER;
-use crate::constants::CAPTURE_LIVE_RUNS_DIR;
 use crate::constants::CAPTURE_ROOT;
 use crate::constants::CAPTURE_ROOT_ENV;
-use crate::constants::CAPTURE_SWEEP_LIMIT;
 use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::PHASE_BUILDING;
 use crate::constants::PHASE_TESTING;
@@ -68,7 +67,6 @@ use crate::constants::REGISTRATION_SEPARATOR;
 use crate::constants::REGISTRATION_TEMP_SUFFIX;
 use crate::constants::RUN_LOG_PREFIX;
 use crate::constants::RUN_LOG_SUFFIX;
-use crate::constants::RUN_LOG_TAIL_BYTES;
 use crate::constants::TALLY_CLOSE;
 use crate::constants::TALLY_OPEN;
 use crate::constants::TEST_PHASE_MARKER;
@@ -201,197 +199,259 @@ impl RegistrationGeneration {
     fn names_log(&self, path: &Path, pid: u32) -> bool {
         match self {
             Self::Legacy => false,
-            Self::Calendar(generation) => path.file_name().is_some_and(|name| {
-                name == format!("{RUN_LOG_PREFIX}{generation}{PID_SEPARATOR}{pid}{RUN_LOG_SUFFIX}")
-                    .as_str()
-            }),
+            Self::Calendar(generation) => path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix(RUN_LOG_PREFIX))
+                .and_then(|name| name.strip_suffix(RUN_LOG_SUFFIX))
+                .and_then(|name| name.rsplit_once(PID_SEPARATOR))
+                .is_some_and(|(stamp, named_pid)| {
+                    stamp == generation
+                        && named_pid.bytes().all(|byte| byte.is_ascii_digit())
+                        && (named_pid == "0" || !named_pid.starts_with('0'))
+                        && named_pid.parse() == Ok(pid)
+                }),
         }
     }
 }
 
-/// The captured runs progress can currently be read from, keyed by the
-/// pid of the shim that captured each one.
-///
-/// Empty whenever capture is switched off, which is the ordinary state
-/// of a machine that never turned it on -- so building one costs a
-/// single failed directory read, and every lookup against it misses.
+thread_local! {
+    /// The process scanner constructs a fresh `Capture` each pass, so root
+    /// identity history belongs to its worker thread rather than that snapshot.
+    static ROOT_HISTORY: RefCell<RootHistory> = RefCell::default();
+}
+
+/// Successful live registrations remain usable even when missing evidence
+/// prevents this scan from proving that other runs have ended.
+struct LiveRegistrations {
+    /// Each readable registration whose pid is present in the process table.
+    generations: HashMap<u32, HashSet<RegistrationGeneration>>,
+    /// Cleanup requires every published registration to have been readable.
+    evidence:    RegistrationEvidence,
+}
+
+/// Whether the registration evidence can justify treating unlisted runs as ended.
+#[derive(Debug, Eq, PartialEq)]
+enum RegistrationEvidence {
+    /// Every published registration was sampled and read within the byte cap.
+    Complete,
+    /// Missing or unreadable entries prohibit deletion, but retain sibling readings.
+    Incomplete,
+}
+
+/// Filename classification only; calendar text never verifies process identity.
+enum RegistrationName<'name> {
+    /// Older shims publish only their pid.
+    Legacy(u32),
+    /// A published filename also supplies a candidate log generation.
+    Calendar {
+        /// The shim pid preceding the first separator.
+        pid:        u32,
+        /// The nonempty suffix, accepted without claiming a birth stamp.
+        generation: &'name str,
+    },
+    /// An unpublished record consumes inspection budget but cannot be removed.
+    Staging,
+    /// Unrelated or malformed names do not establish liveness.
+    Unrelated,
+}
+
+/// Progress readings from one completed capture scan, keyed by shim pid.
+/// Reads happen through that scan's directory handles; subsequent lookups
+/// return these values without reopening any configured pathname.
 #[derive(Default)]
 pub(crate) struct Capture {
-    /// Log file per live shim pid.
-    logs: HashMap<u32, PathBuf>,
+    /// The last parseable state for each selected live log in this scan.
+    readings: HashMap<u32, RunState>,
 }
 
 impl Capture {
-    /// Take stock of the capture directory: which runs are still live,
-    /// which log belongs to each, and which logs are finished with.
-    ///
-    /// The directory is sampled first and the live set second, and that
-    /// order is the one thing here that cannot be swapped: a log in the
-    /// sample was created after a registration the later read is bound
-    /// to find, so a running shim's log cannot be mistaken for an
-    /// orphan. Matching against a live pid is then what keeps a
-    /// finished run's log from being read as a running one that happens
-    /// to have inherited its pid.
-    ///
-    /// `liveness` answers for each pid registered under `state/pids`.
-    /// A registration outliving its process would otherwise stand as a
-    /// live run for as long as the directory does, and one of those is
-    /// enough to have every log in the capture directory read on every
-    /// scan -- see [`RunLiveness`].
+    /// Sample the capture directory before reading registrations and liveness.
+    /// A log arriving after that sample is never eligible for this pass's sweep.
+    /// The next scan opens the configured root again and checks its identity.
+    /// `RootScan::open` materializes the bounded inventory before registration
+    /// enumeration; opening a lazy iterator alone would not preserve that order.
     pub(crate) fn take(liveness: impl Fn(u32) -> RunLiveness) -> Self {
         Self::take_from(&root(), liveness)
     }
 
-    /// [`Capture::take`] against a given directory, which is what makes
-    /// the directory layout testable without moving the real one.
-    ///
-    /// The pass that decides what to read decides what to delete, from
-    /// the same two facts, because they are the same question asked
-    /// once: a log this scan will not read is a log no scan ever will.
-    /// See [`Capture::discard`].
+    /// Scan a supplied capture directory without changing the process environment.
     pub(crate) fn take_from(root: &Path, liveness: impl Fn(u32) -> RunLiveness) -> Self {
-        let Ok(entries) = fs::read_dir(root) else {
-            return Self::default();
-        };
-        // Sample the logs before liveness, never the other way round.
-        // The shim publishes its registration before it creates its
-        // log, so a log in this sample was created after a registration
-        // the read below is bound to find, and a running shim's log
-        // becomes impossible to sweep rather than merely unlikely to
-        // be. Reading liveness first leaves the reverse window open: a
-        // run that publishes between the two reads is absent from the
-        // liveness snapshot and loses its log to the orphan sweep, and
-        // cargo then reopens it outside the shim's setup subshell under
-        // whatever umask the caller had. `read_dir` returns a lazy
-        // iterator, so this collection is the sample, not the call.
-        let entries: Vec<fs::DirEntry> = entries.flatten().collect();
-        let live = live_runs(root, liveness);
-        let mut logs: HashMap<u32, PathBuf> = HashMap::new();
-        let mut swept = 0usize;
-        for entry in entries {
-            let path = entry.path();
-            let Some(pid) = log_pid(&path) else {
+        Self::take_roots(&[root], &liveness)
+    }
+
+    /// One allowance covers every owned root and artifact kind in this pass.
+    /// Identity history persists on the scanner thread; the budget never does.
+    fn take_roots(roots: &[&Path], liveness: &impl Fn(u32) -> RunLiveness) -> Self {
+        let mut capture = Self::default();
+        let mut budget = SweepBudget::default();
+        for root in roots {
+            let Ok(scan) = ROOT_HISTORY.with_borrow_mut(|history| RootScan::open(root, history))
+            else {
                 continue;
             };
-            // A run that has ended is finished with its log, whatever
-            // the log recorded. Nothing reads a capture after its run,
-            // so this is the whole of what retires one.
+            capture.scan_root(&scan, liveness, &mut budget);
+        }
+        capture
+    }
+
+    /// Select log basenames from the bounded sample before any cleanup.
+    /// Missing evidence prevents cleanup without discarding readable live runs.
+    fn scan_root(
+        &mut self,
+        scan: &RootScan,
+        liveness: &impl Fn(u32) -> RunLiveness,
+        budget: &mut SweepBudget,
+    ) {
+        let LiveRegistrations {
+            generations: live,
+            evidence,
+        } = live_runs(scan, liveness);
+        let mut logs: HashMap<u32, &Path> = HashMap::new();
+        for entry in scan.log_entries() {
+            let path = entry.name();
+            let Some(pid) = log_pid(path) else {
+                continue;
+            };
             let Some(generations) = live.get(&pid) else {
-                Self::discard(&path, &mut swept);
                 continue;
-            };
-            let explicitly_registered = |path: &Path| {
-                generations
-                    .iter()
-                    .any(|generation| generation.names_log(path, pid))
             };
             if !generations.contains(&RegistrationGeneration::Legacy)
-                && !explicitly_registered(&path)
+                && !generations
+                    .iter()
+                    .any(|generation| generation.names_log(path, pid))
             {
-                Self::discard(&path, &mut swept);
                 continue;
             }
-            // Legacy registrations need the newest-log fallback.
-            // Preserve every explicitly registered generation until
-            // process identity can settle ambiguous reuse of a pid.
             match logs.entry(pid) {
                 Entry::Vacant(slot) => {
                     slot.insert(path);
                 },
-                Entry::Occupied(mut held) if newer(&path, held.get()) => {
-                    if !explicitly_registered(held.get()) {
-                        Self::discard(held.get(), &mut swept);
-                    }
+                Entry::Occupied(mut held) if newer(path, held.get()) => {
                     held.insert(path);
                 },
-                Entry::Occupied(_) => {
-                    if !explicitly_registered(&path) {
-                        Self::discard(&path, &mut swept);
-                    }
-                },
+                Entry::Occupied(_) => {},
             }
         }
-        Self { logs }
-    }
-
-    /// Delete a log nothing will read again, up to
-    /// [`CAPTURE_SWEEP_LIMIT`] of them in one pass.
-    ///
-    /// A failure is passed over rather than reported: another grid
-    /// sweeping the same directory, or a run tidying up after itself,
-    /// gets there first often enough that the race is ordinary, and
-    /// what either of them did is what this wanted done. `swept`
-    /// carries the count across one pass, so the bound is on the scan
-    /// rather than on any one call.
-    fn discard(path: &Path, swept: &mut usize) {
-        if *swept >= CAPTURE_SWEEP_LIMIT {
+        for entry in scan.log_entries() {
+            let Some(pid) = log_pid(entry.name()) else {
+                continue;
+            };
+            if logs.get(&pid) == Some(&entry.name())
+                && let Ok(tail) = entry.read_log()
+                && let Some(state) = parse_state(&tail)
+            {
+                self.readings.entry(pid).or_insert(state);
+            }
+        }
+        if evidence == RegistrationEvidence::Incomplete {
             return;
         }
-        *swept = swept.saturating_add(1);
-        let _ = fs::remove_file(path);
+        scan.sweep(
+            budget,
+            |path| match registration_name(path) {
+                RegistrationName::Legacy(pid) | RegistrationName::Calendar { pid, .. }
+                    if !live.contains_key(&pid) =>
+                {
+                    SweepDisposition::Remove
+                },
+                RegistrationName::Staging => SweepDisposition::Staging,
+                _ => SweepDisposition::Preserve,
+            },
+            |path| Self::discard(path, &logs, &live),
+        );
     }
 
-    /// What the run captured under `pid` last reported, or `None` when
-    /// no run is captured under it.
-    pub(crate) fn read(&self, pid: u32) -> Option<RunState> {
-        parse_state(&tail(self.logs.get(&pid)?)?)
+    /// Classify an inventory basename; only the access layer's owned capability
+    /// can act on this decision, charging the same budget as registrations.
+    fn discard(
+        path: &Path,
+        logs: &HashMap<u32, &Path>,
+        live: &HashMap<u32, HashSet<RegistrationGeneration>>,
+    ) -> SweepDisposition {
+        let Some(pid) = log_pid(path) else {
+            return SweepDisposition::Preserve;
+        };
+        if logs.get(&pid) == Some(&path)
+            || live.get(&pid).is_some_and(|generations| {
+                generations
+                    .iter()
+                    .any(|generation| generation.names_log(path, pid))
+            })
+        {
+            SweepDisposition::Preserve
+        } else {
+            SweepDisposition::Remove
+        }
     }
+
+    /// Return the state read during this scan, with no later filesystem access.
+    pub(crate) fn read(&self, pid: u32) -> Option<RunState> { self.readings.get(&pid).copied() }
 }
 
-/// Where the shim writes its captures, which an environment variable
-/// moves for a second instance of the grid.
+/// Resolve the shim's configured root without canonicalizing away the pathname
+/// the access layer must reopen and compare on every scan.
 fn root() -> PathBuf {
     env::var_os(CAPTURE_ROOT_ENV).map_or_else(|| PathBuf::from(CAPTURE_ROOT), PathBuf::from)
 }
 
-/// The shim pids with a run still in flight, one file each, which the
-/// shim removes as it exits and this clears away when it did not.
-///
-/// A run killed outright leaves its file behind, and a file standing
-/// for a process that is gone reads as a run in flight for as long as
-/// the directory does. One of those is all it takes to have
-/// [`Capture::take_from`] read the whole capture directory -- which
-/// holds every run since the last reboot -- several times a second,
-/// for the rest of the session.
-fn live_runs(
-    root: &Path,
-    liveness: impl Fn(u32) -> RunLiveness,
-) -> HashMap<u32, HashSet<RegistrationGeneration>> {
-    let Ok(entries) = fs::read_dir(root.join(CAPTURE_LIVE_RUNS_DIR)) else {
-        return HashMap::new();
+/// Read registrations after the bounded log sample, retaining successful live
+/// entries independently of evidence completeness. The shim removes logs and
+/// registrations on normal exit; runs killed outright can leave both artifacts
+/// behind until a later sweep.
+fn live_runs(scan: &RootScan, liveness: &impl Fn(u32) -> RunLiveness) -> LiveRegistrations {
+    let mut evidence = match scan.registration_outcome() {
+        Enumeration::Complete => RegistrationEvidence::Complete,
+        Enumeration::Incomplete | Enumeration::Failed(_) => RegistrationEvidence::Incomplete,
     };
     let mut live: HashMap<u32, HashSet<RegistrationGeneration>> = HashMap::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if name.ends_with(REGISTRATION_TEMP_SUFFIX) {
-            continue;
-        }
-        let (pid, generation) = match name.split_once(REGISTRATION_SEPARATOR) {
-            Some((pid, generation)) if !generation.is_empty() => {
+    for entry in scan.registration_entries() {
+        let (pid, generation) = match registration_name(entry.name()) {
+            RegistrationName::Legacy(pid) => (pid, RegistrationGeneration::Legacy),
+            RegistrationName::Calendar { pid, generation } => {
                 (pid, RegistrationGeneration::Calendar(generation.to_owned()))
             },
-            Some(_) => continue,
-            None => (name, RegistrationGeneration::Legacy),
+            RegistrationName::Staging | RegistrationName::Unrelated => continue,
         };
-        if !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+        if entry.read_registration().is_err() {
+            evidence = RegistrationEvidence::Incomplete;
             continue;
         }
-        let Ok(pid) = pid.parse() else {
-            continue;
-        };
-        match liveness(pid) {
-            RunLiveness::Running => {
-                live.entry(pid).or_default().insert(generation);
-            },
-            RunLiveness::Ended => {
-                let _ = fs::remove_file(entry.path());
-            },
+        if matches!(liveness(pid), RunLiveness::Running) {
+            live.entry(pid).or_default().insert(generation);
         }
     }
-    live
+    LiveRegistrations {
+        generations: live,
+        evidence,
+    }
+}
+
+/// Accept legacy pids and any nonempty generation suffix without interpreting
+/// the suffix as process identity. Staging names never become registrations.
+fn registration_name(path: &Path) -> RegistrationName<'_> {
+    let Some(name) = path.to_str() else {
+        return RegistrationName::Unrelated;
+    };
+    if name.ends_with(REGISTRATION_TEMP_SUFFIX) {
+        return RegistrationName::Staging;
+    }
+    let (pid, generation) = name
+        .split_once(REGISTRATION_SEPARATOR)
+        .unwrap_or((name, ""));
+    if !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return RegistrationName::Unrelated;
+    }
+    let Ok(pid) = pid.parse() else {
+        return RegistrationName::Unrelated;
+    };
+    if !generation.is_empty() {
+        RegistrationName::Calendar { pid, generation }
+    } else if name.contains(REGISTRATION_SEPARATOR) {
+        RegistrationName::Unrelated
+    } else {
+        RegistrationName::Legacy(pid)
+    }
 }
 
 /// Whether `candidate` was captured later than `held`, which their
@@ -399,13 +459,11 @@ fn live_runs(
 /// zero-padded stamp ahead of the pid, so between two names ending in
 /// the same pid the later one sorts higher.
 ///
-/// Which is the whole of what separates them. Logs are never deleted,
-/// so the capture directory holds every run since the machine was set
-/// up, and pids come round again -- a live pid can have days of old
-/// logs filed under it, and reading one of those reports whatever that
-/// run was doing when it ended. The one that belongs to the process
-/// running now is the newest, because it is the newest run to have
-/// started under that pid.
+/// The shim deletes its log on exit, including cancellation through
+/// SIGTERM. A run killed outright can leave a log behind, and a later
+/// process can reuse its pid. Legacy registrations carry no generation,
+/// so the newest filename is their fallback; a filename alone does not
+/// verify which process wrote it.
 fn newer(candidate: &Path, held: &Path) -> bool { candidate.file_name() > held.file_name() }
 
 /// The shim pid a log file is named for: `run-<timestamp>-<pid>.log`.
@@ -418,22 +476,6 @@ fn log_pid(path: &Path) -> Option<u32> {
         .next()?
         .parse()
         .ok()
-}
-
-/// The end of a log, which is as much of it as a counter can be in.
-///
-/// Reading the whole file would mean re-reading megabytes several times
-/// a second: cargo redraws its bar continuously, so the last counter is
-/// always within the last few hundred bytes of compiler output, and the
-/// window is sized to survive a burst of diagnostics between redraws.
-fn tail(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
-    let length = file.metadata().ok()?.len();
-    file.seek(SeekFrom::Start(length.saturating_sub(RUN_LOG_TAIL_BYTES)))
-        .ok()?;
-    let mut captured = Vec::new();
-    file.read_to_end(&mut captured).ok()?;
-    Some(String::from_utf8_lossy(&captured).into_owned())
 }
 
 /// What the end of a log says the run is doing now.
@@ -592,10 +634,18 @@ fn leading_number(text: &str) -> Option<(usize, &str)> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::symlink;
+
     use tempfile::TempDir;
     use tempfile::tempdir;
 
     use super::*;
+    use crate::constants::CAPTURE_INVENTORY_LIMIT;
+    use crate::constants::CAPTURE_LIVE_RUNS_DIR;
+    use crate::constants::CAPTURE_REGISTRATION_BYTES;
+    use crate::constants::CAPTURE_SWEEP_LIMIT;
 
     /// The line cargo prints when another cargo holds the build
     /// directory, as it comes out of a real 1.96 run.
@@ -658,6 +708,17 @@ mod tests {
         root
     }
 
+    /// Inspect the available live set through a fresh scan of a test fixture.
+    fn registered_runs(
+        root: &Path,
+        liveness: impl Fn(u32) -> RunLiveness,
+    ) -> HashMap<u32, HashSet<RegistrationGeneration>> {
+        let scan = RootScan::open(root, &mut RootHistory::default()).unwrap();
+        let live = live_runs(&scan, &liveness);
+        assert_eq!(live.evidence, RegistrationEvidence::Complete);
+        live.generations
+    }
+
     #[test]
     fn a_live_run_reports_what_its_log_last_captured() {
         let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[33395]);
@@ -665,6 +726,306 @@ mod tests {
         assert_eq!(
             Capture::take_from(root.path(), |_| RunLiveness::Running).read(33395),
             Some(compiling(149, 403))
+        );
+    }
+
+    /// A missing live set is not evidence that every sampled log is dead.
+    #[test]
+    fn unavailable_registrations_preserve_sampled_logs() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[]);
+        fs::remove_dir(root.path().join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        let log = root.path().join("run-20260822-101500-33395.log");
+
+        assert_eq!(
+            Capture::take_from(root.path(), |_| RunLiveness::Ended).read(33395),
+            None
+        );
+        assert!(log.exists());
+    }
+
+    /// An empty successful inventory and a missing directory carry different evidence.
+    #[test]
+    fn unavailable_and_empty_live_sets_remain_distinct() {
+        let root = capture_root(&[], &[]);
+        let mut history = RootHistory::default();
+        let empty = RootScan::open(root.path(), &mut history).unwrap();
+        assert!(matches!(
+            live_runs(&empty, &|_| RunLiveness::Ended),
+            LiveRegistrations {
+                generations,
+                evidence: RegistrationEvidence::Complete,
+            } if generations.is_empty()
+        ));
+        fs::remove_dir(root.path().join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        let missing = RootScan::open(root.path(), &mut history).unwrap();
+
+        assert!(matches!(
+            live_runs(&missing, &|_| RunLiveness::Ended),
+            LiveRegistrations {
+                generations,
+                evidence: RegistrationEvidence::Incomplete,
+            } if generations.is_empty()
+        ));
+    }
+
+    /// Root identity survives `Capture` temporaries, so replacement cannot sweep
+    /// on its first observation through the configured pathname.
+    #[test]
+    fn replacing_the_root_suppresses_its_first_sweep() {
+        let parent = tempdir().unwrap();
+        let configured = parent.path().join("capture");
+        fs::create_dir_all(configured.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        Capture::take_from(&configured, |_| RunLiveness::Ended);
+        fs::rename(&configured, parent.path().join("previous")).unwrap();
+        fs::create_dir_all(configured.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        let log = configured.join("run-20260822-101500-33395.log");
+        fs::write(&log, CAPTURED_REDRAW).unwrap();
+
+        Capture::take_from(&configured, |_| RunLiveness::Ended);
+
+        assert!(log.exists());
+
+        Capture::take_from(&configured, |_| RunLiveness::Ended);
+
+        assert!(!log.exists());
+    }
+
+    /// A failed open invalidates the previous observation even if the same
+    /// inode later returns to the configured pathname.
+    #[test]
+    fn access_recovery_requires_one_unswept_observation() {
+        let parent = tempdir().unwrap();
+        let configured = parent.path().join("capture");
+        let displaced = parent.path().join("displaced");
+        fs::create_dir_all(configured.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        Capture::take_from(&configured, |_| RunLiveness::Ended);
+        fs::rename(&configured, &displaced).unwrap();
+        assert_eq!(
+            Capture::take_from(&configured, |_| RunLiveness::Ended).read(33395),
+            None
+        );
+        fs::rename(&displaced, &configured).unwrap();
+        let log = configured.join("run-20260822-101500-33395.log");
+        fs::write(&log, CAPTURED_REDRAW).unwrap();
+
+        Capture::take_from(&configured, |_| RunLiveness::Ended);
+
+        assert!(log.exists());
+
+        Capture::take_from(&configured, |_| RunLiveness::Ended);
+
+        assert!(!log.exists());
+    }
+
+    /// Refusing a redirected registration directory cannot become an empty live set.
+    #[test]
+    fn a_symlinked_registration_directory_preserves_sampled_logs() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[]);
+        let registrations = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        let destination = tempdir().unwrap();
+        fs::remove_dir(&registrations).unwrap();
+        symlink(destination.path(), &registrations).unwrap();
+
+        assert_eq!(
+            Capture::take_from(root.path(), |_| RunLiveness::Ended).read(33395),
+            None
+        );
+        assert!(root.path().join("run-20260822-101500-33395.log").exists());
+    }
+
+    /// An unrelated account can replace directory contents wherever group write is allowed.
+    #[test]
+    fn group_writable_registration_directories_disable_all_cleanup() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[33395]);
+        let registrations = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        fs::set_permissions(&registrations, fs::Permissions::from_mode(0o770)).unwrap();
+
+        Capture::take_from(root.path(), |_| RunLiveness::Ended);
+
+        assert!(registrations.join("33395").exists());
+        assert!(root.path().join("run-20260822-101500-33395.log").exists());
+    }
+
+    /// Entry reads can fail even when enumeration succeeds; that uncertainty protects logs.
+    #[test]
+    fn an_unreadable_registration_disables_cleanup() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[33395]);
+        let registration = root.path().join(CAPTURE_LIVE_RUNS_DIR).join("33395");
+        fs::remove_file(&registration).unwrap();
+        fs::create_dir(&registration).unwrap();
+
+        assert_eq!(
+            Capture::take_from(root.path(), |_| RunLiveness::Ended).read(33395),
+            None
+        );
+        assert!(registration.is_dir());
+        assert!(root.path().join("run-20260822-101500-33395.log").exists());
+    }
+
+    /// Normal shim exit can remove a sampled registration before its read.
+    /// Readable siblings on both sides of that failure still report progress.
+    #[test]
+    fn a_disappearing_registration_preserves_sibling_readings_and_disables_cleanup() {
+        let root = capture_root(
+            &[
+                (33395, CAPTURED_REDRAW),
+                (33396, CAPTURED_REDRAW),
+                (33397, CAPTURED_REDRAW),
+                (33398, CAPTURED_TALLY),
+            ],
+            &[33395, 33396, 33397],
+        );
+        let registrations = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).unwrap();
+        let sampled: Vec<u32> = scan
+            .registration_entries()
+            .map(|entry| entry.name().to_str().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(sampled.len(), 3);
+        assert!(matches!(scan.log_outcome(), Enumeration::Complete));
+        assert!(matches!(scan.registration_outcome(), Enumeration::Complete));
+        fs::remove_file(registrations.join(sampled[1].to_string())).unwrap();
+        let mut capture = Capture::default();
+        let mut budget = SweepBudget::default();
+
+        capture.scan_root(&scan, &|_| RunLiveness::Running, &mut budget);
+
+        assert_eq!(capture.read(sampled[0]), Some(compiling(149, 403)));
+        assert_eq!(capture.read(sampled[1]), None);
+        assert_eq!(capture.read(sampled[2]), Some(compiling(149, 403)));
+        assert_eq!(capture.read(33398), None);
+        assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 5);
+        assert_eq!(fs::read_dir(&registrations).unwrap().count(), 2);
+        assert!(root.path().join("run-20260822-101500-33398.log").exists());
+    }
+
+    /// The registration cap is enforced before a filename can authorize cleanup.
+    #[test]
+    fn an_oversized_registration_disables_cleanup() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[33395]);
+        let registration = root.path().join(CAPTURE_LIVE_RUNS_DIR).join("33395");
+        let bytes = vec![b'x'; usize::try_from(CAPTURE_REGISTRATION_BYTES).unwrap() + 1];
+        fs::write(&registration, bytes).unwrap();
+
+        assert_eq!(
+            Capture::take_from(root.path(), |_| RunLiveness::Ended).read(33395),
+            None
+        );
+        assert!(registration.exists());
+        assert!(root.path().join("run-20260822-101500-33395.log").exists());
+    }
+
+    /// Unrelated directory entries consume inventory capacity too; reaching the
+    /// bound is an explicit incomplete sample that authorizes no deletions.
+    #[test]
+    fn an_incomplete_log_inventory_sweeps_nothing() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[33395]);
+        for index in 0..CAPTURE_INVENTORY_LIMIT {
+            fs::write(root.path().join(format!("unrelated-{index}")), "").unwrap();
+        }
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).unwrap();
+        assert!(matches!(scan.log_outcome(), Enumeration::Incomplete));
+        assert!(scan.log_entries().count() <= CAPTURE_INVENTORY_LIMIT);
+
+        Capture::take_from(root.path(), |_| RunLiveness::Ended);
+
+        assert_eq!(
+            fs::read_dir(root.path()).unwrap().count(),
+            CAPTURE_INVENTORY_LIMIT + 2
+        );
+        assert!(
+            root.path()
+                .join(CAPTURE_LIVE_RUNS_DIR)
+                .join("33395")
+                .exists()
+        );
+    }
+
+    /// Every sampled live log carries the same reading, regardless of directory
+    /// order. The inventory cap must not hide that reading or retire stale files.
+    #[test]
+    fn an_incomplete_log_inventory_keeps_sampled_live_readings() {
+        let root = capture_root(&[(33396, CAPTURED_TALLY)], &[33395, 33396]);
+        for index in 0..CAPTURE_INVENTORY_LIMIT {
+            let name =
+                format!("{RUN_LOG_PREFIX}sample-{index}{PID_SEPARATOR}33395{RUN_LOG_SUFFIX}");
+            fs::write(root.path().join(name), CAPTURED_REDRAW).unwrap();
+        }
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).unwrap();
+        assert!(matches!(scan.log_outcome(), Enumeration::Incomplete));
+        assert!(matches!(scan.registration_outcome(), Enumeration::Complete));
+        assert!(scan.log_entries().count() <= CAPTURE_INVENTORY_LIMIT);
+        assert!(
+            scan.log_entries()
+                .any(|entry| log_pid(entry.name()) == Some(33395))
+        );
+        let mut capture = Capture::default();
+        let mut budget = SweepBudget::default();
+
+        capture.scan_root(&scan, &|pid| RunLiveness::from(pid == 33395), &mut budget);
+
+        assert_eq!(capture.read(33395), Some(compiling(149, 403)));
+        assert_eq!(capture.read(33396), None);
+        assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
+        assert_eq!(
+            fs::read_dir(root.path()).unwrap().count(),
+            CAPTURE_INVENTORY_LIMIT + 2
+        );
+        assert_eq!(
+            fs::read_dir(root.path().join(CAPTURE_LIVE_RUNS_DIR))
+                .unwrap()
+                .count(),
+            2
+        );
+        assert!(root.path().join("run-20260822-101500-33396.log").exists());
+    }
+
+    /// A partial registration inventory cannot classify unsampled generations as absent.
+    #[test]
+    fn an_incomplete_registration_inventory_sweeps_nothing() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[33395]);
+        let registrations = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        for index in 0..CAPTURE_INVENTORY_LIMIT {
+            fs::write(registrations.join(format!("unrelated-{index}")), "").unwrap();
+        }
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).unwrap();
+        assert!(matches!(
+            scan.registration_outcome(),
+            Enumeration::Incomplete
+        ));
+        assert!(matches!(
+            live_runs(&scan, &|_| RunLiveness::Ended),
+            LiveRegistrations {
+                generations,
+                evidence: RegistrationEvidence::Incomplete,
+            } if generations.is_empty()
+        ));
+
+        Capture::take_from(root.path(), |_| RunLiveness::Ended);
+
+        assert!(root.path().join("run-20260822-101500-33395.log").exists());
+        assert_eq!(
+            fs::read_dir(registrations).unwrap().count(),
+            CAPTURE_INVENTORY_LIMIT + 1
+        );
+    }
+
+    /// Captured progress belongs to the completed scan, even when its pathname changes later.
+    #[test]
+    fn a_capture_keeps_its_reading_without_reopening_a_replaced_log() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[33395]);
+        let capture = Capture::take_from(root.path(), |_| RunLiveness::Running);
+        let log = root.path().join("run-20260822-101500-33395.log");
+        let unrelated = root.path().join("unrelated");
+        fs::write(&unrelated, CAPTURED_TALLY).unwrap();
+        fs::remove_file(&log).unwrap();
+        symlink(&unrelated, &log).unwrap();
+
+        assert_eq!(capture.read(33395), Some(compiling(149, 403)));
+        assert_eq!(
+            Capture::take_from(root.path(), |_| RunLiveness::Running).read(33395),
+            None
         );
     }
 
@@ -705,7 +1066,7 @@ mod tests {
         let registration = format!("33396{REGISTRATION_SEPARATOR}{generation}");
         fs::write(markers.join(&registration), "").unwrap();
 
-        let live = live_runs(root.path(), |_| RunLiveness::Running);
+        let live = registered_runs(root.path(), |_| RunLiveness::Running);
         assert_eq!(live.len(), 2);
         assert!(live[&33395].contains(&RegistrationGeneration::Legacy));
         assert!(live[&33396].contains(&RegistrationGeneration::Calendar(generation.to_owned())));
@@ -722,6 +1083,28 @@ mod tests {
             );
         }
         assert!(markers.join(registration).exists());
+    }
+
+    /// Generation suffixes classify filenames even when they are not calendar
+    /// stamps; neither their spelling nor the log match verifies process identity.
+    #[test]
+    fn arbitrary_nonempty_generation_suffixes_still_name_candidate_logs() {
+        let generation = RegistrationGeneration::Calendar("candidate.with-extra-text".to_owned());
+
+        assert!(generation.names_log(Path::new("run-candidate.with-extra-text-33395.log"), 33395));
+        assert!(
+            !generation.names_log(Path::new("run-candidate.with-extra-text-033395.log"), 33395)
+        );
+        assert!(
+            !generation.names_log(Path::new("run-candidate.with-extra-text-+33395.log"), 33395)
+        );
+        assert!(matches!(
+            registration_name(Path::new("33395.candidate.with-extra-text")),
+            RegistrationName::Calendar {
+                pid:        33395,
+                generation: "candidate.with-extra-text",
+            }
+        ));
     }
 
     /// Staging and malformed names are not registrations, even when
@@ -743,7 +1126,7 @@ mod tests {
             fs::write(markers.join(name), "").unwrap();
         }
 
-        assert!(live_runs(root.path(), |_| RunLiveness::Running).is_empty());
+        assert!(registered_runs(root.path(), |_| RunLiveness::Running).is_empty());
         assert_eq!(fs::read_dir(markers).unwrap().count(), 6);
     }
 
@@ -802,7 +1185,8 @@ mod tests {
         fs::write(&registration, "").unwrap();
         fs::write(&staging, "").unwrap();
 
-        assert!(live_runs(root.path(), |_| RunLiveness::Ended).is_empty());
+        Capture::take_from(root.path(), |_| RunLiveness::Ended);
+        assert!(registered_runs(root.path(), |_| RunLiveness::Ended).is_empty());
         assert!(!registration.exists());
         assert!(staging.exists());
     }
@@ -819,10 +1203,9 @@ mod tests {
         );
     }
 
-    /// Logs are never deleted and pids come round again, so a pid live
-    /// now can have days of finished runs filed under it. Reading one of
-    /// those reports what that run was doing when it ended -- a test run
-    /// standing at 100% over a `cargo run` that has only just started.
+    /// Runs killed outright can leave logs behind after the shim loses
+    /// its chance to clean up. A reused pid with a legacy registration
+    /// chooses the newest filename, avoiding an older run's progress.
     #[test]
     fn a_pid_with_several_logs_reads_the_newest() {
         let root = tempdir().unwrap();
@@ -879,7 +1262,7 @@ mod tests {
 
         Capture::take_from(root.path(), |_| RunLiveness::Running);
 
-        assert!(!log.exists(), "and the scan that passed it over retired it");
+        assert!(!log.exists());
     }
 
     /// The older of two logs under one live pid belongs to a run that
@@ -908,17 +1291,16 @@ mod tests {
 
         Capture::take_from(root.path(), |_| RunLiveness::Running);
 
-        assert!(!names[0].exists(), "the run that ended days ago is retired");
+        assert!(!names[0].exists());
         assert!(
             names[1].exists(),
             "and the one being written now is left alone"
         );
     }
 
-    /// A directory that accumulated before the sweep existed holds tens
-    /// of thousands of logs, and clearing them in one pass would hold
-    /// the scan up for seconds. The backlog goes over several scans
-    /// instead, and no one of them is held up noticeably.
+    /// A complete inventory can hold more orphaned logs than one sweep
+    /// allowance. Cleanup drains that backlog over several scans; an inventory
+    /// reaching its enumeration limit remains unswept instead.
     #[test]
     fn a_backlog_is_cleared_over_several_scans_rather_than_holding_one_up() {
         let root = tempdir().unwrap();
@@ -936,7 +1318,7 @@ mod tests {
         assert_eq!(
             after_one,
             backlog - CAPTURE_SWEEP_LIMIT + 1,
-            "one scan takes its bound and no more, leaving the state directory"
+            "one scan takes its allowance and leaves the state directory"
         );
 
         Capture::take_from(root.path(), |_| RunLiveness::Ended);
@@ -944,7 +1326,176 @@ mod tests {
         assert_eq!(
             fs::read_dir(root.path()).unwrap().count(),
             1,
-            "and the next clears the rest, leaving the state directory"
+            "the next scan clears the remaining backlog and leaves the state directory"
+        );
+    }
+
+    /// Registration cleanup shares the allowance with logs and resets on the next scan.
+    #[test]
+    fn stale_registrations_and_logs_share_one_budget() {
+        let root = capture_root(&[], &[]);
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        for pid in 0..CAPTURE_SWEEP_LIMIT {
+            fs::write(markers.join(pid.to_string()), "").unwrap();
+            fs::write(
+                root.path().join(format!("run-20260822-101500-{pid}.log")),
+                "",
+            )
+            .unwrap();
+        }
+
+        Capture::take_from(root.path(), |_| RunLiveness::Ended);
+
+        let remaining = fs::read_dir(&markers).unwrap().count()
+            + fs::read_dir(root.path()).unwrap().count()
+            - 1;
+        assert_eq!(remaining, CAPTURE_SWEEP_LIMIT);
+
+        Capture::take_from(root.path(), |_| RunLiveness::Ended);
+
+        assert_eq!(fs::read_dir(&markers).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    /// Staging inspection consumes cleanup work without claiming a paused writer has ended.
+    #[test]
+    fn staging_files_consume_the_shared_budget_and_remain_in_place() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[]);
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        for pid in 0..CAPTURE_SWEEP_LIMIT {
+            fs::write(
+                markers.join(format!("{pid}.20260822-101500{REGISTRATION_TEMP_SUFFIX}")),
+                "",
+            )
+            .unwrap();
+        }
+
+        Capture::take_from(root.path(), |_| RunLiveness::Ended);
+
+        assert_eq!(fs::read_dir(&markers).unwrap().count(), CAPTURE_SWEEP_LIMIT);
+        assert!(root.path().join("run-20260822-101500-33395.log").exists());
+    }
+
+    /// Both roots use the production scan loop, with staging, registrations,
+    /// and logs competing for the same allowance on each invocation.
+    #[test]
+    fn two_owned_roots_share_one_budget_for_every_artifact_kind() {
+        let first = capture_root(&[], &[]);
+        let second = capture_root(&[], &[]);
+        let staging = CAPTURE_SWEEP_LIMIT / 4;
+        let roots = [first.path(), second.path()];
+        for (root, count) in [(roots[0], staging), (roots[1], CAPTURE_SWEEP_LIMIT / 2)] {
+            let markers = root.join(CAPTURE_LIVE_RUNS_DIR);
+            for pid in 0..count {
+                fs::write(markers.join(pid.to_string()), "").unwrap();
+                fs::write(root.join(format!("run-20260822-101500-{pid}.log")), "").unwrap();
+            }
+        }
+        let markers = first.path().join(CAPTURE_LIVE_RUNS_DIR);
+        for pid in 0..staging {
+            fs::write(
+                markers.join(format!("{pid}.generation{REGISTRATION_TEMP_SUFFIX}")),
+                "",
+            )
+            .unwrap();
+        }
+        let inventory_count = || {
+            roots
+                .iter()
+                .map(|root| {
+                    fs::read_dir(root).unwrap().count() - 1
+                        + fs::read_dir(root.join(CAPTURE_LIVE_RUNS_DIR))
+                            .unwrap()
+                            .count()
+                })
+                .sum::<usize>()
+        };
+        let before = inventory_count();
+
+        Capture::take_roots(&roots, &|_| RunLiveness::Ended);
+
+        assert_eq!(before - inventory_count(), CAPTURE_SWEEP_LIMIT - staging);
+        assert_eq!(fs::read_dir(&markers).unwrap().count(), staging);
+        let after_first = inventory_count();
+
+        Capture::take_roots(&roots, &|_| RunLiveness::Ended);
+
+        assert_eq!(
+            after_first - inventory_count(),
+            CAPTURE_SWEEP_LIMIT - staging
+        );
+        assert_eq!(
+            inventory_count(),
+            before - (CAPTURE_SWEEP_LIMIT - staging) * 2
+        );
+    }
+
+    /// A root whose directories are writable by another account has no sweep
+    /// capability and cannot spend the later owned root's allowance.
+    #[test]
+    fn an_unsweepable_root_leaves_the_budget_for_the_owned_root() {
+        let untrusted = capture_root(&[], &[]);
+        let owned = capture_root(&[], &[]);
+        for root in [untrusted.path(), owned.path()] {
+            for pid in 0..CAPTURE_SWEEP_LIMIT {
+                fs::write(root.join(format!("run-20260822-101500-{pid}.log")), "").unwrap();
+            }
+        }
+        fs::set_permissions(untrusted.path(), fs::Permissions::from_mode(0o770)).unwrap();
+
+        Capture::take_roots(&[untrusted.path(), owned.path()], &|_| RunLiveness::Ended);
+
+        assert_eq!(
+            fs::read_dir(untrusted.path()).unwrap().count(),
+            CAPTURE_SWEEP_LIMIT + 1
+        );
+        assert_eq!(fs::read_dir(owned.path()).unwrap().count(), 1);
+    }
+
+    /// Verified ownership permits cleanup while retaining the live run's reading
+    /// and preserving staging records whose writers have not been verified as ended.
+    #[test]
+    fn owned_roots_remain_readable_while_stale_artifacts_are_swept() {
+        let root = capture_root(
+            &[(33395, CAPTURED_REDRAW), (33396, CAPTURED_TALLY)],
+            &[33395, 33396],
+        );
+        let registrations = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        fs::write(registrations.join("33397.generation.tmp"), "").unwrap();
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).unwrap();
+        let mut budget = SweepBudget::default();
+        let mut capture = Capture::default();
+
+        capture.scan_root(&scan, &|pid| (pid == 33395).into(), &mut budget);
+
+        assert_eq!(capture.read(33395), Some(compiling(149, 403)));
+        assert_eq!(capture.read(33396), None);
+        assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT - 3);
+        assert_eq!(fs::read_dir(registrations).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+
+    /// Directory entries named like orphan logs make unlink fail without a
+    /// second uid. Each attempted removal still consumes the shared allowance.
+    #[test]
+    fn failed_removals_still_bound_work_across_roots() {
+        let failures = capture_root(&[], &[]);
+        let later = capture_root(&[], &[]);
+        for pid in 0..CAPTURE_SWEEP_LIMIT {
+            let name = format!("run-20260822-101500-{pid}.log");
+            fs::create_dir(failures.path().join(&name)).unwrap();
+            fs::write(later.path().join(name), "").unwrap();
+        }
+
+        Capture::take_roots(&[failures.path(), later.path()], &|_| RunLiveness::Ended);
+
+        assert_eq!(
+            fs::read_dir(failures.path()).unwrap().count(),
+            CAPTURE_SWEEP_LIMIT + 1
+        );
+        assert_eq!(
+            fs::read_dir(later.path()).unwrap().count(),
+            CAPTURE_SWEEP_LIMIT + 1
         );
     }
 

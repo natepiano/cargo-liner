@@ -728,8 +728,35 @@ pub(crate) const DEFAULT_CAPTURE_AUTO_INSTALL: bool = true;
 pub(crate) const CAPTURE_INSTALLED_TOAST_VISIBLE: Duration = Duration::from_secs(12);
 
 // build progress
+/// Bound each directory sample, including unrelated entries, before consulting
+/// liveness. Reaching this count means incomplete enumeration and forbids sweep.
+pub(crate) const CAPTURE_INVENTORY_LIMIT: usize = 4096;
+/// Linux and macOS capture filenames fit in 255 bytes. Longer names make a
+/// sample incomplete instead of allocating storage chosen by a foreign root.
+pub(crate) const CAPTURE_ENTRY_NAME_BYTES: usize = 255;
+/// Fixed storage for Linux getdents, large enough for several maximum-length
+/// names. A directory record that cannot fit fails enumeration conservatively.
+#[cfg(target_os = "linux")]
+pub(crate) const CAPTURE_DIRECTORY_BUFFER_BYTES: usize = 8192;
+/// Registration metadata is small; 64 KiB accommodates long command and cwd
+/// fields. Reads allow one extra byte solely to detect and reject larger files.
+pub(crate) const CAPTURE_REGISTRATION_BYTES: u64 = 64 * 1024;
+/// Open each registration ancestor separately so neither can redirect traversal.
+pub(crate) const CAPTURE_STATE_DIR: &str = "state";
+/// Basename of the live-registration directory opened from the state handle.
+pub(crate) const CAPTURE_PIDS_DIR: &str = "pids";
+/// Reject non-regular entries before seeking or reading their contents.
+pub(crate) const CAPTURE_NOT_REGULAR: &str = "capture entry is not a regular file";
+/// Oversize registrations cannot establish a complete readable live set.
+pub(crate) const CAPTURE_REGISTRATION_TOO_LARGE: &str =
+    "capture registration exceeds its byte limit";
+/// A directory no longer matching the sampled handles cannot authorize cleanup.
+pub(crate) const CAPTURE_DIRECTORY_CHANGED: &str = "capture directory changed during the scan";
+/// A capped sample is not evidence of a fully observed live set.
+pub(crate) const CAPTURE_DIRECTORY_INCOMPLETE: &str = "capture directory inventory is incomplete";
 /// Directory under [`CAPTURE_ROOT`], one file per run still in flight,
 /// each named for the pid of the shim that captured it.
+#[cfg(test)]
 pub(crate) const CAPTURE_LIVE_RUNS_DIR: &str = "state/pids";
 /// Where the cargo shim mirrors each run's output. Under `/tmp` rather
 /// than the home directory because a sandboxed caller can write there.
@@ -777,17 +804,15 @@ pub(crate) const PROGRESS_HEADING_PHASE_MARGIN: u16 = 1;
 /// Bytes of a run log's end to read for the counter. Sized to hold the
 /// bar's last redraw across a burst of diagnostics printed over it.
 pub(crate) const RUN_LOG_TAIL_BYTES: u64 = 64 * 1024;
-/// Run logs one scan will delete before leaving the rest to the next
-/// one.
+/// Shared cleanup allowance across every owned root in one scan: registration
+/// and log removal attempts, plus recognized staging records kept for identity
+/// verification. Foreign and incompletely enumerated roots consume none.
 ///
-/// A log outlives every use it has the moment its run ends -- nothing
-/// reads a finished run's capture -- so each scan clears what it finds,
-/// and in the ordinary way of things that is nothing at all. A
-/// directory that has been accumulating since before the sweep existed
-/// is the exception: at roughly 60 microseconds an unlink, clearing
-/// sixty thousand in one pass would hold the scan for the better part
-/// of four seconds. Bounded, the backlog goes in well under a minute
-/// of ordinary scans and no single one of them is held up noticeably.
+/// The shim removes ordinary captures on exit; runs killed outright leave
+/// artifacts behind. Limiting work avoids clearing a large backlog in one scan.
+/// At an illustrative 60 microseconds per unlink, 512 attempts cost about 31 ms.
+/// The worker sleeps 250 ms after scanning, so it runs at most four scans per
+/// second; neither backlog size nor a fixed cleanup time is assumed.
 pub(crate) const CAPTURE_SWEEP_LIMIT: usize = 512;
 /// What a run log's name starts with, ahead of its timestamp and pid.
 pub(crate) const RUN_LOG_PREFIX: &str = "run-";

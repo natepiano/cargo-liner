@@ -4,6 +4,7 @@
 mod app;
 mod attract;
 mod capture;
+mod capture_root;
 mod cli;
 mod config;
 mod constants;
