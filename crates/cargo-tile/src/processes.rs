@@ -62,16 +62,21 @@ use crate::constants::TRANSPARENT_PROCESS_NAMES;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
 use crate::progress::Capture;
-use crate::progress::RunState;
+use crate::progress::CaptureLookup;
+use crate::registration::DirectoryIdentity;
+use crate::registration::VersionedRegistration;
+use crate::registration::WriterHome;
 use crate::sccache::SccacheServer;
 
 /// One running `cargo` invocation, preformatted for the table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CargoProcess {
-    /// Working directory with the home prefix collapsed to `~`.
-    pub(crate) path:     String,
+    /// Working directory display, shortened only when the home prefix is unambiguous.
+    pub(crate) path:               String,
+    /// Raw absolute directory for grouping; display formatting cannot change membership.
+    pub(crate) directory_identity: DirectoryIdentity,
     /// Process id.
-    pub(crate) pid:      u32,
+    pub(crate) pid:                u32,
     /// The nearest ancestor the cell draws: the cargo above this one
     /// where there is one, since that is a row of the same table, and
     /// otherwise the step of the chain block the command was started
@@ -80,34 +85,34 @@ pub(crate) struct CargoProcess {
     ///
     /// `None` only where the walk reaches the top having found nothing
     /// on screen.
-    pub(crate) parent:   Option<u32>,
+    pub(crate) parent:             Option<u32>,
     /// Local wall-clock start time, `hh:mm`.
-    pub(crate) start:    String,
+    pub(crate) start:              String,
     /// The same instant as seconds since the epoch, which is what
     /// orders one invocation against another. The label above it is
     /// only accurate to the minute and turns over at midnight, so it
     /// reads well and sorts badly.
-    pub(crate) started:  u64,
+    pub(crate) started:            u64,
     /// Elapsed run time, `mm:ss` until an hour and `hh:mm:ss` past it.
-    pub(crate) duration: String,
+    pub(crate) duration:           String,
     /// Share of a core this invocation and everything running under it
     /// are using, as a whole-number percent. `top`'s scale rather than a
     /// share of the machine, so a build across eight cores reads past
     /// 100% instead of flattening to a tenth of one.
-    pub(crate) cpu:      String,
+    pub(crate) cpu:                String,
     /// Compiler processes this invocation currently owns, if any. On the
     /// invocation leading a group this is the whole group's tally, so
     /// the summary reports the build rather than the driver process.
-    pub(crate) compiler: Option<Compiler>,
+    pub(crate) compiler:           Option<Compiler>,
     /// What the command is doing, when a capture of its output is there
     /// to read it from. Read off the nearest capture at or above the
     /// invocation, so a cargo the enclosing run started -- which the
     /// shim declines to capture a second time -- reports the run it is
     /// inside rather than nothing at all.
-    pub(crate) state:    Option<RunState>,
+    pub(crate) state:              CaptureLookup,
     /// Cargo invocations running under this one. Zero for a plain
     /// command, which is what most rows are.
-    pub(crate) managed:  usize,
+    pub(crate) managed:            usize,
     /// Whether another cargo stands between this invocation and the
     /// lead of its group. False for the lead itself and for the
     /// invocations it started directly.
@@ -117,9 +122,9 @@ pub(crate) struct CargoProcess {
     /// one table with every other command's, the deeper levels bury the
     /// runs they came from -- one `cargo nextest run` puts a `cargo
     /// mend` in the table for every test it runs.
-    pub(crate) nested:   bool,
+    pub(crate) nested:             bool,
     /// The command line, split so program and arguments style apart.
-    pub(crate) command:  CommandText,
+    pub(crate) command:            CommandText,
 }
 
 /// The compiler driver an invocation is running, and how many at once.
@@ -438,9 +443,9 @@ fn scan(
     // cargo running underneath one attributes to whatever is above it
     // instead of leaving with it.
     census.cargo.retain(|pid| {
-        system.process(*pid).is_some_and(|process| {
-            names_cargo(process.cmd()) && !is_excluded(process.cmd(), excluded)
-        })
+        system
+            .process(*pid)
+            .is_some_and(|process| select_cargo(process.cmd(), excluded).is_ok())
     });
 
     // Shims are separated from managers on argv, so this waits for phase
@@ -452,15 +457,9 @@ fn scan(
     let attributed = census.attribute(smoothing, now);
     Scan {
         sccache: census.sccache(),
-        // Phase one refreshed every process, so whether a registered
-        // run is still going is a lookup rather than a fresh read of
-        // the process table.
-        groups:  census.groups(
-            system,
-            &attributed,
-            home,
-            &Capture::take(|pid| system.process(Pid::from_u32(pid)).is_some().into()),
-        ),
+        // Registration identity is read live; a pid missing from the earlier
+        // process snapshot cannot authorize deleting a newly published run.
+        groups:  census.groups(system, &attributed, home, &Capture::take()),
     }
 }
 
@@ -915,15 +914,49 @@ impl Census {
     /// rather than the cargo itself -- two levels up when the run went
     /// through a pty, one when it did not. The same bound the compiler
     /// walk uses stops a reparented cycle here.
-    fn captured_run(&self, capture: &Capture, pid: Pid) -> Option<RunState> {
+    fn captured_run(&self, capture: &Capture, pid: Pid) -> CaptureLookup {
         let mut walking = pid;
         for _ in 0..PARENT_WALK_LIMIT {
-            if let Some(state) = capture.read(walking.as_u32()) {
-                return Some(state);
+            let reading = capture.read(walking.as_u32());
+            if let CaptureLookup::Registered(_) = reading {
+                return reading;
             }
-            walking = *self.parents.get(&walking)?;
+            let Some(parent) = self.parents.get(&walking) else {
+                return CaptureLookup::Unregistered;
+            };
+            walking = *parent;
         }
-        None
+        CaptureLookup::Unregistered
+    }
+
+    /// Captures annotate rows already established by the process table. A verified
+    /// writer home only shortens the same directory the process table supplied.
+    fn annotate_capture(&self, row: &mut CargoProcess, capture: &Capture, home: Option<&Path>) {
+        let pid = Pid::from_u32(row.pid);
+        row.state = self.captured_run(capture, pid);
+        let mut walking = pid;
+        for _ in 0..PARENT_WALK_LIMIT {
+            if let Some(confirmed) = capture
+                .confirmed()
+                .iter()
+                .find(|confirmed| confirmed.registration.pid() == walking.as_u32())
+            {
+                let record = confirmed.registration.record();
+                if matches!(row.directory_identity, DirectoryIdentity::Absolute(_))
+                    && record.directory_identity() == row.directory_identity
+                {
+                    row.path = registration_directory(record, home);
+                }
+                return;
+            }
+            if matches!(capture.read(walking.as_u32()), CaptureLookup::Registered(_)) {
+                return;
+            }
+            let Some(parent) = self.parents.get(&walking) else {
+                return;
+            };
+            walking = *parent;
+        }
     }
 
     /// Every group the surviving cargo set forms, newest lead first.
@@ -981,14 +1014,15 @@ impl Census {
             managed.len(),
             home,
             aggregate_cpu(&attributed.cpu, whole_group.clone()),
-        )?;
+        )
+        .ok()?;
         // The lead reports the whole group's compilers: what a developer
         // wants off the summary row is how much work the command they
         // typed is doing, and for a manager none of that work is running
         // under the manager's own pid. Its CPU share is the same story
         // told in cores rather than in processes.
         lead.compiler = aggregate_compilers(&attributed.compilers, whole_group);
-        lead.state = self.captured_run(capture, root);
+        self.annotate_capture(&mut lead, capture, home);
         let ancestry = self.ancestry(system, home, root);
         lead.parent = self.drawn_parent(root, &ancestry);
 
@@ -1004,7 +1038,8 @@ impl Census {
                     under,
                     home,
                     aggregate_cpu(&attributed.cpu, std::iter::once(pid)),
-                )?;
+                )
+                .ok()?;
                 // The same read the lead gets. An invocation the lead
                 // is driving is captured in its own right where it came
                 // through the shim, and where it went round the shim --
@@ -1013,7 +1048,7 @@ impl Census {
                 // still its own: the lock it prints about is the one
                 // this row is waiting on, mirrored into the log of the
                 // run it is inside.
-                managed_row.state = self.captured_run(capture, pid);
+                self.annotate_capture(&mut managed_row, capture, home);
                 managed_row.parent = self.drawn_parent(pid, &ancestry);
                 managed_row.nested = !children
                     .get(&root)
@@ -1064,12 +1099,15 @@ fn row(
     managed: usize,
     home: Option<&Path>,
     cpu: f32,
-) -> Option<CargoProcess> {
-    Some(CargoProcess {
+) -> Result<CargoProcess, RowAbsence> {
+    Ok(CargoProcess {
         path: process.cwd().map_or_else(
             || UNRESOLVED_PATH.to_string(),
             |cwd| home_relative(cwd, home),
         ),
+        directory_identity: process
+            .cwd()
+            .map_or(DirectoryIdentity::Unavailable, DirectoryIdentity::from),
         pid: pid.as_u32(),
         parent: None,
         start: start_label(process.start_time()),
@@ -1077,7 +1115,7 @@ fn row(
         duration: duration_label(process.run_time()),
         cpu: cpu_label(cpu),
         compiler,
-        state: None,
+        state: CaptureLookup::Unregistered,
         managed,
         nested: false,
         command: command_text(process.cmd(), home)?,
@@ -1137,6 +1175,16 @@ fn home_relative(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
+/// A tilde is meaningful only when the writer and scanner agree on its prefix.
+fn registration_directory(record: &VersionedRegistration, scanner_home: Option<&Path>) -> String {
+    match record.writer_home() {
+        WriterHome::Known(writer_home) if scanner_home == Some(writer_home.as_path()) => {
+            home_relative(record.directory(), scanner_home)
+        },
+        WriterHome::Known(_) | WriterHome::Unavailable => record.directory().display().to_string(),
+    }
+}
+
 /// Local `hh:mm` for a UNIX timestamp in seconds.
 fn start_label(epoch_seconds: u64) -> String {
     let seconds = i64::try_from(epoch_seconds).unwrap_or_default();
@@ -1164,21 +1212,21 @@ fn duration_label(seconds: u64) -> String {
 }
 
 /// Split argv into the program's bare name and the rest of the line,
-/// answering `None` when argv does not name a cargo binary anywhere.
+/// retaining whether unavailable metadata or exclusion prevents a cargo row.
 ///
 /// A cargo binary installed under an alias still reads as `cargo`: the
 /// name on disk is an artifact of how it was wrapped, not of what the
 /// user typed.
 ///
-/// The `None` case is what keeps the table honest about what a process
-/// is. [`Census::take`] classifies on [`sysinfo::Process::name`], and
+/// [`RowAbsence::Excluded`] rejects readable argv belonging to another program.
+/// [`Census::take`] classifies on [`sysinfo::Process::name`], and
 /// macOS does not always let sysinfo read a process's executable: when
 /// it cannot, the name reported is the parent's. Every `sccache` a build
 /// spawns is a child of cargo, so a whole burst of them can present as
 /// cargo at once. Their argv still reads `sccache /path/to/rustc …`,
 /// which names no cargo binary, and that is what settles it.
-fn command_text(argv: &[OsString], home: Option<&Path>) -> Option<CommandText> {
-    let (start, subcommand) = cargo_split(argv)?;
+fn command_text(argv: &[OsString], home: Option<&Path>) -> Result<CommandText, RowAbsence> {
+    let CargoArguments { start, layout } = cargo_split(argv)?;
     let mut arguments: Vec<String> = argv
         .iter()
         .skip(start)
@@ -1188,32 +1236,67 @@ fn command_text(argv: &[OsString], home: Option<&Path>) -> Option<CommandText> {
     // back as the first argument -- `cargo-nextest nextest run` -- but
     // a caller invoking the binary directly skips that. Putting it back
     // is what makes both spell the command that was typed.
-    if let Some(subcommand) = subcommand
+    if let ArgumentLayout::External(subcommand) = layout
         && arguments.first() != Some(&subcommand)
     {
         arguments.insert(0, subcommand);
     }
-    Some(CommandText {
+    Ok(CommandText {
         program: CARGO_DISPLAY_NAME.to_string(),
         arguments,
     })
 }
 
-/// Where a cargo invocation's arguments start in its argv, and the
-/// subcommand its binary name carries when it is an external one.
-///
-/// Two layouts reach here. A cargo binary somewhere in argv -- the
-/// common case, and the one a shim caught mid-handoff also takes --
-/// puts the arguments straight after it. An external subcommand carries
-/// no cargo binary at all: `cargo mend` *becomes* `cargo-mend`, so the
-/// subcommand is in the process's own name and the arguments are
-/// everything after argv\[0\].
-fn cargo_split(argv: &[OsString]) -> Option<(usize, Option<String>)> {
+/// Why a process-table candidate cannot become a cargo row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RowAbsence {
+    /// The external process API could not supply argv.
+    Unavailable,
+    /// The available arguments identify another program or an excluded command.
+    Excluded,
+}
+
+/// The two layouts carry different rules for rebuilding the displayed command.
+#[derive(Debug, Eq, PartialEq)]
+enum ArgumentLayout {
+    /// Arguments immediately follow a cargo executable within argv.
+    Cargo,
+    /// The executable itself supplies the cargo subcommand name.
+    External(String),
+}
+
+/// A recognized cargo argv retains where arguments begin and their interpretation.
+#[derive(Debug, Eq, PartialEq)]
+struct CargoArguments {
+    /// Skip wrappers and the cargo executable when displaying arguments.
+    start:  usize,
+    /// External subcommands may need their name inserted into the display.
+    layout: ArgumentLayout,
+}
+
+/// Unavailable argv differs from a readable argv that deliberately excludes a row.
+fn cargo_split(argv: &[OsString]) -> Result<CargoArguments, RowAbsence> {
     if let Some(start) = cargo_argv_start(argv) {
-        return Some((start + 1, None));
+        return Ok(CargoArguments {
+            start:  start + 1,
+            layout: ArgumentLayout::Cargo,
+        });
     }
-    let subcommand = external_subcommand(argv.first()?)?;
-    Some((1, Some(subcommand)))
+    let program = argv.first().ok_or(RowAbsence::Unavailable)?;
+    let subcommand = external_subcommand(program).ok_or(RowAbsence::Excluded)?;
+    Ok(CargoArguments {
+        start:  1,
+        layout: ArgumentLayout::External(subcommand),
+    })
+}
+
+/// User exclusions and unavailable process metadata retain separate reasons.
+fn select_cargo(argv: &[OsString], excluded: &[String]) -> Result<CargoArguments, RowAbsence> {
+    let arguments = cargo_split(argv)?;
+    if is_excluded(argv, excluded) {
+        return Err(RowAbsence::Excluded);
+    }
+    Ok(arguments)
 }
 
 /// Whether an argv belongs to a cargo invocation at all.
@@ -1221,14 +1304,14 @@ fn cargo_split(argv: &[OsString]) -> Option<(usize, Option<String>)> {
 /// [`Census::take`] classifies on the process's own name, and a process
 /// can wear one without being one -- see [`command_text`] -- so this is
 /// what settles it.
-fn names_cargo(argv: &[OsString]) -> bool { cargo_split(argv).is_some() }
+fn names_cargo(argv: &[OsString]) -> bool { cargo_split(argv).is_ok() }
 
 /// The subcommand an argv names: the first word past the cargo binary
 /// that is neither a flag nor a `+toolchain` selector.
 fn subcommand(argv: &[OsString]) -> Option<String> {
-    let (start, external) = cargo_split(argv)?;
-    if external.is_some() {
-        return external;
+    let CargoArguments { start, layout } = cargo_split(argv).ok()?;
+    if let ArgumentLayout::External(subcommand) = layout {
+        return Some(subcommand);
     }
     argv.iter()
         .skip(start)
@@ -1307,6 +1390,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::birth_stamp::IdentityEvidence;
+    use crate::birth_stamp::KernelObservation;
+    use crate::birth_stamp::Observation;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::COORDINATION_SUBCOMMAND_NAME;
     use crate::constants::DEFAULT_EXCLUDED;
@@ -1315,7 +1401,9 @@ mod tests {
     use crate::constants::RUN_LOG_PREFIX;
     use crate::constants::RUN_LOG_SUFFIX;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
-    use crate::progress::RunLiveness;
+    use crate::progress::CaptureRead;
+    use crate::progress::RunState;
+    use crate::registration::Registration;
 
     /// A capture directory holding one live run's log per entry.
     fn capture_root(runs: &[(u32, &str)]) -> TempDir {
@@ -1326,7 +1414,11 @@ mod tests {
             let name =
                 format!("{RUN_LOG_PREFIX}20260824-084300{PID_SEPARATOR}{pid}{RUN_LOG_SUFFIX}");
             fs::write(root.path().join(name), output).expect("run log must be written");
-            fs::write(markers.join(pid.to_string()), "").expect("live marker must be written");
+            fs::write(
+                markers.join(pid.to_string()),
+                "/writer/project\tcargo build",
+            )
+            .expect("live marker must be written");
         }
         root
     }
@@ -1343,6 +1435,175 @@ mod tests {
             compilers: Vec::new(),
             cpu:       HashMap::new(),
         }
+    }
+
+    /// Keep the same wire fields for parser and capture-annotation fixtures.
+    fn directory_record_bytes(home: &str) -> Vec<u8> {
+        [
+            "cargo-tile-v2",
+            "generation",
+            "boot",
+            "100",
+            "run-generation-10.log",
+            "/writer/project",
+            home,
+            "1",
+            "build",
+            "",
+        ]
+        .join("\0")
+        .into_bytes()
+    }
+
+    /// A candidate record can provide text without becoming a verified row source.
+    fn directory_record(home: &str) -> VersionedRegistration {
+        match Registration::parse(&directory_record_bytes(home))
+            .expect("well-formed directory record")
+        {
+            Registration::Versioned(record) => Ok(record),
+            Registration::Legacy(_) => Err("expected v2 record"),
+        }
+        .expect("fixture writes a versioned record")
+    }
+
+    /// A process-table row whose absolute cwd is independent of display shortening.
+    fn directory_row() -> CargoProcess {
+        CargoProcess {
+            path:               "~/project".to_owned(),
+            directory_identity: DirectoryIdentity::Absolute("/writer/project".into()),
+            pid:                10,
+            parent:             None,
+            start:              "10:00".to_owned(),
+            started:            0,
+            duration:           "00:01".to_owned(),
+            cpu:                "0%".to_owned(),
+            compiler:           None,
+            state:              CaptureLookup::Unregistered,
+            managed:            0,
+            nested:             false,
+            command:            CommandText::of("cargo", &["build"]),
+        }
+    }
+
+    #[test]
+    fn capture_annotation_changes_only_display_when_writer_home_differs() {
+        for (home, display) in [("/writer", "~/project"), ("/custom", "/writer/project")] {
+            let root = tempdir().expect("capture root");
+            let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+            fs::create_dir_all(&markers).expect("registration directory");
+            fs::write(markers.join("10.generation"), directory_record_bytes(home))
+                .expect("versioned registration");
+            let record = directory_record(home);
+            let stamp = match record.identity() {
+                IdentityEvidence::Available(stamp) => Ok(stamp),
+                IdentityEvidence::Unavailable => Err("fixture identity unavailable"),
+            }
+            .expect("fixture supplies a complete birth");
+            let capture = Capture::take_from(root.path(), |pid| {
+                KernelObservation::for_test(pid, Observation::Present(stamp.clone()))
+            });
+            assert_eq!(capture.confirmed().len(), 1);
+            let mut row = directory_row();
+            let identity = row.directory_identity.clone();
+
+            census_of(&[]).annotate_capture(&mut row, &capture, Some(Path::new("/writer")));
+
+            assert_eq!(row.path, display);
+            assert_eq!(row.directory_identity, identity);
+
+            row.directory_identity = DirectoryIdentity::Absolute("/other/project".into());
+            row.path = "~/project".to_owned();
+            census_of(&[]).annotate_capture(&mut row, &capture, Some(Path::new("/writer")));
+            assert_eq!(row.path, "~/project");
+            assert_eq!(
+                row.directory_identity,
+                DirectoryIdentity::Absolute("/other/project".into())
+            );
+        }
+    }
+
+    #[test]
+    fn registration_directory_shortens_only_the_same_writer_and_scanner_home() {
+        let record = directory_record("/writer");
+        assert_eq!(record.directory(), Path::new("/writer/project"));
+        assert_eq!(
+            registration_directory(&record, Some(Path::new("/writer"))),
+            "~/project"
+        );
+        assert_eq!(
+            registration_directory(&record, Some(Path::new("/other"))),
+            "/writer/project"
+        );
+        assert_eq!(registration_directory(&record, None), "/writer/project");
+        assert_eq!(
+            registration_directory(&directory_record(""), Some(Path::new("/writer"))),
+            "/writer/project"
+        );
+    }
+
+    #[test]
+    fn a_custom_writer_home_does_not_use_the_scanners_tilde_prefix() {
+        assert_eq!(
+            registration_directory(&directory_record("/custom"), Some(Path::new("/writer"))),
+            "/writer/project"
+        );
+    }
+
+    #[test]
+    fn nearest_empty_capture_does_not_inherit_an_enclosing_progress_reading() {
+        let root = capture_root(&[
+            (10, ""),
+            (20, "    Blocking waiting for file lock on build directory"),
+        ]);
+        let census = census_of(&[(11, 10), (10, 20)]);
+        let capture = Capture::take_from(root.path(), |pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        assert_eq!(
+            census.captured_run(&capture, Pid::from_u32(11)),
+            CaptureLookup::Registered(CaptureRead::NoCurrentProgress)
+        );
+    }
+
+    #[test]
+    fn nearest_unreadable_capture_does_not_inherit_an_enclosing_progress_reading() {
+        let root = capture_root(&[
+            (10, ""),
+            (20, "    Blocking waiting for file lock on build directory"),
+        ]);
+        let log = root.path().join(format!(
+            "{RUN_LOG_PREFIX}20260824-084300{PID_SEPARATOR}10{RUN_LOG_SUFFIX}"
+        ));
+        fs::remove_file(&log).expect("remove unreadable log placeholder");
+        fs::create_dir(&log).expect("a directory cannot supply a log tail");
+        let census = census_of(&[(11, 10), (10, 20)]);
+        let capture = Capture::take_from(root.path(), |pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        assert!(matches!(
+            census.captured_run(&capture, Pid::from_u32(11)),
+            CaptureLookup::Registered(CaptureRead::Unreadable(_))
+        ));
+    }
+
+    #[test]
+    fn unavailable_argv_and_deliberately_excluded_rows_have_different_outcomes() {
+        assert_eq!(cargo_split(&[]), Err(RowAbsence::Unavailable));
+        let excluded = vec![OsString::from("cargo"), OsString::from("build")];
+        assert_eq!(
+            select_cargo(&excluded, &[String::from("build")]),
+            Err(RowAbsence::Excluded)
+        );
+        assert!(matches!(
+            cargo_split(&excluded),
+            Ok(CargoArguments {
+                layout: ArgumentLayout::Cargo,
+                ..
+            })
+        ));
+        assert!(
+            matches!(cargo_split(&[OsString::from("cargo-nextest"), OsString::from("run")]), Ok(CargoArguments { layout: ArgumentLayout::External(name), .. }) if name == "nextest")
+        );
     }
 
     #[test]
@@ -1450,11 +1711,13 @@ mod tests {
             "    Blocking waiting for file lock on build directory",
         )]);
         let census = census_of(&[(76847, 76846), (76846, 64432)]);
-        let capture = Capture::take_from(root.path(), |_| RunLiveness::Running);
+        let capture = Capture::take_from(root.path(), |pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
 
         assert_eq!(
             census.captured_run(&capture, Pid::from_u32(76847)),
-            Some(RunState::Blocked),
+            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)),
         );
     }
 
@@ -1470,15 +1733,17 @@ mod tests {
             "    Blocking waiting for file lock on build directory",
         )]);
         let census = census_of(&[(76847, 64432), (64432, 64431)]);
-        let capture = Capture::take_from(root.path(), |_| RunLiveness::Running);
+        let capture = Capture::take_from(root.path(), |pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
 
         assert_eq!(
             census.captured_run(&capture, Pid::from_u32(76847)),
-            Some(RunState::Blocked),
+            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)),
         );
         assert_eq!(
             census.captured_run(&capture, Pid::from_u32(64432)),
-            Some(RunState::Blocked),
+            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)),
             "the lead still reads its own shim",
         );
     }
@@ -1662,7 +1927,7 @@ mod tests {
             OsString::from("--crate-name"),
             OsString::from("bevy_transform"),
         ];
-        assert!(command_text(&argv, None).is_none());
+        assert!(command_text(&argv, None).is_err());
     }
 
     #[test]

@@ -147,8 +147,15 @@ if [ -t 0 ] && [ -t 1 ] && [ -t 2 ] && command -v script > /dev/null 2>&1; then
     fi
 fi
 
+# Calendar text is for people; the UUID prevents a later invocation from
+# reusing a name after a reader has already approved its old deletion.
+invocation=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null) || exec "$real" "$@"
+case $invocation in
+    '' | *[!0-9a-fA-F-]*) exec "$real" "$@" ;;
+esac
 generation=$(date +%Y%m%d-%H%M%S) || exec "$real" "$@"
 [ -n "$generation" ] || exec "$real" "$@"
+generation="$generation-$invocation"
 log_basename="run-$generation-$$.log"
 log_path="$root/$log_basename"
 registration_path="$pids/$$.$generation"
@@ -203,13 +210,15 @@ setup_capture() (
     chmod 0750 "$root/state" || exit 1
     chmod 0750 "$pids" || exit 1
 
-    directory=${PWD-}
-    if [ -n "${HOME-}" ]; then
-        case $directory in
-            "$HOME") directory='~' ;;
-            "$HOME"/*) directory="~${directory#"$HOME"}" ;;
-        esac
-    fi
+    # The sentinel protects newlines belonging to the directory name.
+    # Remove it and exactly the one newline written by pwd itself.
+    directory=$(pwd -P && printf '.') || exit 1
+    directory=${directory%.}
+    directory=${directory%?}
+    # A relative HOME cannot identify a prefix of this absolute directory.
+    # Keep the caller's HOME unchanged; only the serialized field is absent.
+    writer_home=${HOME-}
+    case $writer_home in /*) ;; *) writer_home= ;; esac
 
     boot=
     birth=
@@ -224,7 +233,11 @@ setup_capture() (
             ;;
         Darwin)
             boot=$(sysctl -n kern.boottime) || boot=
-            birth=$(ps -o lstart= -p "$$") || birth=
+            birth=$(
+                # UTC avoids ambiguous local times during a DST fallback.
+                started=$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$$") || exit 1
+                LC_ALL=C TZ=UTC0 date -j -f '%a %b %e %H:%M:%S %Y' "$started" +%s
+            ) || birth=
             ;;
     esac
 
@@ -238,10 +251,10 @@ setup_capture() (
     done
     (set -C; true > "$temporary_path") || exit 1
     temporary=$temporary_path
-    # This format is for recovering cwd and each original argv word;
-    # the current reader uses the filename to find this run's live log.
+    # Preserve directory identity and each argv word. The optional home
+    # field lets a reader shorten only a prefix its own user recognizes.
     printf '%s\000' cargo-tile-v2 "$generation" "$boot" "$birth" \
-        "$log_basename" "$directory" "$#" "$@" > "$temporary" || exit 1
+        "$log_basename" "$directory" "$writer_home" "$#" "$@" > "$temporary" || exit 1
     chmod 0640 "$temporary" || exit 1
     if [ -n "$fifo_path" ]; then
         # This shim owns the pid, so an existing FIFO name is stale.

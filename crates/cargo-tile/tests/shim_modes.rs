@@ -44,6 +44,8 @@ mod tests {
     enum HomeSelection {
         /// Give the child a home directory inside the fixture.
         Present,
+        /// Preserve a caller value that cannot shorten an absolute working directory.
+        Relative(&'static str),
         /// Remove `HOME` only from the child process.
         Unset,
     }
@@ -83,6 +85,7 @@ mod tests {
 set -eu
 umask > "$SHIM_TEST_OBSERVATIONS/umask"
 printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/arguments"
+printf '%s\000' "$(pwd -P)" "${HOME-}" > "$SHIM_TEST_OBSERVATIONS/directory-fields"
 printf '%s\000' "${CARGOTILE_NESTED-unset}" \
     "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" \
     > "$SHIM_TEST_OBSERVATIONS/environment"
@@ -152,6 +155,7 @@ exit "$SHIM_TEST_EXIT_STATUS"
             };
             match home_selection {
                 HomeSelection::Present => command.env("HOME", self.directory.path().join("home")),
+                HomeSelection::Relative(home) => command.env("HOME", home),
                 HomeSelection::Unset => command.env_remove("HOME"),
             };
             command.output().expect("run installed shim to completion")
@@ -228,6 +232,29 @@ exit "$SHIM_TEST_EXIT_STATUS"
             let registrations = entries(&snapshot.join("state/pids"));
             assert_eq!(registrations.len(), 1, "exactly one published registration");
             assert_mode(&registrations[0], 0o640);
+            let registration = fs::read(&registrations[0]).expect("read extended registration");
+            let terminated = registration
+                .strip_suffix(&[0])
+                .expect("NUL-terminated record");
+            let fields: Vec<_> = terminated.split(|byte| *byte == 0).collect();
+            assert_eq!(fields[0], b"cargo-tile-v2");
+            let directory = fs::read(self.observations.join("directory-fields"))
+                .expect("cargo records its original directory and home");
+            let directory = directory
+                .strip_suffix(&[0])
+                .expect("terminated directory fields");
+            let directory: Vec<_> = directory.split(|byte| *byte == 0).collect();
+            assert_eq!(fields[5], directory[0]);
+            let home = Path::new(std::str::from_utf8(directory[1]).expect("UTF-8 fixture home"));
+            let expected_home = if home.is_absolute() {
+                directory[1]
+            } else {
+                b""
+            };
+            assert_eq!(fields[6], expected_home);
+            assert!(
+                Path::new(std::str::from_utf8(fields[5]).expect("UTF-8 fixture cwd")).is_absolute()
+            );
             let logs: Vec<_> = entries(&snapshot)
                 .into_iter()
                 .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
@@ -398,6 +425,92 @@ done
     #[test]
     fn no_terminal_log_stays_group_readable_after_publication_boundary_sweep() {
         assert_log_mode_after_sweep(CapturePath::NoTerminal);
+    }
+
+    /// The additional identity fields are readable by the group before publication too.
+    #[test]
+    fn extended_registration_is_group_readable_before_publication() {
+        for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
+            let toolchain = InstalledToolchain::new();
+            let link = Command::new("sh")
+                .args(["-c", "command -v ln"])
+                .output()
+                .expect("locate native publication utility");
+            assert!(link.status.success());
+            let link = String::from_utf8(link.stdout).expect("UTF-8 utility path");
+            write_executable(
+                &toolchain.directory.path().join("toolchain/bin/ln"),
+                &format!(
+                    r#"#!/bin/sh
+set -eu
+cp -p "$1" "$SHIM_TEST_OBSERVATIONS/staged-registration"
+exec {} "$@"
+"#,
+                    shell_word(link.trim_end())
+                ),
+            );
+            let output = toolchain.run(
+                capture_path,
+                RootSelection::Explicit,
+                HomeSelection::Present,
+                0o066,
+                &["build"],
+            );
+            toolchain.assert_cargo(&output, 0o066, &["build"]);
+            toolchain.assert_capture_modes(capture_path);
+            let staged = toolchain.observations.join("staged-registration");
+            assert_mode(&staged, 0o640);
+            let published = entries(&toolchain.observations.join("root/state/pids"));
+            assert_eq!(
+                fs::read(staged).expect("complete staging record"),
+                fs::read(&published[0]).expect("published record")
+            );
+        }
+    }
+
+    /// Without a unique generation, capture must fail before publishing a repeatable name.
+    #[test]
+    fn unavailable_uuid_sources_run_cargo_with_original_permissions_and_environment() {
+        let toolchain = InstalledToolchain::new();
+        let cat = Command::new("sh")
+            .args(["-c", "command -v cat"])
+            .output()
+            .expect("locate native cat for unrelated fixture reads");
+        assert!(cat.status.success());
+        let cat = String::from_utf8(cat.stdout).expect("UTF-8 utility path");
+        write_executable(
+            &toolchain.directory.path().join("toolchain/bin/cat"),
+            &format!(
+                r#"#!/bin/sh
+case "$1" in /proc/sys/kernel/random/uuid) exit 1 ;; esac
+exec {} "$@"
+"#,
+                shell_word(cat.trim_end())
+            ),
+        );
+        write_executable(
+            &toolchain.directory.path().join("toolchain/bin/uuidgen"),
+            "#!/bin/sh\nexit 1\n",
+        );
+        let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
+        let output = toolchain.run(
+            CapturePath::NoTerminal,
+            RootSelection::Explicit,
+            HomeSelection::Present,
+            0o066,
+            &arguments,
+        );
+        toolchain.assert_cargo(&output, 0o066, &arguments);
+        assert_eq!(output.stdout, b"cargo-stdout\n");
+        assert_eq!(output.stderr, b"cargo-stderr\n");
+        assert_eq!(
+            fs::read(toolchain.observations.join("environment")).expect("cargo capture settings"),
+            b"unset\0unset\0unset\0"
+        );
+        assert!(
+            !toolchain.root.exists(),
+            "no repeatable capture artifacts are published"
+        );
     }
 
     /// A desktop caller keeps its mask when cargo runs in a terminal.
@@ -649,6 +762,39 @@ done
         assert_eq!(entries(&toolchain.root).len(), 1, "log cleanup");
         assert_eq!(output.stdout, b"cargo-stdout\n");
         assert_eq!(output.stderr, b"cargo-stderr\n");
+    }
+
+    /// Relative and numeric homes cannot be interpreted as an absolute prefix or argc.
+    #[test]
+    fn relative_home_is_omitted_from_registration_but_preserved_for_cargo() {
+        for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
+            for home in ["relative/home", "1"] {
+                let toolchain = InstalledToolchain::new();
+                let output = toolchain.run(
+                    capture_path,
+                    RootSelection::Explicit,
+                    HomeSelection::Relative(home),
+                    0o066,
+                    &["build"],
+                );
+                toolchain.assert_cargo(&output, 0o066, &["build"]);
+                toolchain.assert_capture_modes(capture_path);
+                let inherited = fs::read(toolchain.observations.join("directory-fields"))
+                    .expect("cargo records its unchanged HOME");
+                assert_eq!(
+                    inherited.split(|byte| *byte == 0).nth(1),
+                    Some(home.as_bytes())
+                );
+                let registrations = entries(&toolchain.observations.join("root/state/pids"));
+                let registration = fs::read(&registrations[0]).expect("extended registration");
+                let fields: Vec<_> = registration
+                    .strip_suffix(&[0])
+                    .expect("terminated record")
+                    .split(|byte| *byte == 0)
+                    .collect();
+                assert_eq!(&fields[6..], [b"".as_slice(), b"1", b"build"]);
+            }
+        }
     }
 
     /// Accounts without a home environment still reach cargo and publish capture.

@@ -3,6 +3,7 @@
 
 mod app;
 mod attract;
+mod birth_stamp;
 mod capture;
 mod capture_root;
 mod cli;
@@ -20,6 +21,7 @@ mod probe;
 mod processes;
 mod progress;
 mod random;
+mod registration;
 mod render;
 mod roster;
 mod sccache;

@@ -3,7 +3,7 @@
 //! The configured root's final component must be a directory, never a symlink.
 //! Ancestor symlinks remain supported, including macOS `/tmp` -> `/private/tmp`.
 //! `state` and `pids` are opened separately without following symlinks. Every
-//! entry is a sampled basename opened relative to its own directory handle.
+//! entry is a sampled or validated basename opened relative to its directory handle.
 //!
 //! Cleanup requires the effective user to own every inspected directory, with
 //! no group or other write mode bits, on both Linux and macOS.
@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
+use std::fs::Metadata;
 use std::io;
 use std::io::Read;
 use std::io::Seek;
@@ -49,6 +50,7 @@ use crate::constants::CAPTURE_DIRECTORY_BUFFER_BYTES;
 use crate::constants::CAPTURE_DIRECTORY_CHANGED;
 use crate::constants::CAPTURE_DIRECTORY_INCOMPLETE;
 use crate::constants::CAPTURE_ENTRY_NAME_BYTES;
+use crate::constants::CAPTURE_INVALID_BASENAME;
 use crate::constants::CAPTURE_INVENTORY_LIMIT;
 use crate::constants::CAPTURE_NOT_REGULAR;
 use crate::constants::CAPTURE_PIDS_DIR;
@@ -102,15 +104,15 @@ enum RegistrationAccess {
     Unavailable,
 }
 
-/// One bounded directory sample, its live-registration sample, and their handles.
+/// One bounded registration sample and a lazy legacy-log sample with their handles.
 /// No handle or deletion capability is borrowed from a previous scan.
 pub(crate) struct RootScan {
     /// Reopened before sweeping so a replacement at this pathname is detected.
     path:                PathBuf,
     /// Ownership comes from fstat of this handle, never pathname metadata.
     root:                InspectedDirectory,
-    /// Sampled before registration traversal and before any liveness callback.
-    logs:                Inventory,
+    /// Versioned records bypass enumeration; legacy annotation initializes this sample.
+    logs:                OnceLock<Inventory>,
     /// Keep successful traversal handles even when enumeration later fails.
     registration_access: RegistrationAccess,
     /// Unavailable and incomplete registrations never become an empty live set.
@@ -120,7 +122,7 @@ pub(crate) struct RootScan {
 }
 
 impl RootScan {
-    /// Reopen the configured pathname and sample logs before registrations.
+    /// Reopen the configured pathname and sample registrations; legacy logs are lazy.
     pub(crate) fn open(path: &Path, history: &mut RootHistory) -> io::Result<Self> {
         // Removing trailing separators and `.` prevents them bypassing NOFOLLOW
         // on the configured root's final symlink. Ancestors retain OS resolution.
@@ -132,7 +134,7 @@ impl RootScan {
                 return Err(error);
             },
         };
-        let logs = Inventory::sample(&root);
+        let logs = OnceLock::new();
         let (registration_access, registrations) = match open_registrations(&root) {
             Ok((state, pids)) => {
                 let registrations = Inventory::sample(&pids);
@@ -163,10 +165,14 @@ impl RootScan {
 
     /// Entries cannot carry an arbitrary path into a descriptor-relative read.
     pub(crate) fn log_entries(&self) -> impl Iterator<Item = ScanEntry<'_>> {
-        self.logs.entries.iter().map(|entry| ScanEntry {
-            directory: &self.root,
-            entry,
-        })
+        self.logs
+            .get_or_init(|| Inventory::sample(&self.root))
+            .entries
+            .iter()
+            .map(|entry| ScanEntry {
+                directory: &self.root,
+                name:      entry.name(),
+            })
     }
 
     /// Failed traversal yields no entries while keeping its separate outcome.
@@ -178,25 +184,41 @@ impl RootScan {
         self.registrations
             .entries
             .iter()
-            .map(move |entry| ScanEntry { directory, entry })
+            .map(move |entry| ScanEntry {
+                directory,
+                name: entry.name(),
+            })
     }
 
     /// A bounded root sample must be complete before cleanup is possible.
-    pub(crate) const fn log_outcome(&self) -> &Enumeration { &self.logs.outcome }
+    #[cfg(test)]
+    pub(crate) fn log_outcome(&self) -> &Enumeration {
+        &self
+            .logs
+            .get_or_init(|| Inventory::sample(&self.root))
+            .outcome
+    }
 
     /// Distinguish an empty live-registration directory from failed access.
     pub(crate) const fn registration_outcome(&self) -> &Enumeration { &self.registrations.outcome }
 
-    /// Classify once per root. Only the private owned capability can unlink, and
-    /// it selects targets exclusively from this scan's inventories.
+    /// Open a validated basename even when it was published after enumeration.
+    pub(crate) fn read_log(&self, basename: &Path) -> io::Result<String> {
+        let entry = named_entry(&self.root, basename)?;
+        let file = entry.open_regular()?;
+        let length = file.metadata()?.len();
+        read_tail(file, length)
+    }
+
+    /// Only the private owned capability can remove a registration and its log.
+    /// The callback rechecks the recorded identity immediately before each unlink.
     pub(crate) fn sweep(
         &self,
         budget: &mut SweepBudget,
-        registrations: impl FnMut(&Path) -> SweepDisposition,
-        logs: impl FnMut(&Path) -> SweepDisposition,
+        registrations: impl FnMut(ScanEntry<'_>) -> SweepDisposition,
     ) {
         match self.access() {
-            RootAccess::Owned(owned) => owned.sweep(budget, registrations, logs),
+            RootAccess::Owned(owned) => owned.sweep(budget, registrations),
             RootAccess::Foreign(foreign) => foreign.preserve(),
         }
     }
@@ -211,7 +233,10 @@ impl RootScan {
             return RootAccess::Foreign(ForeignRoot { scan: self });
         };
         if self.continuity == RootContinuity::Established
-            && self.log_outcome().require_complete().is_ok()
+            && self
+                .logs
+                .get()
+                .is_none_or(|logs| logs.outcome.require_complete().is_ok())
             && self.registration_outcome().require_complete().is_ok()
             && [&self.root, state, pids]
                 .into_iter()
@@ -467,17 +492,18 @@ impl InventoryEntry {
     fn name(&self) -> &Path { Path::new(OsStr::from_bytes(&self.name[..self.length])) }
 }
 
-/// A readable entry borrows both its inventory and the directory that supplied it.
+/// A readable basename borrows the inspected directory that constrains its open.
+#[derive(Clone, Copy)]
 pub(crate) struct ScanEntry<'scan> {
     /// A replaced pathname cannot redirect the entry's open to another directory.
     directory: &'scan InspectedDirectory,
-    /// Only a sampled basename may be opened through this handle.
-    entry:     &'scan InventoryEntry,
+    /// A sampled or explicitly validated basename carries no pathname prefix.
+    name:      &'scan Path,
 }
 
 impl<'scan> ScanEntry<'scan> {
     /// Classify filenames without allocating a joined path for every entry.
-    pub(crate) fn name(&self) -> &'scan Path { self.entry.name() }
+    pub(crate) const fn name(&self) -> &'scan Path { self.name }
 
     /// NONBLOCK prevents FIFO opens from waiting; fstat rejects every non-regular
     /// type before reads. It does not impose a deadline on regular file I/O.
@@ -504,16 +530,52 @@ impl<'scan> ScanEntry<'scan> {
 
     /// Read one byte past the record cap so oversize input is rejected rather
     /// than accepted as a complete truncated registration.
-    pub(crate) fn read_registration(&self) -> io::Result<Vec<u8>> {
-        let file = self.open_regular()?;
-        let mut bytes = Vec::new();
-        file.take(CAPTURE_REGISTRATION_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > CAPTURE_REGISTRATION_BYTES {
-            return Err(io::Error::other(CAPTURE_REGISTRATION_TOO_LARGE));
-        }
-        Ok(bytes)
+    pub(crate) fn read_registration(&self) -> io::Result<RegistrationObservation> {
+        read_registration_file(self.open_regular()?)
     }
+}
+
+/// Contents and metadata come from one descriptor, even after a pathname replacement.
+#[derive(Debug)]
+pub(crate) struct RegistrationObservation {
+    /// NUL-framed record bytes bounded independently of metadata.
+    pub(crate) bytes:    Vec<u8>,
+    /// Includes the modification time of the same file that supplied the bytes.
+    pub(crate) metadata: Metadata,
+}
+
+/// Read one already opened registration without consulting its pathname again.
+fn read_registration_file(file: File) -> io::Result<RegistrationObservation> {
+    let metadata = file.metadata()?;
+    let mut bytes = Vec::new();
+    file.take(CAPTURE_REGISTRATION_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > CAPTURE_REGISTRATION_BYTES {
+        return Err(io::Error::other(CAPTURE_REGISTRATION_TOO_LARGE));
+    }
+    Ok(RegistrationObservation { bytes, metadata })
+}
+
+/// Validate external record names before any descriptor-relative open.
+fn named_entry<'scan>(
+    directory: &'scan InspectedDirectory,
+    basename: &'scan Path,
+) -> io::Result<ScanEntry<'scan>> {
+    if basename.as_os_str().as_bytes().contains(&b'/')
+        || !matches!(
+            basename.components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            CAPTURE_INVALID_BASENAME,
+        ));
+    }
+    Ok(ScanEntry {
+        directory,
+        name: basename,
+    })
 }
 
 /// One allowance shared by every cleanup kind across all roots in a single scan.
@@ -534,25 +596,23 @@ impl SweepBudget {
     /// Expose the actual production allowance for multi-root budget assertions.
     pub(crate) const fn remaining(&self) -> usize { self.remaining }
 
-    /// Budget is charged only after an owned capability admits the artifact.
-    const fn charge(&mut self) -> bool {
-        if self.remaining == 0 {
+    /// Reserve the complete pair before its first removal attempt.
+    const fn charge_pair(&mut self) -> bool {
+        if self.remaining < 2 {
             return false;
         }
-        self.remaining -= 1;
+        self.remaining -= 2;
         true
     }
 }
 
-/// Identity policy belongs to the reader; filesystem deletion stays in this module.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Identity policy supplies one freshly rechecked registration/log association.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SweepDisposition {
-    /// A live or unverifiable artifact must survive this scan.
+    /// Live, legacy, malformed, or unverifiable records survive, including staging.
     Preserve,
-    /// A stale registration or log is eligible for an owned removal attempt.
-    Remove,
-    /// Unpublished records count against cleanup work but cannot yet be deleted.
-    Staging,
+    /// Only this exact log may be removed alongside its ended registration.
+    Remove(PathBuf),
 }
 
 /// One internal dispatch distinguishes cleanup authority from read-only access.
@@ -561,15 +621,6 @@ enum RootAccess<'scan> {
     Owned(OwnedRoot<'scan>),
     /// Foreign, writable-by-others, incomplete or changed roots retain no authority.
     Foreign(ForeignRoot<'scan>),
-}
-
-/// Select one of the owned capability's own inventories and directory handles.
-#[derive(Clone, Copy)]
-enum SweepDirectory {
-    /// Published and staging registration records share the pids directory.
-    Registrations,
-    /// Logs are basenames from the root sample taken first.
-    Logs,
 }
 
 /// Private and non-clonable: no caller can retain authority beyond this scan.
@@ -581,53 +632,37 @@ struct OwnedRoot<'scan> {
 }
 
 impl OwnedRoot<'_> {
-    /// Registration and log cleanup consume the exact same mutable allowance.
+    /// Retained entries never consume allowance; each attempted pair reserves two.
     fn sweep(
         self,
         budget: &mut SweepBudget,
-        mut registrations: impl FnMut(&Path) -> SweepDisposition,
-        mut logs: impl FnMut(&Path) -> SweepDisposition,
+        mut registrations: impl FnMut(ScanEntry<'_>) -> SweepDisposition,
     ) {
-        for entry in &self.scan.registrations.entries {
-            self.discard(
-                SweepDirectory::Registrations,
-                entry,
-                registrations(entry.name()),
-                budget,
-            );
-            if budget.remaining() == 0 {
+        for entry in self.scan.registration_entries() {
+            if budget.remaining() < 2 {
                 return;
             }
-        }
-        for entry in &self.scan.logs.entries {
-            self.discard(SweepDirectory::Logs, entry, logs(entry.name()), budget);
-            if budget.remaining() == 0 {
-                return;
+            let SweepDisposition::Remove(log) = registrations(entry) else {
+                continue;
+            };
+            if self.scan.revalidate().is_err()
+                || named_entry(&self.scan.root, &log).is_err()
+                || !budget.charge_pair()
+            {
+                continue;
             }
-        }
-    }
-
-    /// Only this capability reaches unlinkat; neither callers nor entry reads
-    /// receive a removal API taking an arbitrary filesystem path.
-    fn discard(
-        &self,
-        directory: SweepDirectory,
-        entry: &InventoryEntry,
-        disposition: SweepDisposition,
-        budget: &mut SweepBudget,
-    ) {
-        match disposition {
-            SweepDisposition::Staging => {
-                budget.charge();
-            },
-            SweepDisposition::Remove if budget.charge() => {
-                let directory = match directory {
-                    SweepDirectory::Registrations => &self.pids.handle,
-                    SweepDirectory::Logs => &self.scan.root.handle,
-                };
-                let _ = unlinkat(directory, entry.name(), AtFlags::empty());
-            },
-            SweepDisposition::Preserve | SweepDisposition::Remove => {},
+            // A failed log removal must leave its only deletion evidence intact.
+            match unlinkat(&self.scan.root.handle, &log, AtFlags::empty()) {
+                Ok(()) | Err(rustix::io::Errno::NOENT) => {},
+                Err(_) => continue,
+            }
+            // Publication never reuses a generation. Re-reading also protects
+            // older records replaced before this final confirmation.
+            if registrations(entry) == SweepDisposition::Remove(log)
+                && self.scan.revalidate().is_ok()
+            {
+                let _ = unlinkat(&self.pids.handle, entry.name(), AtFlags::empty());
+            }
         }
     }
 }
@@ -782,12 +817,94 @@ mod tests {
     /// Attempt every artifact through the production capability dispatcher.
     fn sweep_everything(scan: &RootScan) -> usize {
         let mut budget = SweepBudget::default();
-        scan.sweep(
-            &mut budget,
-            |_| SweepDisposition::Remove,
-            |_| SweepDisposition::Remove,
-        );
+        scan.sweep(&mut budget, |_| {
+            SweepDisposition::Remove(Path::new("log").to_owned())
+        });
         CAPTURE_SWEEP_LIMIT - budget.remaining()
+    }
+
+    /// Metadata is read from the open descriptor even after its name is replaced.
+    #[test]
+    fn registration_bytes_and_timestamp_always_come_from_the_same_descriptor() {
+        let root = capture_root();
+        let path = root.path().join("record");
+        fs::write(&path, "original").expect("original record");
+        let file = File::open(&path).expect("original descriptor");
+        let original_time = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(123);
+        file.set_times(std::fs::FileTimes::new().set_modified(original_time))
+            .expect("original timestamp");
+        fs::rename(&path, root.path().join("moved")).expect("move opened record");
+        fs::write(&path, "replacement").expect("replacement record");
+        let observed = super::read_registration_file(file).expect("read held descriptor");
+        assert_eq!(observed.bytes, b"original");
+        assert_eq!(
+            observed.metadata.modified().expect("descriptor timestamp"),
+            original_time
+        );
+        assert_ne!(
+            fs::metadata(&path)
+                .expect("replacement metadata")
+                .modified()
+                .expect("replacement timestamp"),
+            original_time
+        );
+    }
+
+    #[test]
+    fn named_log_reads_do_not_require_or_populate_the_inventory() {
+        let root = capture_root();
+        let scan = RootScan::open(root.path(), &mut RootHistory::default())
+            .expect("open before log publication");
+        assert!(scan.logs.get().is_none());
+        fs::write(root.path().join("later.log"), "later").expect("publish after scan");
+        assert_eq!(
+            scan.read_log(Path::new("later.log")).expect("named read"),
+            "later"
+        );
+        assert!(scan.logs.get().is_none());
+        for name in [
+            "",
+            ".",
+            "..",
+            "../later.log",
+            "later.log/",
+            "later.log/.",
+            "/later.log",
+        ] {
+            assert_eq!(
+                scan.read_log(Path::new(name))
+                    .expect_err("invalid basename")
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn a_pair_that_does_not_fit_the_remaining_allowance_stays_whole() {
+        let root = capture_root();
+        let registration = root
+            .path()
+            .join(CAPTURE_LIVE_RUNS_DIR)
+            .join("10.generation");
+        fs::write(&registration, "record").expect("record");
+        let log = root.path().join("log");
+        fs::write(&log, "output").expect("log");
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan");
+        let mut budget = SweepBudget { remaining: 1 };
+        scan.sweep(&mut budget, |_| {
+            SweepDisposition::Remove(Path::new("log").to_owned())
+        });
+        assert_eq!(budget.remaining(), 1);
+        assert!(registration.exists());
+        assert!(log.exists());
+        budget.remaining = 2;
+        scan.sweep(&mut budget, |_| {
+            SweepDisposition::Remove(Path::new("log").to_owned())
+        });
+        assert_eq!(budget.remaining(), 0);
+        assert!(!registration.exists());
+        assert!(!log.exists());
     }
 
     /// Final-component symlinks are rejected even with trailing slash or dot.
@@ -803,8 +920,8 @@ mod tests {
         fs::write(&log, "cleanup through a trusted ancestor").expect("root log");
         let scan = RootScan::open(&alias.join("capture"), &mut history).expect("ancestor alias");
         assert!(matches!(scan.access(), RootAccess::Owned(_)));
-        assert_eq!(sweep_everything(&scan), 2);
-        assert!(!log.exists());
+        assert_eq!(sweep_everything(&scan), 0);
+        assert!(log.exists());
         let root_link = parent.path().join("capture-link");
         symlink(actual.join("capture"), &root_link).expect("root symlink");
         assert!(RootScan::open(&root_link, &mut history).is_err());
@@ -925,7 +1042,11 @@ mod tests {
         let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
         let entry = log_entry(&scan, "record");
         assert_eq!(
-            entry.read_registration().expect("exact cap allowed").len(),
+            entry
+                .read_registration()
+                .expect("exact cap allowed")
+                .bytes
+                .len(),
             cap
         );
         OpenOptions::new()
@@ -982,7 +1103,9 @@ mod tests {
         let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("small scan");
         assert!(matches!(scan.log_outcome(), Enumeration::Complete));
         assert_eq!(scan.log_entries().count(), 1);
-        assert!(scan.logs.entries.capacity() < CAPTURE_INVENTORY_LIMIT);
+        assert!(
+            scan.logs.get().expect("sampled logs").entries.capacity() < CAPTURE_INVENTORY_LIMIT
+        );
         assert_eq!(scan.registrations.entries.capacity(), 0);
     }
 
@@ -1088,8 +1211,8 @@ mod tests {
             "bounded read"
         );
         let attempts = sweep_everything(&scan);
-        // The state directory is also sampled; unlinkat refuses to remove it.
-        assert_eq!(attempts, 3);
+        // One full pair reserves its allowance before the first unlink.
+        assert_eq!(attempts, 2);
         assert!(!path.exists());
         assert!(!registration.exists());
     }
