@@ -698,6 +698,27 @@ pub(crate) const HOOK_TEST_REAL_CARGO: &str =
 /// can execute the saved cargo without creating capture state.
 #[cfg(test)]
 pub(crate) const HOOK_TEST_VERSION_ARGUMENT: &str = "--version";
+/// Observe cargo's original invocation when a directory wins the final
+/// registration name after the shim's preliminary existence check.
+#[cfg(test)]
+pub(crate) const HOOK_TEST_DIRECTORY_COLLISION_CARGO: &str = r#"#!/bin/sh
+printf '%s\000' "$@" > "$HOOK_TEST_OBSERVATIONS/arguments"
+umask > "$HOOK_TEST_OBSERVATIONS/umask"
+printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" > "$HOOK_TEST_OBSERVATIONS/environment"
+printf 'cargo-stdout\n'
+printf 'cargo-stderr\n' >&2
+exit 37
+"#;
+/// Create the competing directory at the last possible command boundary,
+/// then use the host's actual ln to expose its directory-target behavior.
+#[cfg(test)]
+pub(crate) const HOOK_TEST_DIRECTORY_COLLISION_LINK: &str = r#"#!/bin/sh
+set -eu
+mkdir "$2"
+printf 'preserved\n' > "$2/keep"
+printf '%s' "$2" > "$HOOK_TEST_OBSERVATIONS/registration-path"
+exec "$HOOK_TEST_REAL_LINK" "$@"
+"#;
 /// Whether the grid puts the shim in front of cargo when it opens,
 /// when `config.toml` says nothing.
 pub(crate) const DEFAULT_CAPTURE_AUTO_INSTALL: bool = true;
@@ -719,6 +740,12 @@ pub(crate) const CAPTURE_ROOT_ENV: &str = "CARGO_TILE_ROOT";
 /// What separates the pid at the end of a run log's name from the
 /// timestamp in front of it.
 pub(crate) const PID_SEPARATOR: char = '-';
+/// Separates a shim pid from its calendar generation in a versioned
+/// registration filename; older shims register under the pid alone.
+pub(crate) const REGISTRATION_SEPARATOR: char = '.';
+/// Unpublished registration files never establish liveness, even when
+/// a killed setup leaves one beside the published registrations.
+pub(crate) const REGISTRATION_TEMP_SUFFIX: &str = ".tmp";
 /// Shown in `state` for a run waiting on another cargo to give up the
 /// build directory. A word rather than a bar: there is no reading to
 /// draw, which is the whole of what it says.

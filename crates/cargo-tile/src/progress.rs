@@ -12,7 +12,7 @@
 //! from outside it. The shim installed at `~/.rustup/toolchains/*/bin/cargo`
 //! is what closes that gap. It runs each command under a pty, mirrors
 //! the output into `<root>/run-<timestamp>-<pid>.log`, and registers the
-//! run as `<root>/state/pids/<pid>` for as long as it lives -- the pid
+//! run as `<root>/state/pids/<pid>.<timestamp>` for as long as it lives -- the pid
 //! in both being the shim's own, which is an ancestor of the cargo
 //! process the grid draws.
 //!
@@ -64,6 +64,8 @@ use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::PHASE_BUILDING;
 use crate::constants::PHASE_TESTING;
 use crate::constants::PID_SEPARATOR;
+use crate::constants::REGISTRATION_SEPARATOR;
+use crate::constants::REGISTRATION_TEMP_SUFFIX;
 use crate::constants::RUN_LOG_PREFIX;
 use crate::constants::RUN_LOG_SUFFIX;
 use crate::constants::RUN_LOG_TAIL_BYTES;
@@ -184,6 +186,29 @@ impl From<bool> for RunLiveness {
     fn from(running: bool) -> Self { if running { Self::Running } else { Self::Ended } }
 }
 
+/// How precisely a registration names the log belonging to its run.
+#[derive(Debug, Eq, Hash, PartialEq)]
+enum RegistrationGeneration {
+    /// Older shims register only a pid, so their newest log wins.
+    Legacy,
+    /// The calendar stamp shared by a versioned registration and its log.
+    Calendar(String),
+}
+
+impl RegistrationGeneration {
+    /// Whether this registration explicitly names this log, even when
+    /// a clock step makes it sort before another log under the same pid.
+    fn names_log(&self, path: &Path, pid: u32) -> bool {
+        match self {
+            Self::Legacy => false,
+            Self::Calendar(generation) => path.file_name().is_some_and(|name| {
+                name == format!("{RUN_LOG_PREFIX}{generation}{PID_SEPARATOR}{pid}{RUN_LOG_SUFFIX}")
+                    .as_str()
+            }),
+        }
+    }
+}
+
 /// The captured runs progress can currently be read from, keyed by the
 /// pid of the shim that captured each one.
 ///
@@ -200,11 +225,13 @@ impl Capture {
     /// Take stock of the capture directory: which runs are still live,
     /// which log belongs to each, and which logs are finished with.
     ///
-    /// The live set is read first because it is the cheap half and it
-    /// decides the rest: a log is only ever read while the run that is
-    /// writing it is alive, so matching against a live pid is what
-    /// keeps a finished run's log from being read as a running one that
-    /// happens to have inherited its pid.
+    /// The directory is sampled first and the live set second, and that
+    /// order is the one thing here that cannot be swapped: a log in the
+    /// sample was created after a registration the later read is bound
+    /// to find, so a running shim's log cannot be mistaken for an
+    /// orphan. Matching against a live pid is then what keeps a
+    /// finished run's log from being read as a running one that happens
+    /// to have inherited its pid.
     ///
     /// `liveness` answers for each pid registered under `state/pids`.
     /// A registration outliving its process would otherwise stand as a
@@ -223,13 +250,25 @@ impl Capture {
     /// once: a log this scan will not read is a log no scan ever will.
     /// See [`Capture::discard`].
     pub(crate) fn take_from(root: &Path, liveness: impl Fn(u32) -> RunLiveness) -> Self {
-        let live = live_runs(root, liveness);
         let Ok(entries) = fs::read_dir(root) else {
             return Self::default();
         };
+        // Sample the logs before liveness, never the other way round.
+        // The shim publishes its registration before it creates its
+        // log, so a log in this sample was created after a registration
+        // the read below is bound to find, and a running shim's log
+        // becomes impossible to sweep rather than merely unlikely to
+        // be. Reading liveness first leaves the reverse window open: a
+        // run that publishes between the two reads is absent from the
+        // liveness snapshot and loses its log to the orphan sweep, and
+        // cargo then reopens it outside the shim's setup subshell under
+        // whatever umask the caller had. `read_dir` returns a lazy
+        // iterator, so this collection is the sample, not the call.
+        let entries: Vec<fs::DirEntry> = entries.flatten().collect();
+        let live = live_runs(root, liveness);
         let mut logs: HashMap<u32, PathBuf> = HashMap::new();
         let mut swept = 0usize;
-        for entry in entries.flatten() {
+        for entry in entries {
             let path = entry.path();
             let Some(pid) = log_pid(&path) else {
                 continue;
@@ -237,24 +276,39 @@ impl Capture {
             // A run that has ended is finished with its log, whatever
             // the log recorded. Nothing reads a capture after its run,
             // so this is the whole of what retires one.
-            if !live.contains(&pid) {
+            let Some(generations) = live.get(&pid) else {
+                Self::discard(&path, &mut swept);
+                continue;
+            };
+            let explicitly_registered = |path: &Path| {
+                generations
+                    .iter()
+                    .any(|generation| generation.names_log(path, pid))
+            };
+            if !generations.contains(&RegistrationGeneration::Legacy)
+                && !explicitly_registered(&path)
+            {
                 Self::discard(&path, &mut swept);
                 continue;
             }
-            // Two logs under one live pid means the pid came round
-            // again, and the older is a run that ended days ago. The
-            // newest is the one being written now -- so the other is
-            // retired here rather than passed over on every scan for
-            // the rest of the session.
+            // Legacy registrations need the newest-log fallback.
+            // Preserve every explicitly registered generation until
+            // process identity can settle ambiguous reuse of a pid.
             match logs.entry(pid) {
                 Entry::Vacant(slot) => {
                     slot.insert(path);
                 },
                 Entry::Occupied(mut held) if newer(&path, held.get()) => {
-                    Self::discard(held.get(), &mut swept);
+                    if !explicitly_registered(held.get()) {
+                        Self::discard(held.get(), &mut swept);
+                    }
                     held.insert(path);
                 },
-                Entry::Occupied(_) => Self::discard(&path, &mut swept),
+                Entry::Occupied(_) => {
+                    if !explicitly_registered(&path) {
+                        Self::discard(&path, &mut swept);
+                    }
+                },
             }
         }
         Self { logs }
@@ -299,23 +353,45 @@ fn root() -> PathBuf {
 /// [`Capture::take_from`] read the whole capture directory -- which
 /// holds every run since the last reboot -- several times a second,
 /// for the rest of the session.
-fn live_runs(root: &Path, liveness: impl Fn(u32) -> RunLiveness) -> HashSet<u32> {
+fn live_runs(
+    root: &Path,
+    liveness: impl Fn(u32) -> RunLiveness,
+) -> HashMap<u32, HashSet<RegistrationGeneration>> {
     let Ok(entries) = fs::read_dir(root.join(CAPTURE_LIVE_RUNS_DIR)) else {
-        return HashSet::new();
+        return HashMap::new();
     };
-    entries
-        .flatten()
-        .filter_map(|entry| {
-            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
-            match liveness(pid) {
-                RunLiveness::Running => Some(pid),
-                RunLiveness::Ended => {
-                    let _ = fs::remove_file(entry.path());
-                    None
-                },
-            }
-        })
-        .collect()
+    let mut live: HashMap<u32, HashSet<RegistrationGeneration>> = HashMap::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.ends_with(REGISTRATION_TEMP_SUFFIX) {
+            continue;
+        }
+        let (pid, generation) = match name.split_once(REGISTRATION_SEPARATOR) {
+            Some((pid, generation)) if !generation.is_empty() => {
+                (pid, RegistrationGeneration::Calendar(generation.to_owned()))
+            },
+            Some(_) => continue,
+            None => (name, RegistrationGeneration::Legacy),
+        };
+        if !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(pid) = pid.parse() else {
+            continue;
+        };
+        match liveness(pid) {
+            RunLiveness::Running => {
+                live.entry(pid).or_default().insert(generation);
+            },
+            RunLiveness::Ended => {
+                let _ = fs::remove_file(entry.path());
+            },
+        }
+    }
+    live
 }
 
 /// Whether `candidate` was captured later than `held`, which their
@@ -590,6 +666,145 @@ mod tests {
             Capture::take_from(root.path(), |_| RunLiveness::Running).read(33395),
             Some(compiling(149, 403))
         );
+    }
+
+    /// A log that appears after this pass sampled the directory is not
+    /// this pass's to judge, and the next pass will hold its
+    /// registration. Sampling the other way round is what loses a run
+    /// that publishes mid-scan: absent from the liveness snapshot, its
+    /// log is swept as an orphan and cargo reopens it under the
+    /// caller's umask, out of reach of the operator.
+    #[test]
+    fn a_log_arriving_after_the_directory_sample_survives_the_pass() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[33395]);
+        let arriving = root.path().join(format!(
+            "{RUN_LOG_PREFIX}20260822-101500{PID_SEPARATOR}33396{RUN_LOG_SUFFIX}"
+        ));
+
+        let capture = Capture::take_from(root.path(), |pid| {
+            if pid == 33395 {
+                fs::write(&arriving, CAPTURED_TALLY).unwrap();
+            }
+            RunLiveness::Running
+        });
+
+        assert!(arriving.exists());
+        assert_eq!(capture.read(33395), Some(compiling(149, 403)));
+    }
+
+    /// Refreshing the shim leaves older captured invocations running,
+    /// so both filename formats must protect their logs in one scan.
+    #[test]
+    fn legacy_and_versioned_registrations_keep_both_live_logs() {
+        let root = capture_root(
+            &[(33395, CAPTURED_REDRAW), (33396, CAPTURED_TALLY)],
+            &[33395],
+        );
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        let generation = "20260822-101500";
+        let registration = format!("33396{REGISTRATION_SEPARATOR}{generation}");
+        fs::write(markers.join(&registration), "").unwrap();
+
+        let live = live_runs(root.path(), |_| RunLiveness::Running);
+        assert_eq!(live.len(), 2);
+        assert!(live[&33395].contains(&RegistrationGeneration::Legacy));
+        assert!(live[&33396].contains(&RegistrationGeneration::Calendar(generation.to_owned())));
+        let capture = Capture::take_from(root.path(), |_| RunLiveness::Running);
+        assert_eq!(capture.read(33395), Some(compiling(149, 403)));
+        assert_eq!(capture.read(33396), Some(testing(11, 24)));
+        for pid in [33395, 33396] {
+            assert!(
+                root.path()
+                    .join(format!(
+                        "{RUN_LOG_PREFIX}{generation}{PID_SEPARATOR}{pid}{RUN_LOG_SUFFIX}"
+                    ))
+                    .exists()
+            );
+        }
+        assert!(markers.join(registration).exists());
+    }
+
+    /// Staging and malformed names are not registrations, even when
+    /// their prefixes happen to name a live process.
+    #[test]
+    fn staging_files_and_invalid_pids_never_establish_liveness() {
+        let root = capture_root(&[], &[]);
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        for name in [
+            format!("33395{REGISTRATION_SEPARATOR}20260822-101500{REGISTRATION_TEMP_SUFFIX}"),
+            format!(
+                "33396{REGISTRATION_SEPARATOR}20260822-101500.random{REGISTRATION_TEMP_SUFFIX}"
+            ),
+            format!("33397{REGISTRATION_SEPARATOR}"),
+            "+33398".to_owned(),
+            "4294967296".to_owned(),
+            "unrelated".to_owned(),
+        ] {
+            fs::write(markers.join(name), "").unwrap();
+        }
+
+        assert!(live_runs(root.path(), |_| RunLiveness::Running).is_empty());
+        assert_eq!(fs::read_dir(markers).unwrap().count(), 6);
+    }
+
+    /// A stepped-back clock must not make the live generation lose to
+    /// a stale log whose calendar stamp sorts later.
+    #[test]
+    fn a_versioned_registration_selects_its_exact_log_generation() {
+        let root = capture_root(&[(33395, CAPTURED_REDRAW)], &[]);
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        fs::write(markers.join("33395.20260822-101500"), "").unwrap();
+        let stale = root.path().join("run-20260823-101500-33395.log");
+        fs::write(&stale, CAPTURED_TALLY).unwrap();
+
+        assert_eq!(
+            Capture::take_from(root.path(), |_| RunLiveness::Running).read(33395),
+            Some(compiling(149, 403))
+        );
+        assert!(!stale.exists());
+    }
+
+    /// Until process identity is verified, more than one registration
+    /// under a live pid is ambiguous; neither registered log is orphaned.
+    #[test]
+    fn multiple_live_generations_protect_every_registered_log() {
+        let root = capture_root(&[], &[]);
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        let generations = ["20260822-101500", "20260823-101500"];
+        for generation in generations {
+            fs::write(
+                markers.join(format!("33395{REGISTRATION_SEPARATOR}{generation}")),
+                "",
+            )
+            .unwrap();
+            fs::write(
+                root.path().join(format!(
+                    "{RUN_LOG_PREFIX}{generation}{PID_SEPARATOR}33395{RUN_LOG_SUFFIX}"
+                )),
+                CAPTURED_REDRAW,
+            )
+            .unwrap();
+        }
+
+        Capture::take_from(root.path(), |_| RunLiveness::Running);
+
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 3);
+    }
+
+    /// Retirement uses the full enumerated name, so a versioned
+    /// registration cannot accidentally remove the old pid-only file.
+    #[test]
+    fn an_ended_versioned_registration_is_removed_by_its_exact_name() {
+        let root = capture_root(&[], &[]);
+        let markers = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        let registration = markers.join("33395.20260822-101500");
+        let staging = markers.join(format!("33395.20260822-101500{REGISTRATION_TEMP_SUFFIX}"));
+        fs::write(&registration, "").unwrap();
+        fs::write(&staging, "").unwrap();
+
+        assert!(live_runs(root.path(), |_| RunLiveness::Ended).is_empty());
+        assert!(!registration.exists());
+        assert!(staging.exists());
     }
 
     /// Logs outlive the runs that wrote them, so a pid reused by a later

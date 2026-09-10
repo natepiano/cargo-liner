@@ -136,42 +136,164 @@ case ${CARGOTILE_NESTED:-} in
 esac
 
 [ "$capture" -eq 1 ] || exec "$real" "$@"
-mkdir -p "$pids" 2>/dev/null || exec "$real" "$@"
-
-CARGOTILE_NESTED=$$
-export CARGOTILE_NESTED
-log="$root/run-$(date +%Y%m%d-%H%M%S)-$$.log"
-
-# The grid reads the working directory and command from this file, and
-# treats its presence as proof the run is still going.
-case $PWD in
-    "$HOME") directory='~' ;;
-    "$HOME"/*) directory="~${PWD#"$HOME"}" ;;
-    *) directory=$PWD ;;
-esac
-if [ "$#" -gt 0 ]; then
-    printf '%s\tcargo %s\n' "$directory" "$*" > "$pids/$$"
-else
-    printf '%s\tcargo\n' "$directory" > "$pids/$$"
+# Settle the capture path before setup so even FIFO failures can pass
+# the caller's original arguments and environment through unchanged.
+pty=none
+if [ -t 0 ] && [ -t 1 ] && [ -t 2 ] && command -v script > /dev/null 2>&1; then
+    if script --version 2> /dev/null | grep -q util-linux; then
+        pty=util_linux
+    else
+        pty=bsd
+    fi
 fi
 
+generation=$(date +%Y%m%d-%H%M%S) || exec "$real" "$@"
+[ -n "$generation" ] || exec "$real" "$@"
+log_basename="run-$generation-$$.log"
+log_path="$root/$log_basename"
+registration_path="$pids/$$.$generation"
+temporary_path="$registration_path.tmp"
+fifo_path=
+if [ "$pty" = none ]; then fifo_path="$root/state/stderr-$$"; fi
+
+# Only owned artifacts enter cleanup. In particular, a failed exclusive
+# publication must never remove the registration that already held the
+# name. The setup child also installs cleanup: caught traps are reset
+# on entering a subshell, and it owns partial setup until it succeeds.
+temporary=
+registration=
+log=
 fifo=
 cleanup() {
-    rm -f "$pids/$$"
+    rm -f "$temporary" "$registration" "$log"
     if [ -n "$fifo" ]; then rm -f "$fifo"; fi
-    # The log is how a cargo that is running now tells the grid where it
-    # has got to, and nothing reads one after the run that wrote it
-    # ends: the grid only ever opens a log whose pid is still registered
-    # above. So the run takes its log with it. Editors make this matter
-    # -- rust-analyzer checks on every save -- but a build worth
-    # watching is no different, because neither is read again. What the
-    # grid sweeps is the logs of runs killed outright, which never reach
-    # this trap, and that is the only way one outlives its run now.
-    rm -f "$log"
 }
-trap cleanup EXIT
+trap cleanup 0
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# A signal delivered during an external setup command must wait until
+# its result tells cleanup which names this invocation owns. The parent
+# also waits for the setup child before adopting or discarding its work.
+setup_signal=0
+trap 'setup_signal=129' HUP
+trap 'setup_signal=130' INT
+trap 'setup_signal=143' TERM
+setup_capture() (
+    finish_setup() {
+        result=$?
+        trap - 0
+        trap '' HUP INT TERM
+        if [ "$setup_signal" -ne 0 ]; then result=$setup_signal; fi
+        if [ "$result" -ne 0 ]; then cleanup; fi
+        exit "$result"
+    }
+    trap finish_setup 0
+    trap 'setup_signal=129' HUP
+    trap 'setup_signal=130' INT
+    trap 'setup_signal=143' TERM
+    umask 0027 || exit 1
+    mkdir -p "$pids" || exit 1
+    if [ -z "${CARGO_TILE_ROOT-}" ]; then
+        chmod 0700 "$root" || exit 1
+    fi
+    # Previous runner invocations created these under umask 0066.
+    # Correct only the shim's own directory levels, never recursively.
+    chmod 0750 "$root/state" || exit 1
+    chmod 0750 "$pids" || exit 1
+
+    directory=${PWD-}
+    if [ -n "${HOME-}" ]; then
+        case $directory in
+            "$HOME") directory='~' ;;
+            "$HOME"/*) directory="~${directory#"$HOME"}" ;;
+        esac
+    fi
+
+    boot=
+    birth=
+    platform=$(uname -s) || platform=
+    case $platform in
+        Linux)
+            boot=$(cat /proc/sys/kernel/random/boot_id) || boot=
+            # The last ')' ends comm, even when it contains spaces or
+            # parentheses. Field 22 is field 20 of what follows it.
+            # $$ stays the parent shim's pid inside this setup child.
+            birth=$(awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$$/stat") || birth=
+            ;;
+        Darwin)
+            boot=$(sysctl -n kern.boottime) || boot=
+            birth=$(ps -o lstart= -p "$$") || birth=
+            ;;
+    esac
+
+    # A staging name is never a registration, including after SIGKILL.
+    # Exclusive creation gives this POSIX open the same collision policy
+    # as publication, without a platform-specific mktemp suffix option.
+    # Reject non-regular existing entries too: opening an old FIFO
+    # under set -C could otherwise wait forever for its reader.
+    for path in "$temporary_path" "$registration_path" "$log_path"; do
+        if [ -e "$path" ] || [ -L "$path" ]; then exit 1; fi
+    done
+    (set -C; true > "$temporary_path") || exit 1
+    temporary=$temporary_path
+    # This format is for recovering cwd and each original argv word;
+    # the current reader uses the filename to find this run's live log.
+    printf '%s\000' cargo-tile-v2 "$generation" "$boot" "$birth" \
+        "$log_basename" "$directory" "$#" "$@" > "$temporary" || exit 1
+    chmod 0640 "$temporary" || exit 1
+    if [ -n "$fifo_path" ]; then
+        # This shim owns the pid, so an existing FIFO name is stale.
+        rm -f "$fifo_path" || exit 1
+        mkfifo "$fifo_path" || exit 1
+        fifo=$fifo_path
+    fi
+    # Unlike mv -f, a hard link cannot replace a prior registration
+    # after pid reuse or a backward clock step reproduces its name.
+    ln "$temporary" "$registration_path" || exit 1
+    # A directory arriving after the existence check makes POSIX ln
+    # succeed inside that directory. This successful command owns only
+    # the nested link; preserve the directory and reject publication.
+    if [ -d "$registration_path" ]; then
+        rm -f "$registration_path/${temporary##*/}"
+        exit 1
+    fi
+    registration=$registration_path
+    # Publish first so a concurrent sweep cannot remove an orphan log.
+    # true is not a special builtin: redirection failure returns to the
+    # setup policy instead of terminating cargo's parent shell.
+    (set -C; true > "$log_path") || exit 1
+    log=$log_path
+    rm -f "$temporary" || exit 1
+)
+
+if setup_capture "$@" 2>/dev/null; then
+    registration=$registration_path
+    log=$log_path
+    fifo=$fifo_path
+else
+    result=$?
+    cleanup
+    trap - 0
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    if [ "$setup_signal" -ne 0 ]; then result=$setup_signal; fi
+    case $result in
+        129|130|143) exit "$result" ;;
+    esac
+    exec "$real" "$@"
+fi
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if [ "$setup_signal" -ne 0 ]; then exit "$setup_signal"; fi
+
+# The setup subshell contained the permission window. Cargo and script
+# inherit the caller's original umask on every path from here onward.
+CARGOTILE_NESTED=$$
+export CARGOTILE_NESTED
 
 # Quote a command and its arguments into the single command line that
 # util-linux's `script` takes, since it reads a string where the BSD one
@@ -206,19 +328,7 @@ for arg in "$@"; do
     previous=$arg
 done
 
-# The two `script` implementations disagree about their arguments and
-# neither accepts the other's form, so which one is here has to be
-# settled before it is called. Only util-linux answers `--version`.
-pty=none
-if command -v script > /dev/null 2>&1; then
-    if script --version 2> /dev/null | grep -q util-linux; then
-        pty=util_linux
-    else
-        pty=bsd
-    fi
-fi
-
-if [ -t 0 ] && [ -t 1 ] && [ -t 2 ] && [ "$pty" != none ]; then
+if [ "$pty" != none ]; then
     # A pty gives cargo a terminal to draw its progress bar on, which is
     # where the counter comes from, and leaves the run looking to the
     # caller exactly as it would have without any of this.
@@ -279,20 +389,13 @@ else
     # what the caller expects.
     export CARGO_TERM_PROGRESS_WHEN=${CARGO_TERM_PROGRESS_WHEN:-always}
     export CARGO_TERM_PROGRESS_WIDTH=${CARGO_TERM_PROGRESS_WIDTH:-100}
-    fifo="$root/state/stderr-$$"
-    rm -f "$fifo"
-    if mkfifo "$fifo" 2> /dev/null; then
-        tee -a "$log" < "$fifo" >&2 &
-        tee_pid=$!
-        "$real" "$@" 2> "$fifo"
-        status=$?
-        # Let tee drain the pipe before the run is taken off the live
-        # list, so the last redraw is in the log when the grid looks.
-        wait "$tee_pid" 2> /dev/null
-    else
-        "$real" "$@"
-        status=$?
-    fi
+    tee -a "$log" < "$fifo" >&2 &
+    tee_pid=$!
+    "$real" "$@" 2> "$fifo"
+    status=$?
+    # Let tee drain the pipe before the run is taken off the live
+    # list, so the last redraw is in the log when the grid looks.
+    wait "$tee_pid" 2> /dev/null
 fi
 
 exit $status
