@@ -64,13 +64,27 @@
     4 must be declared here, which makes it a hub file those phases assign to
     exactly one writer.
 
-  - `crates/cargo-tile/src/progress.rs` — reads the capture root, 38 KB. `Progress`
-    `:85`; `Phase` `:115`; `RunState` `:141`; `RunLiveness` `:175` with `From<bool>`
-    `:183`; `Capture` `:194` — the pid-keyed map of readable runs — with
-    `take(liveness)` `:214`, `take_from(root, liveness)` `:225` and `read(pid)`
-    `:282`; `root()` `:289` — resolves `CARGO_TILE_ROOT` or the default, the single
-    site phase 5 turns into a list; `live_runs` `:295` — enumerates
-    `<root>/state/pids`. Inline `#[cfg(test)]` module `:513` (31 tests).
+  - `crates/cargo-tile/src/progress.rs` — reads the capture root. `Progress`
+    `:87`; `Phase` `:117`; `RunState` `:143`; `RunLiveness` `:177` with `From<bool>`
+    `:185`; `RegistrationGeneration` `:191` with `names_log` `:201`; `Capture`
+    `:219` — the pid-keyed map of readable runs — with `take(liveness)` `:241`,
+    `take_from(root, liveness)` `:252`, `discard` `:326` and `read(pid)` `:336`;
+    `root()` `:343` — resolves `CARGO_TILE_ROOT` or the default, the single
+    site phase 5 turns into a list; `live_runs` `:356` — enumerates
+    `<root>/state/pids` and returns `HashMap<u32, HashSet<RegistrationGeneration>>`,
+    so one pid carries every generation registered under it; `tail` `:429`;
+    `parse_state` `:457`. Inline `#[cfg(test)]` module `:594` (37 tests).
+
+    Two orderings in this file are invariants, not implementation detail.
+    `take_from` collects the `read_dir` iterator into a `Vec<fs::DirEntry>`
+    **before** it calls `live_runs`: the collection is the sample, and opening
+    the iterator first does not preserve the boundary. Reversing it lets a run
+    that publishes mid-scan lose its log to the orphan sweep, after which cargo
+    reopens the log outside the shim's setup subshell under the caller's umask
+    — `0066` on the runner units — and the operator cannot read it for the life
+    of that run. `RegistrationGeneration::Calendar(String)` is built from any
+    nonempty filename suffix, so it classifies a filename and proves nothing
+    about process identity; treat it as a candidate, never as verification.
 
   - `crates/cargo-tile/src/processes.rs` — the two-phase process scan and row
     construction, 79 KB, the largest non-render file. `cargo_split(argv) ->
@@ -238,9 +252,9 @@
   **`crates/cargo-tile` has no `tests/` directory, and cannot usefully have one
   for Rust code.** It is a binary-only crate (`src/main.rs`, no `lib.rs`), so an
   integration test in `tests/` has no library target to link against and cannot
-  reach any crate item. Every one of the crate's ~400 tests is therefore an
-  inline `#[cfg(test)]` module inside the file it tests: `processes.rs:1298` (47),
-  `render.rs:2009` (43), `progress.rs:513` (31), `hook.rs:289` (20),
+  reach any crate item. Every test of a crate item is therefore an inline
+  `#[cfg(test)]` module inside the file it tests: `processes.rs:1298` (47),
+  `render.rs:2009` (43), `progress.rs:594` (37), `hook.rs:289` (20),
   `terminal.rs:670` (5), `cli.rs:149` (4), `config.rs:276` (2), plus modules in
   `roster.rs`, `capture.rs`, `globals.rs`, `sccache.rs` and the `attract`,
   `favorites` and `theme` trees.
@@ -373,175 +387,45 @@
 
 **Ruled out:** Restoring `cargo-tile-real` to `cargo` before installing over it — the round trip is the window in which a second installer saves a shim as the real cargo. Adding a file-locking dependency for the per-toolchain lock — the crate's existing exclusive-create idiom already serves. Deferring stale-lock recovery guidance — the instruction ships with the diagnostic that names the lock.
 
-### Phase 2 — The capture shim: setup boundary, explicit modes, versioned registration  · status: todo
+### Phase 2 — The capture shim: setup boundary, explicit modes, versioned registration  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the shim publishes a complete, unambiguous registration with an explicit mode, and no capture-setup failure can alter or fail the cargo invocation underneath it.
+`cargo-capture-shim.sh` runs every capture-setup step inside a `setup_capture` subshell that installs its own `HUP`/`INT`/`TERM` traps; the parent installs its `cleanup` and signal traps before any artifact exists. Any setup failure cleans up and `exec`s the real cargo with the original arguments under the caller's original umask, so no capture failure can alter or fail the build. The subshell also contains a fatal expansion error, which is why the parent's umask is never modified; `true > "$log"` replaces `: > "$log"`, since a redirection failure on the special built-in `:` exits a POSIX shell outright.
 
-**Spec:**
+A scoped `umask 0027` covers only the shim's own writes — directories `0750`, files `0640` — and the shim corrects the modes of the directories it owns beneath the root, one level at a time and never recursively, because `mkdir -p` applies a umask only to a directory it actually creates. The built-in `/tmp/cargo-tile` root is created and corrected to `0700`; a root named through `CARGO_TILE_ROOT` keeps the mode its deployment gave it. The staging file gets an explicit `chmod 0640` because `mktemp` creates `0600` whatever the umask.
 
-Five changes to `cargo-capture-shim.sh` that share one control flow, plus one
-change to the reader that **has to land with them**. Phase 1 refreshes an
-out-of-date shim automatically at startup, so the moment this binary ships every
-toolchain on the machine begins publishing the new registration filename — and
-the reader in `progress.rs` accepts only an all-digits filename today, so it
-would see none of them and the sweep would treat their live logs as orphans.
-Item *6* is that reader change; land it before or with the shim edit, never
-after.
+The registration is a NUL-framed record written by `printf` straight to a `.tmp` staging file — never through a shell variable, which cannot hold a NUL: `cargo-tile-v2`, generation, boot identity, birth stamp, log basename, `$HOME`-collapsed working directory, argument count, then each argument verbatim. The birth stamp is field 22 of `/proc/$$/stat` (parsed past the last `)`) on Linux and `ps -o lstart= -p $$` on macOS; identity fields are empty when unobtainable. Publication is `ln` from the exclusively created staging file onto `<pid>.<generation>`, so a name already held is a setup failure like any other, and it happens strictly before the log is created. The shim removes an existing FIFO at its own pid's name before `mkfifo`, since owning the pid means the name is stale; a removal failure preserves cargo's original invocation and leaves an unowned directory untouched.
 
-*1. A setup-failure policy that cannot reach cargo.* `: > "$log"` (`cargo-capture-shim.sh`, the log pre-creation) is a redirection on `:`, a POSIX **special built-in**, and a redirection failure on a special built-in exits a non-interactive shell — before the umask is restored and before cargo runs. The shim's own header commits it to `/bin/sh` as dash on Debian and bash in POSIX mode on macOS, which are exactly the shells where this applies; it does not reproduce on NixOS only because `/bin/sh` there is bash outside POSIX mode. Use `true > "$log"`.
-
-That single fix is not sufficient. `$HOME` still terminates the shell when unset under `set -u`; the traps currently arrive after the artifacts exist; a same-directory rename can fail with `ENOSPC` or `EROFS` after the record is written, and atomic publication supplies no cleanup; and the FIFO is created **after** the argument rewriting, so its failure cannot deliver the original arguments. Give the shim one policy: **any capture-setup failure runs cargo with its original arguments and the caller's original umask.** A monitoring feature must never fail a build.
-
-Install the parent's cleanup and signal traps **before** any artifact exists, then contain the permission window in a setup subshell, which must install its own traps because caught traps reset on entry:
-
-```sh
-fifo=
-cleanup() {
-    rm -f "$temporary" "$registration" "$log"
-    if [ -n "$fifo" ]; then rm -f "$fifo"; fi
-}
-trap cleanup 0
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-setup_capture() (
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    umask 0027 || exit 1
-    mkdir -p "$pids" || exit 1
-    if [ -z "${CARGO_TILE_ROOT-}" ]; then
-        chmod 0700 "$root" || exit 1
-    fi
-
-    directory=${PWD-}
-    if [ -n "${HOME-}" ]; then
-        case $directory in
-            "$HOME") directory='~' ;;
-            "$HOME"/*) directory="~${directory#"$HOME"}" ;;
-        esac
-    fi
-
-    printf '%s\000' cargo-tile-v2 "$generation" "$boot" "$birth" \
-        "$log_basename" "$directory" "$#" "$@" > "$temporary" || exit 1
-    chmod 0640 "$temporary" || exit 1
-    true > "$log" || exit 1
-    mv -f "$temporary" "$registration" || exit 1
-)
-
-if setup_capture "$@"; then
-    :
-else
-    result=$?
-    cleanup
-    trap - 0
-    case $result in
-        129|130|143) exit "$result" ;;
-    esac
-    exec "$real" "$@"
-fi
-```
-
-Create the FIFO, where the no-terminal path needs one, **before** exporting capture settings or rewriting arguments, under the same failure policy. Give the staging file a name the reader ignores (a `.tmp` suffix), because a SIGKILL or a read-only remount can leave one behind and bounded owner cleanup has to recognise it later. The subshell is the containment mechanism: a fatal expansion error stays inside it and the parent's umask never changes. Its cost is one short-lived child and one wait per captured invocation.
-
-*2. The permission window.* Both runner units carry `UMask=0066` (`lib.mkDefault` in nixpkgs' `github-runner/service.nix`); the macOS daemon runs at `Umask = 63`, the same value in decimal. Under `0066` a directory the shim creates lands `0711` and a file lands `0600` — the operator cannot read the file at all. Overriding the unit's umask would reach every file the runner writes, its `.credentials` among them, to buy a monitoring feature; the narrow fix is a scoped `umask 0027` window covering only the shim's own writes.
-
-| umask in force | directory | file |
-| --- | --- | --- |
-| `0066` (the unit) | `0711` | `0600` — the operator cannot read it |
-| `0027` (the window) | `0750` | `0640` — group reads, world does not |
-
-`natepiano` is a member of both runner groups (988 `hana-linux-1`, 987 `hana-linux-2`) and `admin` gives the equivalent read on the Mac, so `0640` is exactly the reach required on the CI accounts. Two ordering constraints, both real:
-
-- **Restore before the `script` call and before the passthrough `exec`.** A umask set once at the top of the shim is inherited by the cargo it execs and by every rustc beneath it, repainting the whole target tree. The `exec "$real"` on the `mkdir` failure path is inside the window and needs the restore too — the subshell above gives this for free, since the parent's umask is never modified.
-- **Pre-create the log rather than letting `script` create it.** Both implementations truncate an existing file rather than recreating it, so `true > "$log"` needs no per-platform branch and the `0640` survives.
-
-- **Correct the modes of the directories the shim itself created.** `mkdir -p`
-  applies the umask only to a directory it actually creates; one that already
-  exists keeps whatever mode it was made with. A runner account that has already
-  run cargo under `0066` therefore has `state` and `state/pids` sitting at
-  `0711`, and the new `0027` window leaves them exactly there — new registrations
-  land `0640` inside a directory the operator still cannot list, which is the
-  same failure this item exists to fix. The shim corrects the modes of the
-  directories it owns beneath the root, one level at a time and never
-  recursively, under the same failure policy as everything else in the window.
-
-`mktemp` creates `0600` whatever the umask, and rename preserves the mode, which is why the staging file needs the explicit `chmod 0640`.
-
-*3. The desktop root is owner-only.* Where the effective root is the built-in `/tmp/cargo-tile` — that is, `CARGO_TILE_ROOT` is unset — the shim creates it `0700` and corrects an existing directory to `0700`, one level and never recursively. A root a deployment named through `CARGO_TILE_ROOT` keeps the mode that deployment gave it: the nix tmpfiles entries make the runner roots `0750 <runner> <runner>`, and group membership is the read path. A failed `chmod` follows the same policy as every other setup failure.
-
-*4. The registration format.* The shim currently writes `printf '%s\tcargo %s\n' "$directory" "$*"`, which joins the arguments with a space: `cargo run -- 'a b'` and `cargo run -- a b` produce identical records. `CommandText.arguments` promises one entry per argv word and the summary's flag trimming relies on it, so splitting the record on whitespace would violate that promise; a tab or newline inside an argument breaks the `<cwd>\tcargo <args>` framing outright; and the writer opens the final filename directly, so a reader can see an empty or partial record.
-
-The replacement is NUL-framed, versioned, and published by same-directory rename — one rename per run, not per poll. Fields in order, each terminated by NUL:
-
-| # | field | value |
-| --- | --- | --- |
-| 1 | magic | the literal `cargo-tile-v2` |
-| 2 | generation | the same token the log basename already carries. **It is not an epoch second:** the log name is `run-$(date +%Y%m%d-%H%M%S)-$$.log`, a calendar timestamp at one-second resolution |
-| 3 | boot identity | Linux: contents of `/proc/sys/kernel/random/boot_id`. macOS: `sysctl -n kern.boottime`. Empty when unobtainable |
-| 4 | birth stamp | Linux: field 22 of **`/proc/$$/stat`**, in ticks, parsed by discarding everything through the **last** `)` so a `comm` containing spaces cannot shift the field. macOS: `ps -o lstart= -p $$`. Empty when unobtainable |
-| 5 | log basename | the exact basename of this run's log, no directory part |
-| 6 | working directory | as today, `$HOME` already collapsed to `~` |
-| 7 | argument count | `$#` |
-| 8.. | arguments | `"$@"`, one field each, verbatim |
-
-Never hold the framed record in a shell variable — a NUL cannot survive one. `printf` writes it directly to the staging file.
-
-The registration **filename** becomes `<pid>.<generation>` rather than bare `<pid>`. That alone does **not** make the name unreusable: the generation is a one-second calendar stamp, so a pid reused inside the same second — or any second at all after a clock step backwards — reproduces a name a previous run already used, and `mv -f` would silently replace whatever holds it. Two rules close that, and both are the contract Phase 4's deletion argument rests on:
-
-- **Publish by exclusive creation, not by overwrite.** Link the staging file into place with `ln "$temporary" "$registration"`, which fails when the name exists — the one atomic exclusive-create primitive POSIX `sh` actually has — then remove the staging file. A name already taken is a setup failure like any other: clean up and run cargo uncaptured. A run can therefore never replace a registration another run still owns, including one a sweep has already chosen as a deletion candidate.
-- **Delete only the exact name that was verified.** A sweep removes `<pid>.<generation>` by the full name it read and proved ended, never by pid alone. A registration that reappears under the same name between enumeration and deletion is a different record, and the exclusive-create rule is what guarantees it could only have appeared after the first was gone.
-
-The log filename already carries the generation and does not change.
-
-Read the birth stamp from **`/proc/$$/stat`, not `/proc/self/stat`**. The setup work runs inside a subshell, so `self` there is the short-lived child; `$$` in POSIX `sh` stays the parent shim's pid, which is the pid the registration is named for and the one the reader will check. Reading `self` publishes a stamp for a process that has already exited by the time anyone compares it, and every registration then reads as a reused pid.
-
-Fields 3 and 4 are what lets the reader prove the registration belongs to the process now holding that pid rather than to a reused pid. When either is empty the reader treats the record as unverifiable — Phase 4 defines what that means. Obtain them inside the setup subshell so a failure follows the same policy.
-
-*5. The header comment.* The shim's header says the grid reads the working directory and command from the registration. Phase 9 makes that true; today it is not. State it as what the format is *for*, without claiming the reader does it yet.
-
-*6. The reader accepts both filenames — and this lands first.* `live_runs`
-(`progress.rs:302`) reads each entry in `state/pids` and parses the whole
-filename as a `u32`, discarding anything that does not parse. A `<pid>.<generation>`
-name fails that parse, so every registration this phase publishes would be
-invisible: the run would not count as live, and `Capture::take_from`'s sweep —
-which deletes the log of any run it cannot see — would delete the logs of runs
-still writing to them. Teach the reader to take the pid from either form (all
-digits, or digits up to the first separator) and to carry the generation with it
-where present, so a mixed directory of old and new registrations reads
-correctly. The separator is a documented constant like every other literal in
-this crate. Phase 4 builds verification on top of this; here the requirement is
-only that the new name is understood and no live log is swept.
+On the reader side, `RegistrationGeneration` classifies a registration filename in both the bare all-digits and `<pid>.<generation>` forms, and `live_runs` returns `HashMap<u32, HashSet<RegistrationGeneration>>`, so one pid carries every generation registered under it and each generation's log is protected separately. `Capture::take_from` collects the capture directory into a `Vec<fs::DirEntry>` strictly before it samples liveness. Nothing reads a record body yet — association is by filename only.
 
 **Files:**
-- `crates/cargo-tile/src/cargo-capture-shim.sh` — the whole shim change; it is embedded by `include_str!` (`hook.rs:53`), so no registration or build step is needed for it to ship
-- `crates/cargo-tile/src/progress.rs` — item *6*: `live_runs` (`:302`) accepts both filename forms; writes its cases into the existing `#[cfg(test)]` module (`:513`)
-- `crates/cargo-tile/src/constants.rs` — the registration-filename separator, and any other literal item *6* needs
-- `crates/cargo-tile/src/hook.rs` — **its `#[cfg(test)]` module only**, no production code: the assertion at `:410` requires the shim to contain the literal `rm -f "$log"`, and this phase's combined `cleanup()` writes `rm -f "$temporary" "$registration" "$log"` instead. Update that assertion to the durable fact it is there to protect — the shim removes its own log on exit — rather than deleting it
-- `crates/cargo-tile/tests/shim_modes.rs` — **new**, and creates the `tests/` directory
-- `crates/cargo-tile/tests/shim_registration.rs` — **new**
+- `crates/cargo-tile/src/cargo-capture-shim.sh` — the writer: setup boundary, capture-path selection, publication, cleanup.
+- `crates/cargo-tile/src/progress.rs` — the reader: `RegistrationGeneration`, `Capture`, the sampling order, the sweep, log association by filename.
+- `crates/cargo-tile/src/constants.rs` — the record's literals and limits, including the registration-filename separator.
+- `crates/cargo-tile/src/hook.rs` — shim installation and toolchain handling; its test asserts the durable fact that the shim removes its own log on exit.
+- `crates/cargo-tile/tests/shim_modes.rs` — capture paths and permission boundaries, against the built shim.
+- `crates/cargo-tile/tests/shim_registration.rs` — publication, stale-pid recovery, record framing.
 
-**Seats:** 1 writer + 2 testers — this phase **creates the crate's only real test lane**, which is what makes it divisible. The shim is a standalone POSIX `sh` script, so a test reaches it with `Command::new("sh")` — no crate linkage, so a binary-only crate is no obstacle. `tempfile` is already a dev-dependency. The two test files are new and disjoint from each other and from the writer's files.
+**Binds later work:** A sweep removes `<pid>.<generation>` by the full name it read and proved ended, never by pid alone. Exclusive creation bounds what that name can mean only so far: it prevents a name being taken while a record still holds it, and does **not** prevent the same name being published again once something has removed it. Deleting by an exact name is therefore not by itself safe, and what makes it safe is still open. The record body is still unparsed, so verifying that a registration belongs to the process now holding its pid remains open. The two files under `tests/` are the shim's regression surface — anything touching the shim runs `verify.sh test cargo-tile` against them. "A hardened root access layer, and `progress.rs` onto it" must carry `RegistrationGeneration` across the migration.
 
-**Neither test file may run the repository copy of the script in place.** The shim resolves its own directory and expects `cargo-tile-real` as a sibling, so pointing `sh` at `crates/cargo-tile/src/cargo-capture-shim.sh` makes it look for `crates/cargo-tile/src/cargo-tile-real`, which does not exist, and every such test exercises only the bail-out path. Each test copies the shim into a temporary directory laid out like an installed toolchain, beside an executable stand-in for the real cargo that records how it was called. The default-root cases (`CARGO_TILE_ROOT` unset) additionally need their own `HOME` and root so they never touch the developer's `/tmp/cargo-tile`.
-- `impl` — `crates/cargo-tile/src/cargo-capture-shim.sh`, `crates/cargo-tile/src/progress.rs`, `crates/cargo-tile/src/constants.rs`, and the `#[cfg(test)]` module of `crates/cargo-tile/src/hook.rs`; hub: `crates/cargo-tile/src/constants.rs`. The shim's format and the reader that parses it are one decision and stay in one head
-- `test` — creates `crates/cargo-tile/tests/shim_modes.rs`: cargo's observed umask and the resulting artifact modes for a caller umask of `0022`, `0066` and `0077`, across both the pty and the no-terminal capture path; the `0700` default-root correction against a set and an unset `CARGO_TILE_ROOT`; and the degradation cases — an unwritable root, and `HOME` unset
-- `review` — opens as test: creates `crates/cargo-tile/tests/shim_registration.rs`: the registration format from the Spec's field table — field order, NUL framing, the `cargo-tile-v2` magic, argument boundaries preserved across `cargo run -- 'a b'` versus `cargo run -- a b`, the `<pid>.<generation>` filename, the `.tmp` staging suffix, and the log basename matching the log actually written
+**Gotchas:**
+- The shim's publication order and the reader's sampling order are one invariant read from two ends, and neither may be swapped. When a live run's log is swept, cargo reopens it through `script`/`tee -a` outside the setup subshell under the caller's umask — `0066` on the runner units — so the log lands `0600` and the operator cannot read it for the life of that run, with no message saying why.
+- `read_dir` returns a lazy iterator. Collecting it is the sample; opening it is not. Code that keeps the calls in order but drops the collection reintroduces the defect while looking correct.
+- `RegistrationGeneration::Calendar(String)` accepts any nonempty filename suffix. It is a candidate, never proof of process identity.
+- The record's directory field is `$HOME`-collapsed at write time and a test asserts that form, so the raw absolute path is not recoverable from a record.
+- The macOS birth stamp is unnormalized `ps -o lstart=` output, which Apple formats through `localtime`; it is not comparable across locales or timezones.
+- `cargo-tile` has no library target, so the files under `tests/` reach the shim as a subprocess and cannot touch crate items.
+- A test must never run the repository copy of the shim in place: it resolves its own directory and expects `cargo-tile-real` as a sibling, so doing so exercises only the bail-out path.
 
-**Constraints from prior phases:**
-
-- **Phase 1 ships a changed shim to every toolchain by itself.** `install()` compares the installed shim against `SHIM_SOURCE` and rewrites it when they differ, and `at_startup()` runs that on launch, so this phase's new format goes live on the next start of the application with no operator action. That is why item *6* cannot land after the shim edit.
-- `SHIM_SOURCE` is `hook.rs:53`, and the shim must keep `SHIM_MARKER` within its first `SHIM_MARKER_SEARCH_BYTES` bytes or an installed shim stops being recognised as one.
-- `HookState` has four variants — `Installed`, `Absent`, `Repairable`, `Orphaned` — and a toolchain holding only the saved cargo is now discovered rather than skipped. `Change::AlreadyCurrent` means the installed shim already matched and nothing was written.
-- `cargo tile install` reports a toolchain that fails and continues to the next, and exits successfully whatever any single toolchain did. `cargo tile uninstall` still stops at the first error.
-- Install and remove serialise on `<toolchain>/bin/cargo-tile-shim.lock`. Nothing in this phase touches that lock, but a test that installs shims must not assume the file is absent afterwards on a failure path.
-
-**Acceptance gate:** Build, Test and Lint green. Tests asserting cargo's observed umask and the artifact modes for `0022`, `0066` and `0077` on both capture paths. A test asserting an existing `0711` `state/pids` hierarchy is corrected to a mode the owner's group can read, while cargo still observes the caller's original umask. A test asserting `cargo run -- 'a b'` and `cargo run -- a b` produce different registrations. A test asserting a setup failure (an unwritable root) still runs cargo with its original arguments and the caller's umask, and exits with cargo's status. A test asserting `HOME` unset does not abort the shim. A test asserting a registration cannot be published over a name that already exists, and that cargo then runs uncaptured. A test asserting the emitted birth stamp names the shim process itself — the pid the registration is filed under — and not a child of it. A test asserting a `state/pids` directory holding both an old all-digits registration and a new `<pid>.<generation>` one yields both runs as live, and that a scan across it deletes neither run's log.
-
----
+**Ruled out:**
+- Overriding the runner unit's `UMask=0066` — it reaches every file the runner writes, `.credentials` included.
+- `mv -f` publication — it silently replaces a name a live run still owns.
+- Recursive mode correction beneath the root — one level, only directories the shim owns.
+- `/proc/self/stat` for the birth stamp — inside the setup subshell `self` is the short-lived child, not the pid the registration is filed under.
+- The `<cwd>\tcargo <args>` line format — space-joined argv loses argument boundaries and a tab or newline inside an argument breaks the framing.
+- Running the application smoke against real toolchains — `install` moves each toolchain's real cargo aside machine-wide.
+- A stylistic-only change inside the shim with no behavioral consequence.
 
 ### Phase 3 — A hardened root access layer, and `progress.rs` onto it  · status: todo
 
@@ -551,7 +435,7 @@ only that the new name is understood and no live log is swept.
 
 **Spec:**
 
-*1. The reads are unsafe today.* `tail` (`progress.rs:353`) uses `File::open`, which follows symlinks, checks no file type, and then `read_to_end`s after a seek. A FIFO blocks at open; a symlink to `/dev/zero` reports length 0, seeks to 0 and reads without bound. The scan runs on a worker thread, which contains neither failure — one foreign entry stops every local row updating, or exhausts memory.
+*1. The reads are unsafe today.* `tail` (`progress.rs:429`) uses `File::open`, which follows symlinks, checks no file type, and then `read_to_end`s after a seek. A FIFO blocks at open; a symlink to `/dev/zero` reports length 0, seeks to 0 and reads without bound. The scan runs on a worker thread, which contains neither failure — one foreign entry stops every local row updating, or exhausts memory.
 
 *2. One directory-handle contract.* Hardening the final `open` is not enough: `O_NOFOLLOW` on `root/state/pids/<name>` still follows a replaced `state` or `pids`, and checking an old descriptor's metadata does not detect a replacement mounted at the configured pathname. Inspection, ownership classification, retained entries and deletion must all refer to the same directory:
 
@@ -563,9 +447,9 @@ only that the new name is understood and no live log is swept.
 
 *3. Deletion is a capability, not a flag.* Both removal paths take an ordinary `&Path`, so an ownership boolean leaves every future caller responsible for remembering the rule. Represent roots as `Owned(OwnedRoot<'scan>) | Foreign(ForeignRoot<'scan>)`, where `OwnedRoot` is private, non-clonable, constructible only after a successful `fstat` and an `st_uid == euid` comparison, and **borrows the scan** — the inspected directory handles and that scan's enumeration success — so a cached capability cannot outlive the check that justified it. Both removal paths are reachable only through `OwnedRoot` and take their targets from its own scan entries. One internal enum dispatch per root, no trait, no per-entry allocation.
 
-*4. Ownership is necessary but not sufficient.* An owned root does not establish ownership of `state/pids`, nor stop that path redirecting through a symlink. Worse, `live_runs` (`progress.rs:302-319`) turns a failed directory read into an **empty** live set, and `take_from` then treats every log as belonging to a dead run and deletes it: a root that stays readable while `state/pids` does not is a path to destroying live capture data in a root the reader owns. Represent an unavailable live set separately from an empty one, and make a complete and successful registration enumeration necessary before any sweep. A failed ownership check disables sweeping for that root without affecting the others. Decline to sweep any directory another account can write.
+*4. Ownership is necessary but not sufficient.* An owned root does not establish ownership of `state/pids`, nor stop that path redirecting through a symlink. Worse, `live_runs` (`progress.rs:356`) turns a failed directory read into an **empty** live set, and `take_from` then treats every log as belonging to a dead run and deletes it: a root that stays readable while `state/pids` does not is a path to destroying live capture data in a root the reader owns. Represent an unavailable live set separately from an empty one, and make a complete and successful registration enumeration necessary before any sweep. A failed ownership check disables sweeping for that root without affecting the others. Decline to sweep any directory another account can write.
 
-*5. One sweep budget, scan-local, counting both artifact types.* `Capture::discard` (`progress.rs:272-278`) increments `swept` **before** `fs::remove_file`, so entries it cannot delete consume the budget anyway and a foreign root starves the owned root's sweep on every pass. `live_runs` removes stale registrations the same way and discards the error identically — and those removals carry **no budget at all**. For `R` stale registrations and `D` discardable logs, one pass attempts `R + min(D, CAPTURE_SWEEP_LIMIT)` removals. Thread **one** budget through registration and log cleanup across all owned roots: initialise it before the scan iterates roots and pass it through both cleanup paths. Resetting it inside `take_from` multiplies the allowance by the number of roots; persisting it across scans eventually stops cleanup altogether. Foreign roots consume none of it. Correct `CAPTURE_SWEEP_LIMIT`'s documented sizing rationale, which counts logs only.
+*5. One sweep budget, scan-local, counting both artifact types.* `Capture::discard` (`progress.rs:326`) increments `swept` **before** `fs::remove_file`, so entries it cannot delete consume the budget anyway and a foreign root starves the owned root's sweep on every pass. `live_runs` removes stale registrations the same way and discards the error identically — and those removals carry **no budget at all**. For `R` stale registrations and `D` discardable logs, one pass attempts `R + min(D, CAPTURE_SWEEP_LIMIT)` removals. Thread **one** budget through registration and log cleanup across all owned roots: initialise it before the scan iterates roots and pass it through both cleanup paths. Resetting it inside `take_from` multiplies the allowance by the number of roots; persisting it across scans eventually stops cleanup altogether. Foreign roots consume none of it. Correct `CAPTURE_SWEEP_LIMIT`'s documented sizing rationale, which counts logs only.
 
 This is guaranteed rather than hypothetical on the runner machine: the runner cache directories are `drwxr-x---`, group read and execute with no write, so every removal a reader running as `natepiano` attempts fails, on every entry, permanently.
 
@@ -573,9 +457,11 @@ This is guaranteed rather than hypothetical on the runner machine: the runner ca
 
 | line | says | correct? |
 | --- | --- | --- |
-| `progress.rs:300` | "every run since the last reboot" | yes |
-| `progress.rs:326` | "Logs are never deleted, so the capture directory holds every run since the machine was set up" | no |
-| `progress.rs:607` | "Logs are never deleted and pids come round again" | no |
+| `progress.rs:354` | "every run since the last reboot" | yes |
+| `progress.rs:402` | "Logs are never deleted, so the capture directory holds every run since the machine was set up" | no |
+| `progress.rs:822` | "Logs are never deleted and pids come round again" | no |
+
+Phase 2 already corrected a fourth: the comment at `progress.rs:228` claimed the live set is read first, after the sampling order had been reversed underneath it. It is not this phase's to fix.
 
 The shim's `cleanup()` does `rm -f "$log"` with `trap cleanup EXIT`, and `trap 'exit 130' INT` / `trap 'exit 143' TERM` route signals through it, so a run takes its log with it and a cancelled Actions job — which takes SIGTERM first — cleans up after itself. What survives is the logs of runs **killed outright**. Correct both wrong comments; the claim was read as a sizing input and produced a CI log-growth estimate wrong by orders of magnitude.
 
@@ -587,14 +473,40 @@ The scan rate this file reasons with is also wrong in one place: the worker slee
 - `crates/cargo-tile/Cargo.toml` — one line: `rustix = { workspace = true, features = ["fs"] }`. `rustix 1.1.4` is already in `[workspace.dependencies]`, so there is no version to choose; `unsafe_code = "deny"` is why this is `rustix` and not `libc`.
 - `crates/cargo-tile/src/main.rs` — the `mod` declaration for the new module
 
-**Seats:** 2 writers + reserve — there are two independent halves here, not three: the new access module with the manifest and module declaration it needs, and the `progress.rs` rewiring onto it. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`. A third writer would be waiting to enter a file one of the other two already holds.
+**Seats:** 2 writers + 0 testers + reserve — there are two independent halves here, not three: the new access module with the manifest and module declaration it needs, and the `progress.rs` rewiring onto it. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`. A third writer would be waiting to enter a file one of the other two already holds.
 - `impl` — `crates/cargo-tile/src/capture_root.rs` and its inline `#[cfg(test)]` tests, `crates/cargo-tile/src/constants.rs` (the access layer's own limits, and the `CAPTURE_SWEEP_LIMIT` documentation this phase changes); hub: `crates/cargo-tile/src/main.rs` (the `mod` line) **and** `crates/cargo-tile/Cargo.toml` (`rustix = { workspace = true, features = ["fs"] }` — `rustix 1.1.4` is already in `[workspace.dependencies]`, so this is one line and no version decision). Land both hub edits first: the second writer cannot compile until the module is declared.
-- `test` — opens as impl: `crates/cargo-tile/src/progress.rs` — `root()` (`:289`), `live_runs` (`:302`), `take_from` (`:225`), the sweep and the tail read, rewired onto the layer, plus the three stale doc corrections; writes its cases into the existing `#[cfg(test)]` module (`:513`)
-- `review` — reserve until the module declaration lands, then opens as impl on whichever half is behind. `capture_root.rs` owns the symlink, FIFO, byte-cap and ownership tests; `progress.rs` owns the unavailable-versus-empty live set and the scan-local budget shared across roots.
+- `test` — opens as impl: `crates/cargo-tile/src/progress.rs` — `root()` (`:343`), `live_runs` (`:356`), `take_from` (`:252`), the sweep and the tail read, rewired onto the layer, plus the two stale doc corrections; writes its cases into the existing `#[cfg(test)]` module (`:594`)
+- `review` — reserve. It takes implementation ownership of a file only after an **explicit handoff** posted by the seat that holds it; "whichever half is behind" would put a second writer into a file another writer still owns. Once handed a half: `capture_root.rs` owns the symlink, FIFO, byte-cap and ownership tests; `progress.rs` owns the unavailable-versus-empty live set and the scan-local budget shared across roots.
+
+Phase 2's two new files under `tests/` do not change this opening. They drive the shim as a process; the root access layer is private to the binary and unreachable from `tests/`, so there is still no test lane here and no seat can open as `test`.
 
 **Constraints from prior phases:**
 - Phase 2 publishes registrations under `<pid>.<generation>` filenames and logs under their existing `run-<generation>-<pid>` names. Enumeration must accept both that form and the legacy bare `<pid>`, and parse the pid as the segment before the first `.`.
-- Phase 2's staging files carry a `.tmp` suffix. The reader ignores them during enumeration; bounded owner cleanup may remove them.
+- Phase 2's staging files carry a `.tmp` suffix. The reader ignores them during enumeration. Whether this phase may also **delete** them is a pending decision below; recognizing them and counting them against the budget is this phase's either way.
+- `Capture::take_from` (`progress.rs:252`) collects the `read_dir` iterator into a `Vec<fs::DirEntry>` **before** it calls `live_runs`. Rewiring it onto the access layer must keep that boundary — the collection is the sample, and merely opening the enumeration first does not preserve it. Reversing the order recreates a live run's log as `0600`, out of the operator's reach for the whole run.
+- `live_runs` (`progress.rs:356`) returns `HashMap<u32, HashSet<RegistrationGeneration>>`. One pid can carry several generations, and every registered generation's log is protected — a signature change from the single-generation form earlier phases assumed.
+- Three tests must survive this phase unchanged in intent: `a_log_arriving_after_the_directory_sample_survives_the_pass` (inline, `progress.rs`), and the two permission-boundary cases in `tests/shim_modes.rs` and `tests/shim_registration.rs` that assert a captured log is group-readable rather than `0600`.
+- `RegistrationGeneration::Calendar(String)` accepts any nonempty filename suffix. It classifies a filename within one scan; it is not evidence of process identity, and this phase must not start treating it as such.
+
+**Pending decision: two bounds this phase does not yet have**
+
+Actual problem:
+Two things this phase touches are unbounded, and each has one obvious answer that nonetheless changes what the phase builds.
+1. **Staging-file deletion.** The acceptance gate asks the sweep to remove staging files "old enough to be swept", but age cannot establish that a paused writer ended, and the evidence that could arrives in phase 4.
+2. **The directory sample.** Phase 2 made `Capture::take_from` collect every entry of the root into a `Vec<fs::DirEntry>` before filtering. The byte caps bound what is read and `CAPTURE_SWEEP_LIMIT` bounds what is deleted; neither bounds that collection, so a root holding very many unrelated entries can exhaust the scanner — on a worker thread, which stops every row updating.
+
+What exists now:
+- `cargo-capture-shim.sh` writes `<pid>.<generation>.tmp`, publishes by hard link, then unlinks the staging name. A writer stopped between those points leaves the file behind, indistinguishable by age from one whose writer is still running.
+- This phase's Spec threads one scan-local sweep budget through registrations, logs and staging files.
+- `Capture::take_from` (`progress.rs:252`) collects the iterator before reading liveness. The collection is the sample, and the sample is what makes a running shim's log impossible to sweep.
+- Nothing reports an enumeration that was cut short.
+
+What should change:
+- Keep staging recognition and budget accounting here — enumerate the file, count it against the budget, do not delete it — and move deletion eligibility and its acceptance cases into phase 4, next to the evidence that authorizes them. Preserve any staging record that is incomplete or cannot be verified.
+- Adopt a bounded inventory that keeps the sample-before-liveness order intact: the order is the invariant, the unbounded `Vec` is not. An enumeration that hits the bound is an explicit incomplete outcome, and an incomplete enumeration must not authorize a sweep — the rule this phase already applies to a failed one. Test a root holding many unrelated entries.
+
+Recommendation:
+Move the staging deletion out and bound the sample here. Sweeping on age is the same class of defect this phase exists to remove from the log path; and deferring the bound leaves phase 2's fix carrying a way to exhaust the scanner, in the phase meant to close exactly that.
 
 **Acceptance gate:** Build, Test and Lint green. Tests for each item in the tester's line above. A test asserting one scan across two owned roots attempts at most `CAPTURE_SWEEP_LIMIT` removals in total, not that many per root — and that the budget counts every kind of removal the sweep makes together: registrations, logs, and staging files old enough to be swept. A budget counted per artifact kind is three budgets, which is what the constant exists to prevent. No test may require a second uid.
 
@@ -625,9 +537,11 @@ Compare the live process's current stamp against fields 3 and 4 of the registrat
 
 *3. The deletion rule covers logs too.* Registration enumeration and log enumeration are not one atomic snapshot. A shim can publish its registration and create its log in the interval between them; the reader then meets a log whose pid was absent from the earlier set and deletes a running capture's output. A second race survives directory-relative deletion: after inspecting `state/pids/<name>` the reader can unlink a *replacement* that has since taken that name, and re-checking the inode narrows the interval without closing it. Every artifact — logs included — needs fresh evidence its writer ended before removal, and uncertainty preserves it. Phase 2's exclusive-create publication is what closes the second race for new records — a `<pid>.<generation>` name cannot be taken while a record still holds it, so a name that reappears is provably a later record rather than a replacement of the one just inspected, and deletion by that exact full name is therefore safe; a legacy bare-`<pid>` record gets deferred cleanup rather than an immediate delete. A snapshot miss must be re-verified before any delete.
 
-*4. Parse the versioned record.* Read the NUL-framed fields Phase 2 defines, under the registration byte cap from Phase 3. Reject a malformed record individually — a bad record must not discard the other registrations and must not disturb the process-table rows that already exist. Records in the old `<cwd>\tcargo <args>` format are display-only text, since their argument boundaries cannot be recovered.
+*4. Parse the versioned record.* Read the NUL-framed fields Phase 2 defines, under the registration byte cap from Phase 3. Phase 2's inline fixtures write **empty** registration files, because nothing read them; replace them here with three kinds that exercise the parser — a valid record, a well-formed record whose identity cannot be verified, and a malformed one. Reject a malformed record individually — a bad record must not discard the other registrations and must not disturb the process-table rows that already exist. Records in the old `<cwd>\tcargo <args>` format are display-only text, since their argument boundaries cannot be recovered.
 
-*5. Bind the log to the registration's generation.* A1's identity establishes which process owns a registration but not which log belongs to that registration's run. "Newest filename for this pid" has no correct answer during the window where a new registration exists and its log does not — the reader selects the previous run's log for a reused pid. Take the exact log basename from field 5, validate it is a single filename with no directory part, and open it relative to the inspected root. That removes foreign log enumeration and `newer()` selection for new-format records entirely. Root replacement or a generation change discards the association; a temporarily missing log is retried on the next scan while its registration stays valid; directory timestamps never decide whether that named file is reopened, since timestamp resolution is finite and a rename over an existing name can leave them equal.
+*5. Bind the log to the registration's generation.* Part of this already exists and must be described before it is replaced: phase 2 shipped `RegistrationGeneration` (`progress.rs:191`) and `names_log` (`:201`), which protect every explicitly registered generation and already select the exact filename when a pid carries a single versioned registration. What phase 2 did **not** ship is any reading of the record's contents — the reader still never opens a registration body, so nothing today parses fields or verifies a stale pid. This phase replaces filename inference with verified record contents; it does not introduce generation association from nothing.
+
+A1's identity establishes which process owns a registration but not which log belongs to that registration's run. "Newest filename for this pid" has no correct answer during the window where a new registration exists and its log does not — the reader selects the previous run's log for a reused pid. Take the exact log basename from field 5, validate it is a single filename with no directory part, and open it relative to the inspected root. That removes foreign log enumeration and `newer()` selection for new-format records entirely. Root replacement or a generation change discards the association; a temporarily missing log is retried on the next scan while its registration stays valid; directory timestamps never decide whether that named file is reopened, since timestamp resolution is finite and a rename over an existing name can leave them equal.
 
 **Files:**
 - `crates/cargo-tile/src/birth_stamp/mod.rs` — **new**: the boot-qualified birth stamp and the platform-independent comparison. Directory form because it has submodules, which `self_named_module_files` requires.
@@ -643,10 +557,10 @@ Compare the live process's current stamp against fields 3 and 4 of the registrat
 - `crates/cargo-tile/src/progress.rs` — acceptance, the three-state outcome, the deletion rule, log association by basename
 - `crates/cargo-tile/src/main.rs` — the `mod` declarations for `birth_stamp` and `registration`
 
-**Seats:** 3 writers — splits by module: the platform birth stamp, the record parser, and `progress.rs` acceptance are three separate files. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`.
-- `impl` — `crates/cargo-tile/src/birth_stamp/mod.rs` and its two platform submodules, plus `crates/cargo-tile/src/constants.rs` (the tick and clock literals both platforms need); hub: `crates/cargo-tile/src/main.rs` **and** `crates/cargo-tile/Cargo.toml` (the macOS-gated `libc` entry). Lands the `mod` lines for **both** new top-level modules first, so the other two writers can compile. This seat owns the only `unsafe` in the plan, so it also owns the `allow` and the `// SAFETY:` comments; a Linux-hosted delegate cannot compile `macos.rs` and must reason it through rather than iterating against the compiler.
-- `test` — opens as impl: `crates/cargo-tile/src/registration.rs` — the field table, NUL framing, rejection of a malformed or short record, `Unknown` for an empty identity field, and refusal of a log basename containing a directory separator
-- `review` — opens as impl: `crates/cargo-tile/src/progress.rs` — acceptance, the `Confirmed | Ended | Unknown` outcome, the deletion rule, and log association by basename
+**Seats:** 2 writers + 1 tester — this phase now has a real tester lane, which the original three-writer split did not. The deletion, timestamp and directory-identity work below reaches back into the shipped publisher and the shipped reader together, so those two move as one writer's set rather than two; and phase 2's files under `tests/` drive the shim as a process, which is exactly where publication, compatibility and permission behavior can be exercised independently of the crate's private items.
+- `impl` — `crates/cargo-tile/src/birth_stamp/` and its two platform submodules, `crates/cargo-tile/src/registration.rs`, `crates/cargo-tile/src/constants.rs`; hub: `crates/cargo-tile/src/main.rs` **and** `crates/cargo-tile/Cargo.toml` (the macOS-gated `libc` entry). Owns the verification interfaces and both hubs, and lands the `mod` lines for both new top-level modules first so the other writer can compile. This seat owns the only `unsafe` in the plan, so it also owns the `allow` and the `// SAFETY:` comments; a Linux-hosted delegate cannot compile `macos.rs` and must reason it through rather than iterating against the compiler.
+- `test` — opens as impl: `crates/cargo-tile/src/cargo-capture-shim.sh`, `crates/cargo-tile/src/progress.rs`, `crates/cargo-tile/src/capture_root.rs`, and the liveness call site in `crates/cargo-tile/src/processes.rs`. The publisher and the reader change together here; one writer holding both is what keeps the record format from drifting between them.
+- `review` — opens as test: `crates/cargo-tile/tests/shim_registration.rs` and `crates/cargo-tile/tests/shim_modes.rs`. Exercises publication, backward compatibility with phase 2 records, and the permission invariants, against the built shim rather than against crate items.
 
 **Constraints from prior phases:**
 - Phase 2 defines the record: NUL-terminated fields in the order magic, generation, boot identity, birth stamp, log basename, working directory, argument count, arguments. The magic is the literal `cargo-tile-v2`. Fields 3 and 4 are empty when the shim could not obtain them.
@@ -654,6 +568,31 @@ Compare the live process's current stamp against fields 3 and 4 of the registrat
 - Phase 3 supplies the directory handles, the byte caps, and `OwnedRoot<'scan>`; all opens and deletions here go through them.
 - Phase 3 already added `rustix` to `crates/cargo-tile/Cargo.toml`. This phase adds only the macOS-gated `libc` entry beneath it; do not restate or alter the `rustix` line. rustix covers phase 3's file surface and **not** `sysctl`, which is why this phase reaches past it on macOS alone.
 - Phase 3's enumeration accepts both `<pid>.<generation>` and legacy bare `<pid>` filenames.
+- `live_runs` (`progress.rs:356`) returns `HashMap<u32, HashSet<RegistrationGeneration>>`: one pid, every generation registered under it. Verification replaces the *contents* of that association, not its shape.
+- `RegistrationGeneration::Calendar(String)` (`progress.rs:191`) is constructed from any nonempty filename suffix. It is a candidate, not proof — it carries neither validated calendar syntax nor process identity, which is what this phase exists to add.
+- Phase 3 may hand this phase the deletion of staging files; see the pending decision in phase 3. Recognition and budget accounting stay there either way.
+
+**Pending decision: four protocol questions phase 2's shipped record leaves open**
+
+Actual problem:
+1. **Deletion by name is not safe yet.** This Work Order argues exclusive-create publication makes deletion by exact full name safe, because a name cannot be taken while a record holds it. That is true of overwriting and false of reuse: a scanner can verify `<pid>.<generation>`, a second scanner can remove it, a new invocation can publish the same name, and the first scanner's delayed unlink then deletes the running run's record. Item 3 leans on this claim for logs too.
+2. **The macOS birth stamp has no fixed format.** The shipped Darwin branch records unnormalized `ps -o lstart=` output (`cargo-capture-shim.sh:225`), and this Work Order says to parse its "fixed format". Apple formats that field with `%c` through `localtime`, so a writer and reader in different locales or timezones cannot compare it.
+3. **Directory identity is discarded at write time.** The shim collapses `$HOME` to `~` before serializing the working directory (`cargo-capture-shim.sh:206`), and `shim_registration.rs` asserts the collapsed field. Two invocations under different `HOME` values encode two different absolute directories identically, under one account and one root — and phase 9 must group rows by directory identity.
+4. **Verification produces no proof-bearing type.** `RegistrationGeneration::Calendar(String)` (`progress.rs:191`) accepts any nonempty filename suffix, so it carries neither validated calendar syntax nor process identity, yet phases 8 and 9 build capture membership and display rows on it.
+
+What exists now:
+- The shim publishes by hard link onto an exclusively created name (`cargo-capture-shim.sh:150`); the name is free again the moment anything unlinks it, and the generation is a calendar stamp, so a reused pid inside one stamp resolution collides by construction.
+- Records already exist carrying unnormalized `lstart` text and the `~`-collapsed directory; the reader's own side reads `p_starttime` as a locale-free `timeval`.
+- `CargoProcess.state`, `row()` and `cargo_split()` return bare optionals at the external-process boundary, where unavailable metadata, deliberate exclusion, absent capture membership and unreadable capture data all arrive as the same `None`.
+
+What should change:
+- Treat the exclusive-create argument as closing the overwrite race only, say so in item 3, and close the reuse race with evidence: delete only what this scan verified and re-confirmed still carries the identity it verified. Cover registrations and logs together, with a deterministic remove-republish-delete regression for each.
+- Define a normalized, locale-free and timezone-free serialization the shim writes for the birth stamp; report an already-written unnormalized record as `Unknown` rather than reading it as though its format were known; test differing writer and reader environments without changing the environment cargo inherits.
+- Preserve raw directory identity in the record and make the `~` collapse a display transform the reader applies; keep reading phase 2 records that carry only the collapsed form as identity-unavailable rather than as a distinct directory.
+- Produce a verified-registration type constructible only from a completed identity check; phase 8 consumes it through explicitly named direct-versus-enclosing capture relationships and phase 9 accepts it for row construction. Extend the same treatment to those three optional results — four outcomes need four names, not one `None`.
+
+Recommendation:
+Take all four. Each is a change to the record protocol, which is this phase's subject and is far cheaper to settle before phases 8 and 9 build on it. Normalize at the writer rather than parsing an unspecified locale at the reader; preserve the raw directory rather than recovering it later; and note that the proof-bearing type also settles phase 7's contract, which phases 8 and 9 currently restate as "optional CPU" and "optional managed count".
 
 **Acceptance gate:** Build, Test and Lint green. A test asserting a registration whose birth stamp does not match the live pid's is `Ended`, not `Confirmed`. A test asserting an `Unknown` outcome authorises no deletion. A test asserting a log created between the two enumerations is not swept. A test asserting a legacy record annotates but never sources a row. A test asserting the comparison truncates to whole seconds on the macOS path and does not on the Linux path, written so it runs on either host. `unsafe` appears in `birth_stamp/macos.rs` and nowhere else, each block under a `reason`-carrying `allow` and a `// SAFETY:` comment.
 
@@ -667,7 +606,7 @@ Compare the live process's current stamp against fields 3 and 4 of the registrat
 
 **Spec:**
 
-`root()` (`progress.rs:289`) resolves exactly one root: `CARGO_TILE_ROOT` or the `/tmp` default. It becomes a list — the reader's own root, unchanged, plus any additional roots from configuration:
+`root()` (`progress.rs:343`) resolves exactly one root: `CARGO_TILE_ROOT` or the `/tmp` default. It becomes a list — the reader's own root, unchanged, plus any additional roots from configuration:
 
 ```toml
 [capture]
@@ -703,9 +642,10 @@ The sweep budget from Phase 3 is already scan-local and threaded across roots; a
 **Constraints from prior phases:**
 - Phase 3 supplies `OwnedRoot<'scan>` / `ForeignRoot<'scan>`, the per-scan ownership recheck, and the scan-local sweep budget. Roots are opened and classified through it.
 - Phase 4 supplies acceptance and the log association; both are per root and must not assume a single root.
+- The writer and the reader disagree today about an **empty** `CARGO_TILE_ROOT`. The shim (`cargo-capture-shim.sh:53`) treats empty as the default, and phase 2's `RootSelection::Empty` tests assert that; `root()` (`progress.rs:343`) returns an empty path for it. Resolve it one way here: unset **and** empty both fall back to the default, and the resolved root records `default` as its source in both cases. Do not preserve the disagreement into a list.
 - The runner roots this key names are `/var/lib/hana-ci/hana-linux-1/cargo-tile` and `/var/lib/hana-ci/hana-linux-2/cargo-tile`, created `0750 <runner> <runner>` by nix tmpfiles, with `CARGO_TILE_ROOT` set in each unit's environment. They are foreign to the reader and will never be swept.
 
-**Acceptance gate:** Build, Test and Lint green. A test asserting a config with no `capture.roots` produces exactly the single root the code resolves today. A test asserting a registration under the same pid number in two roots yields two capture entries. A test asserting root resolution happens once, not per scan. A test asserting a configured root that does not exist is still present in the resolved list, carrying the source it came from, rather than being dropped — phase 6 has nothing to report about a root that was silently discarded.
+**Acceptance gate:** Build, Test and Lint green. Three cases for the environment variable — unset, set and empty, set and nonempty — asserting the first two resolve to the default with source `default`, and the third to the override with source `environment`. A test asserting a config with no `capture.roots` produces exactly the single root the code resolves today. A test asserting a registration under the same pid number in two roots yields two capture entries. A test asserting root resolution happens once, not per scan. A test asserting a configured root that does not exist is still present in the resolved list, carrying the source it came from, rather than being dropped — phase 6 has nothing to report about a root that was silently discarded.
 
 ---
 
@@ -740,8 +680,8 @@ Use specific wording rather than a boolean: `readable — no active captures`, `
 - `crates/cargo-tile/src/app.rs` — holds the retained root status the overlay reads. The Delegation Context lists this file as read-only for the plan; this phase is the exception, because a status `settings.rs` may not read from disk has to reach it through `App`
 - `crates/cargo-tile/src/constants.rs` — the status strings
 
-**Seats:** 3 writers — splits by file: producing the status, propagating a redraw, and rendering the rows. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`.
-- `impl` — `crates/cargo-tile/src/processes.rs` — root status on `Scan`; hub: `crates/cargo-tile/src/processes.rs` (the status type the other two read)
+**Seats:** 3 writers + 0 testers — splits by file: producing the diagnostics, propagating a redraw, and rendering the rows. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`.
+- `impl` — `crates/cargo-tile/src/processes.rs` **and `crates/cargo-tile/src/progress.rs`** — root status on `Scan`, and the read outcomes that status is built from; hub: `crates/cargo-tile/src/processes.rs` (the `Scan` status type the other two read)
 - `test` — opens as impl: `crates/cargo-tile/src/terminal.rs` — `drain_scans` (`:401`) redraws when root status changes even though the command groups did not; writes into the existing `#[cfg(test)]` module (`:670`). **Also `crates/cargo-tile/src/app.rs`**, which has to hold the retained root status for `settings.rs` to read: the Delegation Context lists `app.rs` as read-only for this plan, and this phase is the exception
 - `review` — opens as impl: `crates/cargo-tile/src/settings.rs` — the read-only rows off `rows(app)` (`:98`), plus `crates/cargo-tile/src/constants.rs` for the status strings. **This seat must not introduce filesystem access**: `settings.rs` performs none today, and every value it shows comes from what the scan already retained on `app`.
 
@@ -749,7 +689,28 @@ Use specific wording rather than a boolean: `readable — no active captures`, `
 - Phase 5 supplies the resolved, deduplicated, interned root list and the `default` / `environment` / `config` distinction.
 - Phase 3 supplies per-scan ownership and enumeration outcomes, including the unavailable-versus-empty live set that `permission denied: state/pids` and `partial` report.
 
-**Acceptance gate:** Build, Test and Lint green. A test asserting `settings::rows` performs no filesystem access. A test asserting a root whose status changes while the command groups do not still requests a redraw. A test asserting a configured root that is missing at first and appears later changes its displayed status, with the command groups unchanged across both scans. A test per status string.
+**Pending decision: who owns the unreadable-capture diagnostic, and how the evidence reaches this phase**
+
+Actual problem:
+This phase must tell an operator why a root is producing nothing, but the information it needs is destroyed before it arrives. `tail()` and `Capture::read()` (`progress.rs:332` onward) erase every read failure into `None`, so an unreadable log and a healthy capture with nothing to report are the same value by the time this phase sees them. The phase 2 retrospective named a backlog item as the owner of this surface; no such item exists, and the plan does not otherwise assign it.
+
+What exists now:
+- A capture log the reader cannot open is indistinguishable from one that is simply empty.
+- This is the operator-visible face of the `0600` failure phases 2 and 3 exist to prevent: when it does happen, the operator sees nothing and is left to find it with `cat`.
+- Phases 3 and 4 both touch these read paths and neither is currently required to preserve the outcome.
+
+What should change:
+- Phases 3 and 4 retain read failures instead of collapsing them, and carry them to the scan.
+- This phase owns the operator surface: name the affected root and log, say the access failed, and distinguish a registration that cannot be verified from a root that is genuinely empty.
+- Phase 8 consumes the same retained outcomes when it adds its cache, rather than re-deriving them.
+- Test recovery — an unreadable log that becomes readable — and a redraw on that transition with command groups unchanged.
+
+Recommendation:
+Assign it here and add the retention requirement to phases 3 and 4. This phase's Goal already promises the operator can see "why one is producing nothing", and today it cannot answer that for the one cause most likely to occur.
+
+**Acceptance gate:** Build, Test and Lint green. A test asserting `settings::rows` performs no filesystem access. A test asserting a root whose status changes while the command groups do not still requests a redraw. A test asserting a configured root that is missing at first and appears later changes its displayed status, with the command groups unchanged across both scans. A test asserting an empty `CARGO_TILE_ROOT` displays the default as its source, not the environment. A test per status string.
+
+An end-to-end CLI check also lands here, and it is the one phase 2 deferred: run the built binary against a fixture-only `RUSTUP_HOME`, `HOME` and `CARGO_TILE_ROOT`, and assert `install`, `status`, a shim execution, and `uninstall` restoring what was moved aside. `rustup_home()` (`hook.rs:323`) honours `RUSTUP_HOME` and the existing hook tests already build isolated toolchains, so this needs no second machine and must never touch a real toolchain. Phase 2's two files under `tests/` drive the shim as a process and do not cover this.
 
 ---
 
@@ -816,7 +777,9 @@ One `RunId` inside `Captured` cannot carry both of those relationships: the same
 
 *5. Read each capture once per scan.* Every row calls `captured_run`, and every hit opens, stats, seeks, reads and parses the log again — ten rows sharing one capture at the full tail cap read and parse 640 KiB per scan, and rows from the same scan can disagree about progress because they read at different instants. Phase 3's hardened open would repeat on each of those reads. Resolve membership through the identity above, read each referenced capture **once per scan** into the scan's capture data — caching the unsuccessful reads too — and copy the resulting outcome into matching rows; `RunState` is already `Copy`. One stored result per capture, and no cache needing invalidation across scans.
 
-What the cache stores is a named capture-read outcome, not `Option<RunState>`. Three things happen when a capture is read and the rows need to tell them apart: progress was parsed, the log opened but has printed nothing to parse yet, and the read itself did not succeed. A bare `None` collapses the last two, and the second is the ordinary state of a run that has just started — so a row cannot distinguish "no progress yet" from "this capture is unreadable" without asking the filesystem again, which is the per-row read this item removes. Name the three outcomes in the type the scan stores, and let the row decide what to display from the outcome rather than from an absence.
+What the cache stores is a named capture-read outcome, not `Option<RunState>`. Three things happen when a capture is read and the rows need to tell them apart: progress was parsed, the read succeeded but there is **no current progress**, and the read itself did not succeed. A bare `None` collapses the last two, so a row cannot distinguish them without asking the filesystem again, which is the per-row read this item removes.
+
+Name the middle one for what it means, not for when it happens. `parse_state` (`progress.rs:457`) returns nothing in three quite different situations: an empty log, ordinary output carrying no counter, and — the one that misleads — a run that has already printed `Finished` while its `cargo run` application is still alive and still the row's subject. "Nothing printed yet" describes only the first and would make the third read as a run that never started. Name the three outcomes in the type the scan stores, and let the row decide what to display from the outcome rather than from an absence.
 
 *6. Order within the scan.* Verify registrations against Phase 4's evidence, prune, establish direct association, resolve each invocation's command, and only then decide row eligibility.
 
@@ -834,15 +797,15 @@ What the cache stores is a named capture-read outcome, not `Option<RunState>`. T
 
 **Seats:** 3 writers — the identity reaches further than the two files this phase originally named: `roster.rs`, `tiles.rs` and `render.rs` all still key on the pid, so a third writer takes those consumers while the other two establish the identity and the capture lookup. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`.
 - `impl` — `crates/cargo-tile/src/processes.rs` — `InvocationId`, `is_shim` (`:752`), `captured_run` (`:918`), the exclusion retain (`:440`), the liveness callback (`:462`), scan-scoped capture reads; plus `crates/cargo-tile/src/constants.rs`; hub: `crates/cargo-tile/src/processes.rs` (`InvocationId` is defined here and read by all three files). Land the type first — the other two cannot compile without it
-- `test` — opens as impl: `crates/cargo-tile/src/progress.rs` — capture lookup keyed by the new identity, and the once-per-scan read that replaces the per-row read; writes into the existing `#[cfg(test)]` module (`:513`)
+- `test` — opens as impl: `crates/cargo-tile/src/progress.rs` — capture lookup keyed by the new identity, and the once-per-scan read that replaces the per-row read; writes into the existing `#[cfg(test)]` module (`:594`)
 - `review` — opens as impl: `crates/cargo-tile/src/roster.rs` (matching at `:194` and the family maps), `crates/cargo-tile/src/tiles.rs` (the demand and content identifiers) and `crates/cargo-tile/src/render.rs` (the renderer entry point that takes a pid). The `is_shim` defect — two unavailable cwds comparing equal — is the highest-value single test in the phase and belongs with the `processes.rs` writer
 
 **Constraints from prior phases:**
 - Phase 5 supplies the interned root index and the root-qualified capture map key; the identity here extends that key rather than replacing it.
 - Phase 4 supplies verification and the `Confirmed | Ended | Unknown` outcome; membership resolution consumes it and must not re-derive it.
-- Phase 7 supplies the optional CPU, optional managed count, and three-state compiler observation; rows built here use them directly.
+- Phase 7 supplies the CPU measurement, the managed-process count, and the three-state compiler observation as **named semantic types**, each distinguishing an unavailable measurement from a measured zero. Rows built here use those types directly and must not reintroduce a bare `Option` for any of the three; phase 7's Work Order names them, and this phase uses those names rather than restating them as "optional".
 
-**Acceptance gate:** Build, Test and Lint green. A test asserting a run that switches between a registration source and a process source across two scans keeps one tile. A test asserting a capture referenced by many rows is read once per scan. A test asserting an excluded command produces no row but is still counted live for sweep purposes.
+**Acceptance gate:** Build, Test and Lint green. Unit coverage that the identity survives a source transition — the same invocation identified from a registration and from a process resolves to one identity. The complete two-scan acceptance test for the source switch itself belongs to phase 9, which is where registration-sourced rows first exist; do not write a version of it here that needs a row builder this phase does not have. A test asserting a capture referenced by many rows is read once per scan. A test asserting the three capture-read outcomes stay distinct, including a log that has printed `Finished` while its application is still running. A test asserting an excluded command produces no row but is still counted live for sweep purposes.
 
 ---
 
@@ -854,7 +817,7 @@ What the cache stores is a named capture-read outcome, not `Option<RunState>`. T
 
 **Spec:**
 
-This is the item the feature exists for. The shim already writes the field that is missing and the grid discards it: `live_runs` (`progress.rs:302`) parses only the **filename** as a pid and never opens the file. So a registration can *supply* a row rather than only annotate one, and an unreadable argv costs no columns.
+This is the item the feature exists for. The shim already writes the field that is missing and the grid discards it: `live_runs` (`progress.rs:356`) parses only the **filename** as a pid and never opens the file. So a registration can *supply* a row rather than only annotate one, and an unreadable argv costs no columns.
 
 *1. The new direction.* Today the linkage runs one way: `captured_run` (`processes.rs:918`) walks **upward** from a cargo pid to find a registered ancestor and read its state. That walk stays as it is for every row the process table can already build. What is new is the other direction, for a run the process table cannot describe: the registration names a live shim pid, and the two fields the row is missing are in the file. Give `Capture` a sibling to `read(pid) -> Option<RunState>` that returns the parsed registration — working directory and command text — and let a row be built from it.
 
@@ -884,380 +847,257 @@ Group on the verified account, the root identity **and** the working directory r
 - `crates/cargo-tile/src/render.rs` — grouping on account, root and working directory (`:1347`), the heading prefix
 - `crates/cargo-tile/src/constants.rs` — the heading prefix's presentation literals
 
-**Seats:** 3 writers — splits by file; the behaviour is a merge across three existing modules. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`.
-- `impl` — `crates/cargo-tile/src/processes.rs` — the registration-sourced row and the per-field merge at `row()` (`:1069-1083`), where `path` degrades to `UNRESOLVED_PATH` but `command` fails the whole row; hub: `crates/cargo-tile/src/processes.rs` (the row builder the other two feed and read)
+**Seats:** 2 writers + 0 testers + reserve — phases 4 and 8 already expose verified registration data, so the accessor work that once looked like a third lane is now a few lines tightly bound to row construction and belongs with its owner. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`.
+- `impl` — `crates/cargo-tile/src/processes.rs` **and `crates/cargo-tile/src/progress.rs`** — the registration-sourced row, the per-field merge at `row()` (`:1069-1083`) where `path` degrades to `UNRESOLVED_PATH` but `command` fails the whole row, and the registration accessor beside `read`; hub: `crates/cargo-tile/src/processes.rs` (the row builder both writers feed and read). Also maintains the literal row fixtures in `crates/cargo-tile/src/roster.rs` (`:527`), which have to change whenever a row gains an identity field. Owns the source-merge tests.
 - `test` — opens as impl: `crates/cargo-tile/src/render.rs` — `group_by_path` (`:1347`) keys on verified account, root and working directory instead of display text, and headings gain the account prefix; plus `crates/cargo-tile/src/constants.rs` for the prefix's presentation literals, which are this writer's alone in this phase; writes into the existing `#[cfg(test)]` module (`:2009`)
-- `review` — opens as impl: `crates/cargo-tile/src/progress.rs` — the registration accessor beside `read` (`:282`)
+- `review` — reserve. Reviews source transitions and exclusion behaviour without taking a share of either writer's files.
 
 **Constraints from prior phases:**
 - Phase 4 supplies the parsed record: working directory, argument count and arguments as separate fields, and the `Confirmed | Ended | Unknown` outcome. Only `Confirmed` may source a row; `Unknown` and legacy records annotate only.
 - Phase 8 supplies `InvocationId::Captured(RunId) | Process(ProcessIdentity)`, the resolved membership, the scan-scoped capture reads, and the exclusion ordering. A row may not be built for an excluded command.
-- Phase 7 supplies the optional CPU and managed count and the three-state compiler observation; a registration-sourced row leaves all three unavailable rather than zero.
+- Phase 7 supplies the CPU measurement, the managed-process count, and the three-state compiler observation as **named semantic types**. A registration-sourced row leaves all three unavailable rather than zero, and says so through those types rather than through a bare `Option`; use phase 7's names, not "optional".
 - Phase 6 supplies the owner account per root, which the heading prefix and the grouping key both use.
 - Phase 5 supplies the interned root index that qualifies the identity.
 
-**Acceptance gate:** Build, Test and Lint green. A test asserting a registration with no matching process-table row produces a row carrying its working directory and command. A test asserting a process row with an unavailable cwd and a matching registration renders the registration's directory while keeping the process row's pid and measured values. A test asserting two roots reporting the same `~/x` produce two headings, each prefixed with its own account. A test asserting two working directories under one account and one root produce two headings rather than one. A test asserting an `Unknown` registration sources no row.
+**Acceptance gate:** Build, Test and Lint green. The complete two-scan source-switch acceptance test lands here, not in phase 8: one run observed from a registration on the first scan and from a process on the second keeps one tile with a stable identity, and an excluded command produces no row from either source. Two directory-identity tests, which depend on phase 4's pending decision about preserving the raw working directory: two distinct absolute directories that collapse to the same display text group as two, and grouping stays stable when a row's source changes. A test asserting a registration with no matching process-table row produces a row carrying its working directory and command. A test asserting a process row with an unavailable cwd and a matching registration renders the registration's directory while keeping the process row's pid and measured values. A test asserting two roots reporting the same `~/x` produce two headings, each prefixed with its own account. A test asserting two working directories under one account and one root produce two headings rather than one. A test asserting an `Unknown` registration sources no row.
 
-### Phase 10 — A reservation retires when its work reaches trunk  · status: todo
+### Phase 10 — A claim covers the merge it prevents, and nothing else  · status: todo
 
 #### Work Order
 
-**Goal:** A reservation whose commits are in trunk and whose worktree is clean
-retires on its own, so finished work stops holding files against everyone else.
+**Goal:** A reservation protects exactly the branch's unmerged surface, stops
+growing past it, and stops holding anything once the branch merges — without an
+operator running a verb.
 
 **Spec:**
 
-Today a reservation is held until something explicitly releases it. When a run
-ends without that release, the claim outlives the work forever. Observed
-2026-09-09: reservation `01a06fde`, opened 2026-09-05 by the `cargo-liner`
-worktree, still held 40+ files four days after its work was committed and
-pushed and its worktree returned to clean. It blocked an unrelated phase in a
-second worktree and raised incursion `01a0887c`. The two worktrees had separate
-working trees on different branches and could not collide on disk.
+*One scope set is doing two unrelated jobs.* `is_foreign_to_coordination_run_in_worktree`
+(`reservation/record.rs:242`) refuses an edit on two separate grounds, and reads
+the same scope set for both:
 
-Retention exists so an interrupted run cannot silently drop its protection.
-That reasoning does not survive integration: once the work is in trunk there is
-nothing left to protect and the claim is pure obstruction. The cost lands on
-whoever comes next, who did nothing wrong and has no way to tell a live claim
-from a dead one.
+- **A different worktree** — `self.actor.worktree != worktree_id`. This is
+  merge-conflict protection: two branches modifying the same file conflict when
+  both reach trunk.
+- **The same worktree under a different coordination run** — a direct race over
+  one checkout on disk.
 
-`resolve --integrated-as <TRUNK_OID>` already exists, but it is a manual
-assertion, and its own help warns that a wrong commit releases an unresolved
-reservation. So the safe path is the one nobody runs. Make it automatic and
-evidence-based instead.
+The two grounds have different natural extents and different natural lifetimes,
+and sharing one set gives each of them the other's:
 
-Retire a reservation during board evaluation when **both** hold:
+- Merge protection should last until the branch merges and cover exactly the
+  branch's unmerged surface. It instead inherits accumulation, so it grows past
+  that surface without bound. Observed on `01a06fde`: 45 recorded overlap
+  answers, every one `widen_without_foreign_overlap` with cause `drift`, ending
+  at 293 paths spanning three crates plus root files — a reservation protecting a
+  change in `crates/cargo-berth` came to own the whole of `crates/cargo-tile`.
+- Race protection should last as long as a run is editing and cover what that run
+  has open. It instead inherits "until merged", so it outlives the run. Observed
+  on the same reservation: still held days after its worktree returned to clean,
+  blocking an unrelated phase in a second worktree and raising incursion
+  `01a0887c`. The two worktrees had separate working trees on different branches
+  and could not collide on disk at all.
 
-1. every commit the reservation records is an ancestor of trunk, and
-2. its worktree is clean — no uncommitted change inside its own scopes.
+One cause, both symptoms. Fix the extent and the lifetime follows.
 
-Both, never either alone. A clean worktree whose commits are not in trunk is
-unintegrated work, and unreachable commits with a dirty tree are work in
-progress; retiring either would discard exactly what retention protects.
+*The rule.* A reservation's merge-protecting scope is **derived on read, never
+accumulated**:
 
-The ancestry machinery already exists: the board reports
-`protected_predecessor_ancestry_queries` and
-`worktree_ahead_behind_computations` in its git cost, so this reads existing
-capability rather than adding a git path. Keep the per-invocation git cost
-bounded — the board is read constantly and must not become an O(reservations)
-ancestry walk. Reuse the batched ancestry the board already issues rather than
-adding a query per reservation, and hold the bound across the whole read: the
-cost that matters is reservations multiplied by worktrees, since each verified
-holder needs its own cleanliness observation.
+    files changed by `trunk..HEAD` in the holder's worktree
+      ∪ files currently modified there (staged, unstaged, untracked)
 
-*Where the rule runs, and what it may read.* Three placements here are not
-interchangeable, and getting them wrong puts a durable mutation outside the lock
-that protects it:
+That is the merge-conflict surface exactly. Two properties follow, and they are
+the whole point:
 
-- `retention.rs` **replays journal operations**. The rule that decides a
-  reservation is retirable is not a replay step, and a replay function is not
-  where a new board-time decision goes.
-- `lifecycle.rs` owns the disposition and its permitted transitions.
-- The automatic mutation itself belongs in **locked reconciliation** —
-  `prepare_reconciliation_transaction` (`reconcile.rs:949`) — where a board read
-  already holds the lock and already produces journal operations. A retirement
-  decided outside it races every other board reader.
-- `git/mod.rs` only re-exports; the ancestry queries are implemented in
-  `git/reachability.rs`, which is the file this phase actually reads and extends.
+- **It cannot run away.** It does not grow when another run commits into the same
+  branch. It grows only as this branch accumulates work against trunk — which is
+  precisely what can conflict. This is what `phase_start..HEAD` could never give:
+  `drift/observation.rs:194` states that range "is a comparison, not an
+  authorship record", so a second run committing onto the same branch lands
+  inside the incumbent's range and widens it. `trunk..HEAD` has no such property.
+- **It empties itself.** Once the branch merges, `trunk..HEAD` is empty; a clean
+  worktree then derives an empty scope set, and the reservation holds nothing.
+  There is no retirement verb to run, no operator step to remember, and no new
+  disposition to invent. Retirement stops being an action and becomes a
+  consequence of the same computation.
 
-The cleanliness half needs an observation that does not exist yet. Today's
-worktree observations carry liveness and HEAD — enough to say a worktree is
-still there and where it points, and nothing about its index. "No uncommitted
-change inside its own scopes" needs **staged, unstaged and untracked** paths
-observed per verified holder, intersected with that holder's scope set. Add
-those observations rather than inferring cleanliness from HEAD.
+Check the rule against the incident before building it. `cargo-liner` was on
+`main`, `0 0` against `origin/main`, working tree clean, nothing uncommitted.
+Unmerged surface: empty. Under this rule the claim covers zero paths, not 293,
+and it reached zero on its own the moment its work landed.
 
-Evidence that cannot be obtained is not evidence of cleanliness. A worktree that
-cannot be observed — gone, unreadable, a git invocation that failed — makes the
-reservation **ineligible** for automatic retirement, and it stays held. The
-whole rule is that retirement follows proof; an unanswered question is not proof.
+*What race protection keeps.* The intra-worktree ground stays and keeps its own
+extent — the paths the run declared or first-touched. It is **not** derived from
+the branch: two runs sharing one checkout race over what they have open right
+now, not over what the branch will eventually merge. Keep the two extents
+separate on the reservation. Collapsing them back into one set is the defect this
+phase removes, and a later change that "simplifies" them back together
+reintroduces it whole.
 
-Record the retirement as its own disposition — retired-on-integration — so the
-journal still shows where the work went. It is not an abandonment and must not
-be reported as one: nothing was discarded.
+*The race extent is dropped when the run ends.* This is what makes ordinary
+sequential work possible, and it is the half most easily left out. A run commits
+a path on Monday and finishes. A later run in the **same worktree on the same
+branch** must be free to edit that same path on Tuesday: the two never overlap in
+time, so there is no race, and the branch has no conflict with itself. The
+merge extent still covers that path — it is unmerged work, and a *different*
+worktree must still be refused it — but the intra-worktree ground reads the race
+extent only, and Monday's race extent is gone.
 
-*The transition has to be durable, and today's replay refuses it.* Two rules in
-the shipped code stand between this phase and a recorded retirement, and both
-are there deliberately:
+The two grounds therefore answer opposite ways about one path, and both answers
+are right: same worktree asks "is another run editing this right now", different
+worktree asks "does this branch have unmerged changes here". Never let one ground
+read the other's extent as a fallback.
 
-- `ReservationLifecycle::release` (`lifecycle.rs:85`) rejects a release from
-  `Active` with `ReleaseRequiresCheckpoint`. A reservation that never
-  checkpointed cannot take the ordinary integrated release path at all — and a
-  reservation retiring on integration evidence may well be one that never
-  checkpointed.
-- `apply_release` (`retention.rs:1047`) rejects
-  `ReleaseDisposition::Integrated` unless the reservation already carries
-  `IntegrationEvidenceStatus::Integrated { .. }`, with
-  `IntegratedReleaseWithoutEvidence`.
+*Widening applies to one extent only.* `JournalOperation::Widen` is emitted from
+two places — `drift/classification.rs:258`, the drift path this incident came
+through, and `widen_first_touch_reservation` (`verb/claim.rs:1151`, emitting at
+`:1176`), the first-touch reuse path — and `apply_widen`
+(`reservation/retention.rs:958`) mutates the shared set on replay. After this
+change all three grow the **race** extent only. Nothing widens the merge extent,
+because nothing needs to: it is computed. A bound enforced in one producer and
+not the other is a bound the other walks around, so both producers change
+together.
 
-The only two dispositions that release from `Active` today are `Abandoned` and
-`RetiredOrphan`, both of which go through `release_after_user_confirmation` —
-which is exactly why a checkpoint-free release currently means "the user threw
-this away" or "the user confirmed an orphan". Automatic retirement is neither,
-so it cannot borrow either path.
+*Where the derivation runs.* Under the lock, in `prepare_reconciliation_transaction`
+(`reconcile.rs:949`), where a board read already holds the lock and already
+produces journal operations. `retention.rs` replays journal operations and is not
+where a board-time computation belongs; `git/mod.rs` only re-exports, and the
+queries live in `git/reachability.rs`.
 
-Define the transition so that all of this holds:
+*Cost.* Deriving on read means git work per board read, and the board is read
+constantly. Per live holder worktree that is one `trunk..HEAD` name-only query
+plus one status observation — the staged, unstaged and untracked paths today's
+worktree observations do not carry. Hold the cost bounded across the whole read
+rather than per reservation, and cache the derivation against the pair
+(`HEAD`, working-tree fingerprint): `drift/fingerprint.rs` already publishes such
+a fingerprint, so a recomputation happens only when something actually moved.
 
-1. The retirement **records the evidence it acted on** — the verified commits
-   and the trunk commit they are ancestors of — into the journal alongside the
-   disposition, not only the fact of retirement.
-2. **Replay reconstructs it.** Reading the journal back produces the same
-   retired reservation with the same evidence, without the replay path needing
-   to re-run git.
-3. The recorded evidence **participates in later revalidation** the way other
-   integration evidence does, rather than being a terminal note nothing checks
-   again.
-4. **Successor retention refs are preserved.** A reservation retiring must not
-   drop the retention refs a successor still depends on
-   (`RetentionRefStatus`, `alert.rs:263`).
-5. **Obsolete identity mappings retire with it.** `verb/release.rs` publishes a
-   session identity mapping on release (`SessionIdentityMappingPublication`);
-   the automatic path owes the same bookkeeping, or a retired reservation leaves
-   a mapping pointing at nothing.
+*What must not regress.*
 
-Leave the squash and cherry-pick case alone. Where the recorded commits are not
-ancestors of trunk but the work did reach it in rewritten form, the tool cannot
-prove integration, and `--integrated-as` stays the manual answer for it.
+- **Uncommitted work stays covered.** The dirty half of the union is what does
+  this. A run that has committed nothing still protects everything it has open —
+  the pre-commit window is the thing retention exists for, and the answer there
+  can never be "nothing".
+- **An unanswerable derivation holds, never releases.** If the derivation cannot
+  run — worktree gone, unreadable, a failed git invocation — the reservation
+  keeps its last derived set and reports the failure rather than collapsing to
+  empty. An unanswered question is not proof that nothing is protected.
+- **A narrowing is as visible as a refusal.** A claim that quietly stops covering
+  what the work touched is worse than one that grows, because the protection
+  disappears with nobody told. If a refused widen still publishes the working-tree
+  fingerprint, the next invocation sees no drift for those paths and the refusal
+  never surfaces again. A refused widen must leave the next comparison able to
+  see the same paths.
+- **Successor retention refs survive.** A reservation whose merge extent empties
+  must not drop retention refs a successor still depends on (`RetentionRefStatus`,
+  `alert.rs:263`).
+- **Obsolete identity mappings retire with it.** `verb/release.rs` publishes a
+  session identity mapping on release (`SessionIdentityMappingPublication`); a
+  reservation that empties owes the same bookkeeping, or it leaves a mapping
+  pointing at nothing.
+- **An incursion recorded against the reservation gets its own disposition**
+  rather than disappearing when the claim empties.
+
+*Squash and cherry-pick stay manual.* Where a branch's work reached trunk in
+rewritten form, `trunk..HEAD` may still list paths the tool cannot prove
+integrated. `resolve --integrated-as <TRUNK_OID>` stays the manual answer for
+that shape, with its existing warning intact.
 
 **Files:**
-- `crates/cargo-berth/src/reservation/retention.rs` — replay of the new operation (`apply_release`, `:1047`).
-- `crates/cargo-berth/src/reservation/lifecycle.rs` — the disposition and its permitted transition (`release`, `:85`; `ReleaseDisposition`, `:189`).
-- `crates/cargo-berth/src/reservation/record.rs` — the recorded evidence on the reservation (`:49`).
-- `crates/cargo-berth/src/ledger/journal.rs`, `crates/cargo-berth/src/ledger/projection.rs` — the durable operation and its projection.
-- `crates/cargo-berth/src/reconcile.rs` — `prepare_reconciliation_transaction` (`:949`), where the board-time decision is made under the lock.
-- `crates/cargo-berth/src/git/reachability.rs` — the batched ancestry queries this reuses; `crates/cargo-berth/src/git/mod.rs` only re-exports them.
-- `crates/cargo-berth/src/worktree/` — the staged, unstaged and untracked observations the cleanliness check needs.
-- `crates/cargo-berth/src/board/`, `crates/cargo-berth/src/edge/`, `crates/cargo-berth/src/alert.rs`, `crates/cargo-berth/src/recovery.rs`, `crates/cargo-berth/src/verb/release.rs` — successor retention refs and the identity-mapping bookkeeping the automatic path inherits.
-- `crates/cargo-berth/src/output.rs`, `crates/cargo-berth/src/output_contract.rs`, `crates/cargo-berth/src/constants.rs` — how the new disposition reports.
-- `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/output_contract.rs` — the lane.
+- `crates/cargo-berth/src/reservation/record.rs` — the two refusal grounds (`is_foreign_to_coordination_run_in_worktree`, `:242`) and the reservation's two extents (`:49`).
+- `crates/cargo-berth/src/reservation/partition.rs` — coverage and binding (`is_foreign`, `authorizes`, `reservations_authorize_scope`), expressed against whichever extent each ground reads.
+- `crates/cargo-berth/src/reservation/retention.rs` — `apply_widen` (`:958`), now mutating the race extent only.
+- `crates/cargo-berth/src/reservation/lifecycle.rs` — how an emptied merge extent reads as a terminal state (`ReleaseDisposition`, `:189`).
+- `crates/cargo-berth/src/reconcile.rs` — `prepare_reconciliation_transaction` (`:949`), where the derivation runs under the lock.
+- `crates/cargo-berth/src/git/reachability.rs` — the `trunk..HEAD` query and the batched ancestry it joins; `crates/cargo-berth/src/git/mod.rs` only re-exports.
+- `crates/cargo-berth/src/worktree/` — the staged, unstaged and untracked observations the dirty half needs.
+- `crates/cargo-berth/src/drift/classification.rs` — `:258`, the drift widen producer, now bounded to the race extent.
+- `crates/cargo-berth/src/verb/claim.rs` — `:1151`, emitting at `:1176`; the other widen producer, likewise bounded to the race extent.
+- `crates/cargo-berth/src/drift/fingerprint.rs` — the published fingerprint the cache keys on and a refusal must not hide behind.
+- `crates/cargo-berth/src/drift/observation.rs` — `:194`, what the ranges establish.
+- `crates/cargo-berth/src/drift/selection.rs` — which reservations are compared.
+- `crates/cargo-berth/src/ledger/journal.rs` — `Widen` at `:362`, the durable operations.
+- `crates/cargo-berth/src/ledger/projection.rs` — their projection.
+- `crates/cargo-berth/src/board/` — successor retention refs.
+- `crates/cargo-berth/src/edge/` — successor retention refs.
+- `crates/cargo-berth/src/alert.rs` — `:263`, identity-mapping bookkeeping.
+- `crates/cargo-berth/src/recovery.rs` — identity-mapping bookkeeping.
+- `crates/cargo-berth/src/verb/release.rs` — identity-mapping bookkeeping.
+- `crates/cargo-berth/src/output.rs`, `crates/cargo-berth/src/output_contract.rs`, `crates/cargo-berth/src/constants.rs`, `crates/cargo-berth/src/cli.rs` — how a derived scope, a refused widen and an emptied claim report.
+- `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/overlap.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/output_contract.rs` — the lane.
 
-**Seats:** `2 writers + 1 tester`, split between the durable lifecycle and everything that observes or reports it. `cargo-berth` has a real integration-test lane (Delegation Context → **Test lanes**), and the rule above is concrete enough to test before the code exists, so the tester opens as `test`.
-- `impl` — opens as `impl`. Owns `crates/cargo-berth/src/reservation/` (`retention.rs`, `lifecycle.rs`, `record.rs`), `crates/cargo-berth/src/ledger/journal.rs` and `crates/cargo-berth/src/ledger/projection.rs`; hub: `crates/cargo-berth/src/reservation/record.rs` — the lifecycle and durable-evidence hub the other writer reads. Land the disposition and its journal operation first; the observation side cannot compile against a transition that does not exist yet
-- `review` — opens as writer: `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/src/git/`, `crates/cargo-berth/src/worktree/`, `crates/cargo-berth/src/board/`, `crates/cargo-berth/src/edge/`, `crates/cargo-berth/src/alert.rs`, `crates/cargo-berth/src/recovery.rs`, `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/src/output.rs`, `crates/cargo-berth/src/output_contract.rs`, `crates/cargo-berth/src/constants.rs` — the board-time decision, the observations it reads, and how the result reports
-- `test` — opens as `test`. Owns `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/edges.rs` and `crates/cargo-berth/tests/output_contract.rs`
+**Seats:** `1 writer + 1 tester + reserve`. The separation of the two extents is a
+single judgment that the refusal grounds, both widen producers, replay and the
+board all have to agree on; splitting it puts halves of one decision in different
+heads, and the file list is wide only because everything reads the same rule.
+`cargo-berth` has a real integration-test lane (Delegation Context → **Test
+lanes**), and the rule above is concrete enough to test before the code exists,
+so the tester opens as `test`.
+- `impl` — opens as `impl`. Owns `crates/cargo-berth/src/reservation/`, `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/src/git/`, `crates/cargo-berth/src/worktree/`, `crates/cargo-berth/src/drift/`, `crates/cargo-berth/src/verb/`, `crates/cargo-berth/src/ledger/`, `crates/cargo-berth/src/board/`, `crates/cargo-berth/src/edge/`, `crates/cargo-berth/src/alert.rs`, `crates/cargo-berth/src/recovery.rs`, `crates/cargo-berth/src/output.rs`, `crates/cargo-berth/src/output_contract.rs`, `crates/cargo-berth/src/constants.rs` and `crates/cargo-berth/src/cli.rs`; hub: `crates/cargo-berth/src/reservation/record.rs`, which carries both extents and both refusal grounds
+- `test` — opens as `test`. Owns `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/overlap.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/edges.rs` and `crates/cargo-berth/tests/output_contract.rs`
+- `review` — reserve. Reads the derived extent against the recorded incident and against both widen producers
 
 **Constraints from prior phases:** None. This phase is independent of phases 1-9
 and may run before or after them.
 
-**Acceptance gate:** `verify.sh check cargo-berth`, `verify.sh test cargo-berth`
-and `verify.sh lint cargo-berth` green — this phase edits no `cargo-tile` file,
-so the Delegation Context's default `cargo-tile` gate would pass without
-compiling anything this phase wrote. A test that a reservation whose
-commits are ancestors of trunk and whose worktree is clean is retired without an
-operator disposition. A test that the same reservation with an uncommitted
-change inside its own scopes is **not** retired. A test that a clean worktree
-whose commits are not ancestors of trunk is **not** retired. A test that the
-recorded disposition reads as retired-on-integration and not as an abandonment.
-A test that retirement releases the files for a second worktree that previously
-raised an incursion against them. A test that a worktree whose cleanliness
-cannot be observed is left held rather than retired. A test that reading the
-board repeatedly produces exactly one retirement transition, not one per read. A
-test that replaying the journal reconstructs the retired reservation and its
-recorded evidence without re-running git. A test that a trunk rewrite after
-retirement is handled without the recorded evidence going stale unnoticed. A
-test that an incursion previously recorded against the reservation receives its
-own disposition rather than disappearing with the retirement.
-
-**Pending decision: what counts as proof that a reservation's work reached trunk**
+**Pending decision: what invalidates the derived-extent cache**
 
 Actual problem:
-The rule above says "every commit the reservation records is an ancestor of
-trunk", and `Reservation` (`reservation/record.rs:49`) records no commit list. It
-holds `phase_start_head` (the acquisition baseline), `head_snapshot`,
-`retained_protected_tip` (the eventual checkpoint tip) and
-`integration_trunk_snapshot`. Something has to stand in for "the reservation's
-work", and the wrong stand-in retires live claims.
+The proposed cache key is `(HEAD, working-tree fingerprint)`. Neither half moves when **trunk** advances: the holder's `HEAD` is fixed and its worktree is clean, yet `trunk..HEAD` has just become empty. The cached merge extent therefore keeps covering paths the branch no longer has unmerged, and the reservation goes on refusing a different worktree work it should now allow — the exact over-holding this phase exists to end, reintroduced through the cache.
 
 What exists now:
-- A reservation that has checkpointed has a protected tip, and reconciliation
-  already makes it nonblocking once integration is proved — including through
-  the existing scoped-patch equivalence path. That part of the problem is
-  already solved; what this phase adds is **terminal** retirement, and handling
-  reservations that are still `Active`.
-- A reservation still `Active` has never checkpointed, so it has no protected
-  integration subject at all. Its only commit-shaped fact is the baseline it
-  acquired at.
-- Testing the baseline, or testing an empty set, both answer "yes, integrated"
-  for a reservation that has not yet made a single edit — the ancestry question
-  is trivially true when there is nothing to ask about. Combined with a clean
-  worktree, that retires a freshly opened claim before its first edit, which is
-  the precise failure this phase must not introduce.
+- `crates/cargo-berth/src/drift/fingerprint.rs:18` builds the fingerprint from path sets only; nothing in it observes trunk.
+- The phase's own reproduction test has a clean worktree on trunk deriving an empty extent — the state this cache would answer from stale data.
 
 What should change:
-- Settle what the ancestry test is applied to, for each of the two shapes: a
-  reservation with a protected tip, and one still `Active` with none.
-- Whatever the answer, the emptiness case is not eligible: a reservation with no
-  observed work is held, never retired.
-- Acceptance has to include a fresh claim with no edits yet, and a reservation
-  carrying commits made after its last checkpoint, since those are the two
-  states a baseline test silently passes.
+- Include the resolved trunk revision in the cache key, so a merge invalidates the derived extent with no verb run and no operator step.
+- Add a test where **only** trunk changes — the holder's worktree untouched — and the next board read releases the merge extent.
 
 Recommendation:
-Require the reservation to have produced observable work before the ancestry
-question is asked at all, and derive that work from the reservation's own
-worktree rather than inventing a commit list on the record: the commits between
-`phase_start_head` and the worktree's current HEAD, restricted to the
-reservation's scopes. An empty result means nothing to integrate and the
-reservation stays held — never retired. That keeps a still-`Active` reservation
-eligible once it has actually committed something, without it having
-checkpointed, and it leaves the checkpointed case reading its protected tip as
-it does today.
-
-Any answer must also satisfy the durable-transition requirements above: the
-evidence it acts on is recorded in the journal, replay reconstructs it without
-re-running git, it revalidates later, successor retention refs survive, and the
-identity mapping retires with the reservation.
-
-### Phase 11 — Drift widening stays inside the work it protects  · status: todo
-
-#### Work Order
-
-**Goal:** A long-lived reservation stops accreting files it never worked on, so
-a claim keeps meaning what it says.
-
-**Spec:**
-
-A reservation widens its scopes when drift shows it touched something new. That
-is right in itself — a claim has to cover what the work actually did. What is
-missing is any tie back to the work being protected, so on a busy branch the
-claim grows without limit.
-
-Observed on reservation `01a06fde`: 45 recorded overlap answers, every one
-`widen_without_foreign_overlap` with cause `drift`. A reservation protecting a
-change in `crates/cargo-berth` finished up owning the whole of
-`crates/cargo-tile`, plus `crates/cargo-mend/CHANGELOG.md` and two root handoff
-files. By the end its scope list described the repository, not the work.
-
-Bound the widening. The rule is a design decision this phase must settle and
-record, not one to pick silently; evaluate at least these and say why the chosen
-one wins:
-
-- confine widening to the crates the reservation's own commits touch;
-- expire scopes no commit of this reservation ever modified;
-- require a purpose at first touch and hold widening to it.
-
-Note that `01a06fde` carried `purpose: not_provided_by_caller`. That is not
-incidental — with no purpose recorded there is nothing for a widen to be checked
-against, which is why the third option is about more than reporting.
-
-Whatever rule lands, a widen that the rule refuses must fail visibly rather than
-silently narrowing the claim: a claim that quietly stops covering what the work
-touched is worse than one that grows, because the protection disappears without
-anyone being told.
-
-*Where a widen actually comes from, and where it lands.* The bound has to be
-enforced at both producers, and neither of them is the file this phase first
-named:
-
-- `JournalOperation::Widen` is emitted from **two** places —
-  `drift/classification.rs:258`, the drift path this incident came through, and
-  `widen_first_touch_reservation` (`verb/claim.rs:1151`, emitting at `:1176`),
-  the first-touch reuse path. A bound enforced in one is a bound the other walks
-  around.
-- The scope set is mutated by `apply_widen` (`reservation/retention.rs:958`) on
-  replay. That is where a widen becomes a wider claim.
-- `drift/selection.rs` chooses which reservations are subjects of the
-  comparison, and `reservation/partition.rs` defines coverage and binding —
-  `is_foreign`, `authorizes`, `reservations_authorize_scope`. Neither is the
-  mutation, and a change made only in them changes what is compared rather than
-  what is claimed.
-
-*A refusal is a result, not an absence.* Carry the refusal as its own outcome
-through classification, reporting, output and execution rather than dropping the
-operation. One consequence in particular has to be handled: the drift comparison
-publishes a working-tree fingerprint (`drift/fingerprint.rs`,
-`publish_fingerprint`) so the next run can compare cheaply. If a refused widen
-still publishes the fingerprint, the next invocation sees no drift for those
-paths and the refusal never surfaces again — the change is hidden rather than
-reported. A refused widen must leave the next comparison able to see the same
-paths.
-
-**Files:**
-- `crates/cargo-berth/src/drift/classification.rs` — the drift producer of `JournalOperation::Widen` (`:258`) and where a refusal is classified.
-- `crates/cargo-berth/src/drift/selection.rs` — which reservations are subjects of the comparison.
-- `crates/cargo-berth/src/drift/fingerprint.rs` — the published working-tree fingerprint a refusal must not hide behind.
-- `crates/cargo-berth/src/drift/observation.rs` — what `phase_start..HEAD` does and does not establish (`:194`).
-- `crates/cargo-berth/src/verb/claim.rs` — the first-touch reuse producer, `widen_first_touch_reservation` (`:1151`, emitting at `:1176`).
-- `crates/cargo-berth/src/reservation/retention.rs` — `apply_widen` (`:958`), the scope-set mutation.
-- `crates/cargo-berth/src/reservation/partition.rs` — coverage and binding, which the bound is expressed against.
-- `crates/cargo-berth/src/ledger/journal.rs` — the `Widen` operation itself (`:362`) and any refusal it carries.
-- `crates/cargo-berth/src/output.rs`, `crates/cargo-berth/src/cli.rs` — how a refused widen reports and how execution ends.
-- `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/overlap.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/output_contract.rs` — the lane.
-
-**Seats:** `1 writer + 1 tester + reserve`, because the bound is one rule that
-both producers and the replay have to agree on, and splitting it would put
-halves of one judgment in different heads. `cargo-berth` has a real
-integration-test lane (Delegation Context → **Test lanes**), so the tester opens
-as `test`.
-- `impl` — opens as `impl`. Owns `crates/cargo-berth/src/drift/`, `crates/cargo-berth/src/reservation/`, `crates/cargo-berth/src/verb/claim.rs`, `crates/cargo-berth/src/ledger/journal.rs`, `crates/cargo-berth/src/output.rs` and `crates/cargo-berth/src/cli.rs`; hub: the widening policy itself, which both producers and `apply_widen` read
-- `test` — opens as `test`. Owns `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/overlap.rs`, `crates/cargo-berth/tests/hooks.rs` and `crates/cargo-berth/tests/output_contract.rs`
-- `review` — reserve. Reads the chosen rule against the recorded incident and against both widen producers
-
-**Constraints from prior phases:**
-- Phase 10 supplies retirement-on-integration. A reservation that retires when
-  its work lands is exposed to far less drift, so this phase bounds what remains
-  rather than carrying the whole problem alone. Do not treat phase 10 as making
-  this unnecessary: a claim held across a long-running branch still widens.
+Add trunk to the key. The phase already promises the extent shrinks on merge with no operator step, and a cache that cannot observe the merge cannot keep that promise.
 
 **Acceptance gate:** `verify.sh check cargo-berth`, `verify.sh test cargo-berth`
 and `verify.sh lint cargo-berth` green — this phase edits no `cargo-tile` file,
 so the Delegation Context's default `cargo-tile` gate would pass without
-compiling anything this phase wrote. A test that drift outside the
-bound does not widen the reservation. A test that drift inside it still does —
-the protection this exists for must survive the fix. A test that a refused widen
-is reported rather than silently dropped. A test reproducing the observed shape:
-a reservation whose commits touch one crate does not come to own a second crate
-through repeated drift answers. A test that the same bound refuses the same
-widen on the first-touch reuse path, not only on the drift path. A test that a
-refused widen leaves the next comparison able to see the same paths rather than
-being hidden by a published fingerprint.
+compiling anything this phase wrote.
 
-**Pending decision: which rule bounds a widen, and what it does before there is anything to bound it against**
+Reproducing the incident: a test that a worktree on trunk with nothing ahead and
+a clean tree derives an **empty** merge extent, so a second worktree may edit
+paths that reservation previously held. A test that a reservation whose branch
+touches one crate does not come to hold a second crate through repeated drift
+answers.
 
-Actual problem:
-The Spec above lists three candidate rules and says the phase must settle one.
-Two of the three do not survive contact with the shipped code, and the third has
-no executable meaning yet, so the choice cannot be left to the delegate.
+The derivation: a test that a path committed on this branch and not yet on trunk
+is covered. A test that the same path stops being covered once the branch merges,
+with no verb run and no operator step. A test that a path committed by a
+*different* run onto the same branch **does** enter this reservation's merge
+extent, and does **not** enter its race extent. The merge extent is derived from
+`trunk..HEAD` and is branch-wide by construction — a branch is what gets merged,
+so every unmerged change on it is covered whichever run made it. The
+run-specific set is the race extent, and that is the one another run's commit
+stays out of. Stating it of the merge extent contradicted the derivation rule
+above and made the two requirements unsatisfiable together. A test that reading the board repeatedly derives the same extent and
+emits at most one transition, not one per read.
 
-What exists now:
-- `drift/observation.rs:194` states outright that a reservation's
-  `phase_start..HEAD` range "is a comparison, not an authorship record": once a
-  second run commits onto the same branch in the same worktree, the incumbent's
-  earlier paths sit inside the range too. Deriving "the crates this
-  reservation's own commits touch" from that same range is therefore circular —
-  the range grows with other runs' work, so the bound widens for the same reason
-  the claim does.
-- Classification already excludes restored paths and historical committed-only
-  paths outside HEAD's own changes. So part of what reservation `01a06fde` looks
-  like — unrestricted accretion — is already constrained today, and the rule
-  only has to bound what gets past those exclusions.
-- Expiring scopes no commit ever modified removes protection from work that is
-  edited but not yet committed. That is exactly the window a claim exists to
-  cover, and `01a06fde` spent days in it.
-- `purpose` is free text and was `not_provided_by_caller` on the observed
-  reservation. Free text supplies no boundary anything can evaluate, and a rule
-  that requires one has to say what happens when it is absent.
+Uncommitted work: a test that a reservation that has committed nothing still
+covers everything modified in its worktree. A test that a staged, an unstaged and
+an untracked path are each covered.
 
-What should change:
-- Pick the rule, in terms the code can evaluate, and say what it is applied to
-  when the reservation has committed nothing yet, when the touched path is a
-  shared root file belonging to no crate, and when no purpose was recorded.
-- Say what a claim protects during the uncommitted window, since the answer
-  cannot be "nothing".
-- Resolving this may add or move files in the Files list above; the production
-  ownership recorded there stands independently of which rule wins.
+The two extents stay separate: a test that a second coordination run in the same
+worktree is refused a path the first run currently has open, while the first run
+is **still live**. A test that the same second run is **allowed** that same path
+once the first run has ended — committed on the branch, unmerged, and the merge
+extent still covering it — since sequential work on one branch is the ordinary
+case and must not be refused. A test that a *different* worktree is refused that
+same path at that same moment, so the two grounds are shown answering opposite
+ways about one file. A test that a widen from the drift path grows the race
+extent and leaves the merge extent unchanged, and the same test for the
+first-touch reuse path.
 
-Recommendation:
-Bound the widen by what the acting run can be attributed, using the same
-attribution `observation.rs` already defines — HEAD's own commit plus the
-working tree — rather than the full `phase_start..HEAD` range, and take the
-bound as the set of crates that attribution covers. That reuses a distinction
-the code already draws for this exact reason instead of adding a second one, and
-it sidesteps the circularity, since the attributed set does not grow when
-another run commits. For the three edge shapes: a reservation with nothing
-attributed yet widens freely within its own worktree, which is the pre-commit
-window and the thing retention exists to cover; a shared root file is attributed
-to the acting run the same way any other path is, and is not treated as a crate;
-and a missing purpose does not block a widen, because purpose is reporting, not
-policy. Do not make purpose the boundary until it is something other than free
-text.
+Failure and visibility: a test that a worktree whose state cannot be observed
+keeps its last derived extent rather than collapsing to empty. A test that a
+refused widen is reported rather than silently dropped. A test that a refused
+widen leaves the next comparison able to see the same paths rather than being
+hidden by a published fingerprint. A test that replaying the journal reconstructs
+the reservation and its race extent without re-running git. A test that an
+incursion previously recorded against the reservation receives its own
+disposition rather than disappearing when the claim empties.

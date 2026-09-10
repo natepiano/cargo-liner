@@ -359,6 +359,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::constants::CAPTURE_ROOT_ENV;
+    use crate::constants::HOOK_TEST_DIRECTORY_COLLISION_CARGO;
+    use crate::constants::HOOK_TEST_DIRECTORY_COLLISION_LINK;
     use crate::constants::HOOK_TEST_REAL_CARGO;
     use crate::constants::HOOK_TEST_VERSION_ARGUMENT;
     use crate::constants::LOCK_WAIT_MARKER;
@@ -407,11 +410,90 @@ mod tests {
     /// what freed it from spelling out the reader's markers to answer.
     #[test]
     fn the_shim_retires_its_log_when_its_run_ends() {
-        assert!(SHIM_SOURCE.contains(r#"rm -f "$log""#));
+        let cleanup = SHIM_SOURCE
+            .split_once("cleanup() {")
+            .unwrap()
+            .1
+            .split_once("\n}")
+            .unwrap()
+            .0;
+        assert!(cleanup.lines().any(|line| {
+            line.trim_start().starts_with("rm -f ")
+                && line.split_whitespace().any(|word| word == r#""$log""#)
+        }));
+        assert!(SHIM_SOURCE.contains("trap cleanup 0"));
         assert!(
             !SHIM_SOURCE.contains(LOCK_WAIT_MARKER),
             "and no longer carries a copy of a marker the reader owns"
         );
+    }
+
+    /// A directory can win the name after setup checks it; POSIX ln
+    /// then succeeds inside it, which must still cause uncaptured cargo.
+    #[test]
+    fn a_directory_arriving_at_publication_preserves_original_cargo() {
+        let (home, hook) = toolchain(HOOK_TEST_DIRECTORY_COLLISION_CARGO);
+        fs::set_permissions(&hook.cargo, fs::Permissions::from_mode(SHIM_MODE)).unwrap();
+        hook.install().unwrap();
+        let observations = home.path().join("observations");
+        let tools = home.path().join("tools");
+        let root = home.path().join("capture");
+        fs::create_dir(&observations).unwrap();
+        fs::create_dir(&tools).unwrap();
+        let link = tools.join("ln");
+        fs::write(&link, HOOK_TEST_DIRECTORY_COLLISION_LINK).unwrap();
+        fs::set_permissions(&link, fs::Permissions::from_mode(SHIM_MODE)).unwrap();
+        let real_link = Command::new("sh")
+            .args(["-c", "command -v ln"])
+            .output()
+            .unwrap();
+        assert!(real_link.status.success());
+        let real_link = String::from_utf8(real_link.stdout).unwrap();
+        let search_path = env::var_os("PATH").unwrap();
+        let search_path =
+            env::join_paths(std::iter::once(tools).chain(env::split_paths(&search_path))).unwrap();
+        let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
+        let output = Command::new("sh")
+            .args(["-c", "umask 0066; exec sh \"$@\"", "publication-test"])
+            .arg(&hook.cargo)
+            .args(arguments)
+            .env("PATH", search_path)
+            .env("POSIXLY_CORRECT", "1")
+            .env(CAPTURE_ROOT_ENV, &root)
+            .env("HOOK_TEST_OBSERVATIONS", &observations)
+            .env("HOOK_TEST_REAL_LINK", real_link.trim_end())
+            .env_remove("CARGOTILE_NESTED")
+            .env_remove("CARGO_TERM_PROGRESS_WHEN")
+            .env_remove("CARGO_TERM_PROGRESS_WIDTH")
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(37));
+        assert_eq!(output.stdout, b"cargo-stdout\n");
+        assert_eq!(output.stderr, b"cargo-stderr\n");
+        let expected: Vec<u8> = arguments
+            .iter()
+            .flat_map(|word| word.bytes().chain(std::iter::once(0)))
+            .collect();
+        assert_eq!(fs::read(observations.join("arguments")).unwrap(), expected);
+        let umask = fs::read_to_string(observations.join("umask")).unwrap();
+        assert_eq!(u32::from_str_radix(umask.trim(), 8).unwrap(), 0o066);
+        assert_eq!(
+            fs::read(observations.join("environment")).unwrap(),
+            b"unset\0unset\0unset\0"
+        );
+        let registration = fs::read_to_string(observations.join("registration-path")).unwrap();
+        let registration = PathBuf::from(registration);
+        assert_eq!(fs::read(registration.join("keep")).unwrap(), b"preserved\n");
+        assert_eq!(fs::read_dir(&registration).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_dir(registration.parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(fs::read_dir(root.join("state")).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
     }
 
     /// Whether the shim's exemption arm names this subcommand. The arm
