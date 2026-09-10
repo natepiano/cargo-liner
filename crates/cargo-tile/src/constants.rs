@@ -1038,3 +1038,10 @@ pub(crate) const SCCACHE_POLL_SECONDS: u64 = 10;
 pub(crate) const SCCACHE_SIZE_LABEL: &str = "Cache size";
 /// The argument that makes sccache report its statistics.
 pub(crate) const SCCACHE_STATS_ARG: &str = "--show-stats";
+
+/// Shared displayed pid lets consumer fixtures vary lifetime without varying presentation.
+#[cfg(test)]
+pub(crate) const TEST_INVOCATION_PID: u32 = 42;
+/// A second native birth distinguishes a replacement from the original test lifetime.
+#[cfg(test)]
+pub(crate) const TEST_REPLACEMENT_LIFETIME: u64 = 100_002;

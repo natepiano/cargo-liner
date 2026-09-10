@@ -124,13 +124,18 @@ use crate::processes;
 use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
 use crate::processes::CompilerObservation;
+use crate::processes::InvocationId;
 use crate::processes::Measurement;
 use crate::processes::SummaryDetail;
+use crate::processes::VisibleParent;
 use crate::progress::CaptureLookup;
 use crate::progress::CaptureRead;
+use crate::progress::CounterState;
 use crate::progress::Progress;
 use crate::progress::RunState;
-use crate::registration::DirectoryIdentity;
+use crate::registration::WorkingDirectoryIdentity;
+use crate::roster::FamilyHead;
+use crate::roster::ParentFamily;
 use crate::roster::Roster;
 use crate::roster::TrackedGroup;
 use crate::roster::TrackedRow;
@@ -312,7 +317,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
         // cell is painted on, which focus moves.
         let ground = pane_background(placement.frame.is_focused());
         let hidden_when_idle = &app.loaded_config.config.commands.hidden_when_idle;
-        let content_rows = match placement.content {
+        let content_rows = match &placement.content {
             TileContent::Summary => demands.summary,
             TileContent::Group(id) => demands.rows_for(id),
             TileContent::Empty(_) => 0,
@@ -323,14 +328,14 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
         // drawn at another says so rather than only looking wrong.
         let demand_width = widths
             .iter()
-            .find(|&&(content, _)| content == placement.content)
+            .find(|(content, _)| *content == placement.content)
             .map_or(0, |&(_, width)| width);
         if contents == Contents::Shown {
             draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
                 draw_contents(
                     buffer,
                     &app.roster,
-                    placement.content,
+                    &placement.content,
                     inner,
                     ground,
                     hidden_when_idle,
@@ -339,7 +344,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
                 draw_rows_readout(buffer, inner, content_rows, demand_width);
             });
         }
-        match placement.content {
+        match &placement.content {
             TileContent::Summary => {
                 grid_lines.add_titled(placement.frame, SUMMARY_CELL_TITLE);
                 if contents == Contents::Shown {
@@ -388,7 +393,7 @@ fn tile_demands(
     let width_of = |wanted: TileContent| {
         widths
             .iter()
-            .find(|&&(content, _)| content == wanted)
+            .find(|(content, _)| *content == wanted)
             .map_or(narrowest, |&(_, width)| width)
     };
     TileDemands {
@@ -404,10 +409,10 @@ fn tile_demands(
             .into_iter()
             .filter_map(|id| roster.groups().iter().find(|group| group.id == id))
             .map(|group| TileDemand {
-                id:   group.id,
+                id:   group.id.clone(),
                 rows: group_height(
                     group,
-                    width_of(TileContent::Group(group.id)),
+                    width_of(TileContent::Group(group.id.clone())),
                     hidden_when_idle,
                     tree,
                 ),
@@ -459,7 +464,7 @@ fn ancestry_demand(ancestry: &[Ancestor], width: u16) -> usize {
     if ancestry.is_empty() {
         return 0;
     }
-    let whole: Vec<Option<&Ancestor>> = ancestry.iter().map(Some).collect();
+    let whole: Vec<AncestryLevel<'_>> = ancestry.iter().map(AncestryLevel::Ancestor).collect();
     ancestry_height(&whole, width).saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
 }
 
@@ -600,7 +605,7 @@ fn readout_area(inner: Rect, width: u16) -> Option<Rect> {
 fn draw_contents(
     buffer: &mut Buffer,
     roster: &Roster,
-    content: TileContent,
+    content: &TileContent,
     inner: Rect,
     ground: Color,
     hidden_when_idle: &[String],
@@ -611,7 +616,7 @@ fn draw_contents(
         TileContent::Group(id) => {
             draw_group(buffer, roster, id, inner, ground, hidden_when_idle, tree);
         },
-        TileContent::Empty(number) => draw_number(buffer, number, inner),
+        TileContent::Empty(number) => draw_number(buffer, *number, inner),
     }
 }
 
@@ -747,13 +752,13 @@ fn run_color(kind: LabelRunKind) -> Color {
 fn draw_group(
     buffer: &mut Buffer,
     roster: &Roster,
-    id: u32,
+    id: &InvocationId,
     inner: Rect,
     ground: Color,
     hidden_when_idle: &[String],
     tree: ProcessTree,
 ) {
-    let Some(group) = roster.groups().iter().find(|group| group.id == id) else {
+    let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
         return;
     };
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
@@ -763,12 +768,10 @@ fn draw_group(
     // where its pid is written, and the rows pointing at it in the
     // table below need it in the colour they are pointing with.
     let foot = if leads_as_ancestor {
-        group
-            .lead
-            .family()
-            .map_or(AncestryFoot::PlainCommand, |family| {
-                AncestryFoot::ColoredCommand(theme::family_color(family))
-            })
+        match group.lead.family() {
+            FamilyHead::Heads(family) => AncestryFoot::ColoredCommand(theme::family_color(family)),
+            FamilyHead::NoChildren => AncestryFoot::PlainCommand,
+        }
     } else {
         AncestryFoot::Other
     };
@@ -965,6 +968,15 @@ fn draw_ancestry(
     height.saturating_add(ANCESTRY_GAP_HEIGHT)
 }
 
+/// A drawn ancestor or the marker for a deliberately omitted chain segment.
+#[derive(Clone, Copy)]
+enum AncestryLevel<'a> {
+    /// This ancestor is retained in the visible chain.
+    Ancestor(&'a Ancestor),
+    /// The layout omits one or more intervening ancestors.
+    Elided,
+}
+
 /// Which levels of `ancestry` the block draws once wrapping is counted.
 ///
 /// [`ancestry_levels`] answers in levels, one row apiece, which is what
@@ -984,7 +996,7 @@ fn ancestry_fit(
     budget: usize,
     width: u16,
     foot_is_the_command: bool,
-) -> Vec<Option<&Ancestor>> {
+) -> Vec<AncestryLevel<'_>> {
     let mut asked = budget;
     loop {
         let levels = ancestry_levels(ancestry, asked, foot_is_the_command);
@@ -996,7 +1008,7 @@ fn ancestry_fit(
 }
 
 /// Rows `levels` take at `width`, every level's wrapping counted.
-fn ancestry_height(levels: &[Option<&Ancestor>], width: u16) -> usize {
+fn ancestry_height(levels: &[AncestryLevel<'_>], width: u16) -> usize {
     levels
         .iter()
         .enumerate()
@@ -1018,8 +1030,7 @@ fn ancestry_budget(height: u16, table: usize) -> usize {
         .saturating_sub(usize::from(ANCESTRY_GAP_HEIGHT))
 }
 
-/// Which levels of `ancestry` a block of `budget` rows carries, `None`
-/// standing for the levels left out.
+/// Which ancestors a block of `budget` rows carries and which segment it elides.
 ///
 /// A chain that fits is drawn whole. One that does not keeps both ends:
 /// the top-level parent, and the levels nearest the command, which are
@@ -1040,35 +1051,43 @@ fn ancestry_levels(
     ancestry: &[Ancestor],
     budget: usize,
     foot_is_the_command: bool,
-) -> Vec<Option<&Ancestor>> {
+) -> Vec<AncestryLevel<'_>> {
     if budget == 0 {
         return Vec::new();
     }
     if ancestry.len() <= budget {
-        return ancestry.iter().map(Some).collect();
+        return ancestry.iter().map(AncestryLevel::Ancestor).collect();
     }
     if budget < ANCESTRY_MIN_ELIDED_ROWS {
         if foot_is_the_command {
             return ancestry[ancestry.len() - budget..]
                 .iter()
-                .map(Some)
+                .map(AncestryLevel::Ancestor)
                 .collect();
         }
         let tail = budget - 1;
         return ancestry
             .first()
-            .map(Some)
+            .map(AncestryLevel::Ancestor)
             .into_iter()
-            .chain(ancestry[ancestry.len() - tail..].iter().map(Some))
+            .chain(
+                ancestry[ancestry.len() - tail..]
+                    .iter()
+                    .map(AncestryLevel::Ancestor),
+            )
             .collect();
     }
     let tail = budget - 2;
     ancestry
         .first()
-        .map(Some)
+        .map(AncestryLevel::Ancestor)
         .into_iter()
-        .chain(std::iter::once(None))
-        .chain(ancestry[ancestry.len() - tail..].iter().map(Some))
+        .chain(std::iter::once(AncestryLevel::Elided))
+        .chain(
+            ancestry[ancestry.len() - tail..]
+                .iter()
+                .map(AncestryLevel::Ancestor),
+        )
         .collect()
 }
 
@@ -1103,8 +1122,8 @@ fn ancestry_room(ancestor: &Ancestor, level: usize, width: u16) -> u16 {
 /// the command carried on to.
 ///
 /// An elided level is a single character and never wraps.
-fn ancestry_rows(ancestor: Option<&Ancestor>, level: usize, width: u16) -> usize {
-    let Some(ancestor) = ancestor else {
+fn ancestry_rows(ancestor: AncestryLevel<'_>, level: usize, width: u16) -> usize {
+    let AncestryLevel::Ancestor(ancestor) = ancestor else {
         return 1;
     };
     wrap::wrapped(
@@ -1125,13 +1144,13 @@ fn ancestry_rows(ancestor: Option<&Ancestor>, level: usize, width: u16) -> usize
 /// line after the first is set to the column the command started at, so
 /// the block still reads as one step per pid.
 fn ancestry_lines(
-    ancestor: Option<&Ancestor>,
+    ancestor: AncestryLevel<'_>,
     level: usize,
     width: u16,
     pid: Color,
     command: Color,
 ) -> Vec<Line<'static>> {
-    let Some(ancestor) = ancestor else {
+    let AncestryLevel::Ancestor(ancestor) = ancestor else {
         let indent = format!(
             "{SECTION_HEADER_INDENT}{}",
             ANCESTRY_LEVEL_INDENT.repeat(level)
@@ -1356,7 +1375,7 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: Option<&str>) -> Vec<PathG
         if let Some(group) = groups.iter_mut().find(|group| {
             matches!(
                 row.process.directory_identity,
-                DirectoryIdentity::Absolute(_)
+                WorkingDirectoryIdentity::Absolute(_)
             ) && group.rows.first().is_some_and(|first| {
                 first.process.directory_identity == row.process.directory_identity
             })
@@ -1602,10 +1621,10 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
 /// The `parent` cell: the cargo an invocation is running under, and an
 /// empty cell for a command nothing above it started.
 fn parent_text(process: &CargoProcess) -> String {
-    process
-        .parent
-        .map(|pid| pid.to_string())
-        .unwrap_or_default()
+    match &process.parent {
+        VisibleParent::Invocation { pid, .. } | VisibleParent::Ancestor(pid) => pid.to_string(),
+        VisibleParent::None => String::new(),
+    }
 }
 
 /// The `pid` cell's style: the family colour where the invocation has
@@ -1622,7 +1641,10 @@ fn parent_text(process: &CargoProcess) -> String {
 /// the header, and a pid is the one number on this screen that is read
 /// by being searched for.
 fn pid_style(row: &TrackedRow, layout: &TableLayout) -> Style {
-    let color = row.family().map_or_else(text_default, theme::family_color);
+    let color = match row.family() {
+        FamilyHead::Heads(family) => theme::family_color(family),
+        FamilyHead::NoChildren => text_default(),
+    };
     Style::default().fg(layout.ink(color, row.faded()))
 }
 
@@ -1630,9 +1652,10 @@ fn pid_style(row: &TrackedRow, layout: &TableLayout) -> Style {
 /// which is the colour that cargo's own `pid` cell carries, and plain
 /// text where the pid names something that heads no family.
 fn parent_style(row: &TrackedRow, layout: &TableLayout) -> Style {
-    let color = row
-        .parent_family()
-        .map_or_else(text_default, theme::family_color);
+    let color = match row.parent_family() {
+        ParentFamily::Member(family) => theme::family_color(family),
+        ParentFamily::NoFamily => text_default(),
+    };
     Style::default().fg(layout.ink(color, row.faded()))
 }
 
@@ -1763,10 +1786,17 @@ fn percent_reading(progress: Progress) -> String {
 /// life -- units, then tests -- so naming which is a reading of what,
 /// but a cell too narrow to carry both still says how far along it is.
 fn heading_gauge(group: &PathGroup<'_>, width: u16, layout: &TableLayout) -> Vec<Span<'static>> {
-    let Some((row, (phase, progress))) = group
-        .rows
-        .iter()
-        .find_map(|row| Some((row, row.process.state.working()?)))
+    let Some((row, (phase, progress))) =
+        group
+            .rows
+            .iter()
+            .find_map(|row| match row.process.state.working() {
+                CounterState::Working { phase, progress } => Some((row, (phase, progress))),
+                CounterState::Blocked
+                | CounterState::NoCurrentProgress
+                | CounterState::Unavailable
+                | CounterState::Unregistered => None,
+            })
     else {
         return Vec::new();
     };
@@ -2058,7 +2088,9 @@ mod tests {
     use crate::processes::CargoProcess;
     use crate::processes::CommandText;
     use crate::processes::Compiler;
+    use crate::processes::InvocationId;
     use crate::processes::MeasurementAbsence;
+    use crate::processes::VisibleParent;
     use crate::processes::aggregate_cpu;
     use crate::processes::cpu_label;
     use crate::progress::Phase;
@@ -2085,7 +2117,16 @@ mod tests {
     /// What a working-directory header draws to the right of the
     /// directory, as text, for a cell `width` cells across.
     fn gauge_text(state: RunState, width: u16) -> String {
-        let row = row_at(GAUGE_PATH, Some(state));
+        capture_gauge_text(
+            CaptureLookup::Registered(CaptureRead::Progress(state)),
+            width,
+        )
+    }
+
+    /// Exercise the gauge at the complete capture-outcome boundary.
+    fn capture_gauge_text(state: CaptureLookup, width: u16) -> String {
+        let mut row = row_at(GAUGE_PATH, None);
+        row.process.state = state;
         let rows = [&row];
         let area = Rect {
             x: 0,
@@ -2108,6 +2149,32 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    /// The gauge keeps no-counter reasons distinct while drawing no false progress.
+    #[test]
+    fn named_counter_absences_do_not_draw_a_gauge() {
+        for (lookup, counter) in [
+            (CaptureLookup::Unregistered, CounterState::Unregistered),
+            (
+                CaptureLookup::Registered(CaptureRead::NoCurrentProgress),
+                CounterState::NoCurrentProgress,
+            ),
+            (
+                CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)),
+                CounterState::Blocked,
+            ),
+            (
+                CaptureLookup::Registered(CaptureRead::Unreadable(
+                    std::io::Error::from(std::io::ErrorKind::PermissionDenied).into(),
+                )),
+                CounterState::Unavailable,
+            ),
+        ] {
+            assert_eq!(lookup.working(), counter);
+            assert!(capture_gauge_text(lookup, 60).is_empty(), "{counter:?}");
+        }
+        assert!(!gauge_text(compiling(1, 2), 60).is_empty());
     }
 
     /// The working directory the gauge tests head their group with.
@@ -2144,7 +2211,7 @@ mod tests {
         rest: Vec<CargoProcess>,
         kind: TableKind,
     ) -> Buffer {
-        let id = lead.pid;
+        let id = lead.invocation_id.clone();
         let roster = roster_with_ancestry(lead, rest, Vec::new());
         let area = Rect::new(0, 0, 120, 6);
         let mut buffer = Buffer::empty(area);
@@ -2152,7 +2219,7 @@ mod tests {
             TableKind::Command => draw_group(
                 &mut buffer,
                 &roster,
-                id,
+                &id,
                 area,
                 Color::Reset,
                 &hidden_when_idle(),
@@ -2297,9 +2364,13 @@ mod tests {
     fn started_at(path: &str, state: Option<RunState>, started: u64) -> TrackedRow {
         TrackedRow::from(CargoProcess {
             path: path.to_string(),
-            directory_identity: DirectoryIdentity::Absolute(Path::new("/test-home").join(path)),
+            directory_identity: WorkingDirectoryIdentity::Absolute(
+                Path::new("/test-home").join(path),
+            ),
             pid: 41233,
-            parent: None,
+            invocation_id: InvocationId::for_test(41233),
+            capture_membership: crate::processes::CaptureMembership::Outside,
+            parent: VisibleParent::None,
             start: "11:04".to_string(),
             started,
             duration: "00:18".to_string(),
@@ -2319,6 +2390,7 @@ mod tests {
     fn same_second(path: &str, pid: u32) -> TrackedRow {
         let mut row = started_at(path, None, 100);
         row.process.pid = pid;
+        row.process.invocation_id = InvocationId::for_test(pid);
         row
     }
 
@@ -2344,10 +2416,13 @@ mod tests {
     fn chain(count: u32) -> Vec<Ancestor> { (0..count).map(|step| ancestor(step, "sh")).collect() }
 
     /// The pids the block draws, `None` where a level was elided.
-    fn drawn(levels: &[Option<&Ancestor>]) -> Vec<Option<u32>> {
+    fn drawn(levels: &[AncestryLevel<'_>]) -> Vec<Option<u32>> {
         levels
             .iter()
-            .map(|level| level.map(|ancestor| ancestor.pid))
+            .map(|level| match level {
+                AncestryLevel::Ancestor(ancestor) => Some(ancestor.pid),
+                AncestryLevel::Elided => None,
+            })
             .collect()
     }
 
@@ -2614,9 +2689,13 @@ mod tests {
     fn invocation(pid: u32, arguments: &[&str]) -> CargoProcess {
         CargoProcess {
             path: "~/rust/cargo-liner".to_string(),
-            directory_identity: DirectoryIdentity::Absolute("/test-home/rust/cargo-liner".into()),
+            directory_identity: WorkingDirectoryIdentity::Absolute(
+                "/test-home/rust/cargo-liner".into(),
+            ),
             pid,
-            parent: None,
+            invocation_id: InvocationId::for_test(pid),
+            capture_membership: crate::processes::CaptureMembership::Outside,
+            parent: VisibleParent::None,
             start: "11:04".to_string(),
             started: 0,
             duration: "00:18".to_string(),
@@ -2807,7 +2886,7 @@ mod tests {
         draw_group(
             &mut buffer,
             &roster,
-            4100,
+            &InvocationId::for_test(4100),
             area,
             Color::Reset,
             &hidden,
@@ -2840,7 +2919,7 @@ mod tests {
         draw_group(
             &mut buffer,
             &roster,
-            4100,
+            &InvocationId::for_test(4100),
             area,
             Color::Reset,
             &hidden,
@@ -2862,7 +2941,7 @@ mod tests {
     fn a_cell_granted_its_ask_draws_the_whole_chain() {
         let width = 60;
         let ancestry = long_chain();
-        let whole: Vec<Option<&Ancestor>> = ancestry.iter().map(Some).collect();
+        let whole: Vec<AncestryLevel<'_>> = ancestry.iter().map(AncestryLevel::Ancestor).collect();
         let table = 6;
         let gap = usize::from(ANCESTRY_GAP_HEIGHT);
 
@@ -2943,7 +3022,7 @@ mod tests {
         draw_group(
             &mut buffer,
             &roster,
-            4100,
+            &InvocationId::for_test(4100),
             area,
             Color::Reset,
             &hidden_when_idle(),
@@ -2977,7 +3056,7 @@ mod tests {
         draw_group(
             &mut buffer,
             &roster,
-            4100,
+            &InvocationId::for_test(4100),
             area,
             Color::Reset,
             &hidden_when_idle(),
@@ -3019,7 +3098,7 @@ mod tests {
         draw_group(
             &mut buffer,
             &roster,
-            4100,
+            &InvocationId::for_test(4100),
             area,
             Color::Reset,
             &hidden_when_idle(),
@@ -3068,7 +3147,7 @@ mod tests {
         draw_group(
             &mut buffer,
             &roster,
-            4100,
+            &InvocationId::for_test(4100),
             area,
             Color::Reset,
             &hidden,
@@ -3092,7 +3171,7 @@ mod tests {
         draw_group(
             &mut buffer,
             &roster,
-            4100,
+            &InvocationId::for_test(4100),
             area,
             Color::Reset,
             &hidden_when_idle(),
@@ -3133,7 +3212,8 @@ mod tests {
     fn display_shortening_does_not_split_a_directorys_progress_group() {
         let mut ordinary = started_at("~/project", Some(compiling(1, 2)), 100);
         let mut custom_home = started_at("/writer/project", Some(compiling(1, 2)), 101);
-        ordinary.process.directory_identity = DirectoryIdentity::Absolute("/writer/project".into());
+        ordinary.process.directory_identity =
+            WorkingDirectoryIdentity::Absolute("/writer/project".into());
         custom_home.process.directory_identity = ordinary.process.directory_identity.clone();
         let rows = [&ordinary, &custom_home];
 
@@ -3164,8 +3244,10 @@ mod tests {
     fn identical_display_labels_do_not_merge_distinct_absolute_directories() {
         let mut first = row_at("~/project", None);
         let mut second = row_at("~/project", None);
-        first.process.directory_identity = DirectoryIdentity::Absolute("/first/project".into());
-        second.process.directory_identity = DirectoryIdentity::Absolute("/second/project".into());
+        first.process.directory_identity =
+            WorkingDirectoryIdentity::Absolute("/first/project".into());
+        second.process.directory_identity =
+            WorkingDirectoryIdentity::Absolute("/second/project".into());
 
         assert_eq!(group_by_path(&[&first, &second], None).len(), 2);
     }
@@ -3176,8 +3258,8 @@ mod tests {
         let second_path = Path::new(OsStr::from_bytes(b"/writer/\xfe"));
         let mut first = row_at(&first_path.display().to_string(), None);
         let mut second = row_at(&second_path.display().to_string(), None);
-        first.process.directory_identity = DirectoryIdentity::from(first_path);
-        second.process.directory_identity = DirectoryIdentity::from(second_path);
+        first.process.directory_identity = WorkingDirectoryIdentity::from(first_path);
+        second.process.directory_identity = WorkingDirectoryIdentity::from(second_path);
 
         assert_eq!(first.process.path, second.process.path);
         assert_eq!(group_by_path(&[&first, &second], None).len(), 2);
@@ -3187,8 +3269,8 @@ mod tests {
     fn missing_directory_identity_does_not_group_by_placeholder_text() {
         let mut first = row_at("unavailable", None);
         let mut second = row_at("unavailable", None);
-        first.process.directory_identity = DirectoryIdentity::Unavailable;
-        second.process.directory_identity = DirectoryIdentity::Unavailable;
+        first.process.directory_identity = WorkingDirectoryIdentity::Unavailable;
+        second.process.directory_identity = WorkingDirectoryIdentity::Unavailable;
 
         assert_eq!(group_by_path(&[&first, &second], None).len(), 2);
     }
@@ -3197,7 +3279,8 @@ mod tests {
     fn pinning_finds_a_group_through_any_members_display_label() {
         let mut ordinary = started_at("~/project", None, 100);
         let mut custom_home = started_at("/writer/project", None, 101);
-        ordinary.process.directory_identity = DirectoryIdentity::Absolute("/writer/project".into());
+        ordinary.process.directory_identity =
+            WorkingDirectoryIdentity::Absolute("/writer/project".into());
         custom_home.process.directory_identity = ordinary.process.directory_identity.clone();
         let older = started_at("/other/project", None, 1);
         let rows = [&older, &custom_home, &ordinary];

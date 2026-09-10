@@ -49,6 +49,23 @@ pub(super) fn observe(pid: u32) -> Observation {
     }
 }
 
+/// Process rows retain fractional birth precision even though registrations cannot.
+pub(super) fn lifetime(pid: u32) -> super::LifetimeEvidence {
+    let Ok(boot) = boot() else {
+        return super::LifetimeEvidence::Unavailable;
+    };
+    let Ok(pid) = libc::c_int::try_from(pid) else {
+        return super::LifetimeEvidence::Unavailable;
+    };
+    let mut name = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+    let mut bytes = [0; BIRTH_SYSCTL_MAX_BYTES];
+    read_sysctl(&mut name, &mut bytes)
+        .and_then(|length| decode_timeval(&bytes[..length]))
+        .map_or(super::LifetimeEvidence::Unavailable, |birth| {
+            super::ProcessLifetime::macos(boot.clone(), birth)
+        })
+}
+
 /// Match the numeric prefix of `sysctl -n kern.boottime`, without its local date.
 fn read_boot() -> io::Result<String> {
     let mut name = [libc::CTL_KERN, libc::KERN_BOOTTIME];

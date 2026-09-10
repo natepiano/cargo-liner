@@ -137,6 +137,11 @@ enum RegistrationAccess {
 /// One bounded registration sample and a lazy legacy-log sample with their handles.
 /// No handle or deletion capability is borrowed from a previous scan.
 pub(crate) struct RootScan {
+    /// Count descriptor log reads, including failures, in scan-deduplication tests.
+    #[cfg(test)]
+    log_reads:           std::cell::Cell<usize>,
+    /// An opaque value identifies the directory independently of cleanup eligibility.
+    incarnation:         RootIncarnation,
     /// Reopened before sweeping so a replacement at this pathname is detected.
     path:                PathBuf,
     /// Ownership comes from fstat of this handle, never pathname metadata.
@@ -159,6 +164,13 @@ impl RootScan {
         let path: PathBuf = path.components().collect();
         let root = match InspectedDirectory::open_root(&path) {
             Ok(root) => root,
+            Err(error) => {
+                history.roots.insert(path, PreviousRoot::Unavailable);
+                return Err(error);
+            },
+        };
+        let incarnation = match history.incarnation(&path, &root) {
+            Ok(incarnation) => incarnation,
             Err(error) => {
                 history.roots.insert(path, PreviousRoot::Unavailable);
                 return Err(error);
@@ -187,6 +199,9 @@ impl RootScan {
             Some(PreviousRoot::Open(_) | PreviousRoot::Unavailable) => RootContinuity::Changed,
         };
         Ok(Self {
+            #[cfg(test)]
+            log_reads: std::cell::Cell::new(0),
+            incarnation,
             path,
             root,
             logs,
@@ -195,6 +210,13 @@ impl RootScan {
             continuity,
         })
     }
+
+    /// The root object alone identifies an incarnation; access metadata is separate.
+    pub(crate) const fn incarnation(&self) -> RootIncarnation { self.incarnation }
+
+    /// Verify actual filesystem calls rather than deduplicated diagnostics.
+    #[cfg(test)]
+    pub(crate) const fn log_read_count(&self) -> usize { self.log_reads.get() }
 
     /// Entries cannot carry an arbitrary path into a descriptor-relative read.
     pub(crate) fn log_entries(&self) -> impl Iterator<Item = ScanEntry<'_>> {
@@ -237,6 +259,8 @@ impl RootScan {
 
     /// Open a validated basename even when it was published after enumeration.
     pub(crate) fn read_log(&self, basename: &Path) -> io::Result<String> {
+        #[cfg(test)]
+        self.log_reads.set(self.log_reads.get() + 1);
         let entry = named_entry(&self.root, basename)?;
         let file = entry.open_regular()?;
         let length = file.metadata()?.len();
@@ -358,7 +382,7 @@ impl RootScan {
         ] {
             let metadata = fstat(&held.handle).map_err(|error| (path.clone(), error.into()))?;
             if held.identity != current.identity
-                || DirectoryIdentity::from(&metadata) != held.identity
+                || InspectedDirectoryMetadata::from(&metadata) != held.identity
             {
                 return Err((path, io::Error::other(CAPTURE_DIRECTORY_CHANGED)));
             }
@@ -367,12 +391,44 @@ impl RootScan {
     }
 }
 
-/// Persisted by the caller across scans; it retains identities, never handles or
-/// cleanup capabilities. Each configured root has independent access history.
+/// Cleanup history and directory incarnation have independent evidence and lifetimes.
 #[derive(Default)]
 pub(crate) struct RootHistory {
     /// An access failure is retained so recovery cannot authorize immediate sweep.
-    roots: HashMap<PathBuf, PreviousRoot>,
+    roots:        HashMap<PathBuf, PreviousRoot>,
+    /// Pins prevent inode reuse from looking like continuity; they grant no cleanup.
+    incarnations: HashMap<PathBuf, RootIncarnationAnchor>,
+}
+
+/// Keep the last directory allocated even while its pathname is unavailable.
+struct RootIncarnationAnchor {
+    /// This handle is used only for object comparison, never for reading or removal.
+    handle:      OwnedFd,
+    /// Replacement produces a new value even if an earlier inode later returns.
+    incarnation: RootIncarnation,
+}
+
+impl RootHistory {
+    /// Permission and ownership changes cannot change the directory object's identity.
+    fn incarnation(
+        &mut self,
+        path: &Path,
+        root: &InspectedDirectory,
+    ) -> io::Result<RootIncarnation> {
+        if let Some(previous) = self.incarnations.get(path) {
+            let metadata = fstat(&previous.handle)?;
+            if metadata.st_dev == root.identity.device && metadata.st_ino == root.identity.inode {
+                return Ok(previous.incarnation);
+            }
+        }
+        let anchor = RootIncarnationAnchor {
+            handle:      root.handle.try_clone()?,
+            incarnation: RootIncarnation(uuid::Uuid::now_v7()),
+        };
+        let incarnation = anchor.incarnation;
+        self.incarnations.insert(path.to_owned(), anchor);
+        Ok(incarnation)
+    }
 }
 
 /// A successful observation differs from a previously inaccessible pathname.
@@ -387,14 +443,14 @@ enum PreviousRoot {
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct TreeIdentity {
     /// The configured root itself may change without its pathname changing.
-    root:          DirectoryIdentity,
+    root:          InspectedDirectoryMetadata,
     /// Missing registration ancestors also matter when they become available.
     registrations: RegistrationIdentity,
 }
 
 impl TreeIdentity {
     /// Preserve unavailable traversal as a distinct identity state.
-    const fn new(root: DirectoryIdentity, access: &RegistrationAccess) -> Self {
+    const fn new(root: InspectedDirectoryMetadata, access: &RegistrationAccess) -> Self {
         let registrations = match access {
             RegistrationAccess::Open { state, pids } => RegistrationIdentity::Open {
                 state: state.identity,
@@ -415,17 +471,21 @@ enum RegistrationIdentity {
     /// Both ancestors were inspectable in this observation.
     Open {
         /// State ownership alone does not establish ownership of pids.
-        state: DirectoryIdentity,
+        state: InspectedDirectoryMetadata,
         /// The directory whose enumeration determines the live set.
-        pids:  DirectoryIdentity,
+        pids:  InspectedDirectoryMetadata,
     },
     /// Failed traversal is never equivalent to an empty registration directory.
     Unavailable,
 }
 
+/// Identity of a directory object, without permissions or removal authority.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct RootIncarnation(uuid::Uuid);
+
 /// Device, inode, owner and permissions describe the inspected directory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct DirectoryIdentity {
+struct InspectedDirectoryMetadata {
     /// Inode numbers alone are not unique across filesystems.
     device: Dev,
     /// Detect replacement on the same filesystem.
@@ -438,7 +498,7 @@ struct DirectoryIdentity {
     mode:   Mode,
 }
 
-impl From<&Stat> for DirectoryIdentity {
+impl From<&Stat> for InspectedDirectoryMetadata {
     fn from(stat: &Stat) -> Self {
         Self {
             device: stat.st_dev,
@@ -450,7 +510,7 @@ impl From<&Stat> for DirectoryIdentity {
     }
 }
 
-impl DirectoryIdentity {
+impl InspectedDirectoryMetadata {
     /// A foreign owner is expected; an owned directory writable by others is fixable.
     /// Linux POSIX ACL write masks appear in group mode bits. On macOS, an ACL
     /// can grant another account write access without changing those bits; this
@@ -477,7 +537,7 @@ struct InspectedDirectory {
     /// All later operations stay relative to this directory.
     handle:   OwnedFd,
     /// The ownership and identity inspected on this exact descriptor.
-    identity: DirectoryIdentity,
+    identity: InspectedDirectoryMetadata,
 }
 
 impl InspectedDirectory {
@@ -498,7 +558,7 @@ impl InspectedDirectory {
 
     /// Successful fstat is required before the descriptor can authorize access.
     fn inspect(handle: OwnedFd) -> io::Result<Self> {
-        let identity = DirectoryIdentity::from(&fstat(&handle)?);
+        let identity = InspectedDirectoryMetadata::from(&fstat(&handle)?);
         Ok(Self { handle, identity })
     }
 }
@@ -629,6 +689,7 @@ impl<'scan> ScanEntry<'scan> {
 
     /// Metadata chooses only the starting position; `Read::take` enforces the byte
     /// bound even when the file grows after that metadata was inspected.
+    #[cfg(test)]
     pub(crate) fn read_log(&self) -> io::Result<String> {
         let file = self.open_regular()?;
         let length = file.metadata()?.len();

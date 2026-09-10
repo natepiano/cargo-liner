@@ -43,6 +43,10 @@ for directory in (work, pids, bin_directory, root / 'config/cargo-tile',
                   home / 'Library/Application Support/cargo-tile', root / 'rustup/toolchains'):
     directory.mkdir(parents=True)
 configuration = '[capture]\nauto_install = false\n[tiles]\ninitial_rows = 100\n'
+if scenario == 'excluded':
+    configuration += '[commands]\nexcluded = ["clippy"]\n'
+elif scenario == 'exec-excluded':
+    configuration += '[commands]\nexcluded = ["run"]\n'
 for directory in (root / 'config/cargo-tile', home / 'Library/Application Support/cargo-tile'):
     (directory / 'config.toml').write_text(configuration)
 shutil.copyfile(source, bin_directory / 'cargo')
@@ -50,22 +54,39 @@ shutil.copyfile(shutil.which('sh'), bin_directory / 'cargo-tile-real')
 (bin_directory / 'cargo-tile-real').chmod(0o755)
 (work / 'build').write_text('''printf '%s\\0' "$LC_ALL" "$TZ" "$LANG" "$HOME" > "$OBSERVED/environment"
 printf '%s' "$$" > "$OBSERVED/cargo-pid"
+printf '%s' "${CARGOTILE_NESTED-}" > "$OBSERVED/enclosing-pid"
 printf 'Blocking waiting for file lock on build directory\\n' >&2
+if [ -n "${NESTED_WORK-}" ]; then
+    for command in check test; do
+        (
+            cd "$NESTED_WORK" || exit 93
+            OBSERVED="$OBSERVED/$command" NESTED_WORK= sh "$CARGO" "$command" "$NESTED_MARKER-$command"
+        ) &
+    done
+fi
 remaining=1000
 while [ ! -f "$OBSERVED/release" ] && [ "$remaining" -gt 0 ]; do
+    if [ -f "$OBSERVED/pulse" ]; then
+        printf 'writer remains captured after reader scan\\n' >&2
+        rm "$OBSERVED/pulse"
+    fi
     sleep 0.02
     remaining=$((remaining - 1))
 done
 [ "$remaining" -gt 0 ] || exit 92
+wait
 exit 37
 ''')
+shutil.copyfile(work / 'build', work / 'clippy')
+shutil.copyfile(work / 'build', work / 'application')
+(work / 'run').write_text('exec sh "$APPLICATION"\n')
 
 environment = dict(os.environ)
 locales = subprocess.run(['locale', '-a'], check=True, capture_output=True, text=True).stdout.split()
 writer_locale = next((name for name in locales if name not in ('C', 'POSIX')
                       and not name.lower().startswith('c.')), 'POSIX')
 for key in ('CARGOTILE_NESTED', 'CARGO_TILE_FRAME_LOG', 'CARGO_TERM_PROGRESS_WHEN',
-            'CARGO_TERM_PROGRESS_WIDTH', 'ITERM_SESSION_ID'):
+            'CARGO_TERM_PROGRESS_WIDTH', 'ITERM_SESSION_ID', 'NESTED_WORK', 'NESTED_MARKER'):
     environment.pop(key, None)
 environment.update(HOME=str(home), XDG_CONFIG_HOME=str(root / 'config'),
                    XDG_CACHE_HOME=str(root / 'cache'), XDG_DATA_HOME=str(root / 'data'),
@@ -85,13 +106,22 @@ def wait_for(predicate, description):
         time.sleep(0.02)
     raise AssertionError(description)
 
-def start_writer(name, writer_home):
+def start_writer(name, writer_home, command='build', nested_directory=None):
     name += '-' + root.name
     observations = root / name
     observations.mkdir()
     child_environment = dict(environment, HOME=str(writer_home), OBSERVED=str(observations))
+    if command == 'run':
+        child_environment['APPLICATION'] = str(work / 'application')
+    if nested_directory is not None:
+        nested_directory.mkdir()
+        for nested_command in ('check', 'test'):
+            (observations / nested_command).mkdir()
+            shutil.copyfile(work / 'build', nested_directory / nested_command)
+        child_environment.update(NESTED_WORK=str(nested_directory),
+                                 NESTED_MARKER='probe-nested-' + root.name)
     with (observations / 'output').open('wb') as output:
-        child = subprocess.Popen(['sh', str(bin_directory / 'cargo'), 'build', name],
+        child = subprocess.Popen(['sh', str(bin_directory / 'cargo'), command, name],
                                  cwd=work, env=child_environment, stdin=subprocess.DEVNULL,
                                  stdout=output, stderr=output, start_new_session=True)
     writers.append((child, observations))
@@ -105,10 +135,36 @@ def start_writer(name, writer_home):
     inherited = (observations / 'environment').read_bytes().split(b'\0')
     assert inherited == [writer_locale.encode(), environment['TZ'].encode(),
                          writer_locale.encode(), os.fsencode(writer_home), b'']
+    if nested_directory is not None:
+        for nested_command in ('check', 'test'):
+            nested = observations / nested_command
+            wait_for(lambda: (nested / 'enclosing-pid').exists()
+                     and (nested / 'enclosing-pid').read_text() == str(child.pid),
+                     'nested command does not inherit the enclosing capture')
+            nested_pid = (nested / 'cargo-pid').read_text()
+            assert not list(pids.glob(nested_pid + '.*')), 'nested command publishes a capture'
+        if command == 'run':
+            application_pid = (observations / 'cargo-pid').read_text()
+            application = subprocess.run(['ps', '-p', application_pid, '-o', 'comm=', '-o', 'args='],
+                                         check=True, capture_output=True, text=True).stdout.strip()
+            assert 'cargo' not in Path(application.split()[0]).name, application
+            assert str(work / 'application') in application, application
+            for nested_command in ('check', 'test'):
+                descendant = (observations / nested_command / 'cargo-pid').read_text()
+                ancestry = []
+                while descendant != str(child.pid):
+                    assert descendant not in ancestry and descendant != '1', ancestry
+                    ancestry.append(descendant)
+                    descendant = subprocess.run(['ps', '-p', descendant, '-o', 'ppid='], check=True,
+                                                capture_output=True, text=True).stdout.strip()
+                assert application_pid in ancestry, ancestry
     return child, observations, registration, fields, log
 
 def end_writer(writer):
     child, observations = writer[:2]
+    for nested_command in ('check', 'test'):
+        if (observations / nested_command).is_dir():
+            (observations / nested_command / 'release').touch()
     (observations / 'release').touch()
     assert child.wait(timeout=5) == 37, (observations / 'output').read_text()
 
@@ -164,12 +220,47 @@ def screen():
                 column += 1
     return '\n'.join(''.join(line).rstrip() for line in cells)
 
+def command_panes(rendered):
+    lines = rendered.splitlines()
+    for beginning, line in enumerate(lines):
+        if 'parent' not in line or 'command' not in line:
+            continue
+        commands = []
+        for line in lines[beginning + 1:]:
+            if re.match(r'^\s*[└├╰╞╘].*[─━═]{3}', line):
+                break
+            commands.append(line)
+        yield commands
+
+def fixture_pane(rendered, markers):
+    matches = [commands for commands in command_panes(rendered)
+               if all(any(marker in line for line in commands) for marker in markers)]
+    assert len(matches) == 1, 'fixture must occupy one command pane\n' + rendered
+    return matches[0]
+
 try:
     first = start_writer('probe-first', home)
     retained = []
     removed = []
-    if scenario == 'grouping':
+    if scenario in ('grouping', 'grouping-earlier-pane'):
         second = start_writer('probe-second', root / 'custom-home')
+    elif scenario in ('nested', 'excluded', 'exec-nested', 'exec-excluded'):
+        nested_directory = home / ('nested-directory-' + root.name)
+        enclosing_command = {'nested': 'build', 'excluded': 'clippy',
+                             'exec-nested': 'run', 'exec-excluded': 'run'}[scenario]
+        enclosing = start_writer('probe-enclosing', home,
+                                 enclosing_command,
+                                 nested_directory)
+        retained.extend((enclosing[2], enclosing[4]))
+        if scenario in ('excluded', 'exec-excluded'):
+            # A removed sibling proves cleanup ran while the excluded capture
+            # and its still-running nested commands retained their artifacts.
+            ended = start_writer('probe-ended', home)
+            contents = ended[2].read_bytes()
+            end_writer(ended)
+            ended[2].write_bytes(contents)
+            ended[4].write_bytes(b'Blocking waiting for file lock on build directory\n')
+            removed.extend((ended[2], ended[4]))
     elif scenario == 'staging':
         child, observations, registration, fields, log = first
         contents = registration.read_bytes()
@@ -209,6 +300,25 @@ try:
         forged_log.write_bytes(b'Blocking waiting for file lock on build directory\n')
         removed.extend((forged_name, forged_log))
         retained.extend((first[2], first[4], live[2], live[4]))
+    elif scenario in ('ambiguous-generation', 'unverifiable-generation'):
+        # Duplicate one live writer's wire identity: this recreates competing
+        # generations without depending on the kernel to reuse a pid in one second.
+        competing = list(first[3])
+        competing[1] = b'0000-competing-generation'
+        assert competing[1] < first[3][1], 'conflicting generation must sort first'
+        competing[4] = b'run-' + competing[1] + b'-' + str(first[0].pid).encode() + b'.log'
+        competing_directory = home / ('competing-directory-' + root.name)
+        competing_directory.mkdir()
+        competing[5] = os.fsencode(competing_directory)
+        competing_marker = 'probe-competing-' + root.name
+        competing[8:] = [b'test', competing_marker.encode(), b'']
+        if scenario == 'unverifiable-generation':
+            competing[3] = b''
+        competing_name = pids / (str(first[0].pid) + '.' + competing[1].decode())
+        competing_log = capture / os.fsdecode(competing[4])
+        competing_name.write_bytes(b'\0'.join(competing))
+        competing_log.write_bytes(b'PASS [0.010s] (7/13) competing-test\n')
+        retained.extend((first[2], first[4], competing_name, competing_log))
 
     reader_environment = dict(environment, LC_ALL='C', LANG='POSIX', TZ='UTC-11')
     reader, terminal = pty.fork()
@@ -225,36 +335,82 @@ try:
     read_terminal(1)
     rendered = screen()
     assert 'summary' in rendered, rendered
-    if scenario in ('locale', 'grouping', 'forged'):
+    if scenario in ('locale', 'grouping', 'grouping-earlier-pane', 'forged'):
         assert first[1].name in rendered, rendered
         assert any(first[1].name in line and 'blocked' in line
                    for line in rendered.splitlines()), rendered
         assert first[2].exists() and first[4].exists(), 'live record is removed by reader'
-    if scenario == 'grouping':
+    if scenario in ('grouping', 'grouping-earlier-pane'):
         # Count this directory only inside the command pane, which is the one
         # that lists these writers: they run under the test binary, and the
         # summary pane carries the outermost invocation of each directory
         # rather than the nested ones. Other panes can choose a different
         # display label for the same directory identity.
-        lines = rendered.splitlines()
-        beginning = next(index for index, line in enumerate(lines)
-                         if 'parent' in line and 'command' in line)
-        commands = []
-        for line in lines[beginning + 1:]:
-            if re.match(r'^\s*[└├╰╞╘].*[─━═]{3}', line):
-                break
-            commands.append(line)
-        assert any(first[1].name in line for line in commands), rendered
-        assert any(second[1].name in line for line in commands), rendered
+        if scenario == 'grouping-earlier-pane':
+            # Prepend a separate pane to the actual production screen so this
+            # parser regression never depends on the host's live command order.
+            rendered = ('│ pid parent command\n│ unrelated-earlier-pane\n└────\n'
+                        + rendered)
+            assert 'unrelated-earlier-pane' in '\n'.join(next(command_panes(rendered)))
+        commands = fixture_pane(rendered, (first[1].name, second[1].name))
         assert sum(work.name in line for line in commands) == 1, rendered
+    if scenario in ('nested', 'excluded', 'exec-nested', 'exec-excluded'):
+        markers = ['probe-nested-' + root.name + '-' + command for command in ('check', 'test')]
+        def nested_rows_are_visible():
+            read_terminal(0.1)
+            return all(marker in screen() for marker in markers)
+        wait_for(nested_rows_are_visible, 'nested commands merge or disappear from the reader')
+        rendered = screen()
+        commands = fixture_pane(rendered, (first[1].name, *markers))
+        assert any(nested_directory.name in line for line in commands), rendered
+        for marker, command in zip(markers, ('check', 'test')):
+            rows = [line for line in commands if marker in line]
+            assert len(rows) == 1, 'nested invocation does not retain one row\n' + rendered
+            assert 'blocked' in rows[0] and 'cargo ' + command + ' ' + marker in rows[0], rendered
+            nested_pid = (enclosing[1] / command / 'cargo-pid').read_text()
+            assert re.match(r'^\s*│\s*' + nested_pid + r'\s', rows[0]), rendered
+        if scenario == 'nested':
+            assert sum(enclosing[1].name in line for line in commands) == 1, rendered
+        elif scenario in ('excluded', 'exec-excluded'):
+            assert not any(enclosing[1].name in line for pane in command_panes(rendered)
+                           for line in pane), 'excluded command becomes a row\n' + rendered
+            assert enclosing[0].poll() is None, 'excluded writer ends before cleanup assertions'
+            # Observe another captured write after the reader has pruned the ended
+            # sibling; a mere retained empty filename would not prove live capture.
+            assert all(not path.exists() for path in removed), 'reader has not swept the sibling'
+            (enclosing[1] / 'pulse').touch()
+            wait_for(lambda: enclosing[4].exists()
+                     and b'writer remains captured after reader scan' in enclosing[4].read_bytes(),
+                     'excluded live command loses its capture after the sweep')
     if scenario == 'staging':
         assert live[1].name in rendered, rendered
         assert not any(live[1].name in line and 'blocked' in line
                        for line in rendered.splitlines()), rendered
+    if scenario in ('ambiguous-generation', 'unverifiable-generation'):
+        commands = fixture_pane(rendered, (first[1].name,))
+        rows = [line for line in commands if first[1].name in line]
+        assert len(rows) == 1, 'ambiguous generations duplicate the live row\n' + rendered
+        assert 'cargo build ' + first[1].name in rows[0], rendered
+        assert re.match(r'^\s*│\s*' + (first[1] / 'cargo-pid').read_text() + r'\s', rows[0]), rendered
+        assert 'blocked' not in rows[0], rendered
+        headings = [line for line in commands if work.name in line]
+        assert len(headings) == 1 and 'testing' not in headings[0], rendered
+        assert competing_marker not in rendered and competing_directory.name not in rendered, rendered
     for path in removed:
         assert not path.exists(), 'reader retains ended artifact: ' + str(path) + '\n' + rendered
     for path in retained:
         assert path.exists(), 'reader removes unknown or live artifact: ' + str(path)
+    if scenario in ('ambiguous-generation', 'unverifiable-generation'):
+        competing_name.unlink()
+        competing_log.unlink()
+        def unambiguous_progress_recovers():
+            read_terminal(0.1)
+            return any(first[1].name in line and 'blocked' in line
+                       for line in screen().splitlines())
+        wait_for(unambiguous_progress_recovers,
+                 'remaining capture does not recover after generation ambiguity ends')
+        assert first[0].poll() is None and first[2].exists() and first[4].exists()
+        rendered = screen()
     print(rendered)
 finally:
     try:
@@ -270,6 +426,9 @@ finally:
             os.close(terminal)
     finally:
         for child, observations in writers:
+            for nested_command in ('check', 'test'):
+                if (observations / nested_command).is_dir():
+                    (observations / nested_command / 'release').touch()
             (observations / 'release').touch()
             try:
                 child.wait(timeout=5)
@@ -674,6 +833,48 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
     #[test]
     fn reader_groups_one_directory_across_different_writer_homes() {
         reader_regression("grouping");
+    }
+
+    /// Select the fixture's command pane even when an unrelated pane precedes it.
+    #[test]
+    fn reader_grouping_finds_fixture_markers_after_an_unrelated_pane() {
+        reader_regression("grouping-earlier-pane");
+    }
+
+    /// One enclosing capture supplies progress without replacing nested commands or pids.
+    #[test]
+    fn reader_keeps_nested_invocations_distinct_with_one_enclosing_capture() {
+        reader_regression("nested");
+    }
+
+    /// An exec replaces cargo with an application without making its cargo children direct owners.
+    #[test]
+    fn reader_keeps_application_spawned_cargo_invocations_distinct() {
+        reader_regression("exec-nested");
+    }
+
+    /// Excluding the captured run cannot hide cargo children launched by its application.
+    #[test]
+    fn reader_keeps_application_spawned_cargo_when_run_is_excluded() {
+        reader_regression("exec-excluded");
+    }
+
+    /// Same-birth publications cannot select an old generation by its filename order.
+    #[test]
+    fn reader_rejects_competing_generations_until_one_publication_remains() {
+        reader_regression("ambiguous-generation");
+    }
+
+    /// Missing birth evidence cannot prove a competing publication belongs to another lifetime.
+    #[test]
+    fn reader_rejects_an_unverifiable_competing_generation() {
+        reader_regression("unverifiable-generation");
+    }
+
+    /// Excluded writers remain live for cleanup and nested capture membership.
+    #[test]
+    fn reader_excludes_a_live_command_without_sweeping_its_capture() {
+        reader_regression("excluded");
     }
 
     /// Another live pid cannot adopt the identity copied from a published record.

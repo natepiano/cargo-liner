@@ -23,6 +23,7 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fmt;
 use std::ops::Add;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -41,6 +42,8 @@ use sysinfo::System;
 use sysinfo::UpdateKind;
 use tui_pane::kernel_parent;
 
+use crate::birth_stamp;
+use crate::birth_stamp::LifetimeEvidence;
 use crate::capture_root::CleanupRefusal;
 use crate::capture_root::RootOwner;
 use crate::config::Config;
@@ -73,11 +76,125 @@ use crate::progress::CaptureKey;
 use crate::progress::CaptureLookup;
 use crate::progress::CaptureRoot;
 use crate::progress::CaptureRoots;
+use crate::progress::CaptureSelection;
 use crate::progress::PathFailure;
-use crate::registration::DirectoryIdentity;
-use crate::registration::VersionedRegistration;
+use crate::registration::RegistrationCandidate;
+use crate::registration::VerifiedRegistration;
+use crate::registration::WorkingDirectoryIdentity;
 use crate::registration::WriterHome;
 use crate::sccache::SccacheServer;
+
+/// Identity of an invocation, independent of its displayed process or row source.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum InvocationId {
+    /// The verified registration directly represents this invocation.
+    Captured(RunId),
+    /// Uncaptured and nested invocations retain their own process lifetime.
+    Process(ProcessIdentity),
+}
+
+/// Root incarnation and publication generation qualify one captured invocation.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct RunId {
+    /// Startup root position alone cannot detect a replaced directory.
+    pub(crate) root:        crate::progress::CaptureRootIndex,
+    /// Descriptor identity changes when the directory itself is replaced.
+    pub(crate) incarnation: crate::capture_root::RootIncarnation,
+    /// The registration describes the shim, even when cargo supplies the row.
+    pub(crate) shim_pid:    u32,
+    /// Publication generations separate even identical pid and birth observations.
+    pub(crate) generation:  String,
+    /// Kernel comparison qualifies the generation without reducing its precision.
+    pub(crate) birth:       crate::birth_stamp::BirthStamp,
+}
+
+/// Process lifetime evidence never substitutes registration comparison seconds.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ProcessIdentity {
+    /// Native kernel precision separates process replacements without a generation.
+    Known {
+        /// A birth stamp belongs to the process whose kernel entry was read.
+        pid:      u32,
+        /// Linux start ticks or the full Darwin start timeval, qualified by boot.
+        lifetime: crate::birth_stamp::ProcessLifetime,
+    },
+    /// Continuous presence permits row retention without proving a kernel lifetime.
+    Unavailable {
+        /// Retain the displayed process even when its lifetime cannot be read.
+        pid:         u32,
+        /// Retired once this pid disappears from a scan, even if the pid returns.
+        observation: uuid::Uuid,
+    },
+}
+
+/// Retain unavailable row identities only while their pids remain continuously observed.
+#[derive(Default)]
+pub(crate) struct ProcessIdentities {
+    /// This map is replaced by each scan, so absent pids cannot retain row continuity.
+    present: HashMap<Pid, ProcessIdentity>,
+}
+
+impl ProcessIdentities {
+    /// Kernel evidence controls known lifetimes; presence alone retains unavailable rows.
+    pub(crate) fn observe(
+        &mut self,
+        lifetimes: &HashMap<Pid, LifetimeEvidence>,
+    ) -> HashMap<Pid, InvocationId> {
+        self.present = lifetimes
+            .iter()
+            .map(|(&pid, lifetime)| {
+                let identity = match (lifetime, self.present.get(&pid)) {
+                    (
+                        LifetimeEvidence::Unavailable,
+                        Some(identity @ ProcessIdentity::Unavailable { .. }),
+                    ) => identity.clone(),
+                    _ => ProcessIdentity::observed(pid.as_u32(), lifetime.clone()),
+                };
+                (pid, identity)
+            })
+            .collect();
+        self.present
+            .iter()
+            .map(|(&pid, identity)| (pid, InvocationId::Process(identity.clone())))
+            .collect()
+    }
+}
+
+impl InvocationId {
+    /// Stable synthetic lifetime for fixtures that are not kernel observations.
+    #[cfg(test)]
+    pub(crate) fn for_test(pid: u32) -> Self {
+        Self::Process(ProcessIdentity::Known {
+            pid,
+            lifetime: crate::birth_stamp::ProcessLifetime::for_test(u64::from(pid)),
+        })
+    }
+}
+
+/// Capture membership supplies progress without granting registration row fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CaptureMembership {
+    /// This invocation runs inside the named capture and keeps its own identity.
+    Enclosing(RunId),
+    /// No enclosing capture supplies this invocation's progress.
+    Outside,
+}
+
+/// A visible parent is either an invocation, a chain entry, or absent from the view.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum VisibleParent {
+    /// Family matching uses invocation identity rather than the displayed pid.
+    Invocation {
+        /// Family continuity follows the invocation across changes of row source.
+        id:  InvocationId,
+        /// Display the cargo parent pid even when the identity names its shim.
+        pid: u32,
+    },
+    /// A non-cargo ancestor is drawn in the command's ancestry chain.
+    Ancestor(u32),
+    /// No ancestor is drawn for this invocation.
+    None,
+}
 
 /// A reading remains distinct from every reason the scanner cannot establish one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,10 +262,14 @@ pub(crate) enum CompilerObservation {
 /// One running `cargo` invocation, preformatted for the table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CargoProcess {
+    /// Row source and displayed pid do not change invocation continuity.
+    pub(crate) invocation_id:      InvocationId,
+    /// Nested invocations share progress without inheriting registration metadata.
+    pub(crate) capture_membership: CaptureMembership,
     /// Working directory display, shortened only when the home prefix is unambiguous.
     pub(crate) path:               String,
     /// Raw absolute directory for grouping; display formatting cannot change membership.
-    pub(crate) directory_identity: DirectoryIdentity,
+    pub(crate) directory_identity: WorkingDirectoryIdentity,
     /// Process id.
     pub(crate) pid:                u32,
     /// The nearest ancestor the cell draws: the cargo above this one
@@ -157,9 +278,8 @@ pub(crate) struct CargoProcess {
     /// from. Never the immediate parent, which is the pty and shim the
     /// capture opened and is drawn nowhere.
     ///
-    /// `None` only where the walk reaches the top having found nothing
-    /// on screen.
-    pub(crate) parent:             Option<u32>,
+    /// The named parent state distinguishes invocation identity from chain display.
+    pub(crate) parent:             VisibleParent,
     /// Local wall-clock start time, `hh:mm`.
     pub(crate) start:              String,
     /// The same instant as seconds since the epoch, which is what
@@ -410,7 +530,7 @@ pub(crate) struct CargoGroup {
 
 impl CargoGroup {
     /// The group's identity, stable for as long as the command runs.
-    pub(crate) const fn id(&self) -> u32 { self.lead.pid }
+    pub(crate) fn id(&self) -> InvocationId { self.lead.invocation_id.clone() }
 }
 
 /// One scan's account of the machine: the cargo commands running, and
@@ -501,12 +621,67 @@ pub(crate) struct CaptureAssociation {
 }
 
 /// The nearest registered ancestor retains its root for every annotation lookup.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CapturedRun {
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NearestRegistration {
     /// No registration exists along the bounded parent walk.
     Unregistered,
     /// Root precedence selects one registration without mixing its sibling roots.
     Registered(CaptureKey),
+}
+
+/// A verified registration established to directly represent this invocation.
+/// Only membership resolution can construct this value; an enclosing capture cannot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DirectCapture {
+    /// The same identity is used by a process row and a registration row.
+    run_id:       RunId,
+    /// Keep the existing verifier's proof, including its permitted directory and argv.
+    registration: VerifiedRegistration,
+}
+
+impl DirectCapture {
+    /// Row construction consumes this proof rather than an enclosing membership.
+    pub(crate) const fn registration(&self) -> &VerifiedRegistration { &self.registration }
+
+    /// A change of row source cannot change the registered invocation's identity.
+    pub(crate) fn invocation_id(&self) -> InvocationId {
+        InvocationId::Captured(self.run_id.clone())
+    }
+}
+
+/// Only the direct arm permits access to verified row metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DirectAssociation {
+    /// The registration represents this row's command, rather than an ancestor command.
+    Direct(Box<DirectCapture>),
+    /// No verified registration directly describes this process.
+    None,
+}
+
+impl RunId {
+    /// Bind the verified generation to the actual directory scanned this time.
+    fn verified(key: &CaptureKey, registration: &VerifiedRegistration) -> Self {
+        Self {
+            root:        key.root,
+            incarnation: key.incarnation,
+            shim_pid:    registration.pid(),
+            generation:  registration.record().generation().to_owned(),
+            birth:       registration.birth().clone(),
+        }
+    }
+}
+
+impl ProcessIdentity {
+    /// Unavailable evidence receives only a row token, never a claimed lifetime.
+    fn observed(pid: u32, evidence: LifetimeEvidence) -> Self {
+        match evidence {
+            LifetimeEvidence::Available(lifetime) => Self::Known { pid, lifetime },
+            LifetimeEvidence::Unavailable => Self::Unavailable {
+                pid,
+                observation: uuid::Uuid::now_v7(),
+            },
+        }
+    }
 }
 
 /// Start the scanner thread and hand back the channel it publishes on.
@@ -570,7 +745,19 @@ fn scan(
     let previous = system
         .processes()
         .iter()
-        .map(|(&pid, process)| (pid, CpuBaseline::from(process)))
+        .map(|(&pid, process)| {
+            (
+                pid,
+                CpuBaseline {
+                    lifetime:    smoothing
+                        .observed
+                        .get(&pid)
+                        .cloned()
+                        .unwrap_or(LifetimeEvidence::Unavailable),
+                    accumulated: process.accumulated_cpu_time(),
+                },
+            )
+        })
         .collect();
     // Phase one: pid, name, parent and start time for everything. None of
     // the fields this asks for require a per-process read of the argument
@@ -588,6 +775,7 @@ fn scan(
     );
 
     let mut census = Census::take(system, &previous);
+    census.identities = smoothing.identities.observe(&census.lifetimes);
 
     // Phase two: the costly fields, for the cargo processes and for the
     // handful standing above each of them. The ancestors are read for
@@ -595,41 +783,16 @@ fn scan(
     // the command -- and a chain is a few processes long, against the
     // hundreds this pass still skips.
     let detailed = census.detailed();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&detailed),
-        false,
-        process_detail_refresh_kind(),
-    );
+    let details = process_details(&detailed);
 
-    // A process can carry the name `cargo` without being one, so the argv
-    // phase two just read is what settles it -- see `command_text`.
-    // Pruning here rather than at render time keeps a mislabelled
-    // `sccache` from claiming the compilers that belong to the cargo
-    // above it, which `attribute_compilers` is about to hand out.
-    //
-    // `commands.excluded` is read in the same pass and for the same
-    // reason. Dropping an excluded command here rather than where the
-    // cells are handed out is what makes it *untracked* rather than
-    // merely undrawn: it reaches neither the summary nor the grid, it
-    // cannot stand between a compiler and the cargo that owns it, and a
-    // cargo running underneath one attributes to whatever is above it
-    // instead of leaving with it.
-    census.cargo.retain(|pid| {
-        system
-            .process(*pid)
-            .is_some_and(|process| select_cargo(process.cmd(), excluded).is_ok())
-    });
-
-    // Shims are separated from managers on argv, so this waits for phase
-    // two rather than running on names alone. The cost is reading argv
-    // for the wrappers too, which is a handful of processes against the
-    // hundreds phase two already skips.
-    census.collapse_shims(system);
-
-    let attributed = census.attribute(smoothing, now);
-    // Identity is read live, independently of the earlier process snapshot.
+    // Verification and cleanup use the full live set before row eligibility changes.
     let mut capture = Capture::take(roots);
-    let groups = census.groups(system, &attributed, home, &capture);
+    census.identify_capture_wrappers(&details, &capture);
+    census.collapse_shims(&details);
+    census.identify_captures(&capture);
+    census.select_rows(&details, &capture, excluded);
+    let attributed = census.attribute(smoothing, now);
+    let groups = census.groups(&details, &attributed, home, &capture);
     census.associate_status(&mut capture, &groups);
     Scan {
         sccache: census.sccache(),
@@ -655,6 +818,19 @@ fn process_detail_refresh_kind() -> ProcessRefreshKind {
         .with_exe(UpdateKind::OnlyIfNotSet)
 }
 
+/// sysinfo retains populated metadata even when a requested reread fails.
+/// Fresh detail records cannot carry cwd, argv or exe across a pid replacement
+/// that its whole-second start time cannot distinguish.
+fn process_details(pids: &[Pid]) -> System {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(pids),
+        false,
+        process_detail_refresh_kind(),
+    );
+    system
+}
+
 /// What the census worked out per cargo invocation, once every process
 /// under one has been walked up to it.
 struct Attributed {
@@ -666,10 +842,10 @@ struct Attributed {
 }
 
 /// Evidence retained across a refresh to establish identity and monotonic CPU time.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct CpuBaseline {
     /// A reused pid must begin a fresh rate observation.
-    started:     u64,
+    lifetime:    LifetimeEvidence,
     /// A decrease for the same process proves the samples cannot form a valid rate.
     accumulated: u64,
 }
@@ -677,7 +853,7 @@ struct CpuBaseline {
 impl From<&Process> for CpuBaseline {
     fn from(process: &Process) -> Self {
         Self {
-            started:     process.start_time(),
+            lifetime:    birth_stamp::lifetime(process.pid().as_u32()),
             accumulated: process.accumulated_cpu_time(),
         }
     }
@@ -707,13 +883,16 @@ enum CpuPublication {
 /// second is still a figure nobody can read.
 #[derive(Default)]
 struct CpuSmoothing {
+    /// Unavailable lifetime reads retain rows only during continuous pid presence.
+    identities:  ProcessIdentities,
+    /// Bind the pre-refresh counters to the lifetime observed with their last sample.
+    observed:    HashMap<Pid, LifetimeEvidence>,
     /// Where each invocation's reading has settled, moved on every scan.
-    /// Keyed by the cargo pid, so an invocation that ends takes its
-    /// history with it.
-    settled:     HashMap<Pid, Measurement<f32>>,
+    /// Keyed by invocation identity, so a replaced pid cannot inherit old readings.
+    settled:     HashMap<InvocationId, Measurement<f32>>,
     /// What the table is carrying, taken from
     /// [`settled`](Self::settled) when a reading falls due.
-    reported:    HashMap<Pid, Measurement<f32>>,
+    reported:    HashMap<InvocationId, Measurement<f32>>,
     /// A never-published smoother has no previous snapshot to hold.
     publication: CpuPublication,
 }
@@ -727,19 +906,19 @@ impl CpuSmoothing {
     /// because a sample gap cannot contribute to a smoothed rate.
     fn settle(
         &mut self,
-        sampled: &HashMap<Pid, Measurement<f32>>,
-        cargo: &[Pid],
+        sampled: &HashMap<InvocationId, Measurement<f32>>,
+        cargo: &[InvocationId],
         now: Instant,
-    ) -> HashMap<Pid, Measurement<f32>> {
+    ) -> HashMap<InvocationId, Measurement<f32>> {
         self.settled.retain(|pid, _| cargo.contains(pid));
         self.reported.retain(|pid, _| cargo.contains(pid));
         let alpha = smoothing_alpha();
-        for &pid in cargo {
+        for pid in cargo {
             let sample = sampled
-                .get(&pid)
+                .get(pid)
                 .copied()
                 .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven));
-            let settled = self.settled.entry(pid).or_insert(sample);
+            let settled = self.settled.entry(pid.clone()).or_insert(sample);
             *settled = match (sample, *settled) {
                 (Measurement::Reading(sample), Measurement::Reading(previous)) => {
                     Measurement::Reading((sample - previous).mul_add(alpha, previous))
@@ -747,7 +926,7 @@ impl CpuSmoothing {
                 (sample, _) => sample,
             };
             if matches!(sample, Measurement::Unavailable(_)) {
-                self.reported.insert(pid, sample);
+                self.reported.insert(pid.clone(), sample);
             }
         }
         if self.is_due(now) {
@@ -758,8 +937,8 @@ impl CpuSmoothing {
             // held for it, and waiting out the rest of somebody else's
             // second would draw it idle. Its opening reading goes
             // straight through.
-            for (&pid, &settled) in &self.settled {
-                let reported = self.reported.entry(pid).or_insert(settled);
+            for (pid, &settled) in &self.settled {
+                let reported = self.reported.entry(pid.clone()).or_insert(settled);
                 if matches!(reported, Measurement::Unavailable(_)) {
                     *reported = settled;
                 }
@@ -792,37 +971,52 @@ fn smoothing_alpha() -> f32 {
 /// What phase one learned: the parent links, the cargo processes, and the
 /// compiler processes waiting to be attributed to one of them.
 struct Census {
+    /// Registration eligibility is resolved even when no process row can be built.
+    registration_eligibility: HashMap<RunId, Result<(), RowAbsence>>,
+    /// Invocation identities are established before attribution and row construction.
+    identities:               HashMap<Pid, InvocationId>,
+    /// Preserve cargo ancestry even after a command is deliberately excluded.
+    capture_boundaries:       HashSet<Pid>,
+    /// Only observed forwarding of the registered command permits walking through a wrapper.
+    capture_wrappers:         HashSet<Pid>,
+    /// Native lifetime evidence belongs to this refresh, including unavailable reads.
+    lifetimes:                HashMap<Pid, LifetimeEvidence>,
+    /// Deliberate exclusion remains distinct from unavailable command metadata.
+    eligibility:              HashMap<Pid, Result<(), RowAbsence>>,
     /// Every process's parent, for walking a compiler up to its cargo.
-    parents:   HashMap<Pid, Pid>,
+    parents:                  HashMap<Pid, Pid>,
     /// Processes whose own name is `cargo`.
-    cargo:     Vec<Pid>,
+    cargo:                    Vec<Pid>,
     /// Compiler processes paired with which driver they are.
-    compilers: Vec<(Pid, &'static str)>,
+    compilers:                Vec<(Pid, &'static str)>,
     /// Every process contributes a reading or an absence reason to its owner.
-    cpu:       HashMap<Pid, Measurement<f32>>,
+    cpu:                      HashMap<Pid, Measurement<f32>>,
 }
 
 impl Census {
     /// Classify every process the last refresh saw.
     fn take(system: &System, previous: &HashMap<Pid, CpuBaseline>) -> Self {
         let mut census = Self {
-            parents:   HashMap::new(),
-            cargo:     Vec::new(),
-            compilers: Vec::new(),
-            cpu:       HashMap::new(),
+            identities:               HashMap::new(),
+            capture_boundaries:       HashSet::new(),
+            capture_wrappers:         HashSet::new(),
+            lifetimes:                HashMap::new(),
+            eligibility:              HashMap::new(),
+            registration_eligibility: HashMap::new(),
+            parents:                  HashMap::new(),
+            cargo:                    Vec::new(),
+            compilers:                Vec::new(),
+            cpu:                      HashMap::new(),
         };
         for (&pid, process) in system.processes() {
             if let Some(parent) = process.parent().or_else(|| kernel_parent(pid)) {
                 census.parents.insert(pid, parent);
             }
+            let baseline = CpuBaseline::from(process);
+            census.lifetimes.insert(pid, baseline.lifetime.clone());
             census.cpu.insert(
                 pid,
-                Self::measure_cpu(
-                    pid,
-                    process.cpu_usage(),
-                    CpuBaseline::from(process),
-                    previous,
-                ),
+                Self::measure_cpu(pid, process.cpu_usage(), &baseline, previous),
             );
             let name = process.name();
             if is_cargo_name(name) {
@@ -843,27 +1037,29 @@ impl Census {
     /// sysinfo's rate: without it, the rate can retain an earlier value. A failed
     /// macOS task-info read resets the counter to zero but leaves the rate intact.
     /// Quantized zero counters cannot prove either a reading or a failed read.
-    /// A regression is also unproven: sysinfo exposes start time only in seconds,
-    /// so a replacement within that second cannot be distinguished from failure.
+    /// Native lifetime evidence separates same-second replacements before counters
+    /// are compared. A regression within that lifetime remains unproven.
     /// An unchanged counter cannot prove a positive rate: macOS retains the old one.
     /// Nonzero counters on both samples still support a measured zero rate.
     fn measure_cpu(
         pid: Pid,
         cpu: f32,
-        baseline: CpuBaseline,
+        baseline: &CpuBaseline,
         previous: &HashMap<Pid, CpuBaseline>,
     ) -> Measurement<f32> {
+        let LifetimeEvidence::Available(lifetime) = &baseline.lifetime else {
+            return Measurement::Unavailable(MeasurementAbsence::Unproven);
+        };
         let Some(previous) = previous
             .get(&pid)
-            .filter(|previous| previous.started == baseline.started)
+            .filter(|previous| matches!(&previous.lifetime, LifetimeEvidence::Available(prior) if prior == lifetime))
         else {
             return Measurement::Unavailable(MeasurementAbsence::FirstObservation);
         };
         if !cpu.is_finite() || cpu < 0.0 {
             return Measurement::Unavailable(MeasurementAbsence::ReadFailed);
         }
-        if baseline.started == 0
-            || previous.accumulated == 0
+        if previous.accumulated == 0
             || baseline.accumulated < previous.accumulated
             || (baseline.accumulated == previous.accumulated && cpu > 0.0)
         {
@@ -927,9 +1123,34 @@ impl Census {
     /// The two walks are one call because they run over the same parent
     /// chains and are both spent by the same pass over the groups.
     fn attribute(&self, smoothing: &mut CpuSmoothing, now: Instant) -> Attributed {
+        smoothing.observed.clone_from(&self.lifetimes);
+        let sampled: HashMap<_, _> = self
+            .attribute_cpu()
+            .into_iter()
+            .filter_map(|(pid, cpu)| {
+                self.identities
+                    .get(&pid)
+                    .map(|identity| (identity.clone(), cpu))
+            })
+            .collect();
+        let identities: Vec<_> = self
+            .cargo
+            .iter()
+            .filter_map(|pid| self.identities.get(pid).cloned())
+            .collect();
+        let reported = smoothing.settle(&sampled, &identities, now);
         Attributed {
             compilers: self.attribute_compilers(),
-            cpu:       smoothing.settle(&self.attribute_cpu(), &self.cargo, now),
+            cpu:       self
+                .cargo
+                .iter()
+                .filter_map(|pid| {
+                    self.identities
+                        .get(pid)
+                        .and_then(|identity| reported.get(identity))
+                        .map(|cpu| (*pid, *cpu))
+                })
+                .collect(),
         }
     }
 
@@ -1012,7 +1233,7 @@ impl Census {
         let (Some(outer), Some(inner)) = (system.process(pid), system.process(child)) else {
             return false;
         };
-        subcommand(outer.cmd()) == subcommand(inner.cmd()) && outer.cwd() == inner.cwd()
+        observed_shim_match(outer.cmd(), outer.cwd(), inner.cmd(), inner.cwd())
     }
 
     /// Each cargo's direct cargo children -- the tree the groups are cut
@@ -1067,20 +1288,28 @@ impl Census {
     ///
     /// Bounded by [`PARENT_WALK_LIMIT`], like every other walk here, so
     /// a reparented chain that loops cannot spin.
-    fn drawn_parent(&self, pid: Pid, ancestry: &[Ancestor]) -> Option<u32> {
+    fn drawn_parent(&self, pid: Pid, ancestry: &[Ancestor]) -> VisibleParent {
         let mut current = pid;
         for _ in 0..PARENT_WALK_LIMIT {
-            let parent = *self.parents.get(&current)?;
-            if self.cargo.contains(&parent)
-                || ancestry
-                    .iter()
-                    .any(|ancestor| ancestor.pid == parent.as_u32())
+            let Some(&parent) = self.parents.get(&current) else {
+                break;
+            };
+            if self.cargo.contains(&parent) {
+                if let Some(identity) = self.identities.get(&parent) {
+                    return VisibleParent::Invocation {
+                        id:  identity.clone(),
+                        pid: parent.as_u32(),
+                    };
+                }
+            } else if ancestry
+                .iter()
+                .any(|ancestor| ancestor.pid == parent.as_u32())
             {
-                return Some(parent.as_u32());
+                return VisibleParent::Ancestor(parent.as_u32());
             }
             current = parent;
         }
-        None
+        VisibleParent::None
     }
 
     /// Walk `pid` up its parent chain to the cargo invocation that owns
@@ -1178,18 +1407,20 @@ impl Census {
     /// rather than the cargo itself -- two levels up when the run went
     /// through a pty, one when it did not. The same bound the compiler
     /// walk uses stops a reparented cycle here.
-    fn captured_run(&self, capture: &Capture, pid: Pid) -> CapturedRun {
+    fn captured_run(&self, capture: &Capture, pid: Pid) -> NearestRegistration {
         let mut walking = pid;
         for _ in 0..PARENT_WALK_LIMIT {
-            if let Some(key) = capture.keys(walking.as_u32()).next() {
-                return CapturedRun::Registered(key);
+            match capture.select(walking.as_u32()) {
+                CaptureSelection::Selected(key) => return NearestRegistration::Registered(key),
+                CaptureSelection::Ambiguous => return NearestRegistration::Unregistered,
+                CaptureSelection::Unregistered => {},
             }
             let Some(parent) = self.parents.get(&walking) else {
-                return CapturedRun::Unregistered;
+                return NearestRegistration::Unregistered;
             };
             walking = *parent;
         }
-        CapturedRun::Unregistered
+        NearestRegistration::Unregistered
     }
 
     /// Settings names the supplying root for every displayed association, including
@@ -1199,7 +1430,8 @@ impl Census {
             .iter()
             .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
         {
-            let CapturedRun::Registered(key) = self.captured_run(capture, Pid::from_u32(row.pid))
+            let NearestRegistration::Registered(key) =
+                self.captured_run(capture, Pid::from_u32(row.pid))
             else {
                 continue;
             };
@@ -1238,29 +1470,161 @@ impl Census {
         }
     }
 
-    /// Captures annotate rows already established by the process table. A verified
-    /// writer home only shortens the same directory the process table supplied.
-    /// State and metadata use the same root-qualified key, including when that
-    /// root's registration is unconfirmed and only another root has a proof.
-    fn annotate_capture(&self, row: &mut CargoProcess, capture: &Capture, home: Option<&Path>) {
-        let CapturedRun::Registered(key) = self.captured_run(capture, Pid::from_u32(row.pid))
-        else {
-            row.state = CaptureLookup::Unregistered;
-            return;
+    /// Record wrappers whose argv forwards the exact registered cargo command.
+    /// An exec-replaced application no longer carries that command and is a boundary.
+    fn identify_capture_wrappers(&mut self, system: &System, capture: &Capture) {
+        self.capture_wrappers = system
+            .processes()
+            .iter()
+            .filter_map(|(&pid, process)| {
+                let NearestRegistration::Registered(key) = self.captured_run(capture, pid) else {
+                    return None;
+                };
+                capture
+                    .confirmed()
+                    .iter()
+                    .find(|confirmed| confirmed.key == key)
+                    .filter(|confirmed| {
+                        forwards_capture_command(process.cmd(), confirmed.registration.record())
+                    })
+                    .map(|_| pid)
+            })
+            .collect();
+    }
+
+    /// Direct ownership crosses only wrappers observed forwarding this registration.
+    /// Any other intervening process establishes enclosing membership.
+    fn direct_capture(&self, capture: &Capture, pid: Pid) -> DirectAssociation {
+        let NearestRegistration::Registered(key) = self.captured_run(capture, pid) else {
+            return DirectAssociation::None;
         };
-        row.state = capture.read(key);
         let Some(confirmed) = capture
             .confirmed()
             .iter()
             .find(|confirmed| confirmed.key == key)
         else {
+            return DirectAssociation::None;
+        };
+        let mut walking = pid;
+        for _ in 0..PARENT_WALK_LIMIT {
+            if walking.as_u32() == key.pid {
+                return DirectAssociation::Direct(Box::new(DirectCapture {
+                    run_id:       RunId::verified(&key, &confirmed.registration),
+                    registration: confirmed.registration.clone(),
+                }));
+            }
+            let Some(&parent) = self.parents.get(&walking) else {
+                break;
+            };
+            if parent.as_u32() != key.pid
+                && (!self.capture_wrappers.contains(&parent)
+                    || self.capture_boundaries.contains(&parent)
+                    || self.cargo.contains(&parent))
+            {
+                break;
+            }
+            walking = parent;
+        }
+        DirectAssociation::None
+    }
+
+    /// Prefer the process doing the work when both the shim and cargo describe one run.
+    fn identify_captures(&mut self, capture: &Capture) {
+        self.capture_boundaries.extend(self.cargo.iter().copied());
+        for &pid in &self.cargo {
+            if let DirectAssociation::Direct(direct) = self.direct_capture(capture, pid) {
+                self.identities.insert(pid, direct.invocation_id());
+            }
+        }
+        let represented: HashSet<_> = self
+            .cargo
+            .iter()
+            .copied()
+            .filter(|pid| {
+                self.cargo.iter().any(|child| {
+                    child != pid
+                        && self
+                            .identities
+                            .get(child)
+                            .is_some_and(|identity| self.identities.get(pid) == Some(identity))
+                        && self.ancestor_pids(*child).contains(pid)
+                })
+            })
+            .collect();
+        self.cargo.retain(|pid| !represented.contains(pid));
+    }
+
+    /// Exclusions prune only row ownership; parents and verified capture liveness remain intact.
+    fn select_rows(&mut self, system: &System, capture: &Capture, excluded: &[String]) {
+        self.registration_eligibility = capture
+            .confirmed()
+            .iter()
+            .map(|confirmed| {
+                let argv = std::iter::once(OsString::from(CARGO_DISPLAY_NAME))
+                    .chain(confirmed.registration.record().arguments().iter().cloned())
+                    .collect::<Vec<_>>();
+                (
+                    RunId::verified(&confirmed.key, &confirmed.registration),
+                    select_cargo(&argv, excluded).map(|_| ()),
+                )
+            })
+            .collect();
+        for &pid in &self.cargo {
+            let process = system
+                .process(pid)
+                .map_or(Err(RowAbsence::Unavailable), |process| {
+                    select_cargo(process.cmd(), excluded).map(|_| ())
+                });
+            let eligibility = match self.direct_capture(capture, pid) {
+                DirectAssociation::Direct(direct) => {
+                    match self.registration_eligibility.get(&direct.run_id) {
+                        Some(Err(RowAbsence::Excluded)) => Err(RowAbsence::Excluded),
+                        Some(Ok(()) | Err(RowAbsence::Unavailable)) | None => process,
+                    }
+                },
+                DirectAssociation::None => process,
+            };
+            self.eligibility.insert(pid, eligibility);
+        }
+        self.cargo
+            .retain(|pid| matches!(self.eligibility.get(pid), Some(Ok(()))));
+    }
+
+    /// Only a verified direct association may supply directory annotation.
+    fn annotate_capture(&self, row: &mut CargoProcess, capture: &Capture, home: Option<&Path>) {
+        let pid = Pid::from_u32(row.pid);
+        if let Some(identity) = self.identities.get(&pid) {
+            row.invocation_id.clone_from(identity);
+        }
+        let NearestRegistration::Registered(key) = self.captured_run(capture, pid) else {
+            row.state = CaptureLookup::Unregistered;
             return;
         };
-        let record = confirmed.registration.record();
-        if matches!(row.directory_identity, DirectoryIdentity::Absolute(_))
-            && record.directory_identity() == row.directory_identity
-        {
-            row.path = registration_directory(record, home);
+        row.state = capture.read(&key);
+        match self.direct_capture(capture, pid) {
+            DirectAssociation::Direct(direct) => {
+                row.invocation_id = direct.invocation_id();
+                let record = direct.registration().record();
+                if matches!(
+                    row.directory_identity,
+                    WorkingDirectoryIdentity::Absolute(_)
+                ) && record.directory_identity() == row.directory_identity
+                {
+                    row.path = registration_directory(record, home);
+                }
+            },
+            DirectAssociation::None => {
+                if let Some(confirmed) = capture
+                    .confirmed()
+                    .iter()
+                    .find(|confirmed| confirmed.key == key)
+                {
+                    row.capture_membership = CaptureMembership::Enclosing(RunId::verified(
+                        &key,
+                        &confirmed.registration,
+                    ));
+                }
+            },
         }
     }
 
@@ -1314,7 +1678,7 @@ impl Census {
         let whole_group = std::iter::once(root).chain(managed.clone());
         let mut lead = row(
             system.process(root)?,
-            root,
+            self.identities.get(&root)?.clone(),
             attributed
                 .compilers
                 .get(&root)
@@ -1342,7 +1706,7 @@ impl Census {
                 let under = Self::descendants(children, pid).len();
                 let mut managed_row = row(
                     process,
-                    pid,
+                    self.identities.get(&pid)?.clone(),
                     attributed
                         .compilers
                         .get(&pid)
@@ -1376,6 +1740,66 @@ impl Census {
             ancestry,
         })
     }
+}
+
+/// Recognize both argv forwarding and the shim's single-quoted POSIX command string.
+/// PTY helpers and their shells carry this command; an application launched by cargo does not.
+fn forwards_capture_command(argv: &[OsString], record: &RegistrationCandidate) -> bool {
+    if let Ok(arguments) = cargo_split(argv)
+        && argv[arguments.start..] == *record.arguments()
+    {
+        return true;
+    }
+    let mut expected_arguments = Vec::new();
+    for argument in record.arguments() {
+        expected_arguments.push(b'\'');
+        for byte in argument.as_bytes() {
+            if *byte == b'\'' {
+                expected_arguments.extend_from_slice(b"'\\''");
+            } else {
+                expected_arguments.push(*byte);
+            }
+        }
+        expected_arguments.extend_from_slice(b"' ");
+    }
+    argv.iter().any(|argument| {
+        argument
+            .as_bytes()
+            .strip_suffix(expected_arguments.as_slice())
+            .and_then(|binary| binary.strip_prefix(b"'"))
+            .and_then(|binary| binary.strip_suffix(b"' "))
+            .is_some_and(quoted_cargo_binary)
+    })
+}
+
+/// Inside one quoted executable word, an apostrophe must use the shim's escape sequence.
+fn quoted_cargo_binary(binary: &[u8]) -> bool {
+    let mut remaining = binary;
+    while let Some(index) = remaining.iter().position(|byte| *byte == b'\'') {
+        let Some(rest) = remaining[index..].strip_prefix(b"'\\''") else {
+            return false;
+        };
+        remaining = rest;
+    }
+    Path::new(OsStr::from_bytes(binary))
+        .file_name()
+        .is_some_and(|name| {
+            CARGO_PROCESS_NAMES
+                .iter()
+                .any(|cargo| name == OsStr::new(cargo))
+        })
+}
+
+/// Missing command or cwd fields never count as observed equality between wrappers.
+fn observed_shim_match(
+    outer: &[OsString],
+    outer_cwd: Option<&Path>,
+    inner: &[OsString],
+    inner_cwd: Option<&Path>,
+) -> bool {
+    matches!((subcommand(outer), subcommand(inner), outer_cwd, inner_cwd),
+        (Some(outer), Some(inner), Some(outer_cwd), Some(inner_cwd))
+        if outer == inner && outer_cwd == inner_cwd)
 }
 
 /// One compiler tally across a whole group: the highest-priority driver
@@ -1426,22 +1850,25 @@ pub(crate) fn aggregate_cpu(
 /// Format one cargo process into its table row.
 fn row(
     process: &Process,
-    pid: Pid,
+    invocation_id: InvocationId,
     compiler: CompilerObservation,
     managed: Measurement<usize>,
     home: Option<&Path>,
     cpu: Measurement<f32>,
 ) -> Result<CargoProcess, RowAbsence> {
     Ok(CargoProcess {
+        invocation_id,
+        capture_membership: CaptureMembership::Outside,
         path: process.cwd().map_or_else(
             || UNRESOLVED_PATH.to_string(),
             |cwd| home_relative(cwd, home),
         ),
-        directory_identity: process
-            .cwd()
-            .map_or(DirectoryIdentity::Unavailable, DirectoryIdentity::from),
-        pid: pid.as_u32(),
-        parent: None,
+        directory_identity: process.cwd().map_or(
+            WorkingDirectoryIdentity::Unavailable,
+            WorkingDirectoryIdentity::from,
+        ),
+        pid: process.pid().as_u32(),
+        parent: VisibleParent::None,
         start: start_label(process.start_time()),
         started: process.start_time(),
         duration: duration_label(process.run_time()),
@@ -1508,7 +1935,7 @@ fn home_relative(path: &Path, home: Option<&Path>) -> String {
 }
 
 /// A tilde is meaningful only when the writer and scanner agree on its prefix.
-fn registration_directory(record: &VersionedRegistration, scanner_home: Option<&Path>) -> String {
+fn registration_directory(record: &RegistrationCandidate, scanner_home: Option<&Path>) -> String {
     match record.writer_home() {
         WriterHome::Known(writer_home) if scanner_home == Some(writer_home.as_path()) => {
             home_relative(record.directory(), scanner_home)
@@ -1717,6 +2144,10 @@ fn base_name(argument: &OsString) -> String {
 )]
 mod tests {
     use std::fs;
+    use std::io::BufRead;
+    use std::io::BufReader;
+    use std::io::Write;
+    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::symlink;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
@@ -1742,6 +2173,461 @@ mod tests {
     use crate::progress::CaptureRootSource;
     use crate::progress::RunState;
     use crate::registration::Registration;
+
+    /// Reap the metadata fixture even if an assertion fails before its exec transition.
+    struct MetadataProcess {
+        /// The test owns stdin, lifetime, and cleanup of the sampled process.
+        child: std::process::Child,
+    }
+
+    impl Drop for MetadataProcess {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    #[test]
+    fn fresh_details_replace_cached_command_directory_and_executable() {
+        let root = tempdir().expect("metadata directories");
+        let before = root.path().join("before");
+        let after = root.path().join("after");
+        fs::create_dir(&before).expect("initial directory");
+        fs::create_dir(&after).expect("replacement directory");
+        let mut fixture = MetadataProcess {
+            child: std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "printf 'ready\\n'; read -r release; cd \"$1\" || exit 1; exec sleep 60",
+                    "metadata",
+                ])
+                .arg(&after)
+                .current_dir(&before)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("metadata fixture"),
+        };
+        let mut ready = String::new();
+        BufReader::new(fixture.child.stdout.take().expect("ready pipe"))
+            .read_line(&mut ready)
+            .expect("fixture handshake");
+        assert_eq!(ready, "ready\n");
+        let pid = Pid::from_u32(fixture.child.id());
+        let mut cached = process_details(&[pid]);
+        let original = cached.process(pid).expect("initial process");
+        let command = original.cmd().to_vec();
+        let executable = original.exe().expect("initial executable").to_path_buf();
+        assert_eq!(original.cwd(), Some(before.as_path()));
+        fixture
+            .child
+            .stdin
+            .take()
+            .expect("release pipe")
+            .write_all(b"\n")
+            .expect("release exec");
+        let deadline = Instant::now() + WORKER_REPLY_TIMEOUT;
+        loop {
+            let refreshed = process_details(&[pid]);
+            if let Some(process) = refreshed.process(pid)
+                && process.cwd() == Some(after.as_path())
+                && process.exe().is_some_and(|exe| exe != executable)
+            {
+                assert_ne!(process.cmd(), command);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fixture must exec with new metadata"
+            );
+            thread::sleep(poll());
+        }
+        cached.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            false,
+            process_detail_refresh_kind(),
+        );
+        let retained = cached.process(pid).expect("cached process");
+        assert_eq!(retained.cmd(), command);
+        assert_eq!(retained.cwd(), Some(before.as_path()));
+        assert_eq!(retained.exe(), Some(executable.as_path()));
+        drop(fixture);
+        assert!(process_details(&[pid]).process(pid).is_none());
+    }
+
+    #[test]
+    fn shim_detection_requires_observed_cwds_and_subcommands() {
+        let argv = [OsString::from("cargo"), OsString::from("build")];
+        let cwd = Path::new("/work");
+        assert!(!observed_shim_match(&argv, None, &argv, None));
+        assert!(!observed_shim_match(&argv, Some(cwd), &argv, None));
+        assert!(!observed_shim_match(&[], Some(cwd), &[], Some(cwd)));
+        assert!(observed_shim_match(&argv, Some(cwd), &argv, Some(cwd)));
+        assert!(!observed_shim_match(
+            &argv,
+            Some(cwd),
+            &argv,
+            Some(Path::new("/other"))
+        ));
+    }
+
+    /// A confirmed record supplies a real proof without using host process allocation.
+    fn verified_capture(root: &Path) -> Capture {
+        let IdentityEvidence::Available(stamp) = directory_record("/writer").identity().clone()
+        else {
+            return Capture::default();
+        };
+        Capture::take_from(root, |pid| {
+            KernelObservation::for_test(pid, Observation::Present(stamp.clone()))
+        })
+    }
+
+    #[test]
+    fn direct_registration_and_process_share_identity_while_nested_invocations_do_not() {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let mut census = census_of(&[(11, 10), (12, 11)]);
+        census.cargo = vec![Pid::from_u32(11), Pid::from_u32(12)];
+        census.identify_captures(&capture);
+        let direct = match census.direct_capture(&capture, Pid::from_u32(11)) {
+            DirectAssociation::Direct(direct) => Ok(direct),
+            DirectAssociation::None => Err("first cargo must directly represent the registration"),
+        }
+        .expect("direct proof");
+        let mut process = directory_row();
+        process.pid = 11;
+        census.annotate_capture(&mut process, &capture, None);
+        assert_eq!(process.invocation_id, direct.invocation_id());
+        assert_eq!(process.capture_membership, CaptureMembership::Outside);
+        let mut nested = directory_row();
+        nested.pid = 12;
+        nested.path = "/nested".to_owned();
+        nested.command = CommandText::of("cargo", &["test"]);
+        census.annotate_capture(&mut nested, &capture, None);
+        assert_ne!(process.invocation_id, nested.invocation_id);
+        assert_eq!(
+            nested.capture_membership,
+            CaptureMembership::Enclosing(direct.run_id)
+        );
+        assert_eq!(nested.path, "/nested");
+        assert_eq!(nested.command, CommandText::of("cargo", &["test"]));
+        assert_eq!(
+            census.direct_capture(&capture, Pid::from_u32(12)),
+            DirectAssociation::None
+        );
+    }
+
+    #[test]
+    fn unverified_nearest_registration_cannot_supply_direct_row_metadata() {
+        let root = capture_root(&[(10, "")]);
+        let capture = Capture::take_from(root.path(), |pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        let census = census_of(&[(11, 10)]);
+        assert!(matches!(
+            census.captured_run(&capture, Pid::from_u32(11)),
+            NearestRegistration::Registered(_)
+        ));
+        assert_eq!(
+            census.direct_capture(&capture, Pid::from_u32(11)),
+            DirectAssociation::None
+        );
+    }
+
+    #[test]
+    fn identical_pid_and_birth_with_different_generations_never_share_cpu_history() {
+        let root = tempdir().expect("capture root");
+        for generation in ["first", "second"] {
+            write_versioned_capture(
+                root.path(),
+                10,
+                generation,
+                "/writer/project",
+                "/writer",
+                "build",
+                "",
+            );
+        }
+        let capture = verified_capture(root.path());
+        let identities: Vec<_> = capture
+            .confirmed()
+            .iter()
+            .map(|confirmed| {
+                InvocationId::Captured(RunId::verified(&confirmed.key, &confirmed.registration))
+            })
+            .collect();
+        assert_eq!(identities.len(), 2);
+        assert_ne!(identities[0], identities[1]);
+        let mut smoothing = CpuSmoothing::default();
+        let now = Instant::now();
+        smoothing.settle(
+            &HashMap::from([(identities[0].clone(), Measurement::Reading(400.0))]),
+            &identities[..1],
+            now,
+        );
+        let reported = smoothing.settle(
+            &HashMap::from([(
+                identities[1].clone(),
+                Measurement::Unavailable(MeasurementAbsence::FirstObservation),
+            )]),
+            &identities[1..],
+            now + poll(),
+        );
+        assert_eq!(
+            reported[&identities[1]],
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        );
+        assert!(!smoothing.settled.contains_key(&identities[0]));
+        assert!(!smoothing.reported.contains_key(&identities[0]));
+    }
+
+    #[test]
+    fn unavailable_lifetimes_retain_present_rows_without_claiming_cpu_continuity() {
+        let pid = Pid::from_u32(10);
+        let lifetimes = HashMap::from([(pid, LifetimeEvidence::Unavailable)]);
+        let mut identities = ProcessIdentities::default();
+        let first = identities.observe(&lifetimes);
+        assert_eq!(first, identities.observe(&lifetimes));
+        assert!(matches!(
+            first[&pid],
+            InvocationId::Process(ProcessIdentity::Unavailable { .. })
+        ));
+        assert!(identities.observe(&HashMap::new()).is_empty());
+        assert_ne!(first, identities.observe(&lifetimes));
+        let previous = HashMap::from([(
+            Pid::from_u32(10),
+            CpuBaseline {
+                lifetime:    LifetimeEvidence::Unavailable,
+                accumulated: 10,
+            },
+        )]);
+        assert_eq!(
+            Census::measure_cpu(
+                Pid::from_u32(10),
+                50.0,
+                &CpuBaseline {
+                    lifetime:    LifetimeEvidence::Unavailable,
+                    accumulated: 20,
+                },
+                &previous
+            ),
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+    }
+
+    #[test]
+    fn exec_replaced_application_separates_nested_cargo_from_the_enclosing_run() {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "run",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let mut census = census_of(&[(11, 10), (12, 11), (13, 11)]);
+        census.cargo = vec![Pid::from_u32(12), Pid::from_u32(13)];
+        census.identify_captures(&capture);
+        let mut nested = Vec::new();
+        for pid in [12, 13] {
+            assert_eq!(
+                census.direct_capture(&capture, Pid::from_u32(pid)),
+                DirectAssociation::None
+            );
+            let mut row = directory_row();
+            row.pid = pid;
+            census.annotate_capture(&mut row, &capture, None);
+            assert!(matches!(
+                row.capture_membership,
+                CaptureMembership::Enclosing(_)
+            ));
+            nested.push(row);
+        }
+        assert_ne!(nested[0].invocation_id, nested[1].invocation_id);
+        census.select_rows(&System::new(), &capture, &["run".to_owned()]);
+        for pid in [12, 13] {
+            assert_eq!(
+                census.eligibility[&Pid::from_u32(pid)],
+                Err(RowAbsence::Unavailable)
+            );
+        }
+    }
+
+    #[test]
+    fn direct_capture_crosses_only_observed_command_forwarders() {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let mut census = census_of(&[(11, 10), (12, 11), (13, 12)]);
+        census.cargo = vec![Pid::from_u32(13)];
+        assert_eq!(
+            census.direct_capture(&capture, Pid::from_u32(13)),
+            DirectAssociation::None
+        );
+        census
+            .capture_wrappers
+            .extend([Pid::from_u32(11), Pid::from_u32(12)]);
+        assert!(matches!(
+            census.direct_capture(&capture, Pid::from_u32(13)),
+            DirectAssociation::Direct(_)
+        ));
+        census.capture_wrappers.remove(&Pid::from_u32(12));
+        assert_eq!(
+            census.direct_capture(&capture, Pid::from_u32(13)),
+            DirectAssociation::None
+        );
+    }
+
+    #[test]
+    fn capture_forwarding_matches_exact_registered_arguments_in_both_pty_forms() {
+        let record = directory_record("/writer");
+        for argv in [
+            vec![
+                "script",
+                "-q",
+                "-t",
+                "0",
+                "/capture/run-generation-10.log",
+                "/toolchain/cargo-tile-real",
+                "build",
+            ],
+            vec![
+                "script",
+                "-q",
+                "-e",
+                "-f",
+                "-c",
+                "'/toolchain/cargo-tile-real' 'build' ",
+                "/capture/run-generation-10.log",
+            ],
+            vec!["sh", "-c", "'/toolchain/cargo-tile-real' 'build' "],
+            vec![
+                "sh",
+                "-c",
+                "'/writer'\\''s toolchain/cargo-tile-real' 'build' ",
+            ],
+        ] {
+            assert!(forwards_capture_command(
+                &argv.into_iter().map(OsString::from).collect::<Vec<_>>(),
+                &record
+            ));
+        }
+        for argv in [
+            vec!["sh", "/writer/application"],
+            vec!["cargo-tile-real", "test"],
+            vec!["sh", "-c", "'/toolchain/cargo-tile-real' 'test' "],
+            vec!["sh", "-c", "'printf' '/toolchain/cargo-tile-real' 'build' "],
+        ] {
+            assert!(!forwards_capture_command(
+                &argv.into_iter().map(OsString::from).collect::<Vec<_>>(),
+                &record
+            ));
+        }
+    }
+
+    #[test]
+    fn capture_forwarding_preserves_non_utf8_paths_and_arguments() {
+        let mut bytes = directory_record_bytes("/writer");
+        bytes.insert(bytes.len() - 1, 0xff);
+        let record = match Registration::parse(&bytes).expect("byte-preserving registration") {
+            Registration::Versioned(record) => Ok(record),
+            Registration::Legacy(_) => Err("expected v2"),
+        }
+        .expect("versioned record");
+        let argv = [
+            OsString::from("sh"),
+            OsString::from("-c"),
+            OsString::from_vec(b"'/toolchain\xff/cargo-tile-real' 'build\xff' ".to_vec()),
+        ];
+        assert!(forwards_capture_command(&argv, &record));
+    }
+
+    #[test]
+    fn same_second_replacement_with_a_higher_counter_begins_a_new_sample() {
+        let pid = Pid::from_u32(10);
+        let before = LifetimeEvidence::Available(birth_stamp::ProcessLifetime::for_test(100_001));
+        let after = LifetimeEvidence::Available(birth_stamp::ProcessLifetime::for_test(100_002));
+        assert_ne!(
+            ProcessIdentity::observed(10, before.clone()),
+            ProcessIdentity::observed(10, after.clone())
+        );
+        let previous = HashMap::from([(
+            pid,
+            CpuBaseline {
+                lifetime:    before,
+                accumulated: 10,
+            },
+        )]);
+        assert_eq!(
+            Census::measure_cpu(
+                pid,
+                80.0,
+                &CpuBaseline {
+                    lifetime:    after,
+                    accumulated: 50,
+                },
+                &previous
+            ),
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        );
+    }
+
+    #[test]
+    fn excluded_registration_stays_live_and_preserves_nested_membership_boundaries() {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "live",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let mut census = census_of(&[(11, 10), (12, 11)]);
+        census.cargo = vec![Pid::from_u32(11), Pid::from_u32(12)];
+        census.identify_captures(&capture);
+        let parents = census.parents.clone();
+        census.select_rows(&System::new(), &capture, &["build".to_owned()]);
+        assert!(census.cargo.is_empty());
+        assert_eq!(
+            census.eligibility[&Pid::from_u32(11)],
+            Err(RowAbsence::Excluded)
+        );
+        assert_eq!(
+            census.eligibility[&Pid::from_u32(12)],
+            Err(RowAbsence::Unavailable)
+        );
+        assert_eq!(census.parents, parents);
+        assert_eq!(
+            census.direct_capture(&capture, Pid::from_u32(12)),
+            DirectAssociation::None
+        );
+        assert_eq!(verified_capture(root.path()).confirmed().len(), 1);
+        assert!(root.path().join("state/pids/10.live").exists());
+        assert!(root.path().join("run-live-10.log").exists());
+    }
 
     /// Bound failed worker handshakes without imposing a startup speed threshold.
     const WORKER_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1808,13 +2694,23 @@ mod tests {
     /// which is all the capture walk reads.
     fn census_of(parents: &[(u32, u32)]) -> Census {
         Census {
-            parents:   parents
+            identities:               parents
+                .iter()
+                .flat_map(|&pair| <[u32; 2]>::from(pair))
+                .map(|pid| (Pid::from_u32(pid), InvocationId::for_test(pid)))
+                .collect(),
+            capture_boundaries:       HashSet::new(),
+            capture_wrappers:         HashSet::new(),
+            lifetimes:                HashMap::new(),
+            eligibility:              HashMap::new(),
+            registration_eligibility: HashMap::new(),
+            parents:                  parents
                 .iter()
                 .map(|&(child, parent)| (Pid::from_u32(child), Pid::from_u32(parent)))
                 .collect(),
-            cargo:     Vec::new(),
-            compilers: Vec::new(),
-            cpu:       HashMap::new(),
+            cargo:                    Vec::new(),
+            compilers:                Vec::new(),
+            cpu:                      HashMap::new(),
         }
     }
 
@@ -1837,7 +2733,7 @@ mod tests {
     }
 
     /// A candidate record can provide text without becoming a verified row source.
-    fn directory_record(home: &str) -> VersionedRegistration {
+    fn directory_record(home: &str) -> RegistrationCandidate {
         match Registration::parse(&directory_record_bytes(home))
             .expect("well-formed directory record")
         {
@@ -1850,10 +2746,12 @@ mod tests {
     /// A process-table row whose absolute cwd is independent of display shortening.
     fn directory_row() -> CargoProcess {
         CargoProcess {
+            invocation_id:      InvocationId::for_test(10),
+            capture_membership: CaptureMembership::Outside,
             path:               "~/project".to_owned(),
-            directory_identity: DirectoryIdentity::Absolute("/writer/project".into()),
+            directory_identity: WorkingDirectoryIdentity::Absolute("/writer/project".into()),
             pid:                10,
-            parent:             None,
+            parent:             VisibleParent::None,
             start:              "10:00".to_owned(),
             started:            0,
             duration:           "00:01".to_owned(),
@@ -1970,27 +2868,24 @@ mod tests {
                 KernelObservation::for_test(pid, Observation::Present(stamp.clone()))
             });
             let census = census_of(&[]);
-            let key = CaptureKey {
-                root: CaptureRootIndex(0),
-                pid:  10,
-            };
+            let key = capture.keys(10).next().expect("preferred root key");
             assert_eq!(capture.keys(10).count(), 2);
             assert_eq!(capture.confirmed().len(), 2);
             assert_eq!(
                 census.captured_run(&capture, Pid::from_u32(10)),
-                CapturedRun::Registered(key)
+                NearestRegistration::Registered(key)
             );
 
             let mut row = directory_row();
             row.path = "process directory".to_owned();
-            row.directory_identity = DirectoryIdentity::Absolute(directory.into());
+            row.directory_identity = WorkingDirectoryIdentity::Absolute(directory.into());
             row.command = CommandText::of("cargo", &[command]);
             census.annotate_capture(&mut row, &capture, Some(Path::new("/writer")));
 
             assert_eq!(row.path, expected_path);
             assert_eq!(
                 row.directory_identity,
-                DirectoryIdentity::Absolute(directory.into())
+                WorkingDirectoryIdentity::Absolute(directory.into())
             );
             assert_eq!(row.command, CommandText::of("cargo", &[command]));
             assert_eq!(row.state, expected_state);
@@ -2086,7 +2981,7 @@ mod tests {
         assert_eq!(row.path, "process directory");
         assert_eq!(
             row.directory_identity,
-            DirectoryIdentity::Absolute("/writer/project".into())
+            WorkingDirectoryIdentity::Absolute("/writer/project".into())
         );
         assert_eq!(row.command, CommandText::of("cargo", &["build"]));
         assert_eq!(
@@ -2106,10 +3001,7 @@ mod tests {
         let census = census_of(&[(11, 10), (10, 20)]);
         assert_eq!(
             census.captured_run(&capture, Pid::from_u32(11)),
-            CapturedRun::Registered(CaptureKey {
-                root: CaptureRootIndex(1),
-                pid:  10,
-            }),
+            NearestRegistration::Registered(capture.keys(10).next().expect("nearest key")),
         );
         assert_eq!(
             captured_state(&census, &capture, 11),
@@ -2224,13 +3116,13 @@ mod tests {
             assert_eq!(row.path, display);
             assert_eq!(row.directory_identity, identity);
 
-            row.directory_identity = DirectoryIdentity::Absolute("/other/project".into());
+            row.directory_identity = WorkingDirectoryIdentity::Absolute("/other/project".into());
             row.path = "~/project".to_owned();
             census_of(&[]).annotate_capture(&mut row, &capture, Some(Path::new("/writer")));
             assert_eq!(row.path, "~/project");
             assert_eq!(
                 row.directory_identity,
-                DirectoryIdentity::Absolute("/other/project".into())
+                WorkingDirectoryIdentity::Absolute("/other/project".into())
             );
         }
     }
@@ -2939,7 +3831,7 @@ mod tests {
     /// Same process identity for CPU boundary fixtures; only the counter changes.
     fn cpu_baseline(accumulated: u64) -> CpuBaseline {
         CpuBaseline {
-            started: 1,
+            lifetime: LifetimeEvidence::Available(birth_stamp::ProcessLifetime::for_test(1)),
             accumulated,
         }
     }
@@ -2947,7 +3839,7 @@ mod tests {
     #[test]
     fn collection_names_the_first_observation_before_publishing_a_rate() {
         assert_eq!(
-            Census::measure_cpu(Pid::from(1), 0.0, cpu_baseline(10), &HashMap::new()),
+            Census::measure_cpu(Pid::from(1), 0.0, &cpu_baseline(10), &HashMap::new()),
             Measurement::Unavailable(MeasurementAbsence::FirstObservation)
         );
     }
@@ -2958,7 +3850,7 @@ mod tests {
         let previous = HashMap::from([(pid, cpu_baseline(10))]);
         for cpu in [0.0, 50.0] {
             assert_eq!(
-                Census::measure_cpu(pid, cpu, cpu_baseline(0), &previous),
+                Census::measure_cpu(pid, cpu, &cpu_baseline(0), &previous),
                 Measurement::Unavailable(MeasurementAbsence::Unproven)
             );
         }
@@ -2973,13 +3865,13 @@ mod tests {
         for accumulated in [0, 0, 0, 20] {
             let baseline = cpu_baseline(accumulated);
             assert_eq!(
-                Census::measure_cpu(pid, 0.4, baseline, &previous),
+                Census::measure_cpu(pid, 0.4, &baseline, &previous),
                 Measurement::Unavailable(MeasurementAbsence::Unproven)
             );
             previous.insert(pid, baseline);
         }
         assert_eq!(
-            Census::measure_cpu(pid, 0.5, cpu_baseline(30), &previous),
+            Census::measure_cpu(pid, 0.5, &cpu_baseline(30), &previous),
             Measurement::Reading(0.5)
         );
     }
@@ -2990,18 +3882,18 @@ mod tests {
         let mut previous = HashMap::new();
         let initial = cpu_baseline(0);
         assert_eq!(
-            Census::measure_cpu(pid, 0.0, initial, &previous),
+            Census::measure_cpu(pid, 0.0, &initial, &previous),
             Measurement::Unavailable(MeasurementAbsence::FirstObservation)
         );
         previous.insert(pid, initial);
         let recovered = cpu_baseline(20);
         assert_eq!(
-            Census::measure_cpu(pid, 0.0, recovered, &previous),
+            Census::measure_cpu(pid, 0.0, &recovered, &previous),
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
-        previous.insert(pid, recovered);
+        previous.insert(pid, recovered.clone());
         assert_eq!(
-            Census::measure_cpu(pid, 0.0, recovered, &previous),
+            Census::measure_cpu(pid, 0.0, &recovered, &previous),
             Measurement::Reading(0.0)
         );
     }
@@ -3010,7 +3902,7 @@ mod tests {
     fn collection_preserves_a_measured_zero_with_nonzero_accumulated_time() {
         let pid = Pid::from(1);
         let previous = HashMap::from([(pid, cpu_baseline(10))]);
-        let measured = Census::measure_cpu(pid, 0.0, cpu_baseline(10), &previous);
+        let measured = Census::measure_cpu(pid, 0.0, &cpu_baseline(10), &previous);
         assert_eq!(measured, Measurement::Reading(0.0));
         assert_eq!(measured.map(cpu_label).to_string(), "0%");
     }
@@ -3020,7 +3912,7 @@ mod tests {
         let pid = Pid::from(1);
         let previous = HashMap::from([(pid, cpu_baseline(10))]);
         assert_eq!(
-            Census::measure_cpu(pid, 80.0, cpu_baseline(10), &previous),
+            Census::measure_cpu(pid, 80.0, &cpu_baseline(10), &previous),
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
     }
@@ -3030,12 +3922,12 @@ mod tests {
         let pid = Pid::from(1);
         let previous = HashMap::from([(pid, cpu_baseline(0))]);
         assert_eq!(
-            Census::measure_cpu(pid, 0.0, cpu_baseline(0), &previous),
+            Census::measure_cpu(pid, 0.0, &cpu_baseline(0), &previous),
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
         // A nonzero rate cannot establish a fresh computation from a zero baseline.
         assert_eq!(
-            Census::measure_cpu(pid, 0.5, cpu_baseline(0), &previous),
+            Census::measure_cpu(pid, 0.5, &cpu_baseline(0), &previous),
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
     }
@@ -3046,7 +3938,7 @@ mod tests {
         let previous = HashMap::from([(pid, cpu_baseline(10))]);
         for cpu in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
             assert_eq!(
-                Census::measure_cpu(pid, cpu, cpu_baseline(10), &previous),
+                Census::measure_cpu(pid, cpu, &cpu_baseline(10), &previous),
                 Measurement::Unavailable(MeasurementAbsence::ReadFailed)
             );
         }
@@ -3057,22 +3949,22 @@ mod tests {
         let pid = Pid::from(1);
         let previous = HashMap::from([(pid, cpu_baseline(10))]);
         let replacement = CpuBaseline {
-            started:     2,
+            lifetime:    LifetimeEvidence::Available(birth_stamp::ProcessLifetime::for_test(2)),
             accumulated: 0,
         };
         assert_eq!(
-            Census::measure_cpu(pid, 0.0, replacement, &previous),
+            Census::measure_cpu(pid, 0.0, &replacement, &previous),
             Measurement::Unavailable(MeasurementAbsence::FirstObservation)
         );
     }
 
     #[test]
-    fn a_pid_reused_within_the_same_second_leaves_the_cpu_sample_unproven() {
+    fn a_counter_regression_with_unchanged_native_lifetime_remains_unproven() {
         let pid = Pid::from(1);
         let previous = HashMap::from([(pid, cpu_baseline(10))]);
         let replacement = cpu_baseline(5);
         assert_eq!(
-            Census::measure_cpu(pid, 0.0, replacement, &previous),
+            Census::measure_cpu(pid, 0.0, &replacement, &previous),
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
     }
@@ -3104,10 +3996,10 @@ mod tests {
     /// One invocation's reading once `sampled` has been folded in at
     /// `now`.
     fn settle_one(smoothing: &mut CpuSmoothing, sampled: f32, now: Instant) -> f32 {
-        let pid = Pid::from(1);
+        let pid = InvocationId::for_test(1);
         match smoothing.settle(
-            &HashMap::from([(pid, Measurement::Reading(sampled))]),
-            &[pid],
+            &HashMap::from([(pid.clone(), Measurement::Reading(sampled))]),
+            std::slice::from_ref(&pid),
             now,
         )[&pid]
         {
@@ -3214,19 +4106,19 @@ mod tests {
     fn an_invocation_that_arrives_mid_second_reports_at_once() {
         let mut smoothing = CpuSmoothing::default();
         let now = start();
-        let (running, arriving) = (Pid::from(1), Pid::from(2));
+        let (running, arriving) = (InvocationId::for_test(1), InvocationId::for_test(2));
         smoothing.settle(
-            &HashMap::from([(running, Measurement::Reading(10.0))]),
-            &[running],
+            &HashMap::from([(running.clone(), Measurement::Reading(10.0))]),
+            std::slice::from_ref(&running),
             now,
         );
 
         let reported = smoothing.settle(
             &HashMap::from([
-                (running, Measurement::Reading(10.0)),
-                (arriving, Measurement::Reading(400.0)),
+                (running.clone(), Measurement::Reading(10.0)),
+                (arriving.clone(), Measurement::Reading(400.0)),
             ]),
-            &[running, arriving],
+            &[running, arriving.clone()],
             now + poll(),
         );
 
@@ -3257,7 +4149,7 @@ mod tests {
         settle_one(&mut smoothing, 40.0, now);
         assert_eq!(smoothing.publication, CpuPublication::Published(now));
         assert_eq!(
-            smoothing.reported[&Pid::from(1)],
+            smoothing.reported[&InvocationId::for_test(1)],
             Measurement::Reading(40.0)
         );
     }
@@ -3271,20 +4163,20 @@ mod tests {
         ] {
             let mut smoothing = CpuSmoothing::default();
             let now = start();
-            let pid = Pid::from(1);
+            let pid = InvocationId::for_test(1);
             settle_one(&mut smoothing, 400.0, now);
             assert!(!smoothing.is_due(now + poll()));
             let reported = smoothing.settle(
-                &HashMap::from([(pid, Measurement::Unavailable(reason))]),
-                &[pid],
+                &HashMap::from([(pid.clone(), Measurement::Unavailable(reason))]),
+                std::slice::from_ref(&pid),
                 now + poll(),
             );
             assert_eq!(reported[&pid], Measurement::Unavailable(reason));
             assert_eq!(smoothing.settled[&pid], Measurement::Unavailable(reason));
             assert_eq!(smoothing.publication, CpuPublication::Published(now));
             let later = smoothing.settle(
-                &HashMap::from([(pid, Measurement::Unavailable(reason))]),
-                &[pid],
+                &HashMap::from([(pid.clone(), Measurement::Unavailable(reason))]),
+                std::slice::from_ref(&pid),
                 now + Duration::from_millis(CPU_REPORT_MILLIS),
             );
             assert_eq!(later[&pid], Measurement::Unavailable(reason));
@@ -3295,9 +4187,9 @@ mod tests {
     fn a_missing_cpu_sample_never_becomes_a_measured_zero() {
         let mut smoothing = CpuSmoothing::default();
         let now = start();
-        let pid = Pid::from(1);
+        let pid = InvocationId::for_test(1);
         settle_one(&mut smoothing, 400.0, now);
-        let reported = smoothing.settle(&HashMap::new(), &[pid], now + poll());
+        let reported = smoothing.settle(&HashMap::new(), std::slice::from_ref(&pid), now + poll());
         assert_eq!(
             reported[&pid],
             Measurement::Unavailable(MeasurementAbsence::Unproven)
@@ -3308,14 +4200,14 @@ mod tests {
     fn cpu_recovery_starts_fresh_without_the_value_from_before_the_gap() {
         let mut smoothing = CpuSmoothing::default();
         let now = start();
-        let pid = Pid::from(1);
+        let pid = InvocationId::for_test(1);
         settle_one(&mut smoothing, 400.0, now);
         smoothing.settle(
             &HashMap::from([(
-                pid,
+                pid.clone(),
                 Measurement::Unavailable(MeasurementAbsence::ReadFailed),
             )]),
-            &[pid],
+            std::slice::from_ref(&pid),
             now + poll(),
         );
         let recovered = settle_one(&mut smoothing, 20.0, now + poll() * 2);

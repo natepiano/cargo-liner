@@ -20,7 +20,7 @@ use crate::constants::REGISTRATION_MAGIC;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Registration {
     /// Framed fields retain argument boundaries and permit identity verification.
-    Versioned(VersionedRegistration),
+    Versioned(RegistrationCandidate),
     /// Older tab-separated text can only annotate an existing process-table row.
     Legacy(LegacyRegistration),
 }
@@ -67,7 +67,7 @@ impl Registration {
             return Err(ParseError::LogBasename);
         }
         let (writer_home, arguments) = parse_arguments(remaining)?;
-        Ok(Self::Versioned(VersionedRegistration {
+        Ok(Self::Versioned(RegistrationCandidate {
             generation: generation.to_owned(),
             identity: text(boot)
                 .and_then(|boot| text(birth).map(|birth| BirthStamp::from_fields(boot, birth)))
@@ -82,7 +82,7 @@ impl Registration {
 
 /// A parsed record remains a candidate until verification compares its kernel stamp.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct VersionedRegistration {
+pub(crate) struct RegistrationCandidate {
     /// An invocation's opaque generation must match its published filename.
     generation:   String,
     /// Missing or nondecimal fields remain unknown, even if the pid is absent.
@@ -97,7 +97,7 @@ pub(crate) struct VersionedRegistration {
     arguments:    Vec<OsString>,
 }
 
-impl VersionedRegistration {
+impl RegistrationCandidate {
     /// A generation is a filename association, never process identity by itself.
     pub(crate) fn generation(&self) -> &str { &self.generation }
 
@@ -108,15 +108,14 @@ impl VersionedRegistration {
     pub(crate) fn directory(&self) -> &Path { &self.directory }
 
     /// An old `~` record cannot supply the absolute directory needed for grouping.
-    pub(crate) fn directory_identity(&self) -> DirectoryIdentity {
-        DirectoryIdentity::from(self.directory())
+    pub(crate) fn directory_identity(&self) -> WorkingDirectoryIdentity {
+        WorkingDirectoryIdentity::from(self.directory())
     }
 
     /// Missing home information prevents a display-only `~` from changing meaning.
     pub(crate) const fn writer_home(&self) -> &WriterHome { &self.writer_home }
 
     /// Argument boundaries and non-UTF-8 bytes survive parsing unchanged.
-    #[cfg(test)]
     pub(crate) fn arguments(&self) -> &[OsString] { &self.arguments }
 
     /// Cleanup compares this evidence again after rereading the registration.
@@ -129,13 +128,18 @@ impl VersionedRegistration {
         pid: u32,
         observation: &KernelObservation,
     ) -> RegistrationVerification {
-        match observation.compare(pid, self.identity()) {
-            Verification::Confirmed => RegistrationVerification::Confirmed(VerifiedRegistration {
-                pid,
-                record: self.clone(),
-            }),
-            Verification::Ended => RegistrationVerification::Ended,
-            Verification::Unknown => RegistrationVerification::Unknown,
+        match (observation.compare(pid, self.identity()), self.identity()) {
+            (Verification::Confirmed, IdentityEvidence::Available(birth)) => {
+                RegistrationVerification::Confirmed(VerifiedRegistration {
+                    birth: birth.clone(),
+                    pid,
+                    record: self.clone(),
+                })
+            },
+            (Verification::Ended, _) => RegistrationVerification::Ended,
+            (Verification::Unknown | Verification::Confirmed, _) => {
+                RegistrationVerification::Unknown
+            },
         }
     }
 }
@@ -151,14 +155,14 @@ pub(crate) enum WriterHome {
 
 /// Only absolute paths can identify a directory across different HOME settings.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum DirectoryIdentity {
+pub(crate) enum WorkingDirectoryIdentity {
     /// The raw absolute directory survives independently of its displayed text.
     Absolute(PathBuf),
     /// Empty and previously shortened paths provide display text only.
     Unavailable,
 }
 
-impl From<&Path> for DirectoryIdentity {
+impl From<&Path> for WorkingDirectoryIdentity {
     fn from(directory: &Path) -> Self {
         if directory.is_absolute() {
             Self::Absolute(directory.to_path_buf())
@@ -201,18 +205,23 @@ pub(crate) enum RegistrationVerification {
 /// Fields are private and there is no conversion from filenames or parsed records.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct VerifiedRegistration {
+    /// The available comparison stamp that verification actually accepted.
+    birth:  BirthStamp,
     /// The process whose current kernel birth matched the record.
     pid:    u32,
     /// Keep the fields bound to that comparison for later membership and row use.
-    record: VersionedRegistration,
+    record: RegistrationCandidate,
 }
 
 impl VerifiedRegistration {
+    /// Qualification for a generation-qualified invocation identity.
+    pub(crate) const fn birth(&self) -> &BirthStamp { &self.birth }
+
     /// Membership attaches to the shim pid that was actually verified.
     pub(crate) const fn pid(&self) -> u32 { self.pid }
 
     /// Consumers retain the checked record instead of reconstructing it from a name.
-    pub(crate) const fn record(&self) -> &VersionedRegistration { &self.record }
+    pub(crate) const fn record(&self) -> &RegistrationCandidate { &self.record }
 }
 
 /// Structural failures reject this record alone, preserving process-table rows.
@@ -313,11 +322,11 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
-    use super::DirectoryIdentity;
     use super::ParseError;
     use super::Registration;
+    use super::RegistrationCandidate;
     use super::RegistrationVerification;
-    use super::VersionedRegistration;
+    use super::WorkingDirectoryIdentity;
     use super::WriterHome;
     use crate::birth_stamp::BirthStamp;
     use crate::birth_stamp::IdentityEvidence;
@@ -343,7 +352,7 @@ mod tests {
     }
 
     /// Assert that a fixture exercises the versioned branch of the public parser.
-    fn versioned(bytes: &[u8]) -> VersionedRegistration {
+    fn versioned(bytes: &[u8]) -> RegistrationCandidate {
         let Registration::Versioned(record) =
             Registration::parse(bytes).expect("valid versioned fixture")
         else {
@@ -380,7 +389,7 @@ mod tests {
         );
         assert_eq!(
             record.directory_identity(),
-            DirectoryIdentity::Absolute(record.directory().to_path_buf())
+            WorkingDirectoryIdentity::Absolute(record.directory().to_path_buf())
         );
         assert_eq!(
             record
@@ -397,7 +406,10 @@ mod tests {
         let record = versioned(&record(b"101", b"exact.log", &[b"~/work", b"1", b"build"]));
         assert_eq!(record.writer_home(), &WriterHome::Unavailable);
         assert_eq!(record.directory(), Path::new("~/work"));
-        assert_eq!(record.directory_identity(), DirectoryIdentity::Unavailable);
+        assert_eq!(
+            record.directory_identity(),
+            WorkingDirectoryIdentity::Unavailable
+        );
     }
 
     #[test]

@@ -17,9 +17,9 @@
 
 - [ ] **The ownership check closes the macOS ACL hole it currently documents**
   - Target: `crates/cargo-tile/src/capture_root.rs` —
-    `DirectoryIdentity::refusals` (`:458`) and
-    `RootScan::cleanup_refusals` (`:279`), which gate private
-    `RootScan::access` (`:328`); preserve `RootOwner` and add a
+    `InspectedDirectoryMetadata::refusals` (`:518`) and
+    `RootScan::cleanup_refusals` (`:303`), which gate private
+    `RootScan::access` (`:352`); preserve `RootOwner` and add a
     path-qualified `CleanupRefusal` for ACL write access.
   - Why needed: the ownership prerequisite still checks uid and mode bits
     alone. A macOS ACL granting another account write access can pass that
@@ -32,7 +32,7 @@
   - Revealed by: Phase 3
 
 - [ ] **Every configured-root status remains reachable in Settings**
-  - Target: `crates/cargo-tile/src/render.rs` — `draw_settings` (`:1992`),
+  - Target: `crates/cargo-tile/src/render.rs` — `draw_settings` (`:2022`),
     including viewport-to-rendered-line positioning.
   - Why needed: configured-root rows and their wrapped diagnostics can exceed
     the popup height, but the paragraph does not follow the settings viewport,

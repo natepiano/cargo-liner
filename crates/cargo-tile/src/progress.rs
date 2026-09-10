@@ -56,6 +56,7 @@ use crate::birth_stamp::KernelObservation;
 use crate::capture_root::CleanupRefusal;
 use crate::capture_root::Enumeration;
 use crate::capture_root::RootHistory;
+use crate::capture_root::RootIncarnation;
 use crate::capture_root::RootOwner;
 use crate::capture_root::RootScan;
 use crate::capture_root::SweepBudget;
@@ -166,33 +167,53 @@ pub(crate) enum RunState {
     Blocked,
 }
 
+/// What a gauge can show, preserving the reason it has no counter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CounterState {
+    /// A phase owns the current numerator and denominator.
+    Working {
+        /// Counters from different phases must not be combined.
+        phase:    Phase,
+        /// The current progress in this phase.
+        progress: Progress,
+    },
+    /// The capture reports a build-directory wait.
+    Blocked,
+    /// Readable output currently supplies no counter, including after Finished.
+    NoCurrentProgress,
+    /// The selected capture could not be read.
+    Unavailable,
+    /// No registration supplies a counter for this invocation.
+    Unregistered,
+}
+
 impl RunState {
-    /// The reading and the phase it belongs to, for the one place that
-    /// draws either: the rule along a working-directory header.
-    pub(crate) const fn working(self) -> Option<(Phase, Progress)> {
+    /// Expose counter availability without dropping the blocked state.
+    pub(crate) const fn working(self) -> CounterState {
         match self {
-            Self::Working { phase, progress } => Some((phase, progress)),
-            Self::Blocked => None,
+            Self::Working { phase, progress } => CounterState::Working { phase, progress },
+            Self::Blocked => CounterState::Blocked,
         }
     }
 }
 
-/// Whether this pid has a capture, independently of the latest log contents.
+/// Whether this invocation has a capture, independently of the latest log contents.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CaptureLookup {
-    /// No accepted registration was associated with this pid in the scan.
+    /// No accepted registration was associated with this invocation in the scan.
     Unregistered,
     /// The registration exists, even when its log has no current progress.
     Registered(CaptureRead),
 }
 
 impl CaptureLookup {
-    /// Rendering asks only for a gauge after preserving the complete read status.
-    pub(crate) const fn working(&self) -> Option<(Phase, Progress)> {
+    /// Keep every no-counter outcome named until the gauge chooses how to draw it.
+    pub(crate) const fn working(&self) -> CounterState {
         match self {
             Self::Registered(CaptureRead::Progress(state)) => state.working(),
-            Self::Unregistered
-            | Self::Registered(CaptureRead::NoCurrentProgress | CaptureRead::Unreadable(_)) => None,
+            Self::Registered(CaptureRead::NoCurrentProgress) => CounterState::NoCurrentProgress,
+            Self::Registered(CaptureRead::Unreadable(_)) => CounterState::Unavailable,
+            Self::Unregistered => CounterState::Unregistered,
         }
     }
 }
@@ -255,12 +276,38 @@ thread_local! {
 pub(crate) struct CaptureRootIndex(pub(crate) usize);
 
 /// A shim pid belongs to one root even when another root registers the same pid.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct CaptureKey {
     /// Interned at scanner startup, without retaining an owned-root capability.
-    pub(crate) root: CaptureRootIndex,
+    pub(crate) root:        CaptureRootIndex,
     /// The shim process named by the registration in this root.
-    pub(crate) pid:  u32,
+    pub(crate) pid:         u32,
+    /// A replaced directory cannot retain any previous association.
+    pub(crate) incarnation: RootIncarnation,
+    /// Legacy annotation and published generations never alias each other.
+    pub(crate) generation:  CaptureGeneration,
+    /// Preserve comparison evidence without letting it replace the generation.
+    pub(crate) birth:       IdentityEvidence,
+}
+
+/// Filename generation classifies publications without asserting verification.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum CaptureGeneration {
+    /// A pid-only record has no generation or identity proof.
+    Legacy,
+    /// An opaque, non-repeating publication suffix.
+    Published(String),
+}
+
+/// Resolve ownership only when the preferred root identifies one capture.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CaptureSelection {
+    /// No retained reading registers this pid in any root.
+    Unregistered,
+    /// Root precedence and identity evidence leave one possible capture.
+    Selected(CaptureKey),
+    /// Competing generations forbid ownership and fallback to another root or ancestor.
+    Ambiguous,
 }
 
 /// Preserve the operator's pathname and its origin after root deduplication.
@@ -575,8 +622,8 @@ impl Capture {
             diagnostics,
         } = registered_runs(scan, observe);
         status.diagnostics = diagnostics;
+        let mut logs = BTreeMap::new();
         for (&pid, runs) in &generations {
-            let key = CaptureKey { root, pid };
             for run in runs {
                 if matches!(
                     registration_name(&run.name),
@@ -584,21 +631,34 @@ impl Capture {
                 ) {
                     continue;
                 }
+                let (generation, birth) = match &run.record {
+                    Registration::Versioned(record) => (
+                        CaptureGeneration::Published(record.generation().to_owned()),
+                        record.identity().clone(),
+                    ),
+                    Registration::Legacy(_) => {
+                        (CaptureGeneration::Legacy, IdentityEvidence::Unavailable)
+                    },
+                };
+                let key = CaptureKey {
+                    root,
+                    pid,
+                    incarnation: scan.incarnation(),
+                    generation,
+                    birth,
+                };
                 match &run.verification {
                     RegistrationVerification::Ended => {},
                     RegistrationVerification::Confirmed(registration) => {
-                        let key = CaptureKey {
-                            root,
-                            pid: registration.pid(),
-                        };
                         self.confirmed.push(ConfirmedCapture {
-                            key,
+                            key:          key.clone(),
                             registration: registration.clone(),
-                            modified: run.modified.clone(),
+                            modified:     run.modified.clone(),
                         });
                         let reading = read_named_log(
                             scan,
                             Path::new(registration.record().log_basename()),
+                            &mut logs,
                             &mut status.diagnostics,
                         );
                         if !matches!(reading, CaptureRead::Unreadable(_)) {
@@ -611,13 +671,14 @@ impl Capture {
                             Registration::Versioned(record) => read_named_log(
                                 scan,
                                 Path::new(record.log_basename()),
+                                &mut logs,
                                 &mut status.diagnostics,
                             ),
                             Registration::Legacy(_) => {
-                                legacy_read(scan, pid, &mut status.diagnostics)
+                                legacy_read(scan, pid, &mut logs, &mut status.diagnostics)
                             },
                         };
-                        self.readings.entry(key).or_insert(reading);
+                        self.readings.insert(key, reading);
                     },
                 }
             }
@@ -634,71 +695,135 @@ impl Capture {
             }
             return;
         }
-        scan.sweep(budget, |entry| {
-            let (RegistrationName::Generated { pid, .. } | RegistrationName::Staging { pid, .. }) =
-                registration_name(entry.name())
-            else {
-                return SweepDisposition::Preserve;
-            };
-            let Some(run) = generations
-                .get(&pid)
-                .and_then(|runs| runs.iter().find(|run| run.name == entry.name()))
-            else {
-                return SweepDisposition::Preserve;
-            };
-            let Registration::Versioned(record) = &run.record else {
-                return SweepDisposition::Preserve;
-            };
-            if !matches!(run.verification, RegistrationVerification::Ended) {
-                return SweepDisposition::Preserve;
-            }
-            let Ok(current) = entry.read_registration() else {
-                return SweepDisposition::Preserve;
-            };
-            if Registration::parse(&current.bytes).ok().as_ref() != Some(&run.record) {
-                return SweepDisposition::Preserve;
-            }
-            if matches!(
-                record.verify_observation(pid, &observe(pid)),
-                RegistrationVerification::Ended
-            ) {
-                SweepDisposition::Remove(PathBuf::from(record.log_basename()))
-            } else {
-                SweepDisposition::Preserve
-            }
-        });
+        sweep_ended(scan, &generations, observe, budget);
     }
 
     /// Membership survives empty or unreadable output without claiming current progress.
-    pub(crate) fn read(&self, key: CaptureKey) -> CaptureLookup {
+    pub(crate) fn read(&self, key: &CaptureKey) -> CaptureLookup {
         self.readings
-            .get(&key)
+            .get(key)
             .cloned()
             .map_or(CaptureLookup::Unregistered, CaptureLookup::Registered)
     }
 
-    /// Root precedence is deterministic when a process has registrations in several roots.
-    pub(crate) fn keys(&self, pid: u32) -> impl Iterator<Item = CaptureKey> + '_ {
-        self.readings
+    /// Select the preferred root before resolving generations within that root.
+    /// The verifier already excludes ended births from `readings`. Every other
+    /// published generation still competes: neither generation text nor modification
+    /// time proves which same-birth record is live, and unknown proof is not ended.
+    pub(crate) fn select(&self, pid: u32) -> CaptureSelection {
+        let Some(root) = self
+            .readings
             .keys()
-            .copied()
-            .filter(move |key| key.pid == pid)
+            .filter(|key| key.pid == pid)
+            .map(|key| key.root)
+            .min()
+        else {
+            return CaptureSelection::Unregistered;
+        };
+        let mut confirmed = self
+            .confirmed
+            .iter()
+            .filter(|confirmed| confirmed.key.pid == pid && confirmed.key.root == root);
+        let mut candidates = self
+            .readings
+            .keys()
+            .filter(|key| key.pid == pid && key.root == root);
+        if let Some(confirmed_capture) = confirmed.next() {
+            // Separate verification reads can straddle pid reuse. Even different
+            // confirmed births do not establish which proof is still current.
+            if confirmed.next().is_some()
+                || candidates.any(|key| {
+                    key != &confirmed_capture.key
+                        && matches!(key.generation, CaptureGeneration::Published(_))
+                })
+            {
+                return CaptureSelection::Ambiguous;
+            }
+            return CaptureSelection::Selected(confirmed_capture.key.clone());
+        }
+        match (candidates.next(), candidates.next()) {
+            (Some(key), None) => CaptureSelection::Selected(key.clone()),
+            (Some(_), Some(_)) => CaptureSelection::Ambiguous,
+            (None, _) => CaptureSelection::Unregistered,
+        }
+    }
+
+    /// Inspect retained readings in fixtures; ownership must use `select`.
+    #[cfg(test)]
+    pub(crate) fn keys(&self, pid: u32) -> impl Iterator<Item = CaptureKey> + '_ {
+        let mut keys: Vec<_> = self.readings.keys().filter(|key| key.pid == pid).collect();
+        keys.sort_by_key(|key| {
+            (
+                key.root,
+                !self
+                    .confirmed
+                    .iter()
+                    .any(|confirmed| &confirmed.key == *key),
+                *key,
+            )
+        });
+        keys.into_iter().cloned()
     }
 
     /// Consumers receive proofs that only the registration verifier can construct.
     pub(crate) fn confirmed(&self) -> &[ConfirmedCapture] { &self.confirmed }
 }
 
+/// Reread an ended registration and its kernel evidence before paired removal.
+fn sweep_ended(
+    scan: &RootScan,
+    generations: &BTreeMap<u32, Vec<RegisteredRun>>,
+    observe: &impl Fn(u32) -> KernelObservation,
+    budget: &mut SweepBudget,
+) {
+    scan.sweep(budget, |entry| {
+        let (RegistrationName::Generated { pid, .. } | RegistrationName::Staging { pid, .. }) =
+            registration_name(entry.name())
+        else {
+            return SweepDisposition::Preserve;
+        };
+        let Some(run) = generations
+            .get(&pid)
+            .and_then(|runs| runs.iter().find(|run| run.name == entry.name()))
+        else {
+            return SweepDisposition::Preserve;
+        };
+        let Registration::Versioned(record) = &run.record else {
+            return SweepDisposition::Preserve;
+        };
+        if !matches!(run.verification, RegistrationVerification::Ended) {
+            return SweepDisposition::Preserve;
+        }
+        let Ok(current) = entry.read_registration() else {
+            return SweepDisposition::Preserve;
+        };
+        if Registration::parse(&current.bytes).ok().as_ref() != Some(&run.record) {
+            return SweepDisposition::Preserve;
+        }
+        if matches!(
+            record.verify_observation(pid, &observe(pid)),
+            RegistrationVerification::Ended
+        ) {
+            SweepDisposition::Remove(PathBuf::from(record.log_basename()))
+        } else {
+            SweepDisposition::Preserve
+        }
+    });
+}
+
 /// Legacy filenames can annotate an existing process row, but never authorize cleanup.
-fn legacy_read(scan: &RootScan, pid: u32, diagnostics: &mut Vec<CaptureDiagnostic>) -> CaptureRead {
+fn legacy_read(
+    scan: &RootScan,
+    pid: u32,
+    logs: &mut BTreeMap<PathBuf, CaptureRead>,
+    diagnostics: &mut Vec<CaptureDiagnostic>,
+) -> CaptureRead {
     let log = scan
         .log_entries()
         .filter(|entry| log_pid(entry.name()) == Some(pid))
         .max_by(|left, right| left.name().cmp(right.name()));
     log.map_or(CaptureRead::NoCurrentProgress, |entry| {
-        let reading = CaptureRead::from(entry.read_log());
-        record_log_failure(scan, entry.name(), &reading, diagnostics);
-        reading
+        read_named_log(scan, entry.name(), logs, diagnostics)
     })
 }
 
@@ -706,9 +831,13 @@ fn legacy_read(scan: &RootScan, pid: u32, diagnostics: &mut Vec<CaptureDiagnosti
 fn read_named_log(
     scan: &RootScan,
     name: &Path,
+    logs: &mut BTreeMap<PathBuf, CaptureRead>,
     diagnostics: &mut Vec<CaptureDiagnostic>,
 ) -> CaptureRead {
-    let reading = CaptureRead::from(scan.read_log(name));
+    let reading = logs
+        .entry(name.to_owned())
+        .or_insert_with(|| CaptureRead::from(scan.read_log(name)))
+        .clone();
     record_log_failure(scan, name, &reading, diagnostics);
     reading
 }
@@ -1051,6 +1180,308 @@ mod tests {
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
 
+    #[test]
+    fn aliased_legacy_and_versioned_registrations_read_one_log_once_per_scan() {
+        let root = capture_root();
+        publish(root.path(), 10, "same", "100", CAPTURED_REDRAW);
+        fs::write(
+            root.path().join(CAPTURE_LIVE_RUNS_DIR).join("10"),
+            "/writer/project\tcargo build",
+        )
+        .unwrap();
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).unwrap();
+        let mut capture = Capture::default();
+        capture.scan_with_observations(&scan, &|_| present("100"), &mut SweepBudget::default());
+        assert_eq!(scan.log_read_count(), 1);
+        assert_eq!(capture.keys(10).count(), 2);
+        for key in capture.keys(10) {
+            assert_eq!(
+                capture.read(&key),
+                CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
+            );
+        }
+        fs::remove_file(root.path().join("run-same-10.log")).unwrap();
+        fs::create_dir(root.path().join("run-same-10.log")).unwrap();
+        let unreadable = RootScan::open(root.path(), &mut RootHistory::default()).unwrap();
+        let mut capture = Capture::default();
+        capture.scan_with_observations(
+            &unreadable,
+            &|_| present("100"),
+            &mut SweepBudget::default(),
+        );
+        assert_eq!(unreadable.log_read_count(), 1);
+        for key in capture.keys(10) {
+            assert!(matches!(
+                capture.read(&key),
+                CaptureLookup::Registered(CaptureRead::Unreadable(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn same_pid_birth_and_root_keep_both_generation_logs_and_metadata() {
+        let root = capture_root();
+        publish(root.path(), 10, "first", "100", CAPTURED_REDRAW);
+        let (second, _) = publish(root.path(), 10, "second", "100", CAPTURED_WAIT);
+        let second_record = String::from_utf8(fs::read(&second).unwrap())
+            .unwrap()
+            .replace("/writer/project", "/second/project");
+        fs::write(second, second_record).unwrap();
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).unwrap();
+        let mut capture = Capture::default();
+        capture.scan_with_observations(&scan, &|_| present("100"), &mut SweepBudget::default());
+        assert_eq!(scan.log_read_count(), 2);
+        assert_eq!(capture.keys(10).count(), 2);
+        assert_eq!(capture.confirmed().len(), 2);
+        for confirmed in capture.confirmed() {
+            let generation = confirmed.registration.record().generation();
+            assert_eq!(
+                confirmed.registration.record().directory(),
+                Path::new(if generation == "first" {
+                    "/writer/project"
+                } else {
+                    "/second/project"
+                })
+            );
+            assert_eq!(
+                confirmed.key.generation,
+                CaptureGeneration::Published(generation.to_owned())
+            );
+            let expected = if generation == "first" {
+                compiling(149, 403)
+            } else {
+                RunState::Blocked
+            };
+            assert_eq!(
+                capture.read(&confirmed.key),
+                CaptureLookup::Registered(CaptureRead::Progress(expected))
+            );
+        }
+        assert_ne!(capture.confirmed()[0].key, capture.confirmed()[1].key);
+    }
+
+    #[test]
+    fn competing_confirmed_generations_never_choose_by_name_or_modification_time() {
+        for (stale, replacement) in [("a-stale", "z-current"), ("z-stale", "a-current")] {
+            let root = capture_root();
+            publish(root.path(), 10, stale, "100", CAPTURED_REDRAW);
+            publish(root.path(), 10, replacement, "100", CAPTURED_WAIT);
+            let mut capture = Capture::take_with_observations(root.path(), |_| present("100"));
+            assert_eq!(capture.confirmed().len(), 2);
+            assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+            for reverse in [false, true] {
+                for confirmed in &mut capture.confirmed {
+                    let current = confirmed.registration.record().generation() == replacement;
+                    confirmed.modified = Ok(SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_secs(u64::from(current != reverse)));
+                }
+                assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+            }
+            capture.confirmed.reverse();
+            for confirmed in &mut capture.confirmed {
+                confirmed.modified =
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
+            }
+            assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+        }
+    }
+
+    #[test]
+    fn ended_birth_evidence_selects_the_live_generation_in_either_name_order() {
+        for (stale, live) in [("a-stale", "z-live"), ("z-stale", "a-live")] {
+            let root = capture_root();
+            publish(root.path(), 10, stale, "100", CAPTURED_REDRAW);
+            publish(root.path(), 10, live, "101", CAPTURED_WAIT);
+            let capture = Capture::take_with_observations(root.path(), |_| present("101"));
+            let confirmed = &capture.confirmed()[0];
+            assert_eq!(confirmed.registration.record().generation(), live);
+            assert_eq!(
+                capture.select(10),
+                CaptureSelection::Selected(confirmed.key.clone())
+            );
+            assert_eq!(
+                capture.read(&confirmed.key),
+                CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_sibling_verification_cannot_resolve_generation_ownership() {
+        for sibling_birth in ["100", "101", ""] {
+            for (live, sibling) in [("a-live", "z-sibling"), ("z-live", "a-sibling")] {
+                let root = capture_root();
+                publish(root.path(), 10, live, "100", CAPTURED_REDRAW);
+                publish(root.path(), 10, sibling, sibling_birth, CAPTURED_WAIT);
+                let observations = std::cell::Cell::new(0);
+                let capture = Capture::take_with_observations(root.path(), |_| {
+                    let first = observations.get() == 0;
+                    observations.set(observations.get() + 1);
+                    if first == (live < sibling) {
+                        present("100")
+                    } else {
+                        Observation::Unknown
+                    }
+                });
+                assert_eq!(capture.confirmed().len(), 1);
+                assert_eq!(capture.keys(10).count(), 2);
+                assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+            }
+        }
+    }
+
+    #[test]
+    fn confirmation_across_two_births_does_not_order_the_live_generation() {
+        let root = capture_root();
+        publish(root.path(), 10, "a-first", "100", CAPTURED_REDRAW);
+        publish(root.path(), 10, "z-second", "101", CAPTURED_WAIT);
+        let observations = std::cell::Cell::new(0);
+        let capture = Capture::take_with_observations(root.path(), |_| {
+            let first = observations.get() == 0;
+            observations.set(observations.get() + 1);
+            present(if first { "100" } else { "101" })
+        });
+        assert_eq!(capture.confirmed().len(), 2);
+        assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+    }
+
+    #[test]
+    fn a_unique_confirmed_generation_takes_precedence_over_legacy_annotation() {
+        let root = capture_root();
+        publish(root.path(), 10, "live", "100", CAPTURED_REDRAW);
+        fs::write(
+            root.path().join(CAPTURE_LIVE_RUNS_DIR).join("10"),
+            "/writer/project\tcargo build",
+        )
+        .unwrap();
+        let capture = Capture::take_with_observations(root.path(), |_| present("100"));
+        assert_eq!(capture.keys(10).count(), 2);
+        assert_eq!(
+            capture.select(10),
+            CaptureSelection::Selected(capture.confirmed()[0].key.clone())
+        );
+    }
+
+    #[test]
+    fn unconfirmed_annotations_require_one_generation_in_the_preferred_root() {
+        let root = capture_root();
+        assert_eq!(
+            Capture::take_with_observations(root.path(), |_| Observation::Unknown).select(10),
+            CaptureSelection::Unregistered
+        );
+        publish(root.path(), 10, "first", "100", CAPTURED_REDRAW);
+        let unique = Capture::take_with_observations(root.path(), |_| Observation::Unknown);
+        assert_eq!(
+            unique.select(10),
+            CaptureSelection::Selected(unique.keys(10).next().unwrap())
+        );
+        publish(root.path(), 10, "second", "100", CAPTURED_WAIT);
+        let competing = Capture::take_with_observations(root.path(), |_| Observation::Unknown);
+        assert_eq!(competing.select(10), CaptureSelection::Ambiguous);
+    }
+
+    #[test]
+    fn preferred_root_ambiguity_never_falls_through_to_another_roots_proof() {
+        let preferred = capture_root();
+        let other = capture_root();
+        publish(preferred.path(), 10, "first", "100", CAPTURED_REDRAW);
+        publish(preferred.path(), 10, "second", "100", CAPTURED_WAIT);
+        publish(other.path(), 10, "third", "100", CAPTURED_TALLY);
+        let roots = CaptureRoots::resolve_environment(
+            &[other.path().to_owned()],
+            CaptureRootEnvironment::Override(preferred.path().to_owned()),
+        );
+        let capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, present("100"))
+        });
+        assert_eq!(capture.confirmed().len(), 3);
+        assert_eq!(capture.select(10), CaptureSelection::Ambiguous);
+    }
+
+    #[test]
+    fn preferred_unconfirmed_root_blocks_a_later_roots_unique_confirmation() {
+        let preferred = capture_root();
+        let other = capture_root();
+        publish(preferred.path(), 10, "unknown", "", CAPTURED_WAIT);
+        publish(other.path(), 10, "confirmed", "100", CAPTURED_REDRAW);
+        let roots = CaptureRoots::resolve_environment(
+            &[other.path().to_owned()],
+            CaptureRootEnvironment::Override(preferred.path().to_owned()),
+        );
+        let capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, present("100"))
+        });
+        assert_eq!(capture.confirmed().len(), 1);
+        let preferred_key = capture.keys(10).next().unwrap();
+        assert_eq!(preferred_key.root, CaptureRootIndex(0));
+        assert_eq!(
+            capture.select(10),
+            CaptureSelection::Selected(preferred_key)
+        );
+    }
+
+    #[test]
+    fn permission_changes_preserve_keys_but_replaced_roots_invalidate_them() {
+        let parent = tempdir().unwrap();
+        let root = parent.path().join("capture");
+        fs::create_dir_all(root.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        publish(&root, 10, "same", "100", CAPTURED_REDRAW);
+        let first = Capture::take_with_observations(&root, |_| present("100"));
+        let key = first.keys(10).next().unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o750)).unwrap();
+        let changed_permissions = Capture::take_with_observations(&root, |_| present("100"));
+        assert_eq!(key, changed_permissions.confirmed()[0].key);
+        assert_eq!(first.read(&key), changed_permissions.read(&key));
+        fs::rename(&root, parent.path().join("previous")).unwrap();
+        fs::create_dir_all(root.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        publish(&root, 10, "same", "100", CAPTURED_REDRAW);
+        let replacement = Capture::take_with_observations(&root, |_| present("100"));
+        assert_ne!(key, replacement.confirmed()[0].key);
+        assert_eq!(replacement.read(&key), CaptureLookup::Unregistered);
+        fs::rename(&root, parent.path().join("second")).unwrap();
+        fs::rename(parent.path().join("previous"), &root).unwrap();
+        let restored_object = Capture::take_with_observations(&root, |_| present("100"));
+        assert_ne!(key, restored_object.confirmed()[0].key);
+        assert_ne!(
+            replacement.confirmed()[0].key,
+            restored_object.confirmed()[0].key
+        );
+    }
+
+    #[test]
+    fn finished_application_retains_registration_without_a_current_counter() {
+        let root = capture_root();
+        publish(
+            root.path(),
+            10,
+            "running",
+            "100",
+            &format!("{CAPTURED_REDRAW}\n{CAPTURED_FINISHED}application is alive\n"),
+        );
+        let capture = Capture::take_with_observations(root.path(), |_| present("100"));
+        let reading = capture.lookup(0, 10);
+        assert_eq!(
+            reading,
+            CaptureLookup::Registered(CaptureRead::NoCurrentProgress)
+        );
+        assert_eq!(reading.working(), CounterState::NoCurrentProgress);
+        assert_eq!(
+            CaptureLookup::Unregistered.working(),
+            CounterState::Unregistered
+        );
+        assert_eq!(
+            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)).working(),
+            CounterState::Blocked
+        );
+        assert_eq!(
+            CaptureLookup::Registered(CaptureRead::Unreadable(
+                std::io::Error::from(std::io::ErrorKind::PermissionDenied).into()
+            ))
+            .working(),
+            CounterState::Unavailable
+        );
+    }
+
     /// The line cargo prints when another cargo holds the build
     /// directory, as it comes out of a real 1.96 run.
     const CAPTURED_WAIT: &str = "    Blocking waiting for file lock on build directory\n";
@@ -1096,6 +1527,13 @@ mod tests {
         "             [ 00:00:00] \u{1b}[35;1mnxprobe\u{1b}[0m \u{1b}[34;1mt18\u{1b}[0m\r\n";
 
     impl Capture {
+        /// Tests observe missing registrations through the same identity-keyed lookup.
+        fn lookup(&self, root: usize, pid: u32) -> CaptureLookup {
+            self.keys(pid)
+                .find(|key| key.root == CaptureRootIndex(root))
+                .map_or(CaptureLookup::Unregistered, |key| self.read(&key))
+        }
+
         /// Bind each injected race observation without enabling production injection.
         fn take_with_observations(root: &Path, observe: impl Fn(u32) -> Observation) -> Self {
             Self::take_from(root, |pid| KernelObservation::for_test(pid, observe(pid)))
@@ -1323,7 +1761,7 @@ mod tests {
         assert!(diagnostics.contains(&CaptureDiagnostic::AnnotationOnly(legacy.clone())));
         assert!(diagnostics.contains(&CaptureDiagnostic::IdentityUnknown(registration.clone())));
         assert!(matches!(
-            capture.read(capture_key(0, 42)),
+            capture.lookup(0, 42),
             CaptureLookup::Registered(CaptureRead::Unreadable(_))
         ));
         assert!(registration.exists() && legacy.exists() && log.is_symlink());
@@ -1438,7 +1876,7 @@ mod tests {
                 Capture::take_with_observations(root.path(), |_| Observation::Unknown);
             let cleanup = capture.root_status[0].cleanup.clone();
             assert!(!cleanup.is_empty());
-            let reading = capture.read(capture_key(0, 10));
+            let reading = capture.lookup(0, 10);
             capture.record_boot_verification(Err(boot_failure.clone()));
 
             let status = &capture.root_status[0];
@@ -1465,7 +1903,7 @@ mod tests {
                 })
             );
             assert_eq!(status.cleanup, cleanup);
-            assert_eq!(capture.read(capture_key(0, 10)), reading);
+            assert_eq!(capture.lookup(0, 10), reading);
             assert_eq!(status.confirmed, 0);
             assert!(capture.confirmed().is_empty());
             assert!(registration.exists() && log.exists() && unverifiable.exists());
@@ -1538,12 +1976,12 @@ mod tests {
         }
     }
 
-    /// Explicitly name both coordinates when checking a capture observation.
-    const fn capture_key(root: usize, pid: u32) -> CaptureKey {
-        CaptureKey {
-            root: CaptureRootIndex(root),
-            pid,
-        }
+    /// Resolve one fixture's root and pid without inventing generation evidence.
+    fn capture_key(capture: &Capture, root: usize, pid: u32) -> CaptureKey {
+        capture
+            .keys(pid)
+            .find(|key| key.root == CaptureRootIndex(root))
+            .unwrap()
     }
 
     #[test]
@@ -1712,9 +2150,9 @@ mod tests {
         });
         assert_eq!(capture.readings.len(), 1);
         assert_eq!(capture.confirmed().len(), 1);
-        assert_eq!(capture.confirmed()[0].key, capture_key(0, 10));
+        assert_eq!(capture.confirmed()[0].key, capture_key(&capture, 0, 10));
         assert_eq!(
-            capture.read(capture_key(0, 10)),
+            capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
     }
@@ -1801,14 +2239,14 @@ mod tests {
         assert_eq!(capture.confirmed().len(), 2);
         assert_eq!(
             capture.keys(10).collect::<Vec<_>>(),
-            [capture_key(0, 10), capture_key(1, 10)]
+            [capture_key(&capture, 0, 10), capture_key(&capture, 1, 10)]
         );
         assert_eq!(
-            capture.read(capture_key(0, 10)),
+            capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert_eq!(
-            capture.read(capture_key(1, 10)),
+            capture.lookup(1, 10),
             CaptureLookup::Registered(CaptureRead::Progress(testing(11, 24)))
         );
         for (index, expected) in [
@@ -1818,12 +2256,12 @@ mod tests {
             let confirmed = capture
                 .confirmed()
                 .iter()
-                .find(|confirmed| confirmed.key == capture_key(index, 10))
+                .find(|confirmed| confirmed.key == capture_key(&capture, index, 10))
                 .unwrap();
             assert_eq!(confirmed.registration.record().log_basename(), expected.0);
             assert_eq!(
                 confirmed.registration.record().directory_identity(),
-                crate::registration::DirectoryIdentity::Absolute(expected.1.to_owned())
+                crate::registration::WorkingDirectoryIdentity::Absolute(expected.1.to_owned())
             );
         }
     }
@@ -1876,24 +2314,24 @@ mod tests {
             ),
         );
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
-        assert_eq!(capture.read(capture_key(0, 9)), CaptureLookup::Unregistered);
+        assert_eq!(capture.lookup(0, 9), CaptureLookup::Unregistered);
         assert_eq!(
-            capture.read(capture_key(0, 10)),
+            capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert_eq!(
-            capture.read(capture_key(0, 11)),
+            capture.lookup(0, 11),
             CaptureLookup::Registered(CaptureRead::NoCurrentProgress)
         );
         assert!(matches!(
-            capture.read(capture_key(0, 12)),
+            capture.lookup(0, 12),
             CaptureLookup::Registered(CaptureRead::Unreadable(CaptureFailure {
                 kind: std::io::ErrorKind::NotFound,
                 ..
             }))
         ));
         assert_eq!(
-            capture.read(capture_key(0, 13)),
+            capture.lookup(0, 13),
             CaptureLookup::Registered(CaptureRead::NoCurrentProgress)
         );
         assert_eq!(capture.confirmed().len(), 4);
@@ -1906,10 +2344,7 @@ mod tests {
         let orphan = root.path().join("run-unregistered-10.log");
         fs::write(&orphan, CAPTURED_REDRAW).unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| present("101"));
-        assert_eq!(
-            capture.read(capture_key(0, 10)),
-            CaptureLookup::Unregistered
-        );
+        assert_eq!(capture.lookup(0, 10), CaptureLookup::Unregistered);
         assert!(capture.confirmed().is_empty());
         assert!(!registration.exists());
         assert!(!log.exists());
@@ -1941,7 +2376,7 @@ mod tests {
         fs::write(&log, CAPTURED_REDRAW).unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| Observation::Ended);
         assert_eq!(
-            capture.read(capture_key(0, 10)),
+            capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert!(capture.confirmed().is_empty());
@@ -1957,13 +2392,10 @@ mod tests {
         fs::write(malformed, b"cargo-tile-v2\0truncated").unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
         assert_eq!(
-            capture.read(capture_key(0, 10)),
+            capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
-        assert_eq!(
-            capture.read(capture_key(0, 11)),
-            CaptureLookup::Unregistered
-        );
+        assert_eq!(capture.lookup(0, 11), CaptureLookup::Unregistered);
     }
 
     #[test]
@@ -1980,14 +2412,11 @@ mod tests {
         capture.scan_with_observations(&scan, &|_| present("100"), &mut budget);
         for pid in [10, 12] {
             assert_eq!(
-                capture.read(capture_key(0, pid)),
+                capture.lookup(0, pid),
                 CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
             );
         }
-        assert_eq!(
-            capture.read(capture_key(0, 11)),
-            CaptureLookup::Unregistered
-        );
+        assert_eq!(capture.lookup(0, 11), CaptureLookup::Unregistered);
         assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
         assert!(stale.0.exists());
         assert!(stale.1.exists());
@@ -2014,7 +2443,7 @@ mod tests {
             &mut SweepBudget::default(),
         );
         assert_eq!(
-            capture.read(capture_key(0, 10)),
+            capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert!(log.exists());
@@ -2027,14 +2456,12 @@ mod tests {
         fs::remove_file(&log).unwrap();
         fs::write(root.path().join("run-older-10.log"), CAPTURED_REDRAW).unwrap();
         assert!(matches!(
-            Capture::take_with_observations(root.path(), |_| present("100"))
-                .read(capture_key(0, 10)),
+            Capture::take_with_observations(root.path(), |_| present("100")).lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Unreadable(_))
         ));
         fs::write(&log, CAPTURED_TALLY).unwrap();
         assert_eq!(
-            Capture::take_with_observations(root.path(), |_| present("100"))
-                .read(capture_key(0, 10)),
+            Capture::take_with_observations(root.path(), |_| present("100")).lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(testing(11, 24)))
         );
     }
@@ -2046,12 +2473,11 @@ mod tests {
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
         fs::write(&log, CAPTURED_TALLY).unwrap();
         assert_eq!(
-            capture.read(capture_key(0, 10)),
+            capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert_eq!(
-            Capture::take_with_observations(root.path(), |_| present("100"))
-                .read(capture_key(0, 10)),
+            Capture::take_with_observations(root.path(), |_| present("100")).lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(testing(11, 24)))
         );
     }
@@ -2198,10 +2624,7 @@ mod tests {
                 observation.clone()
             });
             assert_eq!(calls.get(), 3);
-            assert_eq!(
-                capture.read(capture_key(0, 10)),
-                CaptureLookup::Unregistered
-            );
+            assert_eq!(capture.lookup(0, 10), CaptureLookup::Unregistered);
             assert!(capture.confirmed().is_empty());
             assert!(!staging.exists());
             assert!(!log.exists());
@@ -2244,10 +2667,7 @@ mod tests {
             assert_eq!(calls.get(), 1);
             assert!(staging.exists());
             assert!(log.exists());
-            assert_eq!(
-                capture.read(capture_key(0, 10)),
-                CaptureLookup::Unregistered
-            );
+            assert_eq!(capture.lookup(0, 10), CaptureLookup::Unregistered);
             assert!(capture.confirmed().is_empty());
             assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
         }
@@ -2358,7 +2778,7 @@ mod tests {
         let live = publish(root.path(), 10, "live", "100", CAPTURED_TALLY);
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
         assert_eq!(
-            capture.read(capture_key(0, 10)),
+            capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(testing(11, 24)))
         );
         assert_eq!(capture.confirmed().len(), 1);
@@ -2407,7 +2827,7 @@ mod tests {
         .unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
         assert_eq!(
-            capture.read(capture_key(0, 10)),
+            capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert!(stale.0.exists());
@@ -2421,14 +2841,13 @@ mod tests {
         fs::write(&log, "").unwrap();
         fs::remove_dir(root.path().join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
         assert_eq!(
-            Capture::take_with_observations(root.path(), |_| Observation::Ended)
-                .read(capture_key(0, 10)),
+            Capture::take_with_observations(root.path(), |_| Observation::Ended).lookup(0, 10),
             CaptureLookup::Unregistered
         );
         assert!(log.exists());
         assert_eq!(
             Capture::take_with_observations(&root.path().join("absent"), |_| Observation::Ended)
-                .read(capture_key(0, 10)),
+                .lookup(0, 10),
             CaptureLookup::Unregistered
         );
     }
@@ -2617,7 +3036,7 @@ mod tests {
 
     #[test]
     fn a_blocked_state_has_no_reading_to_draw() {
-        assert_eq!(RunState::Blocked.working(), None);
+        assert_eq!(RunState::Blocked.working(), CounterState::Blocked);
     }
 
     #[test]
