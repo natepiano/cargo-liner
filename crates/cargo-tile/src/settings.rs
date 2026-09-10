@@ -19,7 +19,11 @@ use crate::capture_root::RootOwner;
 use crate::config;
 use crate::constants::APPEARANCE_MODES;
 use crate::constants::CAPTURE_ASSOCIATION;
+use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
+use crate::constants::CAPTURE_ASSOCIATION_COMPETING;
+use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
 use crate::constants::CAPTURE_ASSOCIATION_SUPPRESSED;
+use crate::constants::CAPTURE_ASSOCIATION_UNCONFIRMED;
 use crate::constants::CAPTURE_CLEANUP_ALLOWED;
 use crate::constants::CAPTURE_CLEANUP_CHANGED;
 use crate::constants::CAPTURE_CLEANUP_DISABLED;
@@ -57,6 +61,8 @@ use crate::constants::CAPTURE_STATUS_STAGING;
 use crate::constants::CAPTURE_STATUS_UNREADABLE_LOG;
 use crate::constants::CAPTURE_STATUS_UNREADABLE_REGISTRATION;
 use crate::constants::CAPTURE_STATUS_UNVERIFIABLE;
+use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
+use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
 use crate::constants::CONFIG_KEY_CAPTURE_ROOTS;
 use crate::constants::CURSOR_WIDTH;
 use crate::constants::EMPTY_LIST;
@@ -66,11 +72,17 @@ use crate::constants::MAX_FADE_SECONDS;
 use crate::constants::MAX_INITIAL_ROWS;
 use crate::constants::MIN_FADE_SECONDS;
 use crate::constants::MIN_INITIAL_ROWS;
+use crate::constants::REGISTRATION_SEPARATOR;
 use crate::constants::STEPPER_DECORATION_WIDTH;
 use crate::constants::UNRESOLVED_PATH;
+use crate::processes::AssociationSelection;
 use crate::processes::CaptureDiagnostic;
 use crate::processes::RootReadStatus;
 use crate::processes::RootStatus;
+use crate::processes::SelectedProof;
+use crate::processes::UnusedCaptureReason;
+use crate::progress::CaptureGeneration;
+use crate::progress::CaptureKey;
 use crate::progress::CaptureRootSource;
 use crate::progress::PathFailure;
 
@@ -455,22 +467,60 @@ fn capture_root_status(status: &RootStatus) -> String {
     if let Ok(path) = &status.root.path {
         parts.push(path.display().to_string());
         for association in &status.associations {
-            parts.push(format!(
-                "{CAPTURE_ASSOCIATION}: pid {} via registration {} from {}",
-                association.pid,
-                association.registration_pid,
-                path.display(),
-            ));
-            for suppressed in &association.suppressed {
-                parts.push(format!(
-                    "{CAPTURE_ASSOCIATION_SUPPRESSED}: pid {} from {}",
-                    association.pid,
-                    suppressed.display(),
-                ));
+            match &association.selection {
+                AssociationSelection::Selected { key, proof, unused } => {
+                    let proof = match proof {
+                        SelectedProof::Confirmed => CAPTURE_ASSOCIATION_CONFIRMED,
+                        SelectedProof::Unconfirmed => CAPTURE_ASSOCIATION_UNCONFIRMED,
+                    };
+                    parts.push(format!(
+                        "{CAPTURE_ASSOCIATION}: pid {} via registration {} from {} ({proof}: {})",
+                        association.pid,
+                        key.pid,
+                        path.display(),
+                        registration_publication(key),
+                    ));
+                    for suppressed in unused {
+                        let reason = match suppressed.reason {
+                            UnusedCaptureReason::RootPrecedence => CAPTURE_UNUSED_ROOT_PRECEDENCE,
+                            UnusedCaptureReason::SelectedUnconfirmed => {
+                                CAPTURE_UNUSED_SELECTED_UNCONFIRMED
+                            },
+                        };
+                        parts.push(format!(
+                            "{CAPTURE_ASSOCIATION_SUPPRESSED}: pid {} from {} ({}; {reason})",
+                            association.pid,
+                            suppressed.root.display(),
+                            registration_publication(&suppressed.key),
+                        ));
+                    }
+                },
+                AssociationSelection::Ambiguous { candidates } => {
+                    let candidates = candidates
+                        .iter()
+                        .map(registration_publication)
+                        .collect::<Vec<_>>()
+                        .join(LIST_SEPARATOR);
+                    parts.push(format!(
+                        "{CAPTURE_ASSOCIATION_AMBIGUOUS}: pid {} from {}; {CAPTURE_ASSOCIATION_COMPETING}: {candidates}",
+                        association.pid,
+                        path.display(),
+                    ));
+                },
             }
         }
     }
     parts.join("; ")
+}
+
+/// The publication basename distinguishes generations sharing a shim pid.
+fn registration_publication(key: &CaptureKey) -> String {
+    match &key.generation {
+        CaptureGeneration::Legacy => key.pid.to_string(),
+        CaptureGeneration::Published(generation) => {
+            format!("{}{REGISTRATION_SEPARATOR}{generation}", key.pid)
+        },
+    }
 }
 
 /// Failed root reads have retry rules distinct from startup validation failures.
@@ -647,13 +697,23 @@ mod tests {
     use crate::app::App;
     use crate::capture_root::CleanupRefusal;
     use crate::capture_root::RootOwner;
+    use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
+    use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
+    use crate::constants::CAPTURE_ASSOCIATION_UNCONFIRMED;
     use crate::constants::CAPTURE_STATUS_DEFAULT_NOT_CREATED;
     use crate::constants::CAPTURE_STATUS_IDENTITY_BOOT;
+    use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
+    use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
+    use crate::processes::AssociationSelection;
     use crate::processes::CaptureAssociation;
     use crate::processes::CaptureDiagnostic;
     use crate::processes::RootReadStatus;
     use crate::processes::RootStatus;
+    use crate::processes::SelectedProof;
+    use crate::processes::UnusedCaptureReason;
     use crate::progress::CaptureFailure;
+    use crate::progress::CaptureGeneration;
+    use crate::progress::CaptureKey;
     use crate::progress::CaptureRoot;
     use crate::progress::CaptureRootSource;
     use crate::progress::PathFailure;
@@ -666,11 +726,29 @@ mod tests {
                 sources: vec![CaptureRootSource::Default],
             },
             owner:        RootOwner::Uid(1000),
+            account:      crate::processes::AccountName::Unavailable,
             cleanup:      Vec::new(),
             state:        RootReadStatus::Readable,
             confirmed:    0,
             diagnostics:  Vec::new(),
             associations: Vec::new(),
+        }
+    }
+
+    /// Give settings a retained publication identity without scanning a process.
+    fn association_key(pid: u32, root: usize, generation: &str) -> CaptureKey {
+        let directory = tempfile::tempdir().expect("capture root");
+        let scan = crate::capture_root::RootScan::open(
+            directory.path(),
+            &mut crate::capture_root::RootHistory::default(),
+        )
+        .expect("open capture root");
+        CaptureKey {
+            root: crate::progress::CaptureRootIndex(root),
+            pid,
+            incarnation: scan.incarnation(),
+            generation: CaptureGeneration::Published(generation.into()),
+            birth: crate::birth_stamp::IdentityEvidence::Unavailable,
         }
     }
 
@@ -1120,9 +1198,16 @@ mod tests {
     fn association_names_its_supplier_and_any_unused_competing_proof() {
         let mut status = observed_root();
         status.associations = vec![CaptureAssociation {
-            pid:              42,
-            registration_pid: 40,
-            suppressed:       vec!["/retained/other".into()],
+            pid:       42,
+            selection: AssociationSelection::Selected {
+                key:    association_key(40, 0, "selected"),
+                proof:  SelectedProof::Unconfirmed,
+                unused: vec![crate::processes::UnusedCapture {
+                    key:    association_key(40, 1, "unused"),
+                    root:   "/retained/other".into(),
+                    reason: UnusedCaptureReason::SelectedUnconfirmed,
+                }],
+            },
         }];
         let value = root_row(status).value;
         assert!(
@@ -1131,6 +1216,128 @@ mod tests {
             )
         );
         assert!(value.contains("another root's proof went unused: pid 42 from /retained/other"));
+    }
+
+    /// The retained association alone explains selection for cargo rows and shim fallbacks.
+    #[test]
+    fn selected_proofs_and_suppression_reasons_render_for_both_row_sources() {
+        for pid in [40, 42] {
+            for (proof, reason, expected) in [
+                (
+                    SelectedProof::Confirmed,
+                    UnusedCaptureReason::RootPrecedence,
+                    CAPTURE_UNUSED_ROOT_PRECEDENCE,
+                ),
+                (
+                    SelectedProof::Unconfirmed,
+                    UnusedCaptureReason::SelectedUnconfirmed,
+                    CAPTURE_UNUSED_SELECTED_UNCONFIRMED,
+                ),
+            ] {
+                let mut status = observed_root();
+                status.associations.push(CaptureAssociation {
+                    pid,
+                    selection: AssociationSelection::Selected {
+                        key: association_key(40, 0, "selected"),
+                        proof,
+                        unused: vec![crate::processes::UnusedCapture {
+                            key: association_key(40, 1, "unused"),
+                            root: "/retained/other".into(),
+                            reason,
+                        }],
+                    },
+                });
+                let value = root_row(status).value;
+                assert!(
+                    value.contains(&format!(
+                        "pid {pid} via registration 40 from /retained/captures"
+                    )),
+                    "{value}"
+                );
+                assert!(value.contains("40.selected"), "{value}");
+                assert!(value.contains("40.unused"), "{value}");
+                assert!(value.contains(expected), "{value}");
+                let expected_proof = match proof {
+                    SelectedProof::Confirmed => CAPTURE_ASSOCIATION_CONFIRMED,
+                    SelectedProof::Unconfirmed => CAPTURE_ASSOCIATION_UNCONFIRMED,
+                };
+                assert!(value.contains(expected_proof), "{value}");
+            }
+        }
+    }
+
+    /// The settings app has no process rows; both association shapes still retain competition.
+    #[test]
+    fn ambiguous_generations_render_with_and_without_a_represented_process() {
+        for pid in [40, 42] {
+            let first = association_key(40, 0, "first");
+            let mut second = first.clone();
+            second.generation = CaptureGeneration::Published("second".into());
+            let mut status = observed_root();
+            status.associations.push(CaptureAssociation {
+                pid,
+                selection: AssociationSelection::Ambiguous {
+                    candidates: vec![first.clone(), second],
+                },
+            });
+            let ambiguous = root_row(status.clone()).value;
+            assert!(
+                ambiguous.contains(CAPTURE_ASSOCIATION_AMBIGUOUS),
+                "{ambiguous}"
+            );
+            assert!(
+                ambiguous.contains(&format!("pid {pid} from /retained/captures")),
+                "{ambiguous}"
+            );
+            assert!(ambiguous.contains("40.first"), "{ambiguous}");
+            assert!(ambiguous.contains("40.second"), "{ambiguous}");
+            status.associations[0].selection = AssociationSelection::Selected {
+                key:    first,
+                proof:  SelectedProof::Confirmed,
+                unused: Vec::new(),
+            };
+            let recovered = root_row(status).value;
+            assert!(
+                recovered.contains(CAPTURE_ASSOCIATION_CONFIRMED),
+                "{recovered}"
+            );
+            assert!(
+                !recovered.contains(CAPTURE_ASSOCIATION_AMBIGUOUS),
+                "{recovered}"
+            );
+            assert!(recovered.contains("40.first"), "{recovered}");
+            assert!(!recovered.contains("40.second"), "{recovered}");
+            assert_ne!(ambiguous, recovered);
+        }
+    }
+
+    /// A verified row source does not turn its unreadable log into an active capture.
+    #[test]
+    fn selected_proof_preserves_unreadable_log_diagnostic_and_active_count() {
+        let mut status = observed_root();
+        status.confirmed = 1;
+        status
+            .diagnostics
+            .push(CaptureDiagnostic::LogUnreadable(failure(
+                "/retained/captures/run-40-selected.log",
+                ErrorKind::PermissionDenied,
+            )));
+        status.associations.push(CaptureAssociation {
+            pid:       40,
+            selection: AssociationSelection::Selected {
+                key:    association_key(40, 0, "selected"),
+                proof:  SelectedProof::Confirmed,
+                unused: Vec::new(),
+            },
+        });
+        let value = root_row(status).value;
+        assert!(value.contains("active — 1 capture"), "{value}");
+        assert!(value.contains("1 unreadable log"), "{value}");
+        assert!(
+            value.contains("permission denied: /retained/captures/run-40-selected.log"),
+            "{value}"
+        );
+        assert!(value.contains(CAPTURE_ASSOCIATION_CONFIRMED), "{value}");
     }
 
     #[test]

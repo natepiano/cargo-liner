@@ -31,6 +31,8 @@ use std::sync::mpsc::Receiver;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use chrono::DateTime;
 use chrono::Local;
@@ -40,6 +42,7 @@ use sysinfo::ProcessRefreshKind;
 use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
 use sysinfo::UpdateKind;
+use sysinfo::Users;
 use tui_pane::kernel_parent;
 
 use crate::birth_stamp;
@@ -49,7 +52,11 @@ use crate::capture_root::RootOwner;
 use crate::config::Config;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DISPLAY_NAME;
+use crate::constants::CARGO_JSON_FORMAT_PREFIX;
+use crate::constants::CARGO_MESSAGE_FORMAT_FLAG;
+use crate::constants::CARGO_MESSAGE_FORMAT_JSON_PREFIX;
 use crate::constants::CARGO_PROCESS_NAMES;
+use crate::constants::CARGO_QUIET_FLAGS;
 use crate::constants::CARGO_SUBCOMMAND_PREFIX;
 use crate::constants::CARGO_TOOLCHAIN_SELECTOR;
 use crate::constants::COMPILER_PROCESS_NAMES;
@@ -77,6 +84,7 @@ use crate::progress::CaptureLookup;
 use crate::progress::CaptureRoot;
 use crate::progress::CaptureRoots;
 use crate::progress::CaptureSelection;
+use crate::progress::ConfirmedCapture;
 use crate::progress::PathFailure;
 use crate::registration::RegistrationCandidate;
 use crate::registration::VerifiedRegistration;
@@ -259,6 +267,127 @@ pub(crate) enum CompilerObservation {
     Running(Compiler),
 }
 
+/// Convert the scanner's optional home at the external API boundary once.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScannerHome<'home> {
+    /// Only this prefix may be shortened to the scanner's tilde.
+    Known(&'home Path),
+    /// No scanner home was observed, so every directory stays absolute.
+    Unavailable,
+}
+
+impl<'home> From<Option<&'home Path>> for ScannerHome<'home> {
+    fn from(home: Option<&'home Path>) -> Self { home.map_or(Self::Unavailable, Self::Known) }
+}
+
+/// Missing cwd cannot establish equality or be formatted before metadata merging.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkingDirectoryObservation<'directory> {
+    /// The process API supplied its own working directory.
+    Observed(&'directory Path),
+    /// A direct registration may fill this field before display conversion.
+    Unavailable,
+}
+
+impl<'directory> From<Option<&'directory Path>> for WorkingDirectoryObservation<'directory> {
+    fn from(directory: Option<&'directory Path>) -> Self {
+        directory.map_or(Self::Unavailable, Self::Observed)
+    }
+}
+
+/// Display resolution never changes the numeric account identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AccountName {
+    /// The scanner resolved a nonempty account name for the root owner.
+    Resolved(String),
+    /// A missing passwd entry leaves the numeric owner visible.
+    Unavailable,
+}
+
+/// The verified root owner and its independently resolved display label.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureAccount {
+    /// Ownership identity comes from the opened root, never its pathname.
+    pub(crate) uid:  u32,
+    /// Failure to resolve a label does not change grouping.
+    pub(crate) name: AccountName,
+}
+
+/// Root incarnation and owner qualify a captured working directory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureContext {
+    /// Interned root position distinguishes configured roots.
+    pub(crate) root:        crate::progress::CaptureRootIndex,
+    /// Replacing a directory invalidates its retained grouping identity.
+    pub(crate) incarnation: crate::capture_root::RootIncarnation,
+    /// Numeric identity remains separate from its display name.
+    pub(crate) account:     CaptureAccount,
+}
+
+/// A row's capture context states whether registration fields may describe it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RowProvenance {
+    /// No verified capture qualifies this row's own working directory.
+    Uncaptured,
+    /// This invocation owns its selected registration's metadata.
+    Direct(CaptureContext),
+    /// A nested invocation shares account and capture, retaining its own fields.
+    Enclosing(CaptureContext),
+}
+
+impl RowProvenance {
+    /// Verification came from this root; missing owner observations grant no qualification.
+    fn direct(capture: &Capture, key: &CaptureKey) -> Self {
+        let Some(status) = capture.root_status.get(key.root.0) else {
+            return Self::Uncaptured;
+        };
+        let RootOwner::Uid(uid) = status.owner else {
+            return Self::Uncaptured;
+        };
+        Self::Direct(CaptureContext {
+            root:        key.root,
+            incarnation: key.incarnation,
+            account:     CaptureAccount {
+                uid,
+                name: status.account.clone(),
+            },
+        })
+    }
+
+    /// Enclosing membership qualifies a group without granting registration fields.
+    fn enclosing(capture: &Capture, key: &CaptureKey) -> Self {
+        match Self::direct(capture, key) {
+            Self::Direct(context) => Self::Enclosing(context),
+            provenance => provenance,
+        }
+    }
+}
+
+impl AccountName {
+    /// Account lookup is a scan observation and never participates in identity comparison.
+    pub(crate) fn resolve(owner: RootOwner, users: &Users) -> Self {
+        let RootOwner::Uid(uid) = owner else {
+            return Self::Unavailable;
+        };
+        users
+            .iter()
+            .find(|user| **user.id() == uid)
+            .filter(|user| !user.name().is_empty())
+            .map_or(Self::Unavailable, |user| {
+                Self::Resolved(user.name().to_owned())
+            })
+    }
+}
+
+/// An unavailable registration timestamp sorts after known starts in ascending order.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum RunStart {
+    /// Seconds since the epoch order both process and registration observations.
+    Known(u64),
+    /// A failed timestamp read cannot prevent a verified invocation's row.
+    Unavailable,
+}
+
 /// One running `cargo` invocation, preformatted for the table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CargoProcess {
@@ -266,6 +395,8 @@ pub(crate) struct CargoProcess {
     pub(crate) invocation_id:      InvocationId,
     /// Nested invocations share progress without inheriting registration metadata.
     pub(crate) capture_membership: CaptureMembership,
+    /// Account and root qualification do not grant enclosing rows metadata ownership.
+    pub(crate) provenance:         RowProvenance,
     /// Working directory display, shortened only when the home prefix is unambiguous.
     pub(crate) path:               String,
     /// Raw absolute directory for grouping; display formatting cannot change membership.
@@ -286,7 +417,7 @@ pub(crate) struct CargoProcess {
     /// orders one invocation against another. The label above it is
     /// only accurate to the minute and turns over at midnight, so it
     /// reads well and sorts badly.
-    pub(crate) started:            u64,
+    pub(crate) started:            RunStart,
     /// Elapsed run time, `mm:ss` until an hour and `hh:mm:ss` past it.
     pub(crate) duration:           String,
     /// Share of a core this invocation and everything running under it
@@ -557,6 +688,8 @@ pub(crate) struct RootStatus {
     pub(crate) root:         CaptureRoot,
     /// Descriptor metadata identifies the owner independently of cleanup eligibility.
     pub(crate) owner:        RootOwner,
+    /// Resolved on the scan worker; rendering performs no account lookup.
+    pub(crate) account:      AccountName,
     /// Every reason removal is refused; an empty list permits identity-based cleanup.
     pub(crate) cleanup:      Vec<CleanupRefusal>,
     /// Opening a root and validating its configured path have different retry rules.
@@ -609,15 +742,61 @@ pub(crate) enum CaptureDiagnostic {
     BootUnavailable(PathFailure),
 }
 
-/// The containing root supplied this process's capture; other roots supply no fields.
+/// Final selection reaches settings even when no process row can be built.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CaptureAssociation {
-    /// Process-table row whose ancestor walk selected the containing root.
-    pub(crate) pid:              u32,
-    /// The selected shim may be above the displayed cargo process.
-    pub(crate) registration_pid: u32,
-    /// Confirmed proofs in these roots lost to the preferred unconfirmed reading.
-    pub(crate) suppressed:       Vec<PathBuf>,
+    /// The displayed process, or the shim when the selection sources no process row.
+    pub(crate) pid:       u32,
+    /// Retain both successful selection and unresolved competition.
+    pub(crate) selection: AssociationSelection,
+}
+
+/// Root precedence and verification determine which proof may supply fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AssociationSelection {
+    /// One key was selected; other proofs cannot supply metadata.
+    Selected {
+        /// The exact root, incarnation and generation selected.
+        key:    CaptureKey,
+        /// Unconfirmed selections permit only log annotation.
+        proof:  SelectedProof,
+        /// Every confirmed proof left unused has an explicit reason.
+        unused: Vec<UnusedCapture>,
+    },
+    /// Competing publications prevent metadata ownership and ancestor fallback.
+    Ambiguous {
+        /// Exact identities of the publications that competed in the preferred root.
+        candidates: Vec<CaptureKey>,
+    },
+}
+
+/// Selection and verification are independent facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SelectedProof {
+    /// The selected key has a retained verification proof.
+    Confirmed,
+    /// The selected reading has no proof and cannot source a row.
+    Unconfirmed,
+}
+
+/// A retained proof that the selection forbids using.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UnusedCapture {
+    /// Preserve publication identity as well as its operator-facing path.
+    pub(crate) key:    CaptureKey,
+    /// Settings can name the root without reopening it.
+    pub(crate) root:   PathBuf,
+    /// Explain why this proof supplied neither another row nor borrowed fields.
+    pub(crate) reason: UnusedCaptureReason,
+}
+
+/// A preferred root remains authoritative whether or not its key was verified.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UnusedCaptureReason {
+    /// The selected confirmed publication wins the configured root order.
+    RootPrecedence,
+    /// The preferred reading is unconfirmed, so another root cannot repair it.
+    SelectedUnconfirmed,
 }
 
 /// The nearest registered ancestor retains its root for every annotation lookup.
@@ -627,6 +806,8 @@ enum NearestRegistration {
     Unregistered,
     /// Root precedence selects one registration without mixing its sibling roots.
     Registered(CaptureKey),
+    /// Competition stops the ancestry walk and retains the competing identities.
+    Ambiguous(Vec<CaptureKey>),
 }
 
 /// A verified registration established to directly represent this invocation.
@@ -635,8 +816,23 @@ enum NearestRegistration {
 pub(crate) struct DirectCapture {
     /// The same identity is used by a process row and a registration row.
     run_id:       RunId,
+    /// Metadata and log lookup use the exact selected publication.
+    key:          CaptureKey,
+    /// The descriptor-bound timestamp survives independently of verification.
+    modified:     Result<SystemTime, CaptureFailure>,
     /// Keep the existing verifier's proof, including its permitted directory and argv.
     registration: VerifiedRegistration,
+}
+
+impl From<&ConfirmedCapture> for DirectCapture {
+    fn from(confirmed: &ConfirmedCapture) -> Self {
+        Self {
+            run_id:       RunId::verified(&confirmed.key, &confirmed.registration),
+            key:          confirmed.key.clone(),
+            modified:     confirmed.modified.clone(),
+            registration: confirmed.registration.clone(),
+        }
+    }
 }
 
 impl DirectCapture {
@@ -651,7 +847,7 @@ impl DirectCapture {
 
 /// Only the direct arm permits access to verified row metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum DirectAssociation {
+pub(crate) enum DirectAssociation {
     /// The registration represents this row's command, rather than an ancestor command.
     Direct(Box<DirectCapture>),
     /// No verified registration directly describes this process.
@@ -709,13 +905,14 @@ fn spawn_with_resolver(
         let mut system = System::new();
         let mut smoothing = CpuSmoothing::default();
         let home = dirs::home_dir();
+        let scanner_home = home.as_deref().into();
         loop {
             if sender
                 .send(scan(
                     &mut system,
                     &mut smoothing,
                     Instant::now(),
-                    home.as_deref(),
+                    scanner_home,
                     &excluded,
                     &roots,
                 ))
@@ -738,7 +935,7 @@ fn scan(
     system: &mut System,
     smoothing: &mut CpuSmoothing,
     now: Instant,
-    home: Option<&Path>,
+    home: ScannerHome<'_>,
     excluded: &[String],
     roots: &CaptureRoots,
 ) -> Scan {
@@ -782,11 +979,19 @@ fn scan(
     // the same reason the invocations are -- a cell says what launched
     // the command -- and a chain is a few processes long, against the
     // hundreds this pass still skips.
-    let detailed = census.detailed();
-    let details = process_details(&detailed);
-
-    // Verification and cleanup use the full live set before row eligibility changes.
+    // Verification precedes row filtering, and registration pids must receive fresh
+    // argv even when the cheap snapshot retains a pre-exec process name.
     let mut capture = Capture::take(roots);
+    let mut detailed = census.detailed();
+    for pid in capture.registered_pids().into_iter().map(Pid::from_u32) {
+        for candidate in std::iter::once(pid).chain(census.ancestor_pids(pid)) {
+            if !detailed.contains(&candidate) {
+                detailed.push(candidate);
+            }
+        }
+    }
+    let details = process_details(&detailed);
+    census.include_registered_processes(&details, &capture);
     census.identify_capture_wrappers(&details, &capture);
     census.collapse_shims(&details);
     census.identify_captures(&capture);
@@ -979,6 +1184,8 @@ struct Census {
     capture_boundaries:       HashSet<Pid>,
     /// Only observed forwarding of the registered command permits walking through a wrapper.
     capture_wrappers:         HashSet<Pid>,
+    /// Observed argv naming a different command forbids direct registration fields.
+    capture_mismatches:       HashSet<Pid>,
     /// Native lifetime evidence belongs to this refresh, including unavailable reads.
     lifetimes:                HashMap<Pid, LifetimeEvidence>,
     /// Deliberate exclusion remains distinct from unavailable command metadata.
@@ -1000,6 +1207,7 @@ impl Census {
             identities:               HashMap::new(),
             capture_boundaries:       HashSet::new(),
             capture_wrappers:         HashSet::new(),
+            capture_mismatches:       HashSet::new(),
             lifetimes:                HashMap::new(),
             eligibility:              HashMap::new(),
             registration_eligibility: HashMap::new(),
@@ -1233,7 +1441,12 @@ impl Census {
         let (Some(outer), Some(inner)) = (system.process(pid), system.process(child)) else {
             return false;
         };
-        observed_shim_match(outer.cmd(), outer.cwd(), inner.cmd(), inner.cwd())
+        observed_shim_match(
+            outer.cmd(),
+            outer.cwd().into(),
+            inner.cmd(),
+            inner.cwd().into(),
+        )
     }
 
     /// Each cargo's direct cargo children -- the tree the groups are cut
@@ -1387,7 +1600,7 @@ impl Census {
     /// A cargo ancestor that is *not* plumbing cannot reach here:
     /// [`Self::groups`] leads a group with an invocation that has no
     /// cargo above it.
-    fn ancestry(&self, system: &System, home: Option<&Path>, pid: Pid) -> Vec<Ancestor> {
+    fn ancestry(&self, system: &System, home: ScannerHome<'_>, pid: Pid) -> Vec<Ancestor> {
         self.ancestor_pids(pid)
             .into_iter()
             .filter_map(|pid| system.process(pid))
@@ -1412,7 +1625,9 @@ impl Census {
         for _ in 0..PARENT_WALK_LIMIT {
             match capture.select(walking.as_u32()) {
                 CaptureSelection::Selected(key) => return NearestRegistration::Registered(key),
-                CaptureSelection::Ambiguous => return NearestRegistration::Unregistered,
+                CaptureSelection::Ambiguous(candidates) => {
+                    return NearestRegistration::Ambiguous(candidates);
+                },
                 CaptureSelection::Unregistered => {},
             }
             let Some(parent) = self.parents.get(&walking) else {
@@ -1423,56 +1638,113 @@ impl Census {
         NearestRegistration::Unregistered
     }
 
-    /// Settings names the supplying root for every displayed association, including
-    /// a preferred unconfirmed reading that prevented using another root's proof.
+    /// Report every retained selection, including a shim absent from the process table.
     fn associate_status(&self, capture: &mut Capture, groups: &[CargoGroup]) {
+        let mut associations = Vec::new();
         for row in groups
             .iter()
             .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
         {
-            let NearestRegistration::Registered(key) =
-                self.captured_run(capture, Pid::from_u32(row.pid))
-            else {
-                continue;
-            };
-            let mut suppressed = Vec::new();
-            if !capture
-                .confirmed()
-                .iter()
-                .any(|confirmed| confirmed.key == key)
-            {
-                let mut walking = Pid::from_u32(row.pid);
-                for _ in 0..PARENT_WALK_LIMIT {
-                    for confirmed in capture.confirmed().iter().filter(|confirmed| {
-                        confirmed.key.pid == walking.as_u32() && confirmed.key.root != key.root
-                    }) {
-                        if let Some(status) = capture.root_status.get(confirmed.key.root.0)
-                            && let Ok(path) = &status.root.path
-                            && !suppressed.contains(path)
-                        {
-                            suppressed.push(path.clone());
-                        }
-                    }
-                    let Some(parent) = self.parents.get(&walking) else {
-                        break;
-                    };
-                    walking = *parent;
-                }
+            associations.push((row.pid, self.captured_run(capture, Pid::from_u32(row.pid))));
+        }
+        for pid in capture.registered_pids() {
+            if !associations.iter().any(|(_, nearest)| match nearest {
+                NearestRegistration::Registered(key) => key.pid == pid,
+                NearestRegistration::Ambiguous(keys) => keys.iter().any(|key| key.pid == pid),
+                NearestRegistration::Unregistered => false,
+            }) {
+                associations.push((pid, self.captured_run(capture, Pid::from_u32(pid))));
             }
-            suppressed.sort();
-            if let Some(status) = capture.root_status.get_mut(key.root.0) {
-                status.associations.push(CaptureAssociation {
-                    pid: row.pid,
-                    registration_pid: key.pid,
-                    suppressed,
-                });
+        }
+        for (pid, nearest) in associations {
+            let (root, selection) = match nearest {
+                NearestRegistration::Unregistered => continue,
+                NearestRegistration::Ambiguous(candidates) => {
+                    let Some(key) = candidates.first() else {
+                        continue;
+                    };
+                    (key.root, AssociationSelection::Ambiguous { candidates })
+                },
+                NearestRegistration::Registered(key) => {
+                    let proof = if capture
+                        .confirmed()
+                        .iter()
+                        .any(|confirmed| confirmed.key == key)
+                    {
+                        SelectedProof::Confirmed
+                    } else {
+                        SelectedProof::Unconfirmed
+                    };
+                    let unused = capture
+                        .confirmed()
+                        .iter()
+                        .filter(|confirmed| confirmed.key.pid == key.pid && confirmed.key != key)
+                        .filter_map(|confirmed| {
+                            let status = capture.root_status.get(confirmed.key.root.0)?;
+                            let root = status.root.path.as_ref().ok()?.clone();
+                            Some(UnusedCapture {
+                                key: confirmed.key.clone(),
+                                root,
+                                reason: match proof {
+                                    SelectedProof::Confirmed => UnusedCaptureReason::RootPrecedence,
+                                    SelectedProof::Unconfirmed => {
+                                        UnusedCaptureReason::SelectedUnconfirmed
+                                    },
+                                },
+                            })
+                        })
+                        .collect();
+                    (
+                        key.root,
+                        AssociationSelection::Selected { key, proof, unused },
+                    )
+                },
+            };
+            if let Some(status) = capture.root_status.get_mut(root.0) {
+                status
+                    .associations
+                    .push(CaptureAssociation { pid, selection });
             }
         }
     }
 
-    /// Record wrappers whose argv forwards the exact registered cargo command.
+    /// A registration can become process-readable after exec without a new lifetime.
+    fn include_registered_processes(&mut self, system: &System, capture: &Capture) {
+        for pid in capture.registered_pids().into_iter().map(Pid::from_u32) {
+            if system
+                .process(pid)
+                .is_some_and(|process| names_cargo(process.cmd()))
+                && !self.cargo.contains(&pid)
+            {
+                self.cargo.push(pid);
+            }
+        }
+    }
+
+    /// Record wrappers forwarding the registered command, including the shim's JSON rewrite.
     /// An exec-replaced application no longer carries that command and is a boundary.
     fn identify_capture_wrappers(&mut self, system: &System, capture: &Capture) {
+        self.capture_mismatches = system
+            .processes()
+            .iter()
+            .filter_map(|(&pid, process)| {
+                let NearestRegistration::Registered(key) = self.captured_run(capture, pid) else {
+                    return None;
+                };
+                capture
+                    .confirmed()
+                    .iter()
+                    .find(|confirmed| confirmed.key == key)
+                    .filter(|confirmed| {
+                        !process.cmd().is_empty()
+                            && !forwards_capture_command(
+                                process.cmd(),
+                                confirmed.registration.record(),
+                            )
+                    })
+                    .map(|_| pid)
+            })
+            .collect();
         self.capture_wrappers = system
             .processes()
             .iter()
@@ -1495,6 +1767,9 @@ impl Census {
     /// Direct ownership crosses only wrappers observed forwarding this registration.
     /// Any other intervening process establishes enclosing membership.
     fn direct_capture(&self, capture: &Capture, pid: Pid) -> DirectAssociation {
+        if self.capture_mismatches.contains(&pid) {
+            return DirectAssociation::None;
+        }
         let NearestRegistration::Registered(key) = self.captured_run(capture, pid) else {
             return DirectAssociation::None;
         };
@@ -1508,18 +1783,16 @@ impl Census {
         let mut walking = pid;
         for _ in 0..PARENT_WALK_LIMIT {
             if walking.as_u32() == key.pid {
-                return DirectAssociation::Direct(Box::new(DirectCapture {
-                    run_id:       RunId::verified(&key, &confirmed.registration),
-                    registration: confirmed.registration.clone(),
-                }));
+                return DirectAssociation::Direct(Box::new(DirectCapture::from(confirmed)));
             }
             let Some(&parent) = self.parents.get(&walking) else {
                 break;
             };
-            if parent.as_u32() != key.pid
-                && (!self.capture_wrappers.contains(&parent)
-                    || self.capture_boundaries.contains(&parent)
-                    || self.cargo.contains(&parent))
+            if self.capture_mismatches.contains(&parent)
+                || (parent.as_u32() != key.pid
+                    && (!self.capture_wrappers.contains(&parent)
+                        || self.capture_boundaries.contains(&parent)
+                        || self.cargo.contains(&parent)))
             {
                 break;
             }
@@ -1579,6 +1852,7 @@ impl Census {
                 DirectAssociation::Direct(direct) => {
                     match self.registration_eligibility.get(&direct.run_id) {
                         Some(Err(RowAbsence::Excluded)) => Err(RowAbsence::Excluded),
+                        Some(Ok(())) if process == Err(RowAbsence::Unavailable) => Ok(()),
                         Some(Ok(()) | Err(RowAbsence::Unavailable)) | None => process,
                     }
                 },
@@ -1591,8 +1865,10 @@ impl Census {
     }
 
     /// Only a verified direct association may supply directory annotation.
-    fn annotate_capture(&self, row: &mut CargoProcess, capture: &Capture, home: Option<&Path>) {
+    fn annotate_capture(&self, row: &mut CargoProcess, capture: &Capture, home: ScannerHome<'_>) {
         let pid = Pid::from_u32(row.pid);
+        row.provenance = RowProvenance::Uncaptured;
+        row.capture_membership = CaptureMembership::Outside;
         if let Some(identity) = self.identities.get(&pid) {
             row.invocation_id.clone_from(identity);
         }
@@ -1604,6 +1880,7 @@ impl Census {
         match self.direct_capture(capture, pid) {
             DirectAssociation::Direct(direct) => {
                 row.invocation_id = direct.invocation_id();
+                row.provenance = RowProvenance::direct(capture, &key);
                 let record = direct.registration().record();
                 if matches!(
                     row.directory_identity,
@@ -1619,6 +1896,7 @@ impl Census {
                     .iter()
                     .find(|confirmed| confirmed.key == key)
                 {
+                    row.provenance = RowProvenance::enclosing(capture, &key);
                     row.capture_membership = CaptureMembership::Enclosing(RunId::verified(
                         &key,
                         &confirmed.registration,
@@ -1639,29 +1917,185 @@ impl Census {
         &self,
         system: &System,
         attributed: &Attributed,
-        home: Option<&Path>,
+        home: ScannerHome<'_>,
         capture: &Capture,
     ) -> Vec<CargoGroup> {
         let children = self.cargo_children();
-        let mut dated: Vec<(u64, CargoGroup)> = self
-            .cargo
+        let mut candidates = self.cargo.clone();
+        candidates.sort_by_key(|pid| self.ancestor_pids(*pid).len());
+        let mut rows: Vec<CargoProcess> = Vec::new();
+        for pid in candidates {
+            if !rows.iter().any(|row| row.pid == pid.as_u32())
+                && let Ok(group) = self.group(system, attributed, home, &children, capture, pid)
+            {
+                rows.push(group.lead);
+                rows.extend(group.rest);
+            }
+        }
+        let process_rows: HashSet<_> = rows.iter().map(|row| row.invocation_id.clone()).collect();
+        self.add_registration_rows(&mut rows, capture, home, SystemTime::now());
+        let mut groups = self.assemble_groups(system, home, rows);
+        for group in &mut groups {
+            if process_rows.contains(&group.lead.invocation_id) {
+                let members: Vec<_> = std::iter::once(&group.lead)
+                    .chain(&group.rest)
+                    .map(|row| Pid::from_u32(row.pid))
+                    .collect();
+                group.lead.cpu =
+                    aggregate_cpu(&attributed.cpu, members.iter().copied()).map(cpu_label);
+                group.lead.compiler =
+                    aggregate_compilers(&attributed.compilers, members.into_iter());
+            }
+            for row in &mut group.rest {
+                if process_rows.contains(&row.invocation_id) {
+                    let pid = Pid::from_u32(row.pid);
+                    row.cpu = aggregate_cpu(&attributed.cpu, std::iter::once(pid)).map(cpu_label);
+                    row.compiler = attributed
+                        .compilers
+                        .get(&pid)
+                        .cloned()
+                        .unwrap_or(CompilerObservation::Unknown);
+                }
+            }
+        }
+        groups
+    }
+
+    /// Enclosing membership never suppresses the invocation represented by a proof.
+    fn add_registration_rows(
+        &self,
+        rows: &mut Vec<CargoProcess>,
+        capture: &Capture,
+        home: ScannerHome<'_>,
+        now: SystemTime,
+    ) {
+        for pid in capture.registered_pids() {
+            let DirectAssociation::Direct(direct) = capture.row_source(pid) else {
+                continue;
+            };
+            if !matches!(
+                self.registration_eligibility.get(&direct.run_id),
+                Some(Ok(()))
+            ) {
+                continue;
+            }
+            // Root selection has already rejected unconfirmed and competing proofs.
+            // Only direct representation of this invocation suppresses its source row.
+            let represented = rows
+                .iter()
+                .any(|row| row.invocation_id == direct.invocation_id());
+            if !represented && let Ok(row) = registration_row(&direct, capture, home, now) {
+                rows.push(row);
+            }
+        }
+    }
+
+    /// Build one ancestry tree after both sources have supplied eligible invocations.
+    fn assemble_groups(
+        &self,
+        system: &System,
+        home: ScannerHome<'_>,
+        mut rows: Vec<CargoProcess>,
+    ) -> Vec<CargoGroup> {
+        rows.sort_by(newest_first);
+        let mut seen = HashSet::new();
+        rows.retain(|row| seen.insert(row.invocation_id.clone()));
+        let mut visible = HashMap::new();
+        for row in &rows {
+            let identity = (row.invocation_id.clone(), row.pid);
+            visible.insert(Pid::from_u32(row.pid), identity.clone());
+            if let InvocationId::Captured(run) = &row.invocation_id {
+                visible.insert(Pid::from_u32(run.shim_pid), identity);
+            }
+        }
+        for row in &mut rows {
+            row.parent = self.row_parent(row, &visible);
+        }
+        let parents: HashMap<_, _> = rows
             .iter()
-            .filter(|&&pid| self.owning_cargo(pid).is_none_or(|owner| owner == pid))
-            .filter_map(|&pid| {
-                let start = system.process(pid)?.start_time();
-                Some((
-                    start,
-                    self.group(system, attributed, home, &children, capture, pid)?,
-                ))
+            .filter_map(|row| match &row.parent {
+                VisibleParent::Invocation { id, .. } => {
+                    Some((row.invocation_id.clone(), id.clone()))
+                },
+                VisibleParent::Ancestor(_) | VisibleParent::None => None,
             })
             .collect();
-        dated.sort_by(|left, right| {
-            right
-                .0
-                .cmp(&left.0)
-                .then(right.1.lead.pid.cmp(&left.1.lead.pid))
-        });
-        dated.into_iter().map(|(_, group)| group).collect()
+        let mut families: HashMap<InvocationId, Vec<CargoProcess>> = HashMap::new();
+        let mut assembled_descendants = HashMap::new();
+        for row in rows {
+            let mut root = row.invocation_id.clone();
+            let mut visited = HashSet::new();
+            for _ in 0..PARENT_WALK_LIMIT {
+                if !visited.insert(root.clone()) {
+                    break;
+                }
+                let Some(parent) = parents.get(&root) else {
+                    break;
+                };
+                if !visited.contains(parent) {
+                    *assembled_descendants.entry(parent.clone()).or_insert(0) += 1;
+                }
+                root.clone_from(parent);
+            }
+            families.entry(root).or_default().push(row);
+        }
+        let mut groups = Vec::new();
+        for (id, mut rows) in families {
+            for row in &mut rows {
+                let managed = assembled_descendants
+                    .get(&row.invocation_id)
+                    .copied()
+                    .unwrap_or_default();
+                // Confirmed child rows count regardless of source. Without children,
+                // a registration alone still cannot establish a measured zero.
+                if managed > 0 || matches!(row.managed, Measurement::Reading(_)) {
+                    row.managed = Measurement::Reading(managed);
+                }
+            }
+            let Some(index) = rows.iter().position(|row| row.invocation_id == id) else {
+                continue;
+            };
+            let mut lead = rows.remove(index);
+            let ancestry = self.ancestry(system, home, Pid::from_u32(lead.pid));
+            lead.parent = ancestry.last().map_or(VisibleParent::None, |ancestor| {
+                VisibleParent::Ancestor(ancestor.pid)
+            });
+            for row in &mut rows {
+                row.nested = matches!(&row.parent, VisibleParent::Invocation { id: parent, .. } if parent != &id);
+            }
+            rows.sort_by(newest_first);
+            groups.push(CargoGroup {
+                lead,
+                rest: rows,
+                ancestry,
+            });
+        }
+        groups.sort_by(|left, right| newest_first(&left.lead, &right.lead));
+        groups
+    }
+
+    /// Match displayed invocation identities, including a registration parent's shim alias.
+    fn row_parent(
+        &self,
+        row: &CargoProcess,
+        visible: &HashMap<Pid, (InvocationId, u32)>,
+    ) -> VisibleParent {
+        let mut walking = Pid::from_u32(row.pid);
+        for _ in 0..PARENT_WALK_LIMIT {
+            let Some(parent) = self.parents.get(&walking) else {
+                break;
+            };
+            if let Some((id, pid)) = visible.get(parent)
+                && id != &row.invocation_id
+            {
+                return VisibleParent::Invocation {
+                    id:  id.clone(),
+                    pid: *pid,
+                };
+            }
+            walking = *parent;
+        }
+        VisibleParent::None
     }
 
     /// Build the group led by `root`.
@@ -1669,16 +2103,22 @@ impl Census {
         &self,
         system: &System,
         attributed: &Attributed,
-        home: Option<&Path>,
+        home: ScannerHome<'_>,
         children: &HashMap<Pid, Vec<Pid>>,
         capture: &Capture,
         root: Pid,
-    ) -> Option<CargoGroup> {
+    ) -> Result<CargoGroup, GroupAbsence> {
+        if matches!(self.eligibility.get(&root), Some(Err(RowAbsence::Excluded))) {
+            return Err(GroupAbsence::Excluded);
+        }
         let managed = Self::descendants(children, root);
         let whole_group = std::iter::once(root).chain(managed.clone());
         let mut lead = row(
-            system.process(root)?,
-            self.identities.get(&root)?.clone(),
+            system.process(root).ok_or(GroupAbsence::NoProcess)?,
+            self.identities
+                .get(&root)
+                .ok_or(GroupAbsence::NoIdentity)?
+                .clone(),
             attributed
                 .compilers
                 .get(&root)
@@ -1687,8 +2127,8 @@ impl Census {
             Measurement::Reading(managed.len()),
             home,
             aggregate_cpu(&attributed.cpu, whole_group.clone()),
-        )
-        .ok()?;
+            &self.direct_capture(capture, root),
+        )?;
         // The lead reports the whole group's compilers: what a developer
         // wants off the summary row is how much work the command they
         // typed is doing, and for a manager none of that work is running
@@ -1715,6 +2155,7 @@ impl Census {
                     Measurement::Reading(under),
                     home,
                     aggregate_cpu(&attributed.cpu, std::iter::once(pid)),
+                    &self.direct_capture(capture, pid),
                 )
                 .ok()?;
                 // The same read the lead gets. An invocation the lead
@@ -1734,7 +2175,7 @@ impl Census {
             })
             .collect();
         dated.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.pid.cmp(&left.1.pid)));
-        Some(CargoGroup {
+        Ok(CargoGroup {
             lead,
             rest: dated.into_iter().map(|(_, process)| process).collect(),
             ancestry,
@@ -1742,11 +2183,23 @@ impl Census {
     }
 }
 
+/// Unknown timestamps remain last; invocation identity breaks ties without hash order.
+fn newest_first(left: &CargoProcess, right: &CargoProcess) -> std::cmp::Ordering {
+    match (left.started, right.started) {
+        (RunStart::Known(left), RunStart::Known(right)) => right.cmp(&left),
+        (RunStart::Known(_), RunStart::Unavailable) => std::cmp::Ordering::Less,
+        (RunStart::Unavailable, RunStart::Known(_)) => std::cmp::Ordering::Greater,
+        (RunStart::Unavailable, RunStart::Unavailable) => std::cmp::Ordering::Equal,
+    }
+    .then_with(|| right.invocation_id.cmp(&left.invocation_id))
+}
+
 /// Recognize both argv forwarding and the shim's single-quoted POSIX command string.
 /// PTY helpers and their shells carry this command; an application launched by cargo does not.
 fn forwards_capture_command(argv: &[OsString], record: &RegistrationCandidate) -> bool {
     if let Ok(arguments) = cargo_split(argv)
-        && argv[arguments.start..] == *record.arguments()
+        && (argv[arguments.start..] == *record.arguments()
+            || forwards_json_capture_arguments(&argv[arguments.start..], record.arguments()))
     {
         return true;
     }
@@ -1772,6 +2225,37 @@ fn forwards_capture_command(argv: &[OsString], record: &RegistrationCandidate) -
     })
 }
 
+/// Match only the shim's complete removal of quiet flags before `--` in JSON mode.
+/// All remaining words, including non-UTF-8 bytes and arguments after `--`, stay exact.
+fn forwards_json_capture_arguments(argv: &[OsString], registered: &[OsString]) -> bool {
+    let separator = registered
+        .iter()
+        .position(|argument| argument == ARGUMENT_SEPARATOR)
+        .unwrap_or(registered.len());
+    let (cargo_arguments, passthrough) = registered.split_at(separator);
+    if !cargo_arguments.iter().any(|argument| {
+        argument
+            .as_bytes()
+            .starts_with(CARGO_MESSAGE_FORMAT_JSON_PREFIX.as_bytes())
+    }) && !cargo_arguments.windows(2).any(|pair| {
+        pair[0] == CARGO_MESSAGE_FORMAT_FLAG
+            && pair[1]
+                .as_bytes()
+                .starts_with(CARGO_JSON_FORMAT_PREFIX.as_bytes())
+    }) {
+        return false;
+    }
+    cargo_arguments
+        .iter()
+        .filter(|argument| {
+            !CARGO_QUIET_FLAGS
+                .iter()
+                .any(|quiet| argument.as_os_str() == OsStr::new(quiet))
+        })
+        .chain(passthrough)
+        .eq(argv)
+}
+
 /// Inside one quoted executable word, an apostrophe must use the shim's escape sequence.
 fn quoted_cargo_binary(binary: &[u8]) -> bool {
     let mut remaining = binary;
@@ -1793,12 +2277,12 @@ fn quoted_cargo_binary(binary: &[u8]) -> bool {
 /// Missing command or cwd fields never count as observed equality between wrappers.
 fn observed_shim_match(
     outer: &[OsString],
-    outer_cwd: Option<&Path>,
+    outer_cwd: WorkingDirectoryObservation<'_>,
     inner: &[OsString],
-    inner_cwd: Option<&Path>,
+    inner_cwd: WorkingDirectoryObservation<'_>,
 ) -> bool {
     matches!((subcommand(outer), subcommand(inner), outer_cwd, inner_cwd),
-        (Some(outer), Some(inner), Some(outer_cwd), Some(inner_cwd))
+        (Some(outer), Some(inner), WorkingDirectoryObservation::Observed(outer_cwd), WorkingDirectoryObservation::Observed(inner_cwd))
         if outer == inner && outer_cwd == inner_cwd)
 }
 
@@ -1853,31 +2337,151 @@ fn row(
     invocation_id: InvocationId,
     compiler: CompilerObservation,
     managed: Measurement<usize>,
-    home: Option<&Path>,
+    home: ScannerHome<'_>,
     cpu: Measurement<f32>,
+    direct: &DirectAssociation,
 ) -> Result<CargoProcess, RowAbsence> {
+    let (directory_identity, path, command) =
+        row_fields(process.cwd().into(), process.cmd(), direct, home)?;
+    let (started, start, duration) = match direct {
+        DirectAssociation::Direct(direct) => registration_timing(direct, SystemTime::now()),
+        DirectAssociation::None => (
+            RunStart::Known(process.start_time()),
+            start_label(process.start_time()),
+            duration_label(process.run_time()),
+        ),
+    };
     Ok(CargoProcess {
         invocation_id,
         capture_membership: CaptureMembership::Outside,
-        path: process.cwd().map_or_else(
-            || UNRESOLVED_PATH.to_string(),
-            |cwd| home_relative(cwd, home),
-        ),
-        directory_identity: process.cwd().map_or(
-            WorkingDirectoryIdentity::Unavailable,
-            WorkingDirectoryIdentity::from,
-        ),
+        provenance: RowProvenance::Uncaptured,
+        path,
+        directory_identity,
         pid: process.pid().as_u32(),
         parent: VisibleParent::None,
-        start: start_label(process.start_time()),
-        started: process.start_time(),
-        duration: duration_label(process.run_time()),
+        start,
+        started,
+        duration,
         cpu: cpu.map(cpu_label),
         compiler,
         state: CaptureLookup::Unregistered,
         managed,
         nested: false,
-        command: command_text(process.cmd(), home)?,
+        command,
+    })
+}
+
+/// Resolve each unavailable field independently while observations retain their meaning.
+fn row_fields(
+    directory: WorkingDirectoryObservation<'_>,
+    argv: &[OsString],
+    direct: &DirectAssociation,
+    home: ScannerHome<'_>,
+) -> Result<(WorkingDirectoryIdentity, String, CommandText), RowAbsence> {
+    let command = match (command_text(argv, home), direct) {
+        (Err(RowAbsence::Unavailable), DirectAssociation::Direct(direct)) => {
+            command_text(&registration_argv(direct.registration().record()), home)?
+        },
+        (Ok(_), DirectAssociation::Direct(direct))
+            if cargo_split(argv).is_ok_and(|arguments| {
+                forwards_json_capture_arguments(
+                    &argv[arguments.start..],
+                    direct.registration().record().arguments(),
+                )
+            }) =>
+        {
+            // The shim's quiet rewrite changes execution, not the user's command heading.
+            command_text(&registration_argv(direct.registration().record()), home)?
+        },
+        (command, _) => command?,
+    };
+    let (identity, display) = match (directory, direct) {
+        (WorkingDirectoryObservation::Unavailable, DirectAssociation::Direct(direct)) => {
+            let record = direct.registration().record();
+            (
+                record.directory_identity(),
+                registration_directory(record, home),
+            )
+        },
+        (WorkingDirectoryObservation::Observed(path), DirectAssociation::Direct(direct))
+            if direct.registration().record().directory() == path =>
+        {
+            (
+                path.into(),
+                registration_directory(direct.registration().record(), home),
+            )
+        },
+        (WorkingDirectoryObservation::Observed(path), _) => {
+            (path.into(), home_relative(path, home))
+        },
+        (WorkingDirectoryObservation::Unavailable, _) => (
+            WorkingDirectoryIdentity::Unavailable,
+            UNRESOLVED_PATH.to_owned(),
+        ),
+    };
+    Ok((identity, display, command))
+}
+
+/// Preserve the writer's argument boundaries when applying the same command policy.
+fn registration_argv(record: &RegistrationCandidate) -> Vec<OsString> {
+    std::iter::once(OsString::from(CARGO_DISPLAY_NAME))
+        .chain(record.arguments().iter().cloned())
+        .collect()
+}
+
+/// A captured invocation starts when its registration is published, independently of workers.
+fn registration_timing(direct: &DirectCapture, now: SystemTime) -> (RunStart, String, String) {
+    let started = direct
+        .modified
+        .as_ref()
+        .map_or(RunStart::Unavailable, |modified| {
+            modified
+                .duration_since(UNIX_EPOCH)
+                .map_or(RunStart::Unavailable, |elapsed| {
+                    RunStart::Known(elapsed.as_secs())
+                })
+        });
+    let (start, duration) = match started {
+        RunStart::Known(seconds) => (
+            start_label(seconds),
+            duration_label(
+                now.duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .saturating_sub(seconds),
+            ),
+        ),
+        RunStart::Unavailable => (UNRESOLVED_TIME.to_owned(), UNRESOLVED_TIME.to_owned()),
+    };
+    (started, start, duration)
+}
+
+/// Verified metadata can supply a complete row without a measurable process.
+fn registration_row(
+    direct: &DirectCapture,
+    capture: &Capture,
+    home: ScannerHome<'_>,
+    now: SystemTime,
+) -> Result<CargoProcess, RowAbsence> {
+    let record = direct.registration().record();
+    let (started, start, duration) = registration_timing(direct, now);
+    Ok(CargoProcess {
+        invocation_id: direct.invocation_id(),
+        capture_membership: CaptureMembership::Outside,
+        provenance: RowProvenance::direct(capture, &direct.key),
+        path: registration_directory(record, home),
+        directory_identity: record.directory_identity(),
+        pid: direct.key.pid,
+        parent: VisibleParent::None,
+        start,
+        started,
+        duration,
+        cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
+        compiler: CompilerObservation::Unknown,
+        state: capture.read(&direct.key),
+        managed: Measurement::Unavailable(MeasurementAbsence::Unproven),
+        nested: false,
+        command: command_text(&registration_argv(record), home)?,
     })
 }
 
@@ -1906,7 +2510,7 @@ fn is_transparent(name: &OsStr) -> bool {
 /// user owns and of nothing else, so a root-owned ancestor -- a login
 /// process, a launch agent -- arrives with an empty argv and falls
 /// through to one of the other two.
-fn describe(process: &Process, home: Option<&Path>) -> String {
+fn describe(process: &Process, home: ScannerHome<'_>) -> String {
     let line: Vec<String> = process
         .cmd()
         .iter()
@@ -1922,9 +2526,9 @@ fn describe(process: &Process, home: Option<&Path>) -> String {
 }
 
 /// Render `path` with the home directory collapsed to `~`.
-fn home_relative(path: &Path, home: Option<&Path>) -> String {
+fn home_relative(path: &Path, home: ScannerHome<'_>) -> String {
     let full = path.display().to_string();
-    let Some(home) = home else {
+    let ScannerHome::Known(home) = home else {
         return full;
     };
     match path.strip_prefix(home) {
@@ -1935,9 +2539,11 @@ fn home_relative(path: &Path, home: Option<&Path>) -> String {
 }
 
 /// A tilde is meaningful only when the writer and scanner agree on its prefix.
-fn registration_directory(record: &RegistrationCandidate, scanner_home: Option<&Path>) -> String {
+fn registration_directory(record: &RegistrationCandidate, scanner_home: ScannerHome<'_>) -> String {
     match record.writer_home() {
-        WriterHome::Known(writer_home) if scanner_home == Some(writer_home.as_path()) => {
+        WriterHome::Known(writer_home)
+            if scanner_home == ScannerHome::Known(writer_home.as_path()) =>
+        {
             home_relative(record.directory(), scanner_home)
         },
         WriterHome::Known(_) | WriterHome::Unavailable => record.directory().display().to_string(),
@@ -1984,7 +2590,7 @@ fn duration_label(seconds: u64) -> String {
 /// spawns is a child of cargo, so a whole burst of them can present as
 /// cargo at once. Their argv still reads `sccache /path/to/rustc …`,
 /// which names no cargo binary, and that is what settles it.
-fn command_text(argv: &[OsString], home: Option<&Path>) -> Result<CommandText, RowAbsence> {
+fn command_text(argv: &[OsString], home: ScannerHome<'_>) -> Result<CommandText, RowAbsence> {
     let CargoArguments { start, layout } = cargo_split(argv)?;
     let mut arguments: Vec<String> = argv
         .iter()
@@ -2004,6 +2610,28 @@ fn command_text(argv: &[OsString], home: Option<&Path>) -> Result<CommandText, R
         program: CARGO_DISPLAY_NAME.to_string(),
         arguments,
     })
+}
+
+/// Group construction preserves the reason a candidate cannot lead a tile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GroupAbsence {
+    /// The detailed process snapshot contains no such pid.
+    NoProcess,
+    /// The complete census supplied no invocation identity.
+    NoIdentity,
+    /// Required process fields remain unavailable after direct registration merging.
+    Unavailable,
+    /// Observed arguments or configured policy deliberately reject this command.
+    Excluded,
+}
+
+impl From<RowAbsence> for GroupAbsence {
+    fn from(absence: RowAbsence) -> Self {
+        match absence {
+            RowAbsence::Unavailable => Self::Unavailable,
+            RowAbsence::Excluded => Self::Excluded,
+        }
+    }
 }
 
 /// Why a process-table candidate cannot become a cargo row.
@@ -2140,6 +2768,7 @@ fn base_name(argument: &OsString) -> String {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
+    clippy::panic,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
@@ -2185,6 +2814,718 @@ mod tests {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+    }
+
+    /// Keep a cargo-shaped argv alive until the owning fixture is dropped.
+    fn cargo_process(command: &str) -> MetadataProcess {
+        MetadataProcess {
+            child: std::process::Command::new("sh")
+                .args(["-c", "read -r release", "cargo", command])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("cargo command fixture"),
+        }
+    }
+
+    /// Measurements are supplied explicitly by tests that need process evidence.
+    fn no_measurements() -> Attributed {
+        Attributed {
+            compilers: HashMap::new(),
+            cpu:       HashMap::new(),
+        }
+    }
+
+    /// Run production selection and assembly against a controlled process snapshot.
+    fn fixture_groups(
+        census: &mut Census,
+        system: &System,
+        capture: &Capture,
+        excluded: &[String],
+    ) -> Vec<CargoGroup> {
+        census.identify_capture_wrappers(system, capture);
+        census.identify_captures(capture);
+        census.select_rows(system, capture, excluded);
+        census.groups(
+            system,
+            &no_measurements(),
+            ScannerHome::Known(Path::new("/writer")),
+            capture,
+        )
+    }
+
+    #[test]
+    fn confirmed_registration_sources_directory_command_time_and_unknown_measurements() {
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let mut census = census_of(&[]);
+        let groups = fixture_groups(&mut census, &System::new(), &capture, &[]);
+        assert_eq!(groups.len(), 1);
+        let row = &groups[0].lead;
+        assert_eq!(row.pid, 10);
+        assert_eq!(row.path, "~/project");
+        assert_eq!(row.command, CommandText::of("cargo", &["build"]));
+        assert_eq!(
+            row.directory_identity,
+            WorkingDirectoryIdentity::Absolute("/writer/project".into())
+        );
+        assert!(matches!(row.started, RunStart::Known(_)));
+        assert!(matches!(row.provenance, RowProvenance::Direct(_)));
+        assert_eq!(
+            row.cpu,
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(
+            row.managed,
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(row.compiler, CompilerObservation::Unknown);
+    }
+
+    /// Missing account records change the label without discarding verified ownership.
+    #[test]
+    fn unresolved_account_lookup_preserves_fallback_row_owner() {
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let mut capture = verified_capture(root.path());
+        let users = Users::new();
+        let status = capture.root_status.first_mut().expect("observed root");
+        let RootOwner::Uid(uid) = status.owner else {
+            panic!("verified root has an observed owner");
+        };
+        status.account = AccountName::resolve(status.owner, &users);
+        assert_eq!(status.account, AccountName::Unavailable);
+        assert_eq!(
+            AccountName::resolve(RootOwner::Unavailable, &users),
+            AccountName::Unavailable
+        );
+        let mut census = census_of(&[]);
+        let groups = fixture_groups(&mut census, &System::new(), &capture, &[]);
+        assert_eq!(groups.len(), 1);
+        let RowProvenance::Direct(context) = &groups[0].lead.provenance else {
+            panic!("missing account name does not remove verified provenance");
+        };
+        assert_eq!(context.account.uid, uid);
+        assert_eq!(context.account.name, AccountName::Unavailable);
+    }
+
+    #[test]
+    fn registration_timestamp_failure_preserves_row_and_orders_it_after_known_starts() {
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let DirectAssociation::Direct(mut direct) = capture.row_source(10) else {
+            panic!("verified source");
+        };
+        direct.modified = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
+        let unknown = registration_row(
+            &direct,
+            &capture,
+            ScannerHome::Unavailable,
+            SystemTime::now(),
+        )
+        .expect("row survives missing mtime");
+        assert_eq!(unknown.started, RunStart::Unavailable);
+        assert_eq!(unknown.start, UNRESOLVED_TIME);
+        assert_eq!(unknown.duration, UNRESOLVED_TIME);
+        let mut known = directory_row();
+        known.started = RunStart::Known(1);
+        let mut ordered = vec![unknown.clone(), known.clone()];
+        ordered.sort_by(newest_first);
+        assert_eq!(ordered, [known, unknown]);
+        assert!(RunStart::Known(u64::MAX) < RunStart::Unavailable);
+    }
+
+    #[test]
+    fn direct_registration_fills_cwd_and_argv_independently_before_formatting() {
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let direct = capture.row_source(10);
+        let observed = [OsString::from("cargo"), OsString::from("test")];
+        let (identity, path, command) = row_fields(
+            WorkingDirectoryObservation::Unavailable,
+            &observed,
+            &direct,
+            ScannerHome::Known(Path::new("/writer")),
+        )
+        .expect("merge directory");
+        assert_eq!(
+            identity,
+            WorkingDirectoryIdentity::Absolute("/writer/project".into())
+        );
+        assert_eq!(path, "~/project");
+        assert_eq!(command, CommandText::of("cargo", &["test"]));
+        let (identity, path, command) = row_fields(
+            WorkingDirectoryObservation::Observed(Path::new("/own")),
+            &[],
+            &direct,
+            ScannerHome::Unavailable,
+        )
+        .expect("merge argv");
+        assert_eq!(identity, WorkingDirectoryIdentity::Absolute("/own".into()));
+        assert_eq!(path, "/own");
+        assert_eq!(command, CommandText::of("cargo", &["build"]));
+        assert_eq!(
+            row_fields(
+                WorkingDirectoryObservation::Unavailable,
+                &[OsString::from("application")],
+                &direct,
+                ScannerHome::Unavailable
+            ),
+            Err(RowAbsence::Excluded)
+        );
+    }
+
+    #[test]
+    fn process_with_unavailable_cwd_keeps_pid_and_measurements_after_merge() {
+        let fixture = cargo_process("build");
+        let pid = Pid::from_u32(fixture.child.id());
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            false,
+            ProcessRefreshKind::nothing()
+                .without_tasks()
+                .with_cmd(UpdateKind::Always),
+        );
+        let process = system.process(pid).expect("live process");
+        assert!(process.cwd().is_none());
+        let row = row(
+            process,
+            InvocationId::for_test(pid.as_u32()),
+            CompilerObservation::None,
+            Measurement::Reading(3),
+            ScannerHome::Known(Path::new("/writer")),
+            Measurement::Reading(42.0),
+            &capture.row_source(10),
+        )
+        .expect("merged process row");
+        assert_eq!(row.pid, pid.as_u32());
+        assert_eq!(row.path, "~/project");
+        assert_eq!(row.cpu, Measurement::Reading("42%".into()));
+        assert_eq!(row.managed, Measurement::Reading(3));
+        assert_eq!(row.compiler, CompilerObservation::None);
+    }
+
+    #[test]
+    fn registration_and_process_scans_keep_one_invocation_and_exclusions_apply_to_both() {
+        let fixture = cargo_process("build");
+        let pid = Pid::from_u32(fixture.child.id());
+        let system = process_details(&[pid]);
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let modified = UNIX_EPOCH + Duration::from_secs(1234);
+        fs::File::open(
+            root.path()
+                .join(CAPTURE_LIVE_RUNS_DIR)
+                .join("10.generation"),
+        )
+        .expect("registration descriptor")
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .expect("distinct invocation start");
+        let capture = verified_capture(root.path());
+        let mut absent = census_of(&[]);
+        let first = fixture_groups(&mut absent, &System::new(), &capture, &[]);
+        let mut present = census_of(&[(pid.as_u32(), 10)]);
+        present.cargo.push(pid);
+        let second = fixture_groups(&mut present, &system, &capture, &[]);
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].id(), second[0].id());
+        assert_eq!(first[0].lead.started, RunStart::Known(1234));
+        assert_eq!(second[0].lead.started, first[0].lead.started);
+        assert_eq!(second[0].lead.start, first[0].lead.start);
+        assert_eq!(first[0].lead.pid, 10);
+        assert_eq!(second[0].lead.pid, pid.as_u32());
+        let mut roster = crate::roster::Roster::new();
+        let now = Instant::now();
+        roster.observe(first, now);
+        let ids = roster.tiled_ids(&[]);
+        roster.observe(second, now + poll());
+        assert_eq!(roster.tiled_ids(&[]), ids);
+        assert_eq!(roster.groups().len(), 1);
+        for mut census in [census_of(&[]), census_of(&[(pid.as_u32(), 10)])] {
+            census.cargo.push(pid);
+            assert!(fixture_groups(&mut census, &system, &capture, &["build".into()]).is_empty());
+        }
+    }
+
+    #[test]
+    fn unknown_legacy_and_ambiguous_publications_never_source_rows_and_ambiguity_recovers() {
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "first",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let unknown = Capture::take_from(root.path(), |pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        assert!(fixture_groups(&mut census_of(&[]), &System::new(), &unknown, &[]).is_empty());
+        assert!(matches!(unknown.row_source(10), DirectAssociation::None));
+        write_versioned_capture(root.path(), 10, "second", "/other", "/writer", "test", "");
+        let mut competing = verified_capture(root.path());
+        let census = census_of(&[]);
+        assert!(fixture_groups(&mut census_of(&[]), &System::new(), &competing, &[]).is_empty());
+        census.associate_status(&mut competing, &[]);
+        let associations = &competing.root_status[0].associations;
+        assert_eq!(associations.len(), 1);
+        assert!(
+            matches!(&associations[0].selection, AssociationSelection::Ambiguous { candidates } if candidates.len() == 2)
+        );
+        let mut row = directory_row();
+        census.annotate_capture(&mut row, &competing, ScannerHome::Unavailable);
+        assert_eq!(row.provenance, RowProvenance::Uncaptured);
+        assert_eq!(row.state, CaptureLookup::Unregistered);
+        fs::remove_file(root.path().join(CAPTURE_LIVE_RUNS_DIR).join("10.second"))
+            .expect("remove competing publication");
+        let recovered = verified_capture(root.path());
+        assert_eq!(
+            fixture_groups(&mut census_of(&[]), &System::new(), &recovered, &[]).len(),
+            1
+        );
+        let legacy_root = capture_root(&[(10, "")]);
+        let legacy = verified_capture(legacy_root.path());
+        assert!(fixture_groups(&mut census_of(&[]), &System::new(), &legacy, &[]).is_empty());
+    }
+
+    #[test]
+    fn two_confirmed_roots_select_one_fallback_and_report_the_unused_proof() {
+        let first = tempdir().expect("first root");
+        let second = tempdir().expect("second root");
+        write_versioned_capture(
+            first.path(),
+            10,
+            "first",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        write_versioned_capture(second.path(), 10, "second", "/other", "/writer", "test", "");
+        let roots = resolved_test_roots(&[first.path(), second.path()]);
+        let stamp = directory_record("/writer").identity().clone();
+        let IdentityEvidence::Available(stamp) = stamp else {
+            panic!("birth");
+        };
+        let mut capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Present(stamp.clone()))
+        });
+        let mut census = census_of(&[]);
+        let groups = fixture_groups(&mut census, &System::new(), &capture, &[]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.path, "~/project");
+        assert_eq!(groups[0].lead.command, CommandText::of("cargo", &["build"]));
+        census.associate_status(&mut capture, &groups);
+        assert!(matches!(&capture.root_status[0].associations[0].selection,
+            AssociationSelection::Selected { key, proof: SelectedProof::Confirmed, unused }
+            if key.root == CaptureRootIndex(0) && unused.len() == 1 && unused[0].key.root == CaptureRootIndex(1) && unused[0].reason == UnusedCaptureReason::RootPrecedence));
+    }
+
+    #[test]
+    fn selected_unconfirmed_root_never_borrows_another_roots_metadata_or_adds_a_row() {
+        let first = capture_root(&[(10, "")]);
+        let second = tempdir().expect("second root");
+        write_versioned_capture(second.path(), 10, "second", "/other", "/writer", "test", "");
+        let roots = resolved_test_roots(&[first.path(), second.path()]);
+        let IdentityEvidence::Available(stamp) = directory_record("/writer").identity().clone()
+        else {
+            panic!("birth");
+        };
+        let mut capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Present(stamp.clone()))
+        });
+        let mut census = census_of(&[]);
+        census.select_rows(&System::new(), &capture, &[]);
+        let mut row = directory_row();
+        census.annotate_capture(&mut row, &capture, ScannerHome::Unavailable);
+        let mut rows = vec![row.clone()];
+        census.add_registration_rows(
+            &mut rows,
+            &capture,
+            ScannerHome::Unavailable,
+            SystemTime::now(),
+        );
+        assert_eq!(rows, [row]);
+        assert_eq!(rows[0].provenance, RowProvenance::Uncaptured);
+        assert_eq!(rows[0].command, CommandText::of("cargo", &["build"]));
+        let groups = census.assemble_groups(&System::new(), ScannerHome::Unavailable, rows);
+        census.associate_status(&mut capture, &groups);
+        assert!(matches!(&capture.root_status[0].associations[0].selection,
+            AssociationSelection::Selected { proof: SelectedProof::Unconfirmed, unused, .. }
+            if unused.len() == 1 && unused[0].reason == UnusedCaptureReason::SelectedUnconfirmed));
+    }
+
+    #[test]
+    fn unreadable_log_does_not_remove_verified_registration_row_or_change_active_count() {
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let log = root.path().join("run-generation-10.log");
+        fs::remove_file(&log).expect("remove log");
+        fs::create_dir(&log).expect("unreadable log");
+        let capture = verified_capture(root.path());
+        assert_eq!(capture.root_status[0].confirmed, 0);
+        assert!(
+            capture.root_status[0]
+                .diagnostics
+                .iter()
+                .any(|diagnostic| matches!(diagnostic, CaptureDiagnostic::LogUnreadable(_)))
+        );
+        let groups = fixture_groups(&mut census_of(&[]), &System::new(), &capture, &[]);
+        assert_eq!(groups.len(), 1);
+        assert!(matches!(
+            groups[0].lead.state,
+            CaptureLookup::Registered(CaptureRead::Unreadable(_))
+        ));
+        assert_eq!(capture.root_status[0].confirmed, 0);
+    }
+
+    #[test]
+    fn enclosing_descendant_does_not_suppress_fallback_and_both_sources_assemble_one_tree() {
+        let child = cargo_process("test");
+        let child_pid = Pid::from_u32(child.child.id());
+        let parent = cargo_process("build");
+        let parent_pid = Pid::from_u32(parent.child.id());
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let child_only = process_details(&[child_pid]);
+        let both = process_details(&[parent_pid, child_pid]);
+        let mut census = census_of(&[
+            (parent_pid.as_u32(), 10),
+            (child_pid.as_u32(), parent_pid.as_u32()),
+        ]);
+        census.cargo = vec![child_pid];
+        let first = fixture_groups(&mut census, &child_only, &capture, &[]);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].rest.len(), 1);
+        assert!(matches!(
+            first[0].rest[0].capture_membership,
+            CaptureMembership::Enclosing(_)
+        ));
+        assert!(matches!(
+            first[0].rest[0].provenance,
+            RowProvenance::Enclosing(_)
+        ));
+        assert_eq!(
+            first[0].rest[0].command,
+            CommandText::of("cargo", &["test"])
+        );
+        assert_eq!(
+            first[0].rest[0].parent,
+            VisibleParent::Invocation {
+                id:  first[0].id(),
+                pid: 10,
+            }
+        );
+        let mut present = census_of(&[
+            (parent_pid.as_u32(), 10),
+            (child_pid.as_u32(), parent_pid.as_u32()),
+        ]);
+        present.cargo = vec![parent_pid, child_pid];
+        let second = fixture_groups(&mut present, &both, &capture, &[]);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].rest.len(), 1);
+        assert_eq!(second[0].id(), first[0].id());
+        assert_eq!(second[0].lead.pid, parent_pid.as_u32());
+        assert_eq!(
+            second[0].rest[0].parent,
+            VisibleParent::Invocation {
+                id:  first[0].id(),
+                pid: parent_pid.as_u32(),
+            }
+        );
+        let mut missing_parent = census_of(&[
+            (parent_pid.as_u32(), 10),
+            (child_pid.as_u32(), parent_pid.as_u32()),
+        ]);
+        missing_parent.cargo = vec![parent_pid, child_pid];
+        let partial = fixture_groups(&mut missing_parent, &child_only, &capture, &[]);
+        assert_eq!(partial.len(), 1);
+        assert_eq!(partial[0].id(), first[0].id());
+        assert_eq!(partial[0].rest.len(), 1);
+        assert_eq!(
+            partial[0].rest[0].invocation_id,
+            first[0].rest[0].invocation_id
+        );
+        assert_family_source_transitions(&[first.clone(), second, partial, first]);
+    }
+
+    /// Source transitions retain family assignments and the focused tile together.
+    fn assert_family_source_transitions(scans: &[Vec<CargoGroup>]) {
+        let mut roster = crate::roster::Roster::new();
+        let mut grid = crate::tiles::TileGrid::new();
+        grid.set_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 1);
+        let mut expected_family = crate::roster::FamilyHead::NoChildren;
+        for (index, scan) in scans.iter().enumerate() {
+            roster.observe(scan.clone(), Instant::now());
+            assert_eq!(roster.groups().len(), 1);
+            let tracked = &roster.groups()[0];
+            assert_eq!(tracked.rows().count(), 2);
+            assert!(tracked.rows().all(|row| !row.is_ended()));
+            if index == 0 {
+                expected_family = tracked.lead.family();
+            }
+            assert_eq!(tracked.lead.family(), expected_family);
+            assert!(matches!(
+                expected_family,
+                crate::roster::FamilyHead::Heads(_)
+            ));
+            let demands = crate::tiles::TileDemands {
+                summary: 3,
+                groups:  vec![crate::tiles::TileDemand {
+                    id:   tracked.id.clone(),
+                    rows: 3,
+                }],
+            };
+            grid.sync(&demands, 1);
+            if index == 0 {
+                grid.focus_cell(crate::constants::TABLE_CELL + 1);
+            }
+            assert!(
+                grid.placements(ratatui::layout::Rect::new(0, 0, 120, 40), 1)
+                    .iter()
+                    .any(|placement| placement.content
+                        == crate::tiles::TileContent::Group(tracked.id.clone())
+                        && placement.frame.is_focused())
+            );
+        }
+    }
+
+    #[test]
+    fn enclosing_membership_never_suppresses_fallback_even_at_the_registered_pid() {
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let mut census = census_of(&[(10, 1)]);
+        census.capture_mismatches.insert(Pid::from_u32(10));
+        census.select_rows(&System::new(), &capture, &[]);
+        let mut process = directory_row();
+        process.command = CommandText::of("cargo", &["test"]);
+        census.annotate_capture(&mut process, &capture, ScannerHome::Unavailable);
+        assert!(matches!(
+            process.capture_membership,
+            CaptureMembership::Enclosing(_)
+        ));
+        let mut rows = vec![process];
+        census.add_registration_rows(
+            &mut rows,
+            &capture,
+            ScannerHome::Unavailable,
+            SystemTime::now(),
+        );
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].invocation_id, rows[1].invocation_id);
+        assert_eq!(rows[0].command, CommandText::of("cargo", &["test"]));
+        assert_eq!(rows[1].command, CommandText::of("cargo", &["build"]));
+    }
+
+    #[test]
+    fn current_registration_argv_is_reconsidered_when_the_census_name_was_not_cargo() {
+        let fixture = cargo_process("build");
+        let pid = Pid::from_u32(fixture.child.id());
+        let system = process_details(&[pid]);
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            pid.as_u32(),
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let mut census = census_of(&[(pid.as_u32(), 1)]);
+        assert!(census.cargo.is_empty());
+        census.include_registered_processes(&system, &capture);
+        assert_eq!(census.cargo, [pid]);
+        let groups = fixture_groups(&mut census, &system, &capture, &[]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, pid.as_u32());
+        assert_eq!(groups[0].lead.managed, Measurement::Reading(0));
+        assert!(matches!(
+            groups[0].lead.invocation_id,
+            InvocationId::Captured(_)
+        ));
+    }
+
+    #[test]
+    fn assembled_managed_counts_include_registration_children_and_nested_parents() {
+        let root = tempdir().expect("root");
+        for pid in [20, 30] {
+            write_versioned_capture(
+                root.path(),
+                pid,
+                "generation",
+                "/writer/project",
+                "/writer",
+                "build",
+                "",
+            );
+        }
+        let capture = verified_capture(root.path());
+        let mut census = census_of(&[(20, 10), (30, 20)]);
+        census.select_rows(&System::new(), &capture, &[]);
+        let mut rows = vec![directory_row()];
+        census.add_registration_rows(
+            &mut rows,
+            &capture,
+            ScannerHome::Unavailable,
+            SystemTime::now(),
+        );
+        let groups = census.assemble_groups(&System::new(), ScannerHome::Unavailable, rows);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, 10);
+        assert_eq!(groups[0].lead.managed, Measurement::Reading(2));
+        assert_eq!(groups[0].rest.len(), 2);
+        let parent = groups[0]
+            .rest
+            .iter()
+            .find(|row| row.pid == 20)
+            .expect("parent");
+        assert_eq!(parent.managed, Measurement::Reading(1));
+        let child = groups[0]
+            .rest
+            .iter()
+            .find(|row| row.pid == 30)
+            .expect("child");
+        assert_eq!(
+            child.managed,
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(
+            child.parent,
+            VisibleParent::Invocation {
+                id:  parent.invocation_id.clone(),
+                pid: parent.pid,
+            }
+        );
+    }
+
+    #[test]
+    fn group_absence_distinguishes_process_identity_and_deliberate_exclusion() {
+        let fixture = cargo_process("build");
+        let pid = Pid::from_u32(fixture.child.id());
+        let system = process_details(&[pid]);
+        let mut census = census_of(&[]);
+        let children = HashMap::new();
+        let capture = Capture::default();
+        assert_eq!(
+            census.group(
+                &System::new(),
+                &no_measurements(),
+                ScannerHome::Unavailable,
+                &children,
+                &capture,
+                pid
+            ),
+            Err(GroupAbsence::NoProcess)
+        );
+        assert_eq!(
+            census.group(
+                &system,
+                &no_measurements(),
+                ScannerHome::Unavailable,
+                &children,
+                &capture,
+                pid
+            ),
+            Err(GroupAbsence::NoIdentity)
+        );
+        census.eligibility.insert(pid, Err(RowAbsence::Excluded));
+        assert_eq!(
+            census.group(
+                &system,
+                &no_measurements(),
+                ScannerHome::Unavailable,
+                &children,
+                &capture,
+                pid
+            ),
+            Err(GroupAbsence::Excluded)
+        );
     }
 
     #[test]
@@ -2259,15 +3600,35 @@ mod tests {
     fn shim_detection_requires_observed_cwds_and_subcommands() {
         let argv = [OsString::from("cargo"), OsString::from("build")];
         let cwd = Path::new("/work");
-        assert!(!observed_shim_match(&argv, None, &argv, None));
-        assert!(!observed_shim_match(&argv, Some(cwd), &argv, None));
-        assert!(!observed_shim_match(&[], Some(cwd), &[], Some(cwd)));
-        assert!(observed_shim_match(&argv, Some(cwd), &argv, Some(cwd)));
         assert!(!observed_shim_match(
             &argv,
-            Some(cwd),
+            WorkingDirectoryObservation::Unavailable,
             &argv,
-            Some(Path::new("/other"))
+            WorkingDirectoryObservation::Unavailable
+        ));
+        assert!(!observed_shim_match(
+            &argv,
+            WorkingDirectoryObservation::Observed(cwd),
+            &argv,
+            WorkingDirectoryObservation::Unavailable
+        ));
+        assert!(!observed_shim_match(
+            &[],
+            WorkingDirectoryObservation::Observed(cwd),
+            &[],
+            WorkingDirectoryObservation::Observed(cwd)
+        ));
+        assert!(observed_shim_match(
+            &argv,
+            WorkingDirectoryObservation::Observed(cwd),
+            &argv,
+            WorkingDirectoryObservation::Observed(cwd)
+        ));
+        assert!(!observed_shim_match(
+            &argv,
+            WorkingDirectoryObservation::Observed(cwd),
+            &argv,
+            WorkingDirectoryObservation::Observed(Path::new("/other"))
         ));
     }
 
@@ -2305,14 +3666,14 @@ mod tests {
         .expect("direct proof");
         let mut process = directory_row();
         process.pid = 11;
-        census.annotate_capture(&mut process, &capture, None);
+        census.annotate_capture(&mut process, &capture, ScannerHome::Unavailable);
         assert_eq!(process.invocation_id, direct.invocation_id());
         assert_eq!(process.capture_membership, CaptureMembership::Outside);
         let mut nested = directory_row();
         nested.pid = 12;
         nested.path = "/nested".to_owned();
         nested.command = CommandText::of("cargo", &["test"]);
-        census.annotate_capture(&mut nested, &capture, None);
+        census.annotate_capture(&mut nested, &capture, ScannerHome::Unavailable);
         assert_ne!(process.invocation_id, nested.invocation_id);
         assert_eq!(
             nested.capture_membership,
@@ -2448,7 +3809,7 @@ mod tests {
             );
             let mut row = directory_row();
             row.pid = pid;
-            census.annotate_capture(&mut row, &capture, None);
+            census.annotate_capture(&mut row, &capture, ScannerHome::Unavailable);
             assert!(matches!(
                 row.capture_membership,
                 CaptureMembership::Enclosing(_)
@@ -2560,6 +3921,58 @@ mod tests {
             OsString::from_vec(b"'/toolchain\xff/cargo-tile-real' 'build\xff' ".to_vec()),
         ];
         assert!(forwards_capture_command(&argv, &record));
+    }
+
+    #[test]
+    fn json_capture_forwarding_removes_all_quiet_flags_only_before_the_separator() {
+        for format in [
+            vec!["--message-format=json"],
+            vec!["--message-format", "json-diagnostic-rendered-ansi"],
+        ] {
+            let registered: Vec<OsString> = ["check", "--quiet", "-q", "--quiet"]
+                .into_iter()
+                .chain(format.iter().copied())
+                .chain(["--", "--quiet", "-q"])
+                .map(OsString::from)
+                .chain([OsString::from_vec(b"package\xff".to_vec())])
+                .collect();
+            let rewritten: Vec<OsString> = ["check"]
+                .into_iter()
+                .chain(format.iter().copied())
+                .chain(["--", "--quiet", "-q"])
+                .map(OsString::from)
+                .chain([OsString::from_vec(b"package\xff".to_vec())])
+                .collect();
+            assert!(forwards_json_capture_arguments(&rewritten, &registered));
+            let mut partial = rewritten.clone();
+            partial.insert(1, OsString::from("-q"));
+            assert!(!forwards_json_capture_arguments(&partial, &registered));
+            let mut changed = rewritten.clone();
+            changed[0] = OsString::from("build");
+            assert!(!forwards_json_capture_arguments(&changed, &registered));
+            let mut changed = rewritten.clone();
+            changed.pop();
+            changed.push(OsString::from("package"));
+            assert!(!forwards_json_capture_arguments(&changed, &registered));
+            let mut changed = rewritten;
+            changed.remove(changed.len() - 2);
+            assert!(!forwards_json_capture_arguments(&changed, &registered));
+        }
+    }
+
+    #[test]
+    fn json_capture_forwarding_rejects_non_json_and_post_separator_formats() {
+        for registered in [
+            vec!["check", "--quiet"],
+            vec!["check", "--quiet", "--message-format=human"],
+            vec!["check", "--quiet", "--", "--message-format=json"],
+            vec!["check", "--quiet", "--message-format", "--", "json"],
+        ] {
+            let registered: Vec<_> = registered.into_iter().map(OsString::from).collect();
+            let mut rewritten = registered.clone();
+            rewritten.remove(1);
+            assert!(!forwards_json_capture_arguments(&rewritten, &registered));
+        }
     }
 
     #[test]
@@ -2701,6 +4114,7 @@ mod tests {
                 .collect(),
             capture_boundaries:       HashSet::new(),
             capture_wrappers:         HashSet::new(),
+            capture_mismatches:       HashSet::new(),
             lifetimes:                HashMap::new(),
             eligibility:              HashMap::new(),
             registration_eligibility: HashMap::new(),
@@ -2748,12 +4162,13 @@ mod tests {
         CargoProcess {
             invocation_id:      InvocationId::for_test(10),
             capture_membership: CaptureMembership::Outside,
+            provenance:         RowProvenance::Uncaptured,
             path:               "~/project".to_owned(),
             directory_identity: WorkingDirectoryIdentity::Absolute("/writer/project".into()),
             pid:                10,
             parent:             VisibleParent::None,
             start:              "10:00".to_owned(),
-            started:            0,
+            started:            RunStart::Known(0),
             duration:           "00:01".to_owned(),
             cpu:                Measurement::Reading("0%".to_owned()),
             compiler:           CompilerObservation::None,
@@ -2768,7 +4183,7 @@ mod tests {
     fn captured_state(census: &Census, capture: &Capture, pid: u32) -> CaptureLookup {
         let mut row = directory_row();
         row.pid = pid;
-        census.annotate_capture(&mut row, capture, None);
+        census.annotate_capture(&mut row, capture, ScannerHome::Unavailable);
         row.state
     }
 
@@ -2880,7 +4295,7 @@ mod tests {
             row.path = "process directory".to_owned();
             row.directory_identity = WorkingDirectoryIdentity::Absolute(directory.into());
             row.command = CommandText::of("cargo", &[command]);
-            census.annotate_capture(&mut row, &capture, Some(Path::new("/writer")));
+            census.annotate_capture(&mut row, &capture, ScannerHome::Known(Path::new("/writer")));
 
             assert_eq!(row.path, expected_path);
             assert_eq!(
@@ -2927,24 +4342,28 @@ mod tests {
                 ancestry: Vec::new(),
             }];
             census_of(&[(10, 20)]).associate_status(&mut capture, &groups);
-            assert_eq!(
-                capture.root_status[preferred_index].associations,
-                vec![super::CaptureAssociation {
-                    pid:              10,
-                    registration_pid: 10,
-                    suppressed:       vec![
-                        confirmed
-                            .path()
-                            .canonicalize()
-                            .expect("absolute confirmed root")
-                    ],
-                }]
-            );
-            assert!(
-                capture.root_status[1 - preferred_index]
-                    .associations
-                    .is_empty()
-            );
+            let associations = &capture.root_status[preferred_index].associations;
+            assert_eq!(associations.len(), 1);
+            assert_eq!(associations[0].pid, 10);
+            let AssociationSelection::Selected { key, proof, unused } = &associations[0].selection
+            else {
+                panic!("preferred root selects its reading");
+            };
+            assert_eq!(key.pid, 10);
+            assert_eq!(*proof, SelectedProof::Unconfirmed);
+            if confirmed_pid == 10 {
+                assert_eq!(unused.len(), 1);
+                assert_eq!(unused[0].reason, UnusedCaptureReason::SelectedUnconfirmed);
+                assert_eq!(
+                    unused[0].root,
+                    confirmed.path().canonicalize().expect("root")
+                );
+            } else {
+                assert_eq!(
+                    capture.root_status[1 - preferred_index].associations.len(),
+                    1
+                );
+            }
         }
     }
 
@@ -2976,7 +4395,11 @@ mod tests {
         assert_eq!(capture.confirmed()[0].key.root, CaptureRootIndex(1));
         let mut row = directory_row();
         row.path = "process directory".to_owned();
-        census_of(&[]).annotate_capture(&mut row, &capture, Some(Path::new("/writer")));
+        census_of(&[]).annotate_capture(
+            &mut row,
+            &capture,
+            ScannerHome::Known(Path::new("/writer")),
+        );
 
         assert_eq!(row.path, "process directory");
         assert_eq!(
@@ -3044,7 +4467,7 @@ mod tests {
             &mut system,
             &mut smoothing,
             Instant::now(),
-            None,
+            ScannerHome::Unavailable,
             &[],
             &roots,
         );
@@ -3070,7 +4493,7 @@ mod tests {
             &mut system,
             &mut smoothing,
             Instant::now(),
-            None,
+            ScannerHome::Unavailable,
             &[],
             &roots,
         );
@@ -3111,14 +4534,22 @@ mod tests {
             let mut row = directory_row();
             let identity = row.directory_identity.clone();
 
-            census_of(&[]).annotate_capture(&mut row, &capture, Some(Path::new("/writer")));
+            census_of(&[]).annotate_capture(
+                &mut row,
+                &capture,
+                ScannerHome::Known(Path::new("/writer")),
+            );
 
             assert_eq!(row.path, display);
             assert_eq!(row.directory_identity, identity);
 
             row.directory_identity = WorkingDirectoryIdentity::Absolute("/other/project".into());
             row.path = "~/project".to_owned();
-            census_of(&[]).annotate_capture(&mut row, &capture, Some(Path::new("/writer")));
+            census_of(&[]).annotate_capture(
+                &mut row,
+                &capture,
+                ScannerHome::Known(Path::new("/writer")),
+            );
             assert_eq!(row.path, "~/project");
             assert_eq!(
                 row.directory_identity,
@@ -3132,16 +4563,22 @@ mod tests {
         let record = directory_record("/writer");
         assert_eq!(record.directory(), Path::new("/writer/project"));
         assert_eq!(
-            registration_directory(&record, Some(Path::new("/writer"))),
+            registration_directory(&record, ScannerHome::Known(Path::new("/writer"))),
             "~/project"
         );
         assert_eq!(
-            registration_directory(&record, Some(Path::new("/other"))),
+            registration_directory(&record, ScannerHome::Known(Path::new("/other"))),
             "/writer/project"
         );
-        assert_eq!(registration_directory(&record, None), "/writer/project");
         assert_eq!(
-            registration_directory(&directory_record(""), Some(Path::new("/writer"))),
+            registration_directory(&record, ScannerHome::Unavailable),
+            "/writer/project"
+        );
+        assert_eq!(
+            registration_directory(
+                &directory_record(""),
+                ScannerHome::Known(Path::new("/writer"))
+            ),
             "/writer/project"
         );
     }
@@ -3149,7 +4586,10 @@ mod tests {
     #[test]
     fn a_custom_writer_home_does_not_use_the_scanners_tilde_prefix() {
         assert_eq!(
-            registration_directory(&directory_record("/custom"), Some(Path::new("/writer"))),
+            registration_directory(
+                &directory_record("/custom"),
+                ScannerHome::Known(Path::new("/writer"))
+            ),
             "/writer/project"
         );
     }
@@ -3402,20 +4842,26 @@ mod tests {
     fn home_prefix_collapses_to_tilde() {
         let home = PathBuf::from("/Users/someone");
         let path = PathBuf::from("/Users/someone/rust/project");
-        assert_eq!(home_relative(&path, Some(&home)), "~/rust/project");
+        assert_eq!(
+            home_relative(&path, ScannerHome::Known(&home)),
+            "~/rust/project"
+        );
     }
 
     #[test]
     fn home_itself_renders_as_bare_tilde() {
         let home = PathBuf::from("/Users/someone");
-        assert_eq!(home_relative(&home, Some(&home)), "~");
+        assert_eq!(home_relative(&home, ScannerHome::Known(&home)), "~");
     }
 
     #[test]
     fn path_outside_home_is_left_alone() {
         let home = PathBuf::from("/Users/someone");
         let path = PathBuf::from("/opt/build");
-        assert_eq!(home_relative(&path, Some(&home)), "/opt/build");
+        assert_eq!(
+            home_relative(&path, ScannerHome::Known(&home)),
+            "/opt/build"
+        );
     }
 
     #[test]
@@ -3425,7 +4871,8 @@ mod tests {
             OsString::from("build"),
             OsString::from("--release"),
         ];
-        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        let text =
+            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
         assert_eq!(text.line(SummaryDetail::Full), "build --release");
     }
@@ -3438,7 +4885,8 @@ mod tests {
             OsString::from("check"),
             OsString::from("--all-targets"),
         ];
-        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        let text =
+            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
         assert_eq!(text.line(SummaryDetail::Full), "check --all-targets");
     }
@@ -3450,7 +4898,7 @@ mod tests {
             OsString::from("build"),
         ];
         assert_eq!(
-            command_text(&argv, None)
+            command_text(&argv, ScannerHome::Unavailable)
                 .expect("argv names a cargo binary")
                 .program,
             "cargo"
@@ -3532,7 +4980,7 @@ mod tests {
             OsString::from("--crate-name"),
             OsString::from("bevy_transform"),
         ];
-        assert!(command_text(&argv, None).is_err());
+        assert!(command_text(&argv, ScannerHome::Unavailable).is_err());
     }
 
     #[test]
@@ -3544,7 +4992,8 @@ mod tests {
             OsString::from("/opt/project/Cargo.toml"),
             OsString::from("--all-targets"),
         ];
-        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        let text =
+            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(text.line(SummaryDetail::Trimmed), "check --all-targets");
     }
 
@@ -3556,7 +5005,8 @@ mod tests {
             OsString::from("--manifest-path=/opt/project/Cargo.toml"),
             OsString::from("--all-targets"),
         ];
-        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        let text =
+            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(text.line(SummaryDetail::Trimmed), "check --all-targets");
     }
 
@@ -3571,7 +5021,8 @@ mod tests {
             OsString::from("-p"),
             OsString::from("hana_clerestory"),
         ];
-        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        let text =
+            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(
             text.line(SummaryDetail::Trimmed),
             "mend --all-targets -p hana_clerestory"
@@ -3591,7 +5042,8 @@ mod tests {
             OsString::from("--message-format"),
             OsString::from("json-render-diagnostics"),
         ];
-        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        let text =
+            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(text.line(SummaryDetail::Trimmed), "test --no-run");
     }
 
@@ -3611,7 +5063,8 @@ mod tests {
             OsString::from("--color"),
             OsString::from("always"),
         ];
-        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        let text =
+            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(
             text.line(SummaryDetail::Trimmed),
             "clippy -- -D warnings --color always"
@@ -3629,7 +5082,8 @@ mod tests {
             OsString::from("hana"),
             OsString::from("--message-format=json"),
         ];
-        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        let text =
+            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(
             text.line(SummaryDetail::Full),
             "build --bin hana --message-format=json"
@@ -3646,7 +5100,8 @@ mod tests {
             OsString::from("check"),
             OsString::from("--manifest-path-of-record"),
         ];
-        let text = command_text(&argv, None).expect("argv names a cargo binary");
+        let text =
+            command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(
             text.line(SummaryDetail::Trimmed),
             "check --manifest-path-of-record"
@@ -3662,7 +5117,8 @@ mod tests {
             OsString::from("--manifest-path"),
             OsString::from("/Users/someone/rust/project/Cargo.toml"),
         ];
-        let text = command_text(&argv, Some(&home)).expect("argv names a cargo binary");
+        let text =
+            command_text(&argv, ScannerHome::Known(&home)).expect("argv names a cargo binary");
         assert_eq!(
             text.line(SummaryDetail::Full),
             "check --manifest-path ~/rust/project/Cargo.toml"

@@ -273,7 +273,7 @@ impl TrackedGroup {
     ///
     /// Pid breaks a tie, the rule the tables break one by: a start time
     /// is whole seconds, and macOS hands pids out in order.
-    fn began(&self, hidden_when_idle: &[String]) -> (u64, u32) {
+    fn began(&self, hidden_when_idle: &[String]) -> (crate::processes::RunStart, u32) {
         let key = |row: &TrackedRow| (row.process.started, row.process.pid);
         let tabled = if self.leads_as_ancestor(hidden_when_idle) {
             self.rest.iter().map(key).min()
@@ -817,6 +817,34 @@ mod tests {
         assert!(roster.families.is_empty());
     }
 
+    #[test]
+    fn changed_display_pid_and_unavailable_start_keep_rows_and_family_live() {
+        let mut roster = Roster::new();
+        let mut registration = family(10, &[12]);
+        registration.lead.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
+        registration.lead.started = crate::processes::RunStart::Unavailable;
+        roster.observe(vec![registration.clone()], start());
+        let identity = roster.groups()[0].id.clone();
+        let family = roster.groups()[0].lead.family();
+        let mut process = registration.clone();
+        process.lead.pid = 11;
+        process.lead.started = crate::processes::RunStart::Known(100);
+        process.lead.managed = Measurement::Reading(1);
+        process.rest[0].parent = VisibleParent::Invocation {
+            id:  identity.clone(),
+            pid: 11,
+        };
+        for scan in [process, registration] {
+            roster.observe(vec![scan], start());
+            assert_eq!(roster.groups().len(), 1);
+            let tracked = &roster.groups()[0];
+            assert_eq!(tracked.id, identity);
+            assert_eq!(tracked.lead.family(), family);
+            assert_eq!(tracked.rows().count(), 2);
+            assert!(tracked.rows().all(|row| !row.is_ended()));
+        }
+    }
+
     /// A process row carrying nothing but the pid the tests key on.
     fn process(pid: u32) -> CargoProcess {
         CargoProcess {
@@ -827,9 +855,10 @@ mod tests {
             pid,
             invocation_id: InvocationId::for_test(pid),
             capture_membership: crate::processes::CaptureMembership::Outside,
+            provenance: crate::processes::RowProvenance::Uncaptured,
             parent: VisibleParent::None,
             start: "10:00".to_string(),
-            started: 0,
+            started: crate::processes::RunStart::Known(0),
             duration: "00:01".to_string(),
             cpu: Measurement::Reading("0%".to_string()),
             compiler: CompilerObservation::None,
@@ -894,9 +923,9 @@ mod tests {
     /// The same group with start times stamped on it, lead first --
     /// what the cells are ordered by.
     fn started(mut group: CargoGroup, lead: u64, rest: &[u64]) -> CargoGroup {
-        group.lead.started = lead;
+        group.lead.started = crate::processes::RunStart::Known(lead);
         for (row, start) in group.rest.iter_mut().zip(rest) {
-            row.started = *start;
+            row.started = crate::processes::RunStart::Known(*start);
         }
         group
     }

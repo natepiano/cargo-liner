@@ -5,6 +5,12 @@ use std::time::Duration;
 
 use ratatui::style::Modifier;
 
+// account headings
+/// Separate the account qualifier from the directory without joining their names.
+pub(crate) const ACCOUNT_HEADING_CLOSE: &str = "] ";
+/// Open the account qualifier once per working-directory heading.
+pub(crate) const ACCOUNT_HEADING_OPEN: &str = "[";
+
 // attract screen
 /// How far the attract screen's strip is carried toward or away from
 /// full strength each frame. Divides the range exactly, so the fade
@@ -432,6 +438,13 @@ pub(crate) const TILE_ROWS_RIGHT_INSET: u16 = 1;
 /// Rows the readout takes: it is one line along the foot of the cell.
 pub(crate) const TILE_ROWS_READOUT_HEIGHT: u16 = 1;
 
+// process arguments
+pub(crate) const CARGO_JSON_FORMAT_PREFIX: &str = "json";
+pub(crate) const CARGO_MESSAGE_FORMAT_FLAG: &str = "--message-format";
+pub(crate) const CARGO_MESSAGE_FORMAT_JSON_PREFIX: &str = "--message-format=json";
+/// Flags the shim removes before `--` for non-terminal JSON capture.
+pub(crate) const CARGO_QUIET_FLAGS: [&str; 2] = ["--quiet", "-q"];
+
 // random
 /// Second multiplier in `SplitMix64`'s finalizer.
 pub(crate) const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xbf58_476d_1ce4_e5b9;
@@ -555,7 +568,7 @@ const MANIFEST_PATH_FLAG: &str = "--manifest-path";
 /// member of a workspace is being built and `--all-targets` names how
 /// much of it, which is exactly what the row is there to say.
 pub(crate) const SUMMARY_HIDDEN_VALUED_FLAGS: [&str; 3] =
-    [MANIFEST_PATH_FLAG, "--message-format", "--color"];
+    [MANIFEST_PATH_FLAG, CARGO_MESSAGE_FORMAT_FLAG, "--color"];
 /// The bare `--` handing everything after it to whatever cargo runs.
 /// Those arguments are the other program's, so the summary passes them
 /// through untouched however they are spelled.
@@ -614,6 +627,8 @@ pub(crate) const MANAGED_COLUMN: usize = 8;
 /// how many invocations it is managing, and which cargo started it.
 /// The command's own cell has the room to say so, and the summary
 /// spends that width on the command line instead.
+/// Unavailable compiler and managed-count observations retain their columns so
+/// the summary does not hide measurements the scanner could not establish.
 ///
 /// `parent` has nothing to point at there. A pid in that column is only
 /// worth reading because the screen shows it somewhere else -- another
@@ -655,8 +670,18 @@ pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
 // capture root status
 /// Each process association names the root that supplied all capture fields.
 pub(crate) const CAPTURE_ASSOCIATION: &str = "capture association";
+/// Competing generations explain why no capture can supply a row's fields.
+pub(crate) const CAPTURE_ASSOCIATION_AMBIGUOUS: &str =
+    "capture association ambiguous — no capture selected";
+/// Name the publications that must stop competing before ownership can recover.
+pub(crate) const CAPTURE_ASSOCIATION_COMPETING: &str = "competing registrations";
+/// A verified selection may supply fields even when its log cannot be read.
+pub(crate) const CAPTURE_ASSOCIATION_CONFIRMED: &str = "confirmed selection";
 /// Root precedence deliberately leaves a competing confirmed proof unused.
 pub(crate) const CAPTURE_ASSOCIATION_SUPPRESSED: &str = "another root's proof went unused";
+/// An annotation-only selection must not borrow fields from another root's proof.
+pub(crate) const CAPTURE_ASSOCIATION_UNCONFIRMED: &str =
+    "unconfirmed selection — annotation only; no registration fields";
 /// An empty refusal list authorizes only cleanup justified by process identity.
 pub(crate) const CAPTURE_CLEANUP_ALLOWED: &str = "cleanup allowed for proven ended captures";
 /// Directory replacement prevents removal until another stable scan observes it.
@@ -733,6 +758,11 @@ pub(crate) const CAPTURE_STATUS_UNREADABLE_LOG: &str = "unreadable log";
 pub(crate) const CAPTURE_STATUS_UNREADABLE_REGISTRATION: &str = "unreadable registration";
 /// Missing identity fields can permanently prevent safe deletion.
 pub(crate) const CAPTURE_STATUS_UNVERIFIABLE: &str = "unverifiable artifact";
+/// Explain suppression when both the selected and competing publications verified.
+pub(crate) const CAPTURE_UNUSED_ROOT_PRECEDENCE: &str = "selected root takes precedence";
+/// Explain why a verified sibling cannot repair an unconfirmed preferred reading.
+pub(crate) const CAPTURE_UNUSED_SELECTED_UNCONFIRMED: &str =
+    "selected root is unconfirmed; another root cannot supply its fields";
 
 // capture shim
 /// Name of the real cargo once the shim takes its place beside it. The
@@ -1045,3 +1075,22 @@ pub(crate) const TEST_INVOCATION_PID: u32 = 42;
 /// A second native birth distinguishes a replacement from the original test lifetime.
 #[cfg(test)]
 pub(crate) const TEST_REPLACEMENT_LIFETIME: u64 = 100_002;
+
+#[cfg(test)]
+mod tests {
+    use super::ACCOUNT_HEADING_CLOSE;
+    use super::ACCOUNT_HEADING_OPEN;
+
+    /// The qualifier is visually separate from both the account and directory text.
+    #[test]
+    fn account_heading_delimiters_preserve_the_operator_prefix() {
+        assert_eq!(
+            format!("{ACCOUNT_HEADING_OPEN}runner{ACCOUNT_HEADING_CLOSE}/project"),
+            "[runner] /project"
+        );
+        assert_eq!(
+            format!("{ACCOUNT_HEADING_OPEN}1000{ACCOUNT_HEADING_CLOSE}~/project"),
+            "[1000] ~/project"
+        );
+    }
+}
