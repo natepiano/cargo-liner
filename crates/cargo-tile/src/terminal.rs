@@ -206,7 +206,7 @@ fn restore_terminal(
 /// app costs essentially nothing.
 fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()> {
     let input = spawn_input_thread();
-    let scans = processes::spawn(app.loaded_config.config.commands.excluded.clone());
+    let scans = processes::spawn(&app.loaded_config.config);
     // Each due read runs on a worker of its own and replies here, so a
     // server that has wedged parks that one thread rather than the loop.
     let (sccache_reads, sccache_replies) = mpsc::channel();
@@ -682,7 +682,23 @@ mod tests {
 
     use super::*;
     use crate::attract::SettingsApplicationOutcome;
+    use crate::birth_stamp::KernelObservation;
+    use crate::birth_stamp::Observation;
+    use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::favorites::FavoritesFileState;
+    use crate::processes::CargoGroup;
+    use crate::processes::CargoProcess;
+    use crate::processes::CommandText;
+    use crate::progress::Capture;
+    use crate::progress::CaptureKey;
+    use crate::progress::CaptureLookup;
+    use crate::progress::CaptureRead;
+    use crate::progress::CaptureRootIndex;
+    use crate::progress::CaptureRootSource;
+    use crate::progress::CaptureRoots;
+    use crate::progress::RunState;
+    use crate::registration::DirectoryIdentity;
+    use crate::sccache::SccacheServer;
 
     const FAVORITE_ROW: &str = r#"
 [[favorite]]
@@ -707,6 +723,76 @@ fraying = "leading"
                 })
             })
             .collect()
+    }
+
+    #[test]
+    fn a_configured_roots_capture_reaches_the_roster_through_the_scan_channel() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let directory = TempDir::new().expect("temporary capture root");
+        let markers = directory.path().join(CAPTURE_LIVE_RUNS_DIR);
+        fs::create_dir_all(&markers).expect("registration directory");
+        fs::write(markers.join("10"), "/runner/project\tcargo test").expect("legacy registration");
+        fs::write(
+            directory.path().join("run-generation-10.log"),
+            "    Blocking waiting for file lock on build directory",
+        )
+        .expect("captured output");
+        app.loaded_config.config.capture.roots = vec![directory.path().to_owned()];
+        let mut roots = CaptureRoots::resolve(&app.loaded_config.config.capture.roots);
+        roots.roots.retain(|root| {
+            root.sources
+                .iter()
+                .any(|source| matches!(source, CaptureRootSource::Configuration { .. }))
+        });
+        let capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        let state = capture.read(CaptureKey {
+            root: CaptureRootIndex(0),
+            pid:  10,
+        });
+        assert_eq!(
+            state,
+            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
+        );
+        let process = CargoProcess {
+            path: "/runner/project".to_owned(),
+            directory_identity: DirectoryIdentity::Absolute("/runner/project".into()),
+            pid: 11,
+            parent: None,
+            start: "10:00".to_owned(),
+            started: 0,
+            duration: "00:01".to_owned(),
+            cpu: "0%".to_owned(),
+            compiler: None,
+            state,
+            managed: 0,
+            nested: false,
+            command: CommandText::of("cargo", &["test"]),
+        };
+        let (sender, scans) = mpsc::channel();
+        sender
+            .send(Scan {
+                groups:  vec![CargoGroup {
+                    lead:     process.clone(),
+                    rest:     Vec::new(),
+                    ancestry: Vec::new(),
+                }],
+                sccache: SccacheServer::Stopped,
+            })
+            .expect("scan receiver is alive");
+
+        assert!(drain_scans(&mut app, &scans));
+        let received = app
+            .roster
+            .groups()
+            .first()
+            .expect("received group")
+            .rows()
+            .next()
+            .expect("received process");
+        assert_eq!(received.process, process);
+        assert!(!drain_scans(&mut app, &scans));
     }
 
     #[test]
