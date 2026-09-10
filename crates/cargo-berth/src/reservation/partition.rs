@@ -8,6 +8,7 @@
 
 use super::conflict::ReservationConflict;
 use super::lifecycle::EditBlockingStatus;
+use super::record::ConflictProtection;
 use super::record::Reservation;
 use super::retention::RetainedReservationSet;
 use crate::answer::ConflictAuthorization;
@@ -47,10 +48,9 @@ pub(crate) enum WidenScopeBinding {
 
 /// The actor identity permitted to receive its reservation-specific overlap answers.
 ///
-/// Every identified variant names a worktree and the coordination run acting in it. The
-/// worktree is the coordination unit and one run occupies it at a time, so both terms are
-/// needed: recorded overlap answers bind the worktree, while active work belongs to the
-/// run that acquired it.
+/// Every variant names the invoking checkout; identified variants also name the run acting
+/// in it. One run occupies a checkout at a time, so both terms are needed: recorded overlap
+/// answers bind the worktree, while active work belongs to the run that acquired it.
 #[derive(Clone, Copy)]
 pub(crate) enum AuthorizedEditingIdentity {
     /// A live session mapping identifies one exact reservation.
@@ -65,11 +65,23 @@ pub(crate) enum AuthorizedEditingIdentity {
         coordination_run_id: CoordinationRunId,
         worktree_id:         WorktreeId,
     },
-    /// No coordination run can be proven for this edit.
-    Unidentified,
+    /// The invocation identifies its checkout, but no coordination run can be proven.
+    Unidentified {
+        /// Select race protection here and merge protection in every other checkout.
+        worktree_id: WorktreeId,
+    },
 }
 
 impl AuthorizedEditingIdentity {
+    /// Carry the acting checkout into scope selection as well as foreignness.
+    pub(super) const fn worktree(self) -> WorktreeId {
+        match self {
+            Self::SessionReservation { worktree_id, .. }
+            | Self::Run { worktree_id, .. }
+            | Self::Unidentified { worktree_id } => worktree_id,
+        }
+    }
+
     /// Whether this holder is foreign to the caller: another worktree, or another run
     /// still occupying this one.
     ///
@@ -100,7 +112,7 @@ impl AuthorizedEditingIdentity {
             } => {
                 holder.is_foreign_to_coordination_run_in_worktree(coordination_run_id, worktree_id)
             },
-            Self::Unidentified => true,
+            Self::Unidentified { .. } => true,
         }
     }
 
@@ -116,14 +128,12 @@ impl AuthorizedEditingIdentity {
             .filter(|requester| {
                 self.identifies_requester(requester)
                     && requester.edit_blocking_status() == EditBlockingStatus::Blocking
-                    && requester
-                        .scopes
-                        .as_slice()
-                        .iter()
-                        .any(|scope| scope.overlaps(overlap_scope, path_case))
+                    // An answer authorizes the first write while the requester is still clean.
+                    // Its declaration is an entitlement here, never the holder's refusal extent.
+                    && requester.declared_race_scopes().as_slice().iter().any(|scope| scope.overlaps(overlap_scope, path_case))
             })
             .any(|requester| {
-                reservations_authorize_scope(requester, holder, overlap_scope, path_case)
+                reservations_authorize_scope(reservations, requester, holder, overlap_scope, path_case)
             })
     }
 
@@ -136,27 +146,54 @@ impl AuthorizedEditingIdentity {
             Self::SessionReservation { worktree_id, .. } | Self::Run { worktree_id, .. } => {
                 requester.actor.worktree == worktree_id
             },
-            Self::Unidentified => false,
+            Self::Unidentified { .. } => false,
         }
     }
 }
 
+/// Match answers against the same representative and complete protection the conflict reports.
 pub(super) fn reservations_authorize_scope(
+    reservations: &RetainedReservationSet,
     requester: &Reservation,
     holder: &Reservation,
     overlap_scope: &ReservationScope,
     path_case: PathCase,
 ) -> bool {
-    let holder_scope_revision = OverlapScopeRevision::from(&holder.scopes);
-    let requester_scope_revision = OverlapScopeRevision::from(&requester.scopes);
+    let ConflictProtection::Protected {
+        representative: holder_representative,
+        contributors: holder_contributors,
+        scopes: holder_scopes,
+    } = reservations.protection_for_conflict(holder, requester.actor.worktree, path_case)
+    else {
+        return false;
+    };
+    let holder_scope_revision = OverlapScopeRevision::from(&holder_scopes);
     requester.authorizations.iter().any(|authorization| {
-        authorization.covers(holder.id, &holder_scope_revision, overlap_scope, path_case)
-    }) || holder.authorizations.iter().any(|authorization| {
         authorization.covers(
-            requester.id,
-            &requester_scope_revision,
+            holder_representative.id,
+            &holder_scope_revision,
             overlap_scope,
             path_case,
         )
-    })
+    }) || match reservations.protection_for_conflict(requester, holder.actor.worktree, path_case) {
+        ConflictProtection::Clear => false,
+        ConflictProtection::Protected {
+            representative: requester_representative,
+            scopes: requester_scopes,
+            ..
+        } => {
+            let requester_scope_revision = OverlapScopeRevision::from(&requester_scopes);
+            holder_contributors
+                .iter()
+                .flat_map(|contributor| &contributor.authorizations)
+                .any(|authorization| {
+                    authorization.covers(
+                        requester_representative.id,
+                        &requester_scope_revision,
+                        overlap_scope,
+                        path_case,
+                    )
+                })
+        },
+    }
 }

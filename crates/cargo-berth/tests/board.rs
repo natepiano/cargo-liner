@@ -212,6 +212,7 @@ fn both_unresolved_overlap_endpoints_are_queryable_while_omitted_from_board_rows
     let repository = initialized_repository();
     let (_blocker_directory, blocker_root) = foreign_worktree(&repository, "blocker");
     let (_deferred_directory, deferred_root) = foreign_worktree(&repository, "deferred");
+    dirty_source(&blocker_root, "src/lib.rs");
     let blocker = claim(&blocker_root, "file:src/lib.rs", FIRST_RUN);
     let blocker_id = reservation_id(&blocker);
     let deferred = defer_claim(&deferred_root, "file:src/lib.rs", SECOND_RUN, &blocker_id);
@@ -473,6 +474,7 @@ fn board_outside_a_git_worktree_reports_the_same_unreadable_facts_in_both_modes(
 fn resolved_deferral_moves_to_answer_audit_with_both_reasons() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
     let predecessor = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
     let deferred = defer_claim(&second_root, "file:src/lib.rs", SECOND_RUN, &predecessor_id);
@@ -663,6 +665,7 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
     ] {
         let repository = initialized_repository();
         let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+        dirty_source(repository.path(), "src/lib.rs");
         let blocker = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
         let blocker_id = reservation_id(&blocker);
         let answered = answered_claim(
@@ -728,6 +731,7 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
 fn independent_ready_reservations_are_an_unnumbered_tie() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "first.rs");
     let first = claim(repository.path(), "file:first.rs", FIRST_RUN);
     let first_id = reservation_id(&first);
     let second = answered_claim(
@@ -742,10 +746,10 @@ fn independent_ready_reservations_are_an_unnumbered_tie() {
 
     let (_third_directory, third_root) = foreign_worktree(&repository, "third");
     let fourth_run = uuid::Uuid::now_v7().to_string();
-    // The second chain's head is claimed in this same worktree, so it shares its run. The two
-    // chains are independent because their scopes and ordering edges are, not because of who
-    // claimed them.
-    let third = claim(repository.path(), "file:third.rs", FIRST_RUN);
+    // Independent merge surfaces belong to independent holder branches.
+    let (_fourth_directory, fourth_root) = foreign_worktree(&repository, "fourth");
+    dirty_source(&fourth_root, "third.rs");
+    let third = claim(&fourth_root, "file:third.rs", FIRST_RUN);
     let third_id = reservation_id(&third);
     let fourth = answered_claim(
         &third_root,
@@ -1320,6 +1324,8 @@ fn assert_complete_board_payload_sections(data: &serde_json::Value) {
     assert_eq!(
         git_cost_fields,
         [
+            "merge_extent_path_queries",
+            "merge_extent_worktree_status_queries",
             "orphan_recovery_evidence_queries",
             "protected_predecessor_ancestry_queries",
             "reservation_evidence_revalidations",
@@ -1453,6 +1459,7 @@ fn human_board_names_a_recovered_bypass_once() {
 fn non_board_reconciliation_preserves_recovered_bypass_for_board() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
     let claimed = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
     assert!(claimed.status.success());
     let marker_path = repository.path().join(".git").join(PENDING_BYPASS_NAME);
@@ -1801,6 +1808,7 @@ fn incursion_is_one_shared_incident_then_moves_to_answer_audit() {
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "foreign");
     let subject = claim(repository.path(), "file:owned.txt", FIRST_RUN);
     let subject_id = reservation_id(&subject);
+    dirty_source(&foreign_root, "shared/entered.txt");
     let foreign = claim(&foreign_root, "tree:shared", SECOND_RUN);
     let foreign_id = reservation_id(&foreign);
     fs::create_dir_all(repository.path().join("shared")).expect("shared directory should exist");
@@ -1875,7 +1883,20 @@ fn incursion_is_one_shared_incident_then_moves_to_answer_audit() {
 #[test]
 fn drift_widen_audit_names_existing_coverage_without_new_ordering() {
     let repository = initialized_repository();
+    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "configure berth",
+        ],
+    );
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "shared/approved.txt");
     let holder = claim(repository.path(), "tree:shared", FIRST_RUN);
     let holder_id = reservation_id(&holder);
     let subject = answered_claim(
@@ -1887,8 +1908,8 @@ fn drift_widen_audit_names_existing_coverage_without_new_ordering() {
         "the approved file can overlap",
     );
     let subject_id = reservation_id(&subject);
-    fs::write(repository.path().join("outside.txt"), "new scope\n")
-        .expect("new scope should write");
+    dirty_source(&second_root, "shared/approved.txt");
+    fs::write(second_root.join("outside.txt"), "new scope\n").expect("new scope should write");
     let widened = run_berth_with_run(
         &second_root,
         &["drift", "--full", "--reservation", &subject_id, "--json"],
@@ -2062,6 +2083,7 @@ fn board_git_cost_separates_each_scaling_dimension() {
     let worktrees = tempdir().expect("worktree directory should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
+    dirty_source(&predecessor_root, "src/lib.rs");
     let predecessor = claim(&predecessor_root, "file:src/lib.rs", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
     let successor = defer_claim(
@@ -4138,6 +4160,7 @@ fn ordered_fixture() -> OrderedFixture {
     let worktrees = tempdir().expect("worktree directory should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
+    dirty_source(&predecessor_root, "src/lib.rs");
     let predecessor = claim(&predecessor_root, "file:src/lib.rs", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
     let successor = answered_claim(
@@ -4288,6 +4311,14 @@ fn worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
             .strip_prefix("gitdir: ")
             .expect("linked worktree git file should name its directory"),
     )
+}
+
+/// A declared overlap needs actual uncommitted work in the holder's branch.
+fn dirty_source(root: &Path, path: &str) {
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("dirty source has a parent"))
+        .expect("dirty source parent should exist");
+    fs::write(file, "// uncommitted holder work\n").expect("dirty source should write");
 }
 
 fn claim(repository_root: &Path, scope: &str, run: &str) -> Output {

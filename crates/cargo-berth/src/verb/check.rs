@@ -42,8 +42,17 @@ pub(crate) struct CheckRequest {
 }
 
 struct CheckDecision {
-    scopes:    ReservationScopeSet,
-    conflicts: Vec<ReservationConflict>,
+    scopes:            ReservationScopeSet,
+    conflicts:         Vec<ReservationConflict>,
+    merge_observation: MergeObservationRequirement,
+}
+
+/// Whether a cached overlap answer can grant an edit without observing other branches.
+enum MergeObservationRequirement {
+    /// At least one foreign branch can have acquired new committed or dirty paths.
+    Required,
+    /// Only this checkout or explicitly released reservations remain.
+    NotNeeded,
 }
 
 /// A prerequisite that failed before an overlap decision could be reached.
@@ -112,6 +121,19 @@ pub(crate) fn execute(
         },
         Err(error) => return error.into_output(),
     };
+    if matches!(
+        first_decision.merge_observation,
+        MergeObservationRequirement::Required
+    ) {
+        return reconcile_and_retry(
+            &invocation_directory,
+            check_request.declared_scopes,
+            first_decision.scopes,
+            first_decision.conflicts,
+            check_request.reservation_selection,
+            recovery_command_line,
+        );
+    }
     if first_decision.conflicts.is_empty() {
         return match acquire_first_touch(
             check_request.declared_scopes.clone(),
@@ -259,7 +281,9 @@ fn decide(
     };
     let path_case = PathCase::read(snapshot.worktree_context().common_git_directory())
         .map_err(CheckDecisionError::PathCase)?;
-    let scopes = declared_scopes.into_exact_file_antichain(path_case);
+    // Refusal follows the full declared edit, including every child of a tree scope.
+    // First-touch acquisition separately retains its exact-file scope contract.
+    let scopes = declared_scopes.into_minimal_antichain(path_case);
     let reservations = RetainedReservationSet::replay(snapshot.events())
         .map_err(CheckDecisionError::ReservationReplay)?;
     let resolved_edit_authorization = ledger::resolve_identity(snapshot.worktree_context())
@@ -277,12 +301,24 @@ fn decide(
         resolved_edit_authorization,
     )
     .map_err(CheckDecisionError::from)?;
-    let conflicts = reservations.conflicts_for_edit(
-        &scopes,
-        resolved_edit_authorization.edit_authorization(),
-        path_case,
-    );
-    Ok(Enrollment::Enrolled(CheckDecision { scopes, conflicts }))
+    let conflicts =
+        reservations.conflicts_for_edit(&scopes, resolved_edit_authorization, path_case);
+    let merge_observation = if reservations.iter().any(|holder| {
+        holder.actor().worktree != resolved_edit_authorization.worktree_id
+            && !matches!(
+                holder.lifecycle(),
+                crate::reservation::ReservationLifecycle::Released { .. }
+            )
+    }) {
+        MergeObservationRequirement::Required
+    } else {
+        MergeObservationRequirement::NotNeeded
+    };
+    Ok(Enrollment::Enrolled(CheckDecision {
+        scopes,
+        conflicts,
+        merge_observation,
+    }))
 }
 
 /// Refuse a pre-edit check whose run is not the one occupying the issuing worktree.

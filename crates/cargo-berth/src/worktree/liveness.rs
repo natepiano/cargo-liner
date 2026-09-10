@@ -167,7 +167,16 @@ impl WorktreeRegistry {
         {
             return match registration.state {
                 WorktreeRegistrationState::Locked => {
-                    observation(WorktreeLiveness::Unavailable, registration.head.clone())
+                    // Preserve the locked-registration state while exposing a usable HEAD
+                    // only when the checkout proves it is still the recorded holder.
+                    let mut validated = Self::validate_registration(
+                        ledger_repository,
+                        common_git_directory,
+                        reservation,
+                        registration,
+                    );
+                    validated.liveness = WorktreeLiveness::Unavailable;
+                    validated
                 },
                 WorktreeRegistrationState::Prunable => {
                     observation(WorktreeLiveness::OrphanCandidate, registration.head.clone())

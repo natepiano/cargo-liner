@@ -1,4 +1,8 @@
 //! Reservation progress and independently revalidated integration evidence.
+//!
+//! Checkpoint and release end a run's editing lifetime. Successful merge-extent emptiness
+//! independently clears branch protection; it never checkpoints an active run or invents
+//! a release disposition. An ended run with an empty extent is retained only for audit.
 
 use std::error::Error;
 use std::fmt;

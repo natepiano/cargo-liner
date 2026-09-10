@@ -5,6 +5,8 @@
 //! coverage, and editing-identity question the crate asks is answered from this set, and
 //! every journal operation is applied to it here.
 
+use std::collections::HashSet;
+
 use super::conflict::ReservationConflict;
 use super::evidence::ProtectedReservationTip;
 use super::lifecycle::EditBlockingStatus;
@@ -13,10 +15,13 @@ use super::lifecycle::IntegrationProof;
 use super::lifecycle::ReleaseDisposition;
 use super::lifecycle::ReleaseRevalidationSubject;
 use super::lifecycle::ReservationLifecycle;
+use super::merge_extent::MergeExtent;
+use super::merge_extent::ReservationProtection;
 use super::partition;
 use super::partition::AuthorizedEditingIdentity;
 use super::partition::DriftBlockingCoverage;
 use super::partition::WidenScopeBinding;
+use super::record::ConflictProtection;
 use super::record::Reservation;
 use super::replay::ReplayedClaim;
 use super::replay::ReservationReplayError;
@@ -51,6 +56,7 @@ use crate::ledger::JournalOperation;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationScopeAdditionSet;
 use crate::ledger::ReservationSnapshot;
+use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::scope::PathCase;
@@ -169,7 +175,7 @@ impl RetainedReservationSet {
         acting_worktree_id: WorktreeId,
         path_case: PathCase,
     ) -> Vec<ReservationConflict> {
-        self.conflicts(candidate, path_case, |holder| {
+        self.conflicts(candidate, path_case, acting_worktree_id, |holder| {
             holder.actor.worktree != acting_worktree_id
         })
     }
@@ -186,7 +192,7 @@ impl RetainedReservationSet {
         acting_coordination_run_id: CoordinationRunId,
         path_case: PathCase,
     ) -> Vec<ReservationConflict> {
-        self.conflicts(candidate, path_case, |holder| {
+        self.conflicts(candidate, path_case, acting_worktree_id, |holder| {
             holder.is_foreign_to_coordination_run_in_worktree(
                 acting_coordination_run_id,
                 acting_worktree_id,
@@ -214,7 +220,7 @@ impl RetainedReservationSet {
         path_case: PathCase,
     ) -> DriftBlockingCoverage {
         if !self
-            .conflicts_with_holders(candidate, path_case, |holder| {
+            .conflicts_with_holders(candidate, path_case, subject_worktree_id, |holder| {
                 !holder.is_foreign_to_coordination_run_in_worktree(
                     subject_coordination_run_id,
                     subject_worktree_id,
@@ -250,23 +256,30 @@ impl RetainedReservationSet {
         added_scopes: &ReservationScopeAdditionSet,
         path_case: PathCase,
     ) -> WidenScopeBinding {
-        let mut widened_scopes = subject.scopes.as_slice().to_vec();
+        let mut widened_scopes = subject.race_scopes.as_slice().to_vec();
         widened_scopes.extend(added_scopes.as_slice().iter().cloned());
         let complete_scopes = ReservationScopeSet::try_from(widened_scopes).map_or_else(
-            |_| subject.scopes.clone(),
+            |_| subject.race_scopes.clone(),
             |scopes| scopes.minimal_antichain(path_case),
         );
-        let conflicts = self.conflicts_with_holders(&complete_scopes, path_case, |holder| {
-            holder.is_foreign_to_coordination_run_in_worktree(
-                subject.actor.run,
-                subject.actor.worktree,
-            )
-        });
+        let conflicts = self.conflicts_with_holders(
+            &complete_scopes,
+            path_case,
+            subject.actor.worktree,
+            |holder| {
+                holder.is_foreign_to_coordination_run_in_worktree(
+                    subject.actor.run,
+                    subject.actor.worktree,
+                )
+            },
+        );
         let blocked = conflicts
             .iter()
             .filter(|(holder, conflict)| {
                 conflict.overlapping_scopes.as_slice().iter().any(|scope| {
-                    !partition::reservations_authorize_scope(subject, holder, scope, path_case)
+                    !partition::reservations_authorize_scope(
+                        self, subject, holder, scope, path_case,
+                    )
                 })
             })
             .map(|(_, conflict)| conflict.clone())
@@ -292,10 +305,11 @@ impl RetainedReservationSet {
     pub(crate) fn conflicts_for_edit(
         &self,
         candidate: &ReservationScopeSet,
-        edit_authorization: EditAuthorization,
+        resolved_edit_authorization: ResolvedEditAuthorization,
         path_case: PathCase,
     ) -> Vec<ReservationConflict> {
-        let authorized_editing_identity = self.resolve_editing_identity(edit_authorization);
+        let authorized_editing_identity =
+            self.resolve_editing_identity(resolved_edit_authorization);
         self.conflicts_for_authorized_edit(candidate, authorized_editing_identity, path_case)
     }
 
@@ -323,9 +337,12 @@ impl RetainedReservationSet {
         authorized_editing_identity: AuthorizedEditingIdentity,
         path_case: PathCase,
     ) -> Vec<ReservationConflict> {
-        let conflicts = self.conflicts_with_holders(candidate, path_case, |holder| {
-            authorized_editing_identity.is_foreign(holder)
-        });
+        let conflicts = self.conflicts_with_holders(
+            candidate,
+            path_case,
+            authorized_editing_identity.worktree(),
+            |holder| authorized_editing_identity.is_foreign(holder),
+        );
         let mut unanswered_conflicts = Vec::new();
         for (holder, mut conflict) in conflicts {
             let unanswered_scopes = conflict
@@ -348,8 +365,9 @@ impl RetainedReservationSet {
     /// Validate a process-resolved edit identity against retained active reservations.
     pub(crate) fn resolve_editing_identity(
         &self,
-        edit_authorization: EditAuthorization,
+        resolved_edit_authorization: ResolvedEditAuthorization,
     ) -> AuthorizedEditingIdentity {
+        let edit_authorization = resolved_edit_authorization.edit_authorization();
         let session_is_active = match edit_authorization {
             EditAuthorization::Session {
                 coordination_run_id,
@@ -404,7 +422,9 @@ impl RetainedReservationSet {
             },
             EditAuthorization::Session { .. }
             | EditAuthorization::Marker { .. }
-            | EditAuthorization::Unidentified => AuthorizedEditingIdentity::Unidentified,
+            | EditAuthorization::Unidentified => AuthorizedEditingIdentity::Unidentified {
+                worktree_id: resolved_edit_authorization.worktree_id,
+            },
         }
     }
 
@@ -591,6 +611,15 @@ impl RetainedReservationSet {
     /// Dispatch one journal operation to the replay step that owns it.
     fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
         match &event.operation {
+            JournalOperation::MergeExtentObserved {
+                reservation_id,
+                extent,
+                ..
+            } => {
+                let reservation = self.find_mut(*reservation_id)?;
+                reservation.merge_extent = extent.clone();
+                reservation.advance_revision()
+            },
             JournalOperation::Claim { .. }
             | JournalOperation::Widen { .. }
             | JournalOperation::Renew { .. }
@@ -924,7 +953,10 @@ impl RetainedReservationSet {
                 RetainedSuccessorScopedPatchTargetVerdicts::default(),
             successor_scoped_patch_target_evaluation_schedule:
                 SuccessorScopedPatchTargetEvaluationSchedule::default(),
-            scopes:                                            replayed_claim.scopes.clone(),
+            race_scopes:                                       replayed_claim.scopes.clone(),
+            merge_extent:                                      MergeExtent::NotDerived {
+                protection: replayed_claim.scopes.clone(),
+            },
             authorizations:                                    vec![
                 replayed_claim.authorization.clone(),
             ],
@@ -955,6 +987,7 @@ impl RetainedReservationSet {
         Ok(())
     }
 
+    /// Replay an editing acquisition only; branch protection changes exclusively by observation.
     fn apply_widen(
         &mut self,
         reservation_id: ReservationId,
@@ -968,9 +1001,9 @@ impl RetainedReservationSet {
                 reservation_id,
             ));
         }
-        let mut scopes = reservation.scopes.as_slice().to_vec();
+        let mut scopes = reservation.race_scopes.as_slice().to_vec();
         scopes.extend(added_scopes.as_slice().iter().cloned());
-        reservation.scopes = ReservationScopeSet::try_from(scopes)
+        reservation.race_scopes = ReservationScopeSet::try_from(scopes)
             .map_err(|_| ReservationReplayError::EmptyScopeSet(reservation_id))?;
         if matches!(
             reservation.lifecycle,
@@ -1256,28 +1289,96 @@ impl RetainedReservationSet {
         &self,
         candidate: &ReservationScopeSet,
         path_case: PathCase,
+        acting_worktree: WorktreeId,
         holder_is_foreign: impl Fn(&Reservation) -> bool,
     ) -> Vec<ReservationConflict> {
-        self.conflicts_with_holders(candidate, path_case, holder_is_foreign)
+        self.conflicts_with_holders(candidate, path_case, acting_worktree, holder_is_foreign)
             .into_iter()
             .map(|(_, conflict)| conflict)
             .collect()
+    }
+
+    /// Select race protection locally and the complete merge protection of a foreign checkout.
+    ///
+    /// Unavailable derivations can retain different evidence for each holder. Replay keeps
+    /// claim order, so the first contributor supplies a stable answer identity while every
+    /// contributor supplies protection. Both conflict reporting and answer coverage read here.
+    pub(super) fn protection_for_conflict<'reservations>(
+        &'reservations self,
+        holder: &'reservations Reservation,
+        acting_worktree: WorktreeId,
+        path_case: PathCase,
+    ) -> ConflictProtection<'reservations> {
+        if holder.actor.worktree == acting_worktree {
+            return match holder.protection_in_worktree(acting_worktree) {
+                ReservationProtection::Clear => ConflictProtection::Clear,
+                ReservationProtection::Protected(scopes) => ConflictProtection::Protected {
+                    representative: holder,
+                    contributors:   vec![holder],
+                    scopes:         scopes.clone(),
+                },
+            };
+        }
+        let mut protected_holders = self.reservations.iter().filter_map(|reservation| {
+            if reservation.actor.worktree != holder.actor.worktree
+                || reservation.edit_blocking_status() != EditBlockingStatus::Blocking
+            {
+                return None;
+            }
+            match reservation.protection_in_worktree(acting_worktree) {
+                ReservationProtection::Clear => None,
+                ReservationProtection::Protected(scopes) => Some((reservation, scopes)),
+            }
+        });
+        let Some((representative, first_scopes)) = protected_holders.next() else {
+            return ConflictProtection::Clear;
+        };
+        let mut contributors = vec![representative];
+        let mut scopes = first_scopes.as_slice().to_vec();
+        for (contributor, contributor_scopes) in protected_holders {
+            contributors.push(contributor);
+            scopes.extend(contributor_scopes.as_slice().iter().cloned());
+        }
+        // The first contributor guarantees the collection is nonempty.
+        let scopes = ReservationScopeSet::try_from(scopes)
+            .unwrap_or_else(|_| first_scopes.clone())
+            .minimal_antichain(path_case);
+        ConflictProtection::Protected {
+            representative,
+            contributors,
+            scopes,
+        }
     }
 
     fn conflicts_with_holders(
         &self,
         candidate: &ReservationScopeSet,
         path_case: PathCase,
+        acting_worktree: WorktreeId,
         holder_is_foreign: impl Fn(&Reservation) -> bool,
     ) -> Vec<(&Reservation, ReservationConflict)> {
         let observed_at = RecordedAt::now();
+        let mut represented_merge_worktrees = HashSet::new();
         self.reservations
             .iter()
             .filter(|holder| holder.edit_blocking_status() == EditBlockingStatus::Blocking)
             .filter(|holder| holder_is_foreign(holder))
             .filter_map(|holder| {
-                let overlapping_scopes = holder
-                    .scopes
+                // Build the whole checkout union once; same-checkout race holders stay separate.
+                if holder.actor.worktree != acting_worktree
+                    && !represented_merge_worktrees.insert(holder.actor.worktree)
+                {
+                    return None;
+                }
+                let ConflictProtection::Protected {
+                    representative: holder,
+                    scopes: held_scopes,
+                    ..
+                } = self.protection_for_conflict(holder, acting_worktree, path_case)
+                else {
+                    return None;
+                };
+                let overlapping_scopes = held_scopes
                     .as_slice()
                     .iter()
                     .flat_map(|held_scope| {
@@ -1304,7 +1405,7 @@ impl RetainedReservationSet {
                             ReservationConflict {
                                 reservation_id:         holder.id,
                                 reservation_revision:   holder.revision,
-                                overlap_scope_revision: OverlapScopeRevision::from(&holder.scopes),
+                                overlap_scope_revision: OverlapScopeRevision::from(&held_scopes),
                                 holder_worktree_id:     holder.actor.worktree,
                                 holder_run_id:          holder.actor.run,
                                 head_snapshot:          holder.head_snapshot.clone(),
@@ -1325,9 +1426,7 @@ impl RetainedReservationSet {
     pub(crate) fn nonterminal_count(&self) -> usize {
         self.reservations
             .iter()
-            .filter(|reservation| {
-                !matches!(reservation.lifecycle, ReservationLifecycle::Released { .. })
-            })
+            .filter(|reservation| !reservation.is_terminal())
             .count()
     }
 }
@@ -1917,7 +2016,7 @@ mod tests {
                 second_run_id,
                 PathCase::Sensitive
             ),
-            DriftBlockingCoverage::NoForeignStanding
+            DriftBlockingCoverage::Unclaimed
         ));
         assert!(
             reservations

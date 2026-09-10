@@ -151,9 +151,22 @@ pub(crate) struct ReconciledDriftPreflight<ConcurrentObservation> {
 /// Git query dimensions owned by reconciliation rather than board row projection.
 pub(crate) struct ReconciliationGitCost {
     /// Calls that attempted to resolve the configured trunk.
-    pub(crate) trunk_resolution_calls:           u64,
+    pub(crate) trunk_resolution_calls:               u64,
     /// Calls used to establish orphan recovery evidence.
-    pub(crate) orphan_recovery_evidence_queries: u64,
+    pub(crate) orphan_recovery_evidence_queries:     u64,
+    /// Status observations shared across the reservations of each live holder.
+    pub(crate) merge_extent_worktree_status_queries: u64,
+    /// Net merge-base path queries; unchanged successful keys need none.
+    pub(crate) merge_extent_path_queries:            u64,
+}
+
+/// Attempted Git queries made while deriving all holder merge extents under one lock.
+#[derive(Default)]
+struct MergeExtentGitCost {
+    /// Includes attempted status reads that report an observation failure.
+    worktree_status_queries: u64,
+    /// Includes attempted net path reads that fail; cache hits cost no query.
+    path_queries:            u64,
 }
 
 /// Complete journal truth retained from one reconciliation lock acquisition.
@@ -732,6 +745,7 @@ struct ReconciliationAction {
     pending_bypass_imports:        Vec<PendingBypassMarkerImport>,
     unrecorded_bypass_occurrences: Vec<BypassOccurrenceTime>,
     trunk_resolution_calls:        u64,
+    merge_extent_git_cost:         MergeExtentGitCost,
 }
 
 #[derive(Clone, Copy)]
@@ -982,6 +996,16 @@ fn prepare_reconciliation_transaction(
             ReconciliationPlanningError::WorktreeRegistry(error)
         },
     })?;
+    let mut merge_extent_git_cost = MergeExtentGitCost::default();
+    let merge_operations = derive_merge_extents(
+        &reservations,
+        &reconciliation_plan.action.repository_snapshot,
+        &reconciliation_plan.operations,
+        &mut merge_extent_git_cost,
+    )
+    .map_err(ReconciliationPlanningError::Reservation)?;
+    reconciliation_plan.operations.extend(merge_operations);
+    reconciliation_plan.action.merge_extent_git_cost = merge_extent_git_cost;
     let mut pending_bypasses = permit::prepare_pending_bypass_recovery(
         worktree_context.common_git_directory(),
         state.events(),
@@ -1002,6 +1026,128 @@ fn prepare_reconciliation_transaction(
         recoverable_operations,
         action: reconciliation_plan.action,
     })
+}
+
+/// Share status and net branch reads across every reservation in the same holder checkout.
+/// The successful key lives in the journal, so process boundaries do not defeat the cache.
+fn derive_merge_extents(
+    reservations: &RetainedReservationSet,
+    snapshot: &RepositorySnapshot,
+    planned: &[JournalOperation],
+    git_cost: &mut MergeExtentGitCost,
+) -> Result<Vec<JournalOperation>, ReservationReplayError> {
+    let mut observed_by_worktree = HashMap::new();
+    let mut operations = Vec::new();
+    for reservation in reservations.iter().filter(|reservation| {
+        !matches!(
+            reservation.lifecycle(),
+            ReservationLifecycle::Released { .. }
+        )
+    }) {
+        let observed = observed_by_worktree
+            .entry(reservation.actor().worktree)
+            .or_insert_with(|| {
+                observe_merge_extent(reservation, reservations, snapshot, planned, git_cost)
+            });
+        let extent = match observed {
+            Ok(extent) => extent.clone(),
+            Err(failure) => reservation.merge_extent().unavailable(failure.clone()),
+        };
+        if &extent != reservation.merge_extent() {
+            operations.push(JournalOperation::MergeExtentObserved {
+                reservation_id: reservation.id(),
+                extent,
+                run_status: reservation.run_status(),
+            });
+        }
+    }
+    for incident in reservations.outstanding_incursion_incidents() {
+        let subject = reservations.reservation(incident.reservation_id())?;
+        let latest = operations
+            .iter()
+            .find_map(|operation| match operation {
+                JournalOperation::MergeExtentObserved {
+                    reservation_id,
+                    extent,
+                    ..
+                } if *reservation_id == subject.id() => Some(extent),
+                _ => None,
+            })
+            .unwrap_or_else(|| subject.merge_extent());
+        // A distinct disposition preserves the incident's history after its branch has no work.
+        if matches!(latest, reservation::MergeExtent::Empty { .. }) {
+            operations.push(JournalOperation::ResolveIncursion {
+                incident_id: incident.id(),
+            });
+        }
+    }
+    Ok(operations)
+}
+
+/// Read the dirty union even on a cache hit: a fingerprint cannot be assumed unchanged.
+fn observe_merge_extent(
+    reservation: &Reservation,
+    reservations: &RetainedReservationSet,
+    snapshot: &RepositorySnapshot,
+    planned: &[JournalOperation],
+    git_cost: &mut MergeExtentGitCost,
+) -> Result<reservation::MergeExtent, String> {
+    let RepositoryTrunk::Resolved(trunk) = snapshot.trunk() else {
+        return Err(crate::constants::MERGE_EXTENT_TRUNK_UNAVAILABLE.to_owned());
+    };
+    let holder = snapshot
+        .reservation(reservation.id())
+        .map_err(|error| error.to_string())?;
+    let WorktreeHead::Resolved(head) = &holder.worktree_head else {
+        return Err(crate::constants::MERGE_EXTENT_WORKTREE_UNAVAILABLE.to_owned());
+    };
+    // A locked registration stays Unavailable in the liveness report, but its HEAD
+    // is usable here only after the registry validates the accessible checkout's identity.
+    if !matches!(
+        holder.worktree_liveness,
+        WorktreeLiveness::Live | WorktreeLiveness::Unavailable
+    ) {
+        return Err(crate::constants::MERGE_EXTENT_WORKTREE_UNAVAILABLE.to_owned());
+    }
+    let root = planned
+        .iter()
+        .find_map(|operation| match operation {
+            JournalOperation::RelocateWorktree {
+                reservation_id,
+                current_root,
+                ..
+            } if *reservation_id == reservation.id() => Some(current_root),
+            _ => None,
+        })
+        .unwrap_or_else(|| reservation.worktree_root());
+    git_cost.worktree_status_queries += 1;
+    let working_tree = crate::drift::observe_merge_working_tree(root.as_ref())?;
+    let key = reservation::MergeExtentKey {
+        trunk: trunk.clone(),
+        head: head.clone(),
+        working_tree,
+    };
+    if let Some(cached) = reservations.iter().find(|holder| {
+        holder.actor().worktree == reservation.actor().worktree
+            && holder.merge_extent().matches_key(&key)
+    }) {
+        return Ok(cached.merge_extent().clone());
+    }
+    git_cost.path_queries += 1;
+    let mut paths = git::unmerged_branch_paths(root.as_ref(), trunk, head)
+        .map_err(|error| error.to_string())?;
+    paths.extend(key.working_tree.tracked_paths.iter().cloned());
+    paths.extend(key.working_tree.untracked_paths.iter().cloned());
+    paths.sort_by_key(ToString::to_string);
+    paths.dedup();
+    let scopes = paths
+        .into_iter()
+        .map(|path| crate::scope::ReservationScope {
+            path,
+            kind: ScopeKind::File,
+        })
+        .collect();
+    Ok(reservation::MergeExtent::derived(key, scopes))
 }
 
 fn build_plan(
@@ -1081,6 +1227,7 @@ fn build_plan(
             pending_bypass_imports: Vec::new(),
             unrecorded_bypass_occurrences: Vec::new(),
             trunk_resolution_calls,
+            merge_extent_git_cost: MergeExtentGitCost::default(),
         },
     })
 }
@@ -2257,6 +2404,22 @@ impl ReconciliationAction {
                 alert::for_lost_integration_evidence(reservation, self.repository_snapshot.trunk())
                     .map_err(ReconcileError::Replay)?,
             );
+            // Released reservations no longer refresh merge extents, but their integration
+            // evidence must still report when the proof for released work is lost.
+            if matches!(
+                reservation.lifecycle(),
+                ReservationLifecycle::Released { .. }
+            ) {
+                continue;
+            }
+            if let reservation::MergeExtent::Unavailable { failure, .. } =
+                reservation.merge_extent()
+            {
+                alerts.push(Alert::MergeExtentUnavailable {
+                    reservation_id: reservation.id(),
+                    failure:        failure.clone(),
+                });
+            }
         }
         for alert_subject in self.alert_subjects {
             alerts.extend(alert::for_orphaned_outstanding(
@@ -2292,6 +2455,10 @@ impl ReconciliationAction {
             git_cost: ReconciliationGitCost {
                 trunk_resolution_calls: self.trunk_resolution_calls,
                 orphan_recovery_evidence_queries,
+                merge_extent_worktree_status_queries: self
+                    .merge_extent_git_cost
+                    .worktree_status_queries,
+                merge_extent_path_queries: self.merge_extent_git_cost.path_queries,
             },
         })
     }

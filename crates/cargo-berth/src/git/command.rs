@@ -9,8 +9,10 @@ use std::process::Output;
 use std::process::Stdio;
 use std::thread;
 
+use super::constants::BERTH_EXECUTABLE_ENVIRONMENT;
 use super::constants::GIT_BINARY;
 use super::constants::GIT_NO_OPTIONAL_LOCKS_ARG;
+use super::constants::GIT_REPOSITORY_ENVIRONMENT;
 
 /// Whether a git invocation may execute repository hooks.
 #[derive(Clone, Copy)]
@@ -36,7 +38,7 @@ impl From<io::Result<Output>> for GitCommandOutputAvailability {
 }
 
 /// Build a git subprocess rooted at `repository_root` without optional locks.
-pub(super) fn git_command(repository_root: &Path) -> Command {
+pub(super) fn git_command(repository_root: &Path) -> io::Result<Command> {
     git_command_with_hook_execution_policy(repository_root, GitHookExecutionPolicy::Enabled)
 }
 
@@ -44,11 +46,24 @@ pub(super) fn git_command(repository_root: &Path) -> Command {
 fn git_command_with_hook_execution_policy(
     repository_root: &Path,
     hook_execution_policy: GitHookExecutionPolicy,
-) -> Command {
+) -> io::Result<Command> {
     let mut command = Command::new(GIT_BINARY);
     command.arg(GIT_NO_OPTIONAL_LOCKS_ARG);
+    // A hook inherits its invoking checkout's selectors, while reconciliation also reads
+    // other checkouts. Every subprocess must discover its repository from current_dir.
+    for variable in GIT_REPOSITORY_ENVIRONMENT {
+        command.env_remove(variable);
+    }
     match hook_execution_policy {
-        GitHookExecutionPolicy::Enabled => {},
+        GitHookExecutionPolicy::Enabled => {
+            // A nested hook must understand the journal its invoking berth just wrote.
+            // Preserve deliberate overrides, including paths that are not UTF-8.
+            let executable = match std::env::var_os(BERTH_EXECUTABLE_ENVIRONMENT) {
+                Some(executable) if !executable.is_empty() => executable,
+                Some(_) | None => std::env::current_exe()?.into_os_string(),
+            };
+            command.env(BERTH_EXECUTABLE_ENVIRONMENT, executable);
+        },
         GitHookExecutionPolicy::SuppressedForRetentionRef => {
             // A count already at the integer ceiling leaves no slot to append to, so it is
             // treated as absent and the suppression entry lands at slot zero.
@@ -66,7 +81,7 @@ fn git_command_with_hook_execution_policy(
         },
     }
     command.current_dir(repository_root);
-    command
+    Ok(command)
 }
 
 /// Run one git operation and return its complete output.
@@ -74,7 +89,7 @@ pub(super) fn git_output<const ARGUMENT_COUNT: usize>(
     repository_root: &Path,
     arguments: [&str; ARGUMENT_COUNT],
 ) -> io::Result<Output> {
-    git_command(repository_root).args(arguments).output()
+    git_command(repository_root)?.args(arguments).output()
 }
 
 /// Run one read-only git operation through the typed process-execution boundary.
@@ -82,7 +97,9 @@ pub(crate) fn git_execution(
     repository_root: &Path,
     arguments: &[&str],
 ) -> GitCommandOutputAvailability {
-    git_command(repository_root).args(arguments).output().into()
+    git_command(repository_root)
+        .and_then(|mut command| command.args(arguments).output())
+        .into()
 }
 
 /// Run one git operation whose revision arguments are assembled at runtime.
@@ -90,7 +107,7 @@ pub(super) fn git_output_dynamic(
     repository_root: &Path,
     arguments: &[String],
 ) -> io::Result<Output> {
-    git_command(repository_root).args(arguments).output()
+    git_command(repository_root)?.args(arguments).output()
 }
 
 /// Run one dynamically assembled git operation with complete standard input.
@@ -99,7 +116,7 @@ pub(super) fn git_output_dynamic_with_input(
     arguments: &[String],
     input: &[u8],
 ) -> io::Result<Output> {
-    let mut command = git_command(repository_root);
+    let mut command = git_command(repository_root)?;
     command.args(arguments);
     command_output_with_input(command, input)
 }
@@ -110,7 +127,7 @@ pub(super) fn git_output_dynamic_with_hook_execution_policy(
     arguments: &[String],
     hook_execution_policy: GitHookExecutionPolicy,
 ) -> io::Result<Output> {
-    git_command_with_hook_execution_policy(repository_root, hook_execution_policy)
+    git_command_with_hook_execution_policy(repository_root, hook_execution_policy)?
         .args(arguments)
         .output()
 }
@@ -123,7 +140,7 @@ pub(super) fn git_output_dynamic_with_hook_execution_policy_and_input(
     input: &[u8],
 ) -> io::Result<Output> {
     let mut command =
-        git_command_with_hook_execution_policy(repository_root, hook_execution_policy);
+        git_command_with_hook_execution_policy(repository_root, hook_execution_policy)?;
     command.args(arguments);
     command_output_with_input(command, input)
 }
@@ -162,8 +179,56 @@ mod tests {
 
     use super::GitHookExecutionPolicy;
     use super::git_command_with_hook_execution_policy;
+    use crate::git::constants::BERTH_EXECUTABLE_ENVIRONMENT;
 
     const CHILD_PROCESS_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_COMMAND_ENVIRONMENT_CHILD";
+
+    #[test]
+    fn enabled_hooks_use_current_berth_when_override_is_missing_or_empty()
+    -> Result<(), Box<dyn Error>> {
+        const TEST_FILTER: &str =
+            "enabled_hooks_use_current_berth_when_override_is_missing_or_empty";
+        if std::env::var_os(CHILD_PROCESS_ENVIRONMENT).as_deref() != Some(OsStr::new(TEST_FILTER)) {
+            rerun_current_test_with_environment(TEST_FILTER, &[])?;
+            return rerun_current_test_with_environment(
+                TEST_FILTER,
+                &[(BERTH_EXECUTABLE_ENVIRONMENT, "")],
+            );
+        }
+
+        let command = git_command_with_hook_execution_policy(
+            Path::new("."),
+            GitHookExecutionPolicy::Enabled,
+        )?;
+        let executable = std::env::current_exe()?;
+        assert_eq!(
+            explicit_environment_value(&command, BERTH_EXECUTABLE_ENVIRONMENT),
+            Some(executable.as_os_str()),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn enabled_hooks_preserve_a_nonempty_explicit_berth_override() -> Result<(), Box<dyn Error>> {
+        const TEST_FILTER: &str = "enabled_hooks_preserve_a_nonempty_explicit_berth_override";
+        const EXPLICIT_EXECUTABLE: &str = "/explicit override/cargo-berth";
+        if std::env::var_os(CHILD_PROCESS_ENVIRONMENT).as_deref() != Some(OsStr::new(TEST_FILTER)) {
+            return rerun_current_test_with_environment(
+                TEST_FILTER,
+                &[(BERTH_EXECUTABLE_ENVIRONMENT, EXPLICIT_EXECUTABLE)],
+            );
+        }
+
+        let command = git_command_with_hook_execution_policy(
+            Path::new("."),
+            GitHookExecutionPolicy::Enabled,
+        )?;
+        assert_eq!(
+            explicit_environment_value(&command, BERTH_EXECUTABLE_ENVIRONMENT),
+            Some(OsStr::new(EXPLICIT_EXECUTABLE)),
+        );
+        Ok(())
+    }
 
     #[test]
     fn inherited_git_config_overlay_survives_hook_suppression() -> Result<(), Box<dyn Error>> {
@@ -182,6 +247,10 @@ mod tests {
         let mut command = git_command_with_hook_execution_policy(
             Path::new("."),
             GitHookExecutionPolicy::SuppressedForRetentionRef,
+        )?;
+        assert_eq!(
+            explicit_environment_value(&command, BERTH_EXECUTABLE_ENVIRONMENT),
+            None,
         );
         assert_eq!(
             explicit_environment_value(&command, "GIT_CONFIG_COUNT"),
@@ -224,7 +293,7 @@ mod tests {
         let command = git_command_with_hook_execution_policy(
             Path::new("."),
             GitHookExecutionPolicy::SuppressedForRetentionRef,
-        );
+        )?;
         assert_eq!(
             explicit_environment_value(&command, "GIT_CONFIG_COUNT"),
             Some(OsStr::new("1"))
@@ -258,6 +327,7 @@ mod tests {
             .arg(test_filter)
             .arg("--nocapture")
             .env(CHILD_PROCESS_ENVIRONMENT, test_filter)
+            .env_remove(BERTH_EXECUTABLE_ENVIRONMENT)
             .envs(environment.iter().copied())
             .output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);

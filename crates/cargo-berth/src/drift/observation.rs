@@ -518,6 +518,18 @@ fn observe_full(
     })
 }
 
+/// Reuse the same staged, unstaged, and untracked status partition for branch protection.
+pub(crate) fn observe_merge_working_tree(
+    repository_root: &Path,
+) -> Result<WorkingTreeFingerprint, String> {
+    let status = observe_working_tree_status(repository_root).map_err(|error| error.to_string())?;
+    Ok(WorkingTreeFingerprint {
+        tracked_paths:   status.tracked(),
+        untracked_paths: status.untracked,
+    }
+    .normalized())
+}
+
 fn observe_working_tree_status(
     repository_root: &Path,
 ) -> Result<WorkingTreeChangePartition, DriftFingerprintError> {

@@ -237,14 +237,13 @@ fn sequence_rejects_a_stale_post_reconciliation_marker_and_carries_alerts() {
         FOURTH_RUN
     );
     assert_eq!(rejected_json["blocked_by"], serde_json::json!([]));
-    assert_eq!(
-        rejected_json["payload"]["alerts"][0]["kind"],
-        "orphaned_outstanding"
-    );
-    assert_eq!(
-        rejected_json["payload"]["alerts"][0]["data"]["reservation_id"],
-        orphan_id
-    );
+    let orphan_alert = rejected_json["payload"]["alerts"]
+        .as_array()
+        .expect("rejection should carry alerts")
+        .iter()
+        .find(|alert| alert["kind"] == "orphaned_outstanding")
+        .expect("rejection should retain the orphan alert alongside derivation failure");
+    assert_eq!(orphan_alert["data"]["reservation_id"], orphan_id);
     assert_eq!(resolve_defer_count(repository.path()), 0);
 }
 
@@ -756,9 +755,11 @@ fn successor_round_robin_has_fixed_cold_cost_and_covers_every_head() {
     assert!(twenty_cold.output.status.success());
     let twenty_argv = git_trace(&twenty_cold);
     assert!(!one_argv.is_empty());
+    assert_merge_observation_budget(&one_argv, 2);
+    assert_merge_observation_budget(&twenty_argv, 21);
     assert_eq!(
-        twenty_argv.len(),
-        one_argv.len(),
+        canonical_git_command_sequence(&twenty_argv).len(),
+        canonical_git_command_sequence(&one_argv).len(),
         "one successor argv: {one_argv:?}; twenty successor argv: {twenty_argv:?}"
     );
     assert_eq!(
@@ -843,9 +844,11 @@ fn predecessor_graph_has_fixed_cold_cost() {
     assert!(twenty_cold.output.status.success());
     let twenty_argv = git_trace(&twenty_cold);
     assert!(!one_argv.is_empty());
+    assert_merge_observation_budget(&one_argv, 2);
+    assert_merge_observation_budget(&twenty_argv, 21);
     assert_eq!(
-        twenty_argv.len(),
-        one_argv.len(),
+        canonical_git_command_sequence(&twenty_argv).len(),
+        canonical_git_command_sequence(&one_argv).len(),
         "one predecessor argv: {one_argv:?}; twenty predecessor argv: {twenty_argv:?}"
     );
     assert_eq!(
@@ -854,9 +857,28 @@ fn predecessor_graph_has_fixed_cold_cost() {
     );
 }
 
+/// Derivation scales once per holder checkout, independently of the fixed ancestry batch.
+fn assert_merge_observation_budget(queries: &[String], worktrees: usize) {
+    assert_eq!(
+        queries
+            .iter()
+            .filter(|query| query.starts_with("status "))
+            .count(),
+        worktrees
+    );
+    assert!(
+        queries
+            .iter()
+            .filter(|query| query.starts_with("diff --merge-base "))
+            .count()
+            <= worktrees
+    );
+}
+
 fn canonical_git_command_sequence(invocations: &[String]) -> Vec<&str> {
     let mut commands = invocations
         .iter()
+        .filter(|line| !line.starts_with("status ") && !line.starts_with("diff --merge-base "))
         .filter_map(|line| line.split_whitespace().next())
         .collect::<Vec<_>>();
     commands.sort_unstable();
@@ -897,6 +919,7 @@ fn confirmed_abandonment_cancels_an_edge() {
     let worktrees = tempdir().expect("worktree parent should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
+    dirty_source(&predecessor_root, "src/lib.rs");
     let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
     let successor = defer_claim(
@@ -942,6 +965,7 @@ fn confirmed_successor_abandonment_cancels_and_releases_the_edge() {
     let worktrees = tempdir().expect("worktree parent should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
+    dirty_source(&predecessor_root, "src/lib.rs");
     let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
     let successor = defer_claim(
@@ -1081,6 +1105,7 @@ fn orphaned_middle_predecessor_recovers_without_losing_its_outgoing_edge() {
     let before_root = add_worktree(repository.path(), worktrees.path(), "before-orphaning");
     let orphaned_root = add_worktree(repository.path(), worktrees.path(), "while-orphaned");
     let recovered_root = add_worktree(repository.path(), worktrees.path(), "after-recovery");
+    dirty_source(&first_root, "left/shared.rs");
     let first = claim(&first_root, "tree:left", FIRST_RUN);
     let first_id = reservation_id(&first);
     let middle = defer_claim_scopes(
@@ -1097,6 +1122,7 @@ fn orphaned_middle_predecessor_recovers_without_losing_its_outgoing_edge() {
         "first before middle",
     );
     assert!(first_edge.status.success());
+    commit_middle_work(&middle_root);
     let before = defer_claim(&before_root, "file:right/before.rs", THIRD_RUN, &middle_id);
     let before_id = reservation_id(&before);
     let before_edge = sequence(
@@ -1130,6 +1156,10 @@ fn orphaned_middle_predecessor_recovers_without_losing_its_outgoing_edge() {
     );
 
     let replacement_root = add_worktree(repository.path(), worktrees.path(), "replacement-middle");
+    git(
+        &replacement_root,
+        &["merge", "--quiet", "--ff-only", "middle"],
+    );
     let recovered = run_berth(
         &replacement_root,
         &["resolve", &middle_id, "--recovered", "--json"],
@@ -1252,6 +1282,7 @@ fn unavailable_predecessor_object_holds_instead_of_satisfying_the_edge() {
 fn assert_claim_time_direction(flag: &str, direction: &str) {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
     let holder = claim(repository.path(), "tree:src", FIRST_RUN);
     let holder_id = reservation_id(&holder);
     let proposal = run_berth(
@@ -1301,6 +1332,7 @@ fn assert_claim_time_direction(flag: &str, direction: &str) {
 }
 
 fn deferred_pair(holder_root: &Path, requester_root: &Path) -> (String, String) {
+    dirty_source(holder_root, "src/lib.rs");
     let holder = claim(holder_root, "tree:src", FIRST_RUN);
     let holder_id = reservation_id(&holder);
     let proposal = run_berth(
@@ -1349,6 +1381,7 @@ fn rewritten_successor_fixture(successor_is_equivalent: bool) -> RewrittenSucces
     let worktrees = tempdir().expect("worktree parent should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
+    dirty_source(&predecessor_root, "src/lib.rs");
     let predecessor = claim(&predecessor_root, "file:src/lib.rs", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
     let successor = defer_claim(
@@ -1410,7 +1443,27 @@ fn rewritten_successor_fixture(successor_is_equivalent: bool) -> RewrittenSucces
     }
 }
 
-fn successor_scale_fixture(successor_count: usize) -> SuccessorScaleFixture {
+/// The middle holder retains its real outgoing work while its checkout is absent.
+fn commit_middle_work(middle_root: &Path) {
+    for path in ["right/before.rs", "right/orphaned.rs", "right/recovered.rs"] {
+        dirty_source(middle_root, path);
+    }
+    git(middle_root, &["add", "right"]);
+    git(
+        middle_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "middle work",
+        ],
+    );
+}
+
+/// Start successor scale fixtures with the same tracked scope files.
+fn successor_scope_repository(successor_count: usize) -> TempDir {
     let repository = initialized_repository();
     commit_configuration(repository.path());
     fs::create_dir_all(repository.path().join("successors"))
@@ -1429,8 +1482,19 @@ fn successor_scale_fixture(successor_count: usize) -> SuccessorScaleFixture {
         repository.path(),
         &["commit", "--quiet", "-m", "successor reservation scopes"],
     );
+    repository
+}
+
+fn successor_scale_fixture(successor_count: usize) -> SuccessorScaleFixture {
+    let repository = successor_scope_repository(successor_count);
     let worktrees = tempdir().expect("worktree parent should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
+    for index in 0..successor_count {
+        dirty_source(
+            &predecessor_root,
+            &format!("successors/successor-{index}.rs"),
+        );
+    }
     let predecessor = claim(&predecessor_root, "tree:successors", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
     let protected_content = "pub fn protected_predecessor() {}\n";
@@ -1544,6 +1608,7 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
         predecessor_worktrees.iter().enumerate()
     {
         let predecessor_path = format!("predecessors/predecessor-{predecessor_index}.rs");
+        dirty_source(predecessor_root, &predecessor_path);
         let predecessor_run = uuid::Uuid::now_v7().to_string();
         let predecessor = claim(
             predecessor_root,
@@ -1723,6 +1788,7 @@ fn readiness_for_predecessor_liveness(
     let worktrees = tempdir().expect("worktree parent should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
+    dirty_source(&predecessor_root, "src/lib.rs");
     let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
     let successor = defer_claim(
@@ -1839,6 +1905,14 @@ fn initialized_repository() -> TempDir {
     let initialized = run_berth(repository.path(), &["init", "--json"]);
     assert!(initialized.status.success());
     repository
+}
+
+/// A declared overlap needs actual uncommitted work in the holder's branch.
+fn dirty_source(root: &Path, path: &str) {
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("dirty source has a parent"))
+        .expect("dirty source parent should exist");
+    fs::write(file, "// uncommitted holder work\n").expect("dirty source should write");
 }
 
 fn claim(repository_root: &Path, scope: &str, run: &str) -> Output {

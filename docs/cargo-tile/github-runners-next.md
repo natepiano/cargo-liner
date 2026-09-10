@@ -68,3 +68,55 @@
     the scenario's existing deadline before asserting, and the exec-excluded
     scenario passes ten consecutive runs on the Linux machine.
   - Revealed by: Phase 9
+
+- [ ] **Every reader of a shared ledger is upgraded before the first merge-extent reconciliation**
+  - Target: `cargo-berth` installation and rollout — every CLI and hook
+    entrypoint that reads a shared ledger, including explicit
+    `CARGO_BERTH_EXECUTABLE` overrides; no in-repository owner.
+  - Why needed: reconciliation appends a `merge_extent_observed` journal record
+    on the first `board`, `check`, or `drift` against a ledger, and every older
+    `cargo-berth` binary then refuses the whole ledger (`journal record N is
+    corrupt: unknown variant merge_extent_observed`). Forwarding the executable
+    to nested hooks does not upgrade independently invoked readers. Observed at
+    record 82 of the ledger shared by every cargo-liner worktree, after which
+    the installed binary failed every hook read.
+  - Completion condition: every installed entrypoint reads a fixture ledger
+    containing that operation, and the SessionStart and PostToolUse hooks return
+    their expected protocol against it; where the record already exists, the
+    remaining readers are upgraded rather than the ledger edited.
+  - Revealed by: Phase 10
+
+- [ ] **A waiting or deferred reservation exposes its extents on request**
+  - Target: `crates/cargo-berth/src/board/report.rs`,
+    `crates/cargo-berth/src/verb/board.rs`, `crates/cargo-berth/src/output.rs`,
+    `docs/cargo-berth/generated/output-contract.json`,
+    `crates/cargo-berth/tests/board.rs`
+  - Why needed: board placement (`crates/cargo-berth/src/board/rows.rs`) keeps
+    waiting successors and unresolved-overlap endpoints out of every
+    reservation-snapshot section, and `board --reservation <id> --json` reports
+    lifecycle only, so an operator holding one of those reservations cannot see
+    its protected paths or retained evidence.
+  - Completion condition: `board --reservation <id> --json` carries
+    `race_extent` and `merge_extent`, including `unavailable` with retained
+    evidence and `not_derived` with declared protection, and `tests/board.rs`
+    verifies that waiting successors and both unresolved-overlap endpoints
+    expose protected, empty, and unavailable extents alongside their lifecycle.
+  - Revealed by: Phase 10
+
+- [ ] **The durable evidence record carries the effective edit-blocking decision beside the checkpoint evidence**
+  - Target: `crates/cargo-berth/src/reservation/lifecycle.rs` —
+    `IntegrationEvidenceStatus::edit_blocking_status`;
+    `crates/cargo-berth/src/reconcile.rs` and
+    `crates/cargo-berth/src/verb/release.rs`, which persist its answer in
+    `evidence_revalidated`; `crates/cargo-berth/tests/lifecycle.rs`.
+  - Why needed: `edit_blocking_status()` answers `Clear` from checkpoint
+    integration alone, and that answer is what the `evidence_revalidated`
+    journal record persists. With an integrated checkpoint followed by later
+    unmerged work, the persisted field reads `clear` while the reservation
+    correctly keeps blocking through its merge extent, so a reader of the
+    journal learns the wrong blocking state.
+  - Completion condition: the persisted record states the checkpoint evidence
+    and the effective protection decision as two facts, and the later-work
+    regression in `tests/lifecycle.rs` asserts that the persisted decision
+    agrees with the live blocking answer.
+  - Revealed by: Phase 10

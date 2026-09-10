@@ -173,9 +173,7 @@ impl DriftActingIdentity {
         resolved_edit_authorization: ResolvedEditAuthorization,
         reservations: &RetainedReservationSet,
     ) -> Self {
-        match reservations
-            .resolve_editing_identity(resolved_edit_authorization.edit_authorization())
-        {
+        match reservations.resolve_editing_identity(resolved_edit_authorization) {
             AuthorizedEditingIdentity::SessionReservation {
                 coordination_run_id: run,
                 reservation_id: reservation,
@@ -189,8 +187,8 @@ impl DriftActingIdentity {
                 coordination_run_id: run,
                 worktree_id: worktree,
             } => Self::Run { run, worktree },
-            AuthorizedEditingIdentity::Unidentified => Self::Unidentified {
-                worktree: resolved_edit_authorization.worktree_id,
+            AuthorizedEditingIdentity::Unidentified { worktree_id } => Self::Unidentified {
+                worktree: worktree_id,
             },
         }
     }

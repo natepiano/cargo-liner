@@ -135,6 +135,8 @@ impl PausedBerthProcess {
 fn proposal_round_trip_records_separate_reasons_and_exact_file_scope() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "crates/a/lib.rs");
+    dirty_source(repository.path(), "crates/a/sibling.rs");
     let holder = claim(
         repository.path(),
         "tree:crates",
@@ -144,6 +146,7 @@ fn proposal_round_trip_records_separate_reasons_and_exact_file_scope() {
         "protect the holder tree",
     );
     let holder_id = reservation_id(&holder);
+    reconcile_fixture(repository.path());
     let journal_before = journal_bytes(repository.path());
 
     let proposed = propose_answer(
@@ -236,6 +239,7 @@ fn proposal_round_trip_records_separate_reasons_and_exact_file_scope() {
 fn multi_path_first_touch_widens_the_single_answered_reservation() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
     let holder = claim(
         repository.path(),
         "file:src/lib.rs",
@@ -390,6 +394,7 @@ fn checkpointed_first_touch_reservation_is_neither_reused_nor_widened() {
 fn unidentified_caller_can_issue_and_spend_its_proposal() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
     let holder = claim(
         repository.path(),
         "tree:src",
@@ -430,6 +435,7 @@ fn unidentified_caller_can_issue_and_spend_its_proposal() {
 fn text_escalation_renders_explicit_holder_material() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
     let holder = claim_explicit(repository.path(), "tree:src", FIRST_RUN, "protect source");
     let holder_id = reservation_id(&holder);
 
@@ -462,6 +468,7 @@ fn text_escalation_renders_explicit_holder_material() {
 fn every_permissive_answer_requires_a_reason_and_a_proposal() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
     let holder = claim(
         repository.path(),
         "tree:src",
@@ -471,6 +478,7 @@ fn every_permissive_answer_requires_a_reason_and_a_proposal() {
         "protect the holder source",
     );
     let holder_id = reservation_id(&holder);
+    reconcile_fixture(repository.path());
     let journal_before = journal_bytes(repository.path());
 
     for answer in ["--before", "--after", "--defer", "--override"] {
@@ -517,9 +525,10 @@ fn every_permissive_answer_requires_a_reason_and_a_proposal() {
 }
 
 #[test]
-fn renewal_preserves_a_proposal_while_scope_widening_invalidates_it() {
+fn renewal_and_race_widening_preserve_a_proposal_while_merge_changes_invalidate_it() {
     let renewed_repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&renewed_repository, "second");
+    dirty_source(renewed_repository.path(), "src/lib.rs");
     let holder = claim(
         renewed_repository.path(),
         "tree:src",
@@ -546,6 +555,7 @@ fn renewal_preserves_a_proposal_while_scope_widening_invalidates_it() {
             .status
             .success()
     );
+    append_widen(renewed_repository.path(), &holder_id, "docs/race-only.rs");
     let applied = apply_proposal(
         &second_root,
         "file:src/lib.rs",
@@ -563,6 +573,7 @@ fn renewal_preserves_a_proposal_while_scope_widening_invalidates_it() {
     let widened_repository = initialized_repository();
     let (_widened_second_directory, widened_second_root) =
         foreign_worktree(&widened_repository, "second");
+    dirty_source(widened_repository.path(), "src/lib.rs");
     let holder = claim(
         widened_repository.path(),
         "tree:src",
@@ -583,6 +594,8 @@ fn renewal_preserves_a_proposal_while_scope_widening_invalidates_it() {
     let proposal_envelope = json_output(&proposed);
     let old_token = proposal_token(&proposal_envelope).to_owned();
     append_widen(widened_repository.path(), &holder_id, "docs/new.rs");
+    dirty_source(widened_repository.path(), "docs/new.rs");
+    reconcile_fixture(widened_repository.path());
     let journal_after_widen = journal_bytes(widened_repository.path());
 
     let stale = apply_proposal(
@@ -604,7 +617,7 @@ fn renewal_preserves_a_proposal_while_scope_widening_invalidates_it() {
 }
 
 #[test]
-fn authorization_survives_holder_lifecycle_changes_but_not_scope_widening() {
+fn authorization_survives_holder_lifecycle_and_race_changes_but_not_merge_changes() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     git(repository.path(), ["switch", "--quiet", "-c", "phase"]);
@@ -689,6 +702,12 @@ fn authorization_survives_holder_lifecycle_changes_but_not_scope_widening() {
     );
 
     append_widen(repository.path(), &holder_id, "docs/new.rs");
+    assert!(
+        check(&second_root, &["file:src/lib.rs"], SECOND_RUN)
+            .status
+            .success()
+    );
+    dirty_source(repository.path(), "docs/new.rs");
     let reblocked = check(&second_root, &["file:src/lib.rs"], SECOND_RUN);
     assert_eq!(reblocked.status.code(), Some(1));
     assert_eq!(
@@ -702,6 +721,7 @@ fn proposal_tokens_are_bound_to_the_holder_and_requester() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    dirty_source(repository.path(), "src/first.rs");
     let first_holder = claim(
         repository.path(),
         "file:src/first.rs",
@@ -711,6 +731,7 @@ fn proposal_tokens_are_bound_to_the_holder_and_requester() {
         "protect first",
     );
     let first_holder_id = reservation_id(&first_holder);
+    dirty_source(&third_root, "src/second.rs");
     let second_holder = claim(
         &third_root,
         "file:src/second.rs",
@@ -770,6 +791,7 @@ fn permissive_answer_is_blocked_by_multiple_holders_without_issuing() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    dirty_source(repository.path(), "src/first.rs");
     let first_holder = claim(
         repository.path(),
         "file:src/first.rs",
@@ -779,6 +801,7 @@ fn permissive_answer_is_blocked_by_multiple_holders_without_issuing() {
         "protect first",
     );
     let first_holder_id = reservation_id(&first_holder);
+    dirty_source(&third_root, "src/second.rs");
     let second_holder = claim(
         &third_root,
         "file:src/second.rs",
@@ -788,6 +811,7 @@ fn permissive_answer_is_blocked_by_multiple_holders_without_issuing() {
         "protect second",
     );
     let second_holder_id = reservation_id(&second_holder);
+    reconcile_fixture(repository.path());
     let journal_before = journal_bytes(repository.path());
 
     let blocked = propose_answer(
@@ -852,13 +876,21 @@ fn permissive_answer_without_a_conflict_is_blocked_without_issuing() {
             .pointer("/payload/data/proposal_token")
             .is_none()
     );
-    assert_eq!(journal_bytes(repository.path()), journal_before);
+    let journal_after = journal_bytes(repository.path());
+    let appended = journal_after
+        .strip_prefix(journal_before.as_slice())
+        .expect("existing journal records must remain an exact raw-byte prefix");
+    let observation: serde_json::Value = serde_json::from_slice(appended)
+        .expect("the only appended record must be one merge observation");
+    assert_eq!(observation["op"], "merge_extent_observed");
+    assert_eq!(observation["reservation_id"], holder_id);
 }
 
 #[test]
 fn proposal_is_blocked_when_its_sole_holder_is_released() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
     let holder = claim(
         repository.path(),
         "tree:src",
@@ -879,6 +911,7 @@ fn proposal_is_blocked_when_its_sole_holder_is_released() {
     let proposal_envelope = json_output(&proposed);
     assert_eq!(proposed.status.code(), Some(3));
     let token = proposal_token(&proposal_envelope).to_owned();
+    fs::remove_file(repository.path().join("src/lib.rs")).expect("holder restores its work");
     assert!(
         run_berth(repository.path(), ["release", &holder_id, "--json"])
             .status
@@ -889,6 +922,7 @@ fn proposal_is_blocked_when_its_sole_holder_is_released() {
             .status
             .success()
     );
+    reconcile_fixture(repository.path());
     let journal_before_apply = journal_bytes(repository.path());
 
     let blocked = apply_proposal(
@@ -917,6 +951,7 @@ fn single_holder_proposal_is_blocked_when_a_second_holder_appears() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    dirty_source(repository.path(), "src/first.rs");
     let first_holder = claim(
         repository.path(),
         "file:src/first.rs",
@@ -941,6 +976,7 @@ fn single_holder_proposal_is_blocked_when_a_second_holder_appears() {
     assert_eq!(proposed.status.code(), Some(3));
     let token = proposal_token(&proposal_envelope).to_owned();
 
+    dirty_source(&third_root, "src/second.rs");
     let second_holder = claim(
         &third_root,
         "file:src/second.rs",
@@ -950,6 +986,7 @@ fn single_holder_proposal_is_blocked_when_a_second_holder_appears() {
         "protect second",
     );
     let second_holder_id = reservation_id(&second_holder);
+    reconcile_fixture(repository.path());
     let journal_before_apply = journal_bytes(repository.path());
     let blocked = apply_proposal(
         &second_root,
@@ -987,6 +1024,7 @@ fn authorization_claim_reports_reconciliation_alerts_on_its_own_envelope() {
         repository.path(),
         ["commit", "--quiet", "-m", "track berth config"],
     );
+    dirty_source(repository.path(), "src/lib.rs");
     let holder = claim(
         repository.path(),
         "tree:src",
@@ -1045,13 +1083,13 @@ fn authorization_claim_reports_reconciliation_alerts_on_its_own_envelope() {
     );
     let proposal_envelope = json_output(&proposed);
     assert_eq!(proposed.status.code(), Some(3));
-    assert_eq!(
-        proposal_envelope["payload"]["alerts"][0]["kind"],
-        "orphaned_outstanding"
-    );
-    assert_eq!(
-        proposal_envelope["payload"]["alerts"][0]["data"]["reservation_id"],
-        orphan_id
+    assert!(
+        proposal_envelope["payload"]["alerts"]
+            .as_array()
+            .expect("proposal reports alerts")
+            .iter()
+            .any(|alert| alert["kind"] == "orphaned_outstanding"
+                && alert["data"]["reservation_id"] == orphan_id)
     );
 
     let applied = apply_proposal(
@@ -1065,9 +1103,13 @@ fn authorization_claim_reports_reconciliation_alerts_on_its_own_envelope() {
     );
     let applied_envelope = json_output(&applied);
     assert!(applied.status.success());
-    assert_eq!(
-        applied_envelope["payload"]["alerts"][0]["kind"],
-        "orphaned_outstanding"
+    assert!(
+        applied_envelope["payload"]["alerts"]
+            .as_array()
+            .expect("applied answer reports alerts")
+            .iter()
+            .any(|alert| alert["kind"] == "orphaned_outstanding"
+                && alert["data"]["reservation_id"] == orphan_id)
     );
 }
 
@@ -1075,6 +1117,7 @@ fn authorization_claim_reports_reconciliation_alerts_on_its_own_envelope() {
 fn authorization_claim_refuses_marker_identity_that_becomes_stale() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
     let holder = claim(
         repository.path(),
         "tree:src",
@@ -1351,6 +1394,7 @@ fn answers_are_not_transitive_to_a_third_reservation() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    dirty_source(repository.path(), "crates/a/lib.rs");
     let holder = claim(
         repository.path(),
         "tree:crates",
@@ -1399,6 +1443,7 @@ fn answers_are_not_transitive_to_a_third_reservation() {
     );
     append_widen(repository.path(), &third_id, "crates/a/lib.rs");
 
+    dirty_source(&third_root, "crates/a/lib.rs");
     let blocked_by_third = check(&second_root, &["file:crates/a/lib.rs"], SECOND_RUN);
     let blocked_envelope = json_output(&blocked_by_third);
     assert_eq!(blocked_by_third.status.code(), Some(1));
@@ -1412,6 +1457,7 @@ fn answers_are_not_transitive_to_a_third_reservation() {
 fn defer_records_both_integration_holds_and_permits_both_editors() {
     let defer_repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&defer_repository, "second");
+    dirty_source(defer_repository.path(), "src/lib.rs");
     let holder = claim(
         defer_repository.path(),
         "tree:src",
@@ -1537,6 +1583,19 @@ fn a_proposal_token_with_no_answer_is_refused_by_the_parser() {
             "the refusal should name {named}: {refusal}"
         );
     }
+}
+
+/// A foreign refusal requires work the holder would bring to a merge.
+fn dirty_source(root: &Path, path: &str) {
+    let target = root.join(path);
+    fs::create_dir_all(target.parent().expect("held path has a parent"))
+        .expect("held directory should exist");
+    fs::write(target, "uncommitted holder work\n").expect("held work should write");
+}
+
+/// Publish initial derived observations before comparing refusal journal bytes.
+fn reconcile_fixture(root: &Path) {
+    assert!(run_berth(root, ["board", "--json"]).status.success());
 }
 
 fn initialized_repository() -> TempDir {
@@ -1854,7 +1913,17 @@ fn commit_file(repository_root: &Path, path: &str, contents: &str, message: &str
     }
     fs::write(file_path, contents).expect("committed file should write");
     git(repository_root, ["add", path]);
-    git(repository_root, ["commit", "--quiet", "-m", message]);
+    git(
+        repository_root,
+        [
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ],
+    );
 }
 
 fn append_widen(repository_root: &Path, reservation_id: &str, added_scope: &str) {

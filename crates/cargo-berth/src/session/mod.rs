@@ -296,7 +296,12 @@ pub(crate) fn apply_journal_event(
             );
         },
         JournalOperation::Checkpoint { reservation_id, .. }
-        | JournalOperation::Release { reservation_id, .. } => {
+        | JournalOperation::Release { reservation_id, .. }
+        | JournalOperation::MergeExtentObserved {
+            reservation_id,
+            extent: crate::reservation::MergeExtent::Empty { .. },
+            run_status: crate::reservation::ReservationRunStatus::Ended,
+        } => {
             let mut store = SessionIdentityStore::read_for_update(&mapping_path);
             store
                 .identities

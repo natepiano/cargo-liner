@@ -31,6 +31,14 @@ use crate::worktree::WorktreeLiveness;
 #[schemars(rename = "alert")]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub(crate) enum Alert {
+    /// A failed branch observation retains protection until the repository can answer again.
+    MergeExtentUnavailable {
+        /// The reservation whose last successful surface remains protected.
+        #[schemars(with = "String")]
+        reservation_id: ReservationId,
+        /// The failed observation reported by Git or holder validation.
+        failure:        String,
+    },
     /// A released reservation no longer has affirmative integration evidence.
     LostIntegrationEvidence(LostIntegrationEvidenceAlert),
     /// A protected reservation has no validated worktree holder.
@@ -41,6 +49,7 @@ impl Alert {
     /// Return the reservation whose retained state keeps this alert active.
     pub(crate) const fn reservation_id(&self) -> ReservationId {
         match self {
+            Self::MergeExtentUnavailable { reservation_id, .. } => *reservation_id,
             Self::LostIntegrationEvidence(alert) => alert.reservation_id,
             Self::OrphanedOutstanding(alert) => alert.reservation_id,
         }
@@ -49,7 +58,7 @@ impl Alert {
     /// Count the git queries that established this orphan recovery verdict.
     pub(crate) const fn recovery_evidence_query_count(&self) -> u64 {
         match self {
-            Self::LostIntegrationEvidence(_) => 0,
+            Self::MergeExtentUnavailable { .. } | Self::LostIntegrationEvidence(_) => 0,
             Self::OrphanedOutstanding(alert) => match alert.branch_ref_status {
                 BranchRefStatus::Present { .. } => 4,
                 BranchRefStatus::Missing { .. } => 3,
@@ -62,6 +71,13 @@ impl Alert {
 impl Display for Alert {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MergeExtentUnavailable {
+                reservation_id,
+                failure,
+            } => write!(
+                formatter,
+                "Reservation {reservation_id} retains its previous merge protection: {failure}."
+            ),
             Self::LostIntegrationEvidence(alert) => match &alert.recovery {
                 LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. } => write!(
                     formatter,

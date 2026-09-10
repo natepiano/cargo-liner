@@ -99,6 +99,7 @@ fn blocked_claim_renders_every_holder_fact_and_first_touch_dispositions() -> Tes
 #[test]
 fn claim_proposal_renders_approval_material_without_the_answer_menu() -> TestResult {
     let repository = initialized_repository()?;
+    dirty_source(repository.path(), "src/lib.rs")?;
     let holder = run_berth_with_run(
         repository.path(),
         &["check", "file:src/lib.rs", "--json"],
@@ -388,6 +389,7 @@ fn sequence_presentation_is_engine_considered() -> TestResult {
 fn integration_denial_has_a_one_line_summary_and_complete_detail() -> TestResult {
     let repository = initialized_repository()?;
     let (_holder_directory, holder_root) = add_worktree(&repository, "integration-holder")?;
+    dirty_source(&holder_root, "src/lib.rs")?;
     let holder = claim(&holder_root, "tree:src", FIRST_RUN)?;
     let holder_envelope = json_output(&holder)?;
     let holder_id = required_string(&holder_envelope, "/payload/data/reservation_id")?;
@@ -773,11 +775,24 @@ fn age_only_journal_event(repository_root: &Path) -> TestResult {
     Ok(())
 }
 
+/// A displayed foreign holder must have work on the path it refuses.
+fn dirty_source(root: &Path, path: &str) -> TestResult {
+    let target = root.join(path);
+    fs::create_dir_all(
+        target
+            .parent()
+            .ok_or_else(|| failure("held path needs a parent"))?,
+    )?;
+    fs::write(target, "uncommitted holder work\n")?;
+    Ok(())
+}
+
 fn blocked_claim_with_three_source_kinds(repository: &TempDir) -> TestResult<Output> {
     run_git(
         repository.path(),
         &["checkout", "--quiet", "--detach", "HEAD"],
     )?;
+    dirty_source(repository.path(), "first-touch.rs")?;
     let first_touch = run_berth_with_run(
         repository.path(),
         &["check", "file:first-touch.rs", "--json"],
@@ -787,6 +802,7 @@ fn blocked_claim_with_three_source_kinds(repository: &TempDir) -> TestResult<Out
     age_only_journal_event(repository.path())?;
 
     let (_explicit_directory, explicit_root) = add_worktree(repository, "explicit-holder")?;
+    dirty_source(&explicit_root, "explicit.rs")?;
     let explicit = run_berth(
         &explicit_root,
         &[
@@ -802,6 +818,7 @@ fn blocked_claim_with_three_source_kinds(repository: &TempDir) -> TestResult<Out
     require_success(&explicit, "explicit claim")?;
 
     let (_planned_directory, planned_root) = add_worktree(repository, "planned-holder")?;
+    dirty_source(&planned_root, "planned.rs")?;
     let planned = run_berth(
         &planned_root,
         &[

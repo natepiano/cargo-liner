@@ -169,7 +169,9 @@ fn prunable_and_pruned_worktrees_keep_blocking_and_pruned_work_reports_recovery(
     assert!(
         json_output(&orphan_candidate)["payload"]["alerts"]
             .as_array()
-            .is_some_and(Vec::is_empty)
+            .is_some_and(|alerts| alerts
+                .iter()
+                .all(|alert| alert["kind"] == "merge_extent_unavailable"))
     );
 
     git(repository.path(), &["worktree", "prune", "--expire", "now"]);
@@ -210,16 +212,23 @@ fn prunable_and_pruned_worktrees_keep_blocking_and_pruned_work_reports_recovery(
     );
 }
 
+/// Orphan recovery remains a separate fact from an unavailable merge derivation.
+fn orphan_alert(envelope: &serde_json::Value) -> &serde_json::Value {
+    envelope["payload"]["alerts"]
+        .as_array()
+        .expect("alerts should be a list")
+        .iter()
+        .find(|alert| alert["kind"] == "orphaned_outstanding")
+        .expect("the missing holder must still report orphan recovery")
+}
+
 fn assert_orphan_recovery_evidence(repository: &Path, reservation_id: &str, protected_tip: &str) {
     let orphaned = run_berth(repository, &["check", "file:src/lib.rs", "--json"]);
     let orphaned_json = json_output(&orphaned);
     assert_eq!(orphaned.status.code(), Some(1));
+    assert_eq!(orphan_alert(&orphaned_json)["kind"], "orphaned_outstanding");
     assert_eq!(
-        orphaned_json["payload"]["alerts"][0]["kind"],
-        "orphaned_outstanding"
-    );
-    assert_eq!(
-        orphaned_json["payload"]["alerts"][0]["data"]["recoverability"],
+        orphan_alert(&orphaned_json)["data"]["recoverability"],
         "recoverable_from_branch"
     );
 
@@ -229,22 +238,22 @@ fn assert_orphan_recovery_evidence(repository: &Path, reservation_id: &str, prot
     );
     let protected = run_berth(repository, &["check", "file:src/lib.rs", "--json"]);
     assert_eq!(
-        json_output(&protected)["payload"]["alerts"][0]["data"]["branch_ref_status"]["status"],
+        orphan_alert(&json_output(&protected))["data"]["branch_ref_status"]["status"],
         "present"
     );
     assert_eq!(
-        json_output(&protected)["payload"]["alerts"][0]["data"]["recoverability"],
+        orphan_alert(&json_output(&protected))["data"]["recoverability"],
         "recoverable_from_protected_tip"
     );
 
     remove_protected_tip_recovery_sources(repository, reservation_id, protected_tip);
     let unavailable = run_berth(repository, &["check", "file:src/lib.rs", "--json"]);
     assert_eq!(
-        json_output(&unavailable)["payload"]["alerts"][0]["data"]["branch_ref_status"]["status"],
+        orphan_alert(&json_output(&unavailable))["data"]["branch_ref_status"]["status"],
         "present"
     );
     assert_eq!(
-        json_output(&unavailable)["payload"]["alerts"][0]["data"]["recoverability"],
+        orphan_alert(&json_output(&unavailable))["data"]["recoverability"],
         "commit_unavailable"
     );
 }
@@ -413,7 +422,9 @@ fn locked_missing_worktree_keeps_blocking_without_an_orphan_alert() {
     assert!(
         json_output(&blocked)["payload"]["alerts"]
             .as_array()
-            .is_some_and(Vec::is_empty)
+            .is_some_and(|alerts| alerts
+                .iter()
+                .all(|alert| alert["kind"] == "merge_extent_unavailable"))
     );
 }
 
@@ -592,6 +603,19 @@ fn foreign_administrative_directory_is_refused_without_sweeping_its_marker() {
 #[test]
 fn reconciliation_repairs_a_retention_ref_after_the_checkpoint_append_survives_failure() {
     let repository = initialized_repository();
+    let observer_parent = tempdir().expect("observer worktree parent should exist");
+    let observer = observer_parent.path().join("observer");
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            observer.to_str().expect("observer path should be UTF-8"),
+            "main",
+        ],
+    );
     git(repository.path(), &["switch", "--quiet", "-c", "retention"]);
     commit_file(repository.path(), "retained", "work\n", "retained work");
     let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
@@ -615,7 +639,7 @@ fn reconciliation_repairs_a_retention_ref_after_the_checkpoint_append_survives_f
     fs::remove_file(repository.path().join(MARKER_PATH))
         .expect("failed checkpoint marker should remove for retention repair check");
 
-    let blocked = run_berth(repository.path(), &["check", "file:retained", "--json"]);
+    let blocked = run_berth(&observer, &["check", "file:retained", "--json"]);
     assert_eq!(blocked.status.code(), Some(1));
     let retention_ref = format!("refs/cargo-berth/reservations/{reservation_id}");
     assert_eq!(
@@ -721,10 +745,25 @@ fn terminal_release_omits_the_orphan_alert_it_resolves() {
     assert_eq!(
         json_output(&evidence)["payload"]["alerts"]
             .as_array()
-            .map(Vec::len),
+            .map(|alerts| alerts
+                .iter()
+                .filter(|alert| alert["kind"] == "orphaned_outstanding")
+                .count()),
         Some(1)
     );
-    let released = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+    // An unavailable checkout cannot prove an empty merge extent; ending it needs a
+    // deliberate disposition even when its recorded checkpoint is integrated.
+    let released = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &reservation_id,
+            "--abandon",
+            "--why",
+            "integrated checkpoint belongs to a deliberately discarded checkout",
+            "--json",
+        ],
+    );
 
     assert!(released.status.success());
     assert_eq!(
@@ -734,7 +773,9 @@ fn terminal_release_omits_the_orphan_alert_it_resolves() {
     assert!(
         json_output(&released)["payload"]["alerts"]
             .as_array()
-            .is_some_and(Vec::is_empty)
+            .is_some_and(|alerts| alerts
+                .iter()
+                .all(|alert| alert["kind"] == "merge_extent_unavailable"))
     );
 }
 

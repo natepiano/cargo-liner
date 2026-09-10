@@ -358,7 +358,17 @@ pub(crate) enum JournalOperation {
         /// Whether a caller presented the coordination identity this claim was made under.
         coordination_identity_provenance: CoordinationIdentityProvenance,
     },
-    /// Enlarge an existing reservation and any conflict answer that authorized it.
+    /// Record branch protection observed under the reconciliation lock, without widening it.
+    MergeExtentObserved {
+        /// The holder whose branch surface was observed.
+        reservation_id: ReservationId,
+        /// Successful emptiness, exact paths, or retained evidence explaining a failed read.
+        extent: crate::reservation::MergeExtent,
+        /// Checkpoint and release determine mapping retirement, never merge emptiness alone.
+        #[serde(default)]
+        run_status: crate::reservation::ReservationRunStatus,
+    },
+    /// Enlarge only the run's editing scope and the answer authorizing that acquisition.
     Widen {
         /// The reservation receiving additional scopes.
         reservation_id:       ReservationId,

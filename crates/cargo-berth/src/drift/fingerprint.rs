@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -14,10 +15,15 @@ use super::ordering;
 use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(super) struct WorkingTreeFingerprint {
-    pub(super) tracked_paths:   Vec<ReservationScopePath>,
-    pub(super) untracked_paths: Vec<ReservationScopePath>,
+/// The modified path sets shared by drift comparison and merge-extent cache keys.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub(crate) struct WorkingTreeFingerprint {
+    /// Staged and unstaged tracked paths, normalized together.
+    #[schemars(with = "Vec<String>")]
+    pub(crate) tracked_paths:   Vec<ReservationScopePath>,
+    /// Untracked files also belong to the branch's uncommitted surface.
+    #[schemars(with = "Vec<String>")]
+    pub(crate) untracked_paths: Vec<ReservationScopePath>,
 }
 
 impl WorkingTreeFingerprint {
@@ -56,6 +62,9 @@ pub(super) fn publish_fingerprint(path: &Path, fingerprint: &WorkingTreeFingerpr
         std::mem::drop(fs::write(path, serialized));
     }
 }
+
+/// A refused acquisition must be compared in full again, even if its path sets stay empty.
+pub(super) fn invalidate_fingerprint(path: &Path) { std::mem::drop(fs::remove_file(path)); }
 
 pub(super) fn fingerprint_cache_path(
     common_git_directory: &Path,

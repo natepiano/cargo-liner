@@ -41,6 +41,7 @@ use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::MergeExtent;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
@@ -384,6 +385,7 @@ fn operation_for_state(
         ),
         phase_start_head: reservation.phase_start_head(),
         scopes: reservation.scopes(),
+        merge_extent: reservation.merge_extent(),
     };
     match evidence_state {
         ReservationEvidenceState::Active { .. } => {
@@ -487,7 +489,21 @@ fn outstanding_operation(
         )
     }
     .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown);
+    // Integrated checkpoint evidence says nothing about commits or dirty paths added later.
+    // Keep the branch outstanding and move its checkpoint to the holder's current HEAD.
     if matches!(
+        release_repository_context.merge_extent,
+        MergeExtent::Protected { .. }
+    ) && release_repository_context.holder_worktree == HolderWorktree::Invoking
+        && reservation::current_head(release_repository_context.repository_root)
+            .is_ok_and(|current_head| current_head != *protected_tip.as_ref())
+    {
+        return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
+    }
+    if matches!(
+        release_repository_context.merge_extent,
+        MergeExtent::Empty { .. }
+    ) && matches!(
         (materialized_status, &evidence),
         (
             IntegrationEvidenceStatus::Integrated { .. },
@@ -631,6 +647,8 @@ struct ReleaseRepositoryContext<'repository> {
     holder_worktree:  HolderWorktree,
     phase_start_head: &'repository ProtectedPhaseStartHead,
     scopes:           &'repository ReservationScopeSet,
+    /// Only observed emptiness permits retiring this branch's merge protection.
+    merge_extent:     &'repository MergeExtent,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

@@ -97,7 +97,7 @@ pub(crate) enum EditAuthorization {
         /// The opaque identity from the same administrative directory.
         worktree_id:         WorktreeId,
     },
-    /// The caller has no run identity and must not receive a same-worktree exemption.
+    /// The caller has no run identity and receives no exemption from active race protection.
     Unidentified,
 }
 

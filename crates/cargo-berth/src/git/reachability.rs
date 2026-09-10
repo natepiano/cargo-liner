@@ -18,14 +18,20 @@ use serde::Serialize;
 
 use super::command;
 use super::constants::GIT_ANCESTOR_RANGE_INFIX;
+use super::constants::GIT_DIFF_COMMAND;
+use super::constants::GIT_DIFF_MERGE_BASE_ARG;
 use super::constants::GIT_EXCLUDE_REVISION_PREFIX;
 use super::constants::GIT_HEAD_REVISION;
 use super::constants::GIT_IGNORE_MISSING_ARG;
 use super::constants::GIT_IS_ANCESTOR_ARG;
 use super::constants::GIT_LOCAL_BRANCH_REF_PREFIX;
 use super::constants::GIT_MERGE_BASE_COMMAND;
+use super::constants::GIT_NAME_ONLY_ARG;
+use super::constants::GIT_NO_RENAMES_ARG;
 use super::constants::GIT_NOT_ANCESTOR_EXIT_CODE;
+use super::constants::GIT_NUL_TERMINATED_ARG;
 use super::constants::GIT_PARENTS_ARG;
+use super::constants::GIT_PATHSPEC_SEPARATOR;
 use super::constants::GIT_REV_LIST_COMMAND;
 use super::constants::GIT_STDIN_ARG;
 use super::error;
@@ -35,6 +41,7 @@ use super::object::CommitAvailability;
 use super::object::CommitObjectResolution;
 use super::patch::ScopedPatchTargetHistory;
 use crate::ids::GitObjectId;
+use crate::ids::ReservationScopePath;
 
 /// A worktree's live relationship to the configured trunk.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -257,6 +264,42 @@ pub(crate) fn branch_commit_reachability(
         &format!("{GIT_LOCAL_BRANCH_REF_PREFIX}{branch}"),
         candidate_ancestors,
     )
+}
+
+/// Return the net paths this branch would bring from its merge base with trunk.
+///
+/// One name-only diff excludes trunk-only changes and paths the branch changed and then
+/// restored. An integrated head therefore returns an empty set even when trunk has moved
+/// ahead. NUL delimiters preserve whitespace in names, and disabling rename detection
+/// retains both the removed and added paths. Missing objects, unrelated histories, and
+/// unreadable paths remain failures rather than evidence of an empty merge extent.
+pub(crate) fn unmerged_branch_paths(
+    repository_root: &Path,
+    trunk: &GitObjectId,
+    head: &GitObjectId,
+) -> Result<Vec<ReservationScopePath>, GitError> {
+    let arguments = [
+        GIT_DIFF_COMMAND.to_owned(),
+        GIT_DIFF_MERGE_BASE_ARG.to_owned(),
+        GIT_NAME_ONLY_ARG.to_owned(),
+        GIT_NUL_TERMINATED_ARG.to_owned(),
+        GIT_NO_RENAMES_ARG.to_owned(),
+        trunk.to_string(),
+        head.to_string(),
+        GIT_PATHSPEC_SEPARATOR.to_owned(),
+    ];
+    let output = command::git_output_dynamic(repository_root, &arguments)?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: GIT_DIFF_COMMAND,
+            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    String::from_utf8(output.stdout)
+        .map_err(GitError::InvalidOutput)?
+        .split_terminator('\0')
+        .map(|path| path.parse().map_err(GitError::InvalidReservationPath))
+        .collect()
 }
 
 /// Return every commit that would become reachable from `proposed` but not `previous`.
@@ -905,11 +948,78 @@ mod tests {
     use super::ProtectedTipSuccessorHeads;
     use super::ahead_behind_for_heads;
     use super::descendant_commits;
+    use super::unmerged_branch_paths;
+    use crate::git::GitError;
     use crate::git::fixture::FixtureResult;
     use crate::git::fixture::PRIMARY_PATH;
     use crate::git::fixture::PatchEquivalenceFixture;
+    use crate::git::fixture::SECONDARY_PATH;
     use crate::git::fixture::UNAVAILABLE_OBJECT_ID;
     use crate::ids::GitObjectId;
+
+    #[test]
+    fn integrated_head_has_no_merge_paths_when_trunk_moves_ahead() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let head = fixture.phase_start_head.clone();
+        assert!(unmerged_branch_paths(fixture.root(), &head, &head)?.is_empty());
+
+        fixture.write(SECONDARY_PATH, "trunk-only change\n")?;
+        let trunk = fixture.commit("advance trunk")?;
+        assert!(unmerged_branch_paths(fixture.root(), &trunk, &head)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn branch_merge_paths_exclude_trunk_changes_and_reverted_paths() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        fixture.write(PRIMARY_PATH, "branch change\n")?;
+        fixture.write("reverted.rs", "temporary branch change\n")?;
+        fixture.commit("branch changes")?;
+        fixture.remove("reverted.rs")?;
+        let head = fixture.commit("revert temporary path")?;
+
+        fixture.reset_to_phase_start()?;
+        fixture.write(SECONDARY_PATH, "trunk-only change\n")?;
+        let trunk = fixture.commit("diverged trunk")?;
+        assert_eq!(
+            unmerged_branch_paths(fixture.root(), &trunk, &head)?,
+            vec![PRIMARY_PATH.parse()?],
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn branch_merge_paths_keep_both_rename_sides_and_verbatim_names() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let trunk = fixture.phase_start_head.clone();
+        let renamed_path = "src/name with\ttab and\nnewline.rs";
+        fixture.git(&["mv", PRIMARY_PATH, renamed_path])?;
+        let head = fixture.commit("rename branch path")?;
+        let paths = unmerged_branch_paths(fixture.root(), &trunk, &head)?;
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&PRIMARY_PATH.parse()?));
+        assert!(paths.contains(&renamed_path.parse()?));
+        Ok(())
+    }
+
+    #[test]
+    fn unanswerable_branch_merge_paths_fail_instead_of_appearing_empty() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let trunk = fixture.phase_start_head.clone();
+        let unavailable = UNAVAILABLE_OBJECT_ID.parse::<GitObjectId>()?;
+        assert!(matches!(
+            unmerged_branch_paths(fixture.root(), &trunk, &unavailable),
+            Err(GitError::CommandFailed { .. }),
+        ));
+
+        fixture.git(&["checkout", "--quiet", "--orphan", "unrelated"])?;
+        let unrelated = fixture.commit("unrelated history")?;
+        assert!(matches!(
+            unmerged_branch_paths(fixture.root(), &trunk, &unrelated),
+            Err(GitError::CommandFailed { .. }),
+        ));
+        Ok(())
+    }
 
     #[test]
     fn unresolvable_worktree_head_preserves_other_ahead_behind_counts() -> FixtureResult {

@@ -315,7 +315,9 @@ fn execute_inner(
             results:           attribution.results,
             scope_acquisition: DriftScopeAcquisition::Permitted,
         };
-        if !report.has_blocking_effect() {
+        if report.has_blocking_effect() {
+            fingerprint::invalidate_fingerprint(&cache_path);
+        } else {
             fingerprint::publish_fingerprint(&cache_path, &observation.cache_value);
         }
         return Ok(Enrollment::Enrolled(report));
@@ -361,7 +363,9 @@ fn execute_inner(
     );
     // From here the refusal withholds every acquisition this invocation could still make: the
     // post-write first touch below, and the fingerprint publication that would move the
-    // worktree's shared comparison baseline under the run that does occupy it. Nothing else
+    // worktree's shared comparison baseline under the run that does occupy it. The previous
+    // fingerprint is invalidated too: a clean commit can otherwise match an older empty
+    // baseline and skip the next full comparison that would report this refusal. Nothing else
     // above is withheld, so the refused run's report states what its commit did before it
     // states that it may take nothing here.
     //
@@ -382,6 +386,8 @@ fn execute_inner(
     }
     if acquisition_permitted && !report.has_blocking_effect() {
         fingerprint::publish_fingerprint(&cache_path, &observation.cache_value);
+    } else {
+        fingerprint::invalidate_fingerprint(&cache_path);
     }
     Ok(Enrollment::Enrolled(report))
 }

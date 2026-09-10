@@ -156,6 +156,10 @@ pub(super) struct BoardReservationSnapshot {
     source:                    ClaimSource,
     purpose:                   ReservationPurpose,
     scopes:                    ReservationScopeSet,
+    /// The run's effective editing scope, independent of branch integration.
+    race_extent:               crate::reservation::RaceExtent,
+    /// The exact derived branch surface or the evidence retained on failure.
+    merge_extent:              crate::reservation::MergeExtent,
     lifecycle:                 ReservationLifecycle,
     integration_evidence:      BoardIntegrationEvidence,
     edit_blocking_status:      EditBlockingStatus,
@@ -715,6 +719,8 @@ fn board_reservation_snapshots(
             source: reservation.source().clone(),
             purpose: reservation.purpose().clone(),
             scopes: reservation.scopes().clone(),
+            race_extent: reservation.race_extent(),
+            merge_extent: reservation.merge_extent().clone(),
             lifecycle: reservation.lifecycle().clone(),
             integration_evidence,
             edit_blocking_status: reservation.edit_blocking_status(),
@@ -768,11 +774,10 @@ fn ahead_behind_by_worktree(
 }
 
 const fn reservation_visibility(reservation: &Reservation) -> BoardReservationVisibility {
-    match reservation.lifecycle() {
-        ReservationLifecycle::Released { .. } => BoardReservationVisibility::ResolvedAudit,
-        ReservationLifecycle::Active | ReservationLifecycle::Outstanding { .. } => {
-            BoardReservationVisibility::ActiveConstraint
-        },
+    if reservation.is_terminal() {
+        BoardReservationVisibility::ResolvedAudit
+    } else {
+        BoardReservationVisibility::ActiveConstraint
     }
 }
 

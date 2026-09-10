@@ -17,6 +17,8 @@ use super::lifecycle::EditBlockingStatus;
 use super::lifecycle::IntegrationEvidenceStatus;
 use super::lifecycle::ReleaseDisposition;
 use super::lifecycle::ReservationLifecycle;
+use super::merge_extent::MergeExtent;
+use super::merge_extent::ReservationProtection;
 use super::replay::ReservationReplayError;
 use super::retention::IntegrationTrunkSnapshot;
 use super::retention::RetainedProtectedTip;
@@ -55,7 +57,10 @@ pub(crate) struct Reservation {
     pub(super) retained_successor_scoped_patch_verdicts: RetainedSuccessorScopedPatchTargetVerdicts,
     pub(super) successor_scoped_patch_target_evaluation_schedule:
         SuccessorScopedPatchTargetEvaluationSchedule,
-    pub(super) scopes:                                            ReservationScopeSet,
+    /// Historical editing declarations; only Active makes this a live race extent.
+    pub(super) race_scopes:                                       ReservationScopeSet,
+    /// Independently derived branch protection; widening never mutates this field.
+    pub(super) merge_extent:                                      MergeExtent,
     pub(super) authorizations:                                    Vec<ConflictAuthorization>,
     pub(super) source:                                            ClaimSource,
     pub(super) purpose:                                           ReservationPurpose,
@@ -71,6 +76,21 @@ pub(crate) struct Reservation {
     pub(super) worktree_locator:                                  WorktreeAdministrativeLocator,
     pub(super) claimed_at:                                        RecordedAt,
     pub(super) last_activity_at:                                  RecordedAt,
+}
+
+/// The complete protection and answer identity for one selected conflict ground.
+pub(super) enum ConflictProtection<'reservations> {
+    /// No unreleased holder protects anything on this ground.
+    Clear,
+    /// Race protection names its holder; merge protection names the oldest contributor.
+    Protected {
+        /// The durable holder identity to which an overlap answer must bind.
+        representative: &'reservations Reservation,
+        /// Every holder supplying these scopes; their answers can authorize reciprocal overlap.
+        contributors:   Vec<&'reservations Reservation>,
+        /// One holder's race scopes, or the normalized union of its checkout's merge scopes.
+        scopes:         ReservationScopeSet,
+    },
 }
 
 impl Reservation {
@@ -248,8 +268,60 @@ impl Reservation {
             || self.occupies_worktree_for_another_coordination_run(coordination_run_id, worktree_id)
     }
 
-    /// Borrow the normalized scopes this reservation currently protects.
-    pub(crate) const fn scopes(&self) -> &ReservationScopeSet { &self.scopes }
+    /// Borrow the historical run declaration used by widening and checkpoint evidence.
+    pub(crate) const fn scopes(&self) -> &ReservationScopeSet { &self.race_scopes }
+
+    /// Borrow this run's declaration when acquiring additional editing paths.
+    pub(crate) const fn declared_race_scopes(&self) -> &ReservationScopeSet { &self.race_scopes }
+
+    /// The branch surface observed independently of this run's editing scope.
+    pub(crate) const fn merge_extent(&self) -> &MergeExtent { &self.merge_extent }
+
+    /// Read the scope belonging to exactly the ground this checkout asks about.
+    pub(super) fn protection_in_worktree(
+        &self,
+        acting_worktree: WorktreeId,
+    ) -> ReservationProtection<'_> {
+        if matches!(self.lifecycle, ReservationLifecycle::Released { .. }) {
+            return ReservationProtection::Clear;
+        }
+        if acting_worktree == self.actor.worktree {
+            if self.is_active() {
+                ReservationProtection::Protected(&self.race_scopes)
+            } else {
+                ReservationProtection::Clear
+            }
+        } else {
+            self.merge_extent.protection()
+        }
+    }
+
+    /// An explicit disposition, or an ended run with no merge surface, needs only audit retention.
+    /// A live clean claim remains nonterminal because its editing extent is still active.
+    pub(crate) const fn is_terminal(&self) -> bool {
+        matches!(self.lifecycle, ReservationLifecycle::Released { .. })
+            || !self.is_active() && matches!(self.merge_extent, MergeExtent::Empty { .. })
+    }
+
+    /// Report the run-end fact independently of the branch's merge extent.
+    pub(crate) const fn run_status(&self) -> ReservationRunStatus {
+        if self.is_active() {
+            ReservationRunStatus::Editing
+        } else {
+            ReservationRunStatus::Ended
+        }
+    }
+
+    /// Publish whether the run still holds declared editing scope.
+    pub(crate) fn race_extent(&self) -> RaceExtent {
+        if self.is_active() {
+            RaceExtent::Editing {
+                scopes: self.race_scopes.clone(),
+            }
+        } else {
+            RaceExtent::Ended
+        }
+    }
 
     /// Borrow the external provenance recorded when this reservation was claimed.
     pub(crate) const fn source(&self) -> &ClaimSource { &self.source }
@@ -283,8 +355,9 @@ impl Reservation {
     pub(crate) const fn edit_blocking_status(&self) -> EditBlockingStatus {
         match self.lifecycle {
             ReservationLifecycle::Active => EditBlockingStatus::Blocking,
-            ReservationLifecycle::Outstanding { .. } => {
-                self.integration_status.edit_blocking_status()
+            ReservationLifecycle::Outstanding { .. } => match self.merge_extent.protection() {
+                ReservationProtection::Clear => EditBlockingStatus::Clear,
+                ReservationProtection::Protected(_) => EditBlockingStatus::Blocking,
             },
             ReservationLifecycle::Released { .. } => EditBlockingStatus::Clear,
         }
@@ -485,4 +558,28 @@ impl From<ReservationEvidenceState> for ReservationLifecycleSnapshot {
             },
         }
     }
+}
+
+/// The effective editing scope, whose lifetime follows checkpoint and release.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum RaceExtent {
+    /// This run may still edit the paths it declared or first touched.
+    Editing {
+        /// Declared or first-touched paths this live run may edit.
+        scopes: ReservationScopeSet,
+    },
+    /// The run has checkpointed or released and refuses no later run in this checkout.
+    Ended,
+}
+
+/// The authoritative editing lifetime carried by reconciliation bookkeeping.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReservationRunStatus {
+    /// An empty merge extent alone never ends the run.
+    #[default]
+    Editing,
+    /// A checkpoint or release has ended the run's editing protection.
+    Ended,
 }

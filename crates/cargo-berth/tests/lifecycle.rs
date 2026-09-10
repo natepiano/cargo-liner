@@ -219,6 +219,18 @@ const RELEASES_TO_A_DISPOSITION: usize = 2;
 #[test]
 fn a_release_that_changed_nothing_does_not_repeat_the_sentence_of_one_that_acted() {
     let repository = initialized_repository();
+    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "track berth configuration",
+        ],
+    );
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
     commit_file(
         repository.path(),
@@ -278,6 +290,17 @@ fn a_release_that_changed_nothing_does_not_repeat_the_sentence_of_one_that_acted
 #[test]
 fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
     let repository = initialized_repository();
+    // This fixture exercises a released holder only; commits must not add live first touches.
+    git(
+        repository.path(),
+        &["config", "core.hooksPath", "/dev/null"],
+    );
+    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(
+        repository.path(),
+        &["commit", "--quiet", "-m", "track berth configuration"],
+    );
+    git(repository.path(), &["tag", "--force", INITIAL_COMMIT_TAG]);
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
     commit_file(
@@ -315,6 +338,16 @@ fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
     assert_eq!(json_output(&rewritten)["status"], "trunk_rewritten");
     fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
     assert!(run_berth(repository.path(), &["init"]).status.success());
+    let claim_count = fs::read_to_string(repository.path().join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .filter(|event| event["op"] == "claim")
+        .count();
+    assert_eq!(
+        claim_count, 1,
+        "fixture must contain only the released holder"
+    );
     let empty_path = tempdir().expect("empty PATH should exist");
     let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
@@ -1402,4 +1435,1527 @@ fn wait_for_path(path: &Path, child: &mut Child) {
 
 fn json_output(output: &Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("command should render a JSON envelope")
+}
+
+mod merge_extent {
+    #![allow(
+        clippy::expect_used,
+        reason = "integration fixtures should stop on invalid git histories or command output"
+    )]
+
+    //! A claim protects the net branch merge and the live run's editing scope independently.
+
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::process::Output;
+
+    use cargo_berth_test_support::GitDriver;
+    use cargo_berth_test_support::OptionalLocks;
+    use serde_json::Value;
+    use tempfile::TempDir;
+    use tempfile::tempdir;
+
+    use super::RETENTION_REF_PREFIX;
+    use super::SESSION_MAPPING_PATH;
+
+    /// The built binary is also the only berth executable git hooks may invoke.
+    const BERTH: &str = env!("CARGO_BIN_EXE_cargo-berth");
+    /// Fixture commits avoid ambient coordination and machine maintenance settings.
+    const GIT: GitDriver = GitDriver {
+        executable:          BERTH,
+        optional_locks:      OptionalLocks::Refused,
+        cleared_environment: &[
+            "CARGO_BERTH_RUN",
+            "CARGO_BERTH_SESSION_ID",
+            "CARGO_BERTH_BYPASS",
+        ],
+    };
+    /// Distinct runs allow a shared checkout race to be tested without a second account.
+    const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+    /// A later run in the holder's checkout.
+    const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+    /// The independent branch making edit requests.
+    const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
+    /// Journal truth lives in the main checkout's common git directory.
+    const JOURNAL: &str = ".git/cargo-berth/journal.ndjson";
+    /// Removing only this cache forces ordinary journal replay on the next command.
+    const PROJECTION: &str = ".git/cargo-berth/reservations.json";
+
+    #[test]
+    fn a_clean_claim_on_trunk_protects_no_paths_in_another_worktree() {
+        let fixture = Repository::new();
+        let id = claim(fixture.trunk(), "tree:crates", FIRST_RUN);
+        let observed = board(fixture.trunk());
+        let reservation = snapshot(&observed, &id);
+        assert_eq!(reservation["merge_extent"]["status"], "empty");
+        assert_eq!(reservation["race_extent"]["status"], "editing");
+
+        assert_allowed(
+            &fixture.outsider,
+            "file:crates/cargo-tile/src/lib.rs",
+            THIRD_RUN,
+        );
+        assert_refused(
+            fixture.trunk(),
+            "file:crates/cargo-tile/src/lib.rs",
+            SECOND_RUN,
+            &id,
+        );
+    }
+
+    #[test]
+    fn an_unmerged_committed_path_is_covered_even_outside_the_declared_race_scope() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "branch work\n");
+        let observed = board(fixture.trunk());
+        assert_eq!(
+            scope_paths(&snapshot(&observed, &id)["merge_extent"]["scopes"]),
+            BTreeSet::from(["branch.rs".to_owned()])
+        );
+        assert_eq!(
+            scope_paths(&snapshot(&observed, &id)["race_extent"]["scopes"]),
+            BTreeSet::from(["declared.rs".to_owned()])
+        );
+
+        assert_refused(&fixture.outsider, "file:branch.rs", THIRD_RUN, &id);
+        assert_allowed(&fixture.outsider, "file:declared.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn advancing_only_trunk_releases_an_unchanged_clean_holder_on_the_next_read() {
+        for locked in [false, true] {
+            let fixture = Repository::new();
+            let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+            commit(&fixture.holder, "branch.rs", "branch work\n");
+            if locked {
+                GIT.run(
+                    fixture.trunk(),
+                    [
+                        "worktree",
+                        "lock",
+                        fixture
+                            .holder
+                            .to_str()
+                            .expect("holder path should be UTF-8"),
+                    ],
+                );
+            }
+            let protected = board(fixture.trunk());
+            assert_eq!(
+                snapshot(&protected, &id)["merge_extent"]["status"],
+                "protected"
+            );
+            assert_refused(&fixture.outsider, "file:branch.rs", THIRD_RUN, &id);
+            let head_before = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+            let status_before = GIT.stdout(&fixture.holder, ["status", "--porcelain"]);
+
+            GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+            assert_eq!(
+                GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]),
+                head_before
+            );
+            assert_eq!(
+                GIT.stdout(&fixture.holder, ["status", "--porcelain"]),
+                status_before
+            );
+            assert!(status_before.is_empty());
+            let integrated = board(fixture.trunk());
+            assert_eq!(
+                snapshot(&integrated, &id)["merge_extent"]["status"],
+                "empty"
+            );
+            assert!(
+                integrated["payload"]["alerts"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty),
+                "an accessible holder must remain observable when locked={locked}: {integrated}"
+            );
+
+            assert_allowed(&fixture.outsider, "file:branch.rs", THIRD_RUN);
+            assert_refused(&fixture.holder, "file:branch.rs", SECOND_RUN, &id);
+        }
+    }
+
+    #[test]
+    fn an_integrated_holder_behind_trunk_does_not_cover_trunk_only_changes() {
+        let fixture = Repository::new();
+        claim(&fixture.holder, "tree:crates", FIRST_RUN);
+        commit(&fixture.holder, "crates/one/lib.rs", "integrated work\n");
+        GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+        commit(fixture.trunk(), "crates/two/lib.rs", "later trunk work\n");
+        board(fixture.trunk());
+
+        assert_allowed(&fixture.outsider, "file:crates/one/lib.rs", THIRD_RUN);
+        assert_allowed(&fixture.outsider, "file:crates/two/lib.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn a_diverged_holder_never_covers_changes_made_only_on_trunk() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "tree:crates", FIRST_RUN);
+        commit(&fixture.holder, "crates/one/lib.rs", "branch work\n");
+        commit(fixture.trunk(), "crates/two/lib.rs", "trunk work\n");
+        board(fixture.trunk());
+
+        assert_refused(&fixture.outsider, "file:crates/one/lib.rs", THIRD_RUN, &id);
+        assert_allowed(&fixture.outsider, "file:crates/two/lib.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn a_change_reverted_on_the_branch_is_outside_the_merge_extent() {
+        let fixture = Repository::new();
+        claim(&fixture.holder, "file:tracked.rs", FIRST_RUN);
+        commit(&fixture.holder, "tracked.rs", "temporary change\n");
+        commit(&fixture.holder, "tracked.rs", "base\n");
+        board(fixture.trunk());
+
+        assert_allowed(&fixture.outsider, "file:tracked.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn a_run_without_commits_covers_staged_unstaged_and_untracked_paths() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
+        write(&fixture.holder, "staged.rs", "staged work\n");
+        GIT.run(&fixture.holder, ["add", "staged.rs"]);
+        write(&fixture.holder, "tracked.rs", "unstaged work\n");
+        write(&fixture.holder, "untracked.rs", "untracked work\n");
+        assert_eq!(
+            GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]),
+            GIT.stdout(fixture.trunk(), ["rev-parse", "HEAD"])
+        );
+        board(fixture.trunk());
+
+        for path in ["staged.rs", "tracked.rs", "untracked.rs"] {
+            assert_refused(&fixture.outsider, &format!("file:{path}"), THIRD_RUN, &id);
+        }
+    }
+
+    #[test]
+    fn ending_a_run_allows_its_checkout_but_still_refuses_another_branch() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:tracked.rs", FIRST_RUN);
+        commit(&fixture.holder, "tracked.rs", "unmerged work\n");
+        assert_refused(&fixture.holder, "file:tracked.rs", SECOND_RUN, &id);
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        let observed = board(fixture.trunk());
+        assert_eq!(snapshot(&observed, &id)["race_extent"]["status"], "ended");
+        assert_eq!(
+            snapshot(&observed, &id)["merge_extent"]["status"],
+            "protected"
+        );
+
+        assert_allowed(&fixture.holder, "file:tracked.rs", SECOND_RUN);
+        assert_refused(&fixture.outsider, "file:tracked.rs", THIRD_RUN, &id);
+    }
+
+    #[test]
+    fn repeated_drift_cannot_leave_other_crates_in_the_merge_extent() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "tree:crates/cargo-berth", FIRST_RUN);
+        commit(
+            &fixture.holder,
+            "crates/cargo-berth/src/lib.rs",
+            "branch work\n",
+        );
+
+        for index in 0..3 {
+            let path = format!("crates/cargo-tile/src/transient-{index}.rs");
+            write(&fixture.holder, &path, "temporary work\n");
+            succeed(&berth(
+                &fixture.holder,
+                &["drift", "--full", "--reservation", &id, "--json"],
+                FIRST_RUN,
+            ));
+            fs::remove_file(fixture.holder.join(&path))
+                .expect("temporary dirty path should remove");
+            let observed = board(fixture.trunk());
+            assert!(
+                scope_paths(&snapshot(&observed, &id)["race_extent"]["scopes"]).contains(&path)
+            );
+            assert_eq!(
+                scope_paths(&snapshot(&observed, &id)["merge_extent"]["scopes"]),
+                BTreeSet::from(["crates/cargo-berth/src/lib.rs".to_owned()])
+            );
+            assert_allowed(&fixture.outsider, &format!("file:{path}"), THIRD_RUN);
+        }
+
+        assert_refused(
+            &fixture.outsider,
+            "file:crates/cargo-berth/src/lib.rs",
+            THIRD_RUN,
+            &id,
+        );
+    }
+
+    #[test]
+    fn first_touch_widening_does_not_protect_an_unmodified_path_from_other_branches() {
+        let fixture = Repository::new();
+        let first = berth(
+            &fixture.holder,
+            &["check", "file:first.rs", "--json"],
+            FIRST_RUN,
+        );
+        succeed(&first);
+        let id = json(&first)["reservations"][0]
+            .as_str()
+            .expect("first touch should name its reservation")
+            .to_owned();
+        let widened = berth(
+            &fixture.holder,
+            &["check", "file:second.rs", "--json"],
+            FIRST_RUN,
+        );
+        succeed(&widened);
+        assert_eq!(
+            json(&widened)["payload"]["data"]["acquisition"]["kind"],
+            "widened"
+        );
+        board(fixture.trunk());
+
+        assert_refused(&fixture.holder, "file:second.rs", SECOND_RUN, &id);
+        assert_allowed(&fixture.outsider, "file:second.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn repeated_board_reads_do_not_journal_the_same_extent_again() {
+        let fixture = Repository::new();
+        claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "unmerged work\n");
+        let first = board(fixture.trunk());
+        let journal = fs::read(fixture.trunk().join(JOURNAL)).expect("journal should read");
+        assert_eq!(
+            events(fixture.trunk())
+                .iter()
+                .filter(|event| event["op"] == "merge_extent_observed"
+                    && event["extent"]["status"] == "protected")
+                .count(),
+            1
+        );
+
+        for _ in 0..3 {
+            let repeated = board(fixture.trunk());
+            assert_eq!(
+                repeated["payload"]["data"]["journal_position"],
+                first["payload"]["data"]["journal_position"]
+            );
+            assert_eq!(
+                fs::read(fixture.trunk().join(JOURNAL)).expect("journal should read"),
+                journal
+            );
+        }
+    }
+
+    #[test]
+    fn losing_the_holder_keeps_the_last_observed_unmerged_paths_protected() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "unmerged work\n");
+        board(fixture.trunk());
+        fs::rename(
+            &fixture.holder,
+            fixture.worktrees.path().join("unavailable-holder"),
+        )
+        .expect("holder checkout should move without updating git metadata");
+
+        let observed = board(fixture.trunk());
+        let unavailable = &snapshot(&observed, &id)["merge_extent"];
+        assert_eq!(unavailable["status"], "unavailable");
+        assert_eq!(unavailable["retained_evidence"]["status"], "protected");
+        assert_eq!(
+            scope_paths(&unavailable["retained_evidence"]["scopes"]),
+            BTreeSet::from(["branch.rs".to_owned()])
+        );
+        assert!(
+            !unavailable["failure"]
+                .as_str()
+                .expect("unavailable extent should explain its failure")
+                .is_empty()
+        );
+        assert_refused(&fixture.outsider, "file:branch.rs", THIRD_RUN, &id);
+    }
+
+    #[test]
+    fn journal_replay_restores_first_touch_race_protection() {
+        let fixture = Repository::new();
+        let first = berth(
+            &fixture.holder,
+            &["check", "file:first.rs", "--json"],
+            FIRST_RUN,
+        );
+        succeed(&first);
+        let id = json(&first)["reservations"][0]
+            .as_str()
+            .expect("first touch should name its reservation")
+            .to_owned();
+        succeed(&berth(
+            &fixture.holder,
+            &["check", "file:second.rs", "--json"],
+            FIRST_RUN,
+        ));
+        fs::remove_file(fixture.trunk().join(PROJECTION)).expect("projection should remove");
+
+        assert_refused(&fixture.holder, "file:second.rs", SECOND_RUN, &id);
+        assert_allowed(&fixture.outsider, "file:second.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn another_runs_commit_enters_the_branch_extent_after_the_first_run_ends() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:first.rs", FIRST_RUN);
+        commit(&fixture.holder, "first.rs", "first run\n");
+        let first_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        // Run B commits without claiming or checking a path, so A is the only holder.
+        // Its merge protection follows the branch even after trunk integrates A's tip.
+        commit(&fixture.holder, "second.rs", "second run\n");
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--ff-only", &first_tip],
+        );
+        let observed = board(fixture.trunk());
+        let reservation = snapshot(&observed, &id);
+        assert_eq!(
+            events(fixture.trunk())
+                .iter()
+                .filter(|event| event["op"] == "claim")
+                .count(),
+            1,
+            "B must have no reservation that could independently protect its commit"
+        );
+        assert_eq!(
+            reservation["integration_evidence"]["status"]["status"],
+            "integrated"
+        );
+        assert_eq!(
+            scope_paths(&reservation["merge_extent"]["scopes"]),
+            BTreeSet::from(["second.rs".to_owned()])
+        );
+        assert_eq!(reservation["race_extent"]["status"], "ended");
+        assert!(!scope_paths(&reservation["scopes"]).contains("second.rs"));
+
+        assert_refused(&fixture.outsider, "file:second.rs", THIRD_RUN, &id);
+
+        write(&fixture.holder, "dirty.rs", "later uncommitted work\n");
+        assert_refused(&fixture.outsider, "file:dirty.rs", THIRD_RUN, &id);
+        let dirty_board = board(fixture.trunk());
+        let dirty_reservation = snapshot(&dirty_board, &id);
+        assert_eq!(
+            scope_paths(&dirty_reservation["merge_extent"]["scopes"]),
+            BTreeSet::from(["dirty.rs".to_owned(), "second.rs".to_owned()])
+        );
+        assert_eq!(dirty_reservation["race_extent"]["status"], "ended");
+        assert_eq!(dirty_reservation["scopes"], reservation["scopes"]);
+        assert_allowed(&fixture.holder, "file:first.rs", SECOND_RUN);
+        assert_allowed(&fixture.outsider, "file:first.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn a_clean_live_claim_keeps_its_session_mapping_until_the_run_ends() {
+        let fixture = Repository::new();
+        let session = "live-empty-merge-extent";
+        let claimed = Command::new(BERTH)
+            .args(["claim", "file:tracked.rs", "--run", FIRST_RUN, "--json"])
+            .current_dir(&fixture.holder)
+            .env("CARGO_BERTH_SESSION_ID", session)
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove("CARGO_BERTH_BYPASS")
+            .output()
+            .expect("session claim should run");
+        succeed(&claimed);
+        let id = json(&claimed)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("session claim should name its reservation")
+            .to_owned();
+        board(fixture.trunk());
+        let mapping_path = fixture
+            .trunk()
+            .join(".git/cargo-berth/session-identities.json");
+        let mappings: Value =
+            serde_json::from_slice(&fs::read(&mapping_path).expect("session mappings should read"))
+                .expect("session mappings should be JSON");
+        assert_eq!(mappings["identities"][session]["reservation_id"], id);
+        assert_refused(&fixture.holder, "file:tracked.rs", SECOND_RUN, &id);
+        assert_allowed(&fixture.outsider, "file:tracked.rs", THIRD_RUN);
+
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        board(fixture.trunk());
+        let retired: Value =
+            serde_json::from_slice(&fs::read(mapping_path).expect("retired mappings should read"))
+                .expect("retired mappings should be JSON");
+        assert!(
+            retired["identities"].get(session).is_none(),
+            "ended empty claim should retire its mapping: {retired}"
+        );
+    }
+
+    #[test]
+    fn a_refused_drift_widen_remains_visible_to_the_next_cheap_comparison() {
+        let fixture = Repository::new();
+        let subject = claim(&fixture.holder, "file:own.rs", FIRST_RUN);
+        let clean = berth(
+            &fixture.holder,
+            &["drift", "--full", "--reservation", &subject, "--json"],
+            FIRST_RUN,
+        );
+        succeed(&clean);
+        let fingerprint = fs::read_dir(fixture.trunk().join(".git/cargo-berth"))
+            .expect("ledger directory should read")
+            .map(|entry| entry.expect("ledger entry should read").path())
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("drift-fingerprint-"))
+            })
+            .expect("full clean drift should publish a fingerprint");
+        let published: Value = serde_json::from_slice(
+            &fs::read(&fingerprint).expect("published fingerprint should read"),
+        )
+        .expect("published fingerprint should be JSON");
+        assert_eq!(
+            published,
+            serde_json::json!({"tracked_paths": [], "untracked_paths": []})
+        );
+        let cached = berth(
+            &fixture.holder,
+            &["drift", "--reservation", &subject, "--json"],
+            FIRST_RUN,
+        );
+        succeed(&cached);
+        assert_eq!(
+            json(&cached)["payload"]["data"]["comparison"],
+            "cheap_delta"
+        );
+        assert_eq!(
+            json(&cached)["payload"]["data"]["results"][0]["status"],
+            "unchanged"
+        );
+        let foreign = claim(&fixture.outsider, "file:contested.rs", THIRD_RUN);
+        write(
+            &fixture.outsider,
+            "contested.rs",
+            "foreign uncommitted work\n",
+        );
+        board(fixture.trunk());
+        commit(&fixture.holder, "contested.rs", "incursion\n");
+        assert!(
+            GIT.stdout(&fixture.holder, ["status", "--porcelain"])
+                .is_empty()
+        );
+
+        for arguments in [
+            vec!["drift", "--full", "--reservation", &subject, "--json"],
+            vec!["drift", "--reservation", &subject, "--json"],
+        ] {
+            let refused = berth(&fixture.holder, &arguments, FIRST_RUN);
+            let envelope = json(&refused);
+            assert_eq!(
+                refused.status.code(),
+                Some(1),
+                "a refused widen must remain visible: {envelope}"
+            );
+            assert_eq!(envelope["status"], "incursion");
+            assert_eq!(envelope["blocked_by"], serde_json::json!([foreign]));
+            assert!(envelope.to_string().contains("contested.rs"));
+            assert!(
+                !fingerprint.exists(),
+                "a refused widening must invalidate the cache"
+            );
+        }
+        let widened_contested_path = events(fixture.trunk()).iter().any(|event| {
+            event["op"] == "widen"
+                && event["reservation_id"] == subject
+                && event["added_scopes"].to_string().contains("contested.rs")
+        });
+        assert!(
+            !widened_contested_path,
+            "a refused drift must not widen the race extent"
+        );
+    }
+
+    #[test]
+    fn a_failed_first_derivation_keeps_the_initial_declaration_protected() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
+        assert!(
+            !events(fixture.trunk()).iter().any(
+                |event| event["reservation_id"] == id && event["op"] == "merge_extent_observed"
+            ),
+            "the fixture must fail before its first derived answer"
+        );
+        fs::rename(
+            &fixture.holder,
+            fixture.worktrees.path().join("unavailable-holder"),
+        )
+        .expect("holder should become unavailable");
+
+        let observed = board(fixture.trunk());
+        let extent = &snapshot(&observed, &id)["merge_extent"];
+        assert_eq!(extent["status"], "unavailable");
+        assert_eq!(extent["retained_evidence"]["status"], "not_derived");
+        assert_eq!(
+            scope_paths(&extent["retained_evidence"]["protection"]),
+            BTreeSet::from(["declared.rs".to_owned()])
+        );
+        assert_refused(&fixture.outsider, "file:declared.rs", THIRD_RUN, &id);
+    }
+
+    #[test]
+    fn a_legacy_journal_without_derived_evidence_replays_to_initial_protection() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
+        let mut legacy_claim = events(fixture.trunk())
+            .into_iter()
+            .find(|event| event["op"] == "claim")
+            .expect("fixture should record a claim");
+        legacy_claim["projection_generation"] = serde_json::json!(1);
+        fs::write(fixture.trunk().join(JOURNAL), format!("{legacy_claim}\n"))
+            .expect("legacy journal should write");
+        fs::remove_file(fixture.trunk().join(PROJECTION)).expect("legacy projection should remove");
+        fs::rename(
+            &fixture.holder,
+            fixture.worktrees.path().join("unavailable-holder"),
+        )
+        .expect("legacy holder should become unavailable");
+
+        let observed = board(fixture.trunk());
+        let extent = &snapshot(&observed, &id)["merge_extent"];
+        assert_eq!(extent["status"], "unavailable");
+        assert_eq!(extent["retained_evidence"]["status"], "not_derived");
+        assert_refused(&fixture.outsider, "file:declared.rs", THIRD_RUN, &id);
+    }
+
+    #[test]
+    fn drift_widening_changes_only_the_race_extent_when_the_dirty_surface_is_unchanged() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
+        write(&fixture.holder, "first-touched.rs", "dirty work\n");
+        let before = board(fixture.trunk());
+        let before_extent = snapshot(&before, &id)["merge_extent"].clone();
+        let widened = berth(
+            &fixture.holder,
+            &["drift", "--full", "--reservation", &id, "--json"],
+            FIRST_RUN,
+        );
+        succeed(&widened);
+        assert_eq!(json(&widened)["status"], "widened");
+        let after = board(fixture.trunk());
+
+        assert_eq!(snapshot(&after, &id)["merge_extent"], before_extent);
+        assert!(
+            scope_paths(&snapshot(&after, &id)["race_extent"]["scopes"])
+                .contains("first-touched.rs")
+        );
+        assert_eq!(
+            events(fixture.trunk())
+                .iter()
+                .filter(
+                    |event| event["op"] == "merge_extent_observed" && event["reservation_id"] == id
+                )
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn repairing_projection_replays_race_widening_without_observing_git_state() {
+        let fixture = Repository::new();
+        succeed(&berth(
+            &fixture.holder,
+            &["check", "file:first.rs", "--json"],
+            FIRST_RUN,
+        ));
+        succeed(&berth(
+            &fixture.holder,
+            &["check", "file:second.rs", "--json"],
+            FIRST_RUN,
+        ));
+        let original = fs::read(fixture.trunk().join(PROJECTION)).expect("projection should read");
+        let journal = fs::read(fixture.trunk().join(JOURNAL)).expect("journal should read");
+        fs::remove_file(fixture.trunk().join(PROJECTION)).expect("projection should remove");
+        let wrapper = tempdir().expect("git wrapper directory should exist");
+        let trace = wrapper.path().join("unexpected-git");
+        let executable = wrapper.path().join("git");
+        fs::write(
+        &executable,
+        "#!/bin/sh\ncase \"$*\" in *rev-parse*) exec \"$CARGO_BERTH_TEST_REAL_GIT\" \"$@\" ;; esac\nprintf '%s\\n' \"$*\" >> \"$CARGO_BERTH_TEST_UNEXPECTED_GIT\"\nexit 97\n",
+    )
+    .expect("failing git wrapper should write");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+            .expect("git wrapper should execute");
+        let repaired = Command::new(BERTH)
+            .args(["init", "--repair-projection", "--json"])
+            .current_dir(fixture.trunk())
+            .env("PATH", wrapper.path())
+            .env("CARGO_BERTH_TEST_UNEXPECTED_GIT", &trace)
+            .env("CARGO_BERTH_TEST_REAL_GIT", real_git())
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove("CARGO_BERTH_SESSION_ID")
+            .env_remove("CARGO_BERTH_BYPASS")
+            .output()
+            .expect("projection repair should run");
+
+        succeed(&repaired);
+        assert!(
+            !trace.exists(),
+            "journal-only repair must not rederive git state"
+        );
+        assert_eq!(
+            fs::read(fixture.trunk().join(PROJECTION)).expect("rebuilt projection should read"),
+            original
+        );
+        assert_eq!(
+            fs::read(fixture.trunk().join(JOURNAL)).expect("replayed journal should read"),
+            journal
+        );
+        let observed = board(fixture.trunk());
+        let id = events(fixture.trunk())
+            .into_iter()
+            .find(|event| event["op"] == "claim")
+            .expect("replayed claim should exist")["reservation_id"]
+            .as_str()
+            .expect("claim should name id")
+            .to_owned();
+        assert_eq!(
+            scope_paths(&snapshot(&observed, &id)["race_extent"]["scopes"]),
+            BTreeSet::from(["first.rs".to_owned(), "second.rs".to_owned()])
+        );
+    }
+
+    #[test]
+    fn an_empty_merge_extent_preserves_the_ref_an_unfinished_successor_depends_on() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:tracked.rs", FIRST_RUN);
+        commit(&fixture.holder, "tracked.rs", "predecessor work\n");
+        let tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+        let proposal = berth(
+            &fixture.outsider,
+            &[
+                "claim",
+                "file:tracked.rs",
+                "--run",
+                THIRD_RUN,
+                "--after",
+                &id,
+                "--overlap-why",
+                "successor edits the same source",
+                "--why",
+                "successor depends on predecessor",
+                "--json",
+            ],
+            THIRD_RUN,
+        );
+        assert_eq!(
+            proposal.status.code(),
+            Some(3),
+            "overlap should request its concrete proposal: {}",
+            json(&proposal)
+        );
+        let token = json(&proposal)["payload"]["data"]["proposal_token"]
+            .as_str()
+            .expect("proposal should name token")
+            .to_owned();
+        let successor = berth(
+            &fixture.outsider,
+            &[
+                "claim",
+                "file:tracked.rs",
+                "--run",
+                THIRD_RUN,
+                "--after",
+                &id,
+                "--overlap-why",
+                "successor edits the same source",
+                "--why",
+                "successor depends on predecessor",
+                "--proposal",
+                &token,
+                "--json",
+            ],
+            THIRD_RUN,
+        );
+        succeed(&successor);
+        assert_allowed(&fixture.outsider, "file:tracked.rs", THIRD_RUN);
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+        let observed = board(fixture.trunk());
+
+        assert_eq!(snapshot(&observed, &id)["merge_extent"]["status"], "empty");
+        assert_eq!(
+            GIT.stdout(
+                fixture.trunk(),
+                ["rev-parse", &format!("refs/cargo-berth/reservations/{id}")]
+            ),
+            tip
+        );
+    }
+
+    #[test]
+    fn an_incursion_gets_a_durable_disposition_when_its_subject_merge_extent_empties() {
+        let fixture = Repository::new();
+        let subject = claim(&fixture.holder, "file:own.rs", FIRST_RUN);
+        claim(&fixture.outsider, "file:contested.rs", THIRD_RUN);
+        write(&fixture.outsider, "contested.rs", "foreign work\n");
+        write(&fixture.holder, "contested.rs", "incursion\n");
+        let refused = berth(
+            &fixture.holder,
+            &["drift", "--full", "--reservation", &subject, "--json"],
+            FIRST_RUN,
+        );
+        assert_eq!(json(&refused)["status"], "incursion");
+        let incident = events(fixture.trunk())
+            .into_iter()
+            .find(|event| event["op"] == "incursion")
+            .expect("incursion should be durable")["incident_id"]
+            .as_str()
+            .expect("incursion should name incident")
+            .to_owned();
+        commit(&fixture.holder, "contested.rs", "incursion\n");
+        GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+        let observed = board(fixture.trunk());
+
+        assert_eq!(
+            snapshot(&observed, &subject)["merge_extent"]["status"],
+            "empty"
+        );
+        assert!(
+        events(fixture.trunk())
+            .iter()
+            .any(|event| event["op"] == "resolve_incursion" && event["incident_id"] == incident),
+        "the original incident must receive a separate durable disposition"
+    );
+        assert!(
+            !observed["payload"]["data"]["outstanding_incursions"]
+                .to_string()
+                .contains(&incident)
+        );
+    }
+
+    #[test]
+    fn an_edit_check_refreshes_an_empty_foreign_extent_before_allowing_the_path() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
+        let empty = board(fixture.trunk());
+        assert_eq!(snapshot(&empty, &id)["merge_extent"]["status"], "empty");
+        write(
+            &fixture.holder,
+            "fresh.rs",
+            "uncommitted work after the board read\n",
+        );
+
+        assert_refused(&fixture.outsider, "file:fresh.rs", THIRD_RUN, &id);
+        fs::remove_file(fixture.holder.join("fresh.rs")).expect("restored path should remove");
+        assert_allowed(&fixture.outsider, "file:fresh.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn reservations_sharing_a_checkout_share_derivation_and_reuse_its_unchanged_key() {
+        let fixture = Repository::new();
+        for path in ["first.rs", "second.rs", "third.rs"] {
+            claim(&fixture.holder, &format!("file:{path}"), FIRST_RUN);
+        }
+        write(&fixture.holder, "tracked.rs", "dirty branch work\n");
+        let wrapper = tempdir().expect("git tracing directory should exist");
+        let trace = wrapper.path().join("git-trace");
+        let executable = wrapper.path().join("git");
+        fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CARGO_BERTH_TEST_GIT_TRACE\"\nexec \"$CARGO_BERTH_TEST_REAL_GIT\" \"$@\"\n").expect("tracing wrapper should write");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+            .expect("tracing wrapper should execute");
+        let original_path = std::env::var_os("PATH").expect("test PATH should exist");
+        let path = std::env::join_paths(
+            std::iter::once(wrapper.path().to_owned()).chain(std::env::split_paths(&original_path)),
+        )
+        .expect("tracing PATH should join");
+
+        for expected_merge_queries in [1, 0] {
+            fs::write(&trace, "").expect("trace should reset");
+            let output = Command::new(BERTH)
+                .args(["board", "--json"])
+                .current_dir(fixture.trunk())
+                .env("PATH", &path)
+                .env("CARGO_BERTH_TEST_GIT_TRACE", &trace)
+                .env("CARGO_BERTH_TEST_REAL_GIT", real_git())
+                .env_remove("CARGO_BERTH_RUN")
+                .env_remove("CARGO_BERTH_SESSION_ID")
+                .env_remove("CARGO_BERTH_BYPASS")
+                .output()
+                .expect("traced board should run");
+            succeed(&output);
+            let queries = fs::read_to_string(&trace).expect("git trace should read");
+            assert_eq!(
+                queries
+                    .lines()
+                    .filter(|line| line.split_whitespace().any(|arg| arg == "status"))
+                    .count(),
+                1,
+                "all reservations share one dirty observation: {queries}"
+            );
+            assert_eq!(
+                queries
+                    .lines()
+                    .filter(|line| line.contains("--merge-base") && line.contains("--name-only"))
+                    .count(),
+                expected_merge_queries,
+                "only changed keys repeat the merge query: {queries}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_retired_session_can_edit_its_predecessors_checkout_before_first_touch() {
+        let fixture = Repository::new();
+        let session = "retired-predecessor-session";
+        let claimed = Command::new(BERTH)
+            .args(["claim", "file:branch.rs", "--run", FIRST_RUN, "--json"])
+            .current_dir(&fixture.holder)
+            .env("CARGO_BERTH_SESSION_ID", session)
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove("CARGO_BERTH_BYPASS")
+            .output()
+            .expect("mapped predecessor claim should run");
+        succeed(&claimed);
+        let id = json(&claimed)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("predecessor claim should name its reservation")
+            .to_owned();
+        let mapping_path = fixture.trunk().join(SESSION_MAPPING_PATH);
+        let live_mapping: Value =
+            serde_json::from_slice(&fs::read(&mapping_path).expect("live mapping should read"))
+                .expect("live mapping should be JSON");
+        assert_eq!(live_mapping["identities"][session]["reservation_id"], id);
+        commit(&fixture.holder, "branch.rs", "predecessor work\n");
+        let released = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&released);
+        assert_eq!(json(&released)["status"], "outstanding");
+        let retired_mapping: Value =
+            serde_json::from_slice(&fs::read(&mapping_path).expect("retired mappings should read"))
+                .expect("retired mappings should be JSON");
+        assert!(retired_mapping["identities"].get(session).is_none());
+
+        let checked = Command::new(BERTH)
+            .args(["check", "file:branch.rs", "--json"])
+            .current_dir(&fixture.holder)
+            .env("CARGO_BERTH_SESSION_ID", session)
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove("CARGO_BERTH_BYPASS")
+            .output()
+            .expect("unidentified edit check should run");
+        succeed(&checked);
+        assert_eq!(json(&checked)["status"], "clear");
+        assert_refused(&fixture.outsider, "file:branch.rs", THIRD_RUN, &id);
+    }
+
+    #[test]
+    fn hook_git_environment_cannot_change_another_checkouts_merge_extent() {
+        let fixture = Repository::new();
+        let holder = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        let outsider = claim(&fixture.outsider, "file:outsider.rs", THIRD_RUN);
+        commit(&fixture.holder, "branch.rs", "holder branch work\n");
+        write(&fixture.holder, "staged.rs", "holder index work\n");
+        GIT.run(&fixture.holder, ["add", "staged.rs"]);
+        let clean = board(&fixture.outsider);
+        assert_eq!(
+            snapshot(&clean, &outsider)["merge_extent"]["status"],
+            "empty"
+        );
+        assert_eq!(
+            scope_paths(&snapshot(&clean, &holder)["merge_extent"]["scopes"]),
+            BTreeSet::from(["branch.rs".to_owned(), "staged.rs".to_owned()])
+        );
+        let git_directory = GIT.stdout(&fixture.holder, ["rev-parse", "--absolute-git-dir"]);
+        let contaminated = Command::new(BERTH)
+            .args(["board", "--json"])
+            .current_dir(&fixture.outsider)
+            .env("GIT_DIR", &git_directory)
+            .env("GIT_WORK_TREE", &fixture.holder)
+            .env("GIT_INDEX_FILE", Path::new(&git_directory).join("index"))
+            .env("GIT_COMMON_DIR", fixture.trunk().join(".git"))
+            .env("GIT_PREFIX", "hook-prefix/")
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove("CARGO_BERTH_SESSION_ID")
+            .env_remove("CARGO_BERTH_BYPASS")
+            .output()
+            .expect("board should run with inherited hook variables");
+        succeed(&contaminated);
+        let contaminated = json(&contaminated);
+        for id in [&holder, &outsider] {
+            assert_eq!(
+                snapshot(&contaminated, id)["merge_extent"],
+                snapshot(&clean, id)["merge_extent"],
+                "hook repository variables must not change checkout observations"
+            );
+        }
+        assert_eq!(
+            contaminated["payload"]["data"]["alerts"]["entries"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn two_outstanding_reservations_have_one_answerable_foreign_merge_conflict() {
+        let fixture = Repository::new();
+        let oldest = claim(&fixture.holder, "file:first.rs", FIRST_RUN);
+        let newer = claim(&fixture.holder, "file:second.rs", FIRST_RUN);
+        commit(&fixture.holder, "first.rs", "first checkpoint\n");
+        commit(&fixture.holder, "second.rs", "second checkpoint\n");
+        for id in [&oldest, &newer] {
+            let released = berth(&fixture.holder, &["release", id, "--json"], FIRST_RUN);
+            succeed(&released);
+            assert_eq!(json(&released)["status"], "outstanding");
+        }
+        let refused = berth(
+            &fixture.outsider,
+            &["claim", "file:second.rs", "--run", THIRD_RUN, "--json"],
+            THIRD_RUN,
+        );
+        assert_eq!(refused.status.code(), Some(1));
+        let refused = json(&refused);
+        let conflicts = refused["payload"]["data"]["conflicts"]
+            .as_array()
+            .expect("refused claim should list its conflicts");
+        assert_eq!(
+            conflicts.len(),
+            1,
+            "one checkout has one merge conflict: {refused}"
+        );
+        assert_eq!(conflicts[0]["reservation_id"], oldest);
+
+        let mut arguments = vec![
+            "claim",
+            "file:second.rs",
+            "--run",
+            THIRD_RUN,
+            "--override",
+            &oldest,
+            "--overlap-why",
+            "reviewed shared branch work",
+            "--json",
+        ];
+        let proposed = berth(&fixture.outsider, &arguments, THIRD_RUN);
+        assert_eq!(proposed.status.code(), Some(3), "{}", json(&proposed));
+        let proposed = json(&proposed);
+        let proposal = proposed["payload"]["data"]["proposal_token"]
+            .as_str()
+            .expect("override should publish an answerable proposal");
+        arguments.extend(["--proposal", proposal]);
+        let applied = berth(&fixture.outsider, &arguments, THIRD_RUN);
+        succeed(&applied);
+        assert_allowed(&fixture.outsider, "file:second.rs", THIRD_RUN);
+        write(&fixture.outsider, "second.rs", "answered edit\n");
+        let drift = berth(&fixture.outsider, &["drift", "--full", "--json"], THIRD_RUN);
+        succeed(&drift);
+        assert_eq!(json(&drift)["blocked_by"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn divergent_unavailable_holders_have_one_answerable_foreign_merge_conflict() {
+        let fixture = Repository::new();
+        let [oldest, _newer] = fixture.retain_divergent_protection();
+        let arguments = ["claim", "file:b.rs", "--run", THIRD_RUN, "--json"];
+        let refused = berth(&fixture.outsider, &arguments, THIRD_RUN);
+        assert_eq!(refused.status.code(), Some(1), "{}", json(&refused));
+        let refused = json(&refused);
+        let conflicts = refused["payload"]["data"]["conflicts"]
+            .as_array()
+            .expect("refused claim should list its conflicts");
+        assert_eq!(conflicts.len(), 1, "{refused}");
+        assert_eq!(conflicts[0]["reservation_id"], oldest);
+        assert_eq!(
+            scope_paths(&conflicts[0]["overlap_scope_revision"]),
+            BTreeSet::from(["a.rs".to_owned(), "b.rs".to_owned()])
+        );
+        assert_eq!(
+            scope_paths(&conflicts[0]["overlapping_scopes"]),
+            BTreeSet::from(["b.rs".to_owned()])
+        );
+
+        let mut arguments = vec![
+            "claim",
+            "file:b.rs",
+            "--run",
+            THIRD_RUN,
+            "--override",
+            &oldest,
+            "--overlap-why",
+            "reviewed retained branch protection",
+            "--json",
+        ];
+        let proposed = berth(&fixture.outsider, &arguments, THIRD_RUN);
+        assert_eq!(proposed.status.code(), Some(3), "{}", json(&proposed));
+        let proposed = json(&proposed);
+        let proposal = proposed["payload"]["data"]["proposal_token"]
+            .as_str()
+            .expect("override should publish an answerable proposal");
+        fs::remove_file(fixture.trunk().join(PROJECTION))
+            .expect("journal replay should reconstruct the same union and representative");
+        arguments.extend(["--proposal", proposal]);
+        succeed(&berth(&fixture.outsider, &arguments, THIRD_RUN));
+        assert_allowed(&fixture.outsider, "file:b.rs", THIRD_RUN);
+        write(&fixture.outsider, "b.rs", "answered edit\n");
+        let drift = berth(&fixture.outsider, &["drift", "--full", "--json"], THIRD_RUN);
+        succeed(&drift);
+        assert_eq!(json(&drift)["blocked_by"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn younger_unavailable_holders_answer_authorizes_only_its_scope_after_replay() {
+        let fixture = Repository::new();
+        let outsider = claim(&fixture.outsider, "file:b.rs", THIRD_RUN);
+        commit(&fixture.outsider, "b.rs", "outsider branch work\n");
+        let oldest = claim(&fixture.holder, "file:a.rs", FIRST_RUN);
+        commit(&fixture.holder, "a.rs", "holder branch work\n");
+        let observed = board(fixture.trunk());
+        for (id, path) in [(&outsider, "b.rs"), (&oldest, "a.rs")] {
+            let extent = &snapshot(&observed, id)["merge_extent"];
+            assert_eq!(extent["status"], "protected");
+            assert_eq!(
+                scope_paths(&extent["scopes"]),
+                BTreeSet::from([path.to_owned()])
+            );
+        }
+
+        let refused = berth(
+            &fixture.holder,
+            &["claim", "file:b.rs", "--run", FIRST_RUN, "--json"],
+            FIRST_RUN,
+        );
+        assert_eq!(refused.status.code(), Some(1), "{}", json(&refused));
+        let refused = json(&refused);
+        let conflicts = refused["payload"]["data"]["conflicts"]
+            .as_array()
+            .expect("refused claim should list its conflicts");
+        assert_eq!(conflicts.len(), 1, "{refused}");
+        assert_eq!(conflicts[0]["reservation_id"], outsider);
+
+        let mut arguments = vec![
+            "claim",
+            "file:b.rs",
+            "--run",
+            FIRST_RUN,
+            "--override",
+            &outsider,
+            "--overlap-why",
+            "reviewed shared b.rs work",
+            "--json",
+        ];
+        let proposed = berth(&fixture.holder, &arguments, FIRST_RUN);
+        assert_eq!(proposed.status.code(), Some(3), "{}", json(&proposed));
+        let proposed = json(&proposed);
+        let proposal = proposed["payload"]["data"]["proposal_token"]
+            .as_str()
+            .expect("override should publish an answerable proposal");
+        arguments.extend(["--proposal", proposal]);
+        let applied = berth(&fixture.holder, &arguments, FIRST_RUN);
+        succeed(&applied);
+        let applied = json(&applied);
+        let newer = applied["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("accepted override should return the younger holder id");
+        assert!(
+            !events(fixture.trunk()).iter().any(|event| {
+                event["reservation_id"] == newer && event["op"] == "merge_extent_observed"
+            }),
+            "the second holder must become unavailable before its first derivation"
+        );
+        fs::rename(
+            &fixture.holder,
+            fixture.worktrees.path().join("unavailable-holder"),
+        )
+        .expect("holder checkout should move without updating git metadata");
+
+        let observed = board(fixture.trunk());
+        let retained = &snapshot(&observed, &oldest)["merge_extent"];
+        assert_eq!(retained["status"], "unavailable");
+        assert_eq!(retained["retained_evidence"]["status"], "protected");
+        assert_eq!(
+            scope_paths(&retained["retained_evidence"]["scopes"]),
+            BTreeSet::from(["a.rs".to_owned()])
+        );
+        let declared = &snapshot(&observed, newer)["merge_extent"];
+        assert_eq!(declared["status"], "unavailable");
+        assert_eq!(declared["retained_evidence"]["status"], "not_derived");
+        assert_eq!(
+            scope_paths(&declared["retained_evidence"]["protection"]),
+            BTreeSet::from(["b.rs".to_owned()])
+        );
+
+        assert_allowed(&fixture.outsider, "file:b.rs", THIRD_RUN);
+        let drift = berth(&fixture.outsider, &["drift", "--full", "--json"], THIRD_RUN);
+        succeed(&drift);
+        assert_eq!(json(&drift)["blocked_by"], serde_json::json!([]));
+        let refused = berth(
+            &fixture.outsider,
+            &["check", "file:a.rs", "--json"],
+            THIRD_RUN,
+        );
+        assert_eq!(refused.status.code(), Some(1), "{}", json(&refused));
+        assert_eq!(json(&refused)["blocked_by"], serde_json::json!([oldest]));
+        fs::remove_file(fixture.trunk().join(PROJECTION))
+            .expect("journal replay should reconstruct contributor answer coverage");
+        assert_allowed(&fixture.outsider, "file:b.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn recovering_divergent_holders_clears_paths_outside_the_derived_merge_extent() {
+        let fixture = Repository::new();
+        let [oldest, newer] = fixture.retain_divergent_protection();
+        assert_refused(&fixture.outsider, "file:b.rs", THIRD_RUN, &oldest);
+        fs::rename(
+            fixture.worktrees.path().join("unavailable-holder"),
+            &fixture.holder,
+        )
+        .expect("holder checkout should return to its recorded path");
+
+        let observed = board(fixture.trunk());
+        for id in [&oldest, &newer] {
+            let extent = &snapshot(&observed, id)["merge_extent"];
+            assert_eq!(extent["status"], "protected");
+            assert_eq!(
+                scope_paths(&extent["scopes"]),
+                BTreeSet::from(["a.rs".to_owned()])
+            );
+        }
+        assert_refused(&fixture.outsider, "file:a.rs", THIRD_RUN, &oldest);
+        claim(&fixture.outsider, "file:b.rs", THIRD_RUN);
+        assert_allowed(&fixture.outsider, "file:b.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn releasing_an_integrated_checkpoint_again_preserves_later_branch_work() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
+        commit(&fixture.holder, "checkpoint.rs", "checkpoint C\n");
+        let checkpoint = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--ff-only", &checkpoint],
+        );
+        commit(&fixture.holder, "later.rs", "commit D\n");
+        let later_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+        let integrated = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&integrated, &id)["integration_evidence"]["status"]["status"],
+            "integrated"
+        );
+
+        for root in [&fixture.outsider, &fixture.holder] {
+            let released = berth(root, &["release", &id, "--json"], FIRST_RUN);
+            succeed(&released);
+            let observed = board(fixture.trunk());
+            let reservation = snapshot(&observed, &id);
+            assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
+            assert_eq!(reservation["merge_extent"]["status"], "protected");
+            assert_eq!(
+                scope_paths(&reservation["merge_extent"]["scopes"]),
+                BTreeSet::from(["later.rs".to_owned()])
+            );
+            assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &id);
+        }
+        assert_eq!(
+            GIT.stdout(
+                fixture.trunk(),
+                ["rev-parse", &format!("{RETENTION_REF_PREFIX}{id}")]
+            ),
+            later_tip
+        );
+        assert!(
+            events(fixture.trunk())
+                .iter()
+                .all(|event| { event["reservation_id"] != id || event["op"] != "release" })
+        );
+    }
+
+    #[test]
+    fn releasing_an_unavailable_extent_stops_its_derivation_alerts() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "unmerged work\n");
+        board(fixture.trunk());
+        fs::rename(
+            &fixture.holder,
+            fixture.worktrees.path().join("unavailable-holder"),
+        )
+        .expect("holder should become unavailable");
+        let unavailable = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&unavailable, &id)["merge_extent"]["status"],
+            "unavailable"
+        );
+        assert!(
+            unavailable["payload"]["data"]["alerts"]["entries"]
+                .as_array()
+                .expect("board should list alerts")
+                .iter()
+                .any(|alert| alert["kind"] == "merge_extent_unavailable"
+                    && alert["reservation_id"] == id),
+            "the unavailable holder should have a board alert: {unavailable}"
+        );
+        succeed(&berth(
+            fixture.trunk(),
+            &[
+                "resolve",
+                &id,
+                "--abandon",
+                "--why",
+                "branch work deliberately discarded",
+                "--json",
+            ],
+            THIRD_RUN,
+        ));
+        let released = board(fixture.trunk());
+        assert_eq!(snapshot(&released, &id)["lifecycle"]["stage"], "released");
+        assert_eq!(
+            snapshot(&released, &id)["merge_extent"]["status"],
+            "unavailable"
+        );
+        assert_eq!(
+            released["payload"]["data"]["alerts"]["entries"],
+            serde_json::json!([])
+        );
+    }
+
+    fn real_git() -> String {
+        let output = Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("git location should resolve");
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .expect("git location should be UTF-8")
+            .trim()
+            .to_owned()
+    }
+
+    /// Three checkouts share object storage but have independent working trees.
+    struct Repository {
+        trunk_directory: TempDir,
+        worktrees:       TempDir,
+        holder:          PathBuf,
+        outsider:        PathBuf,
+    }
+
+    impl Repository {
+        fn new() -> Self {
+            let repository = tempdir().expect("repository parent should exist");
+            let root = repository.path();
+            GIT.run(root, ["init", "--quiet", "--initial-branch=main"]);
+            for (key, value) in [
+                ("user.name", "Berth Test"),
+                ("user.email", "berth@example.invalid"),
+                ("maintenance.auto", "false"),
+                ("gc.auto", "0"),
+            ] {
+                GIT.run(root, ["config", key, value]);
+            }
+            write(root, "tracked.rs", "base\n");
+            write(root, "staged.rs", "base\n");
+            GIT.run(root, ["add", "."]);
+            GIT.run(root, ["commit", "--quiet", "-m", "base"]);
+            succeed(&berth(root, &["init", "--json"], FIRST_RUN));
+            // No hook or lifecycle verb runs when these tests integrate a branch. Only the
+            // following board read may discover its now-empty merge surface.
+            GIT.run(root, ["config", "core.hooksPath", "/dev/null"]);
+            GIT.run(root, ["add", ".claude/config/berth.toml"]);
+            GIT.run(root, ["commit", "--quiet", "-m", "configure berth"]);
+            let worktrees = tempdir().expect("worktree parent should exist");
+            let holder = worktrees.path().join("holder");
+            let outsider = worktrees.path().join("outsider");
+            for (branch, path) in [("holder", &holder), ("outsider", &outsider)] {
+                GIT.run(
+                    root,
+                    [
+                        "worktree",
+                        "add",
+                        "--quiet",
+                        "-b",
+                        branch,
+                        path.to_str().expect("worktree path should be UTF-8"),
+                        "main",
+                    ],
+                );
+            }
+            Self {
+                trunk_directory: repository,
+                worktrees,
+                holder,
+                outsider,
+            }
+        }
+
+        fn trunk(&self) -> &Path { self.trunk_directory.path() }
+
+        /// Keep the older holder's derived path and the newer holder's declaration distinct.
+        fn retain_divergent_protection(&self) -> [String; 2] {
+            let oldest = claim(&self.holder, "file:a.rs", FIRST_RUN);
+            commit(&self.holder, "a.rs", "unmerged work\n");
+            let observed = board(self.trunk());
+            let extent = &snapshot(&observed, &oldest)["merge_extent"];
+            assert_eq!(extent["status"], "protected");
+            assert_eq!(
+                scope_paths(&extent["scopes"]),
+                BTreeSet::from(["a.rs".to_owned()])
+            );
+            let newer = claim(&self.holder, "file:b.rs", FIRST_RUN);
+            assert!(
+                !events(self.trunk()).iter().any(|event| {
+                    event["reservation_id"] == newer && event["op"] == "merge_extent_observed"
+                }),
+                "the second holder must become unavailable before its first derivation"
+            );
+            fs::rename(
+                &self.holder,
+                self.worktrees.path().join("unavailable-holder"),
+            )
+            .expect("holder checkout should move without updating git metadata");
+
+            let observed = board(self.trunk());
+            let retained = &snapshot(&observed, &oldest)["merge_extent"];
+            assert_eq!(retained["status"], "unavailable");
+            assert_eq!(retained["retained_evidence"]["status"], "protected");
+            assert_eq!(
+                scope_paths(&retained["retained_evidence"]["scopes"]),
+                BTreeSet::from(["a.rs".to_owned()])
+            );
+            let declared = &snapshot(&observed, &newer)["merge_extent"];
+            assert_eq!(declared["status"], "unavailable");
+            assert_eq!(declared["retained_evidence"]["status"], "not_derived");
+            assert_eq!(
+                scope_paths(&declared["retained_evidence"]["protection"]),
+                BTreeSet::from(["b.rs".to_owned()])
+            );
+            [oldest, newer]
+        }
+    }
+
+    fn write(root: &Path, path: &str, contents: &str) {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().expect("fixture file should have a parent"))
+            .expect("fixture parent should exist");
+        fs::write(path, contents).expect("fixture file should write");
+    }
+
+    fn commit(root: &Path, path: &str, contents: &str) {
+        write(root, path, contents);
+        GIT.run(root, ["add", path]);
+        GIT.run(root, ["commit", "--quiet", "-m", "fixture work"]);
+    }
+
+    fn berth(root: &Path, arguments: &[&str], run: &str) -> Output {
+        Command::new(BERTH)
+            .args(arguments)
+            .current_dir(root)
+            .env("CARGO_BERTH_RUN", run)
+            .env_remove("CARGO_BERTH_SESSION_ID")
+            .env_remove("CARGO_BERTH_BYPASS")
+            .output()
+            .expect("cargo-berth should run")
+    }
+
+    #[track_caller]
+    fn succeed(output: &Output) {
+        assert!(
+            output.status.success(),
+            "berth failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn json(output: &Output) -> Value {
+        serde_json::from_slice(&output.stdout).expect("berth should emit JSON")
+    }
+
+    fn board(root: &Path) -> Value {
+        let output = berth(root, &["board", "--json"], THIRD_RUN);
+        succeed(&output);
+        json(&output)
+    }
+
+    fn events(root: &Path) -> Vec<Value> {
+        fs::read_to_string(root.join(JOURNAL))
+            .expect("journal should read")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("journal event should decode"))
+            .collect()
+    }
+
+    #[track_caller]
+    fn snapshot<'value>(envelope: &'value Value, id: &str) -> &'value Value {
+        let data = &envelope["payload"]["data"];
+        ["ready_now", "unconstrained_reservations", "resolved"]
+            .into_iter()
+            .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
+            .map(|entry| entry.get("reservation").unwrap_or(entry))
+            .find(|entry| entry["reservation_id"] == id)
+            .expect("reservation should have a board snapshot")
+    }
+
+    fn scope_paths(scopes: &Value) -> BTreeSet<String> {
+        scopes
+            .as_array()
+            .expect("protected extent should contain scope entries")
+            .iter()
+            .map(|scope| {
+                scope["path"]
+                    .as_str()
+                    .expect("scope should name a path")
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    fn claim(root: &Path, scope: &str, run: &str) -> String {
+        let output = berth(root, &["claim", scope, "--run", run, "--json"], run);
+        succeed(&output);
+        json(&output)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("claim should return an id")
+            .to_owned()
+    }
+
+    #[track_caller]
+    fn assert_allowed(root: &Path, scope: &str, run: &str) {
+        let output = berth(root, &["check", scope, "--json"], run);
+        succeed(&output);
+        assert_eq!(json(&output)["status"], "clear");
+    }
+
+    #[track_caller]
+    fn assert_refused(root: &Path, scope: &str, run: &str, holder: &str) {
+        let output = berth(root, &["check", scope, "--json"], run);
+        let envelope = json(&output);
+        assert!(
+            !output.status.success(),
+            "{scope} should be refused by {holder}: {envelope}"
+        );
+        assert!(
+            envelope.to_string().contains(holder),
+            "refusal should name its holder: {envelope}"
+        );
+    }
 }

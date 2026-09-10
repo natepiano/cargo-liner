@@ -1,5 +1,17 @@
 //! Named git command, flag, reference, and status spellings.
 
+/// Keep internally spawned hooks on this berth executable unless the caller selected another.
+pub(super) const BERTH_EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
+
+/// Hook-local repository selectors must not redirect Git away from its requested checkout.
+pub(super) const GIT_REPOSITORY_ENVIRONMENT: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_PREFIX",
+];
+
 // commands
 /// The git executable.
 pub(super) const GIT_BINARY: &str = "git";
@@ -44,6 +56,8 @@ pub(super) const GIT_COMMON_DIRECTORY_ARG: &str = "--git-common-dir";
 pub(super) const GIT_COUNT_ARG: &str = "--count";
 /// Show a merge path only when its result differs from every parent.
 pub(super) const GIT_DENSE_COMBINED_ARG: &str = "--diff-merges=dense-combined";
+/// Compare the branch against its merge base so trunk-only changes never enter its extent.
+pub(super) const GIT_DIFF_MERGE_BASE_ARG: &str = "--merge-base";
 /// Test whether an object can be read without printing it.
 pub(super) const GIT_EXISTS_ARG: &str = "-e";
 /// Follow only the first parent, so a walk stays on one branch's own line.

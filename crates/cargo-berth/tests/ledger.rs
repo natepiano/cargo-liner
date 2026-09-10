@@ -269,6 +269,8 @@ fn a_projection_with_a_different_schema_version_rebuilds_without_changing_the_jo
         MAIN_COORDINATION_RUN_ID,
         "old-projection",
     );
+    let observed = run_berth(repository.path(), ["board", "--json"]);
+    assert!(observed.status.success());
     let projection_path = repository.path().join(PROJECTION_PATH);
     let journal_path = repository.path().join(JOURNAL_PATH);
     let journal_before = fs::read(&journal_path)?;
@@ -451,6 +453,12 @@ fn recorded_linked_worktree_resolve_incident_uses_the_invoking_actor() {
         RECORDED_INCIDENT_WORKTREE_ID,
         RECORDED_INCIDENT_COORDINATION_RUN_ID,
     );
+    fs::create_dir_all(repository.path().join("shared")).expect("holder directory should exist");
+    fs::write(
+        repository.path().join("shared/entered.txt"),
+        "holder work\n",
+    )
+    .expect("holder merge surface should exist");
     let holder_id = claim(
         repository.path(),
         "tree:shared",
