@@ -15,6 +15,9 @@ use crate::alert::Alert;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::config::Enrollment;
+use crate::constants::MERGE_EXTENT_TRUNK_UNAVAILABLE;
+use crate::constants::MERGE_EXTENT_WORKTREE_UNAVAILABLE;
+use crate::drift;
 use crate::edge::EdgeReplayError;
 use crate::edge::IntegrationConstraintProjection;
 use crate::edge::MissingReadinessFact;
@@ -76,6 +79,8 @@ use crate::reservation::IntegrationEvidenceObservation;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProof;
 use crate::reservation::IntegrationProofSubjectRevision;
+use crate::reservation::MergeExtent;
+use crate::reservation::MergeExtentKey;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
@@ -91,6 +96,7 @@ use crate::reservation::ScopedPatchEvaluationPriority;
 use crate::reservation::ScopedPatchTargetVerdictAvailability;
 use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
 use crate::reservation::SuccessorScopedPatchTargetVerdictAvailability;
+use crate::scope::ReservationScope;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
 use crate::worktree::WorktreeHead;
@@ -1091,15 +1097,15 @@ fn observe_merge_extent(
     snapshot: &RepositorySnapshot,
     planned: &[JournalOperation],
     git_cost: &mut MergeExtentGitCost,
-) -> Result<reservation::MergeExtent, String> {
+) -> Result<MergeExtent, String> {
     let RepositoryTrunk::Resolved(trunk) = snapshot.trunk() else {
-        return Err(crate::constants::MERGE_EXTENT_TRUNK_UNAVAILABLE.to_owned());
+        return Err(MERGE_EXTENT_TRUNK_UNAVAILABLE.to_owned());
     };
     let holder = snapshot
         .reservation(reservation.id())
         .map_err(|error| error.to_string())?;
     let WorktreeHead::Resolved(head) = &holder.worktree_head else {
-        return Err(crate::constants::MERGE_EXTENT_WORKTREE_UNAVAILABLE.to_owned());
+        return Err(MERGE_EXTENT_WORKTREE_UNAVAILABLE.to_owned());
     };
     // A locked registration stays Unavailable in the liveness report, but its HEAD
     // is usable here only after the registry validates the accessible checkout's identity.
@@ -1107,7 +1113,7 @@ fn observe_merge_extent(
         holder.worktree_liveness,
         WorktreeLiveness::Live | WorktreeLiveness::Unavailable
     ) {
-        return Err(crate::constants::MERGE_EXTENT_WORKTREE_UNAVAILABLE.to_owned());
+        return Err(MERGE_EXTENT_WORKTREE_UNAVAILABLE.to_owned());
     }
     let root = planned
         .iter()
@@ -1121,8 +1127,8 @@ fn observe_merge_extent(
         })
         .unwrap_or_else(|| reservation.worktree_root());
     git_cost.worktree_status_queries += 1;
-    let working_tree = crate::drift::observe_merge_working_tree(root.as_ref())?;
-    let key = reservation::MergeExtentKey {
+    let working_tree = drift::observe_merge_working_tree(root.as_ref())?;
+    let key = MergeExtentKey {
         trunk: trunk.clone(),
         head: head.clone(),
         working_tree,
@@ -1142,7 +1148,7 @@ fn observe_merge_extent(
     paths.dedup();
     let scopes = paths
         .into_iter()
-        .map(|path| crate::scope::ReservationScope {
+        .map(|path| ReservationScope {
             path,
             kind: ScopeKind::File,
         })
@@ -2412,9 +2418,7 @@ impl ReconciliationAction {
             ) {
                 continue;
             }
-            if let reservation::MergeExtent::Unavailable { failure, .. } =
-                reservation.merge_extent()
-            {
+            if let MergeExtent::Unavailable { failure, .. } = reservation.merge_extent() {
                 alerts.push(Alert::MergeExtentUnavailable {
                     reservation_id: reservation.id(),
                     failure:        failure.clone(),

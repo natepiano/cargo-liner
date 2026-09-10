@@ -7,6 +7,7 @@
 //! nothing here opens a text editor, so the overlay never has a mode the
 //! user has to type their way out of.
 
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use tui_pane::Appearance;
@@ -16,6 +17,8 @@ use tui_pane::SettingsRow;
 use crate::app::App;
 use crate::capture_root::CleanupRefusal;
 use crate::capture_root::RootOwner;
+use crate::capture_root::SharedCaptureDirectory;
+use crate::capture_root::SharedDirectoryState;
 use crate::config;
 use crate::constants::APPEARANCE_MODES;
 use crate::constants::CAPTURE_ASSOCIATION;
@@ -24,7 +27,6 @@ use crate::constants::CAPTURE_ASSOCIATION_COMPETING;
 use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
 use crate::constants::CAPTURE_ASSOCIATION_SUPPRESSED;
 use crate::constants::CAPTURE_ASSOCIATION_UNCONFIRMED;
-use crate::constants::CAPTURE_CLEANUP_ALLOWED;
 use crate::constants::CAPTURE_CLEANUP_CHANGED;
 use crate::constants::CAPTURE_CLEANUP_DISABLED;
 use crate::constants::CAPTURE_CLEANUP_EFFECTIVE_USER;
@@ -35,24 +37,18 @@ use crate::constants::CAPTURE_CLEANUP_WRITABLE;
 use crate::constants::CAPTURE_FAILURE_PERMISSION;
 use crate::constants::CAPTURE_OWNER_UID;
 use crate::constants::CAPTURE_OWNER_UNAVAILABLE;
-use crate::constants::CAPTURE_ROOT_ENV;
 use crate::constants::CAPTURE_SETTINGS_ROOT;
-use crate::constants::CAPTURE_SOURCE_CONFIG;
-use crate::constants::CAPTURE_SOURCE_DEFAULT;
-use crate::constants::CAPTURE_SOURCE_ENVIRONMENT;
 use crate::constants::CAPTURE_STATUS_ACTIVE;
 use crate::constants::CAPTURE_STATUS_ANNOTATION;
 use crate::constants::CAPTURE_STATUS_BOOT;
 use crate::constants::CAPTURE_STATUS_BOOT_FAILURE;
 use crate::constants::CAPTURE_STATUS_CAPTURE;
-use crate::constants::CAPTURE_STATUS_DEFAULT_NOT_CREATED;
 use crate::constants::CAPTURE_STATUS_EMPTY;
 use crate::constants::CAPTURE_STATUS_ENUMERATION;
 use crate::constants::CAPTURE_STATUS_ENUMERATION_FAILED;
 use crate::constants::CAPTURE_STATUS_IDENTITY;
 use crate::constants::CAPTURE_STATUS_IDENTITY_BOOT;
 use crate::constants::CAPTURE_STATUS_IDENTITY_RETRY;
-use crate::constants::CAPTURE_STATUS_INVALID;
 use crate::constants::CAPTURE_STATUS_INVALID_REGISTRATION;
 use crate::constants::CAPTURE_STATUS_MISSING;
 use crate::constants::CAPTURE_STATUS_PARTIAL;
@@ -63,7 +59,6 @@ use crate::constants::CAPTURE_STATUS_UNREADABLE_REGISTRATION;
 use crate::constants::CAPTURE_STATUS_UNVERIFIABLE;
 use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
 use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
-use crate::constants::CONFIG_KEY_CAPTURE_ROOTS;
 use crate::constants::CURSOR_WIDTH;
 use crate::constants::EMPTY_LIST;
 use crate::constants::LABEL_VALUE_GAP;
@@ -75,15 +70,16 @@ use crate::constants::MIN_INITIAL_ROWS;
 use crate::constants::REGISTRATION_SEPARATOR;
 use crate::constants::STEPPER_DECORATION_WIDTH;
 use crate::constants::UNRESOLVED_PATH;
+use crate::processes::AccountCaptureDirectory;
+use crate::processes::AccountName;
 use crate::processes::AssociationSelection;
 use crate::processes::CaptureDiagnostic;
 use crate::processes::RootReadStatus;
-use crate::processes::RootStatus;
 use crate::processes::SelectedProof;
 use crate::processes::UnusedCaptureReason;
+use crate::progress::CaptureCleanup;
 use crate::progress::CaptureGeneration;
 use crate::progress::CaptureKey;
-use crate::progress::CaptureRootSource;
 use crate::progress::PathFailure;
 
 /// Which setting a selected row edits.
@@ -209,7 +205,7 @@ pub(crate) fn rows(app: &App) -> SettingsRows {
         "auto install",
         app.loaded_config.config.capture.auto_install.to_string(),
     );
-    push_capture_roots(&mut out, &mut widths, &app.root_status);
+    push_capture_directories(&mut out, &mut widths, app);
 
     out.rows.push(SettingsRow::section("Commands"));
     push_value(
@@ -415,7 +411,14 @@ fn display_path(path: Option<PathBuf>) -> String {
 }
 
 /// Each effective root adds one selectable value whose controls remain inert.
-fn push_capture_roots(out: &mut SettingsRows, widths: &mut RowWidths, statuses: &[RootStatus]) {
+fn push_capture_directories(out: &mut SettingsRows, widths: &mut RowWidths, app: &App) {
+    push_value(
+        out,
+        widths,
+        "shared directory",
+        shared_directory_status(&app.shared_directory),
+    );
+    let statuses = &app.root_status;
     for (index, status) in statuses.iter().enumerate() {
         push_value(
             out,
@@ -426,45 +429,50 @@ fn push_capture_roots(out: &mut SettingsRows, widths: &mut RowWidths, statuses: 
     }
 }
 
-/// Every spelling remains visible even when the scanner interns its root once.
-fn capture_sources(sources: &[CaptureRootSource]) -> String {
-    sources
-        .iter()
-        .map(|source| match source {
-            CaptureRootSource::Default => CAPTURE_SOURCE_DEFAULT.to_string(),
-            CaptureRootSource::Environment { path } => format!(
-                "{CAPTURE_SOURCE_ENVIRONMENT} ({CAPTURE_ROOT_ENV}={})",
-                path.display(),
-            ),
-            CaptureRootSource::Configuration { entry, path } => format!(
-                "{CAPTURE_SOURCE_CONFIG} (capture.{CONFIG_KEY_CAPTURE_ROOTS}[{entry}]={})",
-                path.display(),
-            ),
-        })
-        .collect::<Vec<_>>()
-        .join(LIST_SEPARATOR)
+/// Render the sampled parent without filesystem access on the terminal thread.
+pub(crate) fn shared_directory_status(directory: &SharedCaptureDirectory) -> String {
+    let path = directory.path.display();
+    match &directory.state {
+        SharedDirectoryState::Missing => format!("{path}; created by the first captured cargo run"),
+        SharedDirectoryState::Shared { owner } => {
+            format!("{path}; mode 1777; {}", capture_owner(*owner))
+        },
+        SharedDirectoryState::NotShared { mode, owner } => format!(
+            "{path}; mode {mode:04o}; {}; other accounts cannot register — run: sudo chmod 1777 /tmp/cargo-tile",
+            capture_owner(*owner)
+        ),
+        SharedDirectoryState::Unavailable(failure) => {
+            format!("{path}; unreadable: {}", failure.message)
+        },
+    }
 }
 
 /// Render one effective root entirely from observations retained on `App`.
-fn capture_root_status(status: &RootStatus) -> String {
-    let mut parts = vec![capture_sources(&status.root.sources)];
-    if !matches!(status.state, RootReadStatus::DefaultNotCreated) {
-        parts.push(capture_owner(status.owner));
-    }
-    if status.cleanup.is_empty() {
-        match status.state {
-            RootReadStatus::DefaultNotCreated => {},
-            RootReadStatus::Readable => parts.push(CAPTURE_CLEANUP_ALLOWED.to_string()),
-            RootReadStatus::Unavailable(_) | RootReadStatus::Invalid(_) => {
-                parts.push(CAPTURE_CLEANUP_DISABLED.to_string());
-            },
-        }
-    } else {
+pub(crate) fn capture_root_status(status: &AccountCaptureDirectory) -> String {
+    let account = match &status.account {
+        AccountName::Resolved(name) => name.clone(),
+        AccountName::Unavailable => status.root.uid.to_string(),
+    };
+    let (ownership, cleanup) = match status.root.cleanup {
+        CaptureCleanup::Here => ("; yours", "here"),
+        CaptureCleanup::AccountNextRun => ("", "by that account's next cargo run"),
+    };
+    let readable = match status.state {
+        RootReadStatus::Readable => "readable",
+        RootReadStatus::Unavailable(_) => "unreadable",
+        RootReadStatus::ForeignOwned { .. } => return capture_read_status(status),
+    };
+    let mut parts = vec![format!(
+        "{account}{ownership}; {readable}; {} active captures; cleanup: {cleanup}",
+        status.confirmed
+    )];
+    if status.root.cleanup == CaptureCleanup::Here {
         parts.extend(status.cleanup.iter().map(cleanup_refusal));
     }
     parts.push(capture_read_status(status));
     parts.extend(status.diagnostics.iter().map(capture_diagnostic));
-    if let Ok(path) = &status.root.path {
+    {
+        let path = &status.root.path;
         parts.push(path.display().to_string());
         for association in &status.associations {
             match &association.selection {
@@ -523,10 +531,26 @@ fn registration_publication(key: &CaptureKey) -> String {
     }
 }
 
-/// Failed root reads have retry rules distinct from startup validation failures.
-fn capture_read_status(status: &RootStatus) -> String {
+/// Keep missing directories, denied access, and readable captures distinct.
+fn capture_read_status(status: &AccountCaptureDirectory) -> String {
     match &status.state {
-        RootReadStatus::DefaultNotCreated => CAPTURE_STATUS_DEFAULT_NOT_CREATED.to_string(),
+        RootReadStatus::ForeignOwned { owner } => {
+            let owner = match owner {
+                AccountName::Resolved(name) => name.clone(),
+                AccountName::Unavailable => match status.owner {
+                    RootOwner::Uid(uid) => uid.to_string(),
+                    RootOwner::Unavailable => capture_owner(status.owner),
+                },
+            };
+            let account = match &status.account {
+                AccountName::Resolved(name) => name.clone(),
+                AccountName::Unavailable => status.root.uid.to_string(),
+            };
+            format!(
+                "{}: owned by {owner}, not by {account} — ignored",
+                status.root.path.display()
+            )
+        },
         RootReadStatus::Readable => {
             let captures = if status.confirmed == 0 {
                 CAPTURE_STATUS_EMPTY.to_string()
@@ -546,15 +570,10 @@ fn capture_read_status(status: &RootStatus) -> String {
                 format!("{CAPTURE_STATUS_PARTIAL} — {summary}; {captures}")
             }
         },
-        RootReadStatus::Unavailable(failure)
-            if failure.failure.kind == std::io::ErrorKind::NotFound =>
-        {
+        RootReadStatus::Unavailable(failure) if failure.failure.kind == ErrorKind::NotFound => {
             format!("{CAPTURE_STATUS_MISSING}: {}", path_failure(failure))
         },
         RootReadStatus::Unavailable(failure) => path_failure(failure),
-        RootReadStatus::Invalid(failure) => {
-            format!("{CAPTURE_STATUS_INVALID}: {}", failure.message)
-        },
     }
 }
 
@@ -671,7 +690,7 @@ fn cleanup_refusal(refusal: &CleanupRefusal) -> String {
 /// Both the failed artifact and the original diagnostic survive rendering.
 fn path_failure(failure: &PathFailure) -> String {
     match failure.failure.kind {
-        std::io::ErrorKind::PermissionDenied => format!(
+        ErrorKind::PermissionDenied => format!(
             "{CAPTURE_FAILURE_PERMISSION}: {} ({})",
             failure.path.display(),
             failure.failure.message,
@@ -692,41 +711,43 @@ mod tests {
     use tui_pane::SettingsRow;
 
     use super::SettingId;
-    use super::capture_sources;
     use super::rows;
     use crate::app::App;
+    use crate::birth_stamp::IdentityEvidence;
     use crate::capture_root::CleanupRefusal;
     use crate::capture_root::RootOwner;
     use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
     use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
     use crate::constants::CAPTURE_ASSOCIATION_UNCONFIRMED;
-    use crate::constants::CAPTURE_STATUS_DEFAULT_NOT_CREATED;
     use crate::constants::CAPTURE_STATUS_IDENTITY_BOOT;
     use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
     use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
+    use crate::processes::AccountCaptureDirectory;
+    use crate::processes::AccountName;
     use crate::processes::AssociationSelection;
     use crate::processes::CaptureAssociation;
     use crate::processes::CaptureDiagnostic;
     use crate::processes::RootReadStatus;
-    use crate::processes::RootStatus;
     use crate::processes::SelectedProof;
     use crate::processes::UnusedCaptureReason;
+    use crate::progress::CaptureCleanup;
     use crate::progress::CaptureFailure;
     use crate::progress::CaptureGeneration;
     use crate::progress::CaptureKey;
     use crate::progress::CaptureRoot;
-    use crate::progress::CaptureRootSource;
+    use crate::progress::CaptureRootIndex;
     use crate::progress::PathFailure;
 
     /// Construct retained evidence without resolving or accessing a fixture path.
-    fn observed_root() -> RootStatus {
-        RootStatus {
+    fn observed_root() -> AccountCaptureDirectory {
+        AccountCaptureDirectory {
             root:         CaptureRoot {
-                path:    Ok("/retained/captures".into()),
-                sources: vec![CaptureRootSource::Default],
+                path:    "/retained/captures".into(),
+                uid:     1000,
+                cleanup: CaptureCleanup::Here,
             },
             owner:        RootOwner::Uid(1000),
-            account:      crate::processes::AccountName::Unavailable,
+            account:      AccountName::Unavailable,
             cleanup:      Vec::new(),
             state:        RootReadStatus::Readable,
             confirmed:    0,
@@ -744,11 +765,11 @@ mod tests {
         )
         .expect("open capture root");
         CaptureKey {
-            root: crate::progress::CaptureRootIndex(root),
+            root: CaptureRootIndex(root),
             pid,
             incarnation: scan.incarnation(),
             generation: CaptureGeneration::Published(generation.into()),
-            birth: crate::birth_stamp::IdentityEvidence::Unavailable,
+            birth: IdentityEvidence::Unavailable,
         }
     }
 
@@ -764,14 +785,14 @@ mod tests {
     }
 
     /// Exercise the public row builder, including its inert selection mapping.
-    fn root_row(status: RootStatus) -> SettingsRow {
+    fn root_row(status: AccountCaptureDirectory) -> SettingsRow {
         let mut app = App::new_for_test().expect("quiet settings app");
         app.root_status.push(status);
         let settings = rows(&app);
         let root = settings
             .rows
             .iter()
-            .find(|row| row.label == "root 1")
+            .find(|row| row.label == "account 1")
             .expect("retained root row");
         assert_eq!(root.kind, SettingsRow::value(0, "", "").kind);
         let selection = root.payload.expect("read-only selection payload").get();
@@ -781,87 +802,11 @@ mod tests {
     }
 
     #[test]
-    fn default_source_is_quiet_and_does_not_claim_an_environment_override() {
-        assert_eq!(capture_sources(&[CaptureRootSource::Default]), "default");
-    }
-
-    #[test]
-    fn environment_source_preserves_a_relative_override() {
-        assert_eq!(
-            capture_sources(&[CaptureRootSource::Environment {
-                path: "captures".into(),
-            }]),
-            "environment (CARGO_TILE_ROOT=captures)",
-        );
-    }
-
-    #[test]
-    fn deduplicated_sources_keep_all_original_spellings_and_config_positions() {
-        assert_eq!(
-            capture_sources(&[
-                CaptureRootSource::Environment {
-                    path: "/tmp/runner".into(),
-                },
-                CaptureRootSource::Configuration {
-                    entry: 0,
-                    path:  "/tmp/runner/state/..".into(),
-                },
-                CaptureRootSource::Configuration {
-                    entry: 1,
-                    path:  "/tmp/runner".into(),
-                },
-            ]),
-            "environment (CARGO_TILE_ROOT=/tmp/runner), config (capture.roots[0]=/tmp/runner/state/..), config (capture.roots[1]=/tmp/runner)",
-        );
-    }
-
-    #[test]
     fn readable_empty_root_displays_owner_cleanup_and_absolute_path() {
         assert_eq!(
             root_row(observed_root()).value,
-            "default; owner uid 1000; cleanup allowed for proven ended captures; readable — no active captures; /retained/captures",
+            "1000; yours; readable; 0 active captures; cleanup: here; readable — no active captures; /retained/captures",
         );
-    }
-
-    #[test]
-    fn unused_default_keeps_its_row_without_access_or_cleanup_warnings() {
-        let mut status = observed_root();
-        status.owner = RootOwner::Unavailable;
-        status.state = RootReadStatus::DefaultNotCreated;
-        assert_eq!(
-            root_row(status).value,
-            format!("default; {CAPTURE_STATUS_DEFAULT_NOT_CREATED}; /retained/captures"),
-        );
-    }
-
-    #[test]
-    fn explicitly_named_missing_roots_keep_access_and_cleanup_failures() {
-        let configured = CaptureRootSource::Configuration {
-            entry: 0,
-            path:  "/retained/captures".into(),
-        };
-        let environment = CaptureRootSource::Environment {
-            path: "/retained/captures".into(),
-        };
-        for sources in [
-            vec![configured.clone()],
-            vec![environment.clone()],
-            vec![CaptureRootSource::Default, configured],
-            vec![CaptureRootSource::Default, environment],
-        ] {
-            let mut status = observed_root();
-            status.root.sources = sources;
-            status.owner = RootOwner::Unavailable;
-            let failure = failure("/retained/captures", ErrorKind::NotFound);
-            status.state = RootReadStatus::Unavailable(failure.clone());
-            status.cleanup.push(CleanupRefusal::Access(failure));
-            let value = root_row(status).value;
-            assert!(value.contains(
-                "owner unavailable; cleanup disabled — /retained/captures: retained scan error"
-            ));
-            assert!(value.contains("missing directory: /retained/captures: retained scan error"));
-            assert!(!value.contains(CAPTURE_STATUS_DEFAULT_NOT_CREATED));
-        }
     }
 
     #[test]
@@ -918,11 +863,15 @@ mod tests {
     fn foreign_owner_is_read_only_without_a_permission_repair_instruction() {
         let mut status = observed_root();
         status.owner = RootOwner::Uid(2000);
+        status.root.uid = 2000;
+        status.root.cleanup = CaptureCleanup::AccountNextRun;
         status
             .cleanup
             .push(CleanupRefusal::Foreign("/retained/captures".into()));
         let value = root_row(status).value;
-        assert!(value.contains("owner uid 2000; read-only: /retained/captures"));
+        assert!(value.contains(
+            "2000; readable; 0 active captures; cleanup: by that account's next cargo run"
+        ));
         assert!(!value.contains("restart"));
         assert!(!value.contains("writable"));
     }
@@ -947,7 +896,7 @@ mod tests {
             RootReadStatus::Unavailable(failure("/retained/captures", ErrorKind::NotFound));
         let value = root_row(status).value;
         assert!(value.contains(
-            "owner unavailable; cleanup disabled; missing directory: /retained/captures"
+            "1000; yours; unreadable; 0 active captures; cleanup: here; missing directory: /retained/captures"
         ));
         assert!(!value.contains("no active captures"));
         assert!(!value.contains("restart"));
@@ -1138,63 +1087,6 @@ mod tests {
     }
 
     #[test]
-    fn validation_failure_keeps_original_config_entry_and_requires_correction_and_restart() {
-        let mut status = observed_root();
-        let error = CaptureFailure {
-            kind:    ErrorKind::InvalidInput,
-            message: "capture.roots[2]: capture root must be an absolute path".into(),
-        };
-        status.root.path = Err(error.clone());
-        status.root.sources = vec![CaptureRootSource::Configuration {
-            entry: 2,
-            path:  "runner/state/..".into(),
-        }];
-        status.owner = RootOwner::Unavailable;
-        status.state = RootReadStatus::Invalid(error);
-        let value = root_row(status).value;
-        assert!(value.contains("config (capture.roots[2]=runner/state/..)"));
-        assert!(value.contains("invalid root — correct the path and restart to retry resolution: capture.roots[2]: capture root must be an absolute path"));
-        assert!(!value.contains("missing directory"));
-        assert!(!value.contains("cleanup allowed"));
-    }
-
-    #[test]
-    fn relative_environment_spelling_displays_with_the_retained_absolute_root() {
-        let mut status = observed_root();
-        status.root.sources = vec![CaptureRootSource::Environment {
-            path: "captures".into(),
-        }];
-        let value = root_row(status).value;
-        assert!(value.contains("environment (CARGO_TILE_ROOT=captures)"));
-        assert!(value.contains("readable — no active captures; /retained/captures"));
-        assert!(!value.contains("invalid root"));
-    }
-
-    #[test]
-    fn deduplicated_root_is_one_row_with_all_source_spellings() {
-        let mut app = App::new_for_test().expect("quiet settings app");
-        let mut status = observed_root();
-        status.root.sources = vec![
-            CaptureRootSource::Environment {
-                path: "/retained/captures".into(),
-            },
-            CaptureRootSource::Configuration {
-                entry: 0,
-                path:  "/retained/captures/state/..".into(),
-            },
-        ];
-        app.root_status.push(status);
-        let settings = rows(&app);
-        let roots: Vec<_> = settings
-            .rows
-            .iter()
-            .filter(|row| row.label.starts_with("root "))
-            .collect();
-        assert_eq!(roots.len(), 1);
-        assert!(roots[0].value.contains("environment (CARGO_TILE_ROOT=/retained/captures), config (capture.roots[0]=/retained/captures/state/..)"));
-    }
-
-    #[test]
     fn association_names_its_supplier_and_any_unused_competing_proof() {
         let mut status = observed_root();
         status.associations = vec![CaptureAssociation {
@@ -1346,7 +1238,7 @@ mod tests {
         let mut status = observed_root();
         // A NUL cannot occur in a real Unix pathname. Reopening this root could
         // never produce the retained readable status, owner, or confirmed count.
-        status.root.path = Ok("/retained/\0/captures".into());
+        status.root.path = "/retained/\0/captures".into();
         status.confirmed = 2;
         app.root_status.push(status);
         let first = rows(&app);
@@ -1355,9 +1247,9 @@ mod tests {
         let root = first
             .rows
             .iter()
-            .find(|row| row.label == "root 1")
+            .find(|row| row.label == "account 1")
             .expect("root row");
-        assert!(root.value.contains("owner uid 1000"));
+        assert!(root.value.contains("1000; yours"));
         assert!(root.value.contains("active — 2 captures"));
         assert!(root.value.contains("/retained/\0/captures"));
     }

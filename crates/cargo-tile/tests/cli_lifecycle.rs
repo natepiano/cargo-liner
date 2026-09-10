@@ -23,10 +23,10 @@ mod tests {
     const FIXTURE_CARGO: &str = r#"#!/bin/sh
 set -eu
 printf '%s\000' "$@" > "$LIFECYCLE_OBSERVATIONS/arguments"
-printf '%s\000' "$HOME" "$RUSTUP_HOME" "$CARGO_TILE_ROOT" \
+printf '%s\000' "$HOME" "$RUSTUP_HOME" "$LIFECYCLE_CAPTURE_DIRECTORY" \
     > "$LIFECYCLE_OBSERVATIONS/environment"
 if [ -n "${CARGOTILE_NESTED-}" ]; then
-    cp -R "$CARGO_TILE_ROOT" "$LIFECYCLE_OBSERVATIONS/published"
+    cp -R "$LIFECYCLE_CAPTURE_DIRECTORY" "$LIFECYCLE_OBSERVATIONS/published"
 fi
 printf 'fixture cargo stdout\n'
 printf 'fixture cargo stderr\n' >&2
@@ -88,7 +88,7 @@ exit 37
                 .env("RUSTUP_HOME", self.path("rustup"))
                 .env("CARGO_HOME", self.path("cargo-home"))
                 .env("XDG_CONFIG_HOME", self.path("config"))
-                .env("CARGO_TILE_ROOT", self.path("capture"))
+                .env("LIFECYCLE_CAPTURE_DIRECTORY", self.capture_directory())
                 .env("LIFECYCLE_OBSERVATIONS", self.path("observations"))
                 .current_dir(self.path("home"))
                 .stdin(Stdio::null());
@@ -109,6 +109,14 @@ exit 37
 
         /// Keep fixture paths visibly separate from the process environment.
         fn path(&self, relative: &str) -> PathBuf { self.directory.path().join(relative) }
+
+        /// Resolve the account layout without an application environment override.
+        fn capture_directory(&self) -> PathBuf {
+            let uid = fs::metadata(self.directory.path())
+                .expect("fixture owner")
+                .uid();
+            self.path("capture").join(uid.to_string())
+        }
 
         /// The fallback home toolchain must remain untouched when `RUSTUP_HOME` is set.
         fn assert_fallback_untouched(&self) {
@@ -154,6 +162,19 @@ exit 37
 
     /// Observe publication from inside cargo, then check cleanup after its shim exits.
     fn assert_shim_execution(fixture: &ToolchainLifecycle) {
+        let source = fs::read_to_string(&fixture.cargo).expect("read installed shim");
+        let assignment = "capture_parent=/tmp/cargo-tile";
+        assert_eq!(source.lines().filter(|line| *line == assignment).count(), 1);
+        let parent = fixture.path("capture");
+        let parent = parent
+            .to_str()
+            .expect("UTF-8 parent")
+            .replace('\'', "'\\''");
+        fs::write(
+            &fixture.cargo,
+            source.replace(assignment, &format!("capture_parent='{parent}'")),
+        )
+        .expect("isolate the installed shim capture parent");
         let arguments = ["build", "--", "argument with spaces", "", "'quoted'", "雪"];
         let output = fixture
             .command(&fixture.cargo)
@@ -172,7 +193,7 @@ exit 37
         let expected = [
             fixture.path("home"),
             fixture.path("rustup"),
-            fixture.path("capture"),
+            fixture.capture_directory(),
         ];
         let expected: Vec<u8> = expected
             .iter()
@@ -195,13 +216,13 @@ exit 37
             1
         );
         assert_eq!(
-            fs::read_dir(fixture.path("capture/state/pids"))
+            fs::read_dir(fixture.capture_directory().join("state/pids"))
                 .expect("inspect registrations after shim exit")
                 .count(),
             0
         );
         assert_eq!(
-            fs::read_dir(fixture.path("capture"))
+            fs::read_dir(fixture.capture_directory())
                 .expect("inspect capture root after shim exit")
                 .count(),
             1,
@@ -263,5 +284,52 @@ exit 37
             .expect("execute restored original cargo");
         assert_cargo_output(&output);
         fixture.assert_fallback_untouched();
+    }
+
+    /// The machine-wide option belongs to install alone.
+    #[test]
+    fn all_accounts_is_rejected_by_status_and_uninstall() {
+        let fixture = ToolchainLifecycle::new();
+        for command in ["status", "uninstall"] {
+            let output = fixture
+                .command(Path::new(env!("CARGO_BIN_EXE_cargo-tile")))
+                .args([command, "--all-accounts"])
+                .output()
+                .expect("reject misplaced flag");
+            assert!(!output.status.success(), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("--all-accounts"));
+        }
+    }
+
+    /// An unprivileged caller receives one actionable line before account enumeration.
+    #[test]
+    fn all_accounts_refuses_non_root_with_sudo_instruction() {
+        let fixture = ToolchainLifecycle::new();
+        assert_ne!(
+            fs::metadata(fixture.directory.path())
+                .expect("fixture owner")
+                .uid(),
+            0,
+            "this acceptance suite runs under one unprivileged uid"
+        );
+        let original = fs::read(&fixture.cargo).expect("original cargo");
+        let output = fixture
+            .command(Path::new(env!("CARGO_BIN_EXE_cargo-tile")))
+            .args(["install", "--all-accounts"])
+            .output()
+            .expect("refuse non-root install");
+        assert!(!output.status.success(), "{output:?}");
+        let message = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(message.lines().count(), 1, "{message}");
+        assert!(message.contains("sudo"), "{message}");
+        assert_eq!(
+            fs::read(&fixture.cargo).expect("cargo after refusal"),
+            original
+        );
+        assert!(!fixture.cargo.with_file_name("cargo-tile-real").exists());
     }
 }

@@ -16,6 +16,7 @@ use tui_pane::NoToastAction;
 
 use crate::attract::Attract;
 use crate::attract::AttractMode;
+use crate::capture_root::SharedCaptureDirectory;
 use crate::config;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
@@ -24,7 +25,7 @@ use crate::favorites_overlay::FavoritesOverlay;
 use crate::favorites_overlay::FavoritesOverlayContent;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
-use crate::processes::RootStatus;
+use crate::processes::AccountCaptureDirectory;
 use crate::roster::Roster;
 use crate::sccache::SccacheStats;
 use crate::tiles::TileGrid;
@@ -168,7 +169,8 @@ pub(crate) struct App {
     /// surfaced in the settings overlay once the toast has gone.
     pub(crate) capture_note:      Option<String>,
     /// Latest worker observations; settings rendering performs no capture reads.
-    pub(crate) root_status:       Vec<RootStatus>,
+    pub(crate) root_status:       Vec<AccountCaptureDirectory>,
+    pub(crate) shared_directory:  SharedCaptureDirectory,
     /// The commands the display is holding: what the last scan found,
     /// plus whatever has finished and is still fading out of it.
     pub(crate) roster:            Roster,
@@ -216,6 +218,7 @@ impl App {
             startup_note,
             capture_note: None,
             root_status: Vec::new(),
+            shared_directory: SharedCaptureDirectory::default(),
             roster: Roster::new(),
             tiles: TileGrid::new(),
             sccache: SccacheStats::new(),

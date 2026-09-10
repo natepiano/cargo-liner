@@ -16,13 +16,21 @@ use std::env;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io;
+use std::io::ErrorKind;
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
 use clap::Subcommand;
+use rustix::process::geteuid;
 
+use crate::capture_root;
+use crate::constants::ACCOUNT_INSTALL_REPORT_FLAG;
 use crate::constants::BINARY_NAME;
+use crate::constants::CAPTURE_ROOT;
 use crate::constants::SUBCOMMAND_NAME;
+use crate::hook;
+use crate::hook::AccountInstallOutcome;
 use crate::hook::Change;
 use crate::hook::Hook;
 use crate::hook::HookState;
@@ -45,7 +53,14 @@ enum Command {
     /// Each toolchain's real cargo is moved aside and the shim takes its
     /// name. Safe to repeat. The grid does the same as it opens unless
     /// `capture.auto_install` is off in `config.toml`.
-    Install,
+    Install {
+        /// Install in every account's default rustup home (requires sudo).
+        #[arg(long)]
+        all_accounts:           bool,
+        /// Report each toolchain to the administrative parent process.
+        #[arg(long = ACCOUNT_INSTALL_REPORT_FLAG, hide = true, conflicts_with = "all_accounts")]
+        account_install_report: bool,
+    },
     /// Take the capture shim back out and give cargo its name back.
     Uninstall,
     /// Report whether the capture shim is installed, toolchain by
@@ -63,7 +78,17 @@ impl Cli {
     pub(crate) fn run(self) -> ExitCode {
         match self.command {
             None => terminal::run(),
-            Some(Command::Install) => {
+            Some(Command::Install {
+                account_install_report: true,
+                ..
+            }) => report(install_account_report()),
+            Some(Command::Install {
+                all_accounts: true, ..
+            }) => report(install_all_accounts()),
+            Some(Command::Install {
+                all_accounts: false,
+                account_install_report: false,
+            }) => {
                 if let Err(error) = install() {
                     eprintln!("{BINARY_NAME}: {error}");
                 }
@@ -106,6 +131,9 @@ fn report(outcome: io::Result<()>) -> ExitCode {
 /// Put the shim in front of every toolchain's cargo, reporting each
 /// failure without preventing the remaining toolchains from installing.
 fn install() -> io::Result<()> {
+    if let Err(error) = capture_root::prepare_shared_directory(Path::new(CAPTURE_ROOT)) {
+        eprintln!("{BINARY_NAME}: {CAPTURE_ROOT}: {error}");
+    }
     let hooks = Hook::all()?;
     for hook in &hooks {
         match hook.ensure() {
@@ -120,6 +148,70 @@ fn install() -> io::Result<()> {
         println!("cannot be captured -- their output belongs to the terminal that started");
         println!("them -- so they show in the grid without a bar until they are run again.");
     }
+    Ok(())
+}
+
+/// Report ordinary account-owned installs without shared-directory setup or prose.
+/// Only failure to discover toolchains fails the child process.
+fn install_account_report() -> io::Result<()> {
+    for hook in Hook::all()? {
+        let name = hook.name().replace(['\t', '\r', '\n'], " ");
+        match hook.ensure() {
+            Ok(change) => println!("{name}\t{}", describe_account_install(change)),
+            Err(error) => {
+                let message = error.to_string().replace(['\t', '\r', '\n'], " ");
+                println!("{name}\terror\t{message}");
+            },
+        }
+    }
+    Ok(())
+}
+
+/// The child install protocol's labels for a toolchain change.
+const fn describe_account_install(change: Change) -> &'static str {
+    match change {
+        Change::Installed => "installed",
+        Change::Refreshed => "refreshed",
+        Change::AlreadyCurrent => "already installed",
+        Change::Orphaned => "orphaned",
+        Change::Removed | Change::AlreadyAbsent => "error\tunexpected uninstall result",
+    }
+}
+
+/// Install for database accounts after checking administrative privileges.
+fn install_all_accounts() -> io::Result<()> {
+    if !geteuid().is_root() {
+        return Err(io::Error::new(
+            ErrorKind::PermissionDenied,
+            "run sudo cargo tile install --all-accounts",
+        ));
+    }
+    let accounts = hook::system_accounts()?;
+    capture_root::prepare_shared_directory(Path::new(CAPTURE_ROOT))?;
+    let reports = hook::install_accounts(&accounts, &env::current_exe()?);
+    let mut installed = 0;
+    let mut already_installed = 0;
+    let mut skipped = 0;
+    for report in &reports {
+        match &report.outcome {
+            AccountInstallOutcome::Installed => {
+                installed += 1;
+                println!("{}: installed", report.account);
+            },
+            AccountInstallOutcome::AlreadyInstalled => {
+                already_installed += 1;
+                println!("{}: already installed", report.account);
+            },
+            AccountInstallOutcome::Skipped(reason) => {
+                skipped += 1;
+                println!("{}: skipped: {reason}", report.account);
+            },
+        }
+    }
+    println!(
+        "{} accounts: {installed} installed, {already_installed} already installed, {skipped} skipped",
+        reports.len()
+    );
     Ok(())
 }
 
@@ -169,6 +261,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::process;
+    use std::process::Output;
 
     use tempfile::tempdir;
 
@@ -267,7 +360,7 @@ mod tests {
 
     /// Re-enter the install test with an isolated environment so the child
     /// returns [`Cli::run`]'s exit code without changing the parent's rustup.
-    fn install_in_child(rustup_home: &Path) -> process::Output {
+    fn install_in_child(rustup_home: &Path) -> Output {
         process::Command::new(env::current_exe().expect("test executable"))
             .args([
                 "--exact",

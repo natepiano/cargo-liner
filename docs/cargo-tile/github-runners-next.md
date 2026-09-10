@@ -31,16 +31,17 @@
     cleanup is disabled while preserving the separately observed owner.
   - Revealed by: Phase 3
 
-- [ ] **Every configured-root status remains reachable in Settings**
+- [ ] **Every account line in Settings remains reachable**
   - Target: `crates/cargo-tile/src/render.rs` — `draw_settings` (`:2128`),
     including viewport-to-rendered-line positioning.
-  - Why needed: configured-root rows and their wrapped diagnostics can exceed
-    the popup height, but the paragraph does not follow the settings viewport,
-    so rows past the bottom edge cannot be reached.
-  - Completion condition: with enough configured roots to overflow a small
-    terminal, navigation reveals every root and the settings rows below them,
-    keeps the selected row visible after resizing or status updates, and
-    leaves root controls inert.
+  - Why needed: the capture section lists the shared directory and one line per
+    account directory, and those lines with their wrapped diagnostics can exceed
+    the popup height; the paragraph does not follow the settings viewport, so
+    rows past the bottom edge cannot be reached.
+  - Completion condition: with enough account directories to overflow a small
+    terminal, navigation reveals every account line and the settings rows below
+    them, keeps the selected row visible after resizing or status updates, and
+    leaves the capture lines inert.
   - Revealed by: Phase 6
 
 - [ ] **A promoted summary row accounts for the descendants it hides**
@@ -120,3 +121,115 @@
     regression in `tests/lifecycle.rs` asserts that the persisted decision
     agrees with the live blocking answer.
   - Revealed by: Phase 10
+
+- [ ] **`processes.rs` and `progress.rs` are relocated by behavior, then split**
+  - Target: `crates/cargo-tile/src/processes.rs` (2773 non-test lines, 43
+    top-level types) and `crates/cargo-tile/src/progress.rs` (1205 non-test
+    lines, 23 top-level types).
+  - Why needed: both files now meet two of the style guide's split criteria
+    (line count and several independent type clusters). `processes.rs` holds
+    process identity (`InvocationId`, `RunId`, `ProcessIdentity`), capture
+    attribution (`CaptureAssociation`, `DirectCapture`, `NearestRegistration`),
+    CPU measurement (`CpuBaseline`, `CpuPublication`, `CpuSmoothing`), and the
+    `Census` scan in one file; `progress.rs` holds capture-root lookup
+    (`CaptureRoots`, `CaptureRootEnvironment`, `RegisteredRuns`) beside the
+    `Progress` counter state.
+  - Completion condition: each type first moves to the module that owns its
+    sole constructor or single consumer; what remains splits into
+    anchor-named submodules, with every file under the guide's line threshold
+    or holding one type cluster, and the package tests unchanged.
+  - Revealed by: style review
+
+- [ ] **`capture_root.rs` is anchored and split**
+  - Target: `crates/cargo-tile/src/capture_root.rs` (924 non-test lines, 23
+    top-level types; the anchor type is `RootScan`, not `CaptureRoot`).
+  - Why needed: a new file over the line threshold with three clusters —
+    directory inspection (`InspectedDirectory`, `Inventory`, `ScanEntry`),
+    root identity (`RootHistory`, `TreeIdentity`, `RootIncarnation`), and sweep
+    policy (`SweepBudget`, `SweepDisposition`, `OwnedRoot`) — under a module
+    name that no type carries.
+  - Completion condition: the module directory is named for its anchor type,
+    each cluster is an anchor-named submodule, and the package tests are
+    unchanged.
+  - Revealed by: style review
+
+- [ ] **`birth_stamp/mod.rs` keeps only the module-name type**
+  - Target: `crates/cargo-tile/src/birth_stamp/mod.rs`.
+  - Why needed: the module root declares `linux` and `macos` and then defines
+    `ProcessLifetime`, `LifetimeEvidence`, `IdentityEvidence`, `Observation`,
+    `KernelObservation`, and `Verification` beside `BirthStamp`; none of them
+    is a field type of `BirthStamp`, so the root is not a table of contents.
+  - Completion condition: the root holds the `mod` block, re-exports, and
+    `BirthStamp`; the other types live in leaf files named for them, and the
+    package tests are unchanged.
+  - Revealed by: style review
+
+- [ ] **A `cargo install` run shows its build progress like a `cargo build` run**
+  - Target: the shim's command classification and the reader's progress parsing in `crates/cargo-tile/src/cargo-capture-shim.sh` and `crates/cargo-tile/src/progress.rs`.
+  - Why needed: `cargo install` compiles the same way `build` does, but its row in cargo tile carries no progress counter while the build runs; the user watched an install with nothing moving.
+  - Completion condition: an integration test captures a `cargo install --path <fixture>` run and the reader reports the same compiling counter it reports for `cargo build`; the settings pane needs no change.
+  - Revealed by: the user, watching an install during the Mac smoke check (2026-09-10).
+
+- [ ] **`uninstall` and `status` gain `--all-accounts` counterparts to the admin install**
+  - Target: `crates/cargo-tile/src/cli.rs` — beside `install_all_accounts()`
+    (`:182`), reusing the per-account re-execution in
+    `crates/cargo-tile/src/hook.rs` — `install_accounts` (`:423`).
+  - Why needed: root can install the shim for every account in one command, but
+    removing it or checking it still means acting as each account in turn; an
+    operator who installs for the runner accounts has no matching way to see
+    the result or undo it.
+  - Completion condition: `sudo cargo-tile uninstall --all-accounts` restores
+    `cargo` for every account's toolchains, `status --all-accounts` prints one
+    line per account and toolchain, and both go through the same per-account
+    child protocol as the install.
+  - Revealed by: final gate — shared capture directory repair
+
+- [ ] **The per-account install report keeps an orphaned toolchain visible**
+  - Target: `crates/cargo-tile/src/hook.rs` — `install_accounts`
+    (`:423`), where the child's per-toolchain report lines are
+    folded into one outcome per account.
+  - Why needed: one installed or refreshed toolchain line marks the whole
+    account installed, so a sibling toolchain the child reported as orphaned is
+    folded away and the operator reads the account as fully installed.
+  - Completion condition: an account whose child reports one installed and one
+    orphaned toolchain is reported with the orphaned toolchain named, and a test
+    drives that report through the child protocol in
+    `crates/cargo-tile/tests/support/shared_capture.rs`.
+  - Revealed by: final-gate closure review 2
+
+- [ ] **The per-account install child carries the account's supplementary groups**
+  - Target: `crates/cargo-tile/src/hook.rs` — `install_account`
+    (`:442`), the command that re-executes cargo-tile with the
+    account's uid and gid.
+  - Why needed: setting the uid alone leaves the child with root's supplementary
+    groups cleared and the account's never set, so a toolchain behind a
+    group-only-readable ancestor (mode 0770) is invisible to the child and
+    reported as absent.
+  - Completion condition: the child starts with the account's group list
+    (`getgrouplist` through `CommandExt::groups`), and a test with a toolchain
+    under a 0770 group-owned directory reports it installed.
+  - Revealed by: final-gate closure review 2
+
+- [ ] **The runner services reach the shared capture directory and drop the per-root environment**
+  - Target: the Linux runner units in the NixOS configuration (owned by the
+    natedev session) and the Mac runner's launchd plist; no in-repository owner.
+  - Why needed: the units still set `CARGO_TILE_ROOT` and pre-create 0750
+    capture directories for the removed per-root design, and the Mac plist still
+    exports `CARGO_TILE_ROOT`; the shim now writes under `/tmp/cargo-tile/<uid>`,
+    which a unit with a private `/tmp` cannot reach without
+    `BindPaths=/tmp/cargo-tile`.
+  - Completion condition: each Linux runner unit binds `/tmp/cargo-tile` into
+    its namespace and no longer sets `CARGO_TILE_ROOT` or creates the 0750
+    directories, the Mac plist no longer sets `CARGO_TILE_ROOT`, and a CI job on
+    each machine produces a `[hana-ci]` row in cargo tile.
+  - Revealed by: final gate — shared capture directory repair
+
+- [ ] **The integration tests stop scrubbing the removed `CARGO_TILE_ROOT` variable**
+  - Target: `crates/cargo-tile/tests/shim_modes.rs` (`:147`) and
+    `crates/cargo-tile/tests/shim_registration.rs` (`:225`, `:1225`).
+  - Why needed: the shim no longer reads `CARGO_TILE_ROOT`, so the `env_remove`
+    calls and the scrub list entry guard against a variable nothing consults;
+    a reader of the tests is led to look for an override that does not exist.
+  - Completion condition: the three references are gone and the package tests
+    are unchanged.
+  - Revealed by: final gate — shared capture directory repair

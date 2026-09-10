@@ -50,7 +50,10 @@ fi
 CARGO=$self_dir/${self##*/}
 export CARGO
 
-root=${CARGO_TILE_ROOT:-/tmp/cargo-tile}
+capture_parent=/tmp/cargo-tile
+capture_uid=$(id -u) || exec "$real" "$@"
+capture_user=$(id -un) || exec "$real" "$@"
+root="$capture_parent/$capture_uid"
 pids="$root/state/pids"
 
 capture=1
@@ -161,7 +164,7 @@ log_path="$root/$log_basename"
 registration_path="$pids/$$.$generation"
 temporary_path="$registration_path.tmp"
 fifo_path=
-if [ "$pty" = none ]; then fifo_path="$root/state/stderr-$$"; fi
+if [ "$pty" = none ]; then fifo_path="$root/state/stderr-$$.$generation"; fi
 
 # Only owned artifacts enter cleanup. In particular, a failed exclusive
 # publication must never remove the registration that already held the
@@ -200,15 +203,45 @@ setup_capture() (
     trap 'setup_signal=129' HUP
     trap 'setup_signal=130' INT
     trap 'setup_signal=143' TERM
-    umask 0027 || exit 1
-    mkdir -p "$pids" || exit 1
-    if [ -z "${CARGO_TILE_ROOT-}" ]; then
-        chmod 0700 "$root" || exit 1
+    umask 0022 || exit 1
+    # Do not follow a replaced account directory or any registration ancestor.
+    owns_directory() {
+        [ ! -L "$1" ] &&
+            [ -n "$(find "$1" -maxdepth 0 -type d -user "$capture_user" -print)" ]
+    }
+    [ ! -L "$capture_parent" ] || exit 1
+    if [ ! -d "$capture_parent" ]; then
+        mkdir "$capture_parent" || [ -d "$capture_parent" ] || exit 1
     fi
-    # Previous runner invocations created these under umask 0066.
-    # Correct only the shim's own directory levels, never recursively.
-    chmod 0750 "$root/state" || exit 1
-    chmod 0750 "$pids" || exit 1
+    if owns_directory "$capture_parent"; then
+        chmod 1777 "$capture_parent" || exit 1
+    fi
+    for directory in "$root" "$root/state" "$pids"; do
+        if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+            mkdir "$directory" || [ -d "$directory" ] || exit 1
+        fi
+        owns_directory "$directory" || exit 1
+        chmod 0755 "$directory" || exit 1
+    done
+
+    # A killed shim cannot run its exit trap. Its account's next invocation
+    # removes each dead pid's exact publication, staging file, log, and FIFO.
+    # This shim has not registered yet, so its own pid names a predecessor.
+    for stale in "$pids"/*; do
+        [ -e "$stale" ] || [ -L "$stale" ] || continue
+        name=${stale##*/}
+        pid=${name%%.*}
+        case $pid in '' | *[!0-9]* | 0) continue ;; esac
+        if [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then continue; fi
+        publication=${name%.tmp}
+        case $publication in
+            "$pid".*)
+                stale_generation=${publication#*.}
+                rm -f "$root/run-$stale_generation-$pid.log"
+                ;;
+        esac
+        rm -f "$pids/$publication" "$pids/$publication.tmp" "$root/state/stderr-$publication"
+    done
 
     # The sentinel protects newlines belonging to the directory name.
     # Remove it and exactly the one newline written by pwd itself.
@@ -255,12 +288,13 @@ setup_capture() (
     # field lets a reader shorten only a prefix its own user recognizes.
     printf '%s\000' cargo-tile-v2 "$generation" "$boot" "$birth" \
         "$log_basename" "$directory" "$writer_home" "$#" "$@" > "$temporary" || exit 1
-    chmod 0640 "$temporary" || exit 1
+    chmod 0644 "$temporary" || exit 1
     if [ -n "$fifo_path" ]; then
-        # This shim owns the pid, so an existing FIFO name is stale.
+        # Remove any stale FIFO at this exact publication name before creating it.
         rm -f "$fifo_path" || exit 1
         mkfifo "$fifo_path" || exit 1
         fifo=$fifo_path
+        chmod 0640 "$fifo" || exit 1
     fi
     # Unlike mv -f, a hard link cannot replace a prior registration
     # after pid reuse or a backward clock step reproduces its name.
@@ -278,6 +312,7 @@ setup_capture() (
     # setup policy instead of terminating cargo's parent shell.
     (set -C; true > "$log_path") || exit 1
     log=$log_path
+    chmod 0644 "$log" || exit 1
     rm -f "$temporary" || exit 1
 )
 

@@ -2,6 +2,8 @@
 
 use std::fs;
 use std::io;
+use std::io::Error;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -14,7 +16,7 @@ use crate::constants::BIRTH_STAT_FILENAME;
 use crate::constants::BIRTH_STAT_START_INDEX;
 
 /// Read the boot once, retaining a denied read as uncertainty for this process.
-static BOOT: OnceLock<Result<String, io::Error>> = OnceLock::new();
+static BOOT: OnceLock<Result<String, Error>> = OnceLock::new();
 
 /// The verifier and its session diagnostic share exactly one cached boot result.
 pub(super) fn boot() -> &'static io::Result<String> {
@@ -34,7 +36,7 @@ pub(super) fn observe(pid: u32) -> Observation {
         Ok(bytes) => start_ticks(&bytes).map_or(Observation::Unknown, |ticks| {
             Observation::Present(BirthStamp::linux(boot.to_owned(), ticks))
         }),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Observation::Ended,
+        Err(error) if error.kind() == ErrorKind::NotFound => Observation::Ended,
         Err(_) => Observation::Unknown,
     }
 }

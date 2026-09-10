@@ -20,6 +20,7 @@ use crate::processes::CargoGroup;
 use crate::processes::CargoProcess;
 use crate::processes::InvocationId;
 use crate::processes::Measurement;
+use crate::processes::RunStart;
 use crate::processes::VisibleParent;
 use crate::theme;
 
@@ -273,7 +274,7 @@ impl TrackedGroup {
     ///
     /// Pid breaks a tie, the rule the tables break one by: a start time
     /// is whole seconds, and macOS hands pids out in order.
-    fn began(&self, hidden_when_idle: &[String]) -> (crate::processes::RunStart, u32) {
+    fn began(&self, hidden_when_idle: &[String]) -> (RunStart, u32) {
         let key = |row: &TrackedRow| (row.process.started, row.process.pid);
         let tabled = if self.leads_as_ancestor(hidden_when_idle) {
             self.rest.iter().map(key).min()
@@ -506,11 +507,16 @@ mod tests {
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
+    use crate::processes::CaptureMembership;
     use crate::processes::CommandText;
     use crate::processes::CompilerObservation;
     use crate::processes::MeasurementAbsence;
     use crate::processes::ProcessIdentities;
     use crate::processes::ProcessIdentity;
+    use crate::processes::RowProvenance;
+    use crate::processes::RunStart;
+    use crate::progress::CaptureLookup;
+    use crate::registration::WorkingDirectoryIdentity;
 
     /// A process replacement starts its own row while the old row finishes fading.
     #[test]
@@ -822,13 +828,13 @@ mod tests {
         let mut roster = Roster::new();
         let mut registration = family(10, &[12]);
         registration.lead.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
-        registration.lead.started = crate::processes::RunStart::Unavailable;
+        registration.lead.started = RunStart::Unavailable;
         roster.observe(vec![registration.clone()], start());
         let identity = roster.groups()[0].id.clone();
         let family = roster.groups()[0].lead.family();
         let mut process = registration.clone();
         process.lead.pid = 11;
-        process.lead.started = crate::processes::RunStart::Known(100);
+        process.lead.started = RunStart::Known(100);
         process.lead.managed = Measurement::Reading(1);
         process.rest[0].parent = VisibleParent::Invocation {
             id:  identity.clone(),
@@ -849,20 +855,20 @@ mod tests {
     fn process(pid: u32) -> CargoProcess {
         CargoProcess {
             path: "~/rust/project".to_string(),
-            directory_identity: crate::registration::WorkingDirectoryIdentity::Absolute(
+            directory_identity: WorkingDirectoryIdentity::Absolute(
                 "/test-home/rust/project".into(),
             ),
             pid,
             invocation_id: InvocationId::for_test(pid),
-            capture_membership: crate::processes::CaptureMembership::Outside,
-            provenance: crate::processes::RowProvenance::Uncaptured,
+            capture_membership: CaptureMembership::Outside,
+            provenance: RowProvenance::Uncaptured,
             parent: VisibleParent::None,
             start: "10:00".to_string(),
-            started: crate::processes::RunStart::Known(0),
+            started: RunStart::Known(0),
             duration: "00:01".to_string(),
             cpu: Measurement::Reading("0%".to_string()),
             compiler: CompilerObservation::None,
-            state: crate::progress::CaptureLookup::Unregistered,
+            state: CaptureLookup::Unregistered,
             managed: Measurement::Reading(0),
             nested: false,
             command: CommandText::of("cargo", &["build"]),
@@ -923,9 +929,9 @@ mod tests {
     /// The same group with start times stamped on it, lead first --
     /// what the cells are ordered by.
     fn started(mut group: CargoGroup, lead: u64, rest: &[u64]) -> CargoGroup {
-        group.lead.started = crate::processes::RunStart::Known(lead);
+        group.lead.started = RunStart::Known(lead);
         for (row, start) in group.rest.iter_mut().zip(rest) {
-            row.started = crate::processes::RunStart::Known(*start);
+            row.started = RunStart::Known(*start);
         }
         group
     }

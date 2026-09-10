@@ -22,6 +22,8 @@ use crate::ids::ReservationId;
 use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
+use crate::reservation::MergeExtent;
+use crate::reservation::ReservationRunStatus;
 
 static CURRENT_PROCESS_HARNESS_SESSION: OnceLock<HookHarnessSessionSelection> = OnceLock::new();
 
@@ -299,8 +301,8 @@ pub(crate) fn apply_journal_event(
         | JournalOperation::Release { reservation_id, .. }
         | JournalOperation::MergeExtentObserved {
             reservation_id,
-            extent: crate::reservation::MergeExtent::Empty { .. },
-            run_status: crate::reservation::ReservationRunStatus::Ended,
+            extent: MergeExtent::Empty { .. },
+            run_status: ReservationRunStatus::Ended,
         } => {
             let mut store = SessionIdentityStore::read_for_update(&mapping_path);
             store
