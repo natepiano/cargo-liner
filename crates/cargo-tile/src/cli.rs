@@ -63,7 +63,14 @@ impl Cli {
     pub(crate) fn run(self) -> ExitCode {
         match self.command {
             None => terminal::run(),
-            Some(Command::Install) => report(install()),
+            Some(Command::Install) => {
+                if let Err(error) = install() {
+                    eprintln!("{BINARY_NAME}: {error}");
+                }
+                // Runner job-start hooks must not fail a job when capture
+                // setup fails; the diagnostic is the install failure report.
+                ExitCode::SUCCESS
+            },
             Some(Command::Uninstall) => report(uninstall()),
             Some(Command::Status) => report(status()),
         }
@@ -96,19 +103,22 @@ fn report(outcome: io::Result<()>) -> ExitCode {
     }
 }
 
-/// Put the shim in front of every toolchain's cargo.
+/// Put the shim in front of every toolchain's cargo, reporting each
+/// failure without preventing the remaining toolchains from installing.
 fn install() -> io::Result<()> {
     let hooks = Hook::all()?;
     for hook in &hooks {
-        let change = hook.install()?;
-        println!("{}: {}", hook.name(), describe(change));
+        match hook.ensure() {
+            Ok(change) => println!("{}: {}", hook.name(), describe(change)),
+            Err(error) => eprintln!("{BINARY_NAME}: {}: {error}", hook.name()),
+        }
     }
     if hooks.is_empty() {
         println!("no rustup toolchains found, so there is no cargo to stand in front of");
     } else {
-        println!("\nRuns started from now on report progress. Ones already going cannot be");
-        println!("captured -- a running process's output belongs to the terminal that started");
-        println!("it -- so they show in the grid without a bar until they are run again.");
+        println!("\nToolchains with a working shim report progress for new runs. Existing runs");
+        println!("cannot be captured -- their output belongs to the terminal that started");
+        println!("them -- so they show in the grid without a bar until they are run again.");
     }
     Ok(())
 }
@@ -128,6 +138,9 @@ fn status() -> io::Result<()> {
         let state = match hook.state() {
             HookState::Installed => "capturing",
             HookState::Absent => "not installed",
+            HookState::Repairable => {
+                "interrupted install -- run cargo-tile install to restore cargo"
+            },
             HookState::Orphaned => "broken -- shim installed but the real cargo is missing",
         };
         println!("{}: {state}", hook.name());
@@ -139,7 +152,8 @@ fn status() -> io::Result<()> {
 const fn describe(change: Change) -> &'static str {
     match change {
         Change::Installed => "capture shim installed",
-        Change::Refreshed => "capture shim already installed, rewritten",
+        Change::Refreshed => "capture shim updated",
+        Change::AlreadyCurrent => "capture shim already current, unchanged",
         Change::Removed => "capture shim removed",
         Change::AlreadyAbsent => "no capture shim to remove",
         Change::Orphaned => "broken -- shim installed but the real cargo is missing",
@@ -147,8 +161,24 @@ const fn describe(change: Change) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::process;
+
+    use tempfile::tempdir;
+
     use super::*;
+    use crate::constants::CARGO_NAME;
+    use crate::constants::REAL_CARGO_NAME;
+    use crate::constants::RUSTUP_HOME_ENV;
+    use crate::constants::SHIM_STAGING_NAME;
+    use crate::constants::TOOLCHAIN_BIN_DIR;
+    use crate::constants::TOOLCHAINS_DIR;
 
     /// The command line as cargo would hand it over, or as a shell would.
     fn parse(arguments: &[&str]) -> Option<Command> {
@@ -187,5 +217,66 @@ mod tests {
             .to_vec();
 
         assert_eq!(without_subcommand_name(arguments.clone()), arguments);
+    }
+
+    /// Child processes isolate rustup discovery from the test runner's
+    /// environment and return the same exit code as the binary's main.
+    #[test]
+    fn a_failed_install_exits_successfully() -> ExitCode {
+        if env::var_os("CARGO_TILE_TEST_FAILED_INSTALL").is_some() {
+            return Cli::parse_from([BINARY_NAME, "install"]).run();
+        }
+
+        let rustup_home = tempdir().expect("temporary rustup home");
+        let toolchains = rustup_home.path().join(TOOLCHAINS_DIR);
+        let blocked = toolchains.join("blocked").join(TOOLCHAIN_BIN_DIR);
+        let working = toolchains.join("working").join(TOOLCHAIN_BIN_DIR);
+        fs::create_dir_all(blocked.join(SHIM_STAGING_NAME))
+            .expect("block shim staging with a directory");
+        fs::create_dir_all(&working).expect("working toolchain directory");
+        fs::write(blocked.join(CARGO_NAME), "real cargo").expect("blocked toolchain cargo");
+        fs::write(working.join(CARGO_NAME), "real cargo").expect("working toolchain cargo");
+
+        let output = install_in_child(rustup_home.path());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{stderr}");
+        assert!(
+            stderr.contains(&format!("{BINARY_NAME}: blocked:")),
+            "{stderr}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("working: capture shim installed")
+        );
+        assert_eq!(
+            fs::read(working.join(REAL_CARGO_NAME)).expect("saved cargo"),
+            b"real cargo"
+        );
+        ExitCode::SUCCESS
+    }
+
+    /// Discovery fails before any per-toolchain install can handle errors.
+    #[test]
+    fn a_toolchain_discovery_failure_exits_successfully() {
+        let rustup_home = tempdir().expect("rustup home with no toolchains directory");
+        let output = install_in_child(rustup_home.path());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(output.status.code(), Some(0), "{stderr}");
+        assert!(stderr.contains(&format!("{BINARY_NAME}:")), "{stderr}");
+    }
+
+    /// Re-enter the install test with an isolated environment so the child
+    /// returns [`Cli::run`]'s exit code without changing the parent's rustup.
+    fn install_in_child(rustup_home: &Path) -> process::Output {
+        process::Command::new(env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "cli::tests::a_failed_install_exits_successfully",
+                "--nocapture",
+            ])
+            .env("CARGO_TILE_TEST_FAILED_INSTALL", "1")
+            .env(RUSTUP_HOME_ENV, rustup_home)
+            .output()
+            .expect("install child process")
     }
 }
