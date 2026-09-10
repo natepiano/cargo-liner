@@ -2937,17 +2937,10 @@ impl OutputEnvelope {
                 }
             }
         }
-        let lost_evidence_messages = self
-            .payload
-            .alerts
-            .iter()
-            .filter(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
         live_board_feedback(
             immediate_stop_messages,
             notice_messages,
-            lost_evidence_messages,
+            &self.payload.alerts,
         )
     }
 
@@ -2960,11 +2953,16 @@ impl OutputEnvelope {
             return PostToolUseRendering::FeedbackDecidedByLiveIncursionState;
         }
         let observed_effect = ObservedDriftEffect::from(report.results.as_slice());
-        let lost_evidence = self
+        let protection_alerts = self
             .payload
             .alerts
             .iter()
-            .filter(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
+            .filter(|alert| {
+                matches!(
+                    alert,
+                    Alert::LostIntegrationEvidence(_) | Alert::MergeExtentUnavailable { .. }
+                )
+            })
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let (prefix, immediate_stop) =
@@ -2994,7 +2992,7 @@ impl OutputEnvelope {
             },
             _ => Vec::new(),
         };
-        messages.extend(lost_evidence);
+        messages.extend(protection_alerts);
         if messages.is_empty() {
             return PostToolUseRendering::NoFeedback;
         }
@@ -3007,6 +3005,20 @@ impl OutputEnvelope {
                 .any(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
         {
             let block = presentation::lost_integration_evidence_block(&messages.join("\n"));
+            return PostToolUseRendering::Feedback {
+                summary: block.summary,
+                detail:  block.detail,
+            };
+        }
+        if !immediate_stop
+            && !matches!(observed_effect, ObservedDriftEffect::Collision)
+            && self
+                .payload
+                .alerts
+                .iter()
+                .any(|alert| matches!(alert, Alert::MergeExtentUnavailable { .. }))
+        {
+            let block = presentation::actionable_board_notices_block(&messages);
             return PostToolUseRendering::Feedback {
                 summary: block.summary,
                 detail:  block.detail,
@@ -3037,7 +3049,9 @@ fn presentation_from_actionable_alerts(alerts: &[Alert]) -> EnvelopePresentation
     let details = alerts
         .iter()
         .map(|alert| match alert {
-            Alert::LostIntegrationEvidence(_) => alert.to_string(),
+            Alert::MergeExtentUnavailable { .. } | Alert::LostIntegrationEvidence(_) => {
+                alert.to_string()
+            },
             Alert::OrphanedOutstanding(orphan) => {
                 let reservation_id = orphan.reservation_id().to_string();
                 let (recoverability, recovery_commands) = match orphan.recoverability() {
@@ -3984,26 +3998,41 @@ fn append_scope_acquisition_rendering(
 fn live_board_feedback(
     mut immediate_stop_messages: Vec<String>,
     notice_messages: Vec<String>,
-    lost_evidence_messages: Vec<String>,
+    alerts: &[Alert],
 ) -> PostToolUseRendering {
+    let protection_alert_messages = alerts
+        .iter()
+        .filter(|alert| {
+            matches!(
+                alert,
+                Alert::LostIntegrationEvidence(_) | Alert::MergeExtentUnavailable { .. }
+            )
+        })
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
     if immediate_stop_messages.is_empty()
         && notice_messages.is_empty()
-        && lost_evidence_messages.is_empty()
+        && protection_alert_messages.is_empty()
     {
         return PostToolUseRendering::NoFeedback;
     }
     let summary = if !immediate_stop_messages.is_empty() {
-        "cargo-berth detected drift that requires an immediate stop."
-    } else if !lost_evidence_messages.is_empty() {
-        "cargo-berth detected lost integration evidence for released work."
+        "cargo-berth detected drift that requires an immediate stop.".to_owned()
+    } else if alerts
+        .iter()
+        .any(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
+    {
+        "cargo-berth detected lost integration evidence for released work.".to_owned()
+    } else if !protection_alert_messages.is_empty() {
+        presentation::actionable_board_notices_block(&protection_alert_messages).summary
     } else {
-        "cargo-berth widened this worktree reservation footprint."
+        "cargo-berth widened this worktree reservation footprint.".to_owned()
     };
     immediate_stop_messages.extend(notice_messages);
-    immediate_stop_messages.extend(lost_evidence_messages);
+    immediate_stop_messages.extend(protection_alert_messages);
     PostToolUseRendering::Feedback {
-        summary: summary.to_owned(),
-        detail:  immediate_stop_messages.join("\n"),
+        summary,
+        detail: immediate_stop_messages.join("\n"),
     }
 }
 

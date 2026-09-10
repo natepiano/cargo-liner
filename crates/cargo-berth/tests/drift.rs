@@ -36,12 +36,9 @@ use tempfile::tempdir;
 
 const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
 const BERTH_BINARY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_BINARY";
-const COLLISION_SCOPE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_COLLISION_SCOPE";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
-const FOREIGN_CLAIM_ENVIRONMENT: &str = "CARGO_BERTH_TEST_FOREIGN_CLAIM";
 const FOREIGN_ROOT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_FOREIGN_ROOT";
-const FOREIGN_RUN_ENVIRONMENT: &str = "CARGO_BERTH_TEST_FOREIGN_RUN";
 const GIT_BINARY: &str = "git";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
@@ -75,20 +72,15 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 const COLLISION_GIT_WRAPPER: &str = r#"#!/bin/sh
 set -eu
 if [ "$1" = "--no-optional-locks" ] && [ "$2" = "status" ]; then
-    (
-        cd "$CARGO_BERTH_TEST_FOREIGN_ROOT"
-        PATH="$CARGO_BERTH_TEST_REAL_PATH" \
-            "$CARGO_BERTH_TEST_BINARY" claim "$CARGO_BERTH_TEST_COLLISION_SCOPE" \
-            --run "$CARGO_BERTH_TEST_FOREIGN_RUN" \
-            --why "deterministic drift collision" --json
-    ) > "$CARGO_BERTH_TEST_FOREIGN_CLAIM"
+    mkdir -p "$CARGO_BERTH_TEST_FOREIGN_ROOT/shared"
+    printf 'new foreign work\n' > "$CARGO_BERTH_TEST_FOREIGN_ROOT/shared/colliding.txt"
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 const MARKER_RELEASE_GIT_WRAPPER: &str = r#"#!/bin/sh
 
 set -eu
-if [ "$1" = "--no-optional-locks" ] && [ "$2" = "status" ] \
+if [ "$1" = "--no-optional-locks" ] && [ "$2" = "diff-tree" ] \
     && [ ! -e "$CARGO_BERTH_TEST_MARKER_RELEASE_TRIGGER" ]; then
     : > "$CARGO_BERTH_TEST_MARKER_RELEASE_TRIGGER"
     (
@@ -472,12 +464,18 @@ fn post_write_drift_detects_but_cannot_prevent_a_foreign_incursion() {
     let repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "post-write-holder");
+    dirty_source(&foreign_root, "foreign-owned.rs");
     let foreign_id = claim(&foreign_root, "file:foreign-owned.rs", FIRST_RUN);
     fs::write(
         repository.path().join("foreign-owned.rs"),
         "already written\n",
     )
     .expect("foreign path should be written before the post-write hook");
+    assert!(
+        run_berth(repository.path(), &["board", "--json"])
+            .status
+            .success()
+    );
     let journal_before = journal_events(repository.path());
 
     let observed = post_commit_drift(repository.path(), &[]);
@@ -500,6 +498,7 @@ fn incursion_incident_round_trip_deduplicates_and_resolves() {
     let worktrees = tempdir().expect("worktree parent should exist");
     let foreign_root = add_worktree(incursion_repository.path(), worktrees.path(), "foreign");
     let subject_id = claim(incursion_repository.path(), "file:owned.txt", FIRST_RUN);
+    dirty_source(&foreign_root, "shared/entered.txt");
     let foreign_id = claim(&foreign_root, "tree:shared", SECOND_RUN);
     fs::create_dir_all(incursion_repository.path().join("shared"))
         .expect("shared directory should exist");
@@ -603,6 +602,7 @@ fn incursion_resolution_requires_current_enrollment() {
     let worktrees = tempdir().expect("worktree parent should exist");
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "unenrolled-foreign");
     let subject_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
+    dirty_source(&foreign_root, "shared/entered.txt");
     let _foreign_id = claim(&foreign_root, "tree:shared", SECOND_RUN);
     fs::create_dir_all(repository.path().join("shared")).expect("shared directory should exist");
     fs::write(repository.path().join("shared/entered.txt"), "incursion\n")
@@ -647,6 +647,7 @@ fn linked_worktree_resolve_reports_recorded_same_actor_and_foreign_actor_outcome
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "resolve-foreign");
     let subject_id = claim(&subject_root, "file:owned.txt", FIRST_RUN);
     let wrong_subject_id = claim(&subject_root, "file:not-the-incident-owner.txt", FIRST_RUN);
+    dirty_source(&foreign_root, "shared/entered.txt");
     let _foreign_id = claim(&foreign_root, "tree:shared", SECOND_RUN);
     fs::create_dir_all(subject_root.join("shared")).expect("shared directory should exist");
     fs::write(subject_root.join("shared/entered.txt"), "incursion\n")
@@ -839,6 +840,8 @@ fn a_backlog_of_incursions_reports_its_size_and_clears_in_one_disposition() {
     // needs a checkout of its own.
     let second_foreign_root = add_worktree(repository.path(), worktrees.path(), "backlog-second");
     let subject_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
+    dirty_source(&foreign_root, "first-held.txt");
+    dirty_source(&second_foreign_root, "second-held.txt");
     let first_holder = claim(&foreign_root, "file:first-held.txt", SECOND_RUN);
     let second_holder = claim(&second_foreign_root, "file:second-held.txt", THIRD_RUN);
     fs::write(repository.path().join("first-held.txt"), "entered\n")
@@ -951,7 +954,12 @@ fn full_classification_reports_a_locked_widen_collision_without_journaling_it() 
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "collision-holder");
     let subject_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
     let colliding_path = "shared/colliding.txt";
-    let collision_scope = format!("file:{colliding_path}");
+    let foreign_id = claim(&foreign_root, &format!("file:{colliding_path}"), SECOND_RUN);
+    assert!(
+        run_berth(repository.path(), &["board", "--json"])
+            .status
+            .success()
+    );
     fs::create_dir_all(repository.path().join("shared")).expect("shared directory should exist");
     fs::write(
         repository.path().join(colliding_path),
@@ -961,7 +969,6 @@ fn full_classification_reports_a_locked_widen_collision_without_journaling_it() 
 
     let directory = tempdir().expect("wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
-    let foreign_claim_path = directory.path().join("foreign-claim.json");
     fs::write(&wrapper_path, COLLISION_GIT_WRAPPER).expect("git wrapper should write");
     let mut permissions = fs::metadata(&wrapper_path)
         .expect("git wrapper metadata should read")
@@ -978,11 +985,7 @@ fn full_classification_reports_a_locked_widen_collision_without_journaling_it() 
         .args(["drift", "--full", "--reservation", &subject_id, "--json"])
         .current_dir(repository.path())
         .env("PATH", wrapped_path)
-        .env(BERTH_BINARY_ENVIRONMENT, env!("CARGO_BIN_EXE_cargo-berth"))
-        .env(COLLISION_SCOPE_ENVIRONMENT, &collision_scope)
-        .env(FOREIGN_CLAIM_ENVIRONMENT, &foreign_claim_path)
         .env(FOREIGN_ROOT_ENVIRONMENT, &foreign_root)
-        .env(FOREIGN_RUN_ENVIRONMENT, SECOND_RUN)
         .env(REAL_GIT_ENVIRONMENT, git_binary())
         .env(REAL_PATH_ENVIRONMENT, real_path)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -990,13 +993,6 @@ fn full_classification_reports_a_locked_widen_collision_without_journaling_it() 
         .env_remove(POST_COMMIT_ENVIRONMENT)
         .output()
         .expect("collision drift should run");
-    let foreign_claim: serde_json::Value = serde_json::from_slice(
-        &fs::read(foreign_claim_path).expect("foreign claim output should read"),
-    )
-    .expect("foreign claim should render JSON");
-    let foreign_id = foreign_claim["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("foreign claim should return a reservation id");
     let collision_envelope = json_output(&collision);
     let collision_effect = &collision_envelope["payload"]["data"]["results"][0]["effects"][0];
 
@@ -1050,8 +1046,12 @@ fn post_commit_uses_same_run_and_worktree_reservations_as_coverage() {
 fn a_committed_incursion_names_the_commits_that_introduced_its_paths() {
     let repository = initialized_repository();
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "provenance");
+    let (_other_holder_directory, other_holder_root) =
+        foreign_worktree(&repository, "uncommitted-holder");
+    dirty_source(repository.path(), "held.txt");
+    dirty_source(&other_holder_root, "also-held.txt");
     let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
-    claim(repository.path(), "file:also-held.txt", FIRST_RUN);
+    claim(&other_holder_root, "file:also-held.txt", THIRD_RUN);
     let subject_id = claim(&foreign_root, "file:own.txt", SECOND_RUN);
     fs::write(foreign_root.join("held.txt"), "entered holder scope\n")
         .expect("held path should write");
@@ -1154,6 +1154,7 @@ fn a_claim_taken_after_a_commit_is_not_entered_by_it() {
         "{}",
         String::from_utf8_lossy(&committed.stderr)
     );
+    dirty_source(&foreign_root, "shared.txt");
     let late_holder_id = claim(&foreign_root, "file:shared.txt", SECOND_RUN);
 
     let reported = run_berth_with_run(
@@ -1193,13 +1194,33 @@ fn a_claim_taken_before_a_commit_is_entered_by_it() {
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "early-holder");
     let subject_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
     claim(repository.path(), "file:second.txt", FIRST_RUN);
+    dirty_source(&foreign_root, "shared.txt");
     let holder_id = claim(&foreign_root, "file:shared.txt", SECOND_RUN);
+    assert!(
+        run_berth(repository.path(), &["board", "--json"])
+            .status
+            .success()
+    );
     fs::write(repository.path().join("shared.txt"), "written while held\n")
         .expect("shared path should write");
     git(repository.path(), &["add", "shared.txt"]);
-    git(
+    let committed = git_output_with_environment(
         repository.path(),
-        &["commit", "--quiet", "-m", "enter the held path"],
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "enter the held path",
+        ],
+        "GIT_COMMITTER_DATE",
+        "2030-01-01T00:00:00Z",
+    );
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
     );
     let entering_commit = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
 
@@ -1229,6 +1250,8 @@ fn incursion_attribution_treats_pathspec_magic_as_literal_path_text() {
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "literal-pathspecs");
     let colon_path = ":held.txt";
     let glob_path = "held*[name].txt";
+    dirty_source(repository.path(), colon_path);
+    dirty_source(repository.path(), glob_path);
     claim(repository.path(), &format!("file:{colon_path}"), FIRST_RUN);
     claim(repository.path(), &format!("file:{glob_path}"), FIRST_RUN);
     let subject_id = claim(&foreign_root, "file:own.txt", SECOND_RUN);
@@ -1246,7 +1269,7 @@ fn incursion_attribution_treats_pathspec_magic_as_literal_path_text() {
         SECOND_RUN,
     );
     let envelope = json_output(&reported);
-    // Each literal path has its own holder, so gather the commit paths across both.
+    // The branch protects both literal paths; gather every attributed commit path.
     let effects = incursion_effects(&envelope);
     assert!(
         !effects.is_empty(),
@@ -1283,6 +1306,7 @@ fn conflict_resolution_only_path_is_attributed_to_the_merge_commit() {
         ],
     );
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "dense-merge");
+    dirty_source(repository.path(), "held.txt");
     claim(repository.path(), "file:held.txt", FIRST_RUN);
     let subject_id = claim(&foreign_root, "file:own.txt", SECOND_RUN);
 
@@ -1432,6 +1456,7 @@ fn stale_phase_anchor_does_not_suppress_valid_reservation_attribution() {
         &["-c", "core.hooksPath=/dev/null", "reset", "--hard", "main"],
     );
     let valid_id = claim(&foreign_root, "file:valid-owned.txt", SECOND_RUN);
+    dirty_source(repository.path(), "held.txt");
     claim(repository.path(), "file:held.txt", FIRST_RUN);
     fs::write(foreign_root.join("held.txt"), "entered holder scope\n")
         .expect("held path should write");
@@ -1476,6 +1501,7 @@ fn mixed_anchor_batch_preserves_nineteen_valid_and_one_independent_history() {
 
     let repository = initialized_repository();
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "anchor-matrix");
+    dirty_source(repository.path(), "held/entered.txt");
     claim(repository.path(), "tree:held", FIRST_RUN);
     let valid_ids = create_valid_anchor_reservations(&foreign_root, VALID_ANCHOR_COUNT);
     let independent_id =
@@ -1558,16 +1584,40 @@ fn an_incursion_from_merged_trunk_work_says_the_phase_did_not_author_it() {
     let holder_id = claim(repository.path(), "file:held.txt", FIRST_RUN);
     fs::write(repository.path().join("held.txt"), "trunk work\n").expect("held path should write");
     git(repository.path(), &["add", "held.txt"]);
-    git(
+    let committed = git_output_with_environment(
         repository.path(),
-        &["commit", "--quiet", "-m", "trunk work"],
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "trunk work",
+        ],
+        "GIT_COMMITTER_DATE",
+        "2030-01-01T00:00:00Z",
+    );
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
     );
     let trunk_commit = git_stdout(repository.path(), &["rev-parse", "HEAD"])
         .trim()
         .to_owned();
+    // The holder still edits this path after its earlier version reached trunk.
+    dirty_source(repository.path(), "held.txt");
     // Taking trunk's work into the phase puts a commit the phase never wrote inside
     // <phase_start>..HEAD, which is how a false incursion arrives.
-    git(&foreign_root, &["merge", "--quiet", "main"]);
+    assert!(
+        run_berth(repository.path(), &["board", "--json"])
+            .status
+            .success()
+    );
+    git(
+        &foreign_root,
+        &["-c", "core.hooksPath=/dev/null", "merge", "--quiet", "main"],
+    );
 
     let reported = run_berth_with_run(
         &foreign_root,
@@ -1603,6 +1653,7 @@ fn an_incursion_from_merged_trunk_work_says_the_phase_did_not_author_it() {
 fn unresolved_trunk_keeps_commit_attribution_and_marks_its_origin_unknown() {
     let repository = initialized_repository();
     let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "missing-trunk");
+    dirty_source(repository.path(), "held.txt");
     claim(repository.path(), "file:held.txt", FIRST_RUN);
     let subject_id = claim(&foreign_root, "file:own.txt", SECOND_RUN);
     fs::write(foreign_root.join("held.txt"), "entered holder scope\n")
@@ -1738,6 +1789,8 @@ fn post_commit_refuses_another_run_here_and_reports_another_worktree_as_foreign(
     );
 
     assert_the_refused_entry_is_reported_but_not_journalled(repository.path(), &holder_id);
+    // Trunk already contains the commit above; fresh dirty work keeps a merge conflict.
+    dirty_source(repository.path(), "held.txt");
     assert_a_foreign_worktree_entry_is_recorded_against_its_own_reservation(
         repository.path(),
         &foreign_root,
@@ -2501,8 +2554,13 @@ fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
     let repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "foreign");
+    git(
+        repository.path(),
+        &["switch", "--quiet", "-c", "markerless-subject"],
+    );
     let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
     let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
+    dirty_source(&foreign_root, "shared/entered.txt");
     let foreign_id = claim(&foreign_root, "tree:shared", SECOND_RUN);
     fs::remove_file(repository.path().join(MARKER_PATH))
         .expect("coordination marker should remove");
@@ -2519,17 +2577,30 @@ fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
         &["add", "shared/entered.txt", "outside.txt"],
     );
 
+    assert!(
+        run_berth(repository.path(), &["board", "--json"])
+            .status
+            .success()
+    );
     let markerless = text_post_commit_drift(repository.path(), &[]);
     assert_eq!(markerless.status.code(), Some(1));
     let markerless_warning = String::from_utf8_lossy(&markerless.stderr);
     assert!(markerless_warning.contains("no coordination run was identified"));
     assert!(markerless_warning.contains("CARGO_BERTH_RUN"));
 
-    let committed = git_output(repository.path(), &["commit", "-m", "markerless widening"]);
+    let committed = git_output_with_environment(
+        repository.path(),
+        &["commit", "-m", "markerless widening"],
+        "GIT_COMMITTER_DATE",
+        "2030-01-01T00:00:00Z",
+    );
     let warning = String::from_utf8_lossy(&committed.stderr);
 
     assert!(committed.status.success());
-    assert!(warning.contains(&first_id));
+    assert!(
+        warning.contains(&first_id),
+        "markerless hook warning: {warning}"
+    );
     assert!(warning.contains(&second_id));
     assert!(warning.contains(&foreign_id));
     assert!(warning.contains("no coordination run was identified"));
@@ -2773,6 +2844,7 @@ fn session_mapping_attributes_post_commit_widening_with_two_active_reservations(
 fn drift_widen_records_existing_answer_coverage_for_a_scope_bound_answer() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "shared/approved.txt");
     let holder_id = claim(repository.path(), "tree:shared", FIRST_RUN);
     let subject_id = claim_with_override(
         &second_root,
@@ -2961,6 +3033,7 @@ fn widening_over_an_overlapped_holder(standing: OverlappedHolderStanding) -> Wid
             )
         },
         OverlappedHolderStanding::InAnotherWorktreeUnderAPresentedRun => {
+            dirty_source(&holder_root, "shared/held.txt");
             let holder_id = claim(&holder_root, "file:shared/held.txt", FIRST_RUN);
             let subject_id =
                 claim_with_override(repository.path(), "tree:shared", SECOND_RUN, &holder_id);
@@ -3060,14 +3133,13 @@ fn unchanged_full_drift_carries_reconciliation_alerts() {
 
     assert!(unchanged.status.success());
     assert_eq!(envelope["status"], "clear");
-    assert_eq!(
-        envelope["payload"]["alerts"][0]["kind"],
-        "orphaned_outstanding"
-    );
-    assert_eq!(
-        envelope["payload"]["alerts"][0]["data"]["reservation_id"],
-        orphan_id
-    );
+    let orphan = envelope["payload"]["alerts"]
+        .as_array()
+        .expect("drift reports reconciliation alerts")
+        .iter()
+        .find(|alert| alert["kind"] == "orphaned_outstanding")
+        .expect("the missing worktree retains its orphan alert");
+    assert_eq!(orphan["data"]["reservation_id"], orphan_id);
 }
 
 #[test]
@@ -3183,21 +3255,20 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(full.output.status.success());
     assert_eq!(
         full.fingerprint_commands(),
-        vec!["diff-tree", "status"],
-        "the phase range and HEAD's own commit share one batched read, and the working tree is \
-         the other"
+        vec!["diff", "diff-tree", "status", "status"],
+        "one branch merge query and status observation accompany the batched phase history and drift status"
     );
     assert_batched_full_attribution_commands(&full.commands());
 
     let cheap = traced_drift(repository.path(), &["--reservation", &reservation_id]);
     assert!(cheap.output.status.success());
-    assert_eq!(cheap.fingerprint_commands(), vec!["status"]);
+    assert_eq!(cheap.fingerprint_commands(), vec!["status", "status"]);
     assert_no_phase_ancestry_or_metadata_command(&cheap.commands());
     let mut cheap_commands = cheap.commands();
     cheap_commands.sort_unstable();
     assert_eq!(
         cheap_commands,
-        vec!["cat-file", "status", "worktree"],
+        vec!["cat-file", "status", "status", "worktree"],
         "the cheap PostToolUse engine path must reuse its discovered ledger and administrative directory",
     );
 
@@ -3206,7 +3277,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(missing_cache.output.status.success());
     assert_eq!(
         missing_cache.fingerprint_commands(),
-        vec!["diff-tree", "status"]
+        vec!["diff-tree", "status", "status"]
     );
     assert_eq!(
         json_output(&missing_cache.output)["payload"]["data"]["comparison"],
@@ -3220,7 +3291,7 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(corrupt_cache.output.status.success());
     assert_eq!(
         corrupt_cache.fingerprint_commands(),
-        vec!["diff-tree", "status"]
+        vec!["diff-tree", "status", "status"]
     );
     assert_batched_full_attribution_commands(&corrupt_cache.commands());
 }
@@ -3284,6 +3355,7 @@ fn post_commit_is_managed_separately_and_warns_without_rejecting_commits() {
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "foreign");
     let subject_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
     let foreign_id = claim(&foreign_root, "tree:shared", SECOND_RUN);
+    dirty_source(&foreign_root, "shared/committed.txt");
     fs::create_dir_all(repository.path().join("shared")).expect("shared directory should exist");
     fs::write(
         repository.path().join("shared/committed.txt"),
@@ -3505,6 +3577,9 @@ fn prepare_differential_attribution_repository() -> DifferentialAttributionRepos
     );
     let (subject_worktree_lifetime, subject_root) =
         foreign_worktree(&repository, "differential-subject");
+    for path in differential_attribution_paths() {
+        dirty_source(&trunk_root, &path);
+    }
     claim(&trunk_root, "tree:held", FIRST_RUN);
     fs::write(subject_root.join("anchor-advance.txt"), "anchor advance\n")
         .expect("anchor advance should write");
@@ -4181,6 +4256,14 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     (directory, root)
 }
 
+/// Give a foreign holder actual work that can conflict when its branch merges.
+fn dirty_source(repository_root: &Path, path: &str) {
+    let target = repository_root.join(path);
+    fs::create_dir_all(target.parent().expect("held path has a parent"))
+        .expect("held directory should exist");
+    fs::write(target, "uncommitted holder work\n").expect("held path should write");
+}
+
 fn initialized_repository() -> TempDir {
     let repository = scratch_repository();
     assert!(
@@ -4448,6 +4531,7 @@ fn cross_worktree_entry(committing_run: CommittingRun) -> CrossWorktreeEntry {
     let repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "foreign");
+    dirty_source(&foreign_root, "shared/s.txt");
     let foreign_id = claim(&foreign_root, "tree:shared", THIRD_RUN);
     claim(repository.path(), "file:held.txt", FIRST_RUN);
     fs::create_dir_all(repository.path().join("shared")).expect("shared directory should exist");

@@ -479,6 +479,8 @@ struct FirstTouchValidationContext {
     coordination_run_id:   CoordinationRunId,
     worktree_id:           WorktreeId,
     path_case:             PathCase,
+    /// Refuse every part of the declared edit before acquiring exact-file race scope.
+    edit_scopes:           ReservationScopeSet,
     conflict_handling:     FirstTouchConflictHandling,
     reservation_selection: CheckReservationSelection,
     maximum_reservations:  u32,
@@ -642,6 +644,7 @@ fn acquire_first_touch_with_reservation_selection(
     let journal_mutation_actor =
         resolved_edit_authorization.journal_mutation_actor_for(coordination_run_id);
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
+    let edit_scopes = declared_scopes.clone().into_minimal_antichain(path_case);
     let scopes = declared_scopes.into_exact_file_antichain(path_case);
     let source = ClaimSource::FirstTouch;
     let repository_facts = ClaimRepositoryFacts::read(&worktree_context, run_validation)?;
@@ -684,6 +687,7 @@ fn acquire_first_touch_with_reservation_selection(
                     coordination_run_id,
                     worktree_id: journal_mutation_actor.worktree_id,
                     path_case,
+                    edit_scopes,
                     conflict_handling,
                     reservation_selection,
                     maximum_reservations: berth_config.maximum_reservations,
@@ -944,6 +948,7 @@ fn validate_first_touch_transaction(
         coordination_run_id,
         worktree_id,
         path_case,
+        edit_scopes,
         conflict_handling,
         reservation_selection,
         maximum_reservations,
@@ -967,7 +972,7 @@ fn validate_first_touch_transaction(
         session::resolve_first_touch_mapping(&worktree_context.ledger_directory());
     let requested_scopes = prepared_claim.scopes.clone();
     let conflicts = reservations.conflicts_for_first_touch(
-        &requested_scopes,
+        &edit_scopes,
         coordination_run_id,
         worktree_id,
         path_case,
@@ -1161,7 +1166,7 @@ fn widen_first_touch_reservation(
         .iter()
         .filter(|candidate| {
             !reservation
-                .scopes()
+                .declared_race_scopes()
                 .as_slice()
                 .iter()
                 .any(|held| held.contains(candidate, path_case))

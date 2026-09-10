@@ -47,7 +47,8 @@ const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
-const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 9;
+/// Attribution and merge observations remain fixed for these two holder checkouts.
+const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 12;
 const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
@@ -1006,6 +1007,12 @@ fn init_installs_into_the_effective_core_hooks_path() {
 #[test]
 fn retention_ref_writes_and_deletions_suppress_the_repository_root_hook() {
     let repository = initialized_repository();
+    // Hook instrumentation is fixture metadata, not uncommitted branch work.
+    fs::write(
+        repository.path().join(".git/info/exclude"),
+        "/repository-root-hooks/\n/reference-transaction-sentinel.log\n",
+    )
+    .expect("sentinel artifacts should be excluded from merge protection");
     let sentinel_log = install_repository_root_reference_transaction_sentinel(repository.path());
     let control_ref = "refs/hook-sentinel/control";
     git(repository.path(), &["update-ref", control_ref, "HEAD"]);
@@ -1925,6 +1932,7 @@ fn observe_enforce_and_one_use_force_apply_to_both_deferred_endpoints() {
     let worktrees = tempdir().expect("worktree parent should exist");
     let holder_root = add_worktree(repository.path(), worktrees.path(), "holder");
     let requester_root = add_worktree(repository.path(), worktrees.path(), "requester");
+    dirty_source(&holder_root, "src/lib.rs");
     let holder = claim(
         &holder_root,
         "tree:src",
@@ -2639,6 +2647,7 @@ fn incursion_report_survives_origin_classification_failure() {
         worktrees.path(),
         "origin-classification-failure",
     );
+    dirty_source(repository.path(), "held.txt");
     assert!(
         claim(
             repository.path(),
@@ -2962,6 +2971,7 @@ fn deferred_pair(repository_root: &Path) -> DeferredPair {
     let worktrees = tempdir().expect("worktree parent should exist");
     let holder_root = add_worktree(repository_root, worktrees.path(), "pair-holder");
     let blocked_root = add_worktree(repository_root, worktrees.path(), "pair-blocked");
+    dirty_source(&holder_root, "src/lib.rs");
     let holder = claim(
         &holder_root,
         "tree:src",
@@ -2984,6 +2994,14 @@ fn deferred_pair(repository_root: &Path) -> DeferredPair {
         blocked_id: reservation_id(&blocked),
         holder_id,
     }
+}
+
+/// Hold actual uncommitted work on the branch whose integration conflicts.
+fn dirty_source(root: &Path, path: &str) {
+    let target = root.join(path);
+    fs::create_dir_all(target.parent().expect("held path has a parent"))
+        .expect("held directory should exist");
+    fs::write(target, "uncommitted holder work\n").expect("held work should write");
 }
 
 fn initialized_repository() -> TempDir {
@@ -3508,6 +3526,7 @@ fn post_commit_reservation_cardinality_trace(reservation_count: usize) -> Vec<Ra
         worktrees.path(),
         "hook-incursion-subject",
     );
+    dirty_source(repository.path(), "hook-incursion/entered.txt");
     assert!(
         claim(
             repository.path(),
@@ -3588,6 +3607,12 @@ fn post_commit_path_commit_cardinality_trace(
         worktrees.path(),
         "hook-cardinality-subject",
     );
+    for index in 0..path_count {
+        dirty_source(
+            repository.path(),
+            &format!("hook-cardinality/path-{index}.txt"),
+        );
+    }
     assert!(
         claim(
             repository.path(),

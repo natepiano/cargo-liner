@@ -589,7 +589,7 @@ fn reservation_covers_path(
         kind: ScopeKind::File,
     };
     reservation
-        .scopes()
+        .declared_race_scopes()
         .as_slice()
         .iter()
         .any(|scope| scope.contains(&candidate, path_case))

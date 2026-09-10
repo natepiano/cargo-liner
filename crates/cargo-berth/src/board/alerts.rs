@@ -137,6 +137,13 @@ pub(super) struct RecordedIncursionAnswer {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum BoardAlert {
+    /// A failed branch observation retains the preceding protection evidence.
+    MergeExtentUnavailable {
+        /// The holder whose merge surface cannot currently be derived.
+        reservation_id: ReservationId,
+        /// The observation failure that prevented a fresh answer.
+        failure:        String,
+    },
     LostIntegrationEvidence {
         reservation_id:  ReservationId,
         protected_tip:   ProtectedReservationTip,
@@ -225,6 +232,12 @@ pub(super) struct BoardGitCost {
     protected_predecessor_ancestry_queries: u64,
     worktree_ahead_behind_computations:     u64,
     orphan_recovery_evidence_queries:       u64,
+    /// One status observation per live holder checkout, including cache hits.
+    #[serde(default)]
+    merge_extent_worktree_status_queries:   u64,
+    /// Only changed trunk, HEAD, or dirty path sets require another net path query.
+    #[serde(default)]
+    merge_extent_path_queries:              u64,
 }
 
 pub(super) fn outstanding_incursion_detail(incursion: &OutstandingIncursion) -> String {
@@ -253,6 +266,12 @@ pub(super) fn outstanding_incursion_detail(incursion: &OutstandingIncursion) -> 
 
 pub(super) fn board_alert_detail(alert: &BoardAlert) -> String {
     match alert {
+        BoardAlert::MergeExtentUnavailable {
+            reservation_id,
+            failure,
+        } => format!(
+            "Reservation {reservation_id} retains its previous merge protection: {failure}."
+        ),
         BoardAlert::LostIntegrationEvidence {
             reservation_id,
             protected_tip,
@@ -542,6 +561,13 @@ pub(super) fn board_alerts(
 
 fn board_alert(alert: &Alert) -> Result<BoardAlert, BoardError> {
     match alert {
+        Alert::MergeExtentUnavailable {
+            reservation_id,
+            failure,
+        } => Ok(BoardAlert::MergeExtentUnavailable {
+            reservation_id: *reservation_id,
+            failure:        failure.clone(),
+        }),
         Alert::LostIntegrationEvidence(lost_evidence) => Ok(BoardAlert::LostIntegrationEvidence {
             reservation_id:  lost_evidence.reservation_id(),
             protected_tip:   lost_evidence.protected_tip().clone(),
@@ -679,6 +705,9 @@ pub(super) fn board_git_cost(
         worktree_ahead_behind_computations:     ahead_behind_computations,
         orphan_recovery_evidence_queries:       reconciliation_git_cost
             .orphan_recovery_evidence_queries,
+        merge_extent_worktree_status_queries:   reconciliation_git_cost
+            .merge_extent_worktree_status_queries,
+        merge_extent_path_queries:              reconciliation_git_cost.merge_extent_path_queries,
     }
 }
 

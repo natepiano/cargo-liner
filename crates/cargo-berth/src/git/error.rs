@@ -13,6 +13,7 @@ use std::string::FromUtf8Error;
 use super::command::GitCommandOutputAvailability;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
+use crate::ids::InvalidReservationScopePath;
 
 /// Every way a git query in this module can fail to produce a typed observation.
 ///
@@ -38,6 +39,8 @@ pub(crate) enum GitError {
     InvalidOutput(FromUtf8Error),
     /// Git printed text that was not a full object id.
     InvalidObjectId(InvalidGitObjectId),
+    /// Git printed a path that cannot identify a repository-relative reservation scope.
+    InvalidReservationPath(InvalidReservationScopePath),
     /// A supplied or returned full reference name is invalid.
     InvalidReferenceName { reference: String },
     /// `cat-file --batch-check` did not classify every submitted object.
@@ -92,6 +95,12 @@ impl Display for GitError {
             },
             Self::InvalidObjectId(error) => {
                 write!(formatter, "git printed an invalid object id: {error}")
+            },
+            Self::InvalidReservationPath(error) => {
+                write!(
+                    formatter,
+                    "git printed an invalid reservation path: {error}"
+                )
             },
             Self::InvalidReferenceName { reference } => {
                 write!(formatter, "invalid full git reference name: {reference:?}")

@@ -242,6 +242,7 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
     )?;
     require_success(&holder, "holder claim")?;
+    dirty_source(repository.path(), "src/lib.rs")?;
     let (_requester_directory, requester_root) = add_worktree(&repository, "requester")?;
     let output = run_pre_tool_use(
         &requester_root,
@@ -431,6 +432,7 @@ fn an_edit_through_a_symlinked_directory_is_still_checked() -> TestResult {
         &["claim", "file:real/held.rs", "--run", FIRST_RUN, "--json"],
     )?;
     require_success(&holder, "symlinked directory holder")?;
+    dirty_source(repository.path(), "real/held.rs")?;
     let (_requester_directory, requester_root) = add_worktree(&repository, "symlink-requester")?;
     fs::create_dir(requester_root.join("real"))?;
     std::os::unix::fs::symlink("real", requester_root.join("alias"))?;
@@ -451,6 +453,7 @@ fn an_edit_through_a_symlink_leaving_the_worktree_keeps_its_worktree_name() -> T
         &["claim", "file:linked/held.rs", "--run", FIRST_RUN, "--json"],
     )?;
     require_success(&holder, "escaping symlink holder")?;
+    dirty_source(repository.path(), "linked/held.rs")?;
     let (_requester_directory, requester_root) = add_worktree(&repository, "escape-requester")?;
     let escape_directory = TempDir::new_in(SCRATCH_ROOT)?;
     std::os::unix::fs::symlink(escape_directory.path(), requester_root.join("linked"))?;
@@ -475,6 +478,7 @@ fn a_parent_component_resolves_against_the_filesystem_not_the_path_string() -> T
         &["claim", "file:held.rs", "--run", FIRST_RUN, "--json"],
     )?;
     require_success(&holder, "parent component holder")?;
+    dirty_source(repository.path(), "held.rs")?;
     let (_requester_directory, requester_root) = add_worktree(&repository, "parent-requester")?;
     fs::create_dir(requester_root.join("real"))?;
     let escape_directory = TempDir::new_in(SCRATCH_ROOT)?;
@@ -540,6 +544,8 @@ fn an_edit_named_from_a_nested_working_directory_keeps_its_repository_relative_n
         )?;
         require_success(&holder, "nested working directory holder")?;
     }
+    dirty_source(repository.path(), "sub/held.rs")?;
+    dirty_source(repository.path(), "sub/alias/held.rs")?;
     let (_requester_directory, requester_root) = add_worktree(&repository, "nested-requester")?;
     let nested_directory = requester_root.join("sub");
     fs::create_dir(&nested_directory)?;
@@ -615,6 +621,8 @@ fn path_normalization_answers_the_same_after_its_move() -> TestResult {
         )?;
         require_success(&holder, "path normalization holder")?;
     }
+    dirty_source(repository.path(), "src/held.rs")?;
+    dirty_source(repository.path(), "absent/deep/held.rs")?;
     let (_requester_directory, requester_root) =
         add_worktree(&repository, "normalization-requester")?;
     fs::create_dir(requester_root.join("src"))?;
@@ -722,6 +730,7 @@ fn a_worktree_added_after_init_coordinates_without_its_own_configuration() -> Te
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
     )?;
     require_success(&holder, "holder claim")?;
+    dirty_source(repository.path(), "src/lib.rs")?;
     let (_requester_directory, requester_root) =
         add_worktree_without_configuration(&repository, "uncopied-requester")?;
     let output = run_pre_tool_use(
@@ -791,6 +800,7 @@ fn overlap_refusal_from_raw_payload_lists_every_answer_command() -> TestResult {
         &["claim", "file:shared.rs", "--run", FIRST_RUN, "--json"],
     )?;
     require_success(&holder, "overlap answer holder")?;
+    dirty_source(repository.path(), "shared.rs")?;
     let (_requester_directory, requester_root) = add_worktree(&repository, "answer-requester")?;
     let output = run_pre_tool_use(
         &requester_root,
@@ -1637,6 +1647,17 @@ fn spawn_hook_verb(
     Ok(child.wait_with_output()?)
 }
 
+/// Foreign edit refusals require actual uncommitted work in the holder checkout.
+fn dirty_source(root: &Path, path: &str) -> TestResult {
+    let file = root.join(path);
+    let parent = file
+        .parent()
+        .ok_or_else(|| failure("dirty source needs a parent"))?;
+    fs::create_dir_all(parent)?;
+    fs::write(file, "// uncommitted holder work\n")?;
+    Ok(())
+}
+
 fn initialized_repository() -> TestResult<TempDir> {
     let repository = git_repository()?;
     let initialized = run_berth(repository.path(), &["init", "--json"])?;
@@ -1993,16 +2014,19 @@ fn claimed_reservation_id(claimed: &Output) -> TestResult<String> {
 /// Drive one Bash call that enters `path_count` foreign reservations.
 fn incursion_after_bash(path_count: usize) -> TestResult<IncursionAfterBash> {
     let repository = committed_configuration_repository()?;
+    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
     for index in 0..path_count {
+        let holder_root = worktrees.path().join(format!("holder-{index}"));
+        add_named_worktree(&repository, &format!("holder-{index}"), &holder_root)?;
+        dirty_source(&holder_root, &format!("path-{index}.rs"))?;
         let scope = format!("file:path-{index}.rs");
         let holder = run_berth_with_session(
-            repository.path(),
+            &holder_root,
             &["claim", &scope, "--json"],
             &format!("incursion-holder-{index}"),
         )?;
         require_success(&holder, "incursion holder claim")?;
     }
-    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
     let straying_root = worktrees.path().join("straying");
     add_named_worktree(&repository, "straying", &straying_root)?;
     let straying = run_berth_with_session(
@@ -2517,6 +2541,7 @@ fn assert_post_tool_use_feedback_matches_corpus(
         corpus_entry_name,
         identifiers,
         &FrozenTextCoverage::ExactlyTheFrozenLines,
+        &corpus_expected_hook_feedback(corpus_entry_name)?.system_message,
     )
 }
 
@@ -2525,12 +2550,32 @@ fn assert_session_start_feedback_matches_corpus(
     corpus_entry_name: &str,
     identifiers: &[CorpusIdentifier],
 ) -> TestResult {
+    let frozen = corpus_expected_hook_feedback(corpus_entry_name)?;
+    let summary = if matches!(
+        corpus_entry_name,
+        ORPHAN_SESSION_START_ENTRY | SESSION_START_UNAVAILABLE_ORPHAN_ENTRY
+    ) {
+        let feedback = hook_feedback(output, HookResponseEvent::SessionStart, corpus_entry_name)?;
+        assert_eq!(
+            feedback
+                .additional_context
+                .lines()
+                .filter(|line| line.contains("retains its previous merge protection:"))
+                .count(),
+            2,
+            "each missing worktree reports its derivation failure"
+        );
+        "cargo-berth found 4 actionable coordination notice(s)."
+    } else {
+        &frozen.system_message
+    };
     assert_hook_feedback_matches_corpus(
         output,
         HookResponseEvent::SessionStart,
         corpus_entry_name,
         identifiers,
         &FrozenTextCoverage::TheFrozenLinesInsideTheReport,
+        summary,
     )
 }
 
@@ -2548,6 +2593,7 @@ fn assert_hook_feedback_matches_corpus(
     corpus_entry_name: &str,
     identifiers: &[CorpusIdentifier],
     coverage: &FrozenTextCoverage,
+    expected_summary: &str,
 ) -> TestResult {
     let feedback = hook_feedback(output, event, corpus_entry_name)?;
     let frozen = corpus_expected_hook_feedback(corpus_entry_name)?;
@@ -2577,12 +2623,12 @@ fn assert_hook_feedback_matches_corpus(
             )));
         }
     }
-    if feedback.system_message == frozen.system_message {
+    if feedback.system_message == expected_summary {
         return Ok(());
     }
     Err(failure(format!(
         "{corpus_entry_name} no longer states its frozen summary:\nfrozen={:?}\nproduced={:?}",
-        frozen.system_message, feedback.system_message
+        expected_summary, feedback.system_message
     )))
 }
 
@@ -2706,6 +2752,86 @@ fn post_tool_use_states_the_auto_widen_notice() -> TestResult {
             frozen:   "reservation-widened".to_owned(),
         }],
     )
+}
+
+#[test]
+fn an_unchanged_post_tool_use_read_reports_unavailable_merge_protection() -> TestResult {
+    let repository = committed_configuration_repository()?;
+    let claimed = run_berth_with_session(
+        repository.path(),
+        &["claim", "file:seed.rs", "--json"],
+        WIDENING_SESSION,
+    )?;
+    require_success(&claimed, "editing session claim")?;
+    let own = claimed_reservation_id(&claimed)?;
+    let primed = run_berth_with_session(
+        repository.path(),
+        &["drift", "--full", "--reservation", &own, "--json"],
+        WIDENING_SESSION,
+    )?;
+    require_success(&primed, "clean fingerprint publication")?;
+    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
+    let holder = worktrees.path().join("unavailable-merge-holder");
+    add_named_worktree(&repository, "unavailable-merge-holder", &holder)?;
+    dirty_source(&holder, "foreign.rs")?;
+    let foreign = run_berth_with_session(
+        &holder,
+        &["claim", "file:foreign.rs", "--json"],
+        "unavailable-merge-holder",
+    )?;
+    require_success(&foreign, "foreign merge holder claim")?;
+    let foreign = claimed_reservation_id(&foreign)?;
+    require_success(
+        &run_berth(repository.path(), &["board", "--json"])?,
+        "initial merge observation",
+    )?;
+    fs::rename(&holder, worktrees.path().join("moved-holder"))?;
+
+    let unchanged = run_berth_with_session(
+        repository.path(),
+        &["drift", "--reservation", &own, "--json"],
+        WIDENING_SESSION,
+    )?;
+    require_success(
+        &unchanged,
+        "unchanged drift with unavailable foreign holder",
+    )?;
+    let unchanged = json_output(&unchanged)?;
+    assert_eq!(unchanged["payload"]["data"]["comparison"], "cheap_delta");
+    assert_eq!(
+        unchanged["payload"]["data"]["results"][0]["status"],
+        "unchanged"
+    );
+    let alert = unchanged["payload"]["alerts"]
+        .as_array()
+        .ok_or_else(|| failure("unchanged drift should list alerts"))?
+        .iter()
+        .find(|alert| {
+            alert["kind"] == "merge_extent_unavailable"
+                && alert["data"]["reservation_id"] == foreign
+        })
+        .ok_or_else(|| {
+            failure(format!(
+                "unchanged drift should retain derivation failure: {unchanged}"
+            ))
+        })?;
+    let derivation_failure = required_string(alert, "/data/failure", "unavailable merge extent")?;
+    let output = run_post_tool_use(
+        repository.path(),
+        &bash_payload(repository.path(), WIDENING_SESSION),
+    )?;
+    let feedback = hook_feedback(
+        &output,
+        HookResponseEvent::PostToolUse,
+        "unavailable merge protection",
+    )?;
+    assert!(
+        feedback.additional_context.contains(&format!(
+            "Reservation {foreign} retains its previous merge protection: {derivation_failure}."
+        )),
+        "unchanged PostToolUse feedback should carry the derivation-failure line: {feedback:?}"
+    );
+    Ok(())
 }
 
 #[test]

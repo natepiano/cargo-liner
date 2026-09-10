@@ -79,6 +79,8 @@ fn blocked_claim_names_holder_provenance_and_appends_nothing() {
     );
     assert!(sibling_claim.status.success());
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    make_dirty(repository.path(), "crates/hana_kana/src/lib.rs");
+    reconcile_fixture(repository.path());
     let journal_before = fs::read(repository.path().join(JOURNAL_PATH))
         .expect("journal should read before rejection");
 
@@ -147,6 +149,7 @@ fn file_and_tree_scopes_differ_for_descendants() {
         .success()
     );
     let (_tree_second_directory, tree_second_root) = foreign_worktree(&tree_repository, "second");
+    make_dirty(tree_repository.path(), "generated/child.rs");
     let blocked = run_berth(
         &tree_second_root,
         &["claim", "file:generated/child.rs", "--json"],
@@ -167,6 +170,8 @@ fn ignore_case_blocks_component_case_variants() {
     );
 
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    make_dirty(repository.path(), "Crates/Hana/src/lib.rs");
+    reconcile_fixture(repository.path());
     let blocked = run_berth(
         &second_root,
         &["claim", "file:crates/hana/src/lib.rs", "--json"],
@@ -350,6 +355,7 @@ fn session_mapped_reservation_survives_first_touch_and_receives_widen() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
     let session_id = "overlapping-claim-session";
     let reservations = claim_overlapping_reservations(repository.path(), session_id);
+    reconcile_fixture(repository.path());
 
     assert_session_mapping(
         repository.path(),
@@ -700,6 +706,7 @@ fn explicit_check_selection_rejects_a_foreign_reservation_without_mutation() {
         "foreign-selection-session",
     );
     assert!(foreign_claim.status.success());
+    reconcile_fixture(repository.path());
     let foreign_reservation_id = json_output(&foreign_claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("foreign claim should report its reservation")
@@ -831,6 +838,8 @@ fn blocked_check_returns_holder_decision_facts_without_appending() {
         .expect("first-touch holder check should run");
     assert!(holder.status.success());
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    make_dirty(repository.path(), "shared.rs");
+    reconcile_fixture(repository.path());
     let journal_before = fs::read(repository.path().join(JOURNAL_PATH))
         .expect("journal should read before blocked check");
 
@@ -863,7 +872,7 @@ fn blocked_check_returns_holder_decision_facts_without_appending() {
 }
 
 #[test]
-fn concurrent_first_touch_checks_choose_one_holder_under_the_mutation_lock() {
+fn concurrent_first_touch_checks_admit_both_clean_worktrees_under_the_mutation_lock() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
     let mutation_lock =
         File::open(repository.path().join(LOCK_PATH)).expect("mutation lock should open");
@@ -913,27 +922,19 @@ fn concurrent_first_touch_checks_choose_one_holder_under_the_mutation_lock() {
             .iter()
             .filter(|output| output.status.success())
             .count(),
-        1,
-        "concurrent check status codes: {status_codes:?}"
-    );
-    assert_eq!(
-        outcomes
-            .iter()
-            .filter(|output| output.status.code() == Some(1))
-            .count(),
-        1,
-        "concurrent check status codes: {status_codes:?}"
+        2,
+        "separate clean branches have no conflicting merge surface: {status_codes:?}"
     );
     let events = journal_events(repository.path());
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["op"], "claim");
-    assert_eq!(events[0]["source"]["kind"], "first_touch");
-    assert_eq!(events[0]["scopes"][0]["path"], "raced.rs");
-    let refused = outcomes
+    let claims: Vec<_> = events
         .iter()
-        .find(|output| !output.status.success())
-        .expect("one concurrent check should be refused");
-    assert_eq!(json_output(refused)["status"], "blocked_by_overlap");
+        .filter(|event| event["op"] == "claim")
+        .collect();
+    assert_eq!(claims.len(), 2);
+    for event in claims {
+        assert_eq!(event["source"]["kind"], "first_touch");
+        assert_eq!(event["scopes"][0]["path"], "raced.rs");
+    }
 }
 
 #[test]
@@ -969,6 +970,8 @@ fn check_in_a_linked_worktree_without_its_own_configuration_reads_the_main_workt
     );
     assert!(claim.status.success());
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    make_dirty(repository.path(), "src/lib.rs");
+    reconcile_fixture(repository.path());
     fs::remove_file(second_root.join(CONFIGURATION_PATH)).expect("configuration should be removed");
 
     let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
@@ -1112,18 +1115,22 @@ fn reconciliation_removes_a_malformed_marker_directory_before_claim() {
 #[test]
 fn blocked_message_names_every_holder() {
     let repository = initialized_repository(PathCaseSetting::Sensitive);
-    for scope in ["tree:src", "file:src/lib.rs"] {
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "other-holder");
+    for (root, scope) in [
+        (repository.path(), "tree:src"),
+        (holder_root.as_path(), "file:src/lib.rs"),
+    ] {
         assert!(
-            run_berth(
-                repository.path(),
-                &["claim", scope, "--run", FIRST_RUN, "--json"]
-            )
-            .status
-            .success()
+            run_berth(root, &["claim", scope, "--run", FIRST_RUN, "--json"])
+                .status
+                .success()
         );
     }
 
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    make_dirty(repository.path(), "src/lib.rs");
+    make_dirty(&holder_root, "src/lib.rs");
+    reconcile_fixture(repository.path());
     let blocked = run_berth(&second_root, &["claim", "file:src/lib.rs", "--json"]);
 
     assert_eq!(blocked.status.code(), Some(1));
@@ -1156,6 +1163,8 @@ fn a_first_touch_holder_block_names_the_verbs_that_clear_it() {
             .to_owned();
 
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    make_dirty(repository.path(), "touched.rs");
+    reconcile_fixture(repository.path());
     let blocked = run_berth(&second_root, &["claim", "file:touched.rs", "--json"]);
 
     assert_eq!(blocked.status.code(), Some(1));
@@ -1237,6 +1246,8 @@ fn unpaired_plan_flags_are_usage_errors_and_rejection_sweeps_stale_marker() {
         .success()
     );
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    make_dirty(repository.path(), "Cargo.toml");
+    reconcile_fixture(repository.path());
     fs::write(
         repository.path().join(MARKER_PATH),
         format!("{THIRD_RUN}\n"),
@@ -1369,6 +1380,19 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     (directory, root)
 }
 
+/// Give a foreign reservation a real uncommitted merge surface.
+fn make_dirty(root: &Path, path: &str) {
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("dirty fixture has a parent"))
+        .expect("dirty fixture parent should exist");
+    fs::write(file, "uncommitted holder work\n").expect("dirty fixture should write");
+}
+
+/// Separate reconciliation's durable observation from the command mutation under test.
+fn reconcile_fixture(root: &Path) {
+    assert!(run_berth(root, &["board", "--json"]).status.success());
+}
+
 fn run_check_without_git(worktree_root: &Path, path: &Path, run: Option<&str>) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-berth"));
     command
@@ -1430,11 +1454,14 @@ fn wait_for_lock_contenders(ready_paths: &[&Path]) {
     }
 }
 
+/// Compare claim and authorization mutations independently of automatic extent observations.
+/// The `lifecycle::merge_extent` tests assert transitions against the full journal.
 fn journal_events(repository_root: &Path) -> Vec<serde_json::Value> {
     fs::read_to_string(repository_root.join(JOURNAL_PATH))
         .expect("journal should read")
         .lines()
         .map(|line| serde_json::from_str(line).expect("journal event should decode"))
+        .filter(|event: &serde_json::Value| event["op"] != "merge_extent_observed")
         .collect()
 }
 

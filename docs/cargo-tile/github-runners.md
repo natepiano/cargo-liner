@@ -662,309 +662,45 @@ Every effective capture root carries a read outcome that reaches the settings po
 - sysinfo's process start time as the run start: the registration mtime is the one value the reader already has across a uid boundary, and the macOS backup path is untested.
 - Family colour as a grouping component: it means process ancestry and is absent for a command with no children.
 
-### Phase 10 — A claim covers the merge it prevents, and nothing else  · status: todo
+### Phase 10 — A claim covers the merge it prevents, and nothing else  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** A reservation protects exactly the branch's unmerged surface, stops
-growing past it, and stops holding anything once the branch merges — without an
-operator running a verb.
-
-**Spec:**
-
-*One scope set is doing two unrelated jobs.* `is_foreign_to_coordination_run_in_worktree`
-(`reservation/record.rs:242`) refuses an edit on two separate grounds, and reads
-the same scope set for both:
-
-- **A different worktree** — `self.actor.worktree != worktree_id`. This is
-  merge-conflict protection: two branches modifying the same file conflict when
-  both reach trunk.
-- **The same worktree under a different coordination run** — a direct race over
-  one checkout on disk.
-
-The two grounds have different natural extents and different natural lifetimes,
-and sharing one set gives each of them the other's:
-
-- Merge protection should last until the branch merges and cover exactly the
-  branch's unmerged surface. It instead inherits accumulation, so it grows past
-  that surface without bound. Observed on `01a06fde`: 45 recorded overlap
-  answers, every one `widen_without_foreign_overlap` with cause `drift`, ending
-  at 293 paths spanning three crates plus root files — a reservation protecting a
-  change in `crates/cargo-berth` came to own the whole of `crates/cargo-tile`.
-- Race protection should last as long as a run is editing and cover what that run
-  has open. It instead inherits "until merged", so it outlives the run. Observed
-  on the same reservation: still held days after its worktree returned to clean,
-  blocking an unrelated phase in a second worktree and raising incursion
-  `01a0887c`. The two worktrees had separate working trees on different branches
-  and could not collide on disk at all.
-
-One cause, both symptoms. Fix the extent and the lifetime follows.
-
-*The rule.* A reservation's merge-protecting scope is **derived on read, never
-accumulated**:
-
-    files changed by `trunk..HEAD` in the holder's worktree
-      ∪ files currently modified there (staged, unstaged, untracked)
-
-That is the merge-conflict surface exactly. Two properties follow, and they are
-the whole point:
-
-- **It is bounded by the merge, not by the run.** It grows as the branch
-  accumulates work against trunk — which is precisely what can conflict — and it
-  stops holding anything once the branch merges. It does **not** exclude another
-  run's commits, and no revision range could: `drift/observation.rs:194` states
-  that a range "is a comparison, not an authorship record", which applies to
-  `trunk..HEAD` exactly as it does to `phase_start..HEAD`. That is the intended
-  behaviour rather than a limitation. Branches are what merge, so a claim covering
-  the whole branch surface against trunk covers the conflict it exists to prevent;
-  a claim scoped to one run's own commits would leave the rest of the branch
-  unprotected while still being merged.
-- **It empties itself.** Once the branch merges, `trunk..HEAD` is empty; a clean
-  worktree then derives an empty scope set, and the reservation holds nothing.
-  There is no retirement verb to run, no operator step to remember, and no new
-  disposition to invent. Retirement stops being an action and becomes a
-  consequence of the same computation.
-
-Check the rule against the incident before building it. `cargo-liner` was on
-`main`, `0 0` against `origin/main`, working tree clean, nothing uncommitted.
-Unmerged surface: empty. Under this rule the claim covers zero paths, not 293,
-and it reached zero on its own the moment its work landed.
-
-*What `trunk..HEAD` means here, exactly.* The shorthand above names one specific
-computation and not the two it could be confused with. The basis is the **net change the
-branch would bring to trunk**: the difference between the merge base of trunk and `HEAD`
-and `HEAD` itself. It is not a raw commit range replayed path by path, which would list a
-path the branch changed and then reverted — a path a merge does not touch, and therefore
-outside "the merge it prevents, and nothing else". Nor is it an endpoint tree comparison
-against trunk's current tip, which is what `git/paths.rs:28` performs today: that reports
-trunk-only changes as differences, so an integrated holder sitting behind an advancing
-trunk would keep widening as trunk moved. Measured on this repository while the plan was
-written: comparing the parent against the current commit produced **zero unmerged commits
-and seven changed paths**, which is exactly the disagreement the basis has to settle. The
-existing `git/paths.rs` machinery is reusable, but the anchor it is given is the merge
-base, not trunk's tip.
-
-*Run end is checkpoint and release, never merge emptiness.* An emptied merge extent is a
-statement about the branch, and it is not a statement that the run is over. A newly claimed
-clean branch has an empty merge extent from its first moment while its run holds live
-editing scope, so treating emptiness as terminal would drop race protection on a run that
-is still working. The authoritative run-end fact stays the one that already exists —
-checkpoint and release, the boundary
-`an_outstanding_holder_from_another_run_refuses_nothing` (`tests/lifecycle.rs:964`) already
-covers — and worktree liveness observes checkout identity, because the hook protocol has no
-session-end event to key on. The two facts are computed independently and neither is
-derived from the other.
-
-*The derived extent needs its own states, and the reservation's scope type cannot supply
-them.* `ReservationScopeSet` (`ledger/journal.rs:943`) refuses empty construction and empty
-deserialization by contract, so the derived merge extent cannot reuse it: a successfully
-empty extent is the ordinary end state of this phase and has to be representable. Name each
-state rather than reaching for an optional: an extent successfully derived and empty, an
-extent successfully derived with protected paths, a derivation that could not run with the
-last derived set retained as its evidence, and the initial state before any derivation has
-run. The last two are distinct and the failure rule above depends on it — a first
-derivation that fails has no "last derived set", and replaying an existing journal that
-never recorded one lands in the same place. Both must still protect rather than collapse to
-empty.
-
-*What race protection keeps.* The intra-worktree ground stays and keeps its own
-extent — the paths the run declared or first-touched. It is **not** derived from
-the branch: two runs sharing one checkout race over what they have open right
-now, not over what the branch will eventually merge. Keep the two extents
-separate on the reservation. Collapsing them back into one set is the defect this
-phase removes, and a later change that "simplifies" them back together
-reintroduces it whole.
-
-*The race extent is dropped when the run ends.* This is what makes ordinary
-sequential work possible, and it is the half most easily left out. A run commits
-a path on Monday and finishes. A later run in the **same worktree on the same
-branch** must be free to edit that same path on Tuesday: the two never overlap in
-time, so there is no race, and the branch has no conflict with itself. The
-merge extent still covers that path — it is unmerged work, and a *different*
-worktree must still be refused it — but the intra-worktree ground reads the race
-extent only, and Monday's race extent is gone.
-
-The two grounds therefore answer opposite ways about one path, and both answers
-are right: same worktree asks "is another run editing this right now", different
-worktree asks "does this branch have unmerged changes here". Never let one ground
-read the other's extent as a fallback.
-
-*Widening applies to one extent only.* `JournalOperation::Widen` is emitted from
-two places — `drift/classification.rs:258`, the drift path this incident came
-through, and `widen_first_touch_reservation` (`verb/claim.rs:1151`, emitting at
-`:1176`), the first-touch reuse path — and `apply_widen`
-(`reservation/retention.rs:958`) mutates the shared set on replay. After this
-change all three grow the **race** extent only. Nothing widens the merge extent,
-because nothing needs to: it is computed. A bound enforced in one producer and
-not the other is a bound the other walks around, so both producers change
-together.
-
-*Where the derivation runs.* Under the lock, in `prepare_reconciliation_transaction`
-(`reconcile.rs:949`), where a board read already holds the lock and already
-produces journal operations. `retention.rs` replays journal operations and is not
-where a board-time computation belongs; `git/mod.rs` only re-exports, and the
-queries live in `git/reachability.rs`.
-
-*Cost.* Deriving on read means git work per board read, and the board is read
-constantly. Per live holder worktree that is one `trunk..HEAD` name-only query
-plus one status observation — the staged, unstaged and untracked paths today's
-worktree observations do not carry. Hold the cost bounded across the whole read
-rather than per reservation, and key the cache on trunk as well: `WorkingTreeFingerprint`
-(`drift/fingerprint.rs:18`) carries path sets alone, so a pair of `HEAD` and that
-fingerprint misses a trunk that moved underneath an unchanged branch and would
-serve a stale extent. The key is (trunk tip, `HEAD`, working-tree fingerprint), and
-a recomputation happens only when one of the three actually moved.
-
-*What must not regress.*
-
-- **Uncommitted work stays covered.** The dirty half of the union is what does
-  this. A run that has committed nothing still protects everything it has open —
-  the pre-commit window is the thing retention exists for, and the answer there
-  can never be "nothing".
-- **An unanswerable derivation holds, never releases.** If the derivation cannot
-  run — worktree gone, unreadable, a failed git invocation — the reservation
-  keeps its last derived set and reports the failure rather than collapsing to
-  empty. An unanswered question is not proof that nothing is protected.
-- **A narrowing is as visible as a refusal.** A claim that quietly stops covering
-  what the work touched is worse than one that grows, because the protection
-  disappears with nobody told. If a refused widen still publishes the working-tree
-  fingerprint, the next invocation sees no drift for those paths and the refusal
-  never surfaces again. A refused widen must leave the next comparison able to
-  see the same paths.
-- **Successor retention refs survive.** A reservation whose merge extent empties
-  must not drop retention refs a successor still depends on (`RetentionRefStatus`,
-  `alert.rs:263`).
-- **Obsolete identity mappings retire with it.** `verb/release.rs` publishes a
-  session identity mapping on release (`SessionIdentityMappingPublication`); a
-  reservation that empties owes the same bookkeeping, or it leaves a mapping
-  pointing at nothing.
-- **An incursion recorded against the reservation gets its own disposition**
-  rather than disappearing when the claim empties.
-
-*Squash and cherry-pick stay manual.* Where a branch's work reached trunk in
-rewritten form, `trunk..HEAD` may still list paths the tool cannot prove
-integrated. `resolve --integrated-as <TRUNK_OID>` stays the manual answer for
-that shape, with its existing warning intact.
+- A reservation carries two independent extents, and each refusal ground in `is_foreign_to_coordination_run_in_worktree` (`reservation/record.rs`) reads only its own. The **merge extent** is what a foreign checkout is refused: the paths the holder's branch still holds unmerged relative to trunk, derived on every read and never accumulated. Its basis is the diff from the merge base of trunk and `HEAD` to `HEAD` (`git/reachability.rs`, anchored on the merge base so an integrated holder behind an advancing trunk derives empty), unioned with the checkout's staged, unstaged and untracked paths from `observe_working_tree_status`. Once the branch merges, the extent derives empty on its own; there is no retirement verb.
+- The **race extent** is what a second coordination run in the same checkout is refused: the paths the holder's run declared or first-touched. It is the only extent a widen grows, from all three producers: the drift widen (`drift/classification.rs`), the first-touch reuse widen (`verb/claim.rs`) and `apply_widen` on replay (`reservation/retention.rs`). It is dropped when the run ends. Run end is checkpoint and release, computed independently of merge emptiness: a freshly claimed clean branch has an empty merge extent and a live race extent from its first moment.
+- `reservation/merge_extent.rs` defines `ReservationProtection::{Clear, Protected(scopes)}` and `Reservation::protection_in_worktree(WorktreeId)`. The merge extent has its own type because `ReservationScopeSet` refuses empty construction and successful emptiness is the ordinary end state. Per reservation the wire state is `protected { scopes }`, `empty`, `unavailable { retained_evidence }` or `not_derived { protection }`: an unreadable checkout keeps the last derived evidence and goes on protecting, and a claim that has never derived reports its declared protection.
+- Reconciliation (`prepare_reconciliation_transaction` in `reconcile.rs`, under the lock) derives the extent on every `board`, `check` and `drift` read and persists each derivation as the journal operation `merge_extent_observed`, cached on (trunk tip, `HEAD`, working-tree fingerprint). Trunk is in the key because trunk advancing under a fixed, clean `HEAD` is exactly the case that empties the extent. Replay reconstructs the reservation and its race extent without running git.
+- Same-checkout holders answer race protection only; foreign checkouts answer merge protection. `AuthorizedEditingIdentity::Unidentified { worktree_id }` carries the caller's checkout so a new run there is not refused its own branch's paths.
+- A foreign checkout holding several unreleased claims reports ONE merge conflict carrying the normalized union of every edit-blocking holder's protection, attributed to the oldest contributing holder: `RetainedReservationSet::protection_for_conflict(holder, acting_worktree, path_case)` returns `ConflictProtection::{Clear, Protected { representative, contributors, scopes }}` (`reservation/record.rs`), and `conflicts_with_holders` dedupes per checkout onto the representative. The operator answers with `--override <representative>`; `reservations_authorize_scope` binds the forward answer to the representative id and the union revision, and the reciprocal check consults every contributor's authorizations.
+- Git subprocesses drop `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR` and `GIT_PREFIX` (`git/command.rs`) so a hook in one checkout derives other checkouts against their own `HEAD`. The hook resolves its executable through `CARGO_BERTH_EXECUTABLE`, falling back to `current_exe`.
+- A refused widen deletes the cached drift fingerprint, so the next comparison sees the same paths and the refusal surfaces again. Explicit release re-snapshots and stays outstanding while the merge extent is `Protected`. Both hook renderers report `Alert::MergeExtentUnavailable`, and the reconcile alert loop skips released reservations. Successor retention refs survive an emptied merge extent. Merge-extent state is visible in `board --json` under `merge_extent` and in a refused check's `blocked_by`.
+- Squash and cherry-pick integrations stay manual: `resolve --integrated-as <TRUNK_OID>` with its existing warning. The specification tests live in `tests/lifecycle.rs::merge_extent`; legacy fixtures carry real dirty or unmerged work wherever an overlap is expected.
 
 **Files:**
-- `crates/cargo-berth/src/reservation/record.rs` — the two refusal grounds (`is_foreign_to_coordination_run_in_worktree`, `:242`) and the reservation's two extents (`:49`).
-- `crates/cargo-berth/src/reservation/partition.rs` — coverage and binding (`is_foreign`, `authorizes`, `reservations_authorize_scope`), expressed against whichever extent each ground reads.
-- `crates/cargo-berth/src/reservation/retention.rs` — `apply_widen` (`:958`), now mutating the race extent only.
-- `crates/cargo-berth/src/reservation/lifecycle.rs` — how an emptied merge extent reads as a terminal state (`ReleaseDisposition`, `:189`).
-- `crates/cargo-berth/src/reconcile.rs` — `prepare_reconciliation_transaction` (`:949`), where the derivation runs under the lock.
-- `crates/cargo-berth/src/git/reachability.rs` — the `trunk..HEAD` query and the batched ancestry it joins; `crates/cargo-berth/src/git/mod.rs` only re-exports.
-- `crates/cargo-berth/src/worktree/` — the staged, unstaged and untracked observations the dirty half needs.
-- `crates/cargo-berth/src/drift/classification.rs` — `:258`, the drift widen producer, now bounded to the race extent.
-- `crates/cargo-berth/src/verb/claim.rs` — `:1151`, emitting at `:1176`; the other widen producer, likewise bounded to the race extent.
-- `crates/cargo-berth/src/drift/fingerprint.rs` — the published fingerprint the cache keys on and a refusal must not hide behind.
-- `crates/cargo-berth/src/drift/observation.rs` — `:194`, what the ranges establish.
-- `crates/cargo-berth/src/drift/selection.rs` — which reservations are compared.
-- `crates/cargo-berth/src/ledger/journal.rs` — `Widen` at `:362`, the durable operations.
-- `crates/cargo-berth/src/ledger/projection.rs` — their projection.
-- `crates/cargo-berth/src/board/` — successor retention refs.
-- `crates/cargo-berth/src/edge/` — successor retention refs.
-- `crates/cargo-berth/src/alert.rs` — `:263`, identity-mapping bookkeeping.
-- `crates/cargo-berth/src/recovery.rs` — identity-mapping bookkeeping.
-- `crates/cargo-berth/src/verb/release.rs` — identity-mapping bookkeeping.
-- `crates/cargo-berth/src/session/mod.rs` — `apply_journal_event` (`:284`), where session identity mappings actually retire.
-- `crates/cargo-berth/src/coordination_identity.rs` — `validate_worktree_occupancy` (`:725`), the separate worktree-occupancy gate, which has to agree with the chosen run-end fact.
-- `crates/cargo-berth/src/git/paths.rs` — `:28`, the existing path query, reusable with the merge base as its anchor rather than trunk's tip.
-- `crates/cargo-berth/src/drift/git_output.rs` — `WorkingTreeChangePartition`, the existing staged/unstaged/untracked partition.
-- `crates/cargo-berth/src/output.rs`, `crates/cargo-berth/src/output_contract.rs`, `crates/cargo-berth/src/constants.rs`, `crates/cargo-berth/src/cli.rs` — how a derived scope, a refused widen and an emptied claim report.
-- `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/overlap.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/output_contract.rs` — the lane.
+- `crates/cargo-berth/src/reservation/merge_extent.rs` — `ReservationProtection`, merge-extent derivation and retained evidence.
+- `crates/cargo-berth/src/reservation/{record.rs, retention.rs, partition.rs, lifecycle.rs, mod.rs}` — the two extents and refusal grounds, `ConflictProtection`, `protection_for_conflict`, checkout-union conflicts, answer coverage, race-only `apply_widen`, lifecycle edit-blocking status.
+- `crates/cargo-berth/src/reconcile.rs` — derivation on every read, `merge_extent_observed` persistence, alert loop.
+- `crates/cargo-berth/src/ledger/{journal.rs, authorization.rs}` — the `merge_extent_observed` operation and its replay.
+- `crates/cargo-berth/src/git/{command.rs, reachability.rs, constants.rs, error.rs, mod.rs}` — environment scrubbing, hook executable routing, merge-base path query.
+- `crates/cargo-berth/src/drift/{classification.rs, execution.rs, fingerprint.rs, identity.rs, observation.rs, mod.rs}` — race-only drift widen, refused-widen invalidation, merge-ground comparison, status observation reused for the dirty half.
+- `crates/cargo-berth/src/verb/{claim.rs, release.rs, check.rs}` — race-only first-touch widen, union conflict reporting and answers, release re-snapshot, check refusal with `blocked_by`.
+- `crates/cargo-berth/src/{output.rs, alert.rs, board/alerts.rs, board/rows.rs, coordination_identity.rs, constants.rs, session/mod.rs, edge/graph.rs, worktree/liveness.rs}` — renderers, `MergeExtentUnavailable`, identity carrying the checkout, successor retention refs.
+- `crates/cargo-berth/tests/{lifecycle.rs, hooks.rs, overlap.rs, presentation.rs, board.rs, drift.rs, answers.rs, edges.rs, engine_instructions.rs, gate.rs, ledger.rs, liveness.rs}` — specification tests under `lifecycle.rs::merge_extent`, regressions, fixtures with real unmerged work.
+- `docs/cargo-berth/generated/output-contract.json` — regenerated by the repository generator.
 
-**Seats:** `1 writer + 1 tester + reserve`. The separation of the two extents is a
-single judgment that the refusal grounds, both widen producers, replay and the
-board all have to agree on; splitting it puts halves of one decision in different
-heads, and the file list is wide only because everything reads the same rule.
-`cargo-berth` has a real integration-test lane (Delegation Context → **Test
-lanes**), and the rule above is concrete enough to test before the code exists,
-so the tester opens as `test`.
-- `impl` — opens as `impl`. Owns `crates/cargo-berth/src/reservation/`, `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/src/git/`, `crates/cargo-berth/src/worktree/`, `crates/cargo-berth/src/drift/`, `crates/cargo-berth/src/verb/`, `crates/cargo-berth/src/ledger/`, `crates/cargo-berth/src/board/`, `crates/cargo-berth/src/edge/`, `crates/cargo-berth/src/alert.rs`, `crates/cargo-berth/src/recovery.rs`, `crates/cargo-berth/src/output.rs`, `crates/cargo-berth/src/output_contract.rs`, `crates/cargo-berth/src/constants.rs` `crates/cargo-berth/src/cli.rs`, `crates/cargo-berth/src/session/` and `crates/cargo-berth/src/coordination_identity.rs`; hub: `crates/cargo-berth/src/reservation/record.rs`, which carries both extents and both refusal grounds. The added session and coordination-identity files carry the lifecycle bookkeeping the emptied claim owes, and they answer to the same run-end decision, so they cannot be split off
-- `test` — opens as `test`. Owns `crates/cargo-berth/tests/drift.rs`, `crates/cargo-berth/tests/overlap.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/edges.rs` and `crates/cargo-berth/tests/output_contract.rs`
-- `review` — reserve. Reads the derived extent against the recorded incident, against both widen producers, and checks that the merge extent and the run lifetime stay independent of each other
+**Gotchas:**
+- A `cargo-berth` binary without the `merge_extent_observed` variant refuses a whole ledger once one such record exists (`journal record N is corrupt: unknown variant`). Every reader of a shared ledger, hooks included, is upgraded before the first new `board`, `check` or `drift` against it. The ledger is never hand-edited to recover an older reader.
+- The wire status for successful emptiness is `empty`; `Clear` is the in-process `ReservationProtection` variant.
+- `edit_blocking_status()` answers `Clear` from checkpoint integration alone, and that answer is what `evidence_revalidated` persists; the live reservation still blocks through its merge extent, so the effective decision reads the merge extent, not the persisted field.
+- Without the `GIT_DIR`/`GIT_INDEX_FILE` scrub, every other checkout derives against the hook's own `HEAD`.
+- The two extents stay separate, and neither ground reads the other's as a fallback. One shared set is what let a claim on one crate grow to own a second and keep holding it after its branch merged; nothing widens the merge extent, and a producer that does reintroduces accumulation.
+- Waiting successors and unresolved-overlap endpoints do not expose their extents on the board.
 
-**Constraints from prior phases:** None from phases 1-9. Phase 8 satisfies none of this
-phase's branch-scope derivation work and introduces no sequencing dependency, so this phase
-may run before or after them. Two facts about the existing `cargo-berth` code are named
-here so the Work Order stays implementable from its files alone:
+**Ruled out:**
+- Per-holder merge conflicts for one foreign checkout: N identical conflicts defeat single-answer authorization.
+- Scoping the merge extent to the run's own commits: no revision range is an authorship record, and a branch is what merges, so another run's commit on the same branch enters the merge extent and stays out of the race extent.
+- Treating an empty merge extent as run end: it drops race protection on a live run.
+- An endpoint tree comparison against trunk's tip, or a replayed commit range: the first reports trunk-only changes, the second lists paths the branch changed and then reverted.
+- An `Option` for the derived extent: never-derived and failed-first-derivation both protect and are distinct from successful emptiness.
+- A separate `tests/merge_extent.rs`: the tests share the lifecycle fixtures.
 
-- **Reuse the existing observation machinery for the dirty half.** `observe_working_tree_status` (`drift/observation.rs:521`) and `WorkingTreeChangePartition` (`drift/git_output.rs`) are private today and already produce the staged, unstaged and untracked partition the union needs. Reuse them for the per-holder status read rather than adding a second observer.
-- **Mapping retirement lives in the session module, not in the release verb alone.** `verb/release.rs` publishes the mapping, but `session::apply_journal_event` (`session/mod.rs:284`) is where a mapping actually retires, so a reservation that empties has to reach that path. The separate worktree-occupancy gate `validate_worktree_occupancy` (`coordination_identity.rs:725`) reads its own provenance and must agree with the run-end fact above rather than inferring one from the merge extent.
-
-*The cache key includes trunk.* The derived extent is cached on
-`(resolved trunk revision, HEAD, working-tree fingerprint)`. The first component is not optional
-bookkeeping: neither of the other two moves when **trunk** advances while the holder's `HEAD` stays
-fixed and its worktree stays clean, yet `trunk..HEAD` has just become empty. A key without it keeps
-covering paths the branch no longer holds unmerged, and the reservation goes on refusing another
-worktree work it should now allow — the over-holding this phase exists to end, reintroduced through
-the cache. `crates/cargo-berth/src/drift/fingerprint.rs:18` builds its fingerprint from path sets
-only and observes nothing about trunk, so this is an addition to the key rather than a change to it.
-
-**Acceptance gate:** `verify.sh check cargo-berth`, `verify.sh test cargo-berth`
-and `verify.sh lint cargo-berth` green — this phase edits no `cargo-tile` file,
-so the Delegation Context's default `cargo-tile` gate would pass without
-compiling anything this phase wrote.
-
-Reproducing the incident: a test that a worktree on trunk with nothing ahead and
-a clean tree derives an **empty** merge extent, so a second worktree may edit
-paths that reservation previously held. A test that a reservation whose branch
-touches one crate does not come to hold a second crate through repeated drift
-answers.
-
-The cache: a test where **only** trunk changes — the holder's worktree untouched, its `HEAD`
-fixed — and the next board read releases the merge extent.
-
-The derivation: a test that a path committed on this branch and not yet on trunk
-is covered. A test that the same path stops being covered once the branch merges,
-with no verb run and no operator step. A test that a path committed by a
-*different* run onto the same branch **does** enter this reservation's merge
-extent, and does **not** enter its race extent. The merge extent is derived from
-`trunk..HEAD` and is branch-wide by construction — a branch is what gets merged,
-so every unmerged change on it is covered whichever run made it. The
-run-specific set is the race extent, and that is the one another run's commit
-stays out of. Stating it of the merge extent contradicted the derivation rule
-above and made the two requirements unsatisfiable together. A test that reading the board repeatedly derives the same extent and
-emits at most one transition, not one per read.
-
-Uncommitted work: a test that a reservation that has committed nothing still
-covers everything modified in its worktree. A test that a staged, an unstaged and
-an untracked path are each covered.
-
-The two extents stay separate: a test that a second coordination run in the same
-worktree is refused a path the first run currently has open, while the first run
-is **still live**. A test that the same second run is **allowed** that same path
-once the first run has ended — committed on the branch, unmerged, and the merge
-extent still covering it — since sequential work on one branch is the ordinary
-case and must not be refused. A test that a *different* worktree is refused that
-same path at that same moment, so the two grounds are shown answering opposite
-ways about one file. A test that a widen from the drift path grows the race
-extent and leaves the merge extent unchanged, and the same test for the
-first-touch reuse path.
-
-Failure and visibility: a test that a worktree whose state cannot be observed
-keeps its last derived extent rather than collapsing to empty. A test that a
-refused widen is reported rather than silently dropped. A test that a refused
-widen leaves the next comparison able to see the same paths rather than being
-hidden by a published fingerprint. A test that replaying the journal reconstructs
-the reservation and its race extent without re-running git. A test that an
-incursion previously recorded against the reservation receives its own
-disposition rather than disappearing when the claim empties.
-
-The derivation basis: a test that a holder already integrated into trunk, sitting
-behind an advancing trunk, derives an empty merge extent rather than growing as
-trunk moves. A test that trunk-only changes on a diverged branch never enter this
-reservation's merge extent. A test that a path this branch changed and then
-reverted is **not** covered, because a merge does not touch it.
-
-Run end against merge emptiness: a test that a freshly claimed clean branch — an
-empty merge extent from its first moment — keeps a live race extent and keeps its
-session identity mapping. A test that an ended run releases race protection even
-while its branch still carries unmerged commits, so the two facts are shown moving
-independently.
-
-The extent's states: a test that a successfully derived empty extent is
-representable and distinguishable from a derivation that could not run. A test
-that a **first** derivation which fails protects rather than collapsing to empty,
-having no previous set to retain. A test that replaying an existing journal which
-never recorded a derived set reaches the same protecting state.

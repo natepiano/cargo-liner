@@ -2024,6 +2024,29 @@
         "BoardAlert": {
           "oneOf": [
             {
+              "description": "A failed branch observation retains the preceding protection evidence.",
+              "properties": {
+                "failure": {
+                  "description": "The observation failure that prevented a fresh answer.",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "merge_extent_unavailable",
+                  "type": "string"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The holder whose merge surface cannot currently be derived."
+                }
+              },
+              "required": [
+                "kind",
+                "reservation_id",
+                "failure"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "evidence_status": {
                   "$ref": "#/$defs/lost_integration_evidence_status"
@@ -2236,6 +2259,20 @@
         },
         "BoardGitCost": {
           "properties": {
+            "merge_extent_path_queries": {
+              "default": 0,
+              "description": "Only changed trunk, HEAD, or dirty path sets require another net path query.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "merge_extent_worktree_status_queries": {
+              "default": 0,
+              "description": "One status observation per live holder checkout, including cache hits.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
             "orphan_recovery_evidence_queries": {
               "format": "uint64",
               "minimum": 0,
@@ -2428,8 +2465,16 @@
             "lifecycle": {
               "$ref": "#/$defs/ReservationLifecycle"
             },
+            "merge_extent": {
+              "$ref": "#/$defs/MergeExtent",
+              "description": "The exact derived branch surface or the evidence retained on failure."
+            },
             "purpose": {
               "$ref": "#/$defs/ReservationPurpose"
+            },
+            "race_extent": {
+              "$ref": "#/$defs/RaceExtent",
+              "description": "The run's effective editing scope, independent of branch integration."
             },
             "reservation_id": {
               "$ref": "#/$defs/uuid_v7_identifier"
@@ -2450,6 +2495,8 @@
             "source",
             "purpose",
             "scopes",
+            "race_extent",
+            "merge_extent",
             "lifecycle",
             "integration_evidence",
             "edit_blocking_status",
@@ -3952,6 +3999,116 @@
           ],
           "type": "object"
         },
+        "MergeExtent": {
+          "description": "The branch's independently observed merge protection, including inability to answer.",
+          "oneOf": [
+            {
+              "description": "Replay of an acquisition predating derivation must still protect its declaration.",
+              "properties": {
+                "protection": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "The immutable acquisition scope protects until the first successful observation."
+                },
+                "status": {
+                  "const": "not_derived",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "protection"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Successful emptiness ends merge protection without ending the editing run.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that proved this empty answer."
+                },
+                "status": {
+                  "const": "empty",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Exactly the net branch change and its currently dirty paths are protected.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that established the protected surface."
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Net branch and dirty paths, independent of the run's declaration."
+                },
+                "status": {
+                  "const": "protected",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key",
+                "scopes"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Failure preserves the last answer and explains why no fresh answer is available.",
+              "properties": {
+                "failure": {
+                  "description": "Why the current observation could not establish a replacement answer.",
+                  "type": "string"
+                },
+                "retained_evidence": {
+                  "$ref": "#/$defs/RetainedMergeEvidence",
+                  "description": "The preceding answer, or explicit evidence that none has yet succeeded."
+                },
+                "status": {
+                  "const": "unavailable",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "retained_evidence",
+                "failure"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "MergeExtentKey": {
+          "description": "Every repository fact whose movement can change the branch's merge surface.",
+          "properties": {
+            "head": {
+              "description": "The branch tip whose net change will reach trunk.",
+              "type": "string"
+            },
+            "trunk": {
+              "description": "Trunk movement can integrate an otherwise unchanged holder.",
+              "type": "string"
+            },
+            "working_tree": {
+              "$ref": "#/$defs/WorkingTreeFingerprint",
+              "description": "Uncommitted paths independently extend that net change."
+            }
+          },
+          "required": [
+            "trunk",
+            "head",
+            "working_tree"
+          ],
+          "type": "object"
+        },
         "ObjectAvailability": {
           "description": "Whether git can read the protected checkpoint commit.",
           "oneOf": [
@@ -4407,6 +4564,42 @@
                 "status",
                 "acquisition",
                 "scopes"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "RaceExtent": {
+          "description": "The effective editing scope, whose lifetime follows checkpoint and release.",
+          "oneOf": [
+            {
+              "description": "This run may still edit the paths it declared or first touched.",
+              "properties": {
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Declared or first-touched paths this live run may edit."
+                },
+                "status": {
+                  "const": "editing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "scopes"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The run has checkpointed or released and refuses no later run in this checkout.",
+              "properties": {
+                "status": {
+                  "const": "ended",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
               ],
               "type": "object"
             }
@@ -5170,6 +5363,70 @@
           "minItems": 1,
           "type": "array"
         },
+        "RetainedMergeEvidence": {
+          "description": "Evidence retained through failure, distinguishing an initial declaration from a successful\nobservation.",
+          "oneOf": [
+            {
+              "description": "No Git observation has succeeded; keep the acquisition's conservative protection.",
+              "properties": {
+                "protection": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "The immutable acquisition scope protects until the first successful observation."
+                },
+                "status": {
+                  "const": "not_derived",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "protection"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A completed observation proved that the branch held no unmerged paths.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that proved this empty answer."
+                },
+                "status": {
+                  "const": "empty",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A completed observation established these exact unmerged paths.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that established the protected surface."
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Net branch and dirty paths, independent of the run's declaration."
+                },
+                "status": {
+                  "const": "protected",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key",
+                "scopes"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "RetentionRefStatus": {
           "description": "Current status of the reservation's private retention reference.",
           "oneOf": [
@@ -5703,6 +5960,30 @@
             }
           ]
         },
+        "WorkingTreeFingerprint": {
+          "description": "The modified path sets shared by drift comparison and merge-extent cache keys.",
+          "properties": {
+            "tracked_paths": {
+              "description": "Staged and unstaged tracked paths, normalized together.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "untracked_paths": {
+              "description": "Untracked files also belong to the branch's uncommitted surface.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "tracked_paths",
+            "untracked_paths"
+          ],
+          "type": "object"
+        },
         "WorktreeLiveness": {
           "description": "Whether the worktree that owns a retained reservation can be validated now.",
           "oneOf": [
@@ -5751,6 +6032,37 @@
         "alert": {
           "description": "A persistent coordination condition that remains until journal state resolves it.",
           "oneOf": [
+            {
+              "description": "A failed branch observation retains protection until the repository can answer again.",
+              "properties": {
+                "data": {
+                  "properties": {
+                    "failure": {
+                      "description": "The failed observation reported by Git or holder validation.",
+                      "type": "string"
+                    },
+                    "reservation_id": {
+                      "description": "The reservation whose last successful surface remains protected.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reservation_id",
+                    "failure"
+                  ],
+                  "type": "object"
+                },
+                "kind": {
+                  "const": "merge_extent_unavailable",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "data"
+              ],
+              "type": "object"
+            },
             {
               "description": "A released reservation no longer has affirmative integration evidence.",
               "properties": {
@@ -8842,6 +9154,29 @@
         "BoardAlert": {
           "oneOf": [
             {
+              "description": "A failed branch observation retains the preceding protection evidence.",
+              "properties": {
+                "failure": {
+                  "description": "The observation failure that prevented a fresh answer.",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "merge_extent_unavailable",
+                  "type": "string"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The holder whose merge surface cannot currently be derived."
+                }
+              },
+              "required": [
+                "kind",
+                "reservation_id",
+                "failure"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "evidence_status": {
                   "$ref": "#/$defs/lost_integration_evidence_status"
@@ -9054,6 +9389,20 @@
         },
         "BoardGitCost": {
           "properties": {
+            "merge_extent_path_queries": {
+              "default": 0,
+              "description": "Only changed trunk, HEAD, or dirty path sets require another net path query.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "merge_extent_worktree_status_queries": {
+              "default": 0,
+              "description": "One status observation per live holder checkout, including cache hits.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
             "orphan_recovery_evidence_queries": {
               "format": "uint64",
               "minimum": 0,
@@ -9246,8 +9595,16 @@
             "lifecycle": {
               "$ref": "#/$defs/ReservationLifecycle"
             },
+            "merge_extent": {
+              "$ref": "#/$defs/MergeExtent",
+              "description": "The exact derived branch surface or the evidence retained on failure."
+            },
             "purpose": {
               "$ref": "#/$defs/ReservationPurpose"
+            },
+            "race_extent": {
+              "$ref": "#/$defs/RaceExtent",
+              "description": "The run's effective editing scope, independent of branch integration."
             },
             "reservation_id": {
               "$ref": "#/$defs/uuid_v7_identifier"
@@ -9268,6 +9625,8 @@
             "source",
             "purpose",
             "scopes",
+            "race_extent",
+            "merge_extent",
             "lifecycle",
             "integration_evidence",
             "edit_blocking_status",
@@ -10712,6 +11071,116 @@
           ],
           "type": "object"
         },
+        "MergeExtent": {
+          "description": "The branch's independently observed merge protection, including inability to answer.",
+          "oneOf": [
+            {
+              "description": "Replay of an acquisition predating derivation must still protect its declaration.",
+              "properties": {
+                "protection": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "The immutable acquisition scope protects until the first successful observation."
+                },
+                "status": {
+                  "const": "not_derived",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "protection"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Successful emptiness ends merge protection without ending the editing run.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that proved this empty answer."
+                },
+                "status": {
+                  "const": "empty",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Exactly the net branch change and its currently dirty paths are protected.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that established the protected surface."
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Net branch and dirty paths, independent of the run's declaration."
+                },
+                "status": {
+                  "const": "protected",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key",
+                "scopes"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Failure preserves the last answer and explains why no fresh answer is available.",
+              "properties": {
+                "failure": {
+                  "description": "Why the current observation could not establish a replacement answer.",
+                  "type": "string"
+                },
+                "retained_evidence": {
+                  "$ref": "#/$defs/RetainedMergeEvidence",
+                  "description": "The preceding answer, or explicit evidence that none has yet succeeded."
+                },
+                "status": {
+                  "const": "unavailable",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "retained_evidence",
+                "failure"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "MergeExtentKey": {
+          "description": "Every repository fact whose movement can change the branch's merge surface.",
+          "properties": {
+            "head": {
+              "description": "The branch tip whose net change will reach trunk.",
+              "type": "string"
+            },
+            "trunk": {
+              "description": "Trunk movement can integrate an otherwise unchanged holder.",
+              "type": "string"
+            },
+            "working_tree": {
+              "$ref": "#/$defs/WorkingTreeFingerprint",
+              "description": "Uncommitted paths independently extend that net change."
+            }
+          },
+          "required": [
+            "trunk",
+            "head",
+            "working_tree"
+          ],
+          "type": "object"
+        },
         "ObjectAvailability": {
           "description": "Whether git can read the protected checkpoint commit.",
           "oneOf": [
@@ -11129,6 +11598,42 @@
                 "status",
                 "acquisition",
                 "scopes"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "RaceExtent": {
+          "description": "The effective editing scope, whose lifetime follows checkpoint and release.",
+          "oneOf": [
+            {
+              "description": "This run may still edit the paths it declared or first touched.",
+              "properties": {
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Declared or first-touched paths this live run may edit."
+                },
+                "status": {
+                  "const": "editing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "scopes"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The run has checkpointed or released and refuses no later run in this checkout.",
+              "properties": {
+                "status": {
+                  "const": "ended",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
               ],
               "type": "object"
             }
@@ -11892,6 +12397,70 @@
           "minItems": 1,
           "type": "array"
         },
+        "RetainedMergeEvidence": {
+          "description": "Evidence retained through failure, distinguishing an initial declaration from a successful\nobservation.",
+          "oneOf": [
+            {
+              "description": "No Git observation has succeeded; keep the acquisition's conservative protection.",
+              "properties": {
+                "protection": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "The immutable acquisition scope protects until the first successful observation."
+                },
+                "status": {
+                  "const": "not_derived",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "protection"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A completed observation proved that the branch held no unmerged paths.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that proved this empty answer."
+                },
+                "status": {
+                  "const": "empty",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A completed observation established these exact unmerged paths.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that established the protected surface."
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Net branch and dirty paths, independent of the run's declaration."
+                },
+                "status": {
+                  "const": "protected",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key",
+                "scopes"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "RevalidationConsequence": {
           "enum": [
             "existing_answers_still_cover_widened_scopes_no_new_edge"
@@ -12362,6 +12931,30 @@
               "type": "object"
             }
           ]
+        },
+        "WorkingTreeFingerprint": {
+          "description": "The modified path sets shared by drift comparison and merge-extent cache keys.",
+          "properties": {
+            "tracked_paths": {
+              "description": "Staged and unstaged tracked paths, normalized together.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "untracked_paths": {
+              "description": "Untracked files also belong to the branch's uncommitted surface.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "tracked_paths",
+            "untracked_paths"
+          ],
+          "type": "object"
         },
         "WorktreeLiveness": {
           "description": "Whether the worktree that owns a retained reservation can be validated now.",

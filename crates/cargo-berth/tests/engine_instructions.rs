@@ -173,6 +173,11 @@ fn check_ledger_unreadable_envelope() -> TestResult<Value> {
 
 fn blocked_claim_and_board_envelopes() -> TestResult<(Value, Value)> {
     let repository = initialized_repository()?;
+    fs::create_dir_all(repository.path().join("crates/cargo-berth/src"))?;
+    fs::write(
+        repository.path().join("crates/cargo-berth/src/main.rs"),
+        "uncommitted holder work\n",
+    )?;
     let holder = run_berth(
         repository.path(),
         &[
