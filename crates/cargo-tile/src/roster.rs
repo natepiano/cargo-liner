@@ -7,7 +7,7 @@
 //! and stamps whatever went away, which is what gives a finished row the
 //! grey spell it fades through before the display lets go of it.
 //!
-//! Every entry is keyed by pid, so a row and its tile survive a scan
+//! Every entry is keyed by invocation identity, so a row and its tile survive a scan
 //! unchanged rather than being rebuilt four times a second.
 
 use std::collections::HashMap;
@@ -18,29 +18,56 @@ use std::time::Instant;
 use crate::processes::Ancestor;
 use crate::processes::CargoGroup;
 use crate::processes::CargoProcess;
+use crate::processes::InvocationId;
 use crate::processes::Measurement;
+use crate::processes::VisibleParent;
 use crate::theme;
+
+/// Whether a retained row still runs or is fading from its first missing scan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RowLifetime {
+    /// The latest scan still carries this invocation.
+    Live,
+    /// The invocation left the scan at this instant.
+    Finished(Instant),
+}
+
+/// Whether an invocation heads a family whose children share its colour.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FamilyHead {
+    /// No retained child family is assigned to this invocation.
+    NoChildren,
+    /// The invocation heads the family with this palette index.
+    Heads(usize),
+}
+
+/// The family colour a row uses to point to its visible cargo parent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ParentFamily {
+    /// The row has no visible parent with an assigned family colour.
+    NoFamily,
+    /// The row belongs to the family with this palette index.
+    Member(usize),
+}
 
 /// One table row, once it has stopped when that happened, and how far
 /// its text has since been carried toward the ground it is drawn on.
 pub(crate) struct TrackedRow {
     /// The invocation as the last scan that carried it described it.
     pub(crate) process: CargoProcess,
-    /// When the process left the scan, or `None` while it runs.
-    ended:              Option<Instant>,
+    /// Whether the row still runs or is fading from a recorded finish.
+    lifetime:           RowLifetime,
     /// How far through the fade the row stands, on the alpha scale
     /// [`blend_color`](tui_pane::blend_color) reads: zero while it
     /// runs, [`u8::MAX`] once it has reached the ground and is about to
     /// be let go of.
     faded:              u8,
     /// The family this invocation heads, where it has cargo running
-    /// under it, as an index into the palette. `None` on a row nothing
-    /// points at.
-    family:             Option<usize>,
+    /// under it, as an index into the palette.
+    family:             FamilyHead,
     /// The family of the cargo this invocation is running under, which
-    /// is the index that cargo's own row carries. `None` where nothing
-    /// above it started it.
-    parent_family:      Option<usize>,
+    /// is the index that cargo's own row carries.
+    parent_family:      ParentFamily,
 }
 
 impl From<CargoProcess> for TrackedRow {
@@ -48,40 +75,46 @@ impl From<CargoProcess> for TrackedRow {
     fn from(process: CargoProcess) -> Self {
         Self {
             process,
-            ended: None,
+            lifetime: RowLifetime::Live,
             faded: 0,
             // Stamped by the roster once the whole scan is in: which
             // colours are free is a question about every group at
             // once, not about this row.
-            family: None,
-            parent_family: None,
+            family: FamilyHead::NoChildren,
+            parent_family: ParentFamily::NoFamily,
         }
     }
 }
 
 impl TrackedRow {
     /// Whether the process behind this row has stopped.
-    pub(crate) const fn is_ended(&self) -> bool { self.ended.is_some() }
+    pub(crate) const fn is_ended(&self) -> bool {
+        matches!(self.lifetime, RowLifetime::Finished(_))
+    }
 
     /// How far the row's text has been carried toward the ground.
     pub(crate) const fn faded(&self) -> u8 { self.faded }
 
     /// The family this invocation heads, where it heads one.
-    pub(crate) const fn family(&self) -> Option<usize> { self.family }
+    pub(crate) const fn family(&self) -> FamilyHead { self.family }
 
     /// The family of the cargo this invocation runs under.
-    pub(crate) const fn parent_family(&self) -> Option<usize> { self.parent_family }
+    pub(crate) const fn parent_family(&self) -> ParentFamily { self.parent_family }
 
     /// Take the scan's account of a process that is still running.
     fn refresh(&mut self, process: CargoProcess) {
         self.process = process;
-        self.ended = None;
+        self.lifetime = RowLifetime::Live;
         self.faded = 0;
     }
 
     /// Stamp the row as finished, leaving an earlier stamp alone so the
     /// fade runs from when it actually stopped.
-    fn finish(&mut self, now: Instant) { self.ended = self.ended.or(Some(now)); }
+    const fn finish(&mut self, now: Instant) {
+        if matches!(self.lifetime, RowLifetime::Live) {
+            self.lifetime = RowLifetime::Finished(now);
+        }
+    }
 
     /// Move the fade on, reporting whether it went anywhere.
     ///
@@ -100,7 +133,7 @@ impl TrackedRow {
     /// `fade` of nothing gives on the poll that stamps the row -- there
     /// is no travel to make, and the row goes on that same poll.
     fn faded_at(&self, now: Instant, fade: Duration) -> u8 {
-        let Some(ended) = self.ended else {
+        let RowLifetime::Finished(ended) = self.lifetime else {
             return 0;
         };
         let elapsed = now.duration_since(ended);
@@ -117,15 +150,14 @@ impl TrackedRow {
 
     /// Whether the row has been finished for longer than `fade`.
     fn is_expired(&self, now: Instant, fade: Duration) -> bool {
-        self.ended
-            .is_some_and(|ended| now.duration_since(ended) >= fade)
+        matches!(self.lifetime, RowLifetime::Finished(ended) if now.duration_since(ended) >= fade)
     }
 }
 
 /// One command's rows: the summary row and the invocations under it.
 pub(crate) struct TrackedGroup {
-    /// The group's identity, the lead's pid, stable while it runs.
-    pub(crate) id:   u32,
+    /// The lead invocation's identity, independent of its displayed pid.
+    pub(crate) id:   InvocationId,
     /// The row the summary carries.
     pub(crate) lead: TrackedRow,
     /// The invocations running under the lead, newest first.
@@ -192,7 +224,7 @@ impl TrackedGroup {
         for tracked in &mut self.rest {
             match arriving
                 .iter()
-                .position(|process| process.pid == tracked.process.pid)
+                .position(|process| process.invocation_id == tracked.process.invocation_id)
             {
                 Some(index) => tracked.refresh(arriving.remove(index)),
                 None => tracked.finish(now),
@@ -287,14 +319,14 @@ pub(crate) struct Roster {
     /// recognised and skipped. With nothing building, the display has no
     /// reason to repaint four times a second.
     last:     Vec<CargoGroup>,
-    /// The palette index each family holds, by the pid heading it.
+    /// The palette index each family holds, by the invocation heading it.
     ///
     /// Kept here rather than worked out per cell because the colour has
     /// to be the same in the summary and in the command's own cell, and
     /// because which colours are free is a question about every group
     /// at once. An index is held for as long as the family is on screen,
     /// fading rows included, so a colour never moves under the reader.
-    families: HashMap<u32, usize>,
+    families: HashMap<InvocationId, usize>,
 }
 
 impl Roster {
@@ -326,14 +358,14 @@ impl Roster {
     /// cells stand in the order each command was first *seen*, which
     /// for a driver is when the driver was started rather than when
     /// anything began running under it.
-    pub(crate) fn tiled_ids(&self, hidden_when_idle: &[String]) -> Vec<u32> {
+    pub(crate) fn tiled_ids(&self, hidden_when_idle: &[String]) -> Vec<InvocationId> {
         let mut tiled: Vec<&TrackedGroup> = self
             .groups
             .iter()
             .filter(|group| group.deserves_a_cell(hidden_when_idle))
             .collect();
         tiled.sort_by_key(|group| group.began(hidden_when_idle));
-        tiled.into_iter().map(|group| group.id).collect()
+        tiled.into_iter().map(|group| group.id.clone()).collect()
     }
 
     /// Fold one scan in, stamping whatever it no longer carries.
@@ -346,7 +378,7 @@ impl Roster {
             return false;
         }
         self.last.clone_from(&scan);
-        let arriving: Vec<u32> = scan.iter().map(CargoGroup::id).collect();
+        let arriving: Vec<InvocationId> = scan.iter().map(CargoGroup::id).collect();
         for group in scan {
             match self
                 .groups
@@ -386,46 +418,55 @@ impl Roster {
     /// ones unmarked -- a repeated colour still pairs correctly far
     /// more often than none does.
     fn assign_families(&mut self) {
-        let parents: HashSet<u32> = self
+        let parents: HashSet<InvocationId> = self
             .groups
             .iter()
             .flat_map(TrackedGroup::rows)
-            .filter_map(|row| row.process.parent)
+            .filter_map(|row| match &row.process.parent {
+                VisibleParent::Invocation { id, .. } => Some(id.clone()),
+                VisibleParent::Ancestor(_) | VisibleParent::None => None,
+            })
             .collect();
-        let heads: Vec<u32> = self
+        let heads: Vec<InvocationId> = self
             .groups
             .iter()
             .flat_map(TrackedGroup::rows)
             .filter(|row| match row.process.managed {
                 Measurement::Reading(managed) => managed > 0,
                 Measurement::Unavailable(_) => {
-                    self.families.contains_key(&row.process.pid)
-                        || parents.contains(&row.process.pid)
+                    self.families.contains_key(&row.process.invocation_id)
+                        || parents.contains(&row.process.invocation_id)
                 },
             })
-            .map(|row| row.process.pid)
+            .map(|row| row.process.invocation_id.clone())
             .collect();
         let mut families = std::mem::take(&mut self.families);
-        families.retain(|pid, _| heads.contains(pid));
+        families.retain(|id, _| heads.contains(id));
         // Asked of the theme rather than of the palette, because how
         // many colours are left depends on what the column headers are
         // drawn in and that is the reader's to change.
         let count = theme::family_color_count().max(1);
-        for pid in heads {
-            if families.contains_key(&pid) {
+        for id in heads {
+            if families.contains_key(&id) {
                 continue;
             }
             let taken: HashSet<usize> = families.values().copied().collect();
             let free = (0..count).find(|index| !taken.contains(index));
-            families.insert(pid, free.unwrap_or(families.len() % count));
+            families.insert(id, free.unwrap_or(families.len() % count));
         }
         for group in &mut self.groups {
             for row in group.rows_mut() {
-                row.family = families.get(&row.process.pid).copied();
-                row.parent_family = row
-                    .process
-                    .parent
-                    .and_then(|parent| families.get(&parent).copied());
+                row.family = families
+                    .get(&row.process.invocation_id)
+                    .copied()
+                    .map_or(FamilyHead::NoChildren, FamilyHead::Heads);
+                row.parent_family = match &row.process.parent {
+                    VisibleParent::Invocation { id, .. } => families
+                        .get(id)
+                        .copied()
+                        .map_or(ParentFamily::NoFamily, ParentFamily::Member),
+                    VisibleParent::Ancestor(_) | VisibleParent::None => ParentFamily::NoFamily,
+                };
             }
         }
         self.families = families;
@@ -456,12 +497,163 @@ impl Roster {
 
 #[cfg(test)]
 mod tests {
+    use sysinfo::Pid;
+
     use super::*;
+    use crate::birth_stamp::LifetimeEvidence;
+    use crate::birth_stamp::ProcessLifetime;
     use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
+    use crate::constants::TEST_INVOCATION_PID;
+    use crate::constants::TEST_REPLACEMENT_LIFETIME;
     use crate::processes::CommandText;
     use crate::processes::CompilerObservation;
     use crate::processes::MeasurementAbsence;
+    use crate::processes::ProcessIdentities;
+    use crate::processes::ProcessIdentity;
+
+    /// A process replacement starts its own row while the old row finishes fading.
+    #[test]
+    fn reused_pids_keep_separate_rows_and_family_colours() {
+        let mut roster = Roster::new();
+        let mut first = group(TEST_INVOCATION_PID, &[]);
+        first.lead.managed = Measurement::Reading(1);
+        let mut replacement = first.clone();
+        replacement.lead.invocation_id = InvocationId::Process(ProcessIdentity::Known {
+            pid:      TEST_INVOCATION_PID,
+            lifetime: ProcessLifetime::for_test(TEST_REPLACEMENT_LIFETIME),
+        });
+        roster.observe(vec![first.clone()], start());
+        let family = roster.groups()[0].lead.family();
+
+        roster.observe(vec![replacement.clone()], start());
+
+        assert_eq!(roster.groups().len(), 2);
+        assert_eq!(roster.groups()[0].id, first.id());
+        assert_eq!(roster.groups()[1].id, replacement.id());
+        assert!(roster.groups()[0].lead.is_ended());
+        assert!(!roster.groups()[1].lead.is_ended());
+        assert_eq!(roster.groups()[0].lead.family(), family);
+        assert_ne!(roster.groups()[1].lead.family(), family);
+    }
+
+    /// Reusing a child pid must finish the old row even when its lead survives.
+    #[test]
+    fn reused_child_pids_keep_separate_rows_within_one_group() {
+        let mut roster = Roster::new();
+        let first = family(TEST_INVOCATION_PID, &[TEST_INVOCATION_PID + 1]);
+        let mut replacement = first.clone();
+        replacement.rest[0].invocation_id = InvocationId::Process(ProcessIdentity::Known {
+            pid:      replacement.rest[0].pid,
+            lifetime: ProcessLifetime::for_test(TEST_REPLACEMENT_LIFETIME),
+        });
+        roster.observe(vec![first.clone()], start());
+        roster.observe(vec![replacement.clone()], start());
+
+        let retained = &roster.groups()[0];
+        assert_eq!(retained.rest.len(), 2);
+        assert_eq!(retained.rest[0].process, first.rest[0]);
+        assert_eq!(retained.rest[1].process, replacement.rest[0]);
+        assert!(retained.rest[0].is_ended());
+        assert!(!retained.rest[1].is_ended());
+        assert_eq!(
+            retained.rest[0].parent_family(),
+            retained.rest[1].parent_family()
+        );
+    }
+
+    /// A fading child's link still proves a family when the next count is unavailable.
+    #[test]
+    fn an_unavailable_count_can_establish_a_family_from_a_retained_child() {
+        let mut first = family(TEST_INVOCATION_PID, &[TEST_INVOCATION_PID + 1]);
+        first.lead.managed = Measurement::Reading(0);
+        let mut next = first.clone();
+        next.rest.clear();
+        next.lead.managed = Measurement::Unavailable(MeasurementAbsence::ReadFailed);
+        let mut roster = Roster::new();
+        roster.observe(vec![first], start());
+        assert_eq!(roster.groups()[0].lead.family(), FamilyHead::NoChildren);
+
+        roster.observe(vec![next], start());
+
+        let retained = &roster.groups()[0];
+        assert!(retained.rest[0].is_ended());
+        assert!(
+            matches!((retained.lead.family(), retained.rest[0].parent_family()),
+            (FamilyHead::Heads(head), ParentFamily::Member(member)) if head == member)
+        );
+    }
+
+    /// Repeated unreadable births preserve one live row during continuous pid presence.
+    #[test]
+    fn unavailable_lifetimes_keep_a_continuously_present_row() {
+        let pid = Pid::from_u32(TEST_INVOCATION_PID);
+        let lifetimes = HashMap::from([(pid, LifetimeEvidence::Unavailable)]);
+        let mut identities = ProcessIdentities::default();
+        let mut first = group(TEST_INVOCATION_PID, &[]);
+        first.lead.invocation_id = identities.observe(&lifetimes)[&pid].clone();
+        first.lead.managed = Measurement::Reading(1);
+        let mut roster = Roster::new();
+        roster.observe(vec![first.clone()], start());
+        let family = roster.groups()[0].lead.family();
+
+        let mut refreshed = first.clone();
+        refreshed.lead.invocation_id = identities.observe(&lifetimes)[&pid].clone();
+        refreshed.lead.managed = Measurement::Unavailable(MeasurementAbsence::ReadFailed);
+        roster.observe(vec![refreshed.clone()], start());
+
+        assert_eq!(roster.groups().len(), 1);
+        let retained = &roster.groups()[0];
+        assert_eq!(retained.id, first.id());
+        assert_eq!(retained.lead.process, refreshed.lead);
+        assert_eq!(retained.lead.family(), family);
+        assert!(!retained.lead.is_ended());
+    }
+
+    /// An absent scan ends unavailable continuity before that pid appears again.
+    #[test]
+    fn unavailable_lifetimes_never_merge_retained_rows() {
+        let pid = Pid::from_u32(TEST_INVOCATION_PID);
+        let lifetimes = HashMap::from([(pid, LifetimeEvidence::Unavailable)]);
+        let mut identities = ProcessIdentities::default();
+        let mut first = group(TEST_INVOCATION_PID, &[]);
+        first.lead.invocation_id = identities.observe(&lifetimes)[&pid].clone();
+        let mut roster = Roster::new();
+        roster.observe(vec![first.clone()], start());
+        assert!(identities.observe(&HashMap::new()).is_empty());
+        roster.observe(Vec::new(), start());
+        assert!(roster.groups()[0].lead.is_ended());
+
+        let mut replacement = first.clone();
+        replacement.lead.invocation_id = identities.observe(&lifetimes)[&pid].clone();
+        roster.observe(vec![replacement.clone()], start());
+
+        assert_eq!(roster.groups().len(), 2);
+        assert_ne!(first.id(), replacement.id());
+        assert_eq!(roster.groups()[0].lead.process, first.lead);
+        assert_eq!(roster.groups()[1].lead.process, replacement.lead);
+        assert!(roster.groups()[0].lead.is_ended());
+        assert!(!roster.groups()[1].lead.is_ended());
+    }
+
+    /// A scan can change the displayed process without replacing the invocation.
+    #[test]
+    fn displayed_pid_changes_preserve_the_invocation_row_and_family() {
+        let mut first = group(TEST_INVOCATION_PID, &[]);
+        first.lead.managed = Measurement::Reading(1);
+        let mut refreshed = first.clone();
+        refreshed.lead.pid += 1;
+        let mut roster = Roster::new();
+        roster.observe(vec![first], start());
+        let family = roster.groups()[0].lead.family();
+
+        roster.observe(vec![refreshed.clone()], start());
+
+        assert_eq!(roster.groups().len(), 1);
+        assert_eq!(roster.groups()[0].lead.process, refreshed.lead);
+        assert_eq!(roster.groups()[0].lead.family(), family);
+        assert!(!roster.groups()[0].lead.is_ended());
+    }
 
     /// The colour is a tie between a row and the rows under it, so a
     /// row's `parent` stamp has to be the very index its parent's own
@@ -476,13 +668,16 @@ mod tests {
         let lead = stamped
             .iter()
             .find(|(pid, ..)| *pid == 64432)
-            .and_then(|(_, family, _)| *family);
-        assert!(lead.is_some(), "{stamped:?}");
+            .map(|(_, family, _)| *family);
+        assert!(matches!(lead, Some(FamilyHead::Heads(_))), "{stamped:?}");
         for (pid, _, parent) in &stamped {
             if *pid == 64432 {
                 continue;
             }
-            assert_eq!(*parent, lead, "{stamped:?}");
+            assert!(
+                matches!((lead, parent), (Some(FamilyHead::Heads(head)), ParentFamily::Member(member)) if head == *member),
+                "{stamped:?}"
+            );
         }
     }
 
@@ -499,7 +694,7 @@ mod tests {
             Instant::now(),
         );
 
-        let heads: Vec<Option<usize>> = stamps(&roster)
+        let heads: Vec<FamilyHead> = stamps(&roster)
             .into_iter()
             .filter(|(pid, ..)| *pid == 64432 || *pid == 70001)
             .map(|(_, family, _)| family)
@@ -521,14 +716,14 @@ mod tests {
         let before = stamps(&roster)
             .into_iter()
             .find(|(pid, ..)| *pid == 70001)
-            .and_then(|(_, family, _)| family);
+            .map(|(_, family, _)| family);
 
         roster.observe(vec![family(70001, &[4058])], Instant::now());
 
         let after = stamps(&roster)
             .into_iter()
             .find(|(pid, ..)| *pid == 70001)
-            .and_then(|(_, family, _)| family);
+            .map(|(_, family, _)| family);
         assert_eq!(before, after);
     }
 
@@ -540,7 +735,10 @@ mod tests {
 
         roster.observe(vec![group(64432, &[])], Instant::now());
 
-        assert_eq!(stamps(&roster), [(64432, None, None)]);
+        assert_eq!(
+            stamps(&roster),
+            [(64432, FamilyHead::NoChildren, ParentFamily::NoFamily)]
+        );
     }
 
     /// An unknown count alone supplies no evidence that a family exists.
@@ -552,7 +750,10 @@ mod tests {
 
         roster.observe(vec![group], start());
 
-        assert_eq!(stamps(&roster), [(64432, None, None)]);
+        assert_eq!(
+            stamps(&roster),
+            [(64432, FamilyHead::NoChildren, ParentFamily::NoFamily)]
+        );
     }
 
     /// A child's parent link proves the family even when its size is unknown.
@@ -565,8 +766,10 @@ mod tests {
         roster.observe(vec![group], start());
 
         let lead = roster.groups()[0].lead.family();
-        assert!(lead.is_some());
-        assert_eq!(roster.groups()[0].rest[0].parent_family(), lead);
+        assert!(matches!(lead, FamilyHead::Heads(_)));
+        assert!(
+            matches!((lead, roster.groups()[0].rest[0].parent_family()), (FamilyHead::Heads(head), ParentFamily::Member(member)) if head == member)
+        );
     }
 
     /// Losing a count does not prove that an established family has ended.
@@ -577,7 +780,7 @@ mod tests {
         group.lead.managed = Measurement::Reading(1);
         roster.observe(vec![group.clone()], start());
         let before = roster.groups()[0].lead.family();
-        assert!(before.is_some());
+        assert!(matches!(before, FamilyHead::Heads(_)));
 
         group.lead.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
         assert!(roster.observe(vec![group.clone()], start()));
@@ -593,15 +796,24 @@ mod tests {
         let mut group = group(64432, &[]);
         group.lead.managed = Measurement::Reading(1);
         roster.observe(vec![group.clone()], start());
-        assert!(roster.groups()[0].lead.family().is_some());
+        assert!(matches!(
+            roster.groups()[0].lead.family(),
+            FamilyHead::Heads(_)
+        ));
         group.lead.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
         roster.observe(vec![group.clone()], start());
-        assert!(roster.groups()[0].lead.family().is_some());
+        assert!(matches!(
+            roster.groups()[0].lead.family(),
+            FamilyHead::Heads(_)
+        ));
 
         group.lead.managed = Measurement::Reading(0);
         assert!(roster.observe(vec![group], start()));
 
-        assert_eq!(stamps(&roster), [(64432, None, None)]);
+        assert_eq!(
+            stamps(&roster),
+            [(64432, FamilyHead::NoChildren, ParentFamily::NoFamily)]
+        );
         assert!(roster.families.is_empty());
     }
 
@@ -609,11 +821,13 @@ mod tests {
     fn process(pid: u32) -> CargoProcess {
         CargoProcess {
             path: "~/rust/project".to_string(),
-            directory_identity: crate::registration::DirectoryIdentity::Absolute(
+            directory_identity: crate::registration::WorkingDirectoryIdentity::Absolute(
                 "/test-home/rust/project".into(),
             ),
             pid,
-            parent: None,
+            invocation_id: InvocationId::for_test(pid),
+            capture_membership: crate::processes::CaptureMembership::Outside,
+            parent: VisibleParent::None,
             start: "10:00".to_string(),
             started: 0,
             duration: "00:01".to_string(),
@@ -642,14 +856,17 @@ mod tests {
         let mut group = group(lead, rest);
         group.lead.managed = Measurement::Reading(rest.len());
         for row in &mut group.rest {
-            row.parent = Some(lead);
+            row.parent = VisibleParent::Invocation {
+                id:  group.lead.invocation_id.clone(),
+                pid: lead,
+            };
         }
         group
     }
 
     /// The palette index every row of `roster` came out with, as
     /// `(pid, own family, parent's family)`.
-    fn stamps(roster: &Roster) -> Vec<(u32, Option<usize>, Option<usize>)> {
+    fn stamps(roster: &Roster) -> Vec<(u32, FamilyHead, ParentFamily)> {
         roster
             .groups()
             .iter()
@@ -886,7 +1103,13 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![hidden_group(10, &[11])], start());
 
-        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
+        assert_eq!(
+            roster.tiled_ids(&hidden_when_idle()),
+            vec![10]
+                .into_iter()
+                .map(InvocationId::for_test)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -898,7 +1121,13 @@ mod tests {
 
         // The invocation is stamped rather than gone, so the cell goes
         // out through the fade instead of vanishing under the reader.
-        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
+        assert_eq!(
+            roster.tiled_ids(&hidden_when_idle()),
+            vec![10]
+                .into_iter()
+                .map(InvocationId::for_test)
+                .collect::<Vec<_>>()
+        );
         roster.advance(now + Duration::from_secs(1), Duration::ZERO);
         assert!(roster.tiled_ids(&hidden_when_idle()).is_empty());
     }
@@ -919,7 +1148,13 @@ mod tests {
             start(),
         );
 
-        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![20, 10]);
+        assert_eq!(
+            roster.tiled_ids(&hidden_when_idle()),
+            vec![20, 10]
+                .into_iter()
+                .map(InvocationId::for_test)
+                .collect::<Vec<_>>()
+        );
     }
 
     /// And ordinary cells sort by start however the roster came to hold
@@ -937,7 +1172,13 @@ mod tests {
             now,
         );
 
-        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![20, 10]);
+        assert_eq!(
+            roster.tiled_ids(&hidden_when_idle()),
+            vec![20, 10]
+                .into_iter()
+                .map(InvocationId::for_test)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -945,6 +1186,12 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![group(10, &[])], start());
 
-        assert_eq!(roster.tiled_ids(&hidden_when_idle()), vec![10]);
+        assert_eq!(
+            roster.tiled_ids(&hidden_when_idle()),
+            vec![10]
+                .into_iter()
+                .map(InvocationId::for_test)
+                .collect::<Vec<_>>()
+        );
     }
 }

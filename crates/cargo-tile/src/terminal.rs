@@ -686,23 +686,29 @@ mod tests {
     use crate::attract::SettingsApplicationOutcome;
     use crate::birth_stamp::KernelObservation;
     use crate::birth_stamp::Observation;
+    use crate::birth_stamp::ProcessLifetime;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
+    use crate::constants::TEST_INVOCATION_PID;
+    use crate::constants::TEST_REPLACEMENT_LIFETIME;
     use crate::favorites::FavoritesFileState;
+    use crate::processes::CaptureMembership;
     use crate::processes::CargoGroup;
     use crate::processes::CargoProcess;
     use crate::processes::CommandText;
     use crate::processes::CompilerObservation;
+    use crate::processes::InvocationId;
     use crate::processes::Measurement;
     use crate::processes::MeasurementAbsence;
+    use crate::processes::ProcessIdentity;
+    use crate::processes::VisibleParent;
     use crate::progress::Capture;
-    use crate::progress::CaptureKey;
     use crate::progress::CaptureLookup;
     use crate::progress::CaptureRead;
     use crate::progress::CaptureRootIndex;
     use crate::progress::CaptureRootSource;
     use crate::progress::CaptureRoots;
     use crate::progress::RunState;
-    use crate::registration::DirectoryIdentity;
+    use crate::registration::WorkingDirectoryIdentity;
     use crate::sccache::SccacheServer;
 
     const FAVORITE_ROW: &str = r#"
@@ -744,12 +750,14 @@ fraying = "leading"
     }
 
     /// A measured idle row isolates scan delivery from live process collection.
-    fn scan_process(state: CaptureLookup) -> CargoProcess {
+    fn scan_process(invocation_id: InvocationId, state: CaptureLookup) -> CargoProcess {
         CargoProcess {
             path: "/runner/project".to_owned(),
-            directory_identity: DirectoryIdentity::Absolute("/runner/project".into()),
+            directory_identity: WorkingDirectoryIdentity::Absolute("/runner/project".into()),
             pid: 11,
-            parent: None,
+            invocation_id,
+            capture_membership: CaptureMembership::Outside,
+            parent: VisibleParent::None,
             start: "10:00".to_owned(),
             started: 0,
             duration: "00:01".to_owned(),
@@ -762,11 +770,51 @@ fraying = "leading"
         }
     }
 
+    /// PID reuse arrives through the channel as a new invocation and a second tile.
+    #[test]
+    fn reused_pid_scan_delivery_keeps_both_invocations() {
+        let mut app = App::new_for_test().expect("test app");
+        let mut first = scan_process(
+            InvocationId::for_test(TEST_INVOCATION_PID),
+            CaptureLookup::Unregistered,
+        );
+        first.pid = TEST_INVOCATION_PID;
+        let replacement = CargoProcess {
+            invocation_id: InvocationId::Process(ProcessIdentity::Known {
+                pid:      TEST_INVOCATION_PID,
+                lifetime: ProcessLifetime::for_test(TEST_REPLACEMENT_LIFETIME),
+            }),
+            ..first.clone()
+        };
+        let (sender, scans) = mpsc::channel();
+        for process in [&first, &replacement] {
+            sender
+                .send(Scan {
+                    groups:      vec![CargoGroup {
+                        lead:     process.clone(),
+                        rest:     Vec::new(),
+                        ancestry: Vec::new(),
+                    }],
+                    sccache:     SccacheServer::Stopped,
+                    root_status: Vec::new(),
+                })
+                .expect("scan receiver is alive");
+            assert!(drain_scans(&mut app, &scans));
+        }
+        assert_eq!(app.roster.groups().len(), 2);
+        assert!(app.roster.groups()[0].lead.is_ended());
+        assert_eq!(app.roster.groups()[1].lead.process, replacement);
+        assert_eq!(
+            app.roster.tiled_ids(&[]),
+            vec![first.invocation_id, replacement.invocation_id]
+        );
+    }
+
     /// Availability changes must redraw and reach the roster without a stale value.
     #[test]
     fn unavailable_measurements_replace_readings_through_the_scan_channel() {
         let mut app = App::new_for_test().expect("test app");
-        let reading = scan_process(CaptureLookup::Unregistered);
+        let reading = scan_process(InvocationId::for_test(11), CaptureLookup::Unregistered);
         let unavailable = CargoProcess {
             cpu: Measurement::Unavailable(MeasurementAbsence::ReadFailed),
             compiler: CompilerObservation::Unknown,
@@ -916,15 +964,16 @@ fraying = "leading"
         let capture = Capture::take_roots(&roots, &|pid| {
             KernelObservation::for_test(pid, Observation::Unknown)
         });
-        let state = capture.read(CaptureKey {
-            root: CaptureRootIndex(0),
-            pid:  10,
-        });
+        let key = capture
+            .keys(10)
+            .find(|key| key.root == CaptureRootIndex(0))
+            .expect("configured root retains its full capture key");
+        let state = capture.read(&key);
         assert_eq!(
             state,
             CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
         );
-        let process = scan_process(state);
+        let process = scan_process(InvocationId::for_test(11), state);
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
