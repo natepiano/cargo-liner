@@ -65,30 +65,38 @@
     exactly one writer.
 
   - `crates/cargo-tile/src/progress.rs` — reads the capture root. `Progress`
-    `:87`; `Phase` `:117`; `RunState` `:143`; `RunLiveness` `:177` with `From<bool>`
-    `:185`; `RegistrationGeneration` `:191` with `names_log` `:201`; `Capture`
-    `:219` — the pid-keyed map of readable runs — with `take(liveness)` `:241`,
-    `take_from(root, liveness)` `:252`, `discard` `:326` and `read(pid)` `:336`;
-    `root()` `:343` — resolves `CARGO_TILE_ROOT` or the default, the single
-    site phase 5 turns into a list; `live_runs` `:356` — enumerates
-    `<root>/state/pids` and returns `HashMap<u32, HashSet<RegistrationGeneration>>`,
-    so one pid carries every generation registered under it; `tail` `:429`;
-    `parse_state` `:457`. Inline `#[cfg(test)]` module `:594` (37 tests).
+    `:85`; `Phase` `:115`; `RunState` `:141`; `RunLiveness` `:175` with `From<bool>`
+    `:183`; `RegistrationGeneration` `:189` with `names_log` `:199`;
+    `LiveRegistrations` `:226` and `RegistrationEvidence` `:235`; `Capture`
+    `:263` — the pid-keyed map of readable runs, field `readings` — with
+    `take(liveness)` `:274`, `take_from(root, liveness)` `:279`,
+    `take_roots(roots, liveness)` `:285` — the single per-scan removal allowance
+    across every root — `scan_root` `:300`, `discard` `:367` and `read(pid)`
+    `:389`, a map lookup that performs no filesystem access; `root()` `:394` —
+    resolves `CARGO_TILE_ROOT` or the default, the single site phase 5 turns
+    into a list; `live_runs` `:402` — reads `<root>/state/pids` through the
+    access layer and returns `LiveRegistrations { generations, evidence }`, so
+    one pid carries every generation registered under it and completeness is
+    tracked separately from the live set; `parse_state` `:499`. Inline
+    `#[cfg(test)]` module `:636` (57 tests). `tail` no longer exists — reading a
+    log goes through `capture_root::ScanEntry::read_log` `:499`, and reading a
+    registration through `read_registration` `:507`.
 
-    Two orderings in this file are invariants, not implementation detail.
-    `take_from` collects the `read_dir` iterator into a `Vec<fs::DirEntry>`
-    **before** it calls `live_runs`: the collection is the sample, and opening
-    the iterator first does not preserve the boundary. Reversing it lets a run
-    that publishes mid-scan lose its log to the orphan sweep, after which cargo
-    reopens the log outside the shim's setup subshell under the caller's umask
-    — `0066` on the runner units — and the operator cannot read it for the life
-    of that run. `RegistrationGeneration::Calendar(String)` is built from any
+    Two orderings are invariants, not implementation detail, and phase 3 moved
+    the first into the access layer. `RootScan::open` samples the log inventory
+    **before** it opens or samples registrations, and `Capture::scan_root` reads
+    that sample **before** it consults liveness; collecting into a `Vec` is the
+    sample, and opening an iterator first does not preserve the boundary.
+    Reversing either lets a run that publishes mid-scan lose its log to the
+    orphan sweep, after which cargo reopens the log outside the shim's setup
+    subshell under the caller's umask — `0066` on the runner units — and the
+    operator cannot read it for the life of that run. `RegistrationGeneration::Calendar(String)` is built from any
     nonempty filename suffix, so it classifies a filename and proves nothing
     about process identity; treat it as a candidate, never as verification.
 
   - `crates/cargo-tile/src/processes.rs` — the two-phase process scan and row
     construction, 79 KB, the largest non-render file. `cargo_split(argv) ->
-    Option<(usize, Option<String>)>` `:1215`, which short-circuits at
+    Option<(usize, Option<String>)>` `:1211`, which short-circuits at
     `argv.first()?` — the macOS empty-argv gate. `row(...) -> Option<CargoProcess>`
     `:1069-1083`: `path` degrades a missing cwd to `UNRESOLVED_PATH` via
     `map_or_else` (`:1070-1073`) while `command: command_text(process.cmd(),
@@ -427,90 +435,31 @@ On the reader side, `RegistrationGeneration` classifies a registration filename 
 - Running the application smoke against real toolchains — `install` moves each toolchain's real cargo aside machine-wide.
 - A stylistic-only change inside the shim with no behavioral consequence.
 
-### Phase 3 — A hardened root access layer, and `progress.rs` onto it  · status: todo
+### Phase 3 — A hardened root access layer, and `progress.rs` onto it  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the scanner reads a capture root through directory handles with bounded, type-checked reads, never sweeps a root it does not own, and cannot mistake an unreadable directory for an empty one.
-
-**Spec:**
-
-*1. The reads are unsafe today.* `tail` (`progress.rs:429`) uses `File::open`, which follows symlinks, checks no file type, and then `read_to_end`s after a seek. A FIFO blocks at open; a symlink to `/dev/zero` reports length 0, seeks to 0 and reads without bound. The scan runs on a worker thread, which contains neither failure — one foreign entry stops every local row updating, or exhausts memory.
-
-*2. One directory-handle contract.* Hardening the final `open` is not enough: `O_NOFOLLOW` on `root/state/pids/<name>` still follows a replaced `state` or `pids`, and checking an old descriptor's metadata does not detect a replacement mounted at the configured pathname. Inspection, ownership classification, retained entries and deletion must all refer to the same directory:
-
-- Open the effective root, then derive ownership from `fstat` on **that descriptor**. Define root-symlink handling explicitly and preserve trusted system prefixes such as macOS `/tmp`.
-- Open `state`, then `pids`, each relative to the previous handle with `RDONLY | DIRECTORY | NOFOLLOW | CLOEXEC`. Enumerate through those handles and **retain enumeration errors** rather than discarding them.
-- Open entry **basenames** relative to those handles with `RDONLY | NOFOLLOW | NONBLOCK | CLOEXEC`, check the opened file is a regular file, and enforce byte caps with `Read::take` independently of metadata: the existing tail cap for logs, a documented cap plus one byte for registrations so an oversize record is detectable. `O_NONBLOCK` keeps a FIFO open from blocking; it imposes no deadline on ordinary file I/O, so the caps are the real bound.
-- Reopen the configured pathname each scan and compare device/inode identity and ownership against the previous scan. Replacement or access failure invalidates that root's retained entries and disables its sweep; descriptors from a previous root are never combined with paths from its replacement.
-- Retain the existing lossy UTF-8 decode for log contents.
-
-*3. Deletion is a capability, not a flag.* Both removal paths take an ordinary `&Path`, so an ownership boolean leaves every future caller responsible for remembering the rule. Represent roots as `Owned(OwnedRoot<'scan>) | Foreign(ForeignRoot<'scan>)`, where `OwnedRoot` is private, non-clonable, constructible only after a successful `fstat` and an `st_uid == euid` comparison, and **borrows the scan** — the inspected directory handles and that scan's enumeration success — so a cached capability cannot outlive the check that justified it. Both removal paths are reachable only through `OwnedRoot` and take their targets from its own scan entries. One internal enum dispatch per root, no trait, no per-entry allocation.
-
-*4. Ownership is necessary but not sufficient.* An owned root does not establish ownership of `state/pids`, nor stop that path redirecting through a symlink. Worse, `live_runs` (`progress.rs:356`) turns a failed directory read into an **empty** live set, and `take_from` then treats every log as belonging to a dead run and deletes it: a root that stays readable while `state/pids` does not is a path to destroying live capture data in a root the reader owns. Represent an unavailable live set separately from an empty one, and make a complete and successful registration enumeration necessary before any sweep. A failed ownership check disables sweeping for that root without affecting the others. Decline to sweep any directory another account can write.
-
-*5. One sweep budget, scan-local, counting both artifact types.* `Capture::discard` (`progress.rs:326`) increments `swept` **before** `fs::remove_file`, so entries it cannot delete consume the budget anyway and a foreign root starves the owned root's sweep on every pass. `live_runs` removes stale registrations the same way and discards the error identically — and those removals carry **no budget at all**. For `R` stale registrations and `D` discardable logs, one pass attempts `R + min(D, CAPTURE_SWEEP_LIMIT)` removals. Thread **one** budget through registration and log cleanup across all owned roots: initialise it before the scan iterates roots and pass it through both cleanup paths. Resetting it inside `take_from` multiplies the allowance by the number of roots; persisting it across scans eventually stops cleanup altogether. Foreign roots consume none of it. Correct `CAPTURE_SWEEP_LIMIT`'s documented sizing rationale, which counts logs only.
-
-This is guaranteed rather than hypothetical on the runner machine: the runner cache directories are `drwxr-x---`, group read and execute with no write, so every removal a reader running as `natepiano` attempts fails, on every entry, permanently.
-
-*6. Three stale doc comments, not two.* `progress.rs` contradicts itself about whether logs are deleted, and the wrong half is repeated:
-
-| line | says | correct? |
-| --- | --- | --- |
-| `progress.rs:354` | "every run since the last reboot" | yes |
-| `progress.rs:402` | "Logs are never deleted, so the capture directory holds every run since the machine was set up" | no |
-| `progress.rs:822` | "Logs are never deleted and pids come round again" | no |
-
-Phase 2 already corrected a fourth: the comment at `progress.rs:228` claimed the live set is read first, after the sampling order had been reversed underneath it. It is not this phase's to fix.
-
-The shim's `cleanup()` does `rm -f "$log"` with `trap cleanup EXIT`, and `trap 'exit 130' INT` / `trap 'exit 143' TERM` route signals through it, so a run takes its log with it and a cancelled Actions job — which takes SIGTERM first — cleans up after itself. What survives is the logs of runs **killed outright**. Correct both wrong comments; the claim was read as a sizing input and produced a CI log-growth estimate wrong by orders of magnitude.
-
-The scan rate this file reasons with is also wrong in one place: the worker sleeps 250 ms **after** completing each scan (`processes.rs:380`), so the frequency is `1 / (0.250 + scan_seconds)` — at most four per second, not exactly four.
+- `RootScan::open` opens a capture root through directory handles — root, then `state`, then `pids`, each relative to the previous handle with `RDONLY | DIRECTORY | NOFOLLOW | CLOEXEC` — and samples the log inventory before it opens or samples registrations.
+- `RootScan::access` returns `RootAccess::Owned | Foreign`, granting the cleanup capability only when root continuity holds across scans, both enumerations (`Enumeration::{Complete, Incomplete, Failed}`) are complete, the root and its `state`/`pids` directories are owned by the effective user with no group or other write bit, and revalidation succeeds.
+- `DirectoryIdentity::exclusive_owner` applies one ownership rule on every platform — owner is the effective user and neither group nor other may write — and documents in a comment that a macOS ACL can grant write access without changing those bits.
+- `effective_user()` caches its first result in a `OnceLock`, retaining a failed read as `EffectiveUser::Unavailable` so a transient failure is never retried into a sweep.
+- `ScanEntry::read_log` and `read_registration` replace the former `tail`, reading through the directory handle under `Read::take` byte caps.
+- `live_runs` returns `LiveRegistrations { generations: HashMap<u32, HashSet<RegistrationGeneration>>, evidence: RegistrationEvidence }`, separating the live set from whether the evidence authorizes deletion; `RegistrationEvidence::Incomplete` withholds the sweep while every successfully sampled reading is still retained and displayed.
+- `Capture` stores per-scan `readings`; `Capture::read` is a map lookup that performs no filesystem access, so a capture referenced by many rows is read once per scan.
+- `Capture::take_roots` establishes one removal allowance shared across every owned root for a scan, counting registrations, logs, and recognized staging files together, replacing the earlier per-root budget reset.
+- `.tmp` staging files are recognized during enumeration and counted against the sweep budget; nothing in this phase deletes them.
 
 **Files:**
-- `crates/cargo-tile/src/capture_root.rs` — **new**: the root access layer. Root open, the ownership check, `openat` traversal, bounded entry reads, and the `OwnedRoot<'scan>` / `ForeignRoot<'scan>` capability types. One file, not a directory module — it has no submodules, and `self_named_module_files` is denied.
-- `crates/cargo-tile/src/progress.rs` — `root()`, `live_runs`, `take_from`, `discard`, `tail` rewired onto the layer; the budget threaded; the three doc corrections
-- `crates/cargo-tile/Cargo.toml` — one line: `rustix = { workspace = true, features = ["fs"] }`. `rustix 1.1.4` is already in `[workspace.dependencies]`, so there is no version to choose; `unsafe_code = "deny"` is why this is `rustix` and not `libc`.
-- `crates/cargo-tile/src/main.rs` — the `mod` declaration for the new module
+- `crates/cargo-tile/src/capture_root.rs` — new: the root access layer — directory-handle traversal, the ownership rule, enumeration outcomes, bounded reads, and the sweep
+- `crates/cargo-tile/src/progress.rs` — the reader rewired onto that layer: `root()`, `live_runs`, `take_roots`, per-scan `readings`
+- `crates/cargo-tile/src/constants.rs` — the access layer's own limits and the corrected `CAPTURE_SWEEP_LIMIT` sizing comment
+- `crates/cargo-tile/src/main.rs`, `Cargo.toml` — the `mod capture_root` declaration and `rustix = { workspace = true, features = ["fs"] }`
 
-**Seats:** 2 writers + 0 testers + reserve — there are two independent halves here, not three: the new access module with the manifest and module declaration it needs, and the `progress.rs` rewiring onto it. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`. A third writer would be waiting to enter a file one of the other two already holds.
-- `impl` — `crates/cargo-tile/src/capture_root.rs` and its inline `#[cfg(test)]` tests, `crates/cargo-tile/src/constants.rs` (the access layer's own limits, and the `CAPTURE_SWEEP_LIMIT` documentation this phase changes); hub: `crates/cargo-tile/src/main.rs` (the `mod` line) **and** `crates/cargo-tile/Cargo.toml` (`rustix = { workspace = true, features = ["fs"] }` — `rustix 1.1.4` is already in `[workspace.dependencies]`, so this is one line and no version decision). Land both hub edits first: the second writer cannot compile until the module is declared.
-- `test` — opens as impl: `crates/cargo-tile/src/progress.rs` — `root()` (`:343`), `live_runs` (`:356`), `take_from` (`:252`), the sweep and the tail read, rewired onto the layer, plus the two stale doc corrections; writes its cases into the existing `#[cfg(test)]` module (`:594`)
-- `review` — reserve. It takes implementation ownership of a file only after an **explicit handoff** posted by the seat that holds it; "whichever half is behind" would put a second writer into a file another writer still owns. Once handed a half: `capture_root.rs` owns the symlink, FIFO, byte-cap and ownership tests; `progress.rs` owns the unavailable-versus-empty live set and the scan-local budget shared across roots.
+**Binds later work:** `RootScan::open` samples the log inventory before registrations, and the reader collects that sample into a `Vec` before consulting liveness — both orderings must survive any future scanner entry point. `live_runs`'s map carries `HashSet<RegistrationGeneration>` per pid: one pid can hold several live generations, each protecting its own log. `RootHistory`/`RootContinuity` lives in thread-local state and must stay reachable through any new scanner entry point. Staging files are recognized and budget-counted but not deletable by anything here — age cannot establish that a paused writer ended, so eligibility needs registration identity, which this layer does not evaluate. `Capture::read` still returns `Option<RunState>`, collapsing unreadable, read-with-nothing-to-report, and never-sampled into one value. Four conditions currently render identically to a healthy or empty root, with no distinct operator-facing surface yet: incomplete or failed enumeration, incomplete registration evidence, a foreign root (itself collapsing five distinct causes), and an unavailable effective-user read. The in-use `rustix` has no `sysctl` binding.
 
-Phase 2's two new files under `tests/` do not change this opening. They drive the shim as a process; the root access layer is private to the binary and unreachable from `tests/`, so there is still no test lane here and no seat can open as `test`.
+**Gotchas:** Reversing either sampling order lets a run publishing mid-scan lose its log; cargo then reopens the log outside the shim's setup subshell, under the caller's umask (`0066` on the runner units), leaving it unreadable by the operator for the rest of that run. A single failed registration read must not abandon the whole root: a cargo run exiting normally unlinks its own registration between the sample and the read, so this is the ordinary case, not an edge case — treating it as fatal would blank every neighboring run's progress whenever any build finished. `cargo-tile` has no library target, so every test for this layer is an inline `#[cfg(test)]` module inside the production file — no test can be added without holding that file. Caching the effective uid for the process lifetime is permanent: if the very first read fails, cleanup is disabled for the whole session with nothing on screen to explain why. The runner cache directories are `drwxr-x---` (group read+execute, no write), so every removal a non-owning reader attempts fails on every entry, permanently — this is the ordinary case on the runner machine, not a hypothetical.
 
-**Constraints from prior phases:**
-- Phase 2 publishes registrations under `<pid>.<generation>` filenames and logs under their existing `run-<generation>-<pid>` names. Enumeration must accept both that form and the legacy bare `<pid>`, and parse the pid as the segment before the first `.`.
-- Phase 2's staging files carry a `.tmp` suffix. The reader ignores them during enumeration. Whether this phase may also **delete** them is a pending decision below; recognizing them and counting them against the budget is this phase's either way.
-- `Capture::take_from` (`progress.rs:252`) collects the `read_dir` iterator into a `Vec<fs::DirEntry>` **before** it calls `live_runs`. Rewiring it onto the access layer must keep that boundary — the collection is the sample, and merely opening the enumeration first does not preserve it. Reversing the order recreates a live run's log as `0600`, out of the operator's reach for the whole run.
-- `live_runs` (`progress.rs:356`) returns `HashMap<u32, HashSet<RegistrationGeneration>>`. One pid can carry several generations, and every registered generation's log is protected — a signature change from the single-generation form earlier phases assumed.
-- Three tests must survive this phase unchanged in intent: `a_log_arriving_after_the_directory_sample_survives_the_pass` (inline, `progress.rs`), and the two permission-boundary cases in `tests/shim_modes.rs` and `tests/shim_registration.rs` that assert a captured log is group-readable rather than `0600`.
-- `RegistrationGeneration::Calendar(String)` accepts any nonempty filename suffix. It classifies a filename within one scan; it is not evidence of process identity, and this phase must not start treating it as such.
-
-**Pending decision: two bounds this phase does not yet have**
-
-Actual problem:
-Two things this phase touches are unbounded, and each has one obvious answer that nonetheless changes what the phase builds.
-1. **Staging-file deletion.** The acceptance gate asks the sweep to remove staging files "old enough to be swept", but age cannot establish that a paused writer ended, and the evidence that could arrives in phase 4.
-2. **The directory sample.** Phase 2 made `Capture::take_from` collect every entry of the root into a `Vec<fs::DirEntry>` before filtering. The byte caps bound what is read and `CAPTURE_SWEEP_LIMIT` bounds what is deleted; neither bounds that collection, so a root holding very many unrelated entries can exhaust the scanner — on a worker thread, which stops every row updating.
-
-What exists now:
-- `cargo-capture-shim.sh` writes `<pid>.<generation>.tmp`, publishes by hard link, then unlinks the staging name. A writer stopped between those points leaves the file behind, indistinguishable by age from one whose writer is still running.
-- This phase's Spec threads one scan-local sweep budget through registrations, logs and staging files.
-- `Capture::take_from` (`progress.rs:252`) collects the iterator before reading liveness. The collection is the sample, and the sample is what makes a running shim's log impossible to sweep.
-- Nothing reports an enumeration that was cut short.
-
-What should change:
-- Keep staging recognition and budget accounting here — enumerate the file, count it against the budget, do not delete it — and move deletion eligibility and its acceptance cases into phase 4, next to the evidence that authorizes them. Preserve any staging record that is incomplete or cannot be verified.
-- Adopt a bounded inventory that keeps the sample-before-liveness order intact: the order is the invariant, the unbounded `Vec` is not. An enumeration that hits the bound is an explicit incomplete outcome, and an incomplete enumeration must not authorize a sweep — the rule this phase already applies to a failed one. Test a root holding many unrelated entries.
-
-Recommendation:
-Move the staging deletion out and bound the sample here. Sweeping on age is the same class of defect this phase exists to remove from the log path; and deferring the bound leaves phase 2's fix carrying a way to exhaust the scanner, in the phase meant to close exactly that.
-
-**Acceptance gate:** Build, Test and Lint green. Tests for each item in the tester's line above. A test asserting one scan across two owned roots attempts at most `CAPTURE_SWEEP_LIMIT` removals in total, not that many per root — and that the budget counts every kind of removal the sweep makes together: registrations, logs, and staging files old enough to be swept. A budget counted per artifact kind is three budgets, which is what the constant exists to prevent. No test may require a second uid.
-
----
+**Ruled out:** a platform gate returning `Foreign` for every non-Linux root, since no Mac would ever sweep — one ownership rule applied uniformly replaces it. A trusted-prefix list preserving macOS `/tmp` — unnecessary once the ownership rule is uniform. Adding `rustix`'s `process` feature for `geteuid` — the effective uid comes from the `sysinfo` dependency already in use. Abandoning a capture root entirely when a single registration read fails. A `bool` marking whether the live set was complete — completeness is carried by the `RegistrationEvidence` type instead.
 
 ### Phase 4 — Registration identity: verify before it counts, and before it is deleted  · status: todo
 
@@ -529,19 +478,33 @@ A random token, an inode number and a ctime all prove only that a *file* persist
 
 *How the macOS stamp is obtained.* Both values are `sysctl`, and **`rustix` does not implement `sysctl`** — the crate lists it as unsupported at `not_implemented.rs:292`, and `rustix::system` carries only `uname`, a Linux-only `sysinfo()`, and hostname setters. `sysinfo` is already ruled out above. So `birth_stamp/macos.rs` calls `libc::sysctl` directly and is the **only** file in this plan that writes `unsafe`, under a per-item `#[allow(unsafe_code, reason = "...")]` with a `// SAFETY:` comment on each block — the escape the workspace manifest's own comment sanctions (`FFI-only; opt back in per item with a reasoned allow`). Do not shell out to `sysctl(8)` or `ps(1)` instead: the reader runs this per registration per scan at up to four scans a second, and a subprocess there is not affordable. `kern.boottime` cannot change within a boot, so read it once and cache it; `KERN_PROC_PID` is per process and read per verification. `birth_stamp/linux.rs` needs none of this — `/proc` reads are ordinary file I/O.
 
-*Units, and the macOS resolution trap.* Phase 2's shim is POSIX `sh` and can only obtain the macOS birth through `ps -o lstart= -p $$`, which has **one-second resolution**, while `p_starttime` is a `timeval` carrying microseconds. Truncate the live reading to whole seconds before comparing, and parse `lstart`'s fixed format rather than assuming a locale. The residual exposure is a pid reused inside the same second as the original registration, which is narrower than the pid-reuse window this evidence exists to close and is the best the shim side can supply. Linux has no such gap: both sides carry ticks.
+*Units, and the macOS resolution trap.* Phase 2's shim is POSIX `sh` and can only obtain the macOS birth through `ps -o lstart= -p $$`, which has **one-second resolution**, while `p_starttime` is a `timeval` carrying microseconds. Truncate the live reading to whole seconds before comparing. The residual exposure is a pid reused inside the same second as the original registration, which is narrower than the pid-reuse window this evidence exists to close and is the best the shim side can supply. Linux has no such gap: both sides carry ticks.
+
+*The stamp is normalized where it is written, not where it is read.* What phase 2 shipped on Darwin is the raw `ps -o lstart=` text, which Apple renders through `localtime` under the caller's locale, so the same instant serializes differently on two machines and the reader cannot recover the instant from the text. Reading it is not made correct by any parser, so the shim stops emitting it: field 4 becomes **a decimal integer on both platforms** — clock ticks since boot on Linux, whole epoch seconds on macOS — obtained by running both `ps` and the conversion under `LC_ALL=C` (`LC_ALL=C ps -o lstart= -p $$` through `LC_ALL=C date -j -f '%a %b %e %H:%M:%S %Y' ... +%s`), with the whole conversion inside the setup subshell so a failure yields an empty field rather than a partial one. Field 3 still says which boot the number belongs to. A record whose field 4 is anything but a decimal integer is a record written before this normalization: report it `Unknown` rather than reading it as though its format were known. Exercise a writer and a reader under differing locale and timezone settings without altering the environment cargo inherits — the conversion's environment is scoped to the conversion.
 
 Compare the live process's current stamp against fields 3 and 4 of the registration Phase 2 writes. Equal on both → the registration belongs to that process. Different → the pid was reused and the registration is stale. Either field empty, or the observation denied or incomplete → `Unknown`.
 
 *2. Three states, never two.* Model the outcome as `Confirmed | Ended | Unknown`. `Unknown` is never rendered as "running" and never authorises a deletion. A record written before this evidence existed — a legacy registration with no magic, or one whose identity fields are empty — is display-only: it may annotate a row the process table already built, and it may never source an active row.
 
-*3. The deletion rule covers logs too.* Registration enumeration and log enumeration are not one atomic snapshot. A shim can publish its registration and create its log in the interval between them; the reader then meets a log whose pid was absent from the earlier set and deletes a running capture's output. A second race survives directory-relative deletion: after inspecting `state/pids/<name>` the reader can unlink a *replacement* that has since taken that name, and re-checking the inode narrows the interval without closing it. Every artifact — logs included — needs fresh evidence its writer ended before removal, and uncertainty preserves it. Phase 2's exclusive-create publication is what closes the second race for new records — a `<pid>.<generation>` name cannot be taken while a record still holds it, so a name that reappears is provably a later record rather than a replacement of the one just inspected, and deletion by that exact full name is therefore safe; a legacy bare-`<pid>` record gets deferred cleanup rather than an immediate delete. A snapshot miss must be re-verified before any delete.
+*3. The deletion rule covers logs too.* Registration enumeration and log enumeration are not one atomic snapshot. A shim can publish its registration and create its log in the interval between them; the reader then meets a log whose pid was absent from the earlier set and deletes a running capture's output. A second race survives directory-relative deletion: after inspecting `state/pids/<name>` the reader can unlink a *replacement* that has since taken that name, and re-checking the inode narrows the interval without closing it. Every artifact — logs included — needs fresh evidence its writer ended before removal, and uncertainty preserves it. Phase 2's exclusive-create publication closes the **overwrite** race and only that one: a name cannot be taken while a record still holds it. It does not close **reuse**. One scan can verify `<pid>.<generation>`, anything can unlink it, a new invocation can publish that same name, and the first scan's delayed unlink then removes a running run's record — a calendar generation makes that collision reachable whenever a pid recurs inside one stamp resolution. So a verified name is not a licence to delete: **delete only what this scan verified and, immediately before the unlink, re-confirmed still carries the identity it verified.** Identity here is the record's own boot-and-birth pair, not the name and not the inode, so a republished record fails the re-confirmation and survives. The same rule covers logs, which carry no identity of their own and are therefore deleted only alongside the registration whose field 5 names them. *Alongside* is a constraint on the sweep's ordering and its allowance, not only on its evidence: `OwnedRoot::sweep` removes every registration before it considers any log and can spend the whole per-scan allowance on registrations, which would strand logs whose only deletion evidence — the registration naming them — has just been removed. Remove the pair together or not at all: the registration is retained until its log is gone, and a pair that does not fit in the remaining allowance is left whole for the next scan. A legacy bare-`<pid>` record gets deferred cleanup rather than an immediate delete, and a snapshot miss is re-verified before any delete.
+
+Re-confirmation narrows the interval between the final read and the unlink; it does not make the two operations atomic, because the name can be taken again inside it. Close the remaining window at the publisher instead of guarding it at the reader: a generation must not repeat, so the shim's `date +%Y%m%d-%H%M%S` suffix — one-second resolution, and therefore repeatable whenever a pid recurs inside the same second — gains a per-invocation distinguishing component that no concurrent or later invocation can reproduce. A name that is never reused makes a delayed unlink harmless by construction rather than by timing. Phase 8 builds invocation identity on this, so the value must be decided here, where the writer changes.
 
 *4. Parse the versioned record.* Read the NUL-framed fields Phase 2 defines, under the registration byte cap from Phase 3. Phase 2's inline fixtures write **empty** registration files, because nothing read them; replace them here with three kinds that exercise the parser — a valid record, a well-formed record whose identity cannot be verified, and a malformed one. Reject a malformed record individually — a bad record must not discard the other registrations and must not disturb the process-table rows that already exist. Records in the old `<cwd>\tcargo <args>` format are display-only text, since their argument boundaries cannot be recovered.
 
-*5. Bind the log to the registration's generation.* Part of this already exists and must be described before it is replaced: phase 2 shipped `RegistrationGeneration` (`progress.rs:191`) and `names_log` (`:201`), which protect every explicitly registered generation and already select the exact filename when a pid carries a single versioned registration. What phase 2 did **not** ship is any reading of the record's contents — the reader still never opens a registration body, so nothing today parses fields or verifies a stale pid. This phase replaces filename inference with verified record contents; it does not introduce generation association from nothing.
+*5. Bind the log to the registration's generation.* Part of this already exists and must be described before it is replaced: phase 2 shipped `RegistrationGeneration` (`progress.rs:189`) and `names_log` (`:199`), which protect every explicitly registered generation and already select the exact filename when a pid carries a single versioned registration. What phase 2 did **not** ship is any reading of the record's contents — the reader still never opens a registration body, so nothing today parses fields or verifies a stale pid. This phase replaces filename inference with verified record contents; it does not introduce generation association from nothing.
 
-A1's identity establishes which process owns a registration but not which log belongs to that registration's run. "Newest filename for this pid" has no correct answer during the window where a new registration exists and its log does not — the reader selects the previous run's log for a reused pid. Take the exact log basename from field 5, validate it is a single filename with no directory part, and open it relative to the inspected root. That removes foreign log enumeration and `newer()` selection for new-format records entirely. Root replacement or a generation change discards the association; a temporarily missing log is retried on the next scan while its registration stays valid; directory timestamps never decide whether that named file is reopened, since timestamp resolution is finite and a rename over an existing name can leave them equal.
+A1's identity establishes which process owns a registration but not which log belongs to that registration's run. "Newest filename for this pid" has no correct answer during the window where a new registration exists and its log does not — the reader selects the previous run's log for a reused pid. Take the exact log basename from field 5, validate it is a single filename with no directory part, and open it relative to the inspected root. That removes foreign log enumeration and `newer()` selection for new-format records entirely, and it needs a root-layer API phase 3 did not ship: `ScanEntry` (`capture_root.rs:471`) opens only entries the scan already sampled, so opening a log named by field 5 requires a validated-basename read on `OwnedRoot` that does not depend on that log appearing in the sampled inventory. Dropping the unconditional log sampling in `RootScan::open` (`capture_root.rs:135`) is part of the same change. Phase 9 additionally needs the registration's modification time as a display timestamp, and `read_registration` (`capture_root.rs:507`) returns bytes alone: return an observation carrying the bytes and the metadata read from one opened descriptor, so a record's contents can never be paired with a replacement's timestamp. Root replacement or a generation change discards the association; a temporarily missing log is retried on the next scan while its registration stays valid; directory timestamps never decide whether that named file is reopened, since timestamp resolution is finite and a rename over an existing name can leave them equal.
+
+*6. The record carries the working directory as it is, and the reader shortens it for display.* The shim collapses `$HOME` to `~` before serializing (`cargo-capture-shim.sh:206`), which makes two invocations under different `HOME` values encode two different absolute directories identically — under one account and one root, and phase 9 groups rows by directory identity. Identity is decided where it is known, so the record carries the raw absolute path and the `~` collapse becomes a transform the reader applies when it renders. `tests/shim_registration.rs` asserts the collapsed field today and changes with the writer; that assertion moves to the reader's display path, which is the one shipped phase-2 test expectation this phase alters. A phase 2 record carrying only the collapsed form is directory-identity-unavailable, never a distinct directory.
+
+Shortening is the writer's information, so serializing the raw path alone does not let the reader reproduce it. The shim collapses against the writer's `HOME`; the reader's helper (`processes.rs:1128`) collapses against the scanner's, and an owner uid does not recover a custom `HOME`. Carry the writer's home prefix as its own field beside the raw path. A record that supplies one renders `~/x`; a record that does not, or one whose prefix does not match the scanner's own, renders the absolute path rather than a `~` that would name a different directory. Phase 9's headings depend on this and its table is corrected to match.
+
+*7. Verification produces a type only verification can construct.* This phase exists to make identity provable, and a value any filename can construct is not proof: `RegistrationGeneration::Calendar(String)` (`progress.rs:189`) accepts any nonempty suffix, yet phases 8 and 9 build capture membership and display rows on it. Introduce a verified-registration type whose only constructor is a completed identity check — private fields, fallible construction, no `From<&str>` — carrying the record's parsed fields and its `Confirmed` outcome. `Ended` and `Unknown` produce no such value, which is what stops an unverified registration from reaching a row by construction rather than by discipline. Phase 8 consumes it through explicitly named direct-versus-enclosing capture relationships; phase 9 accepts it for row construction. Give the same treatment to the optional results at the external-process boundary — `CargoProcess.state`, `row()` and `cargo_split()` — where unavailable metadata, deliberate exclusion, absent capture membership and unreadable capture data all arrive today as one `None`. Four outcomes need four names, and an unreadable capture is a status this phase retains rather than collapses, which is what phase 6 renders.
+
+The same collapse begins one level lower, and fixing only the upper three leaves the information already destroyed before they see it: `Capture::read` returns `Option<RunState>` and answers `None` for a log this scan could not open, a log it read that carried no parseable progress, and a pid it never sampled at all. It is the origin of the unreadable-versus-empty ambiguity, so it changes here with the other three rather than being wrapped by them — three outcomes, named, with the read failure carried rather than discarded.
+
+Those three describe a record that exists. Whether a pid has a capture at all is a separate question, and one type cannot answer both without reintroducing the collapse: model the lookup as `Unregistered | Registered(CaptureRead)` and the read as `Progress | NoCurrentProgress | Unreadable`. Phase 6 renders the unreadable case and phase 8 consumes membership, so both consume these rather than re-deriving them. The same treatment applies to the domain optionals this phase already touches: `cargo_split` (`processes.rs:1211`) carries an inner `Option<String>` that distinguishes two argument layouts, and that distinction needs a name of its own. Replacing only the outer results leaves the contract half-applied.
 
 **Files:**
 - `crates/cargo-tile/src/birth_stamp/mod.rs` — **new**: the boot-qualified birth stamp and the platform-independent comparison. Directory form because it has submodules, which `self_named_module_files` requires.
@@ -555,11 +518,15 @@ A1's identity establishes which process owns a registration but not which log be
   `libc = "0.2.189"` is already in `[workspace.dependencies]`, so there is no version to choose, and target-gating keeps a Linux build free of a direct `libc` dependency.
 - `crates/cargo-tile/src/registration.rs` — **new**: parsing and verifying the `cargo-tile-v2` record
 - `crates/cargo-tile/src/progress.rs` — acceptance, the three-state outcome, the deletion rule, log association by basename
+- `crates/cargo-tile/src/capture_root.rs` — the validated-basename log read, the registration observation carrying bytes and metadata together, paired removal, and the allowance rule for retained staging files
+- `crates/cargo-tile/src/processes.rs` — the liveness call site, `cargo_split`'s argument-layout type, and the display-shortening helper
+- `crates/cargo-tile/src/render.rs` — the rendering matches and signatures that change with `CargoProcess.state`
+- `crates/cargo-tile/src/roster.rs` — the fixtures built on that state type
 - `crates/cargo-tile/src/main.rs` — the `mod` declarations for `birth_stamp` and `registration`
 
 **Seats:** 2 writers + 1 tester — this phase now has a real tester lane, which the original three-writer split did not. The deletion, timestamp and directory-identity work below reaches back into the shipped publisher and the shipped reader together, so those two move as one writer's set rather than two; and phase 2's files under `tests/` drive the shim as a process, which is exactly where publication, compatibility and permission behavior can be exercised independently of the crate's private items.
 - `impl` — `crates/cargo-tile/src/birth_stamp/` and its two platform submodules, `crates/cargo-tile/src/registration.rs`, `crates/cargo-tile/src/constants.rs`; hub: `crates/cargo-tile/src/main.rs` **and** `crates/cargo-tile/Cargo.toml` (the macOS-gated `libc` entry). Owns the verification interfaces and both hubs, and lands the `mod` lines for both new top-level modules first so the other writer can compile. This seat owns the only `unsafe` in the plan, so it also owns the `allow` and the `// SAFETY:` comments; a Linux-hosted delegate cannot compile `macos.rs` and must reason it through rather than iterating against the compiler.
-- `test` — opens as impl: `crates/cargo-tile/src/cargo-capture-shim.sh`, `crates/cargo-tile/src/progress.rs`, `crates/cargo-tile/src/capture_root.rs`, and the liveness call site in `crates/cargo-tile/src/processes.rs`. The publisher and the reader change together here; one writer holding both is what keeps the record format from drifting between them.
+- `test` — opens as impl: `crates/cargo-tile/src/cargo-capture-shim.sh`, `crates/cargo-tile/src/progress.rs`, `crates/cargo-tile/src/capture_root.rs`, every affected part of `crates/cargo-tile/src/processes.rs`, `crates/cargo-tile/src/render.rs`, and `crates/cargo-tile/src/roster.rs`, including their inline tests. The publisher and the reader change together here; one writer holding both is what keeps the record format from drifting between them. The state type reaches rendering and the fixtures, so those travel with it rather than being left without an owner.
 - `review` — opens as test: `crates/cargo-tile/tests/shim_registration.rs` and `crates/cargo-tile/tests/shim_modes.rs`. Exercises publication, backward compatibility with phase 2 records, and the permission invariants, against the built shim rather than against crate items.
 
 **Constraints from prior phases:**
@@ -568,33 +535,16 @@ A1's identity establishes which process owns a registration but not which log be
 - Phase 3 supplies the directory handles, the byte caps, and `OwnedRoot<'scan>`; all opens and deletions here go through them.
 - Phase 3 already added `rustix` to `crates/cargo-tile/Cargo.toml`. This phase adds only the macOS-gated `libc` entry beneath it; do not restate or alter the `rustix` line. rustix covers phase 3's file surface and **not** `sysctl`, which is why this phase reaches past it on macOS alone.
 - Phase 3's enumeration accepts both `<pid>.<generation>` and legacy bare `<pid>` filenames.
-- `live_runs` (`progress.rs:356`) returns `HashMap<u32, HashSet<RegistrationGeneration>>`: one pid, every generation registered under it. Verification replaces the *contents* of that association, not its shape.
-- `RegistrationGeneration::Calendar(String)` (`progress.rs:191`) is constructed from any nonempty filename suffix. It is a candidate, not proof — it carries neither validated calendar syntax nor process identity, which is what this phase exists to add.
-- Phase 3 may hand this phase the deletion of staging files; see the pending decision in phase 3. Recognition and budget accounting stay there either way.
+- `live_runs` (`progress.rs:402`) returns `LiveRegistrations { generations, evidence }`, where `generations` is the `HashMap<u32, HashSet<RegistrationGeneration>>` association and `evidence` records whether every published registration was readable. It already opens and reads registration bodies; what is missing is parsing, verification, and retaining the outcome. Verification replaces the *contents* of that association, not its shape, and must not discard either field.
+- `Capture.readings` holds the per-scan capture results (`scan_root:300`, `read:389`, `root:394`, `parse_state:499`, inline tests from `:631`). `tail` no longer exists; reading a log goes through `capture_root::ScanEntry::read_log` (`capture_root.rs:499`).
+- `a_disappearing_registration_preserves_sibling_readings_and_disables_cleanup` (`progress.rs:868`) must keep passing: replacing the association's contents may not discard readable siblings, and the completeness evidence stays separate from the live set.
+- `RegistrationGeneration::Calendar(String)` (`progress.rs:189`) is constructed from any nonempty filename suffix. It is a candidate, not proof — it carries neither validated calendar syntax nor process identity, which is what this phase exists to add.
+- Phase 3 recognizes `.tmp` staging files and counts them against its sweep budget but never deletes one, because age cannot establish that a paused writer ended. Deletion eligibility for a staging file belongs here, decided by the same identity evidence as every other artifact. Forward progress past one belongs here too, and it is the more pressing half: `staging_files_consume_the_shared_budget_and_remain_in_place` (`progress.rs:1362`) shows a full allowance of staging files being inspected and kept, which spends the entire per-scan allowance without removing anything. Repeated scans then repeat that inspection, so an eligible log behind them is never reached and a later owned root never receives any allowance at all. Inspecting a file that is retained is not a removal and must not draw on the removal allowance.
+- The liveness answer the sweep consumes comes from a snapshot taken before the scan begins. `processes.rs` refreshes the whole process table once at the top of each scan, then `Capture::take` answers every pid from that one snapshot, so a run starting after the refresh reads as absent and its live registration and log are swept — the failure phase 3's sample-before-liveness order exists to prevent, reintroduced one level up. Only the false-*ended* direction does damage; a false-*running* merely preserves a dead run's artifacts for one more pass. Absence from a snapshot is therefore not by itself deletion evidence: an artifact whose pid the snapshot does not list is re-verified against the live process immediately before its unlink, exactly as item 3 requires of a pid the snapshot does list. The seat holding `processes.rs` owns this alongside the reader.
 
-**Pending decision: four protocol questions phase 2's shipped record leaves open**
+**Acceptance gate:** Build, Test and Lint green. A test asserting a registration whose birth stamp does not match the live pid's is `Ended`, not `Confirmed`. A test asserting an `Unknown` outcome authorises no deletion. A test asserting a log created between the two enumerations is not swept. A deterministic regression, for registrations and for logs, that verifies a name, removes it, republishes it, and asserts the pending delete does not remove the republished artifact. A test asserting a record whose birth field is not a decimal integer is `Unknown`. A test asserting a record round-trips the raw working directory and that the `~` collapse happens on the display path. A test asserting the verified-registration type cannot be constructed from an `Ended` or `Unknown` outcome. A test asserting a legacy record annotates but never sources a row. A test asserting the comparison truncates to whole seconds on the macOS path and does not on the Linux path, written so it runs on either host. A test asserting a registration republished *after* its final identity re-confirmation and before the unlink survives — the case re-reading identity cannot close, and the one the non-repeating generation does. A test asserting two invocations of the same pid inside one second receive different generations. A test asserting the allowance is exhausted between a registration removal and its log removal leaves the pair intact rather than the log stranded, and one asserting a failed log unlink retains its registration. A test asserting repeated scans over a full allowance of retained staging files still reach an eligible log behind them and still leave allowance for a second owned root, without deleting any staging file. A test asserting a registration and its log published after the process-table refresh but before `RootScan::open` are not deleted, whether fresh verification confirms the writer or returns `Unknown`. A test asserting a named log outside the sampled inventory is opened, and one asserting a record's bytes are never paired with a replacement's timestamp. A test asserting each of the four lookup and read outcomes is distinguishable, including `Finished` while the application is still running. A test asserting a record carrying a writer home prefix that differs from the scanner's renders the absolute path rather than a `~` collapse.
 
-Actual problem:
-1. **Deletion by name is not safe yet.** This Work Order argues exclusive-create publication makes deletion by exact full name safe, because a name cannot be taken while a record holds it. That is true of overwriting and false of reuse: a scanner can verify `<pid>.<generation>`, a second scanner can remove it, a new invocation can publish the same name, and the first scanner's delayed unlink then deletes the running run's record. Item 3 leans on this claim for logs too.
-2. **The macOS birth stamp has no fixed format.** The shipped Darwin branch records unnormalized `ps -o lstart=` output (`cargo-capture-shim.sh:225`), and this Work Order says to parse its "fixed format". Apple formats that field with `%c` through `localtime`, so a writer and reader in different locales or timezones cannot compare it.
-3. **Directory identity is discarded at write time.** The shim collapses `$HOME` to `~` before serializing the working directory (`cargo-capture-shim.sh:206`), and `shim_registration.rs` asserts the collapsed field. Two invocations under different `HOME` values encode two different absolute directories identically, under one account and one root — and phase 9 must group rows by directory identity.
-4. **Verification produces no proof-bearing type.** `RegistrationGeneration::Calendar(String)` (`progress.rs:191`) accepts any nonempty filename suffix, so it carries neither validated calendar syntax nor process identity, yet phases 8 and 9 build capture membership and display rows on it.
-
-What exists now:
-- The shim publishes by hard link onto an exclusively created name (`cargo-capture-shim.sh:150`); the name is free again the moment anything unlinks it, and the generation is a calendar stamp, so a reused pid inside one stamp resolution collides by construction.
-- Records already exist carrying unnormalized `lstart` text and the `~`-collapsed directory; the reader's own side reads `p_starttime` as a locale-free `timeval`.
-- `CargoProcess.state`, `row()` and `cargo_split()` return bare optionals at the external-process boundary, where unavailable metadata, deliberate exclusion, absent capture membership and unreadable capture data all arrive as the same `None`.
-
-What should change:
-- Treat the exclusive-create argument as closing the overwrite race only, say so in item 3, and close the reuse race with evidence: delete only what this scan verified and re-confirmed still carries the identity it verified. Cover registrations and logs together, with a deterministic remove-republish-delete regression for each.
-- Define a normalized, locale-free and timezone-free serialization the shim writes for the birth stamp; report an already-written unnormalized record as `Unknown` rather than reading it as though its format were known; test differing writer and reader environments without changing the environment cargo inherits.
-- Preserve raw directory identity in the record and make the `~` collapse a display transform the reader applies; keep reading phase 2 records that carry only the collapsed form as identity-unavailable rather than as a distinct directory.
-- Produce a verified-registration type constructible only from a completed identity check; phase 8 consumes it through explicitly named direct-versus-enclosing capture relationships and phase 9 accepts it for row construction. Extend the same treatment to those three optional results — four outcomes need four names, not one `None`.
-
-Recommendation:
-Take all four. Each is a change to the record protocol, which is this phase's subject and is far cheaper to settle before phases 8 and 9 build on it. Normalize at the writer rather than parsing an unspecified locale at the reader; preserve the raw directory rather than recovering it later; and note that the proof-bearing type also settles phase 7's contract, which phases 8 and 9 currently restate as "optional CPU" and "optional managed count".
-
-**Acceptance gate:** Build, Test and Lint green. A test asserting a registration whose birth stamp does not match the live pid's is `Ended`, not `Confirmed`. A test asserting an `Unknown` outcome authorises no deletion. A test asserting a log created between the two enumerations is not swept. A test asserting a legacy record annotates but never sources a row. A test asserting the comparison truncates to whole seconds on the macOS path and does not on the Linux path, written so it runs on either host. `unsafe` appears in `birth_stamp/macos.rs` and nowhere else, each block under a `reason`-carrying `allow` and a `// SAFETY:` comment.
+`unsafe` appears in `birth_stamp/macos.rs` and nowhere else, each block under a `reason`-carrying `allow` and a `// SAFETY:` comment.
 
 ---
 
@@ -606,7 +556,7 @@ Take all four. Each is a change to the record protocol, which is this phase's su
 
 **Spec:**
 
-`root()` (`progress.rs:343`) resolves exactly one root: `CARGO_TILE_ROOT` or the `/tmp` default. It becomes a list — the reader's own root, unchanged, plus any additional roots from configuration:
+`root()` (`progress.rs:394`) resolves exactly one root: `CARGO_TILE_ROOT` or the `/tmp` default. It becomes a list — the reader's own root, unchanged, plus any additional roots from configuration:
 
 ```toml
 [capture]
@@ -621,11 +571,13 @@ roots        = ["/var/lib/hana-ci/hana-linux-1/cargo-tile",
 
 Deserialize `capture.roots` as `Vec<PathBuf>`; resolve, validate absolute, and deduplicate **once at scanner start**, not per scan. Intern the resolved roots so a root index rather than a path goes into keys.
 
-*Root-qualified capture identity.* `Capture.logs` is keyed by bare `u32`. With more than one root, two roots can hold a registration under the same pid number, so the key must carry the root as well. Qualify the capture map on the interned root index plus the pid. Do not attempt the wider identity change here — Phase 8 carries root-qualified identity through the roster, families and tiles; this phase's obligation is that two roots holding the same pid number cannot collide in the capture map.
+*Root-qualified capture identity.* `Capture.readings` is keyed by bare `u32`. With more than one root, two roots can hold a registration under the same pid number, so the key must carry the root as well. Qualify the capture map on the interned root index plus the pid. Do not attempt the wider identity change here — Phase 8 carries root-qualified identity through the roster, families and tiles; this phase's obligation is that two roots holding the same pid number cannot collide in the capture map.
 
 The interned root table stores identity only — **never** deletion authority. `OwnedRoot<'scan>` from Phase 3 borrows the scan; interning must not give it a longer life.
 
-The sweep budget from Phase 3 is already scan-local and threaded across roots; adding roots must not reset or multiply it.
+The sweep budget from Phase 3 is already scan-local and threaded across roots; adding roots must not reset or multiply it. `Capture::take_roots` (`progress.rs:285`) is where that single allowance is established, and `take_from` (`:279`) is its per-root step. Iterating roots means calling `take_roots` once with the resolved list, never calling `take_from` once per root — the latter creates one full allowance per root and undoes the bound entirely.
+
+Resolution must not lose the path the operator wrote. Phase 6 reports a configured root by the pathname from the config file, so canonicalization, deduplication and interning all retain the original string alongside the resolved path.
 
 **Files:**
 - `crates/cargo-tile/src/config.rs` — `capture.roots` on `CaptureConfig`
@@ -641,11 +593,13 @@ The sweep budget from Phase 3 is already scan-local and threaded across roots; a
 
 **Constraints from prior phases:**
 - Phase 3 supplies `OwnedRoot<'scan>` / `ForeignRoot<'scan>`, the per-scan ownership recheck, and the scan-local sweep budget. Roots are opened and classified through it.
+- Phase 3's `RootHistory` is thread-local and preserves observations between scans, which is what lets a root replaced at the same pathname suppress its first sweep. Routing the scanner through a new entry point must keep that history reachable and must keep `replacing_the_root_suppresses_its_first_sweep` and the access-recovery regressions passing unchanged.
+- Phase 3 resolves the final path component without following a symlink, and its ownership check is mode-based: owner is the effective user, and neither group nor other may write. On macOS an ACL can grant another account write access without changing those bits, and that residual exposure is documented at `capture_root.rs:333`. Both policies apply unchanged to every root in the list; a configured root does not get a weaker check for being configured.
 - Phase 4 supplies acceptance and the log association; both are per root and must not assume a single root.
 - The writer and the reader disagree today about an **empty** `CARGO_TILE_ROOT`. The shim (`cargo-capture-shim.sh:53`) treats empty as the default, and phase 2's `RootSelection::Empty` tests assert that; `root()` (`progress.rs:343`) returns an empty path for it. Resolve it one way here: unset **and** empty both fall back to the default, and the resolved root records `default` as its source in both cases. Do not preserve the disagreement into a list.
 - The runner roots this key names are `/var/lib/hana-ci/hana-linux-1/cargo-tile` and `/var/lib/hana-ci/hana-linux-2/cargo-tile`, created `0750 <runner> <runner>` by nix tmpfiles, with `CARGO_TILE_ROOT` set in each unit's environment. They are foreign to the reader and will never be swept.
 
-**Acceptance gate:** Build, Test and Lint green. Three cases for the environment variable — unset, set and empty, set and nonempty — asserting the first two resolve to the default with source `default`, and the third to the override with source `environment`. A test asserting a config with no `capture.roots` produces exactly the single root the code resolves today. A test asserting a registration under the same pid number in two roots yields two capture entries. A test asserting root resolution happens once, not per scan. A test asserting a configured root that does not exist is still present in the resolved list, carrying the source it came from, rather than being dropped — phase 6 has nothing to report about a root that was silently discarded.
+**Acceptance gate:** Build, Test and Lint green. Three cases for the environment variable — unset, set and empty, set and nonempty — asserting the first two resolve to the default with source `default`, and the third to the override with source `environment`. A test asserting a config with no `capture.roots` produces exactly the single root the code resolves today. A test asserting a registration under the same pid number in two roots yields two capture entries. A test asserting root resolution happens once, not per scan. A test asserting a configured root that does not exist is still present in the resolved list, carrying the source it came from, rather than being dropped — phase 6 has nothing to report about a root that was silently discarded. A test asserting the resolved entry retains the pathname as configured, not only its canonical form. A test asserting two roots share one per-scan removal allowance rather than receiving one each.
 
 ---
 
@@ -678,37 +632,40 @@ Use specific wording rather than a boolean: `readable — no active captures`, `
 - `crates/cargo-tile/src/terminal.rs` — `drain_scans` redraws when root status changes
 - `crates/cargo-tile/src/settings.rs` — the read-only rows, rendered from retained observations only
 - `crates/cargo-tile/src/app.rs` — holds the retained root status the overlay reads. The Delegation Context lists this file as read-only for the plan; this phase is the exception, because a status `settings.rs` may not read from disk has to reach it through `App`
+- `crates/cargo-tile/src/capture_root.rs` — owner identity reported separately from cleanup eligibility, with path-qualified refusal reasons in place of one private `Foreign`
 - `crates/cargo-tile/src/constants.rs` — the status strings
+- `crates/cargo-tile/tests/cli_lifecycle.rs` — **new**: the built-binary lifecycle check, against fixture-only toolchain and root environments
 
-**Seats:** 3 writers + 0 testers — splits by file: producing the diagnostics, propagating a redraw, and rendering the rows. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`.
-- `impl` — `crates/cargo-tile/src/processes.rs` **and `crates/cargo-tile/src/progress.rs`** — root status on `Scan`, and the read outcomes that status is built from; hub: `crates/cargo-tile/src/processes.rs` (the `Scan` status type the other two read)
-- `test` — opens as impl: `crates/cargo-tile/src/terminal.rs` — `drain_scans` (`:401`) redraws when root status changes even though the command groups did not; writes into the existing `#[cfg(test)]` module (`:670`). **Also `crates/cargo-tile/src/app.rs`**, which has to hold the retained root status for `settings.rs` to read: the Delegation Context lists `app.rs` as read-only for this plan, and this phase is the exception
-- `review` — opens as impl: `crates/cargo-tile/src/settings.rs` — the read-only rows off `rows(app)` (`:98`), plus `crates/cargo-tile/src/constants.rs` for the status strings. **This seat must not introduce filesystem access**: `settings.rs` performs none today, and every value it shows comes from what the scan already retained on `app`.
+**Seats:** 2 writers + 1 tester — the crate is binary-only and its unit tests are inline `#[cfg(test)]` modules inside the files being edited, so the two writers each write the inline tests for the files they own. The tester lane is real here even so: this phase's CLI gate drives the **built binary** as a process, which needs no crate items, and `tests/shim_registration.rs:39` already demonstrates that shape.
+- `impl` — `crates/cargo-tile/src/capture_root.rs`, `crates/cargo-tile/src/progress.rs`, `crates/cargo-tile/src/processes.rs`, `crates/cargo-tile/src/terminal.rs` and `crates/cargo-tile/src/app.rs`, with their inline tests — producing the diagnostics and carrying them to the screen: the split classification, the read outcomes behind it, root status on `Scan`, the `drain_scans` (`:401`) redraw when status changes while the command groups do not, and the retained status `App` holds. The Delegation Context lists `app.rs` as read-only for this plan and this phase is the exception. Hub: `crates/cargo-tile/src/processes.rs` (the `Scan` status type the renderer reads). Producing a diagnostic and transporting it are one change; splitting them across two writers puts the same type on both lines.
+- `test` — opens as impl: `crates/cargo-tile/src/settings.rs` — the read-only rows off `rows(app)` (`:98`) — plus `crates/cargo-tile/src/constants.rs` for the status strings, and the rendering tests for both. **This seat must not introduce filesystem access**: `settings.rs` performs none today, and every value it shows comes from what the scan already retained on `app`.
+- `review` — opens as test: `crates/cargo-tile/tests/cli_lifecycle.rs`, new, exercising the built binary against isolated toolchains. Owns the `install` / `status` / shim / `uninstall` gate below end to end, and claims no writer file.
 
 **Constraints from prior phases:**
 - Phase 5 supplies the resolved, deduplicated, interned root list and the `default` / `environment` / `config` distinction.
-- Phase 3 supplies per-scan ownership and enumeration outcomes, including the unavailable-versus-empty live set that `permission denied: state/pids` and `partial` report.
+- Phase 3 supplies per-scan ownership and enumeration outcomes, including the unavailable-versus-empty live set that `permission denied: state/pids` and `partial` report. It produces **five distinct refusal conditions that today all look identical to an empty root**, and this phase owes each one its own wording:
+  - an enumeration that failed or reached its bound (`Enumeration::{Failed, Incomplete}`, `capture_root.rs`) — the root is readable but the list is short, so runs are missing and nothing is ever cleaned up;
+  - a registration inventory that was incomplete even though directory enumeration succeeded (`RegistrationEvidence::Incomplete`, `progress.rs`) — every run displays, and cleanup silently stops;
+  - a root genuinely owned by another account — readable, read-only, and correct; there is nothing for the operator to fix;
+  - a root the operator *can* fix, whose mode bits grant group or other write — indistinguishable from the previous case today, and the only one worth acting on;
+  - an effective-user read that failed. `effective_user()` (`capture_root.rs:677`) caches its first result in a `OnceLock` **including the failure**, so one failed read at startup disables cleanup for the entire session with no retry. This one is new as of phase 3's repair round and currently has no surface anywhere — it is the condition most likely to be reported as "it just stopped tidying up".
 
-**Pending decision: who owns the unreadable-capture diagnostic, and how the evidence reaches this phase**
+  `RootScan::access` (`capture_root.rs:206`) collapses all five into one private `RootAccess::Foreign`, so that value cannot become the displayed classification and this phase cannot render the list above without changing it. Split the two questions the name currently conflates: who owns the root, and whether this scan may delete in it. Report the reason path-qualified — the failing directory named, not the root alone — so `permission denied: state/pids` says which directory. That makes `capture_root.rs` and its inline tests this phase's to edit.
 
-Actual problem:
-This phase must tell an operator why a root is producing nothing, but the information it needs is destroyed before it arrives. `tail()` and `Capture::read()` (`progress.rs:332` onward) erase every read failure into `None`, so an unreadable log and a healthy capture with nothing to report are the same value by the time this phase sees them. The phase 2 retrospective named a backlog item as the owner of this surface; no such item exists, and the plan does not otherwise assign it.
+*An unreadable capture is a status, not an absence.* Reading a log and `Capture::read()`
+erase every read failure into `None`, so a log the reader cannot open and a healthy capture with
+nothing to report arrive here as the same value. This phase owns the operator surface for that:
+name the affected root and log, say the access failed, and keep a registration that cannot be
+verified distinct from a root that is genuinely empty. It is the visible face of the `0600` failure
+the capture ordering exists to prevent — when it does happen the operator sees nothing at all and is
+left to find it with `cat`.
 
-What exists now:
-- A capture log the reader cannot open is indistinguishable from one that is simply empty.
-- This is the operator-visible face of the `0600` failure phases 2 and 3 exist to prevent: when it does happen, the operator sees nothing and is left to find it with `cat`.
-- Phases 3 and 4 both touch these read paths and neither is currently required to preserve the outcome.
+This requires the earlier phases to stop discarding the outcome: the hardened access layer and the
+identity verification both retain read failures and carry them to the scan rather than collapsing
+them, and the invocation-identity phase consumes those retained outcomes when it adds its
+once-per-scan capture cache instead of re-deriving them. Their Work Orders carry that requirement.
 
-What should change:
-- Phases 3 and 4 retain read failures instead of collapsing them, and carry them to the scan.
-- This phase owns the operator surface: name the affected root and log, say the access failed, and distinguish a registration that cannot be verified from a root that is genuinely empty.
-- Phase 8 consumes the same retained outcomes when it adds its cache, rather than re-deriving them.
-- Test recovery — an unreadable log that becomes readable — and a redraw on that transition with command groups unchanged.
-
-Recommendation:
-Assign it here and add the retention requirement to phases 3 and 4. This phase's Goal already promises the operator can see "why one is producing nothing", and today it cannot answer that for the one cause most likely to occur.
-
-**Acceptance gate:** Build, Test and Lint green. A test asserting `settings::rows` performs no filesystem access. A test asserting a root whose status changes while the command groups do not still requests a redraw. A test asserting a configured root that is missing at first and appears later changes its displayed status, with the command groups unchanged across both scans. A test asserting an empty `CARGO_TILE_ROOT` displays the default as its source, not the environment. A test per status string.
+**Acceptance gate:** Build, Test and Lint green. A test asserting `settings::rows` performs no filesystem access. A test asserting each of the five refusal conditions above — a short or failed enumeration, an incomplete registration inventory behind a complete directory enumeration, a genuinely foreign read-only root, a root whose mode bits the operator can fix, and an unavailable effective user — renders wording distinct from one another and from a root that is genuinely empty. A test asserting the effective-user wording says cleanup is disabled for the session and that restarting is what retries it, since nothing else will. A test asserting a permission failure names the directory that failed, not only the root. A test asserting a root whose status changes while the command groups do not still requests a redraw. A test asserting a configured root that is missing at first and appears later changes its displayed status, with the command groups unchanged across both scans. A test asserting an empty `CARGO_TILE_ROOT` displays the default as its source, not the environment. A test asserting a log the reader cannot open displays an access failure rather than an empty root, and that it returns to a normal status once readable, requesting a redraw on that transition with the command groups unchanged. A test asserting a registration that cannot be verified is distinct from a root with nothing in it. A test per status string.
 
 An end-to-end CLI check also lands here, and it is the one phase 2 deferred: run the built binary against a fixture-only `RUSTUP_HOME`, `HOME` and `CARGO_TILE_ROOT`, and assert `install`, `status`, a shim execution, and `uninstall` restoring what was moved aside. `rustup_home()` (`hook.rs:323`) honours `RUSTUP_HOME` and the existing hook tests already build isolated toolchains, so this needs no second machine and must never touch a real toolchain. Phase 2's two files under `tests/` drive the shim as a process and do not cover this.
 
@@ -732,9 +689,13 @@ An end-to-end CLI check also lands here, and it is the one phase 2 deferred: run
 - Give compiler observation three states: `Unknown | None | Running`.
 - Preserve availability **through collection and smoothing**, not by restoring it at the row.
 
+*Availability has to come from somewhere, and today it is destroyed before the types could carry it.* `Census::take` (`processes.rs:607`) receives a plain `f32`. On macOS sysinfo initialises a process's CPU usage to zero (`sysinfo-0.39.6/src/unix/apple/macos/process.rs:57`) and its task-info reader discards the syscall result (`:336`), so a failed measurement and a genuinely idle process both arrive as `0.0` and no type introduced downstream can separate them. Establish the distinction where the sample is collected, using evidence already available and without reaching for a platform syscall: `Process::accumulated_cpu_time()` is total CPU consumed, and a process with a nonzero `run_time()` that reports **zero accumulated CPU time** has not been measured rather than been idle. Treat that pairing as unavailable; a zero rate against nonzero accumulated time is a measured zero and renders as one. A process observed for the first time is unavailable too — a rate needs two samples — and that is a separate reason from a failed read, so name both. This keeps the plan's rule that `birth_stamp/macos.rs` is the only file writing `unsafe`; no additional probing is introduced.
+
 An `Option` at the row is not sufficient on its own. The group total sums the members it can read and silently skips the ones it cannot, so a group holding an unknown contributor reports a figure lower than reality and indistinguishable from a measured one. **An unknown contributor makes the group total unknown.** Smoothing must stop publishing its previous value once a sample goes unavailable, rather than holding the last reading indefinitely.
 
-Reach: `Census::take`, `CpuSmoothing`, `Roster::assign_families` (the `managed > 0` test), and three call sites in `render.rs`.
+`CpuSmoothing::taken` (`processes.rs:518`) is itself one of the optionals this phase exists to remove: it distinguishes a smoother that has never published from one holding a previous reading, and those are different states with different consequences once a sample can go unavailable. Give it a name rather than an `Option`.
+
+Reach: `Census::take` (`:607`), `CpuSmoothing` (`:508`), `Roster::assign_families` (the `managed > 0` test), and three call sites in `render.rs`.
 
 An active runner must never read `0%` because the value could not be read. This phase lands before the registration-sourced row so that row can be built on the optional types from the start rather than converted afterwards.
 
@@ -749,9 +710,11 @@ An active runner must never read `0%` because the value could not be read. This 
 - `test` — opens as impl: `crates/cargo-tile/src/render.rs` — how an unavailable value renders wherever a total or a per-row figure is drawn; writes into the existing `#[cfg(test)]` module (`:2009`). **The Work Order previously named three CPU/managed summations in this file; they are not here** — the arithmetic is in `processes.rs` and this seat renders its result
 - `review` — opens as impl: `crates/cargo-tile/src/roster.rs` — `assign_families` (`:382`) compares `managed > 0` directly and its inline fixtures construct measurements by hand, so both change with the type; writes into the existing `#[cfg(test)]` module (`:439`)
 
-**Constraints from prior phases:** none binding — this phase is independent of the capture work and touches no root, registration, or shim code.
+**Constraints from prior phases:**
+- None binding from the capture work — this phase touches no root, registration, or shim code, and can run independently of phases 4 through 6.
+- The plan permits `unsafe` in `birth_stamp/macos.rs` alone, under a per-item reasoned `allow`. This phase adds none: the availability distinction above is drawn from sysinfo values the crate already collects.
 
-**Acceptance gate:** Build, Test and Lint green. A test asserting an unavailable CPU sample renders as unavailable rather than `0%`. A test asserting a group total containing an unknown contributor is unknown. A test asserting `CpuSmoothing` stops publishing a stale value.
+**Acceptance gate:** Build, Test and Lint green. A test asserting an unavailable CPU sample renders as unavailable rather than `0%`. A test asserting a group total containing an unknown contributor is unknown. A test asserting `CpuSmoothing` stops publishing a stale value. Three tests at the collection boundary, distinguishing a first observation, a failed measurement, and a measured zero from one another. A test asserting a reading that becomes unavailable before the next smoothing publication is published as unavailable rather than as the retained previous value. A test asserting a never-published smoother is distinguishable from one holding a previous reading.
 
 ---
 
@@ -767,7 +730,11 @@ An active runner must never read `0%` because the value could not be read. This 
 
 Carry a stable captured-invocation identity of root, shim pid and run generation through capture lookup, deduplication, roster and tiles, with the **displayed** pid kept separate from the identity.
 
-*2. Identity is not membership.* One capture legitimately supplies progress to several invocations — the shim skips nested captures on purpose — so giving every associated row the same run identity merges distinct commands into one. Model it as `InvocationId::Captured(RunId) | Process(ProcessIdentity)`. Only the invocation a registration **directly** represents takes the working directory and arguments from it; a nested invocation keeps its own identity and merely references the enclosing `RunId`.
+*A generation is a filename, not a lifetime.* `RegistrationGeneration::Calendar(String)` (`progress.rs:189`) is arbitrary suffix text produced by a second-resolution stamp in the shim (`cargo-capture-shim.sh:150`), so `(root, shim pid, generation)` can repeat across two genuinely different processes whenever a pid recurs inside one second. Phase 4 makes that suffix non-repeating and supplies the boot-qualified birth stamp; qualify `RunId` and `ProcessIdentity` by that verified process lifetime rather than by the filename, and define root replacement as invalidating every retained association keyed on it. `CpuSmoothing`'s history (`processes.rs:508`) is keyed on the bare pid and belongs in the same migration — otherwise a reused pid inherits the previous invocation's smoothed CPU.
+
+*2. Identity is not membership.* One capture legitimately supplies progress to several invocations — the shim skips nested captures on purpose — so giving every associated row the same run identity merges distinct commands into one. Model it as `InvocationId::Captured(RunId) | Process(ProcessIdentity)`. Only the invocation a registration **directly** represents takes the working directory and arguments from it; a nested invocation keeps its own identity and merely references the enclosing `RunId`. That reference is itself a membership question with two named answers, not an `Option<RunId>`: a row either sits inside an enclosing capture or does not, and the second is not a missing value.
+
+`drawn_parent` (`processes.rs:807`) has the same shape today — an optional pid standing for both "no visible parent" and "the parent is not drawn" — and gains a named visible-parent type in this phase alongside the identity it keys on.
 
 One `RunId` inside `Captured` cannot carry both of those relationships: the same value would mean "this registration describes me" for one row and "I ran underneath that registration" for another, and every consumer would then re-derive which it is holding. Give the direct case its own type — a registration that Phase 4 verified, holding the working directory and arguments it is allowed to supply — and let membership in an enclosing capture be a separate field that carries only the `RunId` it is nested under. Row creation in Phase 9 takes the verified-registration type and nothing else, so a nested invocation cannot reach the fields it must not inherit, and no row-building path needs a runtime check to keep the two apart.
 
@@ -775,19 +742,17 @@ One `RunId` inside `Captured` cannot carry both of those relationships: the same
 
 *4. Membership is resolved before progress is parsed.* `captured_run` (`processes.rs:918`) establishes association only when parsing yields a `RunState`, so a valid registration whose log has printed nothing yet reads as no association at all. Resolve membership independently of progress parsing.
 
-*5. Read each capture once per scan.* Every row calls `captured_run`, and every hit opens, stats, seeks, reads and parses the log again — ten rows sharing one capture at the full tail cap read and parse 640 KiB per scan, and rows from the same scan can disagree about progress because they read at different instants. Phase 3's hardened open would repeat on each of those reads. Resolve membership through the identity above, read each referenced capture **once per scan** into the scan's capture data — caching the unsuccessful reads too — and copy the resulting outcome into matching rows; `RunState` is already `Copy`. One stored result per capture, and no cache needing invalidation across scans.
+*5. Consume the scan's capture results; do not build a second cache.* This item asked for a once-per-scan read because every row was believed to reopen its log. **Phase 3 already shipped that.** `Capture::scan_root` (`progress.rs:300`) reads each selected log during the scan and stores the result; `Capture::read` (`:389`) is a map lookup documented as performing no later filesystem access, and `captured_run` (`processes.rs:918`) walks parents over that lookup alone. `a_capture_keeps_its_reading_without_reopening_a_replaced_log` (`progress.rs:1016`) holds it in place. There is no per-row I/O left to remove and no new cache to add here.
 
-What the cache stores is a named capture-read outcome, not `Option<RunState>`. Three things happen when a capture is read and the rows need to tell them apart: progress was parsed, the read succeeded but there is **no current progress**, and the read itself did not succeed. A bare `None` collapses the last two, so a row cannot distinguish them without asking the filesystem again, which is the per-row read this item removes.
-
-Name the middle one for what it means, not for when it happens. `parse_state` (`progress.rs:457`) returns nothing in three quite different situations: an empty log, ordinary output carrying no counter, and — the one that misleads — a run that has already printed `Finished` while its `cargo run` application is still alive and still the row's subject. "Nothing printed yet" describes only the first and would make the third read as a run that never started. Name the three outcomes in the type the scan stores, and let the row decide what to display from the outcome rather than from an absence.
+What remains is consumption. Phase 4 names the lookup and read outcomes — `Unregistered | Registered(CaptureRead)` over `Progress | NoCurrentProgress | Unreadable`. Rows built here read those outcomes and must not re-derive them or collapse them back into an absence. `NoCurrentProgress` is named for what it means rather than for when it happens: `parse_state` (`progress.rs:499`) yields nothing for an empty log, for ordinary output carrying no counter, and — the one that misleads — for a run that has printed `Finished` while its `cargo run` application is still alive and still the row's subject. "Nothing printed yet" describes only the first. A capture that has no process-table row at all keeps its unreadable status visible, because phase 6 reports it before phase 9's fallback rows exist.
 
 *6. Order within the scan.* Verify registrations against Phase 4's evidence, prune, establish direct association, resolve each invocation's command, and only then decide row eligibility.
 
 *7. Exclusion applies to one set only.* `commands.excluded` prunes the process row at `processes.rs:440`, but the shim's hardcoded skip list covers only `metadata`/`tile`/`port`/`berth` and friends — a user-configured `excluded = ["clippy"]` still gets a registration. "No process-table row" therefore includes rows removed **on purpose**, and Phase 9's fallback would resurrect them, breaking an existing configuration contract for local captures as well as CI ones. Apply exclusion to both sources before fallback selection and attribution, keep deliberate exclusion distinct from unavailable metadata, and apply it **only** to the row-owning and attribution set — never to `Census.parents` and never to the capture liveness set, or an excluded live capture becomes a sweep candidate and loses artifacts it is still writing.
 
 **Files:**
-- `crates/cargo-tile/src/processes.rs` — `InvocationId`, `is_shim` (`:752`), `captured_run` (`:918`), the exclusion retain at `:440`, the liveness callback at `:462`, scan-scoped capture reads
-- `crates/cargo-tile/src/progress.rs` — capture lookup keyed by the new identity
+- `crates/cargo-tile/src/processes.rs` — `InvocationId`, `is_shim` (`:752`), `captured_run` (`:918`), the exclusion retain at `:440`, the liveness callback at `:462`, `drawn_parent` (`:807`), and `CpuSmoothing`'s pid-keyed history (`:508`)
+- `crates/cargo-tile/src/progress.rs` — capture lookup keyed by the new identity (`read:389`, `root:394`, `live_runs:402`)
 - `crates/cargo-tile/src/roster.rs` — matching (`:194`) and the family maps, both keyed on the pid today
 - `crates/cargo-tile/src/tiles.rs` — the demand and content identifiers, likewise
 - `crates/cargo-tile/src/render.rs` — the renderer entry point that still takes a pid
@@ -795,17 +760,17 @@ Name the middle one for what it means, not for when it happens. `parse_state` (`
 
   `roster.rs`, `tiles.rs` and `render.rs` are listed read-only in the Delegation Context and in this Work Order's earlier constraint. **That does not hold for this phase**: the identity these files key on is exactly what the phase replaces, so a change that stops at `processes.rs` and `progress.rs` leaves PID-based identity live in the consumers and the phase does not achieve its goal.
 
-**Seats:** 3 writers — the identity reaches further than the two files this phase originally named: `roster.rs`, `tiles.rs` and `render.rs` all still key on the pid, so a third writer takes those consumers while the other two establish the identity and the capture lookup. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`.
+**Seats:** 2 writers + 0 testers + reserve — with the capture cache removed from this phase, the identity change and the lookup it keys travel together, and the consumers form the second set. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the files it owns; neither writer's lane can open as `test`.
 - `impl` — `crates/cargo-tile/src/processes.rs` — `InvocationId`, `is_shim` (`:752`), `captured_run` (`:918`), the exclusion retain (`:440`), the liveness callback (`:462`), scan-scoped capture reads; plus `crates/cargo-tile/src/constants.rs`; hub: `crates/cargo-tile/src/processes.rs` (`InvocationId` is defined here and read by all three files). Land the type first — the other two cannot compile without it
-- `test` — opens as impl: `crates/cargo-tile/src/progress.rs` — capture lookup keyed by the new identity, and the once-per-scan read that replaces the per-row read; writes into the existing `#[cfg(test)]` module (`:594`)
-- `review` — opens as impl: `crates/cargo-tile/src/roster.rs` (matching at `:194` and the family maps), `crates/cargo-tile/src/tiles.rs` (the demand and content identifiers) and `crates/cargo-tile/src/render.rs` (the renderer entry point that takes a pid). The `is_shim` defect — two unavailable cwds comparing equal — is the highest-value single test in the phase and belongs with the `processes.rs` writer
+- `test` — opens as impl: `crates/cargo-tile/src/roster.rs` (matching at `:194` and the family maps), `crates/cargo-tile/src/tiles.rs` (the demand and content identifiers) and `crates/cargo-tile/src/render.rs` (the renderer entry point that takes a pid), including their consumer tests
+- `review` — reserve. Reviews identity lifetime and source transitions without claiming either writer's files. The `is_shim` defect — two unavailable cwds comparing equal — is the highest-value single test in the phase and belongs with the `processes.rs` writer
 
 **Constraints from prior phases:**
 - Phase 5 supplies the interned root index and the root-qualified capture map key; the identity here extends that key rather than replacing it.
 - Phase 4 supplies verification and the `Confirmed | Ended | Unknown` outcome; membership resolution consumes it and must not re-derive it.
 - Phase 7 supplies the CPU measurement, the managed-process count, and the three-state compiler observation as **named semantic types**, each distinguishing an unavailable measurement from a measured zero. Rows built here use those types directly and must not reintroduce a bare `Option` for any of the three; phase 7's Work Order names them, and this phase uses those names rather than restating them as "optional".
 
-**Acceptance gate:** Build, Test and Lint green. Unit coverage that the identity survives a source transition — the same invocation identified from a registration and from a process resolves to one identity. The complete two-scan acceptance test for the source switch itself belongs to phase 9, which is where registration-sourced rows first exist; do not write a version of it here that needs a row builder this phase does not have. A test asserting a capture referenced by many rows is read once per scan. A test asserting the three capture-read outcomes stay distinct, including a log that has printed `Finished` while its application is still running. A test asserting an excluded command produces no row but is still counted live for sweep purposes.
+**Acceptance gate:** Build, Test and Lint green. Unit coverage that the identity survives a source transition — the same invocation identified from a registration and from a process resolves to one identity. The complete two-scan acceptance test for the source switch itself belongs to phase 9, which is where registration-sourced rows first exist; do not write a version of it here that needs a row builder this phase does not have. A test asserting the lookup and read outcomes phase 4 names stay distinct where rows consume them, including a log that has printed `Finished` while its application is still running. A test asserting two invocations reusing one pid neither share a tile nor inherit each other's smoothed CPU. A test asserting a capture with no process-table row keeps its unreadable status visible. A test asserting an excluded command produces no row but is still counted live for sweep purposes.
 
 ---
 
@@ -844,7 +809,7 @@ Group on the verified account, the root identity **and** the working directory r
 **Files:**
 - `crates/cargo-tile/src/progress.rs` — the registration accessor beside `read`
 - `crates/cargo-tile/src/processes.rs` — the registration-sourced row, the per-field merge, `row()` (`:1069-1083`)
-- `crates/cargo-tile/src/render.rs` — grouping on account, root and working directory (`:1347`), the heading prefix
+- `crates/cargo-tile/src/render.rs` — grouping on account, root and working directory (`:1347`), pin selection (`:1391`), the heading prefix
 - `crates/cargo-tile/src/constants.rs` — the heading prefix's presentation literals
 
 **Seats:** 2 writers + 0 testers + reserve — phases 4 and 8 already expose verified registration data, so the accessor work that once looked like a third lane is now a few lines tightly bound to row construction and belongs with its owner. `cargo-tile` is a binary-only crate, so it has no linkable integration-test target and its tests are inline `#[cfg(test)]` modules inside the files being edited (Delegation Context → **Test lanes**). Each writer writes the inline tests for the file it owns; no seat here can open as `test`.
@@ -853,13 +818,14 @@ Group on the verified account, the root identity **and** the working directory r
 - `review` — reserve. Reviews source transitions and exclusion behaviour without taking a share of either writer's files.
 
 **Constraints from prior phases:**
-- Phase 4 supplies the parsed record: working directory, argument count and arguments as separate fields, and the `Confirmed | Ended | Unknown` outcome. Only `Confirmed` may source a row; `Unknown` and legacy records annotate only.
+- Phase 4 supplies the parsed record: the raw absolute working directory, the writer's home prefix as its own field, argument count and arguments as separate fields, and the `Confirmed | Ended | Unknown` outcome. Only `Confirmed` may source a row; `Unknown` and legacy records annotate only. The `~` collapse happens here, on the display path, and only when the record's prefix matches the scanner's own — otherwise the heading shows the absolute path rather than a `~` naming a different directory.
+- `group_by_path` (`render.rs:1347`) takes `pinned: Option<&str>` and pin selection (`:1391`) chooses by display text, so grouping identity and pin identity must migrate together. A pinned directory carries the full grouping identity — account, root and raw directory — not the rendered string; otherwise two distinct directories that render alike pin the wrong group.
 - Phase 8 supplies `InvocationId::Captured(RunId) | Process(ProcessIdentity)`, the resolved membership, the scan-scoped capture reads, and the exclusion ordering. A row may not be built for an excluded command.
 - Phase 7 supplies the CPU measurement, the managed-process count, and the three-state compiler observation as **named semantic types**. A registration-sourced row leaves all three unavailable rather than zero, and says so through those types rather than through a bare `Option`; use phase 7's names, not "optional".
 - Phase 6 supplies the owner account per root, which the heading prefix and the grouping key both use.
 - Phase 5 supplies the interned root index that qualifies the identity.
 
-**Acceptance gate:** Build, Test and Lint green. The complete two-scan source-switch acceptance test lands here, not in phase 8: one run observed from a registration on the first scan and from a process on the second keeps one tile with a stable identity, and an excluded command produces no row from either source. Two directory-identity tests, which depend on phase 4's pending decision about preserving the raw working directory: two distinct absolute directories that collapse to the same display text group as two, and grouping stays stable when a row's source changes. A test asserting a registration with no matching process-table row produces a row carrying its working directory and command. A test asserting a process row with an unavailable cwd and a matching registration renders the registration's directory while keeping the process row's pid and measured values. A test asserting two roots reporting the same `~/x` produce two headings, each prefixed with its own account. A test asserting two working directories under one account and one root produce two headings rather than one. A test asserting an `Unknown` registration sources no row.
+**Acceptance gate:** Build, Test and Lint green. The complete two-scan source-switch acceptance test lands here, not in phase 8: one run observed from a registration on the first scan and from a process on the second keeps one tile with a stable identity, and an excluded command produces no row from either source. Two directory-identity tests, on phase 4's raw working directory: two distinct absolute directories that collapse to the same display text group as two, and grouping stays stable when a row's source changes. A test asserting the intended lead directory stays first when two groups render identically, across a source transition. A test asserting a record whose writer home prefix differs from the scanner's renders an absolute heading rather than a `~` collapse. A test asserting a registration with no matching process-table row produces a row carrying its working directory and command. A test asserting a process row with an unavailable cwd and a matching registration renders the registration's directory while keeping the process row's pid and measured values. A test asserting two roots reporting the same `~/x` produce two headings, each prefixed with its own account. A test asserting two working directories under one account and one root produce two headings rather than one. A test asserting an `Unknown` registration sources no row.
 
 ### Phase 10 — A claim covers the merge it prevents, and nothing else  · status: todo
 
@@ -908,12 +874,16 @@ accumulated**:
 That is the merge-conflict surface exactly. Two properties follow, and they are
 the whole point:
 
-- **It cannot run away.** It does not grow when another run commits into the same
-  branch. It grows only as this branch accumulates work against trunk — which is
-  precisely what can conflict. This is what `phase_start..HEAD` could never give:
-  `drift/observation.rs:194` states that range "is a comparison, not an
-  authorship record", so a second run committing onto the same branch lands
-  inside the incumbent's range and widens it. `trunk..HEAD` has no such property.
+- **It is bounded by the merge, not by the run.** It grows as the branch
+  accumulates work against trunk — which is precisely what can conflict — and it
+  stops holding anything once the branch merges. It does **not** exclude another
+  run's commits, and no revision range could: `drift/observation.rs:194` states
+  that a range "is a comparison, not an authorship record", which applies to
+  `trunk..HEAD` exactly as it does to `phase_start..HEAD`. That is the intended
+  behaviour rather than a limitation. Branches are what merge, so a claim covering
+  the whole branch surface against trunk covers the conflict it exists to prevent;
+  a claim scoped to one run's own commits would leave the rest of the branch
+  unprotected while still being merged.
 - **It empties itself.** Once the branch merges, `trunk..HEAD` is empty; a clean
   worktree then derives an empty scope set, and the reservation holds nothing.
   There is no retirement verb to run, no operator step to remember, and no new
@@ -967,9 +937,11 @@ queries live in `git/reachability.rs`.
 constantly. Per live holder worktree that is one `trunk..HEAD` name-only query
 plus one status observation — the staged, unstaged and untracked paths today's
 worktree observations do not carry. Hold the cost bounded across the whole read
-rather than per reservation, and cache the derivation against the pair
-(`HEAD`, working-tree fingerprint): `drift/fingerprint.rs` already publishes such
-a fingerprint, so a recomputation happens only when something actually moved.
+rather than per reservation, and key the cache on trunk as well: `WorkingTreeFingerprint`
+(`drift/fingerprint.rs:18`) carries path sets alone, so a pair of `HEAD` and that
+fingerprint misses a trunk that moved underneath an unchanged branch and would
+serve a stale extent. The key is (trunk tip, `HEAD`, working-tree fingerprint), and
+a recomputation happens only when one of the three actually moved.
 
 *What must not regress.*
 
@@ -1039,21 +1011,14 @@ so the tester opens as `test`.
 **Constraints from prior phases:** None. This phase is independent of phases 1-9
 and may run before or after them.
 
-**Pending decision: what invalidates the derived-extent cache**
-
-Actual problem:
-The proposed cache key is `(HEAD, working-tree fingerprint)`. Neither half moves when **trunk** advances: the holder's `HEAD` is fixed and its worktree is clean, yet `trunk..HEAD` has just become empty. The cached merge extent therefore keeps covering paths the branch no longer has unmerged, and the reservation goes on refusing a different worktree work it should now allow — the exact over-holding this phase exists to end, reintroduced through the cache.
-
-What exists now:
-- `crates/cargo-berth/src/drift/fingerprint.rs:18` builds the fingerprint from path sets only; nothing in it observes trunk.
-- The phase's own reproduction test has a clean worktree on trunk deriving an empty extent — the state this cache would answer from stale data.
-
-What should change:
-- Include the resolved trunk revision in the cache key, so a merge invalidates the derived extent with no verb run and no operator step.
-- Add a test where **only** trunk changes — the holder's worktree untouched — and the next board read releases the merge extent.
-
-Recommendation:
-Add trunk to the key. The phase already promises the extent shrinks on merge with no operator step, and a cache that cannot observe the merge cannot keep that promise.
+*The cache key includes trunk.* The derived extent is cached on
+`(resolved trunk revision, HEAD, working-tree fingerprint)`. The first component is not optional
+bookkeeping: neither of the other two moves when **trunk** advances while the holder's `HEAD` stays
+fixed and its worktree stays clean, yet `trunk..HEAD` has just become empty. A key without it keeps
+covering paths the branch no longer holds unmerged, and the reservation goes on refusing another
+worktree work it should now allow — the over-holding this phase exists to end, reintroduced through
+the cache. `crates/cargo-berth/src/drift/fingerprint.rs:18` builds its fingerprint from path sets
+only and observes nothing about trunk, so this is an addition to the key rather than a change to it.
 
 **Acceptance gate:** `verify.sh check cargo-berth`, `verify.sh test cargo-berth`
 and `verify.sh lint cargo-berth` green — this phase edits no `cargo-tile` file,
@@ -1065,6 +1030,9 @@ a clean tree derives an **empty** merge extent, so a second worktree may edit
 paths that reservation previously held. A test that a reservation whose branch
 touches one crate does not come to hold a second crate through repeated drift
 answers.
+
+The cache: a test where **only** trunk changes — the holder's worktree untouched, its `HEAD`
+fixed — and the next board read releases the merge extent.
 
 The derivation: a test that a path committed on this branch and not yet on trunk
 is covered. A test that the same path stops being covered once the branch merges,

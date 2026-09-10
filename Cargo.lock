@@ -533,6 +533,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "ratatui",
+ "rustix",
  "serde",
  "sysinfo",
  "tempfile",
