@@ -65,11 +65,20 @@ use crate::constants::CAPTURE_ROOT;
 use crate::constants::CAPTURE_SHARED_MODE;
 use crate::constants::CAPTURE_STATE_DIR;
 use crate::constants::CAPTURE_SWEEP_LIMIT;
+use crate::constants::PERMISSION_BITS;
 use crate::constants::RUN_LOG_TAIL_BYTES;
 use crate::progress::CaptureFailure;
 use crate::progress::PathFailure;
 
 /// The shared parent either admits all accounts or retains why it cannot.
+/// `CAPTURE_SHARED_MODE` in the descriptor-typed form `fchmod` takes: the sticky bit plus
+/// read, write, and search for everyone. The raw mode type is narrower on macOS than on
+/// Linux, so the flags are named rather than converted from the numeric constant.
+const SHARED_DIRECTORY_MODE: Mode = Mode::SVTX
+    .union(Mode::RWXU)
+    .union(Mode::RWXG)
+    .union(Mode::RWXO);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SharedDirectoryState {
     /// No parent exists yet.
@@ -96,7 +105,7 @@ impl SharedCaptureDirectory {
         let state = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_dir() => {
                 let owner = RootOwner::Uid(metadata.uid());
-                let mode = Mode::from_raw_mode(metadata.mode()).bits();
+                let mode = metadata.mode() & PERMISSION_BITS;
                 if mode == CAPTURE_SHARED_MODE {
                     SharedDirectoryState::Shared { owner }
                 } else {
@@ -151,13 +160,13 @@ pub(crate) fn prepare_shared_directory(parent: &Path) -> io::Result<()> {
 
 /// Ownership authorizes repair; an already shared mode requires no authority.
 fn repair_shared_mode(directory: &InspectedDirectory, user: EffectiveUser) -> io::Result<()> {
-    if directory.identity.mode.bits() == CAPTURE_SHARED_MODE {
+    if directory.identity.mode == SHARED_DIRECTORY_MODE {
         return Ok(());
     }
     if !matches!(user, EffectiveUser::Known(uid) if uid == 0 || uid == directory.identity.owner) {
         return Err(ErrorKind::PermissionDenied.into());
     }
-    fchmod(&directory.handle, Mode::from_raw_mode(CAPTURE_SHARED_MODE))?;
+    fchmod(&directory.handle, SHARED_DIRECTORY_MODE)?;
     Ok(())
 }
 
