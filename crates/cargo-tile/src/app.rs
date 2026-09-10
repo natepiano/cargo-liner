@@ -24,6 +24,7 @@ use crate::favorites_overlay::FavoritesOverlay;
 use crate::favorites_overlay::FavoritesOverlayContent;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
+use crate::processes::RootStatus;
 use crate::roster::Roster;
 use crate::sccache::SccacheStats;
 use crate::tiles::TileGrid;
@@ -166,6 +167,8 @@ pub(crate) struct App {
     /// up -- an orphaned toolchain, one that refused the install --
     /// surfaced in the settings overlay once the toast has gone.
     pub(crate) capture_note:      Option<String>,
+    /// Latest worker observations; settings rendering performs no capture reads.
+    pub(crate) root_status:       Vec<RootStatus>,
     /// The commands the display is holding: what the last scan found,
     /// plus whatever has finished and is still fading out of it.
     pub(crate) roster:            Roster,
@@ -212,6 +215,7 @@ impl App {
             loaded_config,
             startup_note,
             capture_note: None,
+            root_status: Vec::new(),
             roster: Roster::new(),
             tiles: TileGrid::new(),
             sccache: SccacheStats::new(),
@@ -272,5 +276,20 @@ impl KeymapEditContext for App {
             Ok(keymap) => self.keymap = Rc::new(keymap),
             Err(error) => self.inline_error = Some(format!("keymap reload failed: {error}")),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::App;
+
+    #[test]
+    fn roots_wait_for_worker_observations() {
+        let app = App::new_for_test().expect("test app");
+        assert!(app.root_status.is_empty());
     }
 }

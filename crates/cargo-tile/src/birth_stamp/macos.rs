@@ -26,9 +26,12 @@ use crate::constants::BIRTH_SYSCTL_MAX_BYTES;
 /// Boot identity cannot change while this scanner runs; a denied read stays unknown.
 static BOOT: OnceLock<io::Result<String>> = OnceLock::new();
 
+/// The verifier and its session diagnostic share exactly one cached sysctl result.
+pub(super) fn boot() -> &'static io::Result<String> { super::cached_boot(&BOOT, read_boot) }
+
 /// Observe the requested process each time, including immediately before cleanup.
 pub(super) fn observe(pid: u32) -> Observation {
-    let Ok(boot) = BOOT.get_or_init(read_boot) else {
+    let Ok(boot) = boot() else {
         return Observation::Unknown;
     };
     let Ok(pid) = libc::c_int::try_from(pid) else {

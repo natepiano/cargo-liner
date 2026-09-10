@@ -5,13 +5,22 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 
+use std::io;
+use std::path::Path;
+use std::sync::OnceLock;
 #[cfg(any(target_os = "macos", test))]
 use std::time::Duration;
 
+use crate::constants::BIRTH_BOOT_EMPTY;
+#[cfg(target_os = "linux")]
+use crate::constants::BIRTH_BOOT_ID_PATH;
+#[cfg(target_os = "macos")]
+use crate::constants::BIRTH_MACOS_BOOT_NAME;
 use crate::constants::BIRTH_MACOS_BOOT_PREFIX;
 use crate::constants::BIRTH_MACOS_BOOT_SEPARATOR;
 use crate::constants::BIRTH_MACOS_BOOT_SUFFIX;
 use crate::constants::BIRTH_MICROSECONDS_PER_SECOND;
+use crate::progress::PathFailure;
 
 /// Process identity needs both the boot and the kernel's birth counter.
 /// This value is evidence to compare; it is not proof that a record is live.
@@ -158,6 +167,45 @@ pub(crate) fn observe(pid: u32) -> KernelObservation {
     }
 }
 
+/// Preserve a failed boot read for the session, including an empty kernel response.
+fn cached_boot(
+    cache: &OnceLock<io::Result<String>>,
+    read: impl FnOnce() -> io::Result<String>,
+) -> &io::Result<String> {
+    cache.get_or_init(|| {
+        let boot = read()?;
+        if boot.trim().is_empty() {
+            Err(io::Error::new(io::ErrorKind::InvalidData, BIRTH_BOOT_EMPTY))
+        } else {
+            Ok(boot)
+        }
+    })
+}
+
+/// Settings names the cached failure separately from a process unreadable this scan.
+pub(crate) fn boot_verification() -> Result<(), PathFailure> {
+    #[cfg(target_os = "linux")]
+    {
+        boot_read_result(linux::boot(), Path::new(BIRTH_BOOT_ID_PATH))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        boot_read_result(macos::boot(), Path::new(BIRTH_MACOS_BOOT_NAME))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Ok(())
+    }
+}
+
+/// Retain the kernel interface and original I/O cause without retrying the read.
+fn boot_read_result(boot: &io::Result<String>, path: &Path) -> Result<(), PathFailure> {
+    boot.as_ref().map(|_| ()).map_err(|error| PathFailure {
+        path:    path.to_owned(),
+        failure: io::Error::new(error.kind(), error.to_string()).into(),
+    })
+}
+
 /// Keep platform comparison inputs behind the pid-binding observation constructor.
 fn observe_process(pid: u32) -> Observation {
     #[cfg(target_os = "linux")]
@@ -199,6 +247,39 @@ mod tests {
     use crate::constants::BIRTH_MICROSECONDS_PER_SECOND;
     use crate::registration::Registration;
     use crate::registration::RegistrationVerification;
+
+    #[test]
+    fn failed_boot_read_retains_named_error_and_is_never_retried() {
+        let cache = std::sync::OnceLock::new();
+        let reads = std::cell::Cell::new(0);
+        for _ in 0..2 {
+            let boot = super::cached_boot(&cache, || {
+                reads.set(reads.get() + 1);
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            });
+            let diagnostic = super::boot_read_result(boot, std::path::Path::new("kernel/boot"))
+                .expect_err("cached boot failure");
+            assert_eq!(diagnostic.path, std::path::Path::new("kernel/boot"));
+            assert_eq!(
+                diagnostic.failure.kind,
+                std::io::ErrorKind::PermissionDenied
+            );
+        }
+        assert_eq!(reads.get(), 1);
+        let still_failed = super::cached_boot(&cache, || Ok("recovered".to_owned()));
+        assert!(still_failed.is_err());
+    }
+
+    #[test]
+    fn empty_boot_response_is_a_cached_failure_too() {
+        let cache = std::sync::OnceLock::new();
+        assert!(super::cached_boot(&cache, || Ok("  \n".to_owned())).is_err());
+        let error = super::cached_boot(&cache, || Ok("recovered".to_owned()))
+            .as_ref()
+            .expect_err("empty first boot remains invalid");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), crate::constants::BIRTH_BOOT_EMPTY);
+    }
 
     #[test]
     fn kernel_observation_verifies_only_the_pid_it_read() {

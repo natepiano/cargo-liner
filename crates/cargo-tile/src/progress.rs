@@ -43,7 +43,6 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::path::Component;
@@ -52,15 +51,19 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::birth_stamp;
+use crate::birth_stamp::IdentityEvidence;
 use crate::birth_stamp::KernelObservation;
+use crate::capture_root::CleanupRefusal;
 use crate::capture_root::Enumeration;
 use crate::capture_root::RootHistory;
+use crate::capture_root::RootOwner;
 use crate::capture_root::RootScan;
 use crate::capture_root::SweepBudget;
 use crate::capture_root::SweepDisposition;
 use crate::constants::BAR_GLYPH_FIRST;
 use crate::constants::BAR_GLYPH_LAST;
 use crate::constants::BUILD_FINISHED_MARKER;
+use crate::constants::CAPTURE_LIVE_RUNS_DIR;
 use crate::constants::CAPTURE_ROOT;
 use crate::constants::CAPTURE_ROOT_ENV;
 use crate::constants::CAPTURE_ROOT_NOT_ABSOLUTE;
@@ -79,6 +82,9 @@ use crate::constants::TEST_PHASE_MARKER;
 use crate::constants::UNIT_COUNTER_LEAD;
 use crate::constants::UNIT_COUNTER_SEPARATOR;
 use crate::constants::UNIT_COUNTER_TRAILER;
+use crate::processes::CaptureDiagnostic;
+use crate::processes::RootReadStatus;
+use crate::processes::RootStatus;
 use crate::registration::Registration;
 use crate::registration::RegistrationVerification;
 use crate::registration::VerifiedRegistration;
@@ -227,6 +233,15 @@ impl From<std::io::Error> for CaptureFailure {
             message: error.to_string(),
         }
     }
+}
+
+/// Retain the pathname at the failed operation, rather than only its root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PathFailure {
+    /// Absolute artifact path, or a kernel interface name for boot observations.
+    pub(crate) path:    PathBuf,
+    /// Original kind and message survive transport to the display thread.
+    pub(crate) failure: CaptureFailure,
 }
 
 thread_local! {
@@ -379,9 +394,11 @@ impl From<Option<OsString>> for CaptureRootEnvironment {
 /// Keep every readable generation separately from evidence completeness.
 struct RegisteredRuns {
     /// A pid can retain several ended, unknown, or confirmed generations.
-    generations: HashMap<u32, Vec<RegisteredRun>>,
+    generations: BTreeMap<u32, Vec<RegisteredRun>>,
     /// A disappearing or unreadable sibling disables cleanup for this scan.
     evidence:    RegistrationEvidence,
+    /// Failed reads and records without proof remain visible independently of rows.
+    diagnostics: Vec<CaptureDiagnostic>,
 }
 
 /// The scan's original record is the comparison target for pending removal.
@@ -442,15 +459,38 @@ enum RegistrationName<'name> {
 #[derive(Default)]
 pub(crate) struct Capture {
     /// Absence from this map differs from an accepted but unreadable capture.
-    readings:  BTreeMap<CaptureKey, CaptureRead>,
+    readings:               BTreeMap<CaptureKey, CaptureRead>,
     /// Only identity-confirmed records can supply future registration-sourced rows.
-    confirmed: Vec<ConfirmedCapture>,
+    confirmed:              Vec<ConfirmedCapture>,
+    /// One observation per effective root, including missing and invalid paths.
+    pub(crate) root_status: Vec<RootStatus>,
 }
 
 impl Capture {
     /// Verification reads the current kernel identity independently of process snapshots.
     pub(crate) fn take(roots: &CaptureRoots) -> Self {
-        Self::take_roots(roots, &birth_stamp::observe)
+        let mut capture = Self::take_roots(roots, &birth_stamp::observe);
+        capture.record_boot_verification(birth_stamp::boot_verification());
+        capture
+    }
+
+    /// Cached boot failures make unknown identities session-long without changing retention.
+    fn record_boot_verification(&mut self, verification: Result<(), PathFailure>) {
+        let Err(failure) = verification else {
+            return;
+        };
+        for status in &mut self.root_status {
+            if matches!(status.state, RootReadStatus::Readable) {
+                for diagnostic in &mut status.diagnostics {
+                    if let CaptureDiagnostic::IdentityUnknown(path) = diagnostic {
+                        *diagnostic = CaptureDiagnostic::IdentityBlockedByBoot(path.clone());
+                    }
+                }
+                status
+                    .diagnostics
+                    .push(CaptureDiagnostic::BootUnavailable(failure.clone()));
+            }
+        }
     }
 
     /// The observer is invoked again immediately before each deletion attempt.
@@ -471,14 +511,50 @@ impl Capture {
         let mut capture = Self::default();
         let mut budget = SweepBudget::default();
         for (index, root) in roots.roots.iter().enumerate() {
-            let Ok(root) = &root.path else {
-                continue;
+            let mut status = RootStatus {
+                root:         root.clone(),
+                owner:        RootOwner::Unavailable,
+                cleanup:      Vec::new(),
+                state:        RootReadStatus::Readable,
+                confirmed:    0,
+                diagnostics:  Vec::new(),
+                associations: Vec::new(),
             };
-            let Ok(scan) = ROOT_HISTORY.with_borrow_mut(|history| RootScan::open(root, history))
-            else {
-                continue;
-            };
-            capture.scan_root(CaptureRootIndex(index), &scan, observe, &mut budget);
+            match &root.path {
+                Err(failure) => status.state = RootReadStatus::Invalid(failure.clone()),
+                Ok(path) => {
+                    match ROOT_HISTORY.with_borrow_mut(|history| RootScan::open(path, history)) {
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::NotFound
+                                && matches!(
+                                    root.sources.as_slice(),
+                                    [CaptureRootSource::Default]
+                                ) =>
+                        {
+                            status.state = RootReadStatus::DefaultNotCreated;
+                        },
+                        Err(error) => {
+                            let failure = PathFailure {
+                                path:    path.clone(),
+                                failure: error.into(),
+                            };
+                            status.cleanup.push(CleanupRefusal::Access(failure.clone()));
+                            status.state = RootReadStatus::Unavailable(failure);
+                        },
+                        Ok(scan) => {
+                            status.owner = scan.owner();
+                            capture.scan_root(
+                                CaptureRootIndex(index),
+                                &scan,
+                                observe,
+                                &mut budget,
+                                &mut status,
+                            );
+                        },
+                    }
+                },
+            }
+            capture.root_status.push(status);
         }
         capture
     }
@@ -491,11 +567,14 @@ impl Capture {
         scan: &RootScan,
         observe: &impl Fn(u32) -> KernelObservation,
         budget: &mut SweepBudget,
+        status: &mut RootStatus,
     ) {
         let RegisteredRuns {
             generations,
             evidence,
+            diagnostics,
         } = registered_runs(scan, observe);
+        status.diagnostics = diagnostics;
         for (&pid, runs) in &generations {
             let key = CaptureKey { root, pid };
             for run in runs {
@@ -517,25 +596,42 @@ impl Capture {
                             registration: registration.clone(),
                             modified: run.modified.clone(),
                         });
-                        self.readings.insert(
-                            key,
-                            scan.read_log(Path::new(registration.record().log_basename()))
-                                .into(),
+                        let reading = read_named_log(
+                            scan,
+                            Path::new(registration.record().log_basename()),
+                            &mut status.diagnostics,
                         );
+                        if !matches!(reading, CaptureRead::Unreadable(_)) {
+                            status.confirmed += 1;
+                        }
+                        self.readings.insert(key, reading);
                     },
                     RegistrationVerification::Unknown => {
                         let reading = match &run.record {
-                            Registration::Versioned(record) => {
-                                scan.read_log(Path::new(record.log_basename())).into()
+                            Registration::Versioned(record) => read_named_log(
+                                scan,
+                                Path::new(record.log_basename()),
+                                &mut status.diagnostics,
+                            ),
+                            Registration::Legacy(_) => {
+                                legacy_read(scan, pid, &mut status.diagnostics)
                             },
-                            Registration::Legacy(_) => legacy_read(scan, pid),
                         };
                         self.readings.entry(key).or_insert(reading);
                     },
                 }
             }
         }
+        for outcome in scan.sampled_log_outcome() {
+            enumeration_diagnostic(outcome, scan.path().to_owned(), &mut status.diagnostics);
+        }
+        status.cleanup = scan.cleanup_refusals();
         if evidence == RegistrationEvidence::Incomplete {
+            if matches!(scan.registration_outcome(), Enumeration::Complete) {
+                status.cleanup.push(CleanupRefusal::RegistrationIncomplete(
+                    scan.registration_path(),
+                ));
+            }
             return;
         }
         scan.sweep(budget, |entry| {
@@ -594,14 +690,66 @@ impl Capture {
 }
 
 /// Legacy filenames can annotate an existing process row, but never authorize cleanup.
-fn legacy_read(scan: &RootScan, pid: u32) -> CaptureRead {
+fn legacy_read(scan: &RootScan, pid: u32, diagnostics: &mut Vec<CaptureDiagnostic>) -> CaptureRead {
     let log = scan
         .log_entries()
         .filter(|entry| log_pid(entry.name()) == Some(pid))
         .max_by(|left, right| left.name().cmp(right.name()));
     log.map_or(CaptureRead::NoCurrentProgress, |entry| {
-        entry.read_log().into()
+        let reading = CaptureRead::from(entry.read_log());
+        record_log_failure(scan, entry.name(), &reading, diagnostics);
+        reading
     })
+}
+
+/// A successful identity comparison does not hide a failed read of its named log.
+fn read_named_log(
+    scan: &RootScan,
+    name: &Path,
+    diagnostics: &mut Vec<CaptureDiagnostic>,
+) -> CaptureRead {
+    let reading = CaptureRead::from(scan.read_log(name));
+    record_log_failure(scan, name, &reading, diagnostics);
+    reading
+}
+
+/// Count each failed log path once, even when several registrations name it.
+fn record_log_failure(
+    scan: &RootScan,
+    name: &Path,
+    reading: &CaptureRead,
+    diagnostics: &mut Vec<CaptureDiagnostic>,
+) {
+    if let CaptureRead::Unreadable(failure) = reading {
+        let path = scan.path().join(name);
+        if diagnostics.iter().any(|diagnostic| {
+            matches!(diagnostic, CaptureDiagnostic::LogUnreadable(previous) if previous.path == path)
+        }) {
+            return;
+        }
+        diagnostics.push(CaptureDiagnostic::LogUnreadable(PathFailure {
+            path,
+            failure: failure.clone(),
+        }));
+    }
+}
+
+/// Directory enumeration failure is separate from a record that failed after enumeration.
+fn enumeration_diagnostic(
+    outcome: &Enumeration,
+    path: PathBuf,
+    diagnostics: &mut Vec<CaptureDiagnostic>,
+) {
+    match outcome {
+        Enumeration::Complete => {},
+        Enumeration::Incomplete => diagnostics.push(CaptureDiagnostic::EnumerationIncomplete(path)),
+        Enumeration::Failed(error) => {
+            diagnostics.push(CaptureDiagnostic::EnumerationFailed(PathFailure {
+                path,
+                failure: std::io::Error::new(error.kind(), error.to_string()).into(),
+            }));
+        },
+    }
 }
 
 /// Parse each registration independently and retain every generation's identity result.
@@ -610,19 +758,43 @@ fn registered_runs(scan: &RootScan, observe: &impl Fn(u32) -> KernelObservation)
         Enumeration::Complete => RegistrationEvidence::Complete,
         Enumeration::Incomplete | Enumeration::Failed(_) => RegistrationEvidence::Incomplete,
     };
-    let mut generations: HashMap<u32, Vec<RegisteredRun>> = HashMap::new();
-    for entry in scan.registration_entries() {
+    let mut diagnostics = Vec::new();
+    enumeration_diagnostic(
+        scan.registration_outcome(),
+        scan.registration_path(),
+        &mut diagnostics,
+    );
+    let mut generations: BTreeMap<u32, Vec<RegisteredRun>> = BTreeMap::new();
+    let mut entries: Vec<_> = scan.registration_entries().collect();
+    entries.sort_by(|left, right| left.name().cmp(right.name()));
+    for entry in entries {
+        let path = scan.path().join(CAPTURE_LIVE_RUNS_DIR).join(entry.name());
         let pid = match registration_name(entry.name()) {
-            RegistrationName::Legacy(pid)
-            | RegistrationName::Generated { pid, .. }
-            | RegistrationName::Staging { pid, .. } => pid,
+            RegistrationName::Legacy(pid) | RegistrationName::Generated { pid, .. } => pid,
+            RegistrationName::Staging { pid, .. } => {
+                diagnostics.push(CaptureDiagnostic::Staging(path.clone()));
+                pid
+            },
             RegistrationName::Unrelated => continue,
         };
-        let Ok(observation) = entry.read_registration() else {
-            evidence = RegistrationEvidence::Incomplete;
-            continue;
+        let observation = match entry.read_registration() {
+            Ok(observation) => observation,
+            Err(error) => {
+                if !matches!(
+                    registration_name(entry.name()),
+                    RegistrationName::Staging { .. }
+                ) {
+                    evidence = RegistrationEvidence::Incomplete;
+                }
+                diagnostics.push(CaptureDiagnostic::RegistrationUnreadable(PathFailure {
+                    path,
+                    failure: error.into(),
+                }));
+                continue;
+            },
         };
         let Ok(record) = Registration::parse(&observation.bytes) else {
+            diagnostics.push(CaptureDiagnostic::RegistrationInvalid(path));
             continue;
         };
         let verification = match (&record, registration_name(entry.name())) {
@@ -632,8 +804,26 @@ fn registered_runs(scan: &RootScan, observe: &impl Fn(u32) -> KernelObservation)
                 | RegistrationName::Staging { generation, .. },
             ) if record.generation() == generation => record.verify_observation(pid, &observe(pid)),
             (Registration::Legacy(_), _) => RegistrationVerification::Unknown,
-            _ => continue,
+            _ => {
+                diagnostics.push(CaptureDiagnostic::RegistrationInvalid(path));
+                continue;
+            },
         };
+        if !matches!(
+            registration_name(entry.name()),
+            RegistrationName::Staging { .. }
+        ) && matches!(verification, RegistrationVerification::Unknown)
+        {
+            diagnostics.push(match &record {
+                Registration::Legacy(_) => CaptureDiagnostic::AnnotationOnly(path),
+                Registration::Versioned(record)
+                    if matches!(record.identity(), IdentityEvidence::Unavailable) =>
+                {
+                    CaptureDiagnostic::Unverifiable(path)
+                },
+                Registration::Versioned(_) => CaptureDiagnostic::IdentityUnknown(path),
+            });
+        }
         generations.entry(pid).or_default().push(RegisteredRun {
             name: entry.name().to_owned(),
             record,
@@ -647,6 +837,7 @@ fn registered_runs(scan: &RootScan, observe: &impl Fn(u32) -> KernelObservation)
     RegisteredRuns {
         generations,
         evidence,
+        diagnostics,
     }
 }
 
@@ -922,7 +1113,362 @@ mod tests {
                 scan,
                 &|pid| KernelObservation::for_test(pid, observe(pid)),
                 budget,
+                &mut RootStatus {
+                    root:         CaptureRoot {
+                        path:    Ok(scan.path().to_owned()),
+                        sources: vec![CaptureRootSource::Default],
+                    },
+                    owner:        scan.owner(),
+                    cleanup:      Vec::new(),
+                    state:        RootReadStatus::Readable,
+                    confirmed:    0,
+                    diagnostics:  Vec::new(),
+                    associations: Vec::new(),
+                },
             );
+        }
+    }
+
+    #[test]
+    fn missing_default_only_root_stays_quiet_and_recovers_next_scan() {
+        let parent = tempdir().unwrap();
+        let root = parent.path().join("unused-default");
+        let roots = CaptureRoots {
+            roots: vec![CaptureRoot {
+                path:    Ok(root.clone()),
+                sources: vec![CaptureRootSource::Default],
+            }],
+        };
+        let first = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        assert_eq!(first.root_status.len(), 1);
+        let status = &first.root_status[0];
+        assert_eq!(status.root, roots.roots[0]);
+        assert_eq!(status.state, RootReadStatus::DefaultNotCreated);
+        assert!(status.cleanup.is_empty());
+        assert!(status.diagnostics.is_empty());
+        assert_eq!(status.confirmed, 0);
+
+        fs::create_dir_all(root.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        let second = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        assert_eq!(second.root_status.len(), 1);
+        assert_eq!(second.root_status[0].state, RootReadStatus::Readable);
+    }
+
+    #[test]
+    fn explicitly_named_missing_roots_keep_access_failures() {
+        let parent = tempdir().unwrap();
+        let root = parent.path().join("explicit-missing");
+        let environment = CaptureRootSource::Environment { path: root.clone() };
+        let configuration = CaptureRootSource::Configuration {
+            entry: 0,
+            path:  root.clone(),
+        };
+        for sources in [
+            vec![environment.clone()],
+            vec![configuration.clone()],
+            vec![CaptureRootSource::Default, environment],
+            vec![CaptureRootSource::Default, configuration],
+        ] {
+            let roots = CaptureRoots {
+                roots: vec![CaptureRoot {
+                    path: Ok(root.clone()),
+                    sources,
+                }],
+            };
+            let capture = Capture::take_roots(&roots, &|pid| {
+                KernelObservation::for_test(pid, Observation::Unknown)
+            });
+            assert_eq!(capture.root_status.len(), 1);
+            let status = &capture.root_status[0];
+            assert!(matches!(
+                &status.state,
+                RootReadStatus::Unavailable(failure)
+                    if failure.path == root
+                        && failure.failure.kind == std::io::ErrorKind::NotFound
+            ));
+            assert!(matches!(
+                status.cleanup.as_slice(),
+                [CleanupRefusal::Access(failure)]
+                    if status.state == RootReadStatus::Unavailable(failure.clone())
+            ));
+        }
+    }
+
+    #[test]
+    fn default_only_root_keeps_failures_other_than_missing() {
+        let parent = tempdir().unwrap();
+        let root = parent.path().join("default-file");
+        fs::write(&root, "not a directory").unwrap();
+        let roots = CaptureRoots {
+            roots: vec![CaptureRoot {
+                path:    Ok(root.clone()),
+                sources: vec![CaptureRootSource::Default],
+            }],
+        };
+        let capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        let status = &capture.root_status[0];
+        assert!(matches!(
+            &status.state,
+            RootReadStatus::Unavailable(failure)
+                if failure.path == root
+                    && failure.failure.kind != std::io::ErrorKind::NotFound
+        ));
+        assert!(matches!(
+            status.cleanup.as_slice(),
+            [CleanupRefusal::Access(failure)]
+                if status.state == RootReadStatus::Unavailable(failure.clone())
+        ));
+    }
+
+    #[test]
+    fn missing_root_recovers_without_resolving_again() {
+        let parent = tempdir().unwrap();
+        let root = parent.path().join("later");
+        let roots = CaptureRoots {
+            roots: vec![CaptureRoot {
+                path:    Ok(root.clone()),
+                sources: vec![CaptureRootSource::Configuration {
+                    entry: 0,
+                    path:  root.clone(),
+                }],
+            }],
+        };
+        let first = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        assert!(
+            matches!(&first.root_status[0].state, RootReadStatus::Unavailable(failure) if failure.path == root && failure.failure.kind == std::io::ErrorKind::NotFound)
+        );
+        fs::create_dir_all(root.join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
+        let second = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        assert_eq!(second.root_status[0].state, RootReadStatus::Readable);
+        assert!(second.root_status[0].diagnostics.is_empty());
+        assert!(first.readings.is_empty() && second.readings.is_empty());
+    }
+
+    #[test]
+    fn mixed_root_counts_readable_confirmed_publications_and_retains_other_artifacts() {
+        let root = capture_root();
+        let path = root.path().canonicalize().unwrap();
+        publish(&path, 10, "good", "100", CAPTURED_REDRAW);
+        let legacy = path.join(CAPTURE_LIVE_RUNS_DIR).join("11");
+        fs::write(&legacy, "/writer/project\tcargo build").unwrap();
+        let (_, unreadable) = publish(&path, 12, "denied", "100", "");
+        fs::remove_file(&unreadable).unwrap();
+        symlink("missing-target", &unreadable).unwrap();
+        let (staging, _) = stage(&path, 13, "pending", "100");
+        let capture = Capture::take_with_observations(root.path(), |_| present("100"));
+        let status = &capture.root_status[0];
+        assert_eq!(capture.confirmed.len(), 2);
+        assert_eq!(status.confirmed, 1);
+        assert!(
+            status
+                .diagnostics
+                .contains(&CaptureDiagnostic::AnnotationOnly(legacy))
+        );
+        assert!(
+            status
+                .diagnostics
+                .contains(&CaptureDiagnostic::Staging(staging))
+        );
+        assert!(status.diagnostics.iter().any(|diagnostic| matches!(diagnostic, CaptureDiagnostic::LogUnreadable(failure) if failure.path == unreadable)));
+    }
+
+    #[test]
+    fn unreadable_log_without_process_rows_recovers_on_next_scan() {
+        let root = capture_root();
+        let path = root.path().canonicalize().unwrap();
+        let (_, log) = publish(&path, 10, "live", "100", "");
+        fs::remove_file(&log).unwrap();
+        symlink("unreadable", &log).unwrap();
+        let first = Capture::take_with_observations(root.path(), |_| present("100"));
+        assert_eq!(first.root_status[0].confirmed, 0);
+        assert!(first.root_status[0].diagnostics.iter().any(|diagnostic| matches!(diagnostic, CaptureDiagnostic::LogUnreadable(failure) if failure.path == log)));
+        fs::remove_file(&log).unwrap();
+        fs::write(&log, CAPTURED_REDRAW).unwrap();
+        let second = Capture::take_with_observations(root.path(), |_| present("100"));
+        assert_eq!(second.root_status[0].confirmed, 1);
+        assert!(second.root_status[0].diagnostics.is_empty());
+    }
+
+    #[test]
+    fn legacy_and_versioned_records_report_one_shared_unreadable_log() {
+        let root = capture_root();
+        let path = root.path().canonicalize().unwrap();
+        let (registration, log) = publish(&path, 42, "live", "100", "");
+        let legacy = path.join(CAPTURE_LIVE_RUNS_DIR).join("42");
+        fs::write(&legacy, "/writer/project\tcargo build").unwrap();
+        fs::remove_file(&log).unwrap();
+        symlink("unreadable", &log).unwrap();
+
+        let capture = Capture::take_with_observations(root.path(), |_| Observation::Unknown);
+        let diagnostics = &capture.root_status[0].diagnostics;
+        let failures: Vec<_> = diagnostics
+            .iter()
+            .filter_map(|diagnostic| match diagnostic {
+                CaptureDiagnostic::LogUnreadable(failure) => Some(failure),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].path, log);
+        assert!(diagnostics.contains(&CaptureDiagnostic::AnnotationOnly(legacy.clone())));
+        assert!(diagnostics.contains(&CaptureDiagnostic::IdentityUnknown(registration.clone())));
+        assert!(matches!(
+            capture.read(capture_key(0, 42)),
+            CaptureLookup::Registered(CaptureRead::Unreadable(_))
+        ));
+        assert!(registration.exists() && legacy.exists() && log.is_symlink());
+    }
+
+    #[test]
+    fn distinct_unreadable_logs_for_one_pid_keep_separate_diagnostics() {
+        let root = capture_root();
+        let path = root.path().canonicalize().unwrap();
+        let logs: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|generation| {
+                let (_, log) = publish(&path, 42, generation, "100", "");
+                fs::remove_file(&log).unwrap();
+                symlink("unreadable", &log).unwrap();
+                log
+            })
+            .collect();
+        let capture = Capture::take_with_observations(root.path(), |_| Observation::Unknown);
+        let failures: Vec<_> = capture.root_status[0]
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| match diagnostic {
+                CaptureDiagnostic::LogUnreadable(failure) => Some(failure.path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(failures, logs);
+    }
+
+    #[test]
+    fn incomplete_registration_reads_disable_cleanup_after_complete_enumeration() {
+        let root = capture_root();
+        let path = root.path().canonicalize().unwrap();
+        let registration = path.join(CAPTURE_LIVE_RUNS_DIR).join("10.invalid");
+        symlink("missing", &registration).unwrap();
+        let capture = Capture::take_with_observations(root.path(), |_| Observation::Unknown);
+        let status = &capture.root_status[0];
+        assert!(
+            status
+                .cleanup
+                .contains(&CleanupRefusal::RegistrationIncomplete(
+                    path.join(CAPTURE_LIVE_RUNS_DIR)
+                ))
+        );
+        assert!(status.diagnostics.iter().any(|diagnostic| matches!(diagnostic, CaptureDiagnostic::RegistrationUnreadable(failure) if failure.path == registration)));
+        assert!(!status.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            CaptureDiagnostic::EnumerationIncomplete(_) | CaptureDiagnostic::EnumerationFailed(_)
+        )));
+    }
+
+    #[test]
+    fn unreadable_staging_retains_itself_without_disabling_published_pair_cleanup() {
+        let root = capture_root();
+        let path = root.path().canonicalize().unwrap();
+        let staging = path.join(CAPTURE_LIVE_RUNS_DIR).join("11.pending.tmp");
+        symlink("unreadable", &staging).unwrap();
+        let (registration, log) = publish(&path, 10, "ended", "100", "");
+        let capture = Capture::take_with_observations(root.path(), |_| Observation::Ended);
+        assert!(staging.is_symlink());
+        assert!(!registration.exists());
+        assert!(!log.exists());
+        assert!(capture.root_status[0].cleanup.is_empty());
+        assert!(
+            capture.root_status[0]
+                .diagnostics
+                .contains(&CaptureDiagnostic::Staging(staging.clone()))
+        );
+        assert!(capture.root_status[0].diagnostics.iter().any(|diagnostic| matches!(diagnostic, CaptureDiagnostic::RegistrationUnreadable(failure) if failure.path == staging)));
+    }
+
+    #[test]
+    fn permanent_missing_identity_and_temporary_kernel_uncertainty_are_distinct() {
+        let root = capture_root();
+        let path = root.path().canonicalize().unwrap();
+        let (permanent, _) = publish(&path, 10, "permanent", "", "");
+        let (temporary, _) = publish(&path, 11, "temporary", "100", "");
+        let mut capture = Capture::take_with_observations(root.path(), |_| Observation::Unknown);
+        capture.record_boot_verification(Ok(()));
+        assert_eq!(capture.root_status[0].confirmed, 0);
+        assert!(
+            capture.root_status[0]
+                .diagnostics
+                .contains(&CaptureDiagnostic::Unverifiable(permanent))
+        );
+        assert!(
+            capture.root_status[0]
+                .diagnostics
+                .contains(&CaptureDiagnostic::IdentityUnknown(temporary))
+        );
+    }
+
+    #[test]
+    fn cached_boot_failure_removes_next_scan_retry_from_retained_records() {
+        let root = capture_root();
+        let path = root.path().canonicalize().unwrap();
+        let (registration, log) = publish(&path, 10, "live", "100", CAPTURED_REDRAW);
+        let (unverifiable, _) = publish(&path, 11, "no-identity", "", "");
+        symlink(
+            "unreadable",
+            path.join(CAPTURE_LIVE_RUNS_DIR).join("12.denied"),
+        )
+        .unwrap();
+        let boot_failure = PathFailure {
+            path:    path.join("kernel-boot"),
+            failure: std::io::Error::from(std::io::ErrorKind::PermissionDenied).into(),
+        };
+
+        for _ in 0..2 {
+            let mut capture =
+                Capture::take_with_observations(root.path(), |_| Observation::Unknown);
+            let cleanup = capture.root_status[0].cleanup.clone();
+            assert!(!cleanup.is_empty());
+            let reading = capture.read(capture_key(0, 10));
+            capture.record_boot_verification(Err(boot_failure.clone()));
+
+            let status = &capture.root_status[0];
+            assert!(
+                status
+                    .diagnostics
+                    .contains(&CaptureDiagnostic::IdentityBlockedByBoot(
+                        registration.clone()
+                    ))
+            );
+            assert!(
+                status
+                    .diagnostics
+                    .contains(&CaptureDiagnostic::BootUnavailable(boot_failure.clone()))
+            );
+            assert!(
+                status
+                    .diagnostics
+                    .contains(&CaptureDiagnostic::Unverifiable(unverifiable.clone()))
+            );
+            assert!(
+                !status.diagnostics.iter().any(|diagnostic| {
+                    matches!(diagnostic, CaptureDiagnostic::IdentityUnknown(_))
+                })
+            );
+            assert_eq!(status.cleanup, cleanup);
+            assert_eq!(capture.read(capture_key(0, 10)), reading);
+            assert_eq!(status.confirmed, 0);
+            assert!(capture.confirmed().is_empty());
+            assert!(registration.exists() && log.exists() && unverifiable.exists());
         }
     }
 

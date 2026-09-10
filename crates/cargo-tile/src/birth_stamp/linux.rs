@@ -16,16 +16,17 @@ use crate::constants::BIRTH_STAT_START_INDEX;
 /// Read the boot once, retaining a denied read as uncertainty for this process.
 static BOOT: OnceLock<Result<String, io::Error>> = OnceLock::new();
 
+/// The verifier and its session diagnostic share exactly one cached boot result.
+pub(super) fn boot() -> &'static io::Result<String> {
+    super::cached_boot(&BOOT, || fs::read_to_string(BIRTH_BOOT_ID_PATH))
+}
+
 /// Read the registered shim pid, not this scanner or an intermediate child.
 pub(super) fn observe(pid: u32) -> Observation {
-    let boot = BOOT.get_or_init(|| fs::read_to_string(BIRTH_BOOT_ID_PATH));
-    let Ok(boot) = boot else {
+    let Ok(boot) = boot() else {
         return Observation::Unknown;
     };
     let boot = boot.trim();
-    if boot.is_empty() {
-        return Observation::Unknown;
-    }
     let path = Path::new(BIRTH_PROC_DIRECTORY)
         .join(pid.to_string())
         .join(BIRTH_STAT_FILENAME);

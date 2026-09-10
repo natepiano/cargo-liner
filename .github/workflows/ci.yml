@@ -343,6 +343,37 @@ jobs:
       - name: Check without the nightly escape hatch
         run: nix develop -c cargo check --workspace --exclude cargo-mend --all-targets
 
+  # cargo-tile reads process birth stamps through Darwin sysctl. Build and run
+  # its tests here so Linux's cfg selection cannot leave that reader unchecked.
+  macos:
+    name: macOS cargo-tile
+    needs: changes
+    if: needs.changes.outputs.stable_crates == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Build cargo-tile
+        run: cargo build -p cargo-tile --bins
+
+      - name: Test cargo-tile
+        run: cargo nextest run --no-fail-fast -p cargo-tile --bins --tests
+
+      - name: Lint cargo-tile
+        run: cargo clippy -p cargo-tile --bins --tests -- -D warnings
+
   # cargo-port ships to Windows users via `cargo install`, and the Unix-only
   # jobs above cannot see a `#[cfg]` mistake in a Windows code path. Compile
   # only — the test suite assumes a Unix host.
