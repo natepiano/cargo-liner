@@ -1,5 +1,6 @@
 //! Constants for `cargo-tile`.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use ratatui::style::Modifier;
@@ -110,6 +111,10 @@ pub(crate) const HELD_KEY_PRESSES_PER_STEP: u32 = 4;
 pub(crate) const CONFIG_DIRNAME: &str = "cargo-tile";
 /// App configuration file, read at startup for its `[appearance]` section.
 pub(crate) const CONFIG_FILENAME: &str = "config.toml";
+/// Additive capture discovery key, independent of the shim's write root.
+pub(crate) const CONFIG_KEY_CAPTURE_ROOTS: &str = "roots";
+/// Without additional roots the scanner reads only its own shim's root.
+pub(crate) const DEFAULT_CAPTURE_ROOTS: [PathBuf; 0] = [];
 /// Id of the built-in dark variant, and the `appearance.dark_theme`
 /// default. Defined in [`crate::theme`], not in `tui_pane`: theme
 /// content belongs to the app.
@@ -797,6 +802,8 @@ pub(crate) const CAPTURE_ROOT: &str = "/tmp/cargo-tile";
 /// Environment variable moving [`CAPTURE_ROOT`], which is what puts a
 /// second grid on captures of its own.
 pub(crate) const CAPTURE_ROOT_ENV: &str = "CARGO_TILE_ROOT";
+/// Configured roots cannot depend on the directory that launched the grid.
+pub(crate) const CAPTURE_ROOT_NOT_ABSOLUTE: &str = "capture root must be an absolute path";
 /// What separates the pid at the end of a run log's name from the
 /// timestamp in front of it.
 pub(crate) const PID_SEPARATOR: char = '-';

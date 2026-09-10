@@ -42,8 +42,11 @@
 //! build that has not reached its first unit.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -60,6 +63,8 @@ use crate::constants::BAR_GLYPH_LAST;
 use crate::constants::BUILD_FINISHED_MARKER;
 use crate::constants::CAPTURE_ROOT;
 use crate::constants::CAPTURE_ROOT_ENV;
+use crate::constants::CAPTURE_ROOT_NOT_ABSOLUTE;
+use crate::constants::CONFIG_KEY_CAPTURE_ROOTS;
 use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::PHASE_BUILDING;
 use crate::constants::PHASE_TESTING;
@@ -230,6 +235,147 @@ thread_local! {
     static ROOT_HISTORY: RefCell<RootHistory> = RefCell::default();
 }
 
+/// Stable position in the scanner's root table; it grants no filesystem authority.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct CaptureRootIndex(pub(crate) usize);
+
+/// A shim pid belongs to one root even when another root registers the same pid.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct CaptureKey {
+    /// Interned at scanner startup, without retaining an owned-root capability.
+    pub(crate) root: CaptureRootIndex,
+    /// The shim process named by the registration in this root.
+    pub(crate) pid:  u32,
+}
+
+/// Preserve the operator's pathname and its origin after root deduplication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CaptureRootSource {
+    /// Unset and empty environments both select the built-in shim root.
+    Default,
+    /// A nonempty `CARGO_TILE_ROOT` selects the reader's own shim root.
+    Environment {
+        /// Kept exactly as supplied, including relative spellings.
+        path: PathBuf,
+    },
+    /// Additional discovery roots are named by entries in `capture.roots`.
+    Configuration {
+        /// Zero-based position in the original configuration list.
+        entry: usize,
+        /// Kept exactly as configured, even when another spelling is interned first.
+        path:  PathBuf,
+    },
+}
+
+/// One interned pathname with every source that selected it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureRoot {
+    /// Absolute scan path, or a retained validation failure for later reporting.
+    pub(crate) path:    Result<PathBuf, CaptureFailure>,
+    /// Deduplication never discards the spelling needed by the settings view.
+    pub(crate) sources: Vec<CaptureRootSource>,
+}
+
+/// Root identity resolved once at scanner startup; access is rechecked each scan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureRoots {
+    /// Index order gives the reader's own root precedence over additional roots.
+    pub(crate) roots: Vec<CaptureRoot>,
+}
+
+impl CaptureRoots {
+    /// Snapshot the environment and configuration before the first process scan.
+    pub(crate) fn resolve(configured: &[PathBuf]) -> Self {
+        Self::resolve_environment(configured, env::var_os(CAPTURE_ROOT_ENV).into())
+    }
+
+    /// Keep the environment boundary separate so resolution tests need no mutation.
+    fn resolve_environment(configured: &[PathBuf], environment: CaptureRootEnvironment) -> Self {
+        let (path, source) = match environment {
+            CaptureRootEnvironment::Default => {
+                (Ok(PathBuf::from(CAPTURE_ROOT)), CaptureRootSource::Default)
+            },
+            CaptureRootEnvironment::Override(path) => (
+                std::path::absolute(&path).map_err(CaptureFailure::from),
+                CaptureRootSource::Environment { path },
+            ),
+        };
+        let mut roots = Self { roots: Vec::new() };
+        roots.intern(path, source);
+        for (entry, path) in configured.iter().enumerate() {
+            let resolved = if path.is_absolute() {
+                Ok(path.clone())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "capture.{CONFIG_KEY_CAPTURE_ROOTS}[{entry}]: {CAPTURE_ROOT_NOT_ABSOLUTE}"
+                    ),
+                )
+                .into())
+            };
+            roots.intern(
+                resolved,
+                CaptureRootSource::Configuration {
+                    entry,
+                    path: path.clone(),
+                },
+            );
+        }
+        roots
+    }
+
+    /// Resolve ancestor aliases while leaving the final component for `O_NOFOLLOW`.
+    fn intern(&mut self, path: Result<PathBuf, CaptureFailure>, source: CaptureRootSource) {
+        let path = path.map(|path| {
+            let path: PathBuf = path.components().collect();
+            match (path.parent(), path.components().next_back()) {
+                (Some(parent), Some(component)) => parent.canonicalize().map_or_else(
+                    |_| path.clone(),
+                    |mut parent| {
+                        if component == Component::ParentDir {
+                            // Resolve ancestor symlinks before applying the final `..`.
+                            parent.pop();
+                        } else {
+                            parent.push(component);
+                        }
+                        parent
+                    },
+                ),
+                _ => path,
+            }
+        });
+        if let Some(root) = self
+            .roots
+            .iter_mut()
+            .find(|root| path.is_ok() && root.path == path)
+        {
+            root.sources.push(source);
+        } else {
+            self.roots.push(CaptureRoot {
+                path,
+                sources: vec![source],
+            });
+        }
+    }
+}
+
+/// The shim treats an empty environment override just like an unset variable.
+enum CaptureRootEnvironment {
+    /// Use the built-in write root.
+    Default,
+    /// Preserve the nonempty environment pathname.
+    Override(PathBuf),
+}
+
+impl From<Option<OsString>> for CaptureRootEnvironment {
+    fn from(value: Option<OsString>) -> Self {
+        value
+            .filter(|value| !value.is_empty())
+            .map_or(Self::Default, |value| Self::Override(PathBuf::from(value)))
+    }
+}
+
 /// Keep every readable generation separately from evidence completeness.
 struct RegisteredRuns {
     /// A pid can retain several ended, unknown, or confirmed generations.
@@ -262,6 +408,8 @@ enum RegistrationEvidence {
 /// A confirmed registration retains its descriptor-bound display timestamp.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ConfirmedCapture {
+    /// Read outcomes and registration metadata must select the same root and pid.
+    pub(crate) key:          CaptureKey,
     /// Private verification construction is the only route to this proof.
     pub(crate) registration: VerifiedRegistration,
     /// Timestamp failure does not undo a successful process identity check.
@@ -294,30 +442,43 @@ enum RegistrationName<'name> {
 #[derive(Default)]
 pub(crate) struct Capture {
     /// Absence from this map differs from an accepted but unreadable capture.
-    readings:  HashMap<u32, CaptureRead>,
+    readings:  BTreeMap<CaptureKey, CaptureRead>,
     /// Only identity-confirmed records can supply future registration-sourced rows.
     confirmed: Vec<ConfirmedCapture>,
 }
 
 impl Capture {
     /// Verification reads the current kernel identity independently of process snapshots.
-    pub(crate) fn take() -> Self { Self::take_from(&root(), birth_stamp::observe) }
+    pub(crate) fn take(roots: &CaptureRoots) -> Self {
+        Self::take_roots(roots, &birth_stamp::observe)
+    }
 
     /// The observer is invoked again immediately before each deletion attempt.
+    #[cfg(test)]
     pub(crate) fn take_from(root: &Path, observe: impl Fn(u32) -> KernelObservation) -> Self {
-        Self::take_roots(&[root], &observe)
+        let roots = CaptureRoots::resolve_environment(
+            &[],
+            CaptureRootEnvironment::Override(root.to_owned()),
+        );
+        Self::take_roots(&roots, &observe)
     }
 
     /// One removal allowance covers every owned root in this pass.
-    fn take_roots(roots: &[&Path], observe: &impl Fn(u32) -> KernelObservation) -> Self {
+    pub(crate) fn take_roots(
+        roots: &CaptureRoots,
+        observe: &impl Fn(u32) -> KernelObservation,
+    ) -> Self {
         let mut capture = Self::default();
         let mut budget = SweepBudget::default();
-        for root in roots {
+        for (index, root) in roots.roots.iter().enumerate() {
+            let Ok(root) = &root.path else {
+                continue;
+            };
             let Ok(scan) = ROOT_HISTORY.with_borrow_mut(|history| RootScan::open(root, history))
             else {
                 continue;
             };
-            capture.scan_root(&scan, observe, &mut budget);
+            capture.scan_root(CaptureRootIndex(index), &scan, observe, &mut budget);
         }
         capture
     }
@@ -326,6 +487,7 @@ impl Capture {
     /// need the bounded log inventory, and none of those logs can be swept.
     fn scan_root(
         &mut self,
+        root: CaptureRootIndex,
         scan: &RootScan,
         observe: &impl Fn(u32) -> KernelObservation,
         budget: &mut SweepBudget,
@@ -335,6 +497,7 @@ impl Capture {
             evidence,
         } = registered_runs(scan, observe);
         for (&pid, runs) in &generations {
+            let key = CaptureKey { root, pid };
             for run in runs {
                 if matches!(
                     registration_name(&run.name),
@@ -345,12 +508,17 @@ impl Capture {
                 match &run.verification {
                     RegistrationVerification::Ended => {},
                     RegistrationVerification::Confirmed(registration) => {
+                        let key = CaptureKey {
+                            root,
+                            pid: registration.pid(),
+                        };
                         self.confirmed.push(ConfirmedCapture {
+                            key,
                             registration: registration.clone(),
-                            modified:     run.modified.clone(),
+                            modified: run.modified.clone(),
                         });
                         self.readings.insert(
-                            pid,
+                            key,
                             scan.read_log(Path::new(registration.record().log_basename()))
                                 .into(),
                         );
@@ -362,7 +530,7 @@ impl Capture {
                             },
                             Registration::Legacy(_) => legacy_read(scan, pid),
                         };
-                        self.readings.entry(pid).or_insert(reading);
+                        self.readings.entry(key).or_insert(reading);
                     },
                 }
             }
@@ -406,11 +574,19 @@ impl Capture {
     }
 
     /// Membership survives empty or unreadable output without claiming current progress.
-    pub(crate) fn read(&self, pid: u32) -> CaptureLookup {
+    pub(crate) fn read(&self, key: CaptureKey) -> CaptureLookup {
         self.readings
-            .get(&pid)
+            .get(&key)
             .cloned()
             .map_or(CaptureLookup::Unregistered, CaptureLookup::Registered)
+    }
+
+    /// Root precedence is deterministic when a process has registrations in several roots.
+    pub(crate) fn keys(&self, pid: u32) -> impl Iterator<Item = CaptureKey> + '_ {
+        self.readings
+            .keys()
+            .copied()
+            .filter(move |key| key.pid == pid)
     }
 
     /// Consumers receive proofs that only the registration verifier can construct.
@@ -426,12 +602,6 @@ fn legacy_read(scan: &RootScan, pid: u32) -> CaptureRead {
     log.map_or(CaptureRead::NoCurrentProgress, |entry| {
         entry.read_log().into()
     })
-}
-
-/// Resolve the shim's configured root without canonicalizing away the pathname
-/// the access layer must reopen and compare on every scan.
-fn root() -> PathBuf {
-    env::var_os(CAPTURE_ROOT_ENV).map_or_else(|| PathBuf::from(CAPTURE_ROOT), PathBuf::from)
 }
 
 /// Parse each registration independently and retain every generation's identity result.
@@ -748,6 +918,7 @@ mod tests {
             budget: &mut SweepBudget,
         ) {
             self.scan_root(
+                CaptureRootIndex(0),
                 scan,
                 &|pid| KernelObservation::for_test(pid, observe(pid)),
                 budget,
@@ -821,6 +992,327 @@ mod tests {
         }
     }
 
+    /// Explicitly name both coordinates when checking a capture observation.
+    const fn capture_key(root: usize, pid: u32) -> CaptureKey {
+        CaptureKey {
+            root: CaptureRootIndex(root),
+            pid,
+        }
+    }
+
+    #[test]
+    fn unset_root_environment_selects_default_source() {
+        let roots = CaptureRoots::resolve_environment(&[], None.into());
+        assert_eq!(roots.roots.len(), 1);
+        assert_eq!(roots.roots[0].sources, [CaptureRootSource::Default]);
+        let path = roots.roots[0].path.as_ref().unwrap();
+        assert_eq!(path.file_name(), Path::new(CAPTURE_ROOT).file_name());
+        assert_eq!(
+            path.parent().unwrap(),
+            Path::new(CAPTURE_ROOT)
+                .parent()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn empty_root_environment_selects_default_source() {
+        assert_eq!(
+            CaptureRoots::resolve_environment(&[], Some(OsString::new()).into()),
+            CaptureRoots::resolve_environment(&[], None.into()),
+        );
+    }
+
+    #[test]
+    fn nonempty_root_environment_selects_environment_source() {
+        let root = capture_root();
+        let path = root.path().to_path_buf();
+        let roots =
+            CaptureRoots::resolve_environment(&[], Some(path.clone().into_os_string()).into());
+        assert_eq!(roots.roots.len(), 1);
+        assert_eq!(
+            roots.roots[0].path.as_ref().unwrap(),
+            &path.canonicalize().unwrap()
+        );
+        assert_eq!(
+            roots.roots[0].sources,
+            [CaptureRootSource::Environment { path }]
+        );
+    }
+
+    #[test]
+    fn config_without_roots_keeps_exactly_the_readers_own_root() {
+        let config: crate::config::Config =
+            toml::from_str("[capture]\nauto_install = false\n").unwrap();
+        let root = capture_root();
+        let roots = CaptureRoots::resolve_environment(
+            &config.capture.roots,
+            CaptureRootEnvironment::Override(root.path().to_owned()),
+        );
+        assert_eq!(roots.roots.len(), 1);
+        assert_eq!(
+            roots.roots[0].path.as_ref().unwrap(),
+            &root.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn missing_configured_root_retains_its_source_and_path() {
+        let own = capture_root();
+        let configured = own.path().join("not-created");
+        let roots = CaptureRoots::resolve_environment(
+            std::slice::from_ref(&configured),
+            CaptureRootEnvironment::Override(own.path().to_owned()),
+        );
+        assert_eq!(roots.roots.len(), 2);
+        assert_eq!(
+            roots.roots[1].path.as_ref().unwrap(),
+            &own.path().canonicalize().unwrap().join("not-created")
+        );
+        assert_eq!(
+            roots.roots[1].sources,
+            [CaptureRootSource::Configuration {
+                entry: 0,
+                path:  configured,
+            }]
+        );
+    }
+
+    #[test]
+    fn relative_configured_root_retains_a_validation_failure() {
+        let own = capture_root();
+        let configured = PathBuf::from("runner/cargo-tile");
+        let roots = CaptureRoots::resolve_environment(
+            std::slice::from_ref(&configured),
+            CaptureRootEnvironment::Override(own.path().to_owned()),
+        );
+        assert_eq!(roots.roots.len(), 2);
+        assert_eq!(
+            roots.roots[1].path.as_ref().unwrap_err().kind,
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            roots.roots[1].sources,
+            [CaptureRootSource::Configuration {
+                entry: 0,
+                path:  configured,
+            }]
+        );
+    }
+
+    #[test]
+    fn deduplication_preserves_every_configured_spelling() {
+        let own = capture_root();
+        let parent = tempdir().unwrap();
+        let real = parent.path().join("real");
+        let alias = parent.path().join("alias");
+        fs::create_dir(&real).unwrap();
+        symlink(&real, &alias).unwrap();
+        let configured = [alias.join("capture"), real.join("capture")];
+        let roots = CaptureRoots::resolve_environment(
+            &configured,
+            CaptureRootEnvironment::Override(own.path().to_owned()),
+        );
+        assert_eq!(roots.roots.len(), 2);
+        assert_eq!(
+            roots.roots[1].path.as_ref().unwrap(),
+            &real.canonicalize().unwrap().join("capture")
+        );
+        assert_eq!(
+            roots.roots[1].sources,
+            [
+                CaptureRootSource::Configuration {
+                    entry: 0,
+                    path:  configured[0].clone(),
+                },
+                CaptureRootSource::Configuration {
+                    entry: 1,
+                    path:  configured[1].clone(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn trailing_parent_deduplicates_a_populated_root_and_preserves_both_sources() {
+        let root = capture_root();
+        publish(root.path(), 10, "live", "100", CAPTURED_REDRAW);
+        let configured = root.path().join("state/..");
+        let roots = CaptureRoots::resolve_environment(
+            std::slice::from_ref(&configured),
+            CaptureRootEnvironment::Override(root.path().to_owned()),
+        );
+        assert_eq!(roots.roots.len(), 1);
+        assert_eq!(
+            roots.roots[0].path.as_ref().unwrap(),
+            &root.path().canonicalize().unwrap()
+        );
+        assert_eq!(
+            roots.roots[0].sources,
+            [
+                CaptureRootSource::Environment {
+                    path: root.path().to_owned(),
+                },
+                CaptureRootSource::Configuration {
+                    entry: 0,
+                    path:  configured,
+                },
+            ]
+        );
+        let capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, present("100"))
+        });
+        assert_eq!(capture.readings.len(), 1);
+        assert_eq!(capture.confirmed().len(), 1);
+        assert_eq!(capture.confirmed()[0].key, capture_key(0, 10));
+        assert_eq!(
+            capture.read(capture_key(0, 10)),
+            CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
+        );
+    }
+
+    #[test]
+    fn trailing_parents_resolve_ancestor_symlinks_before_deduplication() {
+        let root = capture_root();
+        let parent = tempdir().unwrap();
+        let alias = parent.path().join("alias");
+        symlink(root.path().join(CAPTURE_LIVE_RUNS_DIR), &alias).unwrap();
+        let roots = CaptureRoots::resolve_environment(
+            &[alias.join("../..")],
+            CaptureRootEnvironment::Override(root.path().to_owned()),
+        );
+        assert_eq!(roots.roots.len(), 1);
+        assert_eq!(
+            roots.roots[0].path.as_ref().unwrap(),
+            &root.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn unresolved_ancestors_retain_configured_roots_including_trailing_parents() {
+        let own = capture_root();
+        for suffix in [
+            "not-created/capture",
+            "not-created/..",
+            "not-created/state/../..",
+        ] {
+            let configured = own.path().join(suffix);
+            let roots = CaptureRoots::resolve_environment(
+                std::slice::from_ref(&configured),
+                CaptureRootEnvironment::Override(own.path().to_owned()),
+            );
+            assert_eq!(roots.roots.len(), 2);
+            assert_eq!(roots.roots[1].path.as_ref().unwrap(), &configured);
+            assert_eq!(
+                roots.roots[1].sources,
+                [CaptureRootSource::Configuration {
+                    entry: 0,
+                    path:  configured,
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn configured_final_symlink_never_becomes_a_scan_capability() {
+        let own = capture_root();
+        let target = capture_root();
+        let (registration, log) = publish(target.path(), 10, "ended", "100", "");
+        let alias = own.path().join("alias");
+        symlink(target.path(), &alias).unwrap();
+        let roots = CaptureRoots::resolve_environment(
+            &[alias],
+            CaptureRootEnvironment::Override(own.path().to_owned()),
+        );
+        let capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Ended)
+        });
+        assert!(capture.readings.is_empty());
+        assert!(registration.exists());
+        assert!(log.exists());
+    }
+
+    #[test]
+    fn same_pid_in_two_roots_keeps_both_readings_and_confirmations() {
+        let first = capture_root();
+        let second = capture_root();
+        publish(first.path(), 10, "first", "100", CAPTURED_REDRAW);
+        let (registration, _) = publish(second.path(), 10, "second", "100", CAPTURED_TALLY);
+        let record = String::from_utf8(record("second", 10, "100"))
+            .unwrap()
+            .replace("/writer/project", "/runner/worktree");
+        fs::write(registration, record).unwrap();
+        let roots = CaptureRoots::resolve_environment(
+            &[second.path().to_owned()],
+            CaptureRootEnvironment::Override(first.path().to_owned()),
+        );
+        let capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, present("100"))
+        });
+        assert_eq!(capture.readings.len(), 2);
+        assert_eq!(capture.confirmed().len(), 2);
+        assert_eq!(
+            capture.keys(10).collect::<Vec<_>>(),
+            [capture_key(0, 10), capture_key(1, 10)]
+        );
+        assert_eq!(
+            capture.read(capture_key(0, 10)),
+            CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
+        );
+        assert_eq!(
+            capture.read(capture_key(1, 10)),
+            CaptureLookup::Registered(CaptureRead::Progress(testing(11, 24)))
+        );
+        for (index, expected) in [
+            (0, ("run-first-10.log", Path::new("/writer/project"))),
+            (1, ("run-second-10.log", Path::new("/runner/worktree"))),
+        ] {
+            let confirmed = capture
+                .confirmed()
+                .iter()
+                .find(|confirmed| confirmed.key == capture_key(index, 10))
+                .unwrap();
+            assert_eq!(confirmed.registration.record().log_basename(), expected.0);
+            assert_eq!(
+                confirmed.registration.record().directory_identity(),
+                crate::registration::DirectoryIdentity::Absolute(expected.1.to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn taking_two_resolved_roots_shares_one_removal_allowance() {
+        let first = capture_root();
+        let second = capture_root();
+        let pairs = CAPTURE_SWEEP_LIMIT / 2;
+        for index in 0..pairs {
+            publish(first.path(), 10, &format!("first-{index}"), "100", "");
+            publish(second.path(), 20, &format!("second-{index}"), "100", "");
+        }
+        let roots = CaptureRoots::resolve_environment(
+            &[second.path().to_owned()],
+            CaptureRootEnvironment::Override(first.path().to_owned()),
+        );
+        Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Ended)
+        });
+        assert_eq!(
+            fs::read_dir(first.path().join(CAPTURE_LIVE_RUNS_DIR))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(
+            fs::read_dir(second.path().join(CAPTURE_LIVE_RUNS_DIR))
+                .unwrap()
+                .count(),
+            pairs
+        );
+        assert_eq!(fs::read_dir(second.path()).unwrap().count(), pairs + 1);
+    }
+
     #[test]
     fn each_lookup_and_read_outcome_remains_distinguishable() {
         let root = capture_root();
@@ -838,24 +1330,24 @@ mod tests {
             ),
         );
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
-        assert_eq!(capture.read(9), CaptureLookup::Unregistered);
+        assert_eq!(capture.read(capture_key(0, 9)), CaptureLookup::Unregistered);
         assert_eq!(
-            capture.read(10),
+            capture.read(capture_key(0, 10)),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert_eq!(
-            capture.read(11),
+            capture.read(capture_key(0, 11)),
             CaptureLookup::Registered(CaptureRead::NoCurrentProgress)
         );
         assert!(matches!(
-            capture.read(12),
+            capture.read(capture_key(0, 12)),
             CaptureLookup::Registered(CaptureRead::Unreadable(CaptureFailure {
                 kind: std::io::ErrorKind::NotFound,
                 ..
             }))
         ));
         assert_eq!(
-            capture.read(13),
+            capture.read(capture_key(0, 13)),
             CaptureLookup::Registered(CaptureRead::NoCurrentProgress)
         );
         assert_eq!(capture.confirmed().len(), 4);
@@ -868,7 +1360,10 @@ mod tests {
         let orphan = root.path().join("run-unregistered-10.log");
         fs::write(&orphan, CAPTURED_REDRAW).unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| present("101"));
-        assert_eq!(capture.read(10), CaptureLookup::Unregistered);
+        assert_eq!(
+            capture.read(capture_key(0, 10)),
+            CaptureLookup::Unregistered
+        );
         assert!(capture.confirmed().is_empty());
         assert!(!registration.exists());
         assert!(!log.exists());
@@ -900,7 +1395,7 @@ mod tests {
         fs::write(&log, CAPTURED_REDRAW).unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| Observation::Ended);
         assert_eq!(
-            capture.read(10),
+            capture.read(capture_key(0, 10)),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert!(capture.confirmed().is_empty());
@@ -916,10 +1411,13 @@ mod tests {
         fs::write(malformed, b"cargo-tile-v2\0truncated").unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
         assert_eq!(
-            capture.read(10),
+            capture.read(capture_key(0, 10)),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
-        assert_eq!(capture.read(11), CaptureLookup::Unregistered);
+        assert_eq!(
+            capture.read(capture_key(0, 11)),
+            CaptureLookup::Unregistered
+        );
     }
 
     #[test]
@@ -936,11 +1434,14 @@ mod tests {
         capture.scan_with_observations(&scan, &|_| present("100"), &mut budget);
         for pid in [10, 12] {
             assert_eq!(
-                capture.read(pid),
+                capture.read(capture_key(0, pid)),
                 CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
             );
         }
-        assert_eq!(capture.read(11), CaptureLookup::Unregistered);
+        assert_eq!(
+            capture.read(capture_key(0, 11)),
+            CaptureLookup::Unregistered
+        );
         assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
         assert!(stale.0.exists());
         assert!(stale.1.exists());
@@ -967,7 +1468,7 @@ mod tests {
             &mut SweepBudget::default(),
         );
         assert_eq!(
-            capture.read(10),
+            capture.read(capture_key(0, 10)),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert!(log.exists());
@@ -980,12 +1481,14 @@ mod tests {
         fs::remove_file(&log).unwrap();
         fs::write(root.path().join("run-older-10.log"), CAPTURED_REDRAW).unwrap();
         assert!(matches!(
-            Capture::take_with_observations(root.path(), |_| present("100")).read(10),
+            Capture::take_with_observations(root.path(), |_| present("100"))
+                .read(capture_key(0, 10)),
             CaptureLookup::Registered(CaptureRead::Unreadable(_))
         ));
         fs::write(&log, CAPTURED_TALLY).unwrap();
         assert_eq!(
-            Capture::take_with_observations(root.path(), |_| present("100")).read(10),
+            Capture::take_with_observations(root.path(), |_| present("100"))
+                .read(capture_key(0, 10)),
             CaptureLookup::Registered(CaptureRead::Progress(testing(11, 24)))
         );
     }
@@ -997,11 +1500,12 @@ mod tests {
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
         fs::write(&log, CAPTURED_TALLY).unwrap();
         assert_eq!(
-            capture.read(10),
+            capture.read(capture_key(0, 10)),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert_eq!(
-            Capture::take_with_observations(root.path(), |_| present("100")).read(10),
+            Capture::take_with_observations(root.path(), |_| present("100"))
+                .read(capture_key(0, 10)),
             CaptureLookup::Registered(CaptureRead::Progress(testing(11, 24)))
         );
     }
@@ -1148,7 +1652,10 @@ mod tests {
                 observation.clone()
             });
             assert_eq!(calls.get(), 3);
-            assert_eq!(capture.read(10), CaptureLookup::Unregistered);
+            assert_eq!(
+                capture.read(capture_key(0, 10)),
+                CaptureLookup::Unregistered
+            );
             assert!(capture.confirmed().is_empty());
             assert!(!staging.exists());
             assert!(!log.exists());
@@ -1191,7 +1698,10 @@ mod tests {
             assert_eq!(calls.get(), 1);
             assert!(staging.exists());
             assert!(log.exists());
-            assert_eq!(capture.read(10), CaptureLookup::Unregistered);
+            assert_eq!(
+                capture.read(capture_key(0, 10)),
+                CaptureLookup::Unregistered
+            );
             assert!(capture.confirmed().is_empty());
             assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
         }
@@ -1302,7 +1812,7 @@ mod tests {
         let live = publish(root.path(), 10, "live", "100", CAPTURED_TALLY);
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
         assert_eq!(
-            capture.read(10),
+            capture.read(capture_key(0, 10)),
             CaptureLookup::Registered(CaptureRead::Progress(testing(11, 24)))
         );
         assert_eq!(capture.confirmed().len(), 1);
@@ -1351,7 +1861,7 @@ mod tests {
         .unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
         assert_eq!(
-            capture.read(10),
+            capture.read(capture_key(0, 10)),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
         assert!(stale.0.exists());
@@ -1365,13 +1875,14 @@ mod tests {
         fs::write(&log, "").unwrap();
         fs::remove_dir(root.path().join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
         assert_eq!(
-            Capture::take_with_observations(root.path(), |_| Observation::Ended).read(10),
+            Capture::take_with_observations(root.path(), |_| Observation::Ended)
+                .read(capture_key(0, 10)),
             CaptureLookup::Unregistered
         );
         assert!(log.exists());
         assert_eq!(
             Capture::take_with_observations(&root.path().join("absent"), |_| Observation::Ended)
-                .read(10),
+                .read(capture_key(0, 10)),
             CaptureLookup::Unregistered
         );
     }

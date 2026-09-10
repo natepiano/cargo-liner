@@ -39,6 +39,7 @@ use sysinfo::System;
 use sysinfo::UpdateKind;
 use tui_pane::kernel_parent;
 
+use crate::config::Config;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::CARGO_PROCESS_NAMES;
@@ -62,7 +63,9 @@ use crate::constants::TRANSPARENT_PROCESS_NAMES;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
 use crate::progress::Capture;
+use crate::progress::CaptureKey;
 use crate::progress::CaptureLookup;
+use crate::progress::CaptureRoots;
 use crate::registration::DirectoryIdentity;
 use crate::registration::VersionedRegistration;
 use crate::registration::WriterHome;
@@ -353,19 +356,37 @@ pub(crate) struct Scan {
     pub(crate) sccache: SccacheServer,
 }
 
+/// The nearest registered ancestor retains its root for every annotation lookup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CapturedRun {
+    /// No registration exists along the bounded parent walk.
+    Unregistered,
+    /// Root precedence selects one registration without mixing its sibling roots.
+    Registered(CaptureKey),
+}
+
 /// Start the scanner thread and hand back the channel it publishes on.
 ///
 /// The thread ends when the receiver is dropped.
 ///
-/// `excluded` is taken by value and read for the life of the thread.
-/// Nothing edits `commands.excluded` while the app runs -- the settings
-/// overlay reports the list and the file is where it is changed -- so a
-/// snapshot at startup and a live read say the same thing, and a
-/// snapshot keeps the scanner free of a lock the loop would take four
-/// times a second.
-pub(crate) fn spawn(excluded: Vec<String>) -> Receiver<Scan> {
+/// The caller only snapshots configuration. Root resolution runs once inside
+/// the worker before its scan loop, so a slow filesystem cannot block terminal
+/// startup; each scan still opens every root to recheck access and ownership.
+pub(crate) fn spawn(config: &Config) -> Receiver<Scan> {
+    spawn_with_resolver(config, CaptureRoots::resolve).0
+}
+
+/// Keep root resolution on the worker even when it stalls. The resolver and
+/// join handle let tests hold resolution and observe repeated scans and shutdown.
+fn spawn_with_resolver(
+    config: &Config,
+    resolve: impl FnOnce(&[PathBuf]) -> CaptureRoots + Send + 'static,
+) -> (Receiver<Scan>, thread::JoinHandle<()>) {
+    let configured = config.capture.roots.clone();
+    let excluded = config.commands.excluded.clone();
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
+    let worker = thread::spawn(move || {
+        let roots = resolve(&configured);
         let mut system = System::new();
         let mut smoothing = CpuSmoothing::default();
         let home = dirs::home_dir();
@@ -377,6 +398,7 @@ pub(crate) fn spawn(excluded: Vec<String>) -> Receiver<Scan> {
                     Instant::now(),
                     home.as_deref(),
                     &excluded,
+                    &roots,
                 ))
                 .is_err()
             {
@@ -385,7 +407,7 @@ pub(crate) fn spawn(excluded: Vec<String>) -> Receiver<Scan> {
             thread::sleep(Duration::from_millis(PROCESS_POLL_MILLIS));
         }
     });
-    receiver
+    (receiver, worker)
 }
 
 /// One two-phase scan, newest group first.
@@ -399,6 +421,7 @@ fn scan(
     now: Instant,
     home: Option<&Path>,
     excluded: &[String],
+    roots: &CaptureRoots,
 ) -> Scan {
     // Phase one: pid, name, parent and start time for everything. None of
     // the fields this asks for require a per-process read of the argument
@@ -459,7 +482,7 @@ fn scan(
         sccache: census.sccache(),
         // Registration identity is read live; a pid missing from the earlier
         // process snapshot cannot authorize deleting a newly published run.
-        groups:  census.groups(system, &attributed, home, &Capture::take()),
+        groups:  census.groups(system, &attributed, home, &Capture::take(roots)),
     }
 }
 
@@ -914,48 +937,43 @@ impl Census {
     /// rather than the cargo itself -- two levels up when the run went
     /// through a pty, one when it did not. The same bound the compiler
     /// walk uses stops a reparented cycle here.
-    fn captured_run(&self, capture: &Capture, pid: Pid) -> CaptureLookup {
+    fn captured_run(&self, capture: &Capture, pid: Pid) -> CapturedRun {
         let mut walking = pid;
         for _ in 0..PARENT_WALK_LIMIT {
-            let reading = capture.read(walking.as_u32());
-            if let CaptureLookup::Registered(_) = reading {
-                return reading;
+            if let Some(key) = capture.keys(walking.as_u32()).next() {
+                return CapturedRun::Registered(key);
             }
             let Some(parent) = self.parents.get(&walking) else {
-                return CaptureLookup::Unregistered;
+                return CapturedRun::Unregistered;
             };
             walking = *parent;
         }
-        CaptureLookup::Unregistered
+        CapturedRun::Unregistered
     }
 
     /// Captures annotate rows already established by the process table. A verified
     /// writer home only shortens the same directory the process table supplied.
+    /// State and metadata use the same root-qualified key, including when that
+    /// root's registration is unconfirmed and only another root has a proof.
     fn annotate_capture(&self, row: &mut CargoProcess, capture: &Capture, home: Option<&Path>) {
-        let pid = Pid::from_u32(row.pid);
-        row.state = self.captured_run(capture, pid);
-        let mut walking = pid;
-        for _ in 0..PARENT_WALK_LIMIT {
-            if let Some(confirmed) = capture
-                .confirmed()
-                .iter()
-                .find(|confirmed| confirmed.registration.pid() == walking.as_u32())
-            {
-                let record = confirmed.registration.record();
-                if matches!(row.directory_identity, DirectoryIdentity::Absolute(_))
-                    && record.directory_identity() == row.directory_identity
-                {
-                    row.path = registration_directory(record, home);
-                }
-                return;
-            }
-            if matches!(capture.read(walking.as_u32()), CaptureLookup::Registered(_)) {
-                return;
-            }
-            let Some(parent) = self.parents.get(&walking) else {
-                return;
-            };
-            walking = *parent;
+        let CapturedRun::Registered(key) = self.captured_run(capture, Pid::from_u32(row.pid))
+        else {
+            row.state = CaptureLookup::Unregistered;
+            return;
+        };
+        row.state = capture.read(key);
+        let Some(confirmed) = capture
+            .confirmed()
+            .iter()
+            .find(|confirmed| confirmed.key == key)
+        else {
+            return;
+        };
+        let record = confirmed.registration.record();
+        if matches!(row.directory_identity, DirectoryIdentity::Absolute(_))
+            && record.directory_identity() == row.directory_identity
+        {
+            row.path = registration_directory(record, home);
         }
     }
 
@@ -1385,6 +1403,10 @@ fn base_name(argument: &OsString) -> String {
 )]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     use tempfile::TempDir;
     use tempfile::tempdir;
@@ -1402,8 +1424,53 @@ mod tests {
     use crate::constants::RUN_LOG_SUFFIX;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::progress::CaptureRead;
+    use crate::progress::CaptureRootIndex;
+    use crate::progress::CaptureRootSource;
     use crate::progress::RunState;
     use crate::registration::Registration;
+
+    /// Bound failed worker handshakes without imposing a startup speed threshold.
+    const WORKER_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn spawn_returns_while_root_resolution_waits_and_resolves_once_across_scans() {
+        let mut config = Config::default();
+        config.capture.roots = vec![PathBuf::from("/configured/capture")];
+        let configured = config.capture.roots.clone();
+        let caller = thread::current().id();
+        let resolutions = Arc::new(AtomicUsize::new(0));
+        let worker_resolutions = Arc::clone(&resolutions);
+        let (started, resolution_started) = mpsc::channel();
+        let (release, resolution_release) = mpsc::channel();
+        let (scans, worker) = spawn_with_resolver(&config, move |roots| {
+            assert_ne!(thread::current().id(), caller);
+            worker_resolutions.fetch_add(1, Ordering::SeqCst);
+            started.send(()).expect("startup observer is alive");
+            resolution_release
+                .recv_timeout(WORKER_REPLY_TIMEOUT)
+                .expect("spawn must return before resolution is released");
+            assert_eq!(roots, configured);
+            // No capture root is scanned; this test owns only worker scheduling.
+            CaptureRoots { roots: Vec::new() }
+        });
+
+        config.capture.roots.clear();
+        resolution_started
+            .recv_timeout(WORKER_REPLY_TIMEOUT)
+            .expect("worker must reach root resolution");
+        assert!(matches!(scans.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        release.send(()).expect("release worker root resolution");
+        for _ in 0..2 {
+            scans
+                .recv_timeout(WORKER_REPLY_TIMEOUT)
+                .expect("worker must publish successive scans");
+        }
+        drop(scans);
+        worker
+            .join()
+            .expect("scanner must exit after receiver drop");
+        assert_eq!(resolutions.load(Ordering::SeqCst), 1);
+    }
 
     /// A capture directory holding one live run's log per entry.
     fn capture_root(runs: &[(u32, &str)]) -> TempDir {
@@ -1485,6 +1552,282 @@ mod tests {
         }
     }
 
+    /// Exercise the annotation path when asserting the nearest ancestor's reading.
+    fn captured_state(census: &Census, capture: &Capture, pid: u32) -> CaptureLookup {
+        let mut row = directory_row();
+        row.pid = pid;
+        census.annotate_capture(&mut row, capture, None);
+        row.state
+    }
+
+    /// Resolve fixture paths through production code without scanning the user's root.
+    fn resolved_test_roots(paths: &[&Path]) -> CaptureRoots {
+        let mut roots = CaptureRoots::resolve(
+            &paths
+                .iter()
+                .map(|path| (*path).to_owned())
+                .collect::<Vec<_>>(),
+        );
+        roots.roots.retain(|root| {
+            root.sources
+                .iter()
+                .any(|source| matches!(source, CaptureRootSource::Configuration { .. }))
+        });
+        roots
+    }
+
+    /// Different roots may name different logs and commands for the same shim pid.
+    fn write_versioned_capture(
+        root: &Path,
+        pid: u32,
+        generation: &str,
+        directory: &str,
+        home: &str,
+        command: &str,
+        output: &str,
+    ) {
+        let markers = root.join(CAPTURE_LIVE_RUNS_DIR);
+        fs::create_dir_all(&markers).expect("registration directory");
+        let log = format!("run-{generation}-{pid}.log");
+        let record = [
+            "cargo-tile-v2",
+            generation,
+            "boot",
+            "100",
+            &log,
+            directory,
+            home,
+            "1",
+            command,
+            "",
+        ]
+        .join("\0");
+        fs::write(markers.join(format!("{pid}.{generation}")), record)
+            .expect("versioned registration");
+        fs::write(root.join(log), output).expect("capture output");
+    }
+
+    #[test]
+    fn capture_annotation_uses_one_root_for_progress_directory_and_command() {
+        let first = tempdir().expect("first root");
+        let second = tempdir().expect("second root");
+        write_versioned_capture(
+            first.path(),
+            10,
+            "first",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        write_versioned_capture(
+            second.path(),
+            10,
+            "second",
+            "/runner/project",
+            "/runner",
+            "test",
+            "    Blocking waiting for file lock on build directory",
+        );
+        let record = directory_record("/writer");
+        let stamp = match record.identity() {
+            IdentityEvidence::Available(stamp) => Ok(stamp),
+            IdentityEvidence::Unavailable => Err("fixture identity unavailable"),
+        }
+        .expect("fixture supplies a complete birth");
+        for (paths, directory, command, expected_path, expected_state) in [
+            (
+                [first.path(), second.path()],
+                "/writer/project",
+                "build",
+                "~/project",
+                CaptureLookup::Registered(CaptureRead::NoCurrentProgress),
+            ),
+            (
+                [second.path(), first.path()],
+                "/runner/project",
+                "test",
+                "/runner/project",
+                CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)),
+            ),
+        ] {
+            let roots = resolved_test_roots(&paths);
+            let capture = Capture::take_roots(&roots, &|pid| {
+                KernelObservation::for_test(pid, Observation::Present(stamp.clone()))
+            });
+            let census = census_of(&[]);
+            let key = CaptureKey {
+                root: CaptureRootIndex(0),
+                pid:  10,
+            };
+            assert_eq!(capture.keys(10).count(), 2);
+            assert_eq!(capture.confirmed().len(), 2);
+            assert_eq!(
+                census.captured_run(&capture, Pid::from_u32(10)),
+                CapturedRun::Registered(key)
+            );
+
+            let mut row = directory_row();
+            row.path = "process directory".to_owned();
+            row.directory_identity = DirectoryIdentity::Absolute(directory.into());
+            row.command = CommandText::of("cargo", &[command]);
+            census.annotate_capture(&mut row, &capture, Some(Path::new("/writer")));
+
+            assert_eq!(row.path, expected_path);
+            assert_eq!(
+                row.directory_identity,
+                DirectoryIdentity::Absolute(directory.into())
+            );
+            assert_eq!(row.command, CommandText::of("cargo", &[command]));
+            assert_eq!(row.state, expected_state);
+        }
+    }
+
+    #[test]
+    fn an_unconfirmed_root_does_not_borrow_another_roots_confirmed_metadata() {
+        let first = capture_root(&[(10, "")]);
+        let second = tempdir().expect("confirmed root");
+        write_versioned_capture(
+            second.path(),
+            10,
+            "second",
+            "/writer/project",
+            "/custom",
+            "test",
+            "    Blocking waiting for file lock on build directory",
+        );
+        let record = directory_record("/writer");
+        let stamp = match record.identity() {
+            IdentityEvidence::Available(stamp) => Ok(stamp),
+            IdentityEvidence::Unavailable => Err("fixture identity unavailable"),
+        }
+        .expect("fixture supplies a complete birth");
+        let roots = resolved_test_roots(&[first.path(), second.path()]);
+        let capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Present(stamp.clone()))
+        });
+        assert_eq!(capture.keys(10).count(), 2);
+        assert_eq!(capture.confirmed().len(), 1);
+        assert_eq!(capture.confirmed()[0].key.root, CaptureRootIndex(1));
+        let mut row = directory_row();
+        row.path = "process directory".to_owned();
+        census_of(&[]).annotate_capture(&mut row, &capture, Some(Path::new("/writer")));
+
+        assert_eq!(row.path, "process directory");
+        assert_eq!(
+            row.directory_identity,
+            DirectoryIdentity::Absolute("/writer/project".into())
+        );
+        assert_eq!(row.command, CommandText::of("cargo", &["build"]));
+        assert_eq!(
+            row.state,
+            CaptureLookup::Registered(CaptureRead::NoCurrentProgress)
+        );
+    }
+
+    #[test]
+    fn a_nearer_capture_in_an_additional_root_precedes_the_own_root_ancestor() {
+        let first = capture_root(&[(20, "    Blocking waiting for file lock on build directory")]);
+        let second = capture_root(&[(10, "")]);
+        let roots = resolved_test_roots(&[first.path(), second.path()]);
+        let capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Unknown)
+        });
+        let census = census_of(&[(11, 10), (10, 20)]);
+        assert_eq!(
+            census.captured_run(&capture, Pid::from_u32(11)),
+            CapturedRun::Registered(CaptureKey {
+                root: CaptureRootIndex(1),
+                pid:  10,
+            }),
+        );
+        assert_eq!(
+            captured_state(&census, &capture, 11),
+            CaptureLookup::Registered(CaptureRead::NoCurrentProgress)
+        );
+    }
+
+    #[test]
+    fn repeated_scans_reuse_roots_resolved_before_an_ancestor_alias_changes() {
+        let directory = tempdir().expect("fixture directory");
+        let original = directory.path().join("original");
+        let replacement = directory.path().join("replacement");
+        let alias = directory.path().join("alias");
+        let root = original.join("capture");
+        let other = replacement.join("capture");
+        let pid = std::process::id();
+        write_versioned_capture(
+            &root,
+            pid,
+            "first",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        write_versioned_capture(
+            &other,
+            pid,
+            "other",
+            "/runner/project",
+            "/runner",
+            "test",
+            "",
+        );
+        symlink(&original, &alias).expect("original ancestor alias");
+        let roots = resolved_test_roots(&[&alias.join("capture")]);
+        let mut system = System::new();
+        let mut smoothing = CpuSmoothing::default();
+        scan(
+            &mut system,
+            &mut smoothing,
+            Instant::now(),
+            None,
+            &[],
+            &roots,
+        );
+        assert!(
+            !root
+                .join(CAPTURE_LIVE_RUNS_DIR)
+                .join(format!("{pid}.first"))
+                .exists()
+        );
+
+        fs::remove_file(&alias).expect("remove original ancestor alias");
+        symlink(&replacement, &alias).expect("retarget ancestor alias");
+        write_versioned_capture(
+            &root,
+            pid,
+            "next",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        scan(
+            &mut system,
+            &mut smoothing,
+            Instant::now(),
+            None,
+            &[],
+            &roots,
+        );
+
+        assert!(
+            !root
+                .join(CAPTURE_LIVE_RUNS_DIR)
+                .join(format!("{pid}.next"))
+                .exists()
+        );
+        assert!(
+            other
+                .join(CAPTURE_LIVE_RUNS_DIR)
+                .join(format!("{pid}.other"))
+                .exists()
+        );
+        assert_ne!(roots, resolved_test_roots(&[&alias.join("capture")]));
+    }
+
     #[test]
     fn capture_annotation_changes_only_display_when_writer_home_differs() {
         for (home, display) in [("/writer", "~/project"), ("/custom", "/writer/project")] {
@@ -1560,7 +1903,7 @@ mod tests {
             KernelObservation::for_test(pid, Observation::Unknown)
         });
         assert_eq!(
-            census.captured_run(&capture, Pid::from_u32(11)),
+            captured_state(&census, &capture, 11),
             CaptureLookup::Registered(CaptureRead::NoCurrentProgress)
         );
     }
@@ -1581,7 +1924,7 @@ mod tests {
             KernelObservation::for_test(pid, Observation::Unknown)
         });
         assert!(matches!(
-            census.captured_run(&capture, Pid::from_u32(11)),
+            captured_state(&census, &capture, 11),
             CaptureLookup::Registered(CaptureRead::Unreadable(_))
         ));
     }
@@ -1716,7 +2059,7 @@ mod tests {
         });
 
         assert_eq!(
-            census.captured_run(&capture, Pid::from_u32(76847)),
+            captured_state(&census, &capture, 76847),
             CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)),
         );
     }
@@ -1738,11 +2081,11 @@ mod tests {
         });
 
         assert_eq!(
-            census.captured_run(&capture, Pid::from_u32(76847)),
+            captured_state(&census, &capture, 76847),
             CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)),
         );
         assert_eq!(
-            census.captured_run(&capture, Pid::from_u32(64432)),
+            captured_state(&census, &capture, 64432),
             CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)),
             "the lead still reads its own shim",
         );
