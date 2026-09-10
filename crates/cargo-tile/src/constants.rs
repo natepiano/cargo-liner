@@ -903,6 +903,8 @@ pub(crate) const CAPTURE_LIVE_RUNS_DIR: &str = "state/pids";
 pub(crate) const CAPTURE_ROOT: &str = "/tmp/cargo-tile";
 /// Sticky world-writable shared parent permissions.
 pub(crate) const CAPTURE_SHARED_MODE: u32 = 0o1777;
+/// The permission, setuid, setgid, and sticky bits of a `st_mode`, without the file type.
+pub(crate) const PERMISSION_BITS: u32 = 0o7777;
 /// What separates the pid at the end of a run log's name from the
 /// timestamp in front of it.
 pub(crate) const PID_SEPARATOR: char = '-';
