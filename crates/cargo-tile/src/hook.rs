@@ -24,16 +24,23 @@
 
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::thread;
 
 use crate::constants::CARGO_NAME;
 use crate::constants::REAL_CARGO_NAME;
 use crate::constants::RUSTUP_DIRNAME;
 use crate::constants::RUSTUP_HOME_ENV;
+use crate::constants::SHIM_LOCK_NAME;
+use crate::constants::SHIM_LOCK_RECOVERY;
+use crate::constants::SHIM_LOCK_RETRY_ATTEMPTS;
+use crate::constants::SHIM_LOCK_RETRY_DELAY;
 use crate::constants::SHIM_MARKER;
 use crate::constants::SHIM_MARKER_SEARCH_BYTES;
 use crate::constants::SHIM_MODE;
@@ -105,10 +112,10 @@ fn stand_up(hooks: &[Hook]) -> Startup {
     let mut startup = Startup::default();
     for hook in hooks {
         match hook.ensure() {
-            Ok(Some(Change::Installed)) => startup.installed.push(hook.name.clone()),
-            Ok(Some(Change::Refreshed)) => startup.refreshed.push(hook.name.clone()),
-            Ok(Some(Change::Orphaned)) => startup.orphaned.push(hook.name.clone()),
-            Ok(Some(Change::Removed | Change::AlreadyAbsent) | None) => {},
+            Ok(Change::Installed) => startup.installed.push(hook.name.clone()),
+            Ok(Change::Refreshed) => startup.refreshed.push(hook.name.clone()),
+            Ok(Change::Orphaned) => startup.orphaned.push(hook.name.clone()),
+            Ok(Change::Removed | Change::AlreadyAbsent | Change::AlreadyCurrent) => {},
             Err(error) => startup.failed.push((hook.name.clone(), error.to_string())),
         }
     }
@@ -123,6 +130,9 @@ pub(crate) enum HookState {
     Installed,
     /// A real cargo holds its own name. Nothing is captured.
     Absent,
+    /// Installation moved the real binary aside but did not write the
+    /// shim. Restoring the saved binary repairs the missing `cargo`.
+    Repairable,
     /// The shim holds `cargo` but the real binary beside it is gone, so
     /// every invocation fails. Only reachable by deleting the real
     /// binary by hand.
@@ -134,9 +144,11 @@ pub(crate) enum HookState {
 pub(crate) enum Change {
     /// The shim now stands where a real cargo did.
     Installed,
-    /// The shim was already there and was rewritten from the copy in
-    /// this binary.
+    /// The installed shim differed from this binary's copy and was
+    /// brought up to date.
     Refreshed,
+    /// The installed shim matches this binary's copy and was untouched.
+    AlreadyCurrent,
     /// The real cargo has its name back.
     Removed,
     /// Nothing to do: no shim was installed.
@@ -147,7 +159,8 @@ pub(crate) enum Change {
 }
 
 impl Hook {
-    /// Every toolchain rustup has installed that has a cargo in it.
+    /// Every toolchain rustup has installed with a cargo under either
+    /// its own name or the saved real binary's name.
     ///
     /// Sorted by name so a report reads the same twice running.
     pub(crate) fn all() -> io::Result<Vec<Self>> {
@@ -160,17 +173,18 @@ impl Hook {
     }
 
     /// The hook for one toolchain directory, or `None` where there is no
-    /// cargo to stand in front of.
+    /// cargo under either its own name or the saved real binary's name.
     fn at(toolchain: &Path) -> Option<Self> {
         let binaries = toolchain.join(TOOLCHAIN_BIN_DIR);
         let cargo = binaries.join(CARGO_NAME);
-        if !cargo.exists() {
+        let real = binaries.join(REAL_CARGO_NAME);
+        if !cargo.exists() && !real.exists() {
             return None;
         }
         Some(Self {
             name: toolchain.file_name()?.to_str()?.to_owned(),
             cargo,
-            real: binaries.join(REAL_CARGO_NAME),
+            real,
             staging: binaries.join(SHIM_STAGING_NAME),
         })
     }
@@ -180,6 +194,9 @@ impl Hook {
 
     /// What is standing in front of this toolchain's cargo.
     pub(crate) fn state(&self) -> HookState {
+        if !self.cargo.exists() && self.real.exists() {
+            return HookState::Repairable;
+        }
         if !is_shim(&self.cargo) {
             return HookState::Absent;
         }
@@ -190,44 +207,44 @@ impl Hook {
         }
     }
 
-    /// Put the shim in front of this toolchain's cargo.
+    /// Put the current shim in front of this toolchain's cargo, leaving
+    /// an identical installed copy untouched.
     ///
     /// Writing the shim is the last step, so a failure part way through
-    /// leaves the real cargo reachable under one name or the other
-    /// rather than leaving the toolchain with no cargo at all.
+    /// can leave `cargo` missing. Retrying writes the shim directly and
+    /// leaves the saved real binary in place. The per-toolchain lock
+    /// covers state inspection and every write, including repair.
     pub(crate) fn install(&self) -> io::Result<Change> {
-        if self.state() == HookState::Installed {
-            self.write_shim()?;
-            return Ok(Change::Refreshed);
+        let _installation_lock =
+            HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
+        match self.state() {
+            HookState::Installed => {
+                if fs::read(&self.cargo)? == SHIM_SOURCE.as_bytes() {
+                    return Ok(Change::AlreadyCurrent);
+                }
+                self.write_shim()?;
+                return Ok(Change::Refreshed);
+            },
+            HookState::Orphaned => return Ok(Change::Orphaned),
+            HookState::Repairable => {
+                self.write_shim()?;
+                return Ok(Change::Installed);
+            },
+            HookState::Absent => {},
         }
-        // Whatever holds the name without the marker in it is the real
-        // binary -- a first install, or the fresh cargo `rustup update`
-        // just put back over the shim. Either way it is the one to keep.
+        // Keep an unmarked first install or the fresh cargo that
+        // `rustup update` put back over the shim.
         fs::rename(&self.cargo, &self.real)?;
         self.write_shim()?;
         Ok(Change::Installed)
     }
 
-    /// [`install`](Self::install) as the grid runs it on every launch:
-    /// a missing shim goes in, a stale one is brought up to date, a
-    /// current one is left untouched, and an orphaned one is reported.
+    /// Keep startup and the install subcommand on the same repair and
+    /// content-comparison path as [`install`](Self::install).
     ///
-    /// `None` is the ordinary case -- the shim is there and current --
-    /// and the one that must cost nothing, because it is what every
-    /// launch after the first finds.
-    fn ensure(&self) -> io::Result<Option<Change>> {
-        match self.state() {
-            HookState::Absent => self.install().map(Some),
-            HookState::Orphaned => Ok(Some(Change::Orphaned)),
-            HookState::Installed => {
-                if fs::read_to_string(&self.cargo)? == SHIM_SOURCE {
-                    return Ok(None);
-                }
-                self.write_shim()?;
-                Ok(Some(Change::Refreshed))
-            },
-        }
-    }
+    /// [`Change::AlreadyCurrent`] requires reading the shim, but no
+    /// shim writes: repeated launches and CI job hooks leave it untouched.
+    pub(crate) fn ensure(&self) -> io::Result<Change> { self.install() }
 
     /// Write the shim as `cargo`, executable, without ever writing the
     /// file already there in place.
@@ -245,6 +262,8 @@ impl Hook {
 
     /// Give the real cargo its name back.
     pub(crate) fn remove(&self) -> io::Result<Change> {
+        let _installation_lock =
+            HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
         match self.state() {
             HookState::Absent => Ok(Change::AlreadyAbsent),
             HookState::Orphaned => Err(io::Error::other(format!(
@@ -252,12 +271,52 @@ impl Hook {
                 self.name,
                 self.real.display()
             ))),
-            HookState::Installed => {
+            HookState::Installed | HookState::Repairable => {
                 fs::rename(&self.real, &self.cargo)?;
                 Ok(Change::Removed)
             },
         }
     }
+}
+
+/// Exclusive access to one toolchain's install, repair, and removal operations.
+/// The lock file's presence owns access until this guard is dropped.
+struct HookInstallationLock {
+    /// Only the guard that created this path may remove it.
+    path: PathBuf,
+}
+
+impl HookInstallationLock {
+    /// Wait briefly for another installer, then fail without touching
+    /// cargo if exclusive creation remains unavailable.
+    fn acquire(path: PathBuf) -> io::Result<Self> {
+        let mut retries_remaining = SHIM_LOCK_RETRY_ATTEMPTS;
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => return Ok(Self { path }),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists && retries_remaining > 0 => {
+                    retries_remaining -= 1;
+                    thread::sleep(SHIM_LOCK_RETRY_DELAY);
+                },
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("{}: {error}; {SHIM_LOCK_RECOVERY}", path.display()),
+                    ));
+                },
+                Err(error) => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("{}: {error}", path.display()),
+                    ));
+                },
+            }
+        }
+    }
+}
+
+impl Drop for HookInstallationLock {
+    fn drop(&mut self) { drop(fs::remove_file(&self.path)); }
 }
 
 /// Where rustup keeps its toolchains.
@@ -292,10 +351,16 @@ fn is_shim(path: &Path) -> bool {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::process::Command;
+    use std::sync::Barrier;
+    use std::time::SystemTime;
+
     use tempfile::TempDir;
     use tempfile::tempdir;
 
     use super::*;
+    use crate::constants::HOOK_TEST_REAL_CARGO;
+    use crate::constants::HOOK_TEST_VERSION_ARGUMENT;
     use crate::constants::LOCK_WAIT_MARKER;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::SUBCOMMAND_NAME;
@@ -396,6 +461,77 @@ mod tests {
         );
     }
 
+    /// A held lock must stop the install before it moves cargo or
+    /// creates a staging file, and a failed contender must leave it held.
+    #[test]
+    fn installing_with_a_held_lock_leaves_the_toolchain_untouched() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
+        let installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
+
+        assert_eq!(hook.install().unwrap_err().kind(), ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), CARGO_NAME);
+        assert!(!hook.real.exists());
+        assert!(!hook.staging.exists());
+        assert!(lock_path.exists());
+
+        drop(installation_lock);
+        assert_eq!(hook.install().unwrap(), Change::Installed);
+        assert!(!lock_path.exists());
+    }
+
+    /// A stranded lock must name its path and the operator's recovery
+    /// steps once the bounded wait finishes, without deleting the lock.
+    #[test]
+    fn an_exhausted_installation_lock_reports_how_to_recover() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
+        fs::write(&lock_path, CARGO_NAME).unwrap();
+
+        let error = hook.install().unwrap_err();
+        let message = error.to_string();
+
+        assert_eq!(error.kind(), ErrorKind::AlreadyExists);
+        assert!(message.contains(&lock_path.display().to_string()));
+        assert!(message.contains(SHIM_LOCK_RECOVERY));
+        assert!(message.lines().eq([message.as_str()]));
+        assert_eq!(fs::read_to_string(&lock_path).unwrap(), CARGO_NAME);
+    }
+
+    /// Independent installers starting together must agree which one
+    /// saves cargo; the second must inspect the first one's finished shim.
+    #[test]
+    fn concurrent_installs_preserve_the_original_real_cargo() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        let toolchain = hook.cargo.parent().unwrap().parent().unwrap();
+        let competing_hook = Hook::at(toolchain).unwrap();
+        let installers = [&hook, &competing_hook];
+        let start = Barrier::new(installers.len());
+
+        let changes = thread::scope(|scope| {
+            let start = &start;
+            let installs = installers.map(|hook| {
+                scope.spawn(move || {
+                    start.wait();
+                    hook.install()
+                })
+            });
+            installs.map(|install| install.join().unwrap().unwrap())
+        });
+
+        assert!(matches!(
+            changes,
+            [Change::Installed, Change::AlreadyCurrent]
+                | [Change::AlreadyCurrent, Change::Installed]
+        ));
+        assert_eq!(hook.state(), HookState::Installed);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
+        assert!(!is_shim(&hook.real));
+        assert!(!hook.staging.exists());
+        assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+    }
+
     #[test]
     fn the_installed_shim_is_executable() {
         let (_home, hook) = toolchain("real");
@@ -406,16 +542,261 @@ mod tests {
         assert_eq!(mode & 0o777, SHIM_MODE);
     }
 
-    /// Installing twice must not push the shim itself into the place the
-    /// real cargo is kept, which would lose the real binary.
+    /// Set the mtime far from the current time so even a filesystem with
+    /// coarse timestamps exposes an unnecessary shim rewrite.
+    fn mark_old_mtime(path: &Path) -> SystemTime {
+        fs::File::open(path)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        fs::metadata(path).unwrap().modified().unwrap()
+    }
+
+    /// Installing twice must preserve both the shim's mtime and the
+    /// saved real cargo, even though the shim's timestamp is old.
     #[test]
-    fn installing_twice_rewrites_the_shim_and_leaves_the_real_cargo_alone() {
+    fn installing_twice_leaves_the_current_shim_and_real_cargo_alone() {
         let real = "\u{7f}ELF the one and only real cargo";
         let (_home, hook) = toolchain(real);
         hook.install().unwrap();
+        let written = mark_old_mtime(&hook.cargo);
 
-        assert_eq!(hook.install().unwrap(), Change::Refreshed);
+        assert_eq!(hook.install().unwrap(), Change::AlreadyCurrent);
+        assert_eq!(
+            fs::metadata(&hook.cargo).unwrap().modified().unwrap(),
+            written
+        );
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), real);
+    }
+
+    /// Size and mtime can remain unchanged while the installed bytes
+    /// differ, so neither can establish that the shim is current.
+    #[test]
+    fn ensuring_refreshes_changed_contents_with_the_same_size_and_mtime() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        hook.install().unwrap();
+        let written = mark_old_mtime(&hook.cargo);
+        let length = fs::metadata(&hook.cargo).unwrap().len();
+        let mut stale = SHIM_SOURCE.as_bytes().to_vec();
+        stale.rotate_right(1);
+        fs::write(&hook.cargo, &stale).unwrap();
+        assert_eq!(mark_old_mtime(&hook.cargo), written);
+        assert_eq!(fs::metadata(&hook.cargo).unwrap().len(), length);
+
+        assert_eq!(hook.state(), HookState::Installed);
+        assert_eq!(hook.ensure().unwrap(), Change::Refreshed);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
+    }
+
+    /// Rediscovery must retain a toolchain whose interrupted install
+    /// left the real binary beside the missing `cargo`.
+    fn interrupted_toolchain() -> (TempDir, Hook) {
+        let (home, hook) = toolchain(HOOK_TEST_REAL_CARGO);
+        fs::set_permissions(&hook.cargo, fs::Permissions::from_mode(SHIM_MODE)).unwrap();
+        fs::rename(&hook.cargo, &hook.real).unwrap();
+        let toolchain = hook.cargo.parent().unwrap().parent().unwrap();
+        let hook = Hook::at(toolchain).unwrap();
+        (home, hook)
+    }
+
+    /// A repaired install must execute the saved cargo through the shim
+    /// and retain the saved binary's contents.
+    fn assert_working_install(hook: &Hook) {
+        assert_eq!(hook.state(), HookState::Installed);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(
+            fs::read_to_string(&hook.real).unwrap(),
+            HOOK_TEST_REAL_CARGO
+        );
+        let output = Command::new(&hook.cargo)
+            .arg(HOOK_TEST_VERSION_ARGUMENT)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            output.stdout,
+            format!("{HOOK_TEST_VERSION_ARGUMENT}\n").as_bytes()
+        );
+        assert!(output.stderr.is_empty());
+    }
+
+    /// Installation repairs the missing command without using the
+    /// saved cargo's marker-bearing contents to classify it as a shim.
+    #[test]
+    fn installing_repairs_a_toolchain_with_only_the_saved_cargo() {
+        let (_home, hook) = interrupted_toolchain();
+
+        assert_eq!(hook.state(), HookState::Repairable);
+        assert_eq!(hook.install().unwrap(), Change::Installed);
+        assert_working_install(&hook);
+        let written = mark_old_mtime(&hook.cargo);
+        assert_eq!(hook.install().unwrap(), Change::AlreadyCurrent);
+        assert_eq!(
+            fs::metadata(&hook.cargo).unwrap().modified().unwrap(),
+            written
+        );
+    }
+
+    /// The entry point shared by startup and the CLI repairs the same
+    /// interrupted state and makes a repeated attempt a no-op.
+    #[test]
+    fn ensuring_repairs_a_toolchain_with_only_the_saved_cargo() {
+        let (_home, hook) = interrupted_toolchain();
+
+        assert_eq!(hook.state(), HookState::Repairable);
+        assert_eq!(hook.ensure().unwrap(), Change::Installed);
+        assert_working_install(&hook);
+        let written = mark_old_mtime(&hook.cargo);
+        assert_eq!(hook.ensure().unwrap(), Change::AlreadyCurrent);
+        assert_eq!(
+            fs::metadata(&hook.cargo).unwrap().modified().unwrap(),
+            written
+        );
+    }
+
+    /// A failed staging write leaves a discoverable repair state, so a
+    /// later attempt can complete after the write obstruction is gone.
+    #[test]
+    fn a_failed_shim_write_can_be_rediscovered_and_repaired() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        fs::create_dir(&hook.staging).unwrap();
+
+        assert!(hook.install().is_err());
+        assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+        assert!(!hook.cargo.exists());
+        assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
+        let toolchain = hook.cargo.parent().unwrap().parent().unwrap();
+        let hook = Hook::at(toolchain).unwrap();
+        assert_eq!(hook.state(), HookState::Repairable);
+
+        fs::remove_dir(&hook.staging).unwrap();
+        assert_eq!(hook.ensure().unwrap(), Change::Installed);
+        assert_eq!(hook.state(), HookState::Installed);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
+    }
+
+    /// A repair failure must release its lock while leaving the saved
+    /// cargo at its original path for the next attempt.
+    #[test]
+    fn a_failed_repair_releases_the_lock_and_preserves_saved_cargo() {
+        let (_home, hook) = interrupted_toolchain();
+        fs::create_dir(&hook.staging).unwrap();
+
+        assert!(hook.install().is_err());
+        assert!(!hook.cargo.exists());
+        assert_eq!(
+            fs::read_to_string(&hook.real).unwrap(),
+            HOOK_TEST_REAL_CARGO
+        );
+        assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+
+        fs::remove_dir(&hook.staging).unwrap();
+        assert_eq!(hook.ensure().unwrap(), Change::Installed);
+        assert_working_install(&hook);
+    }
+
+    /// A remover must leave both installed and repairable toolchains
+    /// untouched while another operation owns their installation lock.
+    #[test]
+    fn removing_with_a_held_lock_leaves_the_toolchain_untouched() {
+        for state in [HookState::Installed, HookState::Repairable] {
+            let (_home, hook) = interrupted_toolchain();
+            if state == HookState::Installed {
+                hook.install().unwrap();
+            }
+            let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
+            let installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
+
+            assert_eq!(hook.remove().unwrap_err().kind(), ErrorKind::AlreadyExists);
+            assert_eq!(hook.state(), state);
+            assert_eq!(
+                fs::read_to_string(&hook.real).unwrap(),
+                HOOK_TEST_REAL_CARGO
+            );
+            if state == HookState::Installed {
+                assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+            } else {
+                assert!(!hook.cargo.exists());
+            }
+            assert!(!hook.staging.exists());
+            assert!(lock_path.exists());
+
+            drop(installation_lock);
+            assert_eq!(hook.remove().unwrap(), Change::Removed);
+            assert_eq!(
+                fs::read_to_string(&hook.cargo).unwrap(),
+                HOOK_TEST_REAL_CARGO
+            );
+            assert!(!hook.real.exists());
+            assert!(!lock_path.exists());
+        }
+    }
+
+    /// Starting from the interrupted-install state must preserve an
+    /// executable cargo whichever competing operation acquires the lock first.
+    #[test]
+    fn concurrent_install_and_remove_preserve_a_working_cargo() {
+        // The restored cargo must classify as Absent, so this fixture
+        // omits the marker used by the saved-cargo repair tests.
+        let real = HOOK_TEST_REAL_CARGO.replace(SHIM_MARKER, CARGO_NAME);
+        let (_home, hook) = toolchain(&real);
+        fs::set_permissions(&hook.cargo, fs::Permissions::from_mode(SHIM_MODE)).unwrap();
+        fs::rename(&hook.cargo, &hook.real).unwrap();
+        let operations = [Hook::install, Hook::remove];
+        let start = Barrier::new(operations.len());
+
+        let changes = thread::scope(|scope| {
+            let start = &start;
+            let hook = &hook;
+            let attempts = operations.map(|operation| {
+                scope.spawn(move || {
+                    start.wait();
+                    operation(hook)
+                })
+            });
+            attempts.map(|attempt| attempt.join().unwrap().unwrap())
+        });
+
+        assert_eq!(changes, [Change::Installed, Change::Removed]);
+        assert!(matches!(
+            hook.state(),
+            HookState::Installed | HookState::Absent
+        ));
+        if hook.real.exists() {
+            assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+            assert_eq!(fs::read_to_string(&hook.real).unwrap(), real);
+        } else {
+            assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), real);
+        }
+        let output = Command::new(&hook.cargo)
+            .arg(HOOK_TEST_VERSION_ARGUMENT)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            output.stdout,
+            format!("{HOOK_TEST_VERSION_ARGUMENT}\n").as_bytes()
+        );
+        assert!(output.stderr.is_empty());
+        assert!(!hook.staging.exists());
+        assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+    }
+
+    /// Uninstalling must also restore a cargo left under its saved name
+    /// by a failed install, without installing a shim first.
+    #[test]
+    fn removing_an_interrupted_install_restores_the_real_cargo() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        fs::rename(&hook.cargo, &hook.real).unwrap();
+
+        assert_eq!(hook.remove().unwrap(), Change::Removed);
+        assert_eq!(hook.state(), HookState::Absent);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), CARGO_NAME);
+        assert!(!hook.real.exists());
+        assert_eq!(hook.remove().unwrap(), Change::AlreadyAbsent);
     }
 
     /// What `rustup update` leaves behind: a fresh real cargo back on the
@@ -464,6 +845,9 @@ mod tests {
         fs::remove_file(&hook.real).unwrap();
 
         assert_eq!(hook.state(), HookState::Orphaned);
+        assert_eq!(hook.install().unwrap(), Change::Orphaned);
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert!(!hook.real.exists());
         assert!(hook.remove().is_err());
     }
 
@@ -523,13 +907,33 @@ mod tests {
         );
     }
 
+    /// Startup must include a repaired toolchain in its existing
+    /// installed notice so the restored capture is visible.
+    #[test]
+    fn startup_reports_a_repaired_toolchain_as_installed() {
+        let (_home, hook) = interrupted_toolchain();
+        let name = hook.name.clone();
+        let hooks = [hook];
+
+        let startup = stand_up(&hooks);
+
+        assert_eq!(
+            startup,
+            Startup {
+                installed: vec![name],
+                ..Startup::default()
+            }
+        );
+        assert_working_install(&hooks[0]);
+    }
+
     /// Every launch after the first finds this, and it must change
     /// nothing and say nothing.
     #[test]
     fn startup_over_a_current_shim_is_quiet() {
         let (_home, hooks) = toolchains(&[("stable-test", "\u{7f}ELF stable")]);
         stand_up(&hooks);
-        let written = fs::metadata(&hooks[0].cargo).unwrap().modified().unwrap();
+        let written = mark_old_mtime(&hooks[0].cargo);
 
         let startup = stand_up(&hooks);
 

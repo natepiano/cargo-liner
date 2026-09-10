@@ -677,6 +677,27 @@ pub(crate) const SHIM_MARKER_SEARCH_BYTES: usize = 1024;
 /// `sh`, which does not `exec` the real cargo but waits on it, so the
 /// file it was started from is never written in place.
 pub(crate) const SHIM_STAGING_NAME: &str = "cargo-tile-shim.staging";
+/// Exclusive-create lock beside the shim, held across state inspection
+/// and installation so concurrent installers cannot overwrite real cargo.
+pub(crate) const SHIM_LOCK_NAME: &str = "cargo-tile-shim.lock";
+/// An abandoned exclusive-create lock persists after its owner exits,
+/// so exhausted retries must explain how to recover without racing it.
+pub(crate) const SHIM_LOCK_RECOVERY: &str =
+    "confirm no install is still running, remove this lock file, and run cargo-tile install again";
+/// Brief retries let a concurrent installer finish without waiting
+/// indefinitely for a lock left behind by a terminated process.
+pub(crate) const SHIM_LOCK_RETRY_ATTEMPTS: usize = 10;
+/// Match the favorites lock's short wait between competing writers.
+pub(crate) const SHIM_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
+/// A saved cargo fixture that echoes its arguments. Its marker proves
+/// interrupted-install repair depends on the filenames, not its bytes.
+#[cfg(test)]
+pub(crate) const HOOK_TEST_REAL_CARGO: &str =
+    "#!/bin/sh\n# cargo-tile-capture-shim inside the saved cargo\nprintf '%s\\n' \"$@\"\n";
+/// The shim passes version requests straight through, so repair tests
+/// can execute the saved cargo without creating capture state.
+#[cfg(test)]
+pub(crate) const HOOK_TEST_VERSION_ARGUMENT: &str = "--version";
 /// Whether the grid puts the shim in front of cargo when it opens,
 /// when `config.toml` says nothing.
 pub(crate) const DEFAULT_CAPTURE_AUTO_INSTALL: bool = true;
