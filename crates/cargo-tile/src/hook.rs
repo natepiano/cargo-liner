@@ -26,6 +26,7 @@ use std::env;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::ffi::OsStr;
+use std::fmt;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io;
@@ -82,7 +83,7 @@ pub(crate) struct InstallAccount {
 /// The result of handling all discovered toolchains for one account.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum AccountInstallOutcome {
-    /// At least one shim was installed or refreshed.
+    /// At least one shim was installed or refreshed, with no orphan or failure.
     Installed,
     /// Every shim already had this binary's contents.
     AlreadyInstalled,
@@ -90,13 +91,154 @@ pub(crate) enum AccountInstallOutcome {
     Skipped(String),
 }
 
-/// One account with a rustup home, including an installation or skip reason.
+/// The install result reported by the child for one toolchain.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ToolchainInstallOutcome {
+    /// The child installed a shim in front of cargo.
+    Installed,
+    /// The child updated an existing shim.
+    Refreshed,
+    /// The existing shim already matched the installer.
+    AlreadyInstalled,
+    /// The shim has no saved real cargo and could not be repaired.
+    Orphaned,
+    /// The child could not install this toolchain, with its reported reason.
+    Failed(String),
+}
+
+/// One named toolchain's install result, retained independently of its account summary.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct ToolchainInstallReport {
+    /// The toolchain name from the child's report.
+    pub(crate) toolchain: String,
+    /// The child's reported change or failure for this toolchain.
+    pub(crate) outcome:   ToolchainInstallOutcome,
+}
+
+impl TryFrom<&str> for ToolchainInstallReport {
+    type Error = String;
+
+    fn try_from(line: &str) -> Result<Self, Self::Error> {
+        let (toolchain, result) = line
+            .split_once('\t')
+            .filter(|(toolchain, _)| !toolchain.is_empty())
+            .ok_or_else(|| format!("invalid installer report: {line}"))?;
+        let outcome = match result {
+            "installed" => ToolchainInstallOutcome::Installed,
+            "refreshed" => ToolchainInstallOutcome::Refreshed,
+            "already installed" => ToolchainInstallOutcome::AlreadyInstalled,
+            "orphaned" => ToolchainInstallOutcome::Orphaned,
+            result => ToolchainInstallOutcome::Failed(result.strip_prefix("error\t").map_or_else(
+                || format!("invalid installer report: {line}"),
+                str::to_owned,
+            )),
+        };
+        Ok(Self {
+            toolchain: toolchain.to_owned(),
+            outcome,
+        })
+    }
+}
+
+impl fmt::Display for ToolchainInstallReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: ", self.toolchain)?;
+        match &self.outcome {
+            ToolchainInstallOutcome::Installed => formatter.write_str("installed"),
+            ToolchainInstallOutcome::Refreshed => formatter.write_str("refreshed"),
+            ToolchainInstallOutcome::AlreadyInstalled => formatter.write_str("already installed"),
+            ToolchainInstallOutcome::Orphaned => formatter
+                .write_str("orphaned -- the shim is installed but the real cargo is missing"),
+            ToolchainInstallOutcome::Failed(reason) => write!(formatter, "error: {reason}"),
+        }
+    }
+}
+
+/// One account's complete toolchain reports and their installation or skip summary.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct AccountInstallReport {
-    /// The account name used for this single report line.
-    pub(crate) account: String,
+    /// The account name used for this report.
+    pub(crate) account:    String,
     /// The aggregate result across this account's toolchains.
-    pub(crate) outcome: AccountInstallOutcome,
+    pub(crate) outcome:    AccountInstallOutcome,
+    /// Every named toolchain result, in the order reported by the child.
+    pub(crate) toolchains: Vec<ToolchainInstallReport>,
+}
+
+impl AccountInstallReport {
+    /// Record a failure that prevented the child from reporting any toolchains.
+    fn skipped(account: &InstallAccount, reason: String) -> Self {
+        Self {
+            account:    account.name.clone(),
+            outcome:    AccountInstallOutcome::Skipped(reason),
+            toolchains: Vec::new(),
+        }
+    }
+
+    /// Retain every toolchain before summarizing failures or successful changes.
+    fn from_output(account: &InstallAccount, output: &Output) -> Self {
+        let mut toolchains = Vec::new();
+        let mut failures = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            match ToolchainInstallReport::try_from(line) {
+                Ok(report) => {
+                    if matches!(
+                        report.outcome,
+                        ToolchainInstallOutcome::Orphaned | ToolchainInstallOutcome::Failed(_)
+                    ) {
+                        failures.push(report.to_string());
+                    }
+                    toolchains.push(report);
+                },
+                Err(error) => failures.push(error),
+            }
+        }
+        if !output.status.success() {
+            failures.push(
+                String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .next()
+                    .map_or_else(
+                        || format!("installer exited with {}", output.status),
+                        str::to_owned,
+                    ),
+            );
+        }
+        let outcome = if !failures.is_empty() {
+            AccountInstallOutcome::Skipped(failures.join("; "))
+        } else if toolchains.is_empty() {
+            AccountInstallOutcome::Skipped("no toolchains".to_owned())
+        } else if toolchains.iter().any(|report| {
+            matches!(
+                report.outcome,
+                ToolchainInstallOutcome::Installed | ToolchainInstallOutcome::Refreshed
+            )
+        }) {
+            AccountInstallOutcome::Installed
+        } else {
+            AccountInstallOutcome::AlreadyInstalled
+        };
+        Self {
+            account: account.name.clone(),
+            outcome,
+            toolchains,
+        }
+    }
+}
+
+impl fmt::Display for AccountInstallReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: ", self.account)?;
+        match &self.outcome {
+            AccountInstallOutcome::Installed => formatter.write_str("installed")?,
+            AccountInstallOutcome::AlreadyInstalled => formatter.write_str("already installed")?,
+            AccountInstallOutcome::Skipped(reason) => write!(formatter, "skipped: {reason}")?,
+        }
+        for report in &self.toolchains {
+            write!(formatter, "\n  {report}")?;
+        }
+        Ok(())
+    }
 }
 
 /// One toolchain's cargo, and whatever stands in front of it.
@@ -323,8 +465,7 @@ impl Hook {
         match self.state() {
             HookState::Absent => Ok(Change::AlreadyAbsent),
             HookState::Orphaned => Err(io::Error::other(format!(
-                "{}: the shim is installed but the real cargo is missing from {}",
-                self.name,
+                "the shim is installed but the real cargo is missing from {}",
                 self.real.display()
             ))),
             HookState::Installed | HookState::Repairable => {
@@ -539,23 +680,20 @@ pub(crate) fn install_accounts(
         if fs::metadata(&home).is_err_and(|error| error.kind() == ErrorKind::NotFound) {
             continue;
         }
-        reports.push(AccountInstallReport {
-            account: account.name.clone(),
-            outcome: install_account(account, installer),
-        });
+        reports.push(install_account(account, installer));
     }
     reports
 }
 
 /// Drop privileges before any toolchain discovery, lock, or installation.
-fn install_account(account: &InstallAccount, installer: &Path) -> AccountInstallOutcome {
+fn install_account(account: &InstallAccount, installer: &Path) -> AccountInstallReport {
     let mut command = Command::new(installer);
     if rustix::process::geteuid().is_root() {
         if let Err(error) = account_credentials(&mut command, account) {
-            return AccountInstallOutcome::Skipped(format!(
-                "could not resolve {}'s groups: {error}",
-                account.name
-            ));
+            return AccountInstallReport::skipped(
+                account,
+                format!("could not resolve {}'s groups: {error}", account.name),
+            );
         }
     } else {
         command.uid(account.uid).gid(account.gid);
@@ -568,12 +706,12 @@ fn install_account(account: &InstallAccount, installer: &Path) -> AccountInstall
         .output()
         .map_or_else(
             |error| {
-                AccountInstallOutcome::Skipped(format!(
-                    "could not start the installer as {}: {error}",
-                    account.name
-                ))
+                AccountInstallReport::skipped(
+                    account,
+                    format!("could not start the installer as {}: {error}", account.name),
+                )
             },
-            AccountInstallOutcome::from,
+            |output| AccountInstallReport::from_output(account, &output),
         )
 }
 
@@ -608,46 +746,6 @@ fn account_credentials(command: &mut Command, account: &InstallAccount) -> io::R
         });
     }
     Ok(())
-}
-
-impl From<Output> for AccountInstallOutcome {
-    fn from(output: Output) -> Self {
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Self::Skipped(stderr.lines().next().map_or_else(
-                || format!("installer exited with {}", output.status),
-                str::to_owned,
-            ));
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.is_empty() {
-            return Self::Skipped("no toolchains".to_owned());
-        }
-        let mut outcome = Self::AlreadyInstalled;
-        for line in stdout.lines() {
-            let Some((toolchain, result)) = line.split_once('\t') else {
-                return Self::Skipped(format!("invalid installer report: {line}"));
-            };
-            match result {
-                "installed" | "refreshed" => outcome = Self::Installed,
-                "already installed" => {},
-                "orphaned" => {
-                    if outcome == Self::AlreadyInstalled {
-                        outcome = Self::Skipped(format!(
-                            "{toolchain}: the shim is installed but the real cargo is missing"
-                        ));
-                    }
-                },
-                result => {
-                    return Self::Skipped(result.strip_prefix("error\t").map_or_else(
-                        || format!("invalid installer report: {line}"),
-                        |message| format!("{toolchain}: {message}"),
-                    ));
-                },
-            }
-        }
-        outcome
-    }
 }
 
 /// Where rustup keeps its toolchains.

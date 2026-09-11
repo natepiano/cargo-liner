@@ -11,9 +11,12 @@ use std::time::UNIX_EPOCH;
 use crate::capture_root::RootOwner;
 use crate::capture_root::SharedCaptureDirectory;
 use crate::config::Config;
+use crate::constants::RUSTUP_HOME_ENV;
 use crate::constants::SHIM_MARKER;
 use crate::hook::AccountInstallOutcome;
+use crate::hook::AccountInstallReport;
 use crate::hook::InstallAccount;
+use crate::hook::ToolchainInstallOutcome;
 use crate::hook::account_groups;
 use crate::hook::install_accounts;
 use crate::hook::stage_installer;
@@ -291,6 +294,10 @@ fn injected_account_reports_child_errors_and_continues_other_toolchains() {
     let good = original_cargo(&account, "z-working");
     let reports = install_accounts(&[account], installer());
     assert_eq!(reports.len(), 1);
+    assert_admin_report(
+        &reports[0],
+        &[("a-broken", "error:"), ("z-working", "installed")],
+    );
     assert!(
         matches!(&reports[0].outcome, AccountInstallOutcome::Skipped(reason)
             if reason.contains("a-broken")
@@ -306,6 +313,283 @@ fn injected_account_reports_child_errors_and_continues_other_toolchains() {
         fs::read(broken.join("cargo")).expect("failed toolchain untouched"),
         b"#!/bin/sh\nexit 37\n"
     );
+}
+
+#[test]
+fn injected_account_reports_an_orphan_before_an_installed_toolchain() {
+    assert_orphan_and_installed_reports("a-orphan", "z-working");
+}
+
+#[test]
+fn injected_account_reports_an_orphan_after_an_installed_toolchain() {
+    assert_orphan_and_installed_reports("z-orphan", "a-working");
+}
+
+/// Toolchain discovery orders the actual child reports by these fixture names.
+fn assert_orphan_and_installed_reports(orphan_name: &str, installed_name: &str) {
+    let directory = tempfile::tempdir().expect("mixed account reports fixture");
+    let account = account_at(directory.path(), "runner");
+    let orphan = original_cargo(&account, orphan_name);
+    fs::write(
+        orphan.join("cargo"),
+        include_bytes!("../../src/cargo-capture-shim.sh"),
+    )
+    .expect("orphan shim without saved cargo");
+    let working = original_cargo(&account, installed_name);
+    let reports = install_accounts(&[account], installer());
+    assert_eq!(reports.len(), 1);
+    let report = &reports[0];
+    assert_admin_report(
+        report,
+        &[(orphan_name, "orphaned"), (installed_name, "installed")],
+    );
+    assert_eq!(report.account, "runner");
+    assert!(
+        matches!(&report.outcome, AccountInstallOutcome::Skipped(reason) if reason.contains(orphan_name)),
+        "an orphan prevents an unqualified installed account summary: {report:?}"
+    );
+    assert_eq!(report.toolchains.len(), 2);
+    for (name, outcome) in [
+        (orphan_name, ToolchainInstallOutcome::Orphaned),
+        (installed_name, ToolchainInstallOutcome::Installed),
+    ] {
+        let toolchain = report
+            .toolchains
+            .iter()
+            .find(|entry| entry.toolchain == name)
+            .expect("retain both child report lines");
+        assert_eq!(toolchain.outcome, outcome, "{name}: {report:?}");
+    }
+    assert_eq!(
+        fs::read(working.join("cargo")).expect("successful install"),
+        include_bytes!("../../src/cargo-capture-shim.sh")
+    );
+    assert_eq!(
+        fs::read(working.join("cargo-tile-real")).expect("saved original cargo"),
+        b"#!/bin/sh\nexit 37\n"
+    );
+    assert_eq!(
+        fs::read(orphan.join("cargo")).expect("orphan survives install"),
+        include_bytes!("../../src/cargo-capture-shim.sh")
+    );
+    assert!(!orphan.join("cargo-tile-real").exists());
+}
+
+#[test]
+fn injected_account_reports_every_orphan_beside_a_successful_install() {
+    let directory = tempfile::tempdir().expect("multiple orphans fixture");
+    let account = account_at(directory.path(), "runner");
+    for name in ["a-orphan", "z-orphan"] {
+        let bin = original_cargo(&account, name);
+        fs::write(
+            bin.join("cargo"),
+            include_bytes!("../../src/cargo-capture-shim.sh"),
+        )
+        .expect("orphan shim without saved cargo");
+    }
+    original_cargo(&account, "m-working");
+    let reports = install_accounts(&[account], installer());
+    assert_eq!(reports.len(), 1);
+    let report = &reports[0];
+    assert_admin_report(
+        report,
+        &[
+            ("a-orphan", "orphaned"),
+            ("m-working", "installed"),
+            ("z-orphan", "orphaned"),
+        ],
+    );
+    assert!(
+        matches!(&report.outcome, AccountInstallOutcome::Skipped(_)),
+        "multiple orphans cannot receive an installed account summary: {report:?}"
+    );
+    assert_eq!(report.toolchains.len(), 3);
+    for (toolchain, (name, outcome)) in report.toolchains.iter().zip([
+        ("a-orphan", ToolchainInstallOutcome::Orphaned),
+        ("m-working", ToolchainInstallOutcome::Installed),
+        ("z-orphan", ToolchainInstallOutcome::Orphaned),
+    ]) {
+        assert_eq!(toolchain.toolchain, name);
+        assert_eq!(toolchain.outcome, outcome, "{report:?}");
+    }
+}
+
+#[test]
+fn injected_account_reports_an_orphan_and_install_after_a_child_error() {
+    let directory = tempfile::tempdir().expect("error before orphan fixture");
+    let account = account_at(directory.path(), "runner");
+    let broken = original_cargo(&account, "a-broken");
+    fs::create_dir(broken.join("cargo-tile-shim.lock")).expect("lock open must fail");
+    let orphan = original_cargo(&account, "m-orphan");
+    fs::write(
+        orphan.join("cargo"),
+        include_bytes!("../../src/cargo-capture-shim.sh"),
+    )
+    .expect("orphan shim without saved cargo");
+    let working = original_cargo(&account, "z-working");
+    let reports = install_accounts(&[account], installer());
+    assert_eq!(reports.len(), 1);
+    let report = &reports[0];
+    assert_admin_report(
+        report,
+        &[
+            ("a-broken", "error:"),
+            ("m-orphan", "orphaned"),
+            ("z-working", "installed"),
+        ],
+    );
+    assert!(
+        matches!(&report.outcome, AccountInstallOutcome::Skipped(reason) if reason.contains("a-broken")),
+        "the account report retains the failed toolchain: {report:?}"
+    );
+    assert_eq!(report.toolchains.len(), 3, "retain reports after an error");
+    assert_eq!(report.toolchains[0].toolchain, "a-broken");
+    assert!(matches!(&report.toolchains[0].outcome,
+        ToolchainInstallOutcome::Failed(reason) if !reason.is_empty()));
+    assert_eq!(report.toolchains[1].toolchain, "m-orphan");
+    assert_eq!(
+        report.toolchains[1].outcome,
+        ToolchainInstallOutcome::Orphaned
+    );
+    assert_eq!(report.toolchains[2].toolchain, "z-working");
+    assert_eq!(
+        report.toolchains[2].outcome,
+        ToolchainInstallOutcome::Installed
+    );
+    assert_eq!(
+        fs::read(broken.join("cargo")).expect("failed toolchain untouched"),
+        b"#!/bin/sh\nexit 37\n"
+    );
+    assert_eq!(
+        fs::read(orphan.join("cargo")).expect("orphan untouched"),
+        include_bytes!("../../src/cargo-capture-shim.sh")
+    );
+    assert!(!orphan.join("cargo-tile-real").exists());
+    assert_eq!(
+        fs::read(working.join("cargo")).expect("later toolchain installs"),
+        include_bytes!("../../src/cargo-capture-shim.sh")
+    );
+    assert_eq!(
+        fs::read(working.join("cargo-tile-real")).expect("saved original cargo"),
+        b"#!/bin/sh\nexit 37\n"
+    );
+}
+
+/// Inspect the same report text that the administrative command prints.
+fn assert_admin_report(report: &AccountInstallReport, outcomes: &[(&str, &str)]) {
+    let rendered = report.to_string();
+    assert!(
+        rendered
+            .lines()
+            .next()
+            .expect("account summary")
+            .starts_with("runner: skipped:"),
+        "incomplete account installation must not claim installed: {rendered}"
+    );
+    for (toolchain, outcome) in outcomes {
+        let prefix = format!("{toolchain}: ");
+        let lines: Vec<_> = rendered
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with(&prefix))
+            .collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "one named report for {toolchain}: {rendered}"
+        );
+        assert!(
+            lines[0]
+                .strip_prefix(&prefix)
+                .expect("toolchain prefix")
+                .starts_with(outcome),
+            "{toolchain} must report {outcome}: {rendered}"
+        );
+        if *outcome == "orphaned" {
+            assert!(lines[0].contains("real cargo is missing"), "{rendered}");
+        }
+        if *outcome == "error:" {
+            assert!(lines[0].contains("cargo-tile-shim.lock"), "{rendered}");
+        }
+    }
+}
+
+/// A removal failure must not leave a later healthy toolchain installed.
+#[test]
+fn uninstall_reports_an_orphan_and_restores_later_toolchains_before_failing() {
+    let directory = tempfile::tempdir().expect("uninstall fixture");
+    let account = account_at(directory.path(), "runner");
+    let orphan = original_cargo(&account, "a-orphan");
+    let shim = include_bytes!("../../src/cargo-capture-shim.sh");
+    fs::write(orphan.join("cargo"), shim).expect("orphan shim without saved cargo");
+    let orphan_before = fs::metadata(orphan.join("cargo")).expect("orphan metadata");
+    let working = original_cargo(&account, "z-working");
+    let original = fs::read(working.join("cargo")).expect("original cargo bytes");
+    let original_mode = fs::metadata(working.join("cargo"))
+        .expect("original cargo metadata")
+        .mode();
+    fs::rename(working.join("cargo"), working.join("cargo-tile-real"))
+        .expect("healthy installed toolchain saves cargo");
+    fs::write(working.join("cargo"), shim).expect("healthy installed shim");
+
+    let output = Command::new(installer())
+        .arg("uninstall")
+        .env("HOME", &account.home)
+        .env(RUSTUP_HOME_ENV, account.home.join(".rustup"))
+        .output()
+        .expect("uninstall both toolchains");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "z-working: capture shim removed"),
+        "the later toolchain must report successful removal: {output:?}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|line| { line.contains("a-orphan:") && line.contains("real cargo is missing") }),
+        "the failed removal must name the orphan and its cause: {output:?}"
+    );
+    assert_ne!(
+        output.status.code().expect("uninstall exits normally"),
+        0,
+        "partial removal must exit nonzero: {output:?}"
+    );
+    assert_eq!(
+        fs::read(working.join("cargo")).expect("restored cargo"),
+        original
+    );
+    assert_eq!(
+        fs::metadata(working.join("cargo"))
+            .expect("restored cargo metadata")
+            .mode(),
+        original_mode
+    );
+    assert_eq!(
+        Command::new(working.join("cargo"))
+            .status()
+            .expect("restored cargo remains executable")
+            .code(),
+        Some(37)
+    );
+    assert!(!working.join("cargo-tile-real").exists());
+    assert_eq!(
+        fs::read(orphan.join("cargo")).expect("untouched orphan"),
+        shim
+    );
+    let orphan_after = fs::metadata(orphan.join("cargo")).expect("orphan survives removal");
+    assert_eq!(orphan_after.ino(), orphan_before.ino());
+    assert_eq!(orphan_after.mode(), orphan_before.mode());
+    assert_eq!(
+        orphan_after.modified().expect("orphan mtime"),
+        orphan_before.modified().expect("original orphan mtime")
+    );
+    assert!(!orphan.join("cargo-tile-real").exists());
+    for bin in [&orphan, &working] {
+        assert!(!bin.join("cargo-tile-shim.lock").exists());
+    }
 }
 
 #[test]

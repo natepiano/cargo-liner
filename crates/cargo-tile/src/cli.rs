@@ -197,19 +197,11 @@ fn install_all_accounts() -> io::Result<()> {
     let mut already_installed = 0;
     let mut skipped = 0;
     for report in &reports {
+        println!("{report}");
         match &report.outcome {
-            AccountInstallOutcome::Installed => {
-                installed += 1;
-                println!("{}: installed", report.account);
-            },
-            AccountInstallOutcome::AlreadyInstalled => {
-                already_installed += 1;
-                println!("{}: already installed", report.account);
-            },
-            AccountInstallOutcome::Skipped(reason) => {
-                skipped += 1;
-                println!("{}: skipped: {reason}", report.account);
-            },
+            AccountInstallOutcome::Installed => installed += 1,
+            AccountInstallOutcome::AlreadyInstalled => already_installed += 1,
+            AccountInstallOutcome::Skipped(_) => skipped += 1,
         }
     }
     println!(
@@ -219,11 +211,22 @@ fn install_all_accounts() -> io::Result<()> {
     Ok(())
 }
 
-/// Take the shim back out of every toolchain.
+/// Attempt every removal and fail the command if any toolchain could not be restored.
 fn uninstall() -> io::Result<()> {
+    let mut failed = 0;
     for hook in &Hook::all()? {
-        let change = hook.remove()?;
-        println!("{}: {}", hook.name(), describe(change));
+        match hook.remove() {
+            Ok(change) => println!("{}: {}", hook.name(), describe(change)),
+            Err(error) => {
+                failed += 1;
+                eprintln!("{BINARY_NAME}: {}: {error}", hook.name());
+            },
+        }
+    }
+    if failed > 0 {
+        return Err(io::Error::other(format!(
+            "capture shim removal failed for {failed} toolchain(s)"
+        )));
     }
     Ok(())
 }
