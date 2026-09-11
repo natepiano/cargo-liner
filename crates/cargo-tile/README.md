@@ -415,7 +415,7 @@ other terminals — and a process's output belongs to the terminal that started
 it. Nothing outside can read it. So `cargo-tile install` moves each toolchain's
 real cargo aside to `cargo-tile-real` and puts a small script in its place,
 which runs the real binary under a pty and mirrors the output to
-`/tmp/cargo-tile/<uid>/run-<timestamp>-<pid>.log`, under a directory the account
+`/tmp/cargo-tile/<uid>/run-<date>-<uuid>-<pid>.log`, under a directory the account
 owns. The grid reads the last counter out of the tail of that log.
 
 Without the shim nothing breaks: the `state` column simply stays out and
@@ -438,9 +438,12 @@ Worth knowing before installing it:
   safe: a running cargo holds its binary open, and moving that file aside does
   not disturb it.
 - **Query invocations are passed straight through** — `cargo metadata`,
-  `--version`, `--message-format=json`, and the rest. They compile nothing, and
-  rust-analyzer issues them constantly. So is `cargo tile` itself: capturing it
-  would run the grid under `script` and log every redraw of it.
+  `--version`, and the rest. They compile nothing, and rust-analyzer issues
+  them constantly. So is `cargo tile` itself: capturing it would run the grid
+  under `script` and log every redraw of it. A `--message-format=json` caller
+  is not among them. It compiles and takes the build-directory lock like any
+  other, so it is captured by the no-terminal route, which copies stderr alone
+  and leaves the JSON on stdout untouched.
 - **A nested cargo does not open a second capture.** A build script, or cargo
   driving cargo, is already inside the outer run.
 - **`rustup update` replaces the shim** with a fresh cargo. The next grid to
@@ -461,18 +464,18 @@ the child's status. The shim asks which is present — only util-linux answers
 `--version` — and calls it accordingly. Where there is no `script` at all it
 falls back to the no-terminal route described above rather than giving up.
 
-A run that reached no unit and waited on no lock deletes its own log as it
-ends: there is nothing in it the grid could have read, and an editor issues one
-such check on every save. What is left behind is the logs of runs that actually
-reported something, and whatever cleans `/tmp` on the system is what bounds
-those: macOS sweeps files after a few days, and many Linux systems clear it at
-boot. A run counts as live only while its marker file under
-`/tmp/cargo-tile/<uid>/state/pids/` exists, so deleting the logs is safe at any
-time. Every account on the machine writes under its own numbered directory in
-`/tmp/cargo-tile`, and the grid reads all of them, so a build started by a
-runner account shows up under that account's name with nothing to configure.
-`cargo-tile install --all-accounts`, run as root, puts the shim in front of
-every account's toolchains in one go.
+A run removes its own log and its marker file as it ends, whatever it
+reported. Only a run killed outright leaves them behind. The account's next
+cargo invocation removes those once their pid is gone, and the grid does the
+same for the account it runs as, after checking with the kernel that the run
+ended. A run counts as live only while its marker file under
+`/tmp/cargo-tile/<uid>/state/pids/` exists. Deleting a log by hand disturbs
+nothing, but a live run whose log is removed reports nothing more for the rest
+of that run. Every account on the machine writes under its own numbered
+directory in `/tmp/cargo-tile`, and the grid reads all of them, so a build
+started by a runner account shows up under that account's name with nothing to
+configure. `cargo-tile install --all-accounts`, run as root, puts the shim in
+front of every account's toolchains in one go.
 
 ### keys
 
