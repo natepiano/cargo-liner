@@ -18,6 +18,7 @@ use crate::hook::account_groups;
 use crate::hook::install_accounts;
 use crate::hook::stage_installer;
 use crate::processes::AccountName;
+use crate::processes::CaptureDiagnostic;
 use crate::processes::RootReadStatus;
 use crate::progress::Capture;
 use crate::progress::CaptureCleanup;
@@ -494,6 +495,8 @@ fn reader_reports_foreign_owned_uid_directories_as_ignored() {
     set_mode(&parent, 0o700);
 
     let roots = CaptureRoots::from_parent(&parent);
+    let parent = parent.canonicalize().expect("physical shared parent");
+    let other = parent.join("4294967294");
     let capture = Capture::take(&roots);
     assert_eq!(
         fs::metadata(&parent).expect("repaired parent").mode() & 0o7777,
@@ -622,6 +625,97 @@ fn shared_directory_settings_cover_missing_permissions_and_canonical_aliases() {
     );
 }
 
+/// An ancestor alias cannot cause a live registration and its named log to be swept.
+#[test]
+fn reader_preserves_live_capture_published_under_real_path_and_scanned_through_alias() {
+    let directory = tempfile::tempdir().expect("capture alias fixture");
+    let real = directory.path().join("real");
+    let alias = directory.path().join("alias");
+    let parent = real.join("capture");
+    let uid = fs::metadata(directory.path()).expect("reader uid").uid();
+    let own = parent.join(uid.to_string());
+    fs::create_dir_all(own.join("state/pids")).expect("owned capture hierarchy");
+    symlink(&real, &alias).expect("alias of the real ancestor");
+    let own = own.canonicalize().expect("physical account directory");
+    let pid = std::process::id();
+    let log = format!("run-live-alias-{pid}.log");
+    let registration = own.join("state/pids").join(format!("{pid}.live-alias"));
+    let publication = Command::new("python3")
+        .args([
+            "-c",
+            r"from datetime import datetime, timezone
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+pid, directory, log = sys.argv[1:]
+if sys.platform == 'linux':
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    birth = Path('/proc/' + pid + '/stat').read_text().rsplit(') ', 1)[1].split()[19]
+else:
+    environment = dict(os.environ, LC_ALL='C', TZ='UTC0')
+    boot = subprocess.run(['sysctl', '-n', 'kern.bootsessionuuid'], check=True,
+                          capture_output=True, text=True, env=environment).stdout.strip()
+    started = subprocess.run(['ps', '-o', 'lstart=', '-p', pid], check=True,
+                             capture_output=True, text=True, env=environment).stdout.strip()
+    birth = str(int(datetime.strptime(started, '%a %b %d %H:%M:%S %Y')
+                    .replace(tzinfo=timezone.utc).timestamp()))
+fields = ['cargo-tile-v2', 'live-alias', boot, birth, log, directory, '', '1', 'build', '']
+sys.stdout.buffer.write(b'\0'.join(os.fsencode(field) for field in fields))
+",
+        ])
+        .arg(pid.to_string())
+        .arg(&own)
+        .arg(&log)
+        .output()
+        .expect("observe current process birth independently of the reader");
+    assert!(publication.status.success(), "{publication:?}");
+    assert!(publication.stderr.is_empty(), "{publication:?}");
+    fs::write(&registration, &publication.stdout).expect("publish live registration");
+    let log = own.join(log);
+    let progress = b"Blocking waiting for file lock on build directory\n";
+    fs::write(&log, progress).expect("publish live log");
+    let roots = CaptureRoots::from_parent(&alias.join("capture"));
+
+    for _ in 0..2 {
+        let capture = Capture::take(&roots);
+        assert_eq!(capture.root_status.len(), 1);
+        let status = &capture.root_status[0];
+        assert_eq!(status.root.path, own);
+        assert_eq!(status.root.cleanup, CaptureCleanup::Here);
+        assert_eq!(status.state, RootReadStatus::Readable);
+        assert!(status.cleanup.is_empty(), "{:?}", status.cleanup);
+        assert_eq!(status.confirmed, 1, "{:?}", status.diagnostics);
+        assert_eq!(capture.confirmed().len(), 1);
+        assert_eq!(capture.confirmed()[0].key.pid, pid);
+        assert_eq!(
+            fs::read(&registration).expect("live registration survives owned sweep"),
+            publication.stdout
+        );
+        assert_eq!(
+            fs::read(&log).expect("live log survives owned sweep"),
+            progress
+        );
+    }
+
+    // A running older shim may retain a calendar-derived Darwin boot stamp.
+    let mut fields: Vec<_> = publication.stdout.split(|byte| *byte == 0).collect();
+    fields[2] = b"{ sec = 100, usec = 23 }";
+    let legacy = fields.join(&0);
+    fs::write(&registration, &legacy).expect("publish legacy Darwin boot identity");
+    let capture = Capture::take(&roots);
+    assert!(capture.confirmed().is_empty());
+    assert!(capture.root_status[0].diagnostics.iter().any(|diagnostic| {
+        matches!(diagnostic, CaptureDiagnostic::IdentityUnknown(path) if path == &registration)
+    }));
+    assert_eq!(
+        fs::read(&registration).expect("unknown identity never authorizes a live unlink"),
+        legacy
+    );
+    assert_eq!(fs::read(&log).expect("unknown live log survives"), progress);
+}
+
 #[test]
 fn reader_reaps_its_ended_capture_and_leaves_foreign_owned_directory_untouched() {
     let directory = tempfile::tempdir().expect("shared parent fixture");
@@ -655,6 +749,9 @@ fn reader_reaps_its_ended_capture_and_leaves_foreign_owned_directory_untouched()
         fs::write(account.join("state/pids").join(&name), &record).expect("ended registration");
         fs::write(account.join(&log), b"old progress").expect("ended log");
     }
+    let other = other
+        .canonicalize()
+        .expect("physical foreign-owned directory");
     let capture = Capture::take(&CaptureRoots::from_parent(&parent));
     assert_eq!(capture.root_status.len(), 2);
     let rejected = capture

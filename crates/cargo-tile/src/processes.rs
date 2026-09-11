@@ -24,6 +24,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fs;
 use std::io::ErrorKind;
 use std::ops::Add;
 use std::os::unix::ffi::OsStrExt;
@@ -303,6 +304,41 @@ enum WorkingDirectoryObservation<'directory> {
 impl<'directory> From<Option<&'directory Path>> for WorkingDirectoryObservation<'directory> {
     fn from(directory: Option<&'directory Path>) -> Self {
         directory.map_or(Self::Unavailable, Self::Observed)
+    }
+}
+
+/// Path spelling alone cannot distinguish a directory from one of its aliases.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirectoryComparison {
+    /// Both observations name the same directory.
+    Same,
+    /// Readable metadata identifies distinct directories.
+    Different,
+    /// Missing metadata cannot establish whether different spellings agree.
+    Unavailable,
+}
+
+impl DirectoryComparison {
+    /// Equal observed paths need no extra access; aliases compare filesystem identity.
+    /// A relative spelling would resolve against this process's own directory, so it
+    /// never establishes identity.
+    fn between(left: &Path, right: &Path) -> Self {
+        if left == right {
+            return Self::Same;
+        }
+        if !left.is_absolute() || !right.is_absolute() {
+            return Self::Unavailable;
+        }
+        match (fs::metadata(left), fs::metadata(right)) {
+            (Ok(left), Ok(right)) if left.is_dir() && right.is_dir() => {
+                if left.dev() == right.dev() && left.ino() == right.ino() {
+                    Self::Same
+                } else {
+                    Self::Different
+                }
+            },
+            _ => Self::Unavailable,
+        }
     }
 }
 
@@ -1926,11 +1962,11 @@ impl Census {
                 row.invocation_id = direct.invocation_id();
                 row.provenance = RowProvenance::direct(capture, &key);
                 let record = direct.registration().record();
-                if matches!(
-                    row.directory_identity,
-                    WorkingDirectoryIdentity::Absolute(_)
-                ) && record.directory_identity() == row.directory_identity
+                if let WorkingDirectoryIdentity::Absolute(path) = &row.directory_identity
+                    && DirectoryComparison::between(record.directory(), path)
+                        == DirectoryComparison::Same
                 {
+                    row.directory_identity = record.directory_identity();
                     row.path = registration_directory(record, home);
                 }
             },
@@ -2327,7 +2363,7 @@ fn observed_shim_match(
 ) -> bool {
     matches!((subcommand(outer), subcommand(inner), outer_cwd, inner_cwd),
         (Some(outer), Some(inner), WorkingDirectoryObservation::Observed(outer_cwd), WorkingDirectoryObservation::Observed(inner_cwd))
-        if outer == inner && outer_cwd == inner_cwd)
+        if outer == inner && DirectoryComparison::between(outer_cwd, inner_cwd) == DirectoryComparison::Same)
 }
 
 /// One compiler tally across a whole group: the highest-priority driver
@@ -2448,10 +2484,11 @@ fn row_fields(
             )
         },
         (WorkingDirectoryObservation::Observed(path), DirectAssociation::Direct(direct))
-            if direct.registration().record().directory() == path =>
+            if DirectoryComparison::between(direct.registration().record().directory(), path)
+                == DirectoryComparison::Same =>
         {
             (
-                path.into(),
+                direct.registration().record().directory_identity(),
                 registration_directory(direct.registration().record(), home),
             )
         },
@@ -3583,6 +3620,10 @@ mod tests {
         let after = root.path().join("after");
         fs::create_dir(&before).expect("initial directory");
         fs::create_dir(&after).expect("replacement directory");
+        let before = before.canonicalize().expect("physical initial directory");
+        let after = after
+            .canonicalize()
+            .expect("physical replacement directory");
         let mut fixture = MetadataProcess {
             child: std::process::Command::new("sh")
                 .args([
@@ -3678,6 +3719,66 @@ mod tests {
             &argv,
             WorkingDirectoryObservation::Observed(Path::new("/other"))
         ));
+    }
+
+    #[test]
+    fn directory_aliases_preserve_wrapper_and_registration_associations() {
+        let root = tempdir().expect("capture root");
+        let real = root.path().join("real");
+        fs::create_dir(&real).expect("working directory");
+        let alias = root.path().join("alias");
+        symlink(&real, &alias).expect("working directory alias");
+        let argv = [OsString::from("cargo"), OsString::from("build")];
+        assert!(observed_shim_match(
+            &argv,
+            WorkingDirectoryObservation::Observed(&real),
+            &argv,
+            WorkingDirectoryObservation::Observed(&alias),
+        ));
+        assert_eq!(
+            DirectoryComparison::between(&real, root.path()),
+            DirectoryComparison::Different
+        );
+        assert_eq!(
+            DirectoryComparison::between(&real, &root.path().join("missing")),
+            DirectoryComparison::Unavailable
+        );
+        assert_eq!(
+            DirectoryComparison::between(Path::new("~/real"), &real),
+            DirectoryComparison::Unavailable
+        );
+
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            real.to_str().expect("fixture path"),
+            root.path().to_str().expect("fixture home"),
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let home = ScannerHome::Known(root.path());
+        let (identity, path, _) = row_fields(
+            WorkingDirectoryObservation::Observed(&alias),
+            &argv,
+            &capture.row_source(10),
+            home,
+        )
+        .expect("alias agrees with verified registration");
+        assert_eq!(identity, WorkingDirectoryIdentity::Absolute(real.clone()));
+        assert_eq!(path, "~/real");
+
+        let mut census = census_of(&[]);
+        census.identify_captures(&capture);
+        let mut row = directory_row();
+        row.directory_identity = WorkingDirectoryIdentity::Absolute(alias);
+        census.annotate_capture(&mut row, &capture, home);
+        assert_eq!(
+            row.directory_identity,
+            WorkingDirectoryIdentity::Absolute(real)
+        );
+        assert_eq!(row.path, "~/real");
     }
 
     /// A confirmed record supplies a real proof without using host process allocation.

@@ -842,9 +842,9 @@ pub(crate) const BIRTH_BOOT_EMPTY: &str = "empty boot identity";
 /// Linux exposes a boot UUID independently of process ownership.
 #[cfg(target_os = "linux")]
 pub(crate) const BIRTH_BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
-/// Name the kernel interface that supplied a retained macOS boot failure.
+/// The boot-session UUID survives calendar corrections, unlike kern.boottime.
 #[cfg(target_os = "macos")]
-pub(crate) const BIRTH_MACOS_BOOT_NAME: &str = "kern.boottime";
+pub(crate) const BIRTH_MACOS_BOOT_NAME: &str = "kern.bootsessionuuid";
 /// The numeric portion of Darwin's sysctl output is independent of its date suffix.
 pub(crate) const BIRTH_MACOS_BOOT_PREFIX: &str = "{ sec = ";
 /// Preserve the boot timeval's microseconds even though process births use seconds.

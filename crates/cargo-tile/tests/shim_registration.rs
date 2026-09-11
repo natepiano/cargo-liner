@@ -1322,8 +1322,10 @@ case $SHIM_TEST_NATIVE_PLATFORM in
         ;;
     macos)
         started=$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$shim_pid")
+        # BSD ps pads lstart to its column width; date warns about the suffix.
+        started=$(printf '%s\n' "$started" | sed 's/[[:space:]]*$//')
         LC_ALL=C TZ=UTC0 "$SHIM_TEST_REAL_DATE" -j -f '%a %b %e %H:%M:%S %Y' "$started" +%s > "$observations/birth"
-        sysctl -n kern.boottime > "$observations/boot"
+        sysctl -n kern.bootsessionuuid > "$observations/boot"
         ;;
 esac
 if [ -n "${SHIM_TEST_PENDING_DELETE-}" ] && [ -f "$SHIM_TEST_PENDING_DELETE" ]; then
@@ -1477,8 +1479,12 @@ time.tzset()
 formatting = '%a %b %d %H:%M:%S %Y'
 if sys.argv[1] == 'ps':
     birth = int(os.environ.get('SHIM_TEST_BIRTH', '1788957296'))
-    print(time.strftime(formatting, time.localtime(birth)))
+    started = time.strftime(formatting, time.localtime(birth))
+    if os.environ.get('SHIM_TEST_PS_PADDING'):
+        started += '    '
+    print(started)
 else:
+    assert sys.argv[2] == sys.argv[2].rstrip(), 'date receives ps column padding'
     print(int(time.mktime(time.strptime(sys.argv[2], formatting))))
 ",
         )
@@ -1489,7 +1495,11 @@ else:
         );
         executable(
             &fixture.path("tools/sysctl"),
-            "#!/bin/sh\nprintf '{ sec = 1788900000, usec = 123456 } Wed Sep 9\\n'\n",
+            r#"#!/bin/sh
+set -eu
+[ "$#" -eq 2 ] && [ "$1" = -n ] && [ "$2" = kern.bootsessionuuid ] || exit 91
+printf '12345678-1234-1234-1234-123456789abc\n'
+"#,
         );
         executable(
             &fixture.path("tools/ps"),
@@ -2201,6 +2211,32 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
                 [b"POSIX".as_slice(), timezone.as_bytes(), b"C"]
             );
         }
+    }
+
+    /// BSD ps column padding must not reach date or contaminate cargo's capture log.
+    #[test]
+    fn darwin_birth_conversion_removes_ps_column_padding() {
+        let fixture = InstalledShim::new();
+        install_darwin_observers(&fixture);
+        let output = fixture
+            .command(&["build"])
+            .env("SHIM_TEST_PS_PADDING", "1")
+            .output()
+            .expect("run with padded Darwin ps output");
+        assert_cargo_result(&output);
+        let registration = fixture.registration();
+        let fields = registration.fields();
+        assert_eq!(fields[2], b"12345678-1234-1234-1234-123456789abc");
+        assert_eq!(fields[3], b"1788957296");
+        let converted = fs::read(fixture.path("observations/date-conversion"))
+            .expect("observe the exact date conversion argument");
+        let arguments = nul_fields(&converted);
+        assert_eq!(arguments[5], b"Wed Sep 09 12:34:56 2026");
+        let log = std::str::from_utf8(fields[4]).expect("registered log basename");
+        assert_eq!(
+            fs::read(fixture.path("observations").join(log)).expect("captured cargo bytes"),
+            b"registration log marker\n"
+        );
     }
 
     /// The two occurrences of 01:30 at DST fallback must publish different epoch seconds.

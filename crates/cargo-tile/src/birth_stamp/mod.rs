@@ -27,7 +27,7 @@ use crate::progress::PathFailure;
 /// This value is evidence to compare; it is not proof that a record is live.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct BirthStamp {
-    /// Boot UUID on Linux, numeric boot timeval on macOS.
+    /// Boot-session UUID, or a legacy macOS calendar-derived boot timeval.
     boot:  String,
     /// Linux clock ticks or macOS epoch seconds, matching the publisher.
     birth: u64,
@@ -87,6 +87,14 @@ impl BirthStamp {
     fn compare(&self, observation: &Observation) -> Verification {
         match observation {
             Observation::Present(live) if self == live => Verification::Confirmed,
+            Observation::Present(live)
+                if self.boot.starts_with(BIRTH_MACOS_BOOT_PREFIX)
+                    || live.boot.starts_with(BIRTH_MACOS_BOOT_PREFIX) =>
+            {
+                // Legacy Darwin boot time follows clock corrections. A mismatch
+                // with a live process therefore proves neither reuse nor exit.
+                Verification::Unknown
+            },
             Observation::Present(_) | Observation::Ended => Verification::Ended,
             Observation::Unknown => Verification::Unknown,
         }
@@ -465,6 +473,35 @@ mod tests {
         assert_ne!(
             writer,
             BirthStamp::from_fields("{ sec = 100, usec = 24 } jeudi", "101")
+        );
+    }
+
+    #[test]
+    fn legacy_macos_clock_changes_cannot_end_a_live_registration() {
+        let boot_session = "01234567-89AB-4CDE-8F01-23456789ABCD";
+        let live = match BirthStamp::from_fields("{ sec = 100, usec = 24 }", "101") {
+            IdentityEvidence::Available(live) => Ok(live),
+            IdentityEvidence::Unavailable => Err("valid legacy Darwin stamp"),
+        }
+        .expect("complete fixture identity");
+        let old = BirthStamp::from_fields("{ sec = 100, usec = 23 }", "101");
+        assert_eq!(
+            old.compare(&Observation::Present(live)),
+            Verification::Unknown
+        );
+        assert_eq!(old.compare(&Observation::Ended), Verification::Ended);
+        let current = Observation::Present(BirthStamp::macos(
+            boot_session.to_owned(),
+            Duration::from_secs(101),
+        ));
+        assert_eq!(old.compare(&current), Verification::Unknown);
+        assert_eq!(
+            BirthStamp::from_fields(boot_session, "101").compare(&current),
+            Verification::Confirmed
+        );
+        assert_eq!(
+            BirthStamp::from_fields(boot_session, "100").compare(&current),
+            Verification::Ended
         );
     }
 
