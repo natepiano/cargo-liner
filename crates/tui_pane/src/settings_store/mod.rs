@@ -18,6 +18,7 @@ pub use registry::SettingCodecs;
 pub use registry::SettingsRegistry;
 pub use registry::SettingsSection;
 pub use row::SettingsRow;
+pub use row::SettingsRowIdentity;
 pub use row::SettingsRowKind;
 pub use row::SettingsRowPayload;
 pub use store::LoadedSettings;

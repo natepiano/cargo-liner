@@ -702,6 +702,7 @@ fn path_failure(failure: &PathFailure) -> String {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
+    clippy::panic,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
@@ -709,6 +710,7 @@ mod tests {
     use std::io::ErrorKind;
 
     use tui_pane::SettingsRow;
+    use tui_pane::SettingsRowIdentity;
 
     use super::SettingId;
     use super::rows;
@@ -795,8 +797,10 @@ mod tests {
             .find(|row| row.label == "account 1")
             .expect("retained root row");
         assert_eq!(root.kind, SettingsRow::value(0, "", "").kind);
-        let selection = root.payload.expect("read-only selection payload").get();
-        assert_eq!(settings.ids[selection], SettingId::ReadOnly);
+        let SettingsRowIdentity::Selectable(payload) = root.identity else {
+            panic!("account row must carry a selectable identity");
+        };
+        assert_eq!(settings.ids[payload.get()], SettingId::ReadOnly);
         assert!(settings.widest_row >= root.value.chars().count());
         root.clone()
     }

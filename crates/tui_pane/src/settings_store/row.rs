@@ -2,27 +2,46 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingsRow {
     /// Row label. Section rows use this as the section title.
-    pub label:   String,
+    pub label:    String,
     /// Displayed value for selectable setting rows.
-    pub value:   String,
+    pub value:    String,
     /// Row behavior.
-    pub kind:    SettingsRowKind,
+    pub kind:     SettingsRowKind,
     /// Optional app-provided suffix shown after compact controls.
-    pub suffix:  Option<String>,
-    /// Optional stable app payload for hit testing / dispatch.
-    pub payload: Option<SettingsRowPayload>,
+    pub suffix:   Option<String>,
+    /// Whether this row is decoration or has a selectable-row index.
+    pub identity: SettingsRowIdentity,
 }
 
-/// Stable row payload used by settings hit testing and dispatch.
+/// Selection identity of a settings row.
+///
+/// A selectable row's payload must equal its zero-based position among the
+/// selectable rows supplied to [`crate::SettingsPane::render_rows`]. Decoration
+/// rows do not count. The pane uses that index for cursor placement, scrolling,
+/// and mouse selection; an arbitrary stable id or discriminant is invalid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsRowIdentity {
+    /// A section heading with no selectable row.
+    Decoration,
+    /// A selectable row with its positional index among selectable rows.
+    Selectable(SettingsRowPayload),
+}
+
+/// Zero-based positional index used by settings hit testing and dispatch.
+///
+/// The value must equal the row's position among selectable rows in the current
+/// input to [`crate::SettingsPane::render_rows`], excluding decoration rows.
+/// Reordering selectable rows requires updating their payloads. The pane uses
+/// this value for cursor placement and scrolling as well as mouse selection.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct SettingsRowPayload(usize);
 
 impl SettingsRowPayload {
-    /// Build a settings row payload from an app-owned row id.
+    /// Build a payload from the row's zero-based position among selectable rows.
     #[must_use]
     pub const fn new(value: usize) -> Self { Self(value) }
 
-    /// Return the app-owned row id.
+    /// Return the zero-based position among selectable rows.
     #[must_use]
     pub const fn get(self) -> usize { self.0 }
 }
@@ -36,11 +55,11 @@ impl SettingsRow {
     #[must_use]
     pub fn section(label: impl Into<String>) -> Self {
         Self {
-            label:   label.into(),
-            value:   String::new(),
-            kind:    SettingsRowKind::Section,
-            suffix:  None,
-            payload: None,
+            label:    label.into(),
+            value:    String::new(),
+            kind:     SettingsRowKind::Section,
+            suffix:   None,
+            identity: SettingsRowIdentity::Decoration,
         }
     }
 
@@ -52,11 +71,11 @@ impl SettingsRow {
         value: impl Into<String>,
     ) -> Self {
         Self {
-            label:   label.into(),
-            value:   value.into(),
-            kind:    SettingsRowKind::Value,
-            suffix:  None,
-            payload: Some(payload.into()),
+            label:    label.into(),
+            value:    value.into(),
+            kind:     SettingsRowKind::Value,
+            suffix:   None,
+            identity: SettingsRowIdentity::Selectable(payload.into()),
         }
     }
 
@@ -68,11 +87,11 @@ impl SettingsRow {
         enabled: bool,
     ) -> Self {
         Self {
-            label:   label.into(),
-            value:   if enabled { "ON" } else { "OFF" }.to_string(),
-            kind:    SettingsRowKind::Toggle,
-            suffix:  None,
-            payload: Some(payload.into()),
+            label:    label.into(),
+            value:    if enabled { "ON" } else { "OFF" }.to_string(),
+            kind:     SettingsRowKind::Toggle,
+            suffix:   None,
+            identity: SettingsRowIdentity::Selectable(payload.into()),
         }
     }
 
@@ -84,11 +103,11 @@ impl SettingsRow {
         value: impl Into<String>,
     ) -> Self {
         Self {
-            label:   label.into(),
-            value:   value.into(),
-            kind:    SettingsRowKind::Stepper,
-            suffix:  None,
-            payload: Some(payload.into()),
+            label:    label.into(),
+            value:    value.into(),
+            kind:     SettingsRowKind::Stepper,
+            suffix:   None,
+            identity: SettingsRowIdentity::Selectable(payload.into()),
         }
     }
 

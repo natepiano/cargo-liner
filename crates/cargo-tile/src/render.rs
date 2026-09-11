@@ -2139,8 +2139,7 @@ fn fitted_width(widest_row: usize) -> u16 {
     width.max(SETTINGS_POPUP_WIDTH)
 }
 
-/// Draw the framework settings overlay, sized to its content and
-/// clamped to the terminal so a resize never clips a row.
+/// Draw the visible rendered lines of the framework settings overlay.
 fn draw_settings(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let built = settings::rows(app);
@@ -2181,10 +2180,12 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
     .render_with_areas(frame);
 
     let viewport = app.framework.settings_pane.viewport_mut();
-    viewport.set_len(rendered.selectable_count);
     viewport.set_content_area(popup.inner);
     viewport.set_viewport_rows(usize::from(popup.inner.height));
-    frame.render_widget(Paragraph::new(rendered.lines), popup.inner);
+    app.framework.settings_pane.update_scroll();
+    app.framework
+        .settings_pane
+        .render_lines(frame, rendered.lines);
 }
 
 /// Read the CPU values selected by the production summary without exposing its rows.

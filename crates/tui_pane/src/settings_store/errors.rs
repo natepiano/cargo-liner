@@ -25,6 +25,7 @@ mod tests {
     use crate::settings_store::SettingsFileSpec;
     use crate::settings_store::SettingsRegistry;
     use crate::settings_store::SettingsRow;
+    use crate::settings_store::SettingsRowIdentity;
     use crate::settings_store::SettingsRowPayload;
     use crate::settings_store::SettingsSection;
     use crate::settings_store::SettingsStore;
@@ -110,7 +111,10 @@ mod tests {
     fn settings_row_payload_round_trips_typed_id() {
         let row = SettingsRow::value(SettingsRowPayload::new(7), "Editor", "zed");
 
-        assert_eq!(row.payload.map(SettingsRowPayload::get), Some(7));
+        assert_eq!(
+            row.identity,
+            SettingsRowIdentity::Selectable(SettingsRowPayload::new(7))
+        );
     }
 
     #[test]

@@ -51,13 +51,16 @@ pub(crate) fn handle_click(app: &mut App, pos: Position) {
 }
 
 /// Move an overlay's selection to the row that was clicked.
-const fn overlay_row(app: &mut App, id: FrameworkOverlayId, row: usize) {
-    let viewport = match id {
-        FrameworkOverlayId::Settings => app.framework.settings_pane.viewport_mut(),
-        FrameworkOverlayId::Keymap => app.framework.keymap_pane.viewport_mut(),
-        FrameworkOverlayId::GlobalShortcuts => app.framework.global_shortcuts_pane.viewport_mut(),
-    };
-    viewport.set_pos(row);
+fn overlay_row(app: &mut App, id: FrameworkOverlayId, row: usize) {
+    match id {
+        FrameworkOverlayId::Settings => app.framework.settings_pane.select_row(row),
+        FrameworkOverlayId::Keymap => app.framework.keymap_pane.viewport_mut().set_pos(row),
+        FrameworkOverlayId::GlobalShortcuts => app
+            .framework
+            .global_shortcuts_pane
+            .viewport_mut()
+            .set_pos(row),
+    }
 }
 
 impl Hittable<Picked> for TileGrid {

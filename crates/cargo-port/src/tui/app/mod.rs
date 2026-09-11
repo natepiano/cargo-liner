@@ -4679,6 +4679,8 @@ mod tests {
         use tui_pane::PaneFocusState;
         use tui_pane::PaneSelectionState;
         use tui_pane::RenderFocus;
+        use tui_pane::SettingsLineTarget;
+        use tui_pane::SettingsRowPayload;
         use tui_pane::ToastId;
         use tui_pane::ToastStyle;
         use tui_pane::Viewport;
@@ -5170,7 +5172,9 @@ mod tests {
             let pane = &app.framework.settings_pane;
             let height = usize::from(pane.viewport().content_area().height);
             let line = (0..height)
-                .find(|line| pane.line_target(*line) == Some(row))
+                .find(|line| {
+                    pane.line_target(*line) == SettingsLineTarget::Row(SettingsRowPayload::new(row))
+                })
                 .expect("setting must have a rendered hit target");
             framework_pane_row_point(pane.viewport(), line)
         }

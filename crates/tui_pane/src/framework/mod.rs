@@ -46,6 +46,7 @@ use crate::KeymapPane;
 use crate::LoadedSettings;
 use crate::Mode;
 use crate::SettingsPane;
+use crate::SettingsRowHit;
 use crate::SettingsStore;
 use crate::ToastSettings;
 use crate::Toasts;
@@ -403,13 +404,13 @@ impl<Ctx: AppContext> Framework<Ctx> {
                     row,
                 },
             )),
-            Some(FrameworkOverlayId::Settings) => Some(self.settings_pane.row_at(pos).map_or(
-                FrameworkHit::ModalMissed,
-                |row| FrameworkHit::Overlay {
+            Some(FrameworkOverlayId::Settings) => Some(match self.settings_pane.row_at(pos) {
+                SettingsRowHit::Missed => FrameworkHit::ModalMissed,
+                SettingsRowHit::Row(row) => FrameworkHit::Overlay {
                     id: FrameworkOverlayId::Settings,
                     row,
                 },
-            )),
+            }),
             Some(FrameworkOverlayId::GlobalShortcuts) => Some(
                 self.global_shortcuts_pane
                     .row_at(pos)

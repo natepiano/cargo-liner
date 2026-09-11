@@ -40,7 +40,7 @@ impl Navigation<App> for AppNavigation {
     }
 }
 
-/// Move the settings overlay's selection, or step the selected value.
+/// Move through settings rows and their wrapped lines, or step a value.
 ///
 /// Left and right are the value, not the selection -- a settings row
 /// has no column to move into, so the sideways keys are free to mean
@@ -49,19 +49,6 @@ fn settings_overlay(action: NavAction, app: &mut App) {
     match action {
         NavAction::Left => settings::cycle(app, Step::Prev),
         NavAction::Right => settings::cycle(app, Step::Next),
-        _ => {
-            let viewport = app.framework.settings_pane.viewport_mut();
-            match action {
-                NavAction::Up => viewport.up(),
-                NavAction::Down => viewport.down(),
-                NavAction::Home => viewport.home(),
-                NavAction::End => viewport.end(),
-                NavAction::PageUp => viewport.page_up(),
-                NavAction::PageDown => viewport.page_down(),
-                NavAction::HalfPageUp => viewport.half_page_up(),
-                NavAction::HalfPageDown => viewport.half_page_down(),
-                NavAction::Left | NavAction::Right => (),
-            }
-        },
+        _ => app.framework.settings_pane.navigate(action),
     }
 }

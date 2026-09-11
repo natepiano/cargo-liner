@@ -2,7 +2,6 @@ use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::style::Style;
 use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
 use toml::Table;
 use toml::Value;
 use tui_pane::Appearance;
@@ -20,6 +19,7 @@ use tui_pane::SettingsRegistry;
 use tui_pane::SettingsRenderOptions;
 use tui_pane::SettingsRow as FrameworkSettingsRow;
 use tui_pane::SettingsSection;
+use tui_pane::SettingsSelectionLine;
 use tui_pane::SettingsStore;
 use tui_pane::ToastDuration;
 use tui_pane::ToastSettings;
@@ -1487,17 +1487,16 @@ pub(super) fn render_settings_pane_body(
 
     pane.viewport_mut().set_content_area(inner);
     let visible_height = usize::from(inner.height);
-    let selected_line = pane
-        .line_for_selection(pane.viewport().pos())
-        .unwrap_or_else(|| pane.viewport().pos());
+    let selected_line = match pane.line_for_selection(pane.viewport().pos()) {
+        SettingsSelectionLine::Rendered(line) => line,
+        SettingsSelectionLine::NotRendered => pane.viewport().pos(),
+    };
     let scroll_offset =
         keep_visible_scroll_offset(selected_line, visible_height, inputs.line_count);
     pane.viewport_mut().set_viewport_rows(visible_height);
     pane.viewport_mut().set_scroll_offset(scroll_offset);
 
-    let paragraph =
-        Paragraph::new(inputs.lines.clone()).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
-    frame.render_widget(paragraph, inner);
+    pane.render_lines(frame, inputs.lines.clone());
     render_overflow_affordance(
         frame,
         popup.outer,

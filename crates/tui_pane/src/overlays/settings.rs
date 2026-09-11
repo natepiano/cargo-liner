@@ -5,15 +5,19 @@
 //! `handle_key`, `mode`, `bar_slots`, `editor_target`). The binary's
 //! settings overlay input path routes through this pane.
 
+use std::collections::BTreeMap;
+use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
+use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -25,10 +29,12 @@ use crate::Bindings;
 use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::Mode;
+use crate::NavAction;
 use crate::OverlayAction;
 use crate::PaneFocusState;
 use crate::PaneSelectionState;
 use crate::SettingsRow;
+use crate::SettingsRowIdentity;
 use crate::SettingsRowKind;
 use crate::SettingsRowPayload;
 use crate::Viewport;
@@ -42,6 +48,35 @@ pub enum SettingsCommand {
     Save,
     /// Cancel the current edit.
     Cancel,
+}
+
+/// Selection target of a rendered settings line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsLineTarget {
+    /// The line belongs to this app-owned row, including its continuations.
+    Row(SettingsRowPayload),
+    /// The line is a section heading or other decoration.
+    Decoration,
+    /// The requested line lies outside the rendered content.
+    OutsideContent,
+}
+
+/// Settings row selected by a screen position.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsRowHit {
+    /// The position lands on this selectable row.
+    Row(usize),
+    /// The position does not land on any selectable row.
+    Missed,
+}
+
+/// First rendered line belonging to a settings selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsSelectionLine {
+    /// The selection starts at this rendered line.
+    Rendered(usize),
+    /// The selection has no line in the current render.
+    NotRendered,
 }
 
 /// Styling and layout inputs for [`SettingsPane::render_rows`].
@@ -94,6 +129,14 @@ enum EditState {
     Editing,
 }
 
+/// Scroll offset of the settings content currently drawn on screen.
+enum DrawnScrollOffset {
+    /// No settings content has been drawn yet.
+    Undrawn,
+    /// The most recent content draw uses this offset.
+    Drawn(usize),
+}
+
 /// Framework-owned settings overlay.
 ///
 /// Held inline on [`Framework<Ctx>`](crate::Framework) and reached via
@@ -101,17 +144,19 @@ enum EditState {
 /// [`Framework::overlay`](crate::Framework::overlay) before routing
 /// keys here.
 pub struct SettingsPane {
-    edit_state:    EditState,
-    editor_target: Option<PathBuf>,
-    viewport:      Viewport,
-    line_targets:  Vec<Option<SettingsRowPayload>>,
-    edit_buffer:   String,
-    edit_cursor:   usize,
+    edit_state:          EditState,
+    editor_target:       Option<PathBuf>,
+    viewport:            Viewport,
+    drawn_scroll_offset: DrawnScrollOffset,
+    line_targets:        Vec<SettingsLineTarget>,
+    row_lines:           BTreeMap<usize, Range<usize>>,
+    edit_buffer:         String,
+    edit_cursor:         usize,
     /// Render-time focus snapshot stamped by the embedding crate's
     /// overlay dispatcher right before [`crate::Renderable::render`]
     /// runs. See [`crate::overlays::KeymapPane::focus`] for the
     /// matching pattern.
-    pub focus:     crate::RenderFocus,
+    pub focus:           crate::RenderFocus,
 }
 
 impl SettingsPane {
@@ -119,13 +164,15 @@ impl SettingsPane {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            edit_state:    EditState::Browse,
-            editor_target: None,
-            viewport:      Viewport::new(),
-            line_targets:  Vec::new(),
-            edit_buffer:   String::new(),
-            edit_cursor:   0,
-            focus:         crate::RenderFocus::inactive(),
+            edit_state:          EditState::Browse,
+            editor_target:       None,
+            viewport:            Viewport::new(),
+            drawn_scroll_offset: DrawnScrollOffset::Undrawn,
+            line_targets:        Vec::new(),
+            row_lines:           BTreeMap::new(),
+            edit_buffer:         String::new(),
+            edit_cursor:         0,
+            focus:               crate::RenderFocus::inactive(),
         }
     }
 
@@ -217,63 +264,174 @@ impl SettingsPane {
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
     /// Store rendered-line to setting-row targets for hit testing.
-    pub fn set_line_targets(&mut self, targets: Vec<Option<SettingsRowPayload>>) {
+    pub fn set_line_targets(&mut self, targets: Vec<SettingsLineTarget>) {
+        self.row_lines.clear();
+        for (line, target) in targets.iter().enumerate() {
+            if let SettingsLineTarget::Row(target) = target {
+                self.row_lines
+                    .entry(target.get())
+                    .or_insert(line..line + 1)
+                    .end = line + 1;
+            }
+        }
         self.line_targets = targets;
+        self.viewport.set_content_height(self.line_targets.len());
     }
 
     /// Return the setting row target for a rendered line index.
     #[must_use]
-    pub fn line_target(&self, line: usize) -> Option<usize> {
+    pub fn line_target(&self, line: usize) -> SettingsLineTarget {
         self.line_targets
             .get(line)
             .copied()
-            .flatten()
-            .map(SettingsRowPayload::get)
+            .unwrap_or(SettingsLineTarget::OutsideContent)
     }
 
-    /// Selectable row at screen `pos`, or `None` if `pos` lies
-    /// outside the rendered content area, the overlay is not
-    /// rendered (zero-sized content area), or the line is inert.
+    /// Selectable row at screen `pos`, or [`SettingsRowHit::Missed`] for
+    /// decoration, an unrendered pane, or a position outside its content.
     #[must_use]
-    pub fn row_at(&self, pos: Position) -> Option<usize> {
+    pub fn row_at(&self, pos: Position) -> SettingsRowHit {
+        let DrawnScrollOffset::Drawn(offset) = self.drawn_scroll_offset else {
+            return SettingsRowHit::Missed;
+        };
         let inner = self.viewport.content_area();
         if inner.width == 0 || inner.height == 0 || !inner.contains(pos) {
-            return None;
+            return SettingsRowHit::Missed;
         }
-        let line_index = usize::from(pos.y.saturating_sub(inner.y)) + self.viewport.scroll_offset();
-        self.line_target(line_index)
+        let line_index = offset.saturating_add(usize::from(pos.y.saturating_sub(inner.y)));
+        match self.line_target(line_index) {
+            SettingsLineTarget::Row(target) => SettingsRowHit::Row(target.get()),
+            SettingsLineTarget::Decoration | SettingsLineTarget::OutsideContent => {
+                SettingsRowHit::Missed
+            },
+        }
     }
 
     /// Return the first rendered line for a setting row target.
     #[must_use]
-    pub fn line_for_selection(&self, selection: usize) -> Option<usize> {
-        self.line_targets
-            .iter()
-            .position(|target| target.is_some_and(|target| target.get() == selection))
+    pub fn line_for_selection(&self, selection: usize) -> SettingsSelectionLine {
+        self.row_lines
+            .get(&selection)
+            .map_or(SettingsSelectionLine::NotRendered, |lines| {
+                SettingsSelectionLine::Rendered(lines.start)
+            })
+    }
+
+    /// Preserve the scroll offset while keeping the selected row visible.
+    ///
+    /// Call after setting the viewport's content area and visible row count.
+    /// Rows shorter than the viewport remain fully visible; taller rows keep
+    /// the currently visible continuation lines until navigation moves them.
+    pub fn update_scroll(&mut self) {
+        let height = self.viewport.visible_rows();
+        let max_offset = self.line_targets.len().saturating_sub(height);
+        let mut offset = self.viewport.scroll_offset().min(max_offset);
+        self.viewport.set_content_height(self.line_targets.len());
+        if height == 0 {
+            self.viewport.set_scroll_offset(offset);
+            return;
+        }
+        if let Some(lines) = self.row_lines.get(&self.viewport.pos()) {
+            if lines.len() <= height {
+                offset = offset
+                    .min(lines.start)
+                    .max(lines.end.saturating_sub(height));
+            } else if lines.start >= offset.saturating_add(height) {
+                offset = lines.start;
+            } else if lines.end <= offset {
+                offset = lines.end.saturating_sub(height);
+            }
+        }
+        self.viewport.set_scroll_offset(offset.min(max_offset));
+    }
+
+    /// Select a row without losing a visible continuation of that row.
+    pub fn select_row(&mut self, row: usize) {
+        self.viewport.set_pos(row);
+        self.update_scroll();
+    }
+
+    /// Navigate rows, exposing hidden continuation lines before leaving a row.
+    ///
+    /// Page movement repeats the same steps for the visible page height.
+    /// Left and right remain available to the application's value editor.
+    pub fn navigate(&mut self, action: NavAction) {
+        let height = self.viewport.visible_rows();
+        let steps = match action {
+            NavAction::PageUp | NavAction::PageDown => height.saturating_sub(1).max(1),
+            NavAction::HalfPageUp | NavAction::HalfPageDown => (height / 2).max(1),
+            _ => 1,
+        };
+        for _ in 0..steps {
+            match action {
+                NavAction::Up | NavAction::PageUp | NavAction::HalfPageUp => self.up(),
+                NavAction::Down | NavAction::PageDown | NavAction::HalfPageDown => self.down(),
+                NavAction::Home => {
+                    self.viewport.home();
+                    self.viewport.set_scroll_offset(0);
+                },
+                NavAction::End => {
+                    self.viewport.end();
+                    self.viewport
+                        .set_scroll_offset(self.line_targets.len().saturating_sub(height));
+                },
+                NavAction::Left | NavAction::Right => return,
+            }
+            self.update_scroll();
+        }
+    }
+
+    fn up(&mut self) {
+        let offset = self.viewport.scroll_offset();
+        if self.viewport.visible_rows() > 0
+            && let Some(lines) = self.row_lines.get(&self.viewport.pos())
+            && lines.start < offset
+        {
+            self.viewport.set_scroll_offset(offset.saturating_sub(1));
+        } else {
+            self.viewport.up();
+        }
+    }
+
+    fn down(&mut self) {
+        let offset = self.viewport.scroll_offset();
+        let height = self.viewport.visible_rows();
+        if height > 0
+            && let Some(lines) = self.row_lines.get(&self.viewport.pos())
+            && lines.end > offset.saturating_add(height)
+        {
+            self.viewport.set_scroll_offset(offset.saturating_add(1));
+        } else {
+            self.viewport.down();
+        }
     }
 
     /// Render generic settings rows and update the pane's line-target
     /// map for mouse hit testing.
+    ///
+    /// Use [`Self::render_lines`] to paint the lines after configuring the
+    /// viewport geometry and scroll offset.
     #[must_use]
     pub fn render_rows(
         &mut self,
         rows: &[SettingsRow],
         options: SettingsRenderOptions<'_>,
     ) -> SettingsRender {
-        let max_label = rows
+        let (max_label, selectable_count) = rows
             .iter()
-            .filter(|row| row.kind != SettingsRowKind::Section)
-            .map(|row| row.label.len())
-            .max()
-            .unwrap_or(0);
+            .filter(|row| matches!(row.identity, SettingsRowIdentity::Selectable(_)))
+            .fold((0, 0), |(max_label, count), row| {
+                (max_label.max(row.label.len()), count + 1)
+            });
+        self.viewport.set_len(selectable_count);
         let mut lines = Vec::new();
         let mut line_targets = Vec::new();
         let mut selection_index = 0;
         for row in rows {
-            if row.kind == SettingsRowKind::Section {
+            let SettingsRowIdentity::Selectable(target) = row.identity else {
                 push_settings_header(&mut lines, &mut line_targets, &row.label, &options);
                 continue;
-            }
+            };
             let cursor = if self.viewport.pos() == selection_index {
                 "▶ "
             } else {
@@ -285,9 +443,7 @@ impl SettingsPane {
                 options.section_item_indent, row.label,
             );
             let context = SettingsLineContext {
-                target: row
-                    .payload
-                    .unwrap_or_else(|| SettingsRowPayload::new(selection_index)),
+                target,
                 label: &label,
                 selection,
                 options: &options,
@@ -295,17 +451,36 @@ impl SettingsPane {
             self.push_setting_row(&mut lines, &mut line_targets, &context, row);
             selection_index += 1;
         }
-        self.line_targets = line_targets;
+        self.set_line_targets(line_targets);
         SettingsRender {
             lines,
             selectable_count: selection_index,
         }
     }
 
+    /// Draw settings lines using the configured viewport and record the
+    /// displayed scroll offset for mouse hit testing.
+    ///
+    /// Call after setting the viewport's content area and scroll offset,
+    /// either directly or through [`Self::update_scroll`]. Navigation can
+    /// change the live offset afterward; clicks keep using this draw's offset
+    /// until the next call paints the updated content.
+    pub fn render_lines(&mut self, frame: &mut Frame, lines: Vec<Line<'_>>) {
+        let inner = self.viewport.content_area();
+        let offset = self.viewport.scroll_offset();
+        let visible_lines: Vec<_> = lines
+            .into_iter()
+            .skip(offset)
+            .take(usize::from(inner.height))
+            .collect();
+        frame.render_widget(Paragraph::new(visible_lines), inner);
+        self.drawn_scroll_offset = DrawnScrollOffset::Drawn(offset);
+    }
+
     fn push_setting_row(
         &self,
         lines: &mut Vec<Line<'static>>,
-        line_targets: &mut Vec<Option<SettingsRowPayload>>,
+        line_targets: &mut Vec<SettingsLineTarget>,
         context: &SettingsLineContext<'_>,
         row: &SettingsRow,
     ) {
@@ -450,7 +625,9 @@ impl SettingsPane {
             edit_state: EditState::Editing,
             editor_target,
             viewport: Viewport::new(),
+            drawn_scroll_offset: DrawnScrollOffset::Undrawn,
             line_targets: Vec::new(),
+            row_lines: BTreeMap::new(),
             edit_buffer: String::new(),
             edit_cursor: 0,
             focus: crate::RenderFocus::inactive(),
@@ -537,7 +714,7 @@ impl SettingsLineContext<'_> {
 
 fn push_settings_header(
     lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<SettingsRowPayload>>,
+    line_targets: &mut Vec<SettingsLineTarget>,
     name: &str,
     options: &SettingsRenderOptions<'_>,
 ) {
@@ -548,12 +725,12 @@ fn push_settings_header(
             options.title_style.add_modifier(Modifier::BOLD),
         ),
     ]));
-    line_targets.push(None);
+    line_targets.push(SettingsLineTarget::Decoration);
 }
 
 fn push_toggle_row(
     lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<SettingsRowPayload>>,
+    line_targets: &mut Vec<SettingsLineTarget>,
     value: &str,
     context: &SettingsLineContext<'_>,
     suffix: Option<&str>,
@@ -593,12 +770,12 @@ fn push_toggle_row(
         ),
         Span::styled(suffix.unwrap_or_default().to_owned(), row_style),
     ]));
-    line_targets.push(Some(context.target));
+    line_targets.push(SettingsLineTarget::Row(context.target));
 }
 
 fn push_stepper_row(
     lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<SettingsRowPayload>>,
+    line_targets: &mut Vec<SettingsLineTarget>,
     context: &SettingsLineContext<'_>,
     value: &str,
 ) {
@@ -632,12 +809,12 @@ fn push_stepper_row(
             ),
         ),
     ]));
-    line_targets.push(Some(context.target));
+    line_targets.push(SettingsLineTarget::Row(context.target));
 }
 
 fn push_wrapped_setting_value(
     lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<SettingsRowPayload>>,
+    line_targets: &mut Vec<SettingsLineTarget>,
     context: &SettingsLineContext<'_>,
     value: &str,
     value_style: Style,
@@ -653,13 +830,18 @@ fn push_wrapped_setting_value(
         value_style,
         content_width: context.options.content_width,
     };
-    push_wrapped_value_row(lines, line_targets, Some(context.target), &row);
+    push_wrapped_value_row(
+        lines,
+        line_targets,
+        SettingsLineTarget::Row(context.target),
+        &row,
+    );
 }
 
 fn push_wrapped_value_row(
     lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<SettingsRowPayload>>,
-    target: Option<SettingsRowPayload>,
+    line_targets: &mut Vec<SettingsLineTarget>,
+    target: SettingsLineTarget,
     row: &WrappedValueRow<'_>,
 ) {
     let prefix_width = row.prefix.width();
@@ -752,8 +934,10 @@ mod tests {
     use ratatui::style::Color;
     use ratatui::style::Style;
 
+    use super::SettingsLineTarget;
     use super::SettingsPane;
     use super::SettingsRenderOptions;
+    use super::SettingsSelectionLine;
     use crate::AppContext;
     use crate::FocusedPane;
     use crate::Framework;
@@ -907,8 +1091,8 @@ mod tests {
         let rendered = pane.render_rows(&rows, render_options());
 
         assert!(rendered.lines.len() > 1);
-        assert_eq!(pane.line_target(0), Some(0));
-        assert_eq!(pane.line_target(1), Some(0));
+        assert_eq!(pane.line_target(0), SettingsLineTarget::Row(0.into()));
+        assert_eq!(pane.line_target(1), SettingsLineTarget::Row(0.into()));
         assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "▶ Projects  ");
         assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "            ");
     }
@@ -924,7 +1108,10 @@ mod tests {
         let rendered = pane.render_rows(&rows, render_options());
 
         assert_eq!(rendered.selectable_count, 1);
-        assert_eq!(pane.line_for_selection(0), Some(1));
+        assert_eq!(
+            pane.line_for_selection(0),
+            SettingsSelectionLine::Rendered(1)
+        );
     }
 
     #[test]

@@ -117,8 +117,25 @@ mod tests {
     use std::process::Command;
     use std::process::Output;
     use std::process::Stdio;
+    use std::rc::Rc;
 
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
     use tempfile::TempDir;
+    use tui_pane::GlobalAction;
+    use tui_pane::NavAction;
+    use tui_pane::Navigation;
+    use tui_pane::SettingsLineTarget;
+    use tui_pane::SettingsRowIdentity;
+    use tui_pane::SettingsRowPayload;
+
+    use super::app::App;
+    use super::constants::POPUP_CHROME_HEIGHT;
+    use super::interaction;
+    use super::navigation::AppNavigation;
+    use super::render;
+    use super::settings;
 
     /// Exercise the built binary using actual shim publications and a reconstructed PTY screen.
     const READER_SCENARIO_SCRIPT: &str = r#"from datetime import datetime, timezone
@@ -156,6 +173,10 @@ bin_directory = root / 'bin'
 for directory in (work, pids, bin_directory, root / 'config/cargo-tile',
                   home / 'Library/Application Support/cargo-tile', root / 'rustup/toolchains'):
     directory.mkdir(parents=True)
+if scenario == 'settings-scroll':
+    account_directories = [capture_parent / str(other_uid - index) for index in range(24)]
+    for directory in account_directories:
+        directory.mkdir()
 configuration = '[capture]\nauto_install = false\n'
 if scenario in ('root-headings', 'summary-root-headings', 'root-duplicate', 'fallback-root-duplicate',
                 'fallback-selected-unknown', 'fallback-foreign-owned'):
@@ -660,6 +681,61 @@ def settings_screen():
     wait_for(settings_are_closed, 'settings do not close')
     return rendered
 
+def assert_settings_scroll():
+    global terminal_rows, terminal_columns
+    terminal_rows = 14
+    fcntl.ioctl(terminal, termios.TIOCSWINSZ,
+                struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
+    os.write(terminal, b's')
+    def settings_are_visible():
+        read_terminal(0.1)
+        rendered = screen()
+        return 'Settings' in rendered and any('▶' in line and 'mode' in line
+                                             for line in rendered.splitlines())
+    wait_for(settings_are_visible, 'small settings popup does not open')
+    initial = screen()
+    assert all(str(directory) not in initial for directory in account_directories), initial
+    pending = {str(directory) for directory in account_directories}
+    selected_accounts = set()
+    def accounts_are_selected():
+        os.write(terminal, b'\x1b[B')
+        read_terminal(0.1)
+        rendered = screen()
+        selected = '\n'.join(line for line in rendered.splitlines() if '▶' in line)
+        selected_accounts.update(directory for directory in pending if directory in selected)
+        return selected_accounts == pending
+    wait_for(accounts_are_selected, 'keyboard navigation cannot select every drawn account',
+             lambda: '\nmissing: ' + repr(sorted(pending - selected_accounts)) + '\n' + screen())
+    selected = next(line for line in screen().splitlines() if '▶' in line)
+    account = next(directory for directory in pending if directory in selected)
+    configurations = {path: path.read_bytes() for path in
+                      (root / 'config/cargo-tile/config.toml',
+                       home / 'Library/Application Support/cargo-tile/config.toml')}
+    os.write(terminal, b'\r\x1b[C\x1b[D')
+    read_terminal(0.2)
+    assert any('▶' in line and account in line for line in screen().splitlines()), screen()
+    assert all(path.read_bytes() == contents for path, contents in configurations.items()), \
+        'account navigation edits configuration'
+    terminal_rows, terminal_columns = 9, 240
+    fcntl.ioctl(terminal, termios.TIOCSWINSZ,
+                struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
+    def selection_survives_resize():
+        read_terminal(0.1)
+        return any('▶' in line and account in line for line in screen().splitlines())
+    wait_for(selection_survives_resize, 'selected account disappears after terminal resize')
+    remaining_settings = {'excluded', 'hidden when idle', 'config', 'themes', 'keymap'}
+    def later_settings_are_selected():
+        os.write(terminal, b'\x1b[B')
+        read_terminal(0.1)
+        selected = '\n'.join(line for line in screen().splitlines() if '▶' in line)
+        remaining_settings.difference_update(label for label in tuple(remaining_settings)
+                                             if re.search('▶\\s+' + re.escape(label) + '\\s', selected))
+        return not remaining_settings
+    wait_for(later_settings_are_selected, 'settings below account directories cannot be reached',
+             lambda: '\nmissing: ' + repr(sorted(remaining_settings)) + '\n' + screen())
+    os.write(terminal, b'\x1b')
+    read_terminal(0.1)
+
 def assert_fixture_pane_readiness():
     markers = ('probe-parent', 'probe-nested-check', 'probe-nested-test')
     header, border = '│ pid parent command\n', '└────\n'
@@ -910,6 +986,8 @@ try:
     read_terminal(1)
     rendered = screen()
     assert 'summary' in rendered, rendered
+    if scenario == 'settings-scroll':
+        assert_settings_scroll()
     if scenario.startswith('quiet-json'):
         cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
         rendered = expand_arguments([(cargo_pid, 'cargo check ' + quiet_writer[1].name + ' ' + ' '.join(arguments))])
@@ -1654,6 +1732,71 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
     #[test]
     fn reader_groups_one_directory_across_different_writer_homes() {
         reader_regression("grouping");
+    }
+
+    /// Navigation draws every account in a short popup and reaches the settings below them.
+    #[test]
+    fn reader_scrolls_settings_accounts_into_view_with_keyboard_navigation() {
+        reader_regression("settings-scroll");
+    }
+
+    #[test]
+    fn settings_click_after_navigation_selects_the_row_still_drawn() {
+        let mut app = App::new_for_test().expect("build isolated settings app");
+        app.loaded_config.config.commands.excluded = vec!["wrapped-command ".repeat(24)];
+        app.loaded_config.config.commands.hidden_when_idle = vec!["port".to_owned()];
+        let rows = settings::rows(&app).rows;
+        let selection = |label| {
+            rows.iter()
+                .find_map(|row| match row.identity {
+                    SettingsRowIdentity::Selectable(payload) if row.label == label => {
+                        Some(payload.get())
+                    },
+                    _ => None,
+                })
+                .expect("find selectable settings row")
+        };
+        let excluded = selection("excluded");
+        let hidden_when_idle = selection("hidden when idle");
+        let keymap = Rc::clone(&app.keymap);
+        keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
+        let mut terminal = Terminal::new(TestBackend::new(80, POPUP_CHROME_HEIGHT + 3))
+            .expect("create settings terminal");
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &keymap))
+            .expect("draw settings layout");
+        app.framework.settings_pane.select_row(hidden_when_idle);
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &keymap))
+            .expect("draw hidden-when-idle selection");
+        let pane = &app.framework.settings_pane;
+        let area = pane.viewport().content_area();
+        let offset = pane.viewport().scroll_offset();
+        assert_eq!(area.height, 3);
+        assert_eq!(pane.viewport().pos(), hidden_when_idle);
+        assert_eq!(
+            pane.line_target(offset + 1),
+            SettingsLineTarget::Row(SettingsRowPayload::new(excluded))
+        );
+        let click = Position::new(area.x + 1, area.y + 1);
+        let painted = terminal.backend().buffer().clone();
+        let clicked_line = (area.x..area.right())
+            .map(|x| painted[(x, click.y)].symbol())
+            .collect::<String>();
+        assert!(clicked_line.contains("wrapped-command"), "{clicked_line}");
+        let focused = *app.framework.focused();
+
+        // The terminal drains navigation and mouse input before repainting.
+        AppNavigation::dispatcher()(NavAction::Down, focused, &mut app);
+        assert!(app.framework.settings_pane.viewport().scroll_offset() > offset);
+        assert_eq!(
+            app.framework.settings_pane.viewport().pos(),
+            hidden_when_idle + 1
+        );
+        interaction::handle_click(&mut app, click);
+
+        assert_eq!(terminal.backend().buffer(), &painted);
+        assert_eq!(app.framework.settings_pane.viewport().pos(), excluded);
     }
 
     /// Select the fixture's command pane even when an unrelated pane precedes it.
