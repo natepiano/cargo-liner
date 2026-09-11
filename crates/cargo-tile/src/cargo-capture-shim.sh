@@ -273,7 +273,12 @@ setup_capture() (
                 # BSD ps pads lstart to its column width. Remove that padding
                 # before date parses it, so it consumes the entire timestamp.
                 started=$(printf '%s\n' "$started" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//') || exit 1
-                LC_ALL=C TZ=UTC0 date -j -f '%a %b %e %H:%M:%S %Y' "$started" +%s
+                # A Nix or Homebrew PATH can place GNU coreutils ahead of
+                # /bin, and GNU date has no -j. Its -d form parses the same
+                # text, and BSD date rejects -d, so each binary takes exactly
+                # one branch.
+                LC_ALL=C TZ=UTC0 date -j -f '%a %b %e %H:%M:%S %Y' "$started" +%s 2>/dev/null \
+                    || LC_ALL=C TZ=UTC0 date -u -d "$started" +%s
             ) || birth=
             ;;
     esac

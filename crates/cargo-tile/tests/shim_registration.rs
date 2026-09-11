@@ -1378,6 +1378,16 @@ if [ "$1" != +%Y%m%d-%H%M%S ]; then
     if [ -f "$SHIM_TEST_OBSERVATIONS/darwin-conversion" ]; then
         printf '%s\000' "${LC_ALL-}" "${TZ-}" "$@" > "$SHIM_TEST_OBSERVATIONS/date-conversion"
         [ "${LC_ALL-}" = C ] || exit 91
+        if [ -f "$SHIM_TEST_OBSERVATIONS/gnu-date" ]; then
+            # GNU coreutils date: no -j, and -d parses the same text.
+            if [ "$1" = -j ]; then
+                printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/date-rejected"
+                printf "date: invalid option -- 'j'\n" >&2
+                exit 1
+            fi
+            [ "$#" -eq 4 ] && [ "$1" = -u ] && [ "$2" = -d ] && [ "$4" = +%s ] || exit 94
+            exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" date "$3"
+        fi
         [ "$#" -eq 5 ] && [ "$1" = -j ] && [ "$2" = -f ] || exit 92
         [ "$3" = '%a %b %e %H:%M:%S %Y' ] && [ "$5" = +%s ] || exit 93
         if [ -f "$SHIM_TEST_OBSERVATIONS/fail-conversion" ]; then
@@ -2236,6 +2246,36 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
         assert_eq!(
             fs::read(fixture.path("observations").join(log)).expect("captured cargo bytes"),
             b"registration log marker\n"
+        );
+    }
+
+    /// GNU coreutils ahead of /bin on PATH must not leave the birth field empty.
+    #[test]
+    fn darwin_birth_conversion_falls_back_to_gnu_date() {
+        let fixture = InstalledShim::new();
+        install_darwin_observers(&fixture);
+        fs::write(fixture.path("observations/gnu-date"), b"")
+            .expect("select a GNU coreutils date on the search path");
+        assert_cargo_result(&fixture.run(&["build"]));
+        let registration = fixture.registration();
+        let fields = registration.fields();
+        assert_eq!(fields[2], b"12345678-1234-1234-1234-123456789abc");
+        assert_eq!(fields[3], b"1788957296");
+        let rejected = fs::read(fixture.path("observations/date-rejected"))
+            .expect("the BSD form is attempted first");
+        assert_eq!(nul_fields(&rejected)[0], b"-j");
+        let converted = fs::read(fixture.path("observations/date-conversion"))
+            .expect("observe the GNU conversion arguments");
+        assert_eq!(
+            nul_fields(&converted),
+            [
+                b"C".as_slice(),
+                b"UTC0",
+                b"-u",
+                b"-d",
+                b"Wed Sep 09 12:34:56 2026",
+                b"+%s"
+            ]
         );
     }
 
