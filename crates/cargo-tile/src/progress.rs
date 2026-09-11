@@ -2011,6 +2011,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let parent = directory.path().join("parent");
         fs::create_dir(&parent).unwrap();
+        let parent = parent.canonicalize().unwrap();
         let alias = directory.path().join("alias");
         symlink(&parent, &alias).unwrap();
         let actual = parent.join("captures");
@@ -2166,6 +2167,31 @@ mod tests {
         assert!(!registration.exists());
         assert!(!log.exists());
         assert!(orphan.exists());
+    }
+
+    #[test]
+    fn legacy_darwin_boot_mismatch_preserves_live_artifacts_until_the_process_ends() {
+        let root = capture_root();
+        let (registration, log) = publish(root.path(), 10, "legacy", "100", CAPTURED_REDRAW);
+        let bytes = String::from_utf8(record("legacy", 10, "100"))
+            .unwrap()
+            .replace("\0boot\0", "\0{ sec = 10, usec = 20 }\0");
+        fs::write(&registration, &bytes).unwrap();
+        let capture = Capture::take_with_observations(root.path(), |_| present("100"));
+        assert!(capture.confirmed().is_empty());
+        assert!(
+            capture.root_status[0]
+                .diagnostics
+                .contains(&CaptureDiagnostic::IdentityUnknown(
+                    registration.canonicalize().unwrap()
+                ))
+        );
+        assert_eq!(fs::read(&registration).unwrap(), bytes.as_bytes());
+        assert_eq!(fs::read_to_string(&log).unwrap(), CAPTURED_REDRAW);
+
+        Capture::take_with_observations(root.path(), |_| Observation::Ended);
+        assert!(!registration.exists());
+        assert!(!log.exists());
     }
 
     #[test]

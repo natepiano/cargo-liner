@@ -265,10 +265,14 @@ setup_capture() (
             birth=$(awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$$/stat") || birth=
             ;;
         Darwin)
-            boot=$(sysctl -n kern.boottime) || boot=
+            # A calendar correction can change kern.boottime during a live run.
+            boot=$(sysctl -n kern.bootsessionuuid) || boot=
             birth=$(
                 # UTC avoids ambiguous local times during a DST fallback.
                 started=$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$$") || exit 1
+                # BSD ps pads lstart to its column width. Remove that padding
+                # before date parses it, so it consumes the entire timestamp.
+                started=$(printf '%s\n' "$started" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//') || exit 1
                 LC_ALL=C TZ=UTC0 date -j -f '%a %b %e %H:%M:%S %Y' "$started" +%s
             ) || birth=
             ;;
