@@ -3,7 +3,7 @@
 ## Items to consider
 
 - [ ] **`cargo tile uninstall` reports each toolchain and continues**
-  - Target: `crates/cargo-tile/src/cli.rs` — `uninstall()` (`:127`)
+  - Target: `crates/cargo-tile/src/cli.rs` — `uninstall()` (`:223`)
   - Why needed: `install` now reports a failing toolchain and continues to the
     next, while `uninstall` still abandons the whole loop on the first error. On
     a runner box with several toolchains, an uninstall that hits one broken
@@ -17,14 +17,15 @@
 
 - [ ] **The ownership check closes the macOS ACL hole it currently documents**
   - Target: `crates/cargo-tile/src/capture_root.rs` —
-    `InspectedDirectoryMetadata::refusals` (`:518`) and
-    `RootScan::cleanup_refusals` (`:303`), which gate private
-    `RootScan::access` (`:352`); preserve `RootOwner` and add a
-    path-qualified `CleanupRefusal` for ACL write access.
+    `InspectedDirectoryMetadata::refusals` (`:637`) and
+    `RootScan::cleanup_refusals` (`:422`), which gate private
+    `RootScan::access` (`:471`); preserve `RootOwner` and add a
+    path-qualified `CleanupRefusal` variant for ACL write access.
   - Why needed: the ownership prerequisite still checks uid and mode bits
     alone. A macOS ACL granting another account write access can pass that
-    check; phase 4's registration verification does not close this ownership
-    gap.
+    check; registration verification
+    (`RegistrationCandidate::verify_observation`) does not close this
+    ownership gap.
   - Completion condition: on macOS, non-owner ACL write access on the root,
     state, or pids directory prevents sweeping a verified ended registration
     and its log. The retained status identifies the directory and ACL reason
@@ -123,8 +124,8 @@
   - Revealed by: Phase 10
 
 - [ ] **`processes.rs` and `progress.rs` are relocated by behavior, then split**
-  - Target: `crates/cargo-tile/src/processes.rs` (2773 non-test lines, 43
-    top-level types) and `crates/cargo-tile/src/progress.rs` (1205 non-test
+  - Target: `crates/cargo-tile/src/processes.rs` (2848 non-test lines, 44
+    top-level types) and `crates/cargo-tile/src/progress.rs` (1217 non-test
     lines, 23 top-level types).
   - Why needed: both files now meet two of the style guide's split criteria
     (line count and several independent type clusters). `processes.rs` holds
@@ -132,7 +133,7 @@
     attribution (`CaptureAssociation`, `DirectCapture`, `NearestRegistration`),
     CPU measurement (`CpuBaseline`, `CpuPublication`, `CpuSmoothing`), and the
     `Census` scan in one file; `progress.rs` holds capture-root lookup
-    (`CaptureRoots`, `CaptureRootEnvironment`, `RegisteredRuns`) beside the
+    (`CaptureRoots`, `CaptureRoot`, `RegisteredRuns`) beside the
     `Progress` counter state.
   - Completion condition: each type first moves to the module that owns its
     sole constructor or single consumer; what remains splits into
@@ -141,7 +142,7 @@
   - Revealed by: style review
 
 - [ ] **`capture_root.rs` is anchored and split**
-  - Target: `crates/cargo-tile/src/capture_root.rs` (924 non-test lines, 23
+  - Target: `crates/cargo-tile/src/capture_root.rs` (1023 non-test lines, 25
     top-level types; the anchor type is `RootScan`, not `CaptureRoot`).
   - Why needed: a new file over the line threshold with three clusters —
     directory inspection (`InspectedDirectory`, `Inventory`, `ScanEntry`),
@@ -173,7 +174,7 @@
 - [ ] **`uninstall` and `status` gain `--all-accounts` counterparts to the admin install**
   - Target: `crates/cargo-tile/src/cli.rs` — beside `install_all_accounts()`
     (`:182`), reusing the per-account re-execution in
-    `crates/cargo-tile/src/hook.rs` — `install_accounts` (`:423`).
+    `crates/cargo-tile/src/hook.rs` — `install_accounts` (`:532`).
   - Why needed: root can install the shim for every account in one command, but
     removing it or checking it still means acting as each account in turn; an
     operator who installs for the runner accounts has no matching way to see
@@ -186,8 +187,9 @@
 
 - [ ] **The per-account install report keeps an orphaned toolchain visible**
   - Target: `crates/cargo-tile/src/hook.rs` — `install_accounts`
-    (`:423`), where the child's per-toolchain report lines are
-    folded into one outcome per account.
+    (`:532`) and `AccountInstallOutcome::from(Output)` (`:613`), where the
+    child's per-toolchain report lines are folded into one outcome per
+    account.
   - Why needed: one installed or refreshed toolchain line marks the whole
     account installed, so a sibling toolchain the child reported as orphaned is
     folded away and the operator reads the account as fully installed.
@@ -195,19 +197,6 @@
     orphaned toolchain is reported with the orphaned toolchain named, and a test
     drives that report through the child protocol in
     `crates/cargo-tile/tests/support/shared_capture.rs`.
-  - Revealed by: final-gate closure review 2
-
-- [ ] **The per-account install child carries the account's supplementary groups**
-  - Target: `crates/cargo-tile/src/hook.rs` — `install_account`
-    (`:442`), the command that re-executes cargo-tile with the
-    account's uid and gid.
-  - Why needed: setting the uid alone leaves the child with root's supplementary
-    groups cleared and the account's never set, so a toolchain behind a
-    group-only-readable ancestor (mode 0770) is invisible to the child and
-    reported as absent.
-  - Completion condition: the child starts with the account's group list
-    (`getgrouplist` through `CommandExt::groups`), and a test with a toolchain
-    under a 0770 group-owned directory reports it installed.
   - Revealed by: final-gate closure review 2
 
 - [ ] **The runner services reach the shared capture directory and drop the per-root environment**
@@ -218,10 +207,15 @@
     exports `CARGO_TILE_ROOT`; the shim now writes under `/tmp/cargo-tile/<uid>`,
     which a unit with a private `/tmp` cannot reach without
     `BindPaths=/tmp/cargo-tile`.
-  - Completion condition: each Linux runner unit binds `/tmp/cargo-tile` into
-    its namespace and no longer sets `CARGO_TILE_ROOT` or creates the 0750
-    directories, the Mac plist no longer sets `CARGO_TILE_ROOT`, and a CI job on
-    each machine produces a `[hana-ci]` row in cargo tile.
+  - Done so far: the Linux units bind `/tmp/cargo-tile`, no longer set
+    `CARGO_TILE_ROOT`, and give each runner account a passwd home equal to its
+    cache directory with a `.rustup` symlink, so the admin install finds its
+    toolchains; the admin install reports both Linux runners and the Mac's
+    `hana-ci` installed. Stale `/var/lib/hana-ci/hana-linux-{1,2}/cargo-tile`
+    trees from the removed design remain and need root to delete.
+  - Completion condition: the Mac plist no longer sets `CARGO_TILE_ROOT`, and a
+    CI job on each machine produces a `[hana-ci]` or `[hana-linux-N]` row in
+    cargo tile.
   - Revealed by: final gate — shared capture directory repair
 
 - [ ] **The integration tests stop scrubbing the removed `CARGO_TILE_ROOT` variable**
@@ -233,3 +227,24 @@
   - Completion condition: the three references are gone and the package tests
     are unchanged.
   - Revealed by: final gate — shared capture directory repair
+
+- [ ] **`account_groups` growth past the initial 32-entry buffer is untested on macOS**
+  - Target: `crates/cargo-tile/src/hook.rs` — `account_groups`.
+  - Why needed: the second `getgrouplist` call after a `-1` return is the only
+    path an account with more than 32 groups takes, and no fixture exercises it
+    on either platform; macOS returns the needed count differently from glibc.
+  - Completion condition: a test with a synthetic account of more than 32 groups
+    (or a platform fixture) reaches the resize branch and reports every group.
+  - Revealed by: final-gate closure review 2
+
+- [ ] **A registration written by a newer shim is not detectable by an older reader**
+  - Target: `crates/cargo-tile/src/registration.rs` (the `cargo-tile-v2`
+    framing) and `crates/cargo-tile/src/cargo-capture-shim.sh`.
+  - Why needed: the shim's macOS boot field changed from a `kern.boottime`
+    timeval to the boot-session UUID without a format version bump, so a tile
+    still running the previous build compares the two and treats every live
+    capture as ended until the tile is restarted; a version bump would let the
+    old reader report the skew instead.
+  - Completion condition: a registration whose framing is newer than the
+    reader's is reported as a diagnostic and never unlinked.
+  - Revealed by: final-gate closure review 3
