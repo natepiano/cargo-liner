@@ -1,5 +1,6 @@
 #!/bin/sh
 # cargo-tile-capture-shim
+# cargo-tile-shim-version: 3
 #
 # Installed and owned by the cargo-tile binary: `cargo-tile install`
 # writes this file from the copy compiled into it, so editing it in a
@@ -295,7 +296,7 @@ setup_capture() (
     temporary=$temporary_path
     # Preserve directory identity and each argv word. The optional home
     # field lets a reader shorten only a prefix its own user recognizes.
-    printf '%s\000' cargo-tile-v2 "$generation" "$boot" "$birth" \
+    printf '%s\000' cargo-tile-v3 "$generation" "$boot" "$birth" \
         "$log_basename" "$directory" "$writer_home" "$#" "$@" > "$temporary" || exit 1
     chmod 0644 "$temporary" || exit 1
     if [ -n "$fifo_path" ]; then

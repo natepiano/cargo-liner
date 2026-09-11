@@ -235,7 +235,7 @@ exit "$SHIM_TEST_EXIT_STATUS"
                 .strip_suffix(&[0])
                 .expect("NUL-terminated record");
             let fields: Vec<_> = terminated.split(|byte| *byte == 0).collect();
-            assert_eq!(fields[0], b"cargo-tile-v2");
+            assert_eq!(fields[0], b"cargo-tile-v3");
             let directory = fs::read(self.observations.join("directory-fields"))
                 .expect("cargo records its original directory and home");
             let directory = directory

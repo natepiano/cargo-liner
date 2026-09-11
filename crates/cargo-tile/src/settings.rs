@@ -15,6 +15,7 @@ use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::SettingsRow;
 
 use crate::app::App;
+use crate::app::CaptureStartupNotice;
 use crate::capture_root::CleanupRefusal;
 use crate::capture_root::RootOwner;
 use crate::capture_root::SharedCaptureDirectory;
@@ -58,7 +59,9 @@ use crate::constants::CAPTURE_STATUS_RETAINED;
 use crate::constants::CAPTURE_STATUS_STAGING;
 use crate::constants::CAPTURE_STATUS_UNREADABLE_LOG;
 use crate::constants::CAPTURE_STATUS_UNREADABLE_REGISTRATION;
+use crate::constants::CAPTURE_STATUS_UNSUPPORTED_VERSION;
 use crate::constants::CAPTURE_STATUS_UNVERIFIABLE;
+use crate::constants::CAPTURE_STATUS_VERSION_RECOVERY;
 use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
 use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
 use crate::constants::CURSOR_WIDTH;
@@ -243,19 +246,7 @@ pub(crate) fn rows(app: &App) -> SettingsRows {
         display_path(config::keymap_path()),
     );
 
-    if app.startup_note.is_some() || app.capture_note.is_some() || app.loaded_config.error.is_some()
-    {
-        out.rows.push(SettingsRow::section("Notices"));
-    }
-    if let Some(note) = app.startup_note.clone() {
-        push_value(&mut out, &mut widths, "theme", note);
-    }
-    if let Some(note) = app.capture_note.clone() {
-        push_value(&mut out, &mut widths, "capture", note);
-    }
-    if let Some(error) = app.loaded_config.error.clone() {
-        push_value(&mut out, &mut widths, "config", error);
-    }
+    push_notices(&mut out, &mut widths, app);
     out.widest_row = widths.widest_row();
     out
 }
@@ -389,6 +380,33 @@ fn push_value(out: &mut SettingsRows, widths: &mut RowWidths, label: &str, value
     out.rows
         .push(SettingsRow::value(out.ids.len(), label, value));
     out.ids.push(SettingId::ReadOnly);
+}
+
+/// Keep outstanding startup notices visible after their toasts disappear.
+fn push_notices(out: &mut SettingsRows, widths: &mut RowWidths, app: &App) {
+    if app.startup_note.is_some()
+        || !matches!(app.capture_note, CaptureStartupNotice::Quiet)
+        || app.loaded_config.error.is_some()
+    {
+        out.rows.push(SettingsRow::section("Notices"));
+    }
+    if let Some(note) = app.startup_note.clone() {
+        push_value(out, widths, "theme", note);
+    }
+    match &app.capture_note {
+        CaptureStartupNotice::Quiet => {},
+        CaptureStartupNotice::InstallationFailed(note)
+        | CaptureStartupNotice::NewerShimKept(note) => {
+            push_value(out, widths, "capture", note.clone());
+        },
+        CaptureStartupNotice::NewerShimKeptWithFailures { kept, failures } => {
+            push_value(out, widths, "capture", kept.clone());
+            push_value(out, widths, "capture", failures.clone());
+        },
+    }
+    if let Some(error) = app.loaded_config.error.clone() {
+        push_value(out, widths, "config", error);
+    }
 }
 
 /// Render a list setting for reading.
@@ -610,6 +628,9 @@ const fn diagnostic_label(diagnostic: &CaptureDiagnostic) -> &'static str {
         CaptureDiagnostic::EnumerationFailed(_) => CAPTURE_STATUS_ENUMERATION_FAILED,
         CaptureDiagnostic::RegistrationUnreadable(_) => CAPTURE_STATUS_UNREADABLE_REGISTRATION,
         CaptureDiagnostic::RegistrationInvalid(_) => CAPTURE_STATUS_INVALID_REGISTRATION,
+        CaptureDiagnostic::UnsupportedRegistrationVersion { .. } => {
+            CAPTURE_STATUS_UNSUPPORTED_VERSION
+        },
         CaptureDiagnostic::AnnotationOnly(_) => CAPTURE_STATUS_ANNOTATION,
         CaptureDiagnostic::Unverifiable(_) => CAPTURE_STATUS_UNVERIFIABLE,
         CaptureDiagnostic::IdentityUnknown(_) | CaptureDiagnostic::IdentityBlockedByBoot(_) => {
@@ -625,6 +646,14 @@ const fn diagnostic_label(diagnostic: &CaptureDiagnostic) -> &'static str {
 fn capture_diagnostic(diagnostic: &CaptureDiagnostic) -> String {
     let label = diagnostic_label(diagnostic);
     match diagnostic {
+        CaptureDiagnostic::UnsupportedRegistrationVersion {
+            path,
+            encountered,
+            supported,
+        } => format!(
+            "{label}: {} (encountered v{encountered}; this reader supports v{supported}; {CAPTURE_STATUS_VERSION_RECOVERY})",
+            path.display()
+        ),
         CaptureDiagnostic::EnumerationIncomplete(path) | CaptureDiagnostic::Staging(path) => {
             format!("{label}: {}", path.display())
         },
@@ -727,6 +756,7 @@ mod tests {
     use super::SettingId;
     use super::rows;
     use crate::app::App;
+    use crate::app::CaptureStartupNotice;
     use crate::birth_stamp::IdentityEvidence;
     use crate::capture_root::CleanupRefusal;
     use crate::capture_root::RootOwner;
@@ -736,6 +766,7 @@ mod tests {
     use crate::constants::CAPTURE_STATUS_IDENTITY_BOOT;
     use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
     use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
+    use crate::constants::SUPPORTED_REGISTRATION_VERSION;
     use crate::processes::AccountCaptureDirectory;
     use crate::processes::AccountName;
     use crate::processes::AssociationSelection;
@@ -988,6 +1019,63 @@ mod tests {
         let value = root_row(status).value;
         assert!(value.contains("partial — 1 invalid registration"));
         assert!(value.contains("invalid registration: /retained/captures/state/pids/42-uuid"));
+    }
+
+    #[test]
+    fn unsupported_version_names_both_versions_and_reader_recovery() {
+        let mut status = observed_root();
+        let encountered = SUPPORTED_REGISTRATION_VERSION + 1;
+        status
+            .diagnostics
+            .push(CaptureDiagnostic::UnsupportedRegistrationVersion {
+                path: "/retained/captures/state/pids/42-uuid".into(),
+                encountered,
+                supported: SUPPORTED_REGISTRATION_VERSION,
+            });
+        let value = root_row(status).value;
+        assert!(value.contains("partial — 1 unsupported registration version"));
+        assert!(value.contains("/retained/captures/state/pids/42-uuid"));
+        assert!(value.contains(&format!("encountered v{encountered}")));
+        assert!(value.contains(&format!(
+            "this reader supports v{SUPPORTED_REGISTRATION_VERSION}"
+        )));
+        assert!(value.contains("registration and log retained"));
+        assert!(value.contains("upgrade and restart the reader"));
+        assert!(!value.contains("invalid registration"));
+    }
+
+    #[test]
+    fn kept_newer_shim_and_installation_failure_remain_separate_settings_rows() {
+        let kept = "stable: newer shim kept; upgrade this older reader";
+        let failures = "nightly: not installed: permission denied";
+        let mut app = App::new_for_test().expect("quiet settings app");
+        for (notice, expected) in [
+            (CaptureStartupNotice::Quiet, vec![]),
+            (
+                CaptureStartupNotice::InstallationFailed(failures.into()),
+                vec![failures],
+            ),
+            (CaptureStartupNotice::NewerShimKept(kept.into()), vec![kept]),
+            (
+                CaptureStartupNotice::NewerShimKeptWithFailures {
+                    kept:     kept.into(),
+                    failures: failures.into(),
+                },
+                vec![kept, failures],
+            ),
+        ] {
+            app.capture_note = notice;
+            for _ in 0..2 {
+                let settings = rows(&app);
+                let actual: Vec<_> = settings
+                    .rows
+                    .iter()
+                    .filter(|row| row.label == "capture")
+                    .map(|row| row.value.as_str())
+                    .collect();
+                assert_eq!(actual, expected);
+            }
+        }
     }
 
     #[test]

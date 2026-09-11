@@ -131,9 +131,15 @@ mod tests {
     use tui_pane::SettingsRowPayload;
 
     use super::app::App;
+    use super::constants::CAPTURE_REGISTRATION_BYTES;
     use super::constants::POPUP_CHROME_HEIGHT;
+    use super::constants::REGISTRATION_MAGIC;
+    use super::constants::SHIM_MARKER_SEARCH_BYTES;
+    use super::constants::SUPPORTED_REGISTRATION_VERSION;
     use super::interaction;
     use super::navigation::AppNavigation;
+    use super::registration::ParseError;
+    use super::registration::Registration;
     use super::render;
     use super::settings;
 
@@ -158,7 +164,9 @@ import time
 from unittest.mock import patch
 
 root = Path(sys.argv[1]).resolve()
-binary, source, scenario = sys.argv[2:]
+binary, source, scenario, registration_limit, shim_header_limit = sys.argv[2:]
+registration_limit = int(registration_limit)
+shim_header_limit = int(shim_header_limit)
 # Parallel reader tests share the host census; leave room for every fixture's rows.
 terminal_rows = 300
 terminal_columns = 300
@@ -178,6 +186,8 @@ if scenario == 'settings-scroll':
     for directory in account_directories:
         directory.mkdir()
 configuration = '[capture]\nauto_install = false\n'
+if scenario.startswith('startup-'):
+    configuration = '[capture]\nauto_install = true\n'
 if scenario in ('root-headings', 'summary-root-headings', 'root-duplicate', 'fallback-root-duplicate',
                 'fallback-selected-unknown', 'fallback-foreign-owned'):
     (other_capture / 'state/pids').mkdir(parents=True)
@@ -199,6 +209,40 @@ assert shim_source.splitlines().count(assignment) == 1
 (bin_directory / 'cargo').write_text(shim_source.replace(assignment, 'capture_parent=' + shlex.quote(str(capture_parent))))
 shutil.copyfile(shutil.which('sh'), bin_directory / 'cargo-tile-real')
 (bin_directory / 'cargo-tile-real').chmod(0o755)
+if scenario.startswith('startup-'):
+    version_header = re.search(r'^# cargo-tile-shim-version: (\d+)$', shim_source, re.MULTILINE)
+    assert version_header is not None, 'embedded shim must declare its install version'
+    supported_version = int(version_header[1])
+    newer_version = supported_version + 1
+    newer_bin = root / 'rustup/toolchains/a-newer/bin'
+    newer_bin.mkdir(parents=True)
+    newer_bytes = shim_source.replace(version_header[0],
+                                     '# cargo-tile-shim-version: ' + str(newer_version), 1).encode()
+    if scenario == 'startup-truncated':
+        header = version_header[0].encode()
+        header_start = len(shim_source[:version_header.start()].encode())
+        padding = shim_header_limit - header_start - len(header)
+        newer_bytes = shim_source.encode().replace(header, b'#' + b' ' * (padding - 2) + b'\n' + header + b'0', 1)
+        assert newer_bytes[:shim_header_limit].endswith(header)
+        assert newer_bytes[shim_header_limit:shim_header_limit + 2] == b'0\n'
+    (newer_bin / 'cargo').write_bytes(newer_bytes)
+    (newer_bin / 'cargo').chmod(0o755)
+    saved_cargo = b'#!/bin/sh\nexit 37\n'
+    (newer_bin / 'cargo-tile-real').write_bytes(saved_cargo)
+    (newer_bin / 'cargo-tile-real').chmod(0o751)
+    if scenario == 'startup-truncated':
+        installed_paths = (newer_bin / 'cargo', newer_bin / 'cargo-tile-real')
+        for path in installed_paths:
+            path.chmod(0o751)
+            os.utime(path, ns=(0, 0))
+        installed_before = {path: (path.read_bytes(), path.stat()) for path in installed_paths}
+    newer_metadata = (newer_bin / 'cargo').stat()
+    if scenario == 'startup-newer-failure':
+        failed_bin = root / 'rustup/toolchains/z-broken/bin'
+        failed_bin.mkdir(parents=True)
+        (failed_bin / 'cargo').write_bytes(saved_cargo)
+        (failed_bin / 'cargo').chmod(0o751)
+        (failed_bin / 'cargo-tile-shim.lock').mkdir()
 (work / 'build').write_text('''printf '%s\\0' "$LC_ALL" "$TZ" "$LANG" "$HOME" > "$OBSERVED/environment"
 printf '%s' "$$" > "$OBSERVED/cargo-pid"
 printf '%s' "${CARGOTILE_NESTED-}" > "$OBSERVED/enclosing-pid"
@@ -548,7 +592,11 @@ def summary_pane(rendered):
 
 def summary_row_is_unobscured(rendered, marker, following_marker):
     global terminal_rows
-    summary = summary_pane(rendered)
+    try:
+        summary = summary_pane(rendered)
+    except StopIteration:
+        # Resizing can leave a partial frame until the summary borders redraw.
+        return False
     rows = [index for index, line in enumerate(summary) if marker in line]
     following = [index for index, line in enumerate(summary) if following_marker in line]
     if (rows and following and max(rows) < min(following)
@@ -677,9 +725,22 @@ def settings_screen():
     os.write(terminal, b'\x1b')
     def settings_are_closed():
         read_terminal(0.1)
-        return 'Capture' not in screen()
+        return 'Capture:' not in screen()
     wait_for(settings_are_closed, 'settings do not close')
     return rendered
+
+def popup_lines(rendered, title):
+    lines = rendered.splitlines()
+    header_index = next(index for index, line in enumerate(lines) if title in line)
+    header = lines[header_index]
+    left = header.rindex('┌', 0, header.index(title))
+    right = header.index('┐', left)
+    body = []
+    for line in lines[header_index + 1:]:
+        if line[left:left + 1] == '└':
+            return body
+        body.append(line[left + 1:right])
+    raise AssertionError('popup has no lower border\n' + rendered)
 
 def assert_settings_scroll():
     global terminal_rows, terminal_columns
@@ -799,7 +860,44 @@ try:
     first = start_writer('probe-first', home)
     retained = []
     removed = []
-    if scenario.startswith('quiet-json'):
+    if scenario.startswith('version-'):
+        assert first[3][0] == b'cargo-tile-v3', first[3]
+        carrier = start_registration_carrier(first)
+        if scenario == 'version-mixed':
+            legacy = list(carrier[3])
+            legacy[0] = b'cargo-tile-v2'
+            carrier[2].write_bytes(b'\0'.join(legacy))
+            retained.extend((first[2], first[4], carrier[2], carrier[4]))
+        else:
+            # Recreate this ended sibling for each scan, proving cleanup runs
+            # while the unsupported or malformed publication remains untouched.
+            sweep_probe = start_writer('probe-sweep', home)
+            sweep_bytes = sweep_probe[2].read_bytes()
+            end_writer(sweep_probe)
+            if scenario in ('version-newer-ended', 'version-newer-oversized'):
+                (carrier[1] / 'release').touch()
+                assert carrier[0].wait(timeout=5) == 0
+                try:
+                    os.kill(carrier[0].pid, 0)
+                except ProcessLookupError:
+                    pass
+                else:
+                    raise AssertionError('unsupported fixture pid remains present')
+            supported_version = int(first[3][0].removeprefix(b'cargo-tile-v'))
+            newer_version = supported_version + 1
+            if scenario == 'version-malformed':
+                contents = first[3][0] + b'\0partial\0'
+            else:
+                # A future payload need not have today's field count, UTF-8,
+                # generation, birth, or log positions.
+                contents = ('cargo-tile-v' + str(newer_version)).encode() + b'\0\xfffuture-layout\0'
+                if scenario == 'version-newer-oversized':
+                    contents += b'x' * (registration_limit + 1 - len(contents))
+                    assert len(contents) > registration_limit
+            carrier[2].write_bytes(contents)
+            preserved = {path: path.read_bytes() for path in (carrier[2], carrier[4])}
+            retained.extend(preserved)
+    elif scenario.startswith('quiet-json'):
         quiet = '--quiet' if scenario == 'quiet-json-long' else '-q'
         json_format = (('--message-format', 'json') if scenario == 'quiet-json-separate'
                        else ('--message-format=json',))
@@ -986,6 +1084,111 @@ try:
     read_terminal(1)
     rendered = screen()
     assert 'summary' in rendered, rendered
+    if scenario == 'startup-truncated':
+        refusal = 'a-newer: not installed: incomplete shim version line'
+        def incomplete_notice_is_visible():
+            read_terminal(0.1)
+            return refusal in ' '.join(screen().split())
+        wait_for(incomplete_notice_is_visible, 'startup accepts the truncated shim version')
+        normalized = ' '.join(' '.join(popup_lines(screen(), 'Capture shim')).split())
+        assert refusal in normalized, normalized
+        settings = settings_screen()
+        normalized = ' '.join(' '.join(popup_lines(settings, 'Settings')).split())
+        assert refusal in normalized, normalized
+        for path, (contents, before) in installed_before.items():
+            assert path.read_bytes() == contents, 'startup changes installed bytes: ' + str(path)
+            after = path.stat()
+            assert (after.st_ino, after.st_mode, after.st_mtime_ns) == \
+                   (before.st_ino, before.st_mode, before.st_mtime_ns), str(path)
+        assert not (newer_bin / 'cargo-tile-shim.lock').exists()
+        assert not (newer_bin / 'cargo-tile-shim.staging').exists()
+    elif scenario.startswith('startup-newer'):
+        def newer_notice_is_visible():
+            read_terminal(0.1)
+            return 'Newer capture shim kept' in screen()
+        wait_for(newer_notice_is_visible, 'startup omits the kept-newer-shim toast')
+        rendered = screen()
+        normalized = ' '.join(' '.join(popup_lines(rendered, 'Newer capture shim kept')).split())
+        assert 'a-newer' in normalized, normalized
+        assert f'newer shim v{newer_version} kept' in normalized, normalized
+        assert f'this reader is older and supports v{supported_version}' in normalized, normalized
+        assert 'upgrade and restart the reader' in normalized, normalized
+        assert 'a-newer: not installed' not in normalized, normalized
+        if scenario == 'startup-newer':
+            assert 'not installed' not in normalized.lower(), normalized
+        else:
+            failure = ' '.join(' '.join(popup_lines(rendered, 'Capture shim')).split())
+            assert 'z-broken: not installed' in failure, failure
+            assert 'a-newer' not in failure, failure
+        def newer_toast_expires():
+            read_terminal(0.1)
+            return 'Newer capture shim kept' not in screen()
+        wait_for(newer_toast_expires, 'newer-shim toast does not expire')
+        for visit in range(2):
+            settings = settings_screen()
+            settings_lines = popup_lines(settings, 'Settings')
+            normalized = ' '.join(' '.join(settings_lines).split())
+            assert 'Notices:' in settings, settings
+            assert 'a-newer' in normalized, normalized
+            assert f'newer shim v{newer_version} kept' in normalized, normalized
+            assert f'this reader is older and supports v{supported_version}' in normalized, normalized
+            assert 'upgrade and restart the reader' in normalized, normalized
+            assert 'a-newer: not installed' not in normalized, normalized
+            if scenario == 'startup-newer':
+                assert 'not installed' not in normalized.lower(), normalized
+            else:
+                assert 'z-broken: not installed' in normalized, normalized
+                kept_rows = [line for line in settings_lines if 'a-newer' in line]
+                failed_rows = [line for line in settings_lines if 'z-broken' in line]
+                assert len(kept_rows) == len(failed_rows) == 1, settings
+                assert kept_rows[0] != failed_rows[0], 'startup outcomes share one Settings row\n' + settings
+        assert (newer_bin / 'cargo').read_bytes() == newer_bytes, 'startup replaces the newer shim'
+        assert (newer_bin / 'cargo-tile-real').read_bytes() == saved_cargo
+        after = (newer_bin / 'cargo').stat()
+        assert (after.st_ino, after.st_mode, after.st_mtime_ns) == \
+               (newer_metadata.st_ino, newer_metadata.st_mode, newer_metadata.st_mtime_ns)
+        assert not (newer_bin / 'cargo-tile-shim.lock').exists()
+        assert not (newer_bin / 'cargo-tile-shim.staging').exists()
+        if scenario == 'startup-newer-failure':
+            assert (failed_bin / 'cargo').read_bytes() == saved_cargo
+            assert (failed_bin / 'cargo-tile-shim.lock').is_dir()
+            assert not (failed_bin / 'cargo-tile-real').exists()
+    elif scenario == 'version-mixed':
+        rendered = wait_for_fixture_pane((first[1].name, carrier[1].name))
+        row, heading = assert_registered_row(rendered, carrier)
+        assert 'blocked' in row and unavailable_measurements(row) == 3, rendered
+        commands = fixture_pane(rendered, (first[1].name, carrier[1].name))
+        current = [line for line in commands if first[1].name in line]
+        assert len(current) == 1 and 'blocked' in current[0], rendered
+        assert re.match(r'^\s*│\s*' + (first[1] / 'cargo-pid').read_text() + r'\s', current[0]), rendered
+        settings = settings_screen().lower()
+        assert 'invalid registration' not in settings and 'unsupported' not in settings, settings
+        assert first[2].read_bytes().startswith(b'cargo-tile-v3\0')
+        assert carrier[2].read_bytes().startswith(b'cargo-tile-v2\0')
+    elif scenario.startswith('version-'):
+        for scan in range(3):
+            sweep_probe[4].write_bytes(b'Blocking waiting for file lock on build directory\n')
+            sweep_probe[2].write_bytes(sweep_bytes)
+            def sweep_finishes():
+                read_terminal(0.1)
+                return not sweep_probe[2].exists() and not sweep_probe[4].exists()
+            wait_for(sweep_finishes, 'reader does not sweep the supported ended sibling')
+            rendered = screen()
+            assert carrier[1].name not in rendered, 'ineligible registration supplies a row\n' + rendered
+            if scenario not in ('version-newer-ended', 'version-newer-oversized'):
+                assert carrier[0].poll() is None, 'fixture writer ends before retention checks'
+            for path, contents in preserved.items():
+                assert path.read_bytes() == contents, 'reader changes retained artifact: ' + str(path)
+            settings = ' '.join(settings_screen().replace('│', ' ').split())
+            assert str(carrier[2]) in settings, settings
+            if scenario == 'version-malformed':
+                assert 'invalid registration' in settings.lower(), settings
+                assert 'unsupported' not in settings.lower(), settings
+            else:
+                assert 'unsupported' in settings.lower(), settings
+                assert f'v{newer_version}' in settings and f'v{supported_version}' in settings, settings
+                assert 'upgrade' in settings.lower() and 'restart' in settings.lower(), settings
+                assert 'invalid registration' not in settings.lower(), settings
     if scenario == 'settings-scroll':
         assert_settings_scroll()
     if scenario.startswith('quiet-json'):
@@ -1104,6 +1307,11 @@ try:
             assert sum('[' + account + '] ~/' + other_directory.name in line
                        for line in commands) == 1, rendered
     if scenario == 'summary-root-headings':
+        def summary_writers_are_visible():
+            read_terminal(0.1)
+            return summary_row_is_unobscured(screen(), first[1].name, second[1].name)
+        wait_for(summary_writers_are_visible, 'summary does not display both fixture writers')
+        rendered = screen()
         summary = summary_pane(rendered)
         heading = '[' + pwd.getpwuid(capture.stat().st_uid).pw_name + '] ~/' + work.name
         assert sum(heading in line for line in summary) == 1, rendered
@@ -1704,6 +1912,8 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
                 "/src/cargo-capture-shim.sh"
             ))
             .arg(scenario)
+            .arg(CAPTURE_REGISTRATION_BYTES.to_string())
+            .arg(SHIM_MARKER_SEARCH_BYTES.to_string())
             .output()
             .expect("run isolated production reader regression");
         assert!(
@@ -1839,6 +2049,67 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
     #[test]
     fn reader_does_not_source_a_row_from_an_unknown_registration() {
         reader_regression("fallback-unknown");
+    }
+
+    /// A future layout is diagnosed before its fields can supply identity or cleanup evidence.
+    #[test]
+    fn reader_retains_a_newer_registration_and_log_while_the_writer_is_alive() {
+        reader_regression("version-newer-live");
+    }
+
+    /// Repeated completed sweeps preserve unsupported records even after the writer exits.
+    #[test]
+    fn reader_retains_a_newer_registration_and_log_after_the_writer_exits() {
+        reader_regression("version-newer-ended");
+    }
+
+    /// The read cap must preserve the version diagnostic and both artifacts during cleanup.
+    #[test]
+    fn reader_diagnoses_and_retains_an_oversized_newer_registration_after_cleanup() {
+        reader_regression("version-newer-oversized");
+    }
+
+    /// Header dispatch also precedes the payload cap for callers supplying bytes directly.
+    #[test]
+    fn oversized_newer_registration_reports_its_version_before_its_size() {
+        let encountered = SUPPORTED_REGISTRATION_VERSION + 1;
+        let mut bytes = format!("cargo-tile-v{encountered}\0").into_bytes();
+        bytes.resize(
+            usize::try_from(CAPTURE_REGISTRATION_BYTES).expect("registration cap fits usize") + 1,
+            b'x',
+        );
+        assert_eq!(
+            Registration::parse(&bytes),
+            Err(ParseError::UnsupportedVersion { encountered })
+        );
+    }
+
+    /// Supported framing errors remain distinct from a request to upgrade the reader.
+    #[test]
+    fn reader_reports_a_malformed_supported_registration_separately() {
+        reader_regression("version-malformed");
+    }
+
+    /// Both framing generations retain their live progress and registration-only row source.
+    #[test]
+    fn reader_reads_live_v2_and_v3_publications_together() { reader_regression("version-mixed"); }
+
+    /// Auto-install keeps the newer shim and retains recovery guidance after the toast expires.
+    #[test]
+    fn older_reader_startup_keeps_the_newer_shim_and_reports_it_in_settings() {
+        reader_regression("startup-newer");
+    }
+
+    /// Auto-install refuses a partial version line before touching either installed file.
+    #[test]
+    fn reader_startup_refuses_a_truncated_version_without_changing_installed_files() {
+        reader_regression("startup-truncated");
+    }
+
+    /// A separate failed installation cannot hide or mislabel a retained newer shim.
+    #[test]
+    fn older_reader_startup_distinguishes_a_kept_newer_shim_from_an_install_failure() {
+        reader_regression("startup-newer-failure");
     }
 
     /// Exclusion applies before either registration or process row construction.
@@ -2056,7 +2327,7 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
         assert_eq!(
             &fields[..8],
             [
-                b"cargo-tile-v2".as_slice(),
+                REGISTRATION_MAGIC,
                 generation.as_bytes(),
                 boot.trim_end_matches('\n').as_bytes(),
                 birth.as_bytes(),

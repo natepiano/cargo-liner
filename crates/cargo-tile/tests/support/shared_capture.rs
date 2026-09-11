@@ -15,6 +15,9 @@ use crate::constants::RUSTUP_HOME_ENV;
 use crate::constants::SHIM_LOCK_RETRY_ATTEMPTS;
 use crate::constants::SHIM_LOCK_RETRY_DELAY;
 use crate::constants::SHIM_MARKER;
+use crate::constants::SHIM_MARKER_SEARCH_BYTES;
+use crate::constants::SHIM_VERSION_PREFIX;
+use crate::constants::SUPPORTED_REGISTRATION_VERSION;
 use crate::hook::AccountHookOutcome;
 use crate::hook::AccountHookReport;
 use crate::hook::HookAccount;
@@ -444,6 +447,237 @@ fn assert_orphan_and_installed_reports(orphan_name: &str, installed_name: &str) 
         include_bytes!("../../src/cargo-capture-shim.sh")
     );
     assert!(!orphan.join("cargo-tile-real").exists());
+}
+
+#[test]
+fn injected_account_reports_a_downgrade_refusal_before_a_successful_install() {
+    assert_downgrade_and_installed_reports("a-newer", "z-working");
+}
+
+#[test]
+fn injected_account_reports_a_downgrade_refusal_after_a_successful_install() {
+    assert_downgrade_and_installed_reports("z-newer", "a-working");
+}
+
+/// Exercise the built child, protocol decoder, and administrative renderer in both orders.
+fn assert_downgrade_and_installed_reports(newer_name: &str, installed_name: &str) {
+    let directory = tempfile::tempdir().expect("mixed shim versions fixture");
+    let account = account_at(directory.path(), "runner");
+    let newer = installed_cargo(&account, newer_name);
+    let supported = SUPPORTED_REGISTRATION_VERSION;
+    let installed = supported + 1;
+    let contents = newer_shim(installed);
+    fs::write(newer.join("cargo"), &contents).expect("newer installed shim");
+    let before = fs::metadata(newer.join("cargo")).expect("newer shim metadata");
+    let original = fs::read(newer.join("cargo-tile-real")).expect("saved real cargo");
+    let working = original_cargo(&account, installed_name);
+    let observer = observe_account_child(directory.path());
+    let reports = run_account_hooks(
+        std::slice::from_ref(&account),
+        &observer,
+        HookOperation::Install,
+    );
+    assert_eq!(reports.len(), 1);
+    let report = &reports[0];
+    assert_eq!(report.toolchains.len(), 2);
+    assert_admin_report(
+        report,
+        &[
+            (newer_name, "downgrade refused"),
+            (installed_name, "installed"),
+        ],
+    );
+    assert!(
+        matches!(&report.outcome, AccountHookOutcome::Incomplete(reason)
+            if reason.contains(newer_name) && reason.contains("downgrade refused")),
+        "a kept newer shim prevents an unqualified installed summary: {report:?}"
+    );
+    let mut expected = [
+        (
+            newer_name,
+            ToolchainHookOutcome::Install(HookOperationOutcome::DowngradeRefused {
+                installed,
+                supported,
+            }),
+        ),
+        (
+            installed_name,
+            ToolchainHookOutcome::Install(HookOperationOutcome::Installed),
+        ),
+    ];
+    expected.sort_by_key(|(name, _)| *name);
+    for (actual, (name, outcome)) in report.toolchains.iter().zip(expected) {
+        assert_eq!(actual.toolchain, name);
+        assert_eq!(actual.outcome, outcome);
+    }
+    assert_account_child_environment(&account);
+    let protocol = fs::read_to_string(account.home.join("child-output")).expect("child protocol");
+    let mut expected = [
+        format!("{newer_name}\tdowngrade refused\t{installed}\t{supported}"),
+        format!("{installed_name}\tinstalled"),
+    ];
+    expected.sort();
+    assert_eq!(protocol.lines().collect::<Vec<_>>(), expected);
+    let rendered = report.to_string();
+    let refusal = rendered
+        .lines()
+        .find(|line| line.trim().starts_with(&format!("runner: {newer_name}:")))
+        .expect("named administrative refusal");
+    for text in [
+        format!("newer shim v{installed} kept"),
+        format!("this reader supports v{supported}"),
+        "upgrade and restart the reader".to_owned(),
+    ] {
+        assert!(refusal.contains(&text), "{rendered}");
+    }
+    assert!(
+        HookOperation::Install.completion(&reports).is_ok(),
+        "capture setup refusal must preserve job-start install exit behavior"
+    );
+    assert_eq!(
+        fs::read(working.join("cargo")).expect("successful sibling install"),
+        include_bytes!("../../src/cargo-capture-shim.sh")
+    );
+    assert_eq!(
+        fs::read(newer.join("cargo")).expect("newer shim is kept"),
+        contents.as_bytes()
+    );
+    assert_eq!(
+        fs::read(newer.join("cargo-tile-real")).expect("newer shim's real cargo survives"),
+        original
+    );
+    let after = fs::metadata(newer.join("cargo")).expect("retained shim metadata");
+    assert_eq!(after.ino(), before.ino());
+    assert_eq!(after.mode(), before.mode());
+    assert_eq!(
+        after.modified().expect("mtime"),
+        before.modified().expect("original mtime")
+    );
+    assert!(!newer.join("cargo-tile-shim.lock").exists());
+    assert!(!newer.join("cargo-tile-shim.staging").exists());
+}
+
+/// Only the installed header changes; all other embedded shim bytes remain current.
+fn newer_shim(version: u64) -> String {
+    let source = include_str!("../../src/cargo-capture-shim.sh");
+    let header = format!("{SHIM_VERSION_PREFIX}{SUPPORTED_REGISTRATION_VERSION}");
+    assert_eq!(source.lines().filter(|line| *line == header).count(), 1);
+    source.replacen(&header, &format!("{SHIM_VERSION_PREFIX}{version}"), 1)
+}
+
+/// The ordinary CLI must preserve the installed newer shim and keep install nonfatal.
+#[test]
+fn local_install_refuses_to_replace_a_newer_shim() {
+    let directory = tempfile::tempdir().expect("local downgrade fixture");
+    let account = account_at(directory.path(), "runner");
+    let bin = installed_cargo(&account, "newer");
+    let installed = SUPPORTED_REGISTRATION_VERSION + 1;
+    let contents = newer_shim(installed);
+    fs::write(bin.join("cargo"), &contents).expect("newer shim");
+    let original = fs::read(bin.join("cargo-tile-real")).expect("real cargo before refusal");
+    let output = Command::new(cargo_tile())
+        .arg("install")
+        .env("HOME", &account.home)
+        .env(RUSTUP_HOME_ENV, account.home.join(".rustup"))
+        .output()
+        .expect("install against newer shim");
+    assert!(output.status.success(), "{output:?}");
+    let rendered = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(rendered.contains("newer: downgrade refused"), "{rendered}");
+    assert!(
+        rendered.contains(&format!("newer shim v{installed} kept")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("upgrade and restart the reader"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("not installed"), "{rendered}");
+    assert_eq!(
+        fs::read(bin.join("cargo")).expect("kept newer shim"),
+        contents.as_bytes()
+    );
+    assert_eq!(
+        fs::read(bin.join("cargo-tile-real")).expect("kept real cargo"),
+        original
+    );
+}
+
+/// A declaration split at the inspection limit cannot authorize a shim refresh.
+#[test]
+fn local_install_refuses_a_truncated_version_without_changing_installed_files() {
+    let directory = tempfile::tempdir().expect("truncated version fixture");
+    let account = account_at(directory.path(), "runner");
+    let bin = installed_cargo(&account, "truncated");
+    let source = include_str!("../../src/cargo-capture-shim.sh");
+    let header = format!("{SHIM_VERSION_PREFIX}{SUPPORTED_REGISTRATION_VERSION}");
+    let header_start = source.find(&header).expect("embedded version header");
+    let padding = SHIM_MARKER_SEARCH_BYTES - header_start - header.len();
+    let contents = source.replacen(
+        &header,
+        &format!("#{}\n{header}0", " ".repeat(padding - 2)),
+        1,
+    );
+    assert!(contents[..SHIM_MARKER_SEARCH_BYTES].ends_with(&header));
+    assert_eq!(
+        &contents.as_bytes()[SHIM_MARKER_SEARCH_BYTES..SHIM_MARKER_SEARCH_BYTES + 2],
+        b"0\n",
+        "the inspected prefix declares the supported version but the full line declares a newer one"
+    );
+    fs::write(bin.join("cargo"), &contents).expect("padded installed shim");
+    let paths = [bin.join("cargo"), bin.join("cargo-tile-real")];
+    let before: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            fs::File::open(path)
+                .expect("installed file")
+                .set_modified(UNIX_EPOCH)
+                .expect("distinct historical mtime");
+            (
+                fs::read(path).expect("installed bytes"),
+                fs::metadata(path).expect("installed metadata"),
+            )
+        })
+        .collect();
+    let output = Command::new(cargo_tile())
+        .arg("install")
+        .env("HOME", &account.home)
+        .env(RUSTUP_HOME_ENV, account.home.join(".rustup"))
+        .output()
+        .expect("install against truncated shim version");
+    let rendered = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(rendered.contains("truncated: error:"), "{rendered}");
+    assert!(
+        rendered.contains("incomplete shim version line"),
+        "{rendered}"
+    );
+    for (path, (bytes, metadata)) in paths.iter().zip(before) {
+        assert_eq!(
+            fs::read(path).expect("installed bytes after refusal"),
+            bytes,
+            "{}",
+            path.display()
+        );
+        let after = fs::metadata(path).expect("installed metadata after refusal");
+        assert_eq!(after.ino(), metadata.ino(), "{}", path.display());
+        assert_eq!(after.mode(), metadata.mode(), "{}", path.display());
+        assert_eq!(
+            after.modified().expect("mtime after refusal"),
+            metadata.modified().expect("original mtime"),
+            "{}",
+            path.display()
+        );
+    }
+    assert!(!bin.join("cargo-tile-shim.lock").exists());
+    assert!(!bin.join("cargo-tile-shim.staging").exists());
 }
 
 #[test]

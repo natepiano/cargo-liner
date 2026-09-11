@@ -80,6 +80,7 @@ use crate::constants::REGISTRATION_SEPARATOR;
 use crate::constants::REGISTRATION_TEMP_SUFFIX;
 use crate::constants::RUN_LOG_PREFIX;
 use crate::constants::RUN_LOG_SUFFIX;
+use crate::constants::SUPPORTED_REGISTRATION_VERSION;
 use crate::constants::TALLY_CLOSE;
 use crate::constants::TALLY_OPEN;
 use crate::constants::TEST_PHASE_MARKER;
@@ -91,6 +92,7 @@ use crate::processes::AccountName;
 use crate::processes::CaptureDiagnostic;
 use crate::processes::DirectAssociation;
 use crate::processes::RootReadStatus;
+use crate::registration::ParseError;
 use crate::registration::Registration;
 use crate::registration::RegistrationVerification;
 use crate::registration::VerifiedRegistration;
@@ -976,9 +978,20 @@ fn registered_runs(scan: &RootScan, observe: &impl Fn(u32) -> KernelObservation)
                 continue;
             },
         };
-        let Ok(record) = Registration::parse(&observation.bytes) else {
-            diagnostics.push(CaptureDiagnostic::RegistrationInvalid(path));
-            continue;
+        let record = match Registration::parse(&observation.bytes) {
+            Ok(record) => record,
+            Err(ParseError::UnsupportedVersion { encountered }) => {
+                diagnostics.push(CaptureDiagnostic::UnsupportedRegistrationVersion {
+                    path,
+                    encountered,
+                    supported: SUPPORTED_REGISTRATION_VERSION,
+                });
+                continue;
+            },
+            Err(_) => {
+                diagnostics.push(CaptureDiagnostic::RegistrationInvalid(path));
+                continue;
+            },
         };
         let verification = match (&record, registration_name(entry.name())) {
             (

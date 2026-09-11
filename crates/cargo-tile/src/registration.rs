@@ -15,6 +15,10 @@ use crate::constants::CAPTURE_REGISTRATION_BYTES;
 use crate::constants::REGISTRATION_FIELD_SEPARATOR;
 use crate::constants::REGISTRATION_LEGACY_SEPARATOR;
 use crate::constants::REGISTRATION_MAGIC;
+use crate::constants::REGISTRATION_MAGIC_PREFIX;
+use crate::constants::REGISTRATION_V2_MAGIC;
+use crate::constants::REGISTRATION_VERSION_HEADER_BYTES;
+use crate::constants::SUPPORTED_REGISTRATION_VERSION;
 
 /// Parsing preserves compatibility without promoting old display text to proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,37 +31,36 @@ pub(crate) enum Registration {
 
 impl Registration {
     /// Reject one malformed record without invalidating readable siblings.
-    /// Both phase-2 records and the writer-home extension use the same v2 magic.
+    /// Read v2 and v3, rejecting newer headers before checking payload size or fields.
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
+        let version = check_version(bytes);
+        if let Err(error @ ParseError::UnsupportedVersion { .. }) = version {
+            return Err(error);
+        }
         if u64::try_from(bytes.len()).map_err(|_| ParseError::TooLarge)?
             > CAPTURE_REGISTRATION_BYTES
         {
             return Err(ParseError::TooLarge);
         }
-        if !bytes.contains(&REGISTRATION_FIELD_SEPARATOR) {
-            return parse_legacy(bytes).map(Self::Legacy);
+        if matches!(version, Err(ParseError::Framing)) {
+            return if bytes.starts_with(REGISTRATION_MAGIC_PREFIX)
+                || bytes.contains(&REGISTRATION_FIELD_SEPARATOR)
+            {
+                Err(ParseError::Framing)
+            } else {
+                parse_legacy(bytes).map(Self::Legacy)
+            };
         }
+        version?;
         let framed = bytes
             .strip_suffix(&[REGISTRATION_FIELD_SEPARATOR])
             .ok_or(ParseError::Framing)?;
         let fields: Vec<_> = framed
             .split(|byte| *byte == REGISTRATION_FIELD_SEPARATOR)
             .collect();
-        let [
-            magic,
-            generation,
-            boot,
-            birth,
-            log,
-            directory,
-            remaining @ ..,
-        ] = fields.as_slice()
-        else {
+        let [_, generation, boot, birth, log, directory, remaining @ ..] = fields.as_slice() else {
             return Err(ParseError::Framing);
         };
-        if *magic != REGISTRATION_MAGIC {
-            return Err(ParseError::Magic);
-        }
         let generation = text(generation)?;
         if !single_basename(generation) {
             return Err(ParseError::Generation);
@@ -231,8 +234,13 @@ pub(crate) enum ParseError {
     TooLarge,
     /// Fields are missing or the final field is not NUL-terminated.
     Framing,
-    /// A NUL-framed record uses an unsupported protocol version.
+    /// A NUL-framed record has an unrecognized or malformed protocol header.
     Magic,
+    /// A newer writer's payload remains uninterpreted and cannot authorize cleanup.
+    UnsupportedVersion {
+        /// The decimal version declared by the writer's bounded header.
+        encountered: u64,
+    },
     /// A filename field is not valid UTF-8 text.
     Text,
     /// A generation cannot identify a single published filename.
@@ -243,6 +251,31 @@ pub(crate) enum ParseError {
     ArgumentCount,
     /// Unframed text does not contain a directory and command separated by a tab.
     Legacy,
+}
+
+/// Inspect only the bounded opening header, even when the payload exceeds its cap.
+pub(crate) fn check_version(bytes: &[u8]) -> Result<(), ParseError> {
+    let header_end = bytes
+        .iter()
+        .take(REGISTRATION_VERSION_HEADER_BYTES + 1)
+        .position(|byte| *byte == REGISTRATION_FIELD_SEPARATOR)
+        .ok_or(ParseError::Framing)?;
+    let header = &bytes[..header_end];
+    if header == REGISTRATION_MAGIC || header == REGISTRATION_V2_MAGIC {
+        return Ok(());
+    }
+    let digits = header
+        .strip_prefix(REGISTRATION_MAGIC_PREFIX)
+        .filter(|digits| !digits.is_empty() && digits.iter().all(u8::is_ascii_digit))
+        .ok_or(ParseError::Magic)?;
+    let encountered = text(digits)?
+        .parse::<u64>()
+        .map_err(|_| ParseError::Magic)?;
+    if encountered > SUPPORTED_REGISTRATION_VERSION {
+        Err(ParseError::UnsupportedVersion { encountered })
+    } else {
+        Err(ParseError::Magic)
+    }
 }
 
 /// A slash, dot component, or empty string cannot be a root-relative log basename.
@@ -335,6 +368,10 @@ mod tests {
     use crate::constants::CAPTURE_REGISTRATION_BYTES;
     use crate::constants::REGISTRATION_FIELD_SEPARATOR;
     use crate::constants::REGISTRATION_MAGIC;
+    use crate::constants::REGISTRATION_MAGIC_PREFIX;
+    use crate::constants::REGISTRATION_V2_MAGIC;
+    use crate::constants::REGISTRATION_VERSION_HEADER_BYTES;
+    use crate::constants::SUPPORTED_REGISTRATION_VERSION;
 
     /// Serialize the actual wire framing without relying on Rust string escapes.
     fn framed(fields: &[&[u8]]) -> Vec<u8> {
@@ -344,7 +381,7 @@ mod tests {
             .collect()
     }
 
-    /// Supply the common v2 header; each test controls the meaningful suffix.
+    /// Supply the current header; each test controls the meaningful suffix.
     fn record(birth: &[u8], log: &[u8], suffix: &[&[u8]]) -> Vec<u8> {
         let mut fields = vec![REGISTRATION_MAGIC, b"calendar-uuid", b"boot", birth, log];
         fields.extend_from_slice(suffix);
@@ -541,8 +578,97 @@ mod tests {
 
     #[test]
     fn parser_enforces_registration_byte_cap() {
-        let bytes =
-            vec![b'x'; usize::try_from(CAPTURE_REGISTRATION_BYTES).expect("cap fits usize") + 1];
+        let cap = usize::try_from(CAPTURE_REGISTRATION_BYTES).expect("cap fits usize");
+        let bytes = vec![b'x'; cap + 1];
         assert_eq!(Registration::parse(&bytes), Err(ParseError::TooLarge));
+        for magic in [REGISTRATION_V2_MAGIC, REGISTRATION_MAGIC, b"cargo-tile-v4x"] {
+            let mut bytes = framed(&[magic]);
+            bytes.resize(cap + 1, b'x');
+            assert_eq!(Registration::parse(&bytes), Err(ParseError::TooLarge));
+        }
+    }
+
+    #[test]
+    fn newer_version_precedes_payload_size_checks() {
+        let cap = usize::try_from(CAPTURE_REGISTRATION_BYTES).expect("cap fits usize");
+        let prefix = std::str::from_utf8(REGISTRATION_MAGIC_PREFIX).expect("ASCII magic prefix");
+        for encountered in [SUPPORTED_REGISTRATION_VERSION + 1, u64::MAX] {
+            let magic = format!("{prefix}{encountered}");
+            for length in [cap, cap + 1, cap * 2] {
+                let mut bytes = framed(&[magic.as_bytes()]);
+                bytes.resize(length, 0xff);
+                assert_eq!(
+                    Registration::parse(&bytes),
+                    Err(ParseError::UnsupportedVersion { encountered })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn newer_version_precedes_payload_framing_and_identity_checks() {
+        let encountered = SUPPORTED_REGISTRATION_VERSION + 1;
+        let prefix = std::str::from_utf8(REGISTRATION_MAGIC_PREFIX).expect("ASCII magic prefix");
+        let magic = format!("{prefix}{encountered}");
+        for payload in [b"".as_slice(), b"new layout", b"\xff\0different\0fields\0"] {
+            let mut bytes = framed(&[magic.as_bytes()]);
+            bytes.extend_from_slice(payload);
+            assert_eq!(
+                Registration::parse(&bytes),
+                Err(ParseError::UnsupportedVersion { encountered })
+            );
+        }
+    }
+
+    #[test]
+    fn both_v2_layouts_keep_the_same_fields_as_v3() {
+        for suffix in [
+            vec![b"/work".as_slice(), b"1", b"build"],
+            vec![b"/work".as_slice(), b"/home/writer", b"1", b"build"],
+        ] {
+            let current = record(b"101", b"exact.log", &suffix);
+            let mut legacy = REGISTRATION_V2_MAGIC.to_vec();
+            legacy.extend_from_slice(&current[REGISTRATION_MAGIC.len()..]);
+            assert_eq!(Registration::parse(&legacy), Registration::parse(&current));
+            assert!(matches!(
+                Registration::parse(&legacy),
+                Ok(Registration::Versioned(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn supported_headers_still_require_their_payload() {
+        for magic in [REGISTRATION_V2_MAGIC, REGISTRATION_MAGIC] {
+            assert_eq!(
+                Registration::parse(&framed(&[magic])),
+                Err(ParseError::Framing)
+            );
+        }
+    }
+
+    #[test]
+    fn version_header_is_bounded_and_requires_unsigned_decimal_digits() {
+        let prefix = std::str::from_utf8(REGISTRATION_MAGIC_PREFIX).expect("ASCII magic prefix");
+        let maximum = format!("{prefix}{}", u64::MAX);
+        assert_eq!(maximum.len(), REGISTRATION_VERSION_HEADER_BYTES);
+        assert_eq!(
+            Registration::parse(&framed(&[maximum.as_bytes()])),
+            Err(ParseError::UnsupportedVersion {
+                encountered: u64::MAX,
+            })
+        );
+        let oversized = format!("{maximum}0");
+        assert_eq!(
+            Registration::parse(&framed(&[oversized.as_bytes()])),
+            Err(ParseError::Framing)
+        );
+        for suffix in ["", "+4", "-4", "4x", "18446744073709551616"] {
+            let magic = format!("{prefix}{suffix}");
+            assert_eq!(
+                Registration::parse(&framed(&[magic.as_bytes()])),
+                Err(ParseError::Magic)
+            );
+        }
     }
 }

@@ -62,6 +62,8 @@ use crate::constants::SHIM_MARKER;
 use crate::constants::SHIM_MARKER_SEARCH_BYTES;
 use crate::constants::SHIM_MODE;
 use crate::constants::SHIM_STAGING_NAME;
+use crate::constants::SHIM_VERSION_PREFIX;
+use crate::constants::SUPPORTED_REGISTRATION_VERSION;
 use crate::constants::TOOLCHAIN_BIN_DIR;
 use crate::constants::TOOLCHAINS_DIR;
 
@@ -157,6 +159,12 @@ impl ToolchainHookOutcome {
                 HookOperationOutcome::Removed => "removed",
                 HookOperationOutcome::AlreadyAbsent => "absent",
                 HookOperationOutcome::Orphaned => "orphaned",
+                HookOperationOutcome::DowngradeRefused {
+                    installed,
+                    supported,
+                } => {
+                    return format!("downgrade refused\t{installed}\t{supported}");
+                },
             }
             .to_owned(),
             Self::Status(state) => match state {
@@ -177,8 +185,12 @@ impl ToolchainHookOutcome {
             self,
             Self::Unreadable(_)
                 | Self::Failed(_)
-                | Self::Install(HookOperationOutcome::Orphaned)
-                | Self::Uninstall(HookOperationOutcome::Orphaned)
+                | Self::Install(
+                    HookOperationOutcome::Orphaned | HookOperationOutcome::DowngradeRefused { .. }
+                )
+                | Self::Uninstall(
+                    HookOperationOutcome::Orphaned | HookOperationOutcome::DowngradeRefused { .. }
+                )
         )
     }
 }
@@ -232,6 +244,24 @@ impl ToolchainHookReport {
                 ToolchainHookOutcome::Status(HookState::Orphaned)
             },
             (_, result) => match result.split_once('\t') {
+                Some(("downgrade refused", versions)) if operation == HookOperation::Install => {
+                    versions
+                        .split_once('\t')
+                        .and_then(|(installed, supported)| {
+                            let installed = installed.parse::<u64>().ok()?;
+                            let supported = supported.parse::<u64>().ok()?;
+                            (installed > supported).then_some(
+                                HookOperationOutcome::DowngradeRefused {
+                                    installed,
+                                    supported,
+                                },
+                            )
+                        })
+                        .map_or_else(
+                            || ToolchainHookOutcome::Failed(format!("invalid hook report: {line}")),
+                            ToolchainHookOutcome::Install,
+                        )
+                },
                 Some(("unreadable", reason)) => ToolchainHookOutcome::Unreadable(reason.to_owned()),
                 Some(("error", reason)) => ToolchainHookOutcome::Failed(reason.to_owned()),
                 _ => ToolchainHookOutcome::Failed(format!("invalid hook report: {line}")),
@@ -257,6 +287,17 @@ impl fmt::Display for ToolchainHookReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}: ", self.toolchain)?;
         match &self.outcome {
+            ToolchainHookOutcome::Install(HookOperationOutcome::DowngradeRefused {
+                installed,
+                supported,
+            })
+            | ToolchainHookOutcome::Uninstall(HookOperationOutcome::DowngradeRefused {
+                installed,
+                supported,
+            }) => write!(
+                formatter,
+                "downgrade refused -- newer shim v{installed} kept; this reader supports v{supported}; upgrade and restart the reader"
+            ),
             ToolchainHookOutcome::Install(HookOperationOutcome::Orphaned)
             | ToolchainHookOutcome::Uninstall(HookOperationOutcome::Orphaned)
             | ToolchainHookOutcome::Status(HookState::Orphaned) => formatter
@@ -377,17 +418,19 @@ pub(crate) struct Hook {
 #[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct Startup {
     /// Toolchains the shim was put in front of just now.
-    pub(crate) installed: Vec<String>,
+    pub(crate) installed:  Vec<String>,
     /// Toolchains whose shim was out of date -- written by an earlier
     /// cargo-tile -- and now carries this binary's copy.
-    pub(crate) refreshed: Vec<String>,
+    pub(crate) refreshed:  Vec<String>,
+    /// Newer installed shims kept intact because this reader is older.
+    pub(crate) kept_newer: Vec<NewerShim>,
     /// Toolchains whose shim has no real cargo beside it. Left alone:
     /// installing over that would write a shim in front of nothing, and
     /// the only repair is `rustup` putting a cargo back.
-    pub(crate) orphaned:  Vec<String>,
+    pub(crate) orphaned:   Vec<String>,
     /// Toolchains where installing failed, and the error's text. A
     /// read-only toolchain directory is the usual reason.
-    pub(crate) failed:    Vec<(String, String)>,
+    pub(crate) failed:     Vec<(String, String)>,
 }
 
 impl Startup {
@@ -395,16 +438,28 @@ impl Startup {
     pub(crate) const fn is_quiet(&self) -> bool {
         self.installed.is_empty()
             && self.refreshed.is_empty()
+            && self.kept_newer.is_empty()
             && self.orphaned.is_empty()
             && self.failed.is_empty()
     }
 }
 
+/// One installed shim that startup cannot replace with this older reader's copy.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct NewerShim {
+    /// The toolchain whose shim remains installed.
+    pub(crate) toolchain: String,
+    /// The version declared by the installed shim.
+    pub(crate) installed: u64,
+    /// The newest framing version this reader supports.
+    pub(crate) supported: u64,
+}
+
 /// Stand the shim up in front of every toolchain that lacks one, and
 /// bring every installed shim up to date with this binary's copy.
 ///
-/// The one state left alone is [`HookState::Orphaned`], which is
-/// reported rather than repaired. A toolchain that fails does not stop
+/// Orphaned and newer shims are reported and kept unchanged.
+/// A toolchain that fails does not stop
 /// the others: each is its own file system operation, and one refusing
 /// says nothing about the next.
 pub(crate) fn at_startup() -> io::Result<Startup> {
@@ -433,6 +488,16 @@ fn stand_up(hooks: &[Hook]) -> Startup {
             Ok(HookOperationOutcome::Installed) => startup.installed.push(hook.name.clone()),
             Ok(HookOperationOutcome::Refreshed) => startup.refreshed.push(hook.name.clone()),
             Ok(HookOperationOutcome::Orphaned) => startup.orphaned.push(hook.name.clone()),
+            Ok(HookOperationOutcome::DowngradeRefused {
+                installed,
+                supported,
+            }) => {
+                startup.kept_newer.push(NewerShim {
+                    toolchain: hook.name.clone(),
+                    installed,
+                    supported,
+                });
+            },
             Ok(
                 HookOperationOutcome::Removed
                 | HookOperationOutcome::AlreadyAbsent
@@ -471,6 +536,13 @@ pub(crate) enum HookOperationOutcome {
     Refreshed,
     /// The installed shim matches this binary's copy and was untouched.
     AlreadyCurrent,
+    /// The installed shim is newer than this reader's copy and remains unchanged.
+    DowngradeRefused {
+        /// The installed shim's declared framing version.
+        installed: u64,
+        /// The newest framing version this reader supports.
+        supported: u64,
+    },
     /// The real cargo has its name back.
     Removed,
     /// Nothing to do: no shim was installed.
@@ -632,8 +704,17 @@ impl Hook {
             HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
         match self.state()? {
             HookState::Installed => {
-                if fs::read(&self.cargo)? == SHIM_SOURCE.as_bytes() {
+                let contents = fs::read(&self.cargo)?;
+                if contents == SHIM_SOURCE.as_bytes() {
                     return Ok(HookOperationOutcome::AlreadyCurrent);
+                }
+                if let ShimVersion::Versioned(installed) = shim_version(&contents)?
+                    && installed > SUPPORTED_REGISTRATION_VERSION
+                {
+                    return Ok(HookOperationOutcome::DowngradeRefused {
+                        installed,
+                        supported: SUPPORTED_REGISTRATION_VERSION,
+                    });
                 }
                 self.write_shim()?;
                 return Ok(HookOperationOutcome::Refreshed);
@@ -1057,6 +1138,55 @@ enum CargoContents {
     Original,
 }
 
+/// Whether the installed shim declares its framing version.
+enum ShimVersion {
+    /// Historical shims have no version line and may be upgraded.
+    Unversioned,
+    /// The header explicitly identifies the shim's framing version.
+    Versioned(u64),
+}
+
+/// Inspect only the shim header; malformed declarations must not authorize replacement.
+fn shim_version(contents: &[u8]) -> io::Result<ShimVersion> {
+    let opening = &contents[..contents.len().min(SHIM_MARKER_SEARCH_BYTES)];
+    let mut version = ShimVersion::Unversioned;
+    for line in String::from_utf8_lossy(opening).split_inclusive('\n') {
+        let Some(terminated) = line.strip_suffix('\n') else {
+            // Even a partial prefix may begin a declaration cut off by the opening.
+            if line.starts_with(SHIM_VERSION_PREFIX) || SHIM_VERSION_PREFIX.starts_with(line) {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "incomplete shim version line",
+                ));
+            }
+            continue;
+        };
+        let line = terminated.strip_suffix('\r').unwrap_or(terminated);
+        let Some(number) = line.strip_prefix(SHIM_VERSION_PREFIX) else {
+            continue;
+        };
+        if matches!(version, ShimVersion::Versioned(_)) {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "duplicate shim version line",
+            ));
+        }
+        if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "invalid shim version line",
+            ));
+        }
+        version = ShimVersion::Versioned(number.parse().map_err(|error| {
+            io::Error::new(
+                ErrorKind::InvalidData,
+                format!("invalid shim version: {error}"),
+            )
+        })?);
+    }
+    Ok(version)
+}
+
 /// Read the bounded opening completely, retaining open and read errors.
 fn inspect_shim(path: &Path) -> io::Result<CargoContents> {
     let mut file = fs::File::open(path)
@@ -1094,6 +1224,133 @@ mod tests {
     use crate::constants::LOCK_WAIT_MARKER;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::SUBCOMMAND_NAME;
+
+    #[test]
+    fn embedded_shim_declares_the_supported_framing_version() {
+        assert!(matches!(
+            shim_version(SHIM_SOURCE.as_bytes()).unwrap(),
+            ShimVersion::Versioned(version) if version == SUPPORTED_REGISTRATION_VERSION
+        ));
+    }
+
+    #[test]
+    fn invalid_or_repeated_version_lines_preserve_installed_bytes() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        hook.install().unwrap();
+        for version in [
+            "",
+            "newer",
+            "+4",
+            "18446744073709551616",
+            "4\n# cargo-tile-shim-version: 3",
+        ] {
+            let contents = format!("#!/bin/sh\n# {SHIM_MARKER}\n{SHIM_VERSION_PREFIX}{version}\n");
+            fs::write(&hook.cargo, &contents).unwrap();
+            let written = mark_old_mtime(&hook.cargo);
+
+            assert_eq!(hook.ensure().unwrap_err().kind(), ErrorKind::InvalidData);
+            assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), contents);
+            assert_eq!(
+                fs::metadata(&hook.cargo).unwrap().modified().unwrap(),
+                written
+            );
+            assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
+            assert!(!hook.staging.exists());
+        }
+    }
+
+    #[test]
+    fn version_lines_crossing_the_opening_preserve_installed_files() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        hook.install().unwrap();
+        let header = format!("#!/bin/sh\n# {SHIM_MARKER}\n#");
+        let future_version = format!("{SUPPORTED_REGISTRATION_VERSION}0");
+        for ending in ["\n", "\r\n"] {
+            let declaration = format!("{SHIM_VERSION_PREFIX}{future_version}{ending}");
+            for visible in 1..=declaration.len() {
+                let padding = " ".repeat(SHIM_MARKER_SEARCH_BYTES - header.len() - 1 - visible);
+                let contents = format!("{header}{padding}\n{declaration}");
+                fs::write(&hook.cargo, &contents).unwrap();
+                for path in [&hook.cargo, &hook.real] {
+                    fs::set_permissions(path, fs::Permissions::from_mode(0o751)).unwrap();
+                    mark_old_mtime(path);
+                }
+                let preserved = [&hook.cargo, &hook.real].map(|path| {
+                    let metadata = fs::metadata(path).unwrap();
+                    (
+                        fs::read(path).unwrap(),
+                        metadata.permissions().mode(),
+                        metadata.modified().unwrap(),
+                    )
+                });
+
+                for install in [Hook::install, Hook::ensure] {
+                    if visible == declaration.len() {
+                        assert_eq!(
+                            install(&hook).unwrap(),
+                            HookOperationOutcome::DowngradeRefused {
+                                installed: future_version.parse().unwrap(),
+                                supported: SUPPORTED_REGISTRATION_VERSION,
+                            }
+                        );
+                    } else {
+                        assert_eq!(install(&hook).unwrap_err().kind(), ErrorKind::InvalidData);
+                    }
+                    for (path, (bytes, mode, modified)) in
+                        [&hook.cargo, &hook.real].into_iter().zip(&preserved)
+                    {
+                        let metadata = fs::metadata(path).unwrap();
+                        assert_eq!(&fs::read(path).unwrap(), bytes);
+                        assert_eq!(metadata.permissions().mode(), *mode);
+                        assert_eq!(metadata.modified().unwrap(), *modified);
+                    }
+                    assert!(!hook.staging.exists());
+                    assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn version_lines_without_a_final_newline_are_invalid() {
+        for ending in ["", "\r"] {
+            let contents = format!("{SHIM_VERSION_PREFIX}{SUPPORTED_REGISTRATION_VERSION}{ending}");
+            assert!(matches!(
+                shim_version(contents.as_bytes()),
+                Err(error) if error.kind() == ErrorKind::InvalidData
+            ));
+        }
+    }
+
+    #[test]
+    fn incomplete_script_lines_do_not_invalidate_complete_version_declarations() {
+        let contents = format!(
+            "{SHIM_VERSION_PREFIX}{SUPPORTED_REGISTRATION_VERSION}\n{}",
+            "exec cargo-real ".repeat(SHIM_MARKER_SEARCH_BYTES)
+        );
+        assert!(matches!(
+            shim_version(contents.as_bytes()).unwrap(),
+            ShimVersion::Versioned(version) if version == SUPPORTED_REGISTRATION_VERSION
+        ));
+        assert!(matches!(
+            shim_version(b"#!/bin/sh\nexec cargo-real").unwrap(),
+            ShimVersion::Unversioned
+        ));
+    }
+
+    #[test]
+    fn malformed_downgrade_reports_retain_the_toolchain_as_incomplete() {
+        for result in ["4", "4\t4", "3\t4", "future\t3", "4\t3\textra"] {
+            let report = ToolchainHookReport::parse(
+                HookOperation::Install,
+                &format!("nightly\tdowngrade refused\t{result}"),
+            )
+            .unwrap();
+            assert_eq!(report.toolchain, "nightly");
+            assert!(matches!(report.outcome, ToolchainHookOutcome::Failed(_)));
+            assert!(report.outcome.is_incomplete());
+        }
+    }
 
     #[test]
     fn credential_groups_at_or_below_the_limit_are_unchanged() {

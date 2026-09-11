@@ -814,6 +814,15 @@ pub(crate) enum CaptureDiagnostic {
     RegistrationUnreadable(PathFailure),
     /// Malformed bytes or mismatched generation cannot establish an association.
     RegistrationInvalid(PathBuf),
+    /// A newer framing version stays outside identity verification and cleanup.
+    UnsupportedRegistrationVersion {
+        /// The retained registration that this reader cannot decode.
+        path:        PathBuf,
+        /// The framing version declared by the writer.
+        encountered: u64,
+        /// The newest framing version this reader understands.
+        supported:   u64,
+    },
     /// A legacy record can annotate a process row but supplies no verifiable identity.
     AnnotationOnly(PathBuf),
     /// Missing identity fields cannot authorize cleanup, even after the pid ends.

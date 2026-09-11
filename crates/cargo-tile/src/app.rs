@@ -148,6 +148,25 @@ impl ProcessTree {
     }
 }
 
+/// Capture startup information that remains in Settings after its toast expires.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) enum CaptureStartupNotice {
+    /// Startup leaves no outstanding capture notice.
+    #[default]
+    Quiet,
+    /// At least one toolchain could not establish a working capture shim.
+    InstallationFailed(String),
+    /// A newer installed shim remains in place and this reader needs upgrading.
+    NewerShimKept(String),
+    /// Newer shims remain installed while other toolchains need installation repair.
+    NewerShimKeptWithFailures {
+        /// The newer shims kept and the reader upgrade instruction.
+        kept:     String,
+        /// Separate failures affecting other toolchains.
+        failures: String,
+    },
+}
+
 /// Top-level application state.
 pub(crate) struct App {
     /// Framework state — overlays, panes, toasts, settings pane.
@@ -164,10 +183,8 @@ pub(crate) struct App {
     /// Theme-resolution note from startup (a configured theme id that
     /// no file or built-in supplies), surfaced in the settings overlay.
     pub(crate) startup_note:      Option<String>,
-    /// What is still wrong with the capture shim after startup stood it
-    /// up -- an orphaned toolchain, one that refused the install --
-    /// surfaced in the settings overlay once the toast has gone.
-    pub(crate) capture_note:      Option<String>,
+    /// Outstanding installation failures and kept newer shims, retained in Settings.
+    pub(crate) capture_note:      CaptureStartupNotice,
     /// Latest worker observations; settings rendering performs no capture reads.
     pub(crate) root_status:       Vec<AccountCaptureDirectory>,
     pub(crate) shared_directory:  SharedCaptureDirectory,
@@ -216,7 +233,7 @@ impl App {
             keymap: Rc::new(keymap),
             loaded_config,
             startup_note,
-            capture_note: None,
+            capture_note: CaptureStartupNotice::Quiet,
             root_status: Vec::new(),
             shared_directory: SharedCaptureDirectory::default(),
             roster: Roster::new(),

@@ -279,7 +279,8 @@ fn print_local_report(report: &ToolchainHookReport) {
                 "interrupted install -- run cargo-tile install to restore cargo"
             },
             HookState::Orphaned => "broken -- shim installed but the real cargo is missing",
-        },
+        }
+        .to_owned(),
         ToolchainHookOutcome::Unreadable(_) | ToolchainHookOutcome::Failed(_) => {
             eprintln!("{BINARY_NAME}: {report}");
             return;
@@ -296,15 +297,20 @@ fn print_local_report(report: &ToolchainHookReport) {
 }
 
 /// What one toolchain's mutation outcome reads as.
-const fn describe(outcome: HookOperationOutcome) -> &'static str {
+fn describe(outcome: HookOperationOutcome) -> String {
     match outcome {
         HookOperationOutcome::Installed => "capture shim installed",
         HookOperationOutcome::Refreshed => "capture shim updated",
         HookOperationOutcome::AlreadyCurrent => "capture shim already current, unchanged",
+        HookOperationOutcome::DowngradeRefused { installed, supported } => {
+            return format!(
+                "downgrade refused -- newer shim v{installed} kept; this reader supports v{supported}; upgrade and restart the reader"
+            );
+        },
         HookOperationOutcome::Removed => "capture shim removed",
         HookOperationOutcome::AlreadyAbsent => "no capture shim to remove",
         HookOperationOutcome::Orphaned => "broken -- shim installed but the real cargo is missing",
-    }
+    }.to_owned()
 }
 
 #[cfg(test)]

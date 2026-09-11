@@ -11,6 +11,7 @@ use std::io;
 use tui_pane::ToastStyle;
 
 use crate::app::App;
+use crate::app::CaptureStartupNotice;
 use crate::constants::CAPTURE_INSTALLED_TOAST_VISIBLE;
 use crate::constants::LIST_SEPARATOR;
 use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
@@ -40,7 +41,7 @@ fn report(app: &mut App, startup: io::Result<Startup>) {
                 NOTICE_TOAST_MIN_INTERIOR_LINES,
                 ToastStyle::Warning,
             );
-            app.capture_note = Some(note);
+            app.capture_note = CaptureStartupNotice::InstallationFailed(note);
             return;
         },
     };
@@ -81,14 +82,35 @@ fn report(app: &mut App, startup: io::Result<Startup>) {
     for (toolchain, error) in &startup.failed {
         notes.push(format!("{toolchain}: not installed: {error}"));
     }
-    if notes.is_empty() {
-        return;
+    let kept: Vec<_> = startup.kept_newer.iter().map(|shim| {
+        format!(
+            "{}: newer shim v{} kept; this reader is older and supports v{}; upgrade and restart the reader",
+            shim.toolchain, shim.installed, shim.supported
+        )
+    }).collect();
+    if !kept.is_empty() {
+        app.framework.toasts.push_timed_styled(
+            "Newer capture shim kept",
+            kept.join("; "),
+            NOTICE_TOAST_VISIBLE,
+            NOTICE_TOAST_MIN_INTERIOR_LINES,
+            ToastStyle::Warning,
+        );
     }
-    let note = notes.join("; ");
-    app.framework
-        .toasts
-        .push_styled("Capture shim", &note, ToastStyle::Warning);
-    app.capture_note = Some(note);
+    if !notes.is_empty() {
+        app.framework
+            .toasts
+            .push_styled("Capture shim", notes.join("; "), ToastStyle::Warning);
+    }
+    app.capture_note = match (kept.as_slice(), notes.as_slice()) {
+        ([], []) => CaptureStartupNotice::Quiet,
+        ([], _) => CaptureStartupNotice::InstallationFailed(notes.join("; ")),
+        (_, []) => CaptureStartupNotice::NewerShimKept(kept.join("; ")),
+        (_, _) => CaptureStartupNotice::NewerShimKeptWithFailures {
+            kept:     kept.join("; "),
+            failures: notes.join("; "),
+        },
+    };
 }
 
 #[cfg(test)]
@@ -100,6 +122,8 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::constants::SUPPORTED_REGISTRATION_VERSION;
+    use crate::hook::NewerShim;
 
     fn titles(app: &App) -> Vec<String> {
         app.framework
@@ -117,7 +141,7 @@ mod tests {
         report(&mut app, Ok(Startup::default()));
 
         assert!(titles(&app).is_empty());
-        assert!(app.capture_note.is_none());
+        assert_eq!(app.capture_note, CaptureStartupNotice::Quiet);
     }
 
     #[test]
@@ -139,7 +163,7 @@ mod tests {
         assert!(toasts[0].body().contains("cargo tile uninstall"));
         // Installing is the expected outcome, not a problem to keep on
         // the settings overlay.
-        assert!(app.capture_note.is_none());
+        assert_eq!(app.capture_note, CaptureStartupNotice::Quiet);
     }
 
     #[test]
@@ -155,7 +179,7 @@ mod tests {
         );
 
         assert_eq!(titles(&app), vec!["Capture shim updated".to_owned()]);
-        assert!(app.capture_note.is_none());
+        assert_eq!(app.capture_note, CaptureStartupNotice::Quiet);
     }
 
     /// Something still wrong once the toast is gone has to be findable,
@@ -174,9 +198,12 @@ mod tests {
         );
 
         assert_eq!(titles(&app), vec!["Capture shim".to_owned()]);
-        let note = app.capture_note.as_deref().unwrap();
-        assert!(note.contains("stable: shim installed but the real cargo is missing"));
-        assert!(note.contains("nightly: not installed: permission denied"));
+        assert!(matches!(
+            &app.capture_note,
+            CaptureStartupNotice::InstallationFailed(note)
+                if note.contains("stable: shim installed but the real cargo is missing")
+                    && note.contains("nightly: not installed: permission denied")
+        ));
     }
 
     #[test]
@@ -186,12 +213,65 @@ mod tests {
         report(&mut app, Err(io::Error::other("no home directory")));
 
         assert_eq!(titles(&app), vec!["Capture shim not installed".to_owned()]);
-        assert!(
-            app.capture_note
-                .as_deref()
-                .unwrap()
-                .contains("no home directory")
+        assert!(matches!(
+            &app.capture_note,
+            CaptureStartupNotice::InstallationFailed(note) if note.contains("no home directory")
+        ));
+    }
+
+    #[test]
+    fn kept_newer_shims_have_their_own_toast_and_persistent_notice() {
+        let mut app = App::new_for_test().unwrap();
+        report(
+            &mut app,
+            Ok(Startup {
+                kept_newer: vec![NewerShim {
+                    toolchain: "nightly".to_owned(),
+                    installed: SUPPORTED_REGISTRATION_VERSION + 1,
+                    supported: SUPPORTED_REGISTRATION_VERSION,
+                }],
+                ..Startup::default()
+            }),
         );
+
+        let toasts = app.framework.toasts.active_views(Instant::now());
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].title(), "Newer capture shim kept");
+        assert!(matches!(
+            &app.capture_note,
+            CaptureStartupNotice::NewerShimKept(note)
+                if note == toasts[0].body()
+                    && note.contains("nightly: newer shim")
+                    && note.contains("this reader is older")
+                    && note.contains("upgrade and restart the reader")
+                    && !note.contains("not installed")
+        ));
+    }
+
+    #[test]
+    fn kept_newer_shims_and_installation_failures_remain_distinct() {
+        let mut app = App::new_for_test().unwrap();
+        report(
+            &mut app,
+            Ok(Startup {
+                kept_newer: vec![NewerShim {
+                    toolchain: "nightly".to_owned(),
+                    installed: SUPPORTED_REGISTRATION_VERSION + 1,
+                    supported: SUPPORTED_REGISTRATION_VERSION,
+                }],
+                failed: vec![("stable".to_owned(), "permission denied".to_owned())],
+                ..Startup::default()
+            }),
+        );
+
+        assert_eq!(titles(&app), ["Newer capture shim kept", "Capture shim"]);
+        assert!(matches!(
+            &app.capture_note,
+            CaptureStartupNotice::NewerShimKeptWithFailures { kept, failures }
+                if kept.contains("nightly: newer shim")
+                    && !kept.contains("not installed")
+                    && failures == "stable: not installed: permission denied"
+        ));
     }
 
     #[test]
@@ -202,6 +282,6 @@ mod tests {
         stand_up(&mut app);
 
         assert!(titles(&app).is_empty());
-        assert!(app.capture_note.is_none());
+        assert_eq!(app.capture_note, CaptureStartupNotice::Quiet);
     }
 }

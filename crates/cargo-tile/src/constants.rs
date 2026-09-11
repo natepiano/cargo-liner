@@ -781,8 +781,16 @@ pub(crate) const CAPTURE_STATUS_STAGING: &str = "staging file";
 pub(crate) const CAPTURE_STATUS_UNREADABLE_LOG: &str = "unreadable log";
 /// A listed registration whose bytes were unavailable is not an empty inventory.
 pub(crate) const CAPTURE_STATUS_UNREADABLE_REGISTRATION: &str = "unreadable registration";
+/// A newer layout cannot establish identity or authorize removal by this reader.
+pub(crate) const CAPTURE_STATUS_UNSUPPORTED_VERSION: &str = "unsupported registration version";
 /// Missing identity fields can permanently prevent safe deletion.
 pub(crate) const CAPTURE_STATUS_UNVERIFIABLE: &str = "unverifiable artifact";
+/// Readers through b4ed28aa7be9e649eb91ac1cc10ceb414a3ed463 treated a live
+/// macOS kern.boottime/boot-session UUID mismatch as ended. Commit
+/// 8a373839541860a9c4d2f2c8a18b99c526e13558 made that mismatch unknown, but
+/// retained v2 framing. Deploy and restart readers before installing the v3 shim.
+pub(crate) const CAPTURE_STATUS_VERSION_RECOVERY: &str =
+    "registration and log retained; upgrade and restart the reader";
 /// Explain suppression when both the selected and competing publications verified.
 pub(crate) const CAPTURE_UNUSED_ROOT_PRECEDENCE: &str = "selected root takes precedence";
 /// Explain why a verified sibling cannot repair an unconfirmed preferred reading.
@@ -834,6 +842,8 @@ pub(crate) const SHIM_MARKER_SEARCH_BYTES: usize = 1024;
 /// `sh`, which does not `exec` the real cargo but waits on it, so the
 /// file it was started from is never written in place.
 pub(crate) const SHIM_STAGING_NAME: &str = "cargo-tile-shim.staging";
+/// The installer compares this header before replacing an existing shim.
+pub(crate) const SHIM_VERSION_PREFIX: &str = "# cargo-tile-shim-version: ";
 /// Exclusive-create lock beside the shim, held across state inspection
 /// and installation so concurrent installers cannot overwrite real cargo.
 pub(crate) const SHIM_LOCK_NAME: &str = "cargo-tile-shim.lock";
@@ -962,22 +972,30 @@ pub(crate) const PERMISSION_BITS: u32 = 0o7777;
 /// What separates the pid at the end of a run log's name from the
 /// timestamp in front of it.
 pub(crate) const PID_SEPARATOR: char = '-';
+/// NUL preserves shell argument and path boundaries, including whitespace.
+pub(crate) const REGISTRATION_FIELD_SEPARATOR: u8 = 0;
+/// Legacy records separate their directory from unrecoverable command text.
+pub(crate) const REGISTRATION_LEGACY_SEPARATOR: u8 = b'\t';
+/// Version 3 identifies boot-session UUID semantics on macOS.
+pub(crate) const REGISTRATION_MAGIC: &[u8] = b"cargo-tile-v3";
+/// Inspect the version before interpreting any version-specific payload fields.
+pub(crate) const REGISTRATION_MAGIC_PREFIX: &[u8] = b"cargo-tile-v";
 /// Separates a shim pid from its calendar generation in a versioned
 /// registration filename; older shims register under the pid alone.
 pub(crate) const REGISTRATION_SEPARATOR: char = '.';
 /// Unpublished registration files never establish liveness, even when
 /// a killed setup leaves one beside the published registrations.
 pub(crate) const REGISTRATION_TEMP_SUFFIX: &str = ".tmp";
-/// Distinguish framed registrations from older display-only command text.
-pub(crate) const REGISTRATION_MAGIC: &[u8] = b"cargo-tile-v2";
-/// NUL preserves shell argument and path boundaries, including whitespace.
-pub(crate) const REGISTRATION_FIELD_SEPARATOR: u8 = 0;
-/// Legacy records separate their directory from unrecoverable command text.
-pub(crate) const REGISTRATION_LEGACY_SEPARATOR: u8 = b'\t';
+/// Earlier installations publish v2 until every shim has been refreshed.
+pub(crate) const REGISTRATION_V2_MAGIC: &[u8] = b"cargo-tile-v2";
+/// The protocol header fits its fixed prefix and all 20 decimal u64 digits.
+pub(crate) const REGISTRATION_VERSION_HEADER_BYTES: usize = REGISTRATION_MAGIC_PREFIX.len() + 20;
 /// Shown in `state` for a run waiting on another cargo to give up the
 /// build directory. A word rather than a bar: there is no reading to
 /// draw, which is the whole of what it says.
 pub(crate) const STATE_BLOCKED: &str = "blocked";
+/// Both v2 layouts remain readable; v3 changes boot identity semantics only.
+pub(crate) const SUPPORTED_REGISTRATION_VERSION: u64 = 3;
 /// Cells the reading itself takes at the end of a header's rule,
 /// `100%` being the widest it goes.
 pub(crate) const PROGRESS_READING_WIDTH: usize = 4;

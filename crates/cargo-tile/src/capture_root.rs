@@ -86,6 +86,8 @@ use crate::constants::PERMISSION_BITS;
 use crate::constants::RUN_LOG_TAIL_BYTES;
 use crate::progress::CaptureFailure;
 use crate::progress::PathFailure;
+use crate::registration::ParseError;
+use crate::registration::check_version;
 
 /// The shared parent either admits all accounts or retains why it cannot.
 /// `CAPTURE_SHARED_MODE` in the descriptor-typed form `fchmod` takes: the sticky bit plus
@@ -1016,8 +1018,8 @@ impl<'scan> ScanEntry<'scan> {
         read_tail(file, length)
     }
 
-    /// Read one byte past the record cap so oversize input is rejected rather
-    /// than accepted as a complete truncated registration.
+    /// Read one byte past the record cap to reject oversize supported records.
+    /// Newer headers retain their bounded bytes for the version diagnostic.
     pub(crate) fn read_registration(&self) -> io::Result<RegistrationObservation> {
         read_registration_file(self.open_regular()?)
     }
@@ -1026,7 +1028,7 @@ impl<'scan> ScanEntry<'scan> {
 /// Contents and metadata come from one descriptor, even after a pathname replacement.
 #[derive(Debug)]
 pub(crate) struct RegistrationObservation {
-    /// NUL-framed record bytes bounded independently of metadata.
+    /// Record bytes bounded independently of metadata; newer payloads may be truncated.
     pub(crate) bytes:    Vec<u8>,
     /// Includes the modification time of the same file that supplied the bytes.
     pub(crate) metadata: Metadata,
@@ -1038,6 +1040,12 @@ fn read_registration_file(file: File) -> io::Result<RegistrationObservation> {
     let mut bytes = Vec::new();
     file.take(CAPTURE_REGISTRATION_BYTES + 1)
         .read_to_end(&mut bytes)?;
+    if matches!(
+        check_version(&bytes),
+        Err(ParseError::UnsupportedVersion { .. })
+    ) {
+        return Ok(RegistrationObservation { bytes, metadata });
+    }
     if bytes.len() as u64 > CAPTURE_REGISTRATION_BYTES {
         return Err(io::Error::other(CAPTURE_REGISTRATION_TOO_LARGE));
     }
@@ -1268,7 +1276,14 @@ mod tests {
     use crate::constants::CAPTURE_REGISTRATION_TOO_LARGE;
     use crate::constants::CAPTURE_STATE_DIR;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
+    use crate::constants::REGISTRATION_FIELD_SEPARATOR;
+    use crate::constants::REGISTRATION_MAGIC;
+    use crate::constants::REGISTRATION_MAGIC_PREFIX;
+    use crate::constants::REGISTRATION_V2_MAGIC;
     use crate::constants::RUN_LOG_TAIL_BYTES;
+    use crate::constants::SUPPORTED_REGISTRATION_VERSION;
+    use crate::registration::ParseError;
+    use crate::registration::Registration;
 
     #[test]
     fn root_owner_survives_fixable_mode_and_session_identity_refusals() {
@@ -1702,6 +1717,54 @@ mod tests {
                 .to_string(),
             CAPTURE_REGISTRATION_TOO_LARGE
         );
+    }
+
+    #[test]
+    fn registration_reads_preserve_newer_version_diagnostics_at_every_size() {
+        let root = capture_root();
+        let path = root.path().join("record");
+        let cap = usize::try_from(CAPTURE_REGISTRATION_BYTES).expect("record cap fits usize");
+        let prefix = std::str::from_utf8(REGISTRATION_MAGIC_PREFIX).expect("ASCII magic prefix");
+        for encountered in [SUPPORTED_REGISTRATION_VERSION + 1, u64::MAX] {
+            for length in [cap, cap + 1, cap * 2] {
+                let mut bytes = format!("{prefix}{encountered}").into_bytes();
+                bytes.push(REGISTRATION_FIELD_SEPARATOR);
+                bytes.resize(length, 0xff);
+                fs::write(&path, &bytes).expect("newer registration");
+                let scan =
+                    RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
+                let observation = log_entry(&scan, "record")
+                    .read_registration()
+                    .expect("newer header remains available");
+                assert_eq!(observation.bytes.len(), length.min(cap + 1));
+                assert_eq!(
+                    Registration::parse(&observation.bytes),
+                    Err(ParseError::UnsupportedVersion { encountered })
+                );
+                assert_eq!(fs::read(&path).expect("registration preserved"), bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn registration_reads_reject_oversized_supported_and_malformed_headers() {
+        let root = capture_root();
+        let path = root.path().join("record");
+        let cap = usize::try_from(CAPTURE_REGISTRATION_BYTES).expect("record cap fits usize");
+        for magic in [REGISTRATION_V2_MAGIC, REGISTRATION_MAGIC, b"cargo-tile-v4x"] {
+            let mut bytes = magic.to_vec();
+            bytes.push(REGISTRATION_FIELD_SEPARATOR);
+            bytes.resize(cap + 1, b'x');
+            fs::write(&path, bytes).expect("oversized registration");
+            let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
+            assert_eq!(
+                log_entry(&scan, "record")
+                    .read_registration()
+                    .expect_err("oversized registration rejected")
+                    .to_string(),
+                CAPTURE_REGISTRATION_TOO_LARGE
+            );
+        }
     }
 
     /// A real getdents/readdir failure survives instead of becoming empty success.
