@@ -747,8 +747,13 @@ pub(crate) const CAPTURE_UNUSED_SELECTED_UNCONFIRMED: &str =
     "selected root is unconfirmed; another root cannot supply its fields";
 
 // capture shim
-/// Most accounts fit in one lookup; getgrouplist supplies a larger count if needed.
+/// Most accounts fit in one lookup without allocating a large membership buffer.
 pub(crate) const ACCOUNT_GROUPS_INITIAL_CAPACITY: usize = 32;
+/// Doubling bounds retry calls when getgrouplist cannot report the required size.
+pub(crate) const ACCOUNT_GROUPS_GROWTH_FACTOR: usize = 2;
+/// 65,536 entries accommodate large account directories while capping each libc
+/// group buffer at 256 KiB and terminating repeated failures without size information.
+pub(crate) const ACCOUNT_GROUPS_MAX_CAPACITY: usize = 65_536;
 /// Hidden child-install protocol shared by the admin command and account process.
 pub(crate) const ACCOUNT_INSTALL_REPORT_FLAG: &str = "account-install-report";
 /// Every account can traverse and execute the staged installer; only its owner can write.

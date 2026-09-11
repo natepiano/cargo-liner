@@ -191,9 +191,9 @@ fn unstartable_installer_reports_each_account_separately() {
     }
 }
 
-/// Database groups include the primary gid even when session memberships differ.
+/// Database groups match `id -G` for the named caller, including the primary gid.
 #[test]
-fn resolved_account_groups_include_the_callers_primary_gid() {
+fn resolved_account_groups_include_the_callers_primary_gid() -> std::io::Result<()> {
     let uid = rustix::process::geteuid().as_raw();
     let users = sysinfo::Users::new_with_refreshed_list();
     let user = users
@@ -201,12 +201,44 @@ fn resolved_account_groups_include_the_callers_primary_gid() {
         .find(|user| **user.id() == uid)
         .expect("caller has an account database entry");
     let gid = *user.group_id();
-    let groups = account_groups(user.name(), gid).expect("resolve the caller's groups");
+    let groups = account_groups(user.name(), gid);
+    assert!(
+        groups.is_ok(),
+        "{} must resolve its groups successfully; a failure here means the resize path did not complete: {groups:?}",
+        user.name()
+    );
+    let mut groups = groups?;
     assert!(
         groups.contains(&gid),
         "{} must retain primary gid {gid} in {groups:?}",
         user.name()
     );
+    let output = Command::new("id")
+        .args(["-G", user.name()])
+        .output()
+        .expect("query the caller's account database groups with id -G");
+    assert!(output.status.success(), "id -G failed: {output:?}");
+    let expected = String::from_utf8(output.stdout).expect("id -G prints numeric groups");
+    let mut expected: Vec<u32> = expected
+        .split_whitespace()
+        .map(|group| group.parse().expect("id -G prints numeric gids"))
+        .collect();
+    assert!(
+        groups.len() >= expected.len(),
+        "{} resolved {} groups, fewer than the {} groups reported by id -G: {groups:?} versus {expected:?}",
+        user.name(),
+        groups.len(),
+        expected.len()
+    );
+    groups.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(
+        groups,
+        expected,
+        "{} must resolve every group reported by id -G",
+        user.name()
+    );
+    Ok(())
 }
 
 /// Account-owned files may belong to any permitted group, including a setgid parent's.

@@ -43,7 +43,9 @@ use std::process::Command;
 use std::process::Output;
 use std::thread;
 
+use crate::constants::ACCOUNT_GROUPS_GROWTH_FACTOR;
 use crate::constants::ACCOUNT_GROUPS_INITIAL_CAPACITY;
+use crate::constants::ACCOUNT_GROUPS_MAX_CAPACITY;
 use crate::constants::ACCOUNT_INSTALL_REPORT_FLAG;
 use crate::constants::ACCOUNT_INSTALLER_MODE;
 use crate::constants::ACCOUNT_INSTALLER_PREFIX;
@@ -617,42 +619,12 @@ pub(crate) fn account_groups(name: &str, primary_gid: u32) -> io::Result<Vec<u32
         .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error))?;
     #[cfg(target_os = "linux")]
     let primary_gid: libc::gid_t = primary_gid;
-    let mut groups = vec![primary_gid; ACCOUNT_GROUPS_INITIAL_CAPACITY];
-    let mut count = libc::c_int::try_from(groups.len()).map_err(io::Error::other)?;
-    let resolve = |groups: &mut [_], count: &mut libc::c_int| {
-        // SAFETY: name is NUL-terminated and lives through both calls. The group
+    let groups = account_groups_with(primary_gid, |groups, count| {
+        // SAFETY: name is NUL-terminated and lives through every call. The group
         // element type matches this platform's libc declaration, and count is
         // the allocated slice length on entry to each call.
         unsafe { libc::getgrouplist(name.as_ptr(), primary_gid, groups.as_mut_ptr(), count) }
-    };
-    if resolve(&mut groups, &mut count) == -1 {
-        let needed = usize::try_from(count)
-            .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
-        if needed <= groups.len() {
-            return Err(io::Error::other(format!(
-                "getgrouplist failed with a buffer of {} entries",
-                groups.len()
-            )));
-        }
-        groups.resize(needed, primary_gid);
-        if resolve(&mut groups, &mut count) == -1 {
-            return Err(io::Error::other(format!(
-                "getgrouplist failed after growing the buffer to {needed} entries"
-            )));
-        }
-    }
-    let count =
-        usize::try_from(count).map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
-    if count > groups.len() {
-        return Err(io::Error::new(
-            ErrorKind::InvalidData,
-            format!(
-                "getgrouplist returned {count} groups for a buffer of {} entries",
-                groups.len()
-            ),
-        ));
-    }
-    groups.truncate(count);
+    })?;
     #[cfg(target_os = "macos")]
     {
         groups
@@ -666,6 +638,50 @@ pub(crate) fn account_groups(name: &str, primary_gid: u32) -> io::Result<Vec<u32
     {
         Ok(groups)
     }
+}
+
+/// Grow an undersized group buffer within a ceiling, retaining the platform's element type.
+fn account_groups_with<Group: Copy>(
+    primary_gid: Group,
+    mut resolve: impl FnMut(&mut [Group], &mut libc::c_int) -> libc::c_int,
+) -> io::Result<Vec<Group>> {
+    let mut groups = vec![primary_gid; ACCOUNT_GROUPS_INITIAL_CAPACITY];
+    let count = loop {
+        let mut count = libc::c_int::try_from(groups.len()).map_err(io::Error::other)?;
+        if resolve(&mut groups, &mut count) != -1 {
+            break count;
+        }
+        let needed = usize::try_from(count)
+            .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+        if groups.len() == ACCOUNT_GROUPS_MAX_CAPACITY || needed > ACCOUNT_GROUPS_MAX_CAPACITY {
+            return Err(io::Error::other(format!(
+                "getgrouplist could not resolve groups within the ceiling of {ACCOUNT_GROUPS_MAX_CAPACITY} entries"
+            )));
+        }
+        // glibc reports the required size; Darwin can leave the supplied count unchanged.
+        let needed = if needed > groups.len() {
+            needed
+        } else {
+            groups
+                .len()
+                .saturating_mul(ACCOUNT_GROUPS_GROWTH_FACTOR)
+                .min(ACCOUNT_GROUPS_MAX_CAPACITY)
+        };
+        groups.resize(needed, primary_gid);
+    };
+    let count =
+        usize::try_from(count).map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+    if count > groups.len() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "getgrouplist returned {count} groups for a buffer of {} entries",
+                groups.len()
+            ),
+        ));
+    }
+    groups.truncate(count);
+    Ok(groups)
 }
 
 /// Install from explicit account records so fixtures need neither root nor a
@@ -795,6 +811,188 @@ mod tests {
     use crate::constants::LOCK_WAIT_MARKER;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::SUBCOMMAND_NAME;
+
+    #[test]
+    fn account_groups_resizes_and_returns_every_reported_group() {
+        let expected: Vec<u32> = (0..=ACCOUNT_GROUPS_INITIAL_CAPACITY)
+            .map(|group| u32::try_from(group).unwrap())
+            .collect();
+        let mut calls = 0;
+        let groups = account_groups_with(expected[0], |groups, count| {
+            calls += 1;
+            assert_eq!(usize::try_from(*count).unwrap(), groups.len());
+            if calls == 1 {
+                assert_eq!(groups.len(), ACCOUNT_GROUPS_INITIAL_CAPACITY);
+                *count = libc::c_int::try_from(expected.len()).unwrap();
+                return -1;
+            }
+            assert_eq!(calls, 2);
+            assert_eq!(groups.len(), expected.len());
+            groups.copy_from_slice(&expected);
+            *count = libc::c_int::try_from(expected.len()).unwrap();
+            0
+        })
+        .unwrap();
+
+        assert_eq!(calls, 2);
+        assert_eq!(groups, expected);
+    }
+
+    #[test]
+    fn account_groups_reports_failure_after_resizing() {
+        let needed = ACCOUNT_GROUPS_MAX_CAPACITY;
+        let mut calls = 0;
+        let error = account_groups_with(0_u32, |groups, count| {
+            calls += 1;
+            assert_eq!(usize::try_from(*count).unwrap(), groups.len());
+            if calls == 1 {
+                assert_eq!(groups.len(), ACCOUNT_GROUPS_INITIAL_CAPACITY);
+            } else {
+                assert_eq!(calls, 2);
+                assert_eq!(groups.len(), needed);
+            }
+            *count = libc::c_int::try_from(needed).unwrap();
+            -1
+        })
+        .unwrap_err();
+
+        assert_eq!(calls, 2);
+        assert_eq!(error.kind(), ErrorKind::Other);
+        assert_eq!(
+            error.to_string(),
+            format!("getgrouplist could not resolve groups within the ceiling of {needed} entries")
+        );
+    }
+
+    #[test]
+    fn account_groups_rejects_negative_retry_counts_without_calling_again() {
+        let initial_count = libc::c_int::try_from(ACCOUNT_GROUPS_INITIAL_CAPACITY).unwrap();
+        let mut calls = 0;
+        let error = account_groups_with(0_u32, |groups, count| {
+            calls += 1;
+            assert_eq!(calls, 1);
+            assert_eq!(groups.len(), ACCOUNT_GROUPS_INITIAL_CAPACITY);
+            assert_eq!(*count, initial_count);
+            *count = -1;
+            -1
+        })
+        .unwrap_err();
+
+        assert_eq!(calls, 1);
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn account_groups_grows_when_failed_counts_supply_no_larger_size() {
+        let initial_count = libc::c_int::try_from(ACCOUNT_GROUPS_INITIAL_CAPACITY).unwrap();
+        let expected: Vec<u32> = (0..=ACCOUNT_GROUPS_INITIAL_CAPACITY)
+            .map(|group| u32::try_from(group).unwrap())
+            .collect();
+        for reported_count in [0, initial_count - 1, initial_count] {
+            let mut calls = 0;
+            let groups = account_groups_with(expected[0], |groups, count| {
+                calls += 1;
+                assert_eq!(usize::try_from(*count).unwrap(), groups.len());
+                if calls == 1 {
+                    assert_eq!(groups.len(), ACCOUNT_GROUPS_INITIAL_CAPACITY);
+                    *count = reported_count;
+                    return -1;
+                }
+                assert_eq!(calls, 2);
+                assert_eq!(
+                    groups.len(),
+                    ACCOUNT_GROUPS_INITIAL_CAPACITY * ACCOUNT_GROUPS_GROWTH_FACTOR
+                );
+                groups[..expected.len()].copy_from_slice(&expected);
+                *count = libc::c_int::try_from(expected.len()).unwrap();
+                0
+            })
+            .unwrap();
+
+            assert_eq!(calls, 2);
+            assert_eq!(groups, expected, "reported count {reported_count}");
+        }
+    }
+
+    #[test]
+    fn account_groups_retries_darwin_overflow_until_every_group_fits() {
+        let first_growth = ACCOUNT_GROUPS_INITIAL_CAPACITY * ACCOUNT_GROUPS_GROWTH_FACTOR;
+        let expected: Vec<libc::c_int> = (0..=first_growth)
+            .map(|group| libc::c_int::try_from(group).unwrap())
+            .collect();
+        let mut capacities = Vec::new();
+        let groups = account_groups_with(expected[0], |groups, count| {
+            assert_eq!(usize::try_from(*count).unwrap(), groups.len());
+            capacities.push(groups.len());
+            if groups.len() < expected.len() {
+                return -1;
+            }
+            groups[..expected.len()].copy_from_slice(&expected);
+            *count = libc::c_int::try_from(expected.len()).unwrap();
+            0
+        })
+        .unwrap();
+
+        assert_eq!(
+            capacities,
+            [
+                ACCOUNT_GROUPS_INITIAL_CAPACITY,
+                first_growth,
+                first_growth * ACCOUNT_GROUPS_GROWTH_FACTOR,
+            ]
+        );
+        assert_eq!(groups, expected);
+    }
+
+    #[test]
+    fn account_groups_stops_persistent_overflow_at_the_ceiling() {
+        let mut previous_capacity = 0;
+        let error = account_groups_with(0_u32, |groups, count| {
+            assert_eq!(usize::try_from(*count).unwrap(), groups.len());
+            assert!(groups.len() > previous_capacity);
+            assert!(groups.len() <= ACCOUNT_GROUPS_MAX_CAPACITY);
+            if previous_capacity != 0 {
+                assert_eq!(
+                    groups.len(),
+                    previous_capacity * ACCOUNT_GROUPS_GROWTH_FACTOR
+                );
+            }
+            previous_capacity = groups.len();
+            -1
+        })
+        .unwrap_err();
+
+        assert_eq!(previous_capacity, ACCOUNT_GROUPS_MAX_CAPACITY);
+        assert_eq!(error.kind(), ErrorKind::Other);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "getgrouplist could not resolve groups within the ceiling of {ACCOUNT_GROUPS_MAX_CAPACITY} entries"
+            )
+        );
+    }
+
+    #[test]
+    fn account_groups_rejects_required_size_above_the_ceiling_without_retrying() {
+        let mut calls = 0;
+        let error = account_groups_with(0_u32, |groups, count| {
+            calls += 1;
+            assert_eq!(calls, 1);
+            assert_eq!(groups.len(), ACCOUNT_GROUPS_INITIAL_CAPACITY);
+            *count = libc::c_int::try_from(ACCOUNT_GROUPS_MAX_CAPACITY + 1).unwrap();
+            -1
+        })
+        .unwrap_err();
+
+        assert_eq!(calls, 1);
+        assert_eq!(error.kind(), ErrorKind::Other);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "getgrouplist could not resolve groups within the ceiling of {ACCOUNT_GROUPS_MAX_CAPACITY} entries"
+            )
+        );
+    }
 
     /// Enumerate the host database in an isolated process, without installing
     /// anything or sharing libc's enumeration cursor with another test.
