@@ -27,6 +27,8 @@ use crate::constants::CAPTURE_ASSOCIATION_COMPETING;
 use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
 use crate::constants::CAPTURE_ASSOCIATION_SUPPRESSED;
 use crate::constants::CAPTURE_ASSOCIATION_UNCONFIRMED;
+#[cfg(target_os = "macos")]
+use crate::constants::CAPTURE_CLEANUP_ACL_WRITABLE;
 use crate::constants::CAPTURE_CLEANUP_CHANGED;
 use crate::constants::CAPTURE_CLEANUP_DISABLED;
 use crate::constants::CAPTURE_CLEANUP_EFFECTIVE_USER;
@@ -671,6 +673,10 @@ fn cleanup_refusal(refusal: &CleanupRefusal) -> String {
         CleanupRefusal::WritableByOthers(path) => {
             format!("{CAPTURE_CLEANUP_WRITABLE}: {}", path.display())
         },
+        #[cfg(target_os = "macos")]
+        CleanupRefusal::AclWritableByOthers(path) => {
+            format!("{CAPTURE_CLEANUP_ACL_WRITABLE}: {}", path.display())
+        },
         CleanupRefusal::EffectiveUserUnavailable => CAPTURE_CLEANUP_EFFECTIVE_USER.to_string(),
         CleanupRefusal::Access(failure) => {
             format!("{CAPTURE_CLEANUP_DISABLED} — {}", path_failure(failure))
@@ -685,6 +691,12 @@ fn cleanup_refusal(refusal: &CleanupRefusal) -> String {
             format!("{CAPTURE_CLEANUP_CHANGED}: {}", path.display())
         },
     }
+}
+
+/// Exercise the production refusal wording from the macOS integration target.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn cleanup_refusal_for_test(refusal: &CleanupRefusal) -> String {
+    cleanup_refusal(refusal)
 }
 
 /// Both the failed artifact and the original diagnostic survive rendering.

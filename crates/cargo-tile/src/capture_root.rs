@@ -6,12 +6,15 @@
 //! entry is a sampled or validated basename opened relative to its directory handle.
 //!
 //! Cleanup requires the effective user to own every inspected directory, with
-//! no group or other write mode bits, on both Linux and macOS.
+//! no group or other write mode bits, on both Linux and macOS. On macOS,
+//! descriptor ACLs must also contain no non-owner write grants before each unlink.
 
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
+#[cfg(target_os = "macos")]
+use std::ffi::c_void;
 use std::fs;
 use std::fs::File;
 use std::fs::Metadata;
@@ -23,11 +26,15 @@ use std::io::Seek;
 use std::io::SeekFrom;
 #[cfg(target_os = "linux")]
 use std::mem::MaybeUninit;
+#[cfg(target_os = "macos")]
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::ptr;
 use std::sync::OnceLock;
 
 use rustix::fd::OwnedFd;
@@ -49,6 +56,16 @@ use rustix::fs::unlinkat;
 use rustix::process::geteuid;
 use uuid::Uuid;
 
+#[cfg(target_os = "macos")]
+use crate::constants::CAPTURE_ACL_ALLOW;
+#[cfg(target_os = "macos")]
+use crate::constants::CAPTURE_ACL_FIRST_ENTRY;
+#[cfg(target_os = "macos")]
+use crate::constants::CAPTURE_ACL_NEXT_ENTRY;
+#[cfg(target_os = "macos")]
+use crate::constants::CAPTURE_ACL_USER_ID;
+#[cfg(target_os = "macos")]
+use crate::constants::CAPTURE_ACL_WRITE_PERMISSIONS;
 #[cfg(target_os = "linux")]
 use crate::constants::CAPTURE_DIRECTORY_BUFFER_BYTES;
 use crate::constants::CAPTURE_DIRECTORY_CHANGED;
@@ -197,6 +214,9 @@ pub(crate) enum CleanupRefusal {
     Foreign(PathBuf),
     /// The operator owns this directory but its mode permits other writers.
     WritableByOthers(PathBuf),
+    /// A directory ACL allows a principal other than its owner to write.
+    #[cfg(target_os = "macos")]
+    AclWritableByOthers(PathBuf),
     /// The effective uid read failed once; restarting is the only retry.
     EffectiveUserUnavailable,
     /// Directory access or revalidation failed at the named path.
@@ -426,18 +446,23 @@ impl RootScan {
     /// Inject only effective identity in unit tests; all descriptor checks remain real.
     fn cleanup_for(&self, effective_user: EffectiveUser) -> Vec<CleanupRefusal> {
         let mut refusals = Vec::new();
-        self.root
-            .identity
-            .refusals(&self.path, effective_user, &mut refusals);
+        self.root.identity.refusals(
+            &self.path,
+            effective_user,
+            &self.root.acl_write_access,
+            &mut refusals,
+        );
         if let RegistrationAccess::Open { state, pids } = &self.registration_access {
             state.identity.refusals(
                 &self.path.join(CAPTURE_STATE_DIR),
                 effective_user,
+                &state.acl_write_access,
                 &mut refusals,
             );
             pids.identity.refusals(
                 &self.path.join(CAPTURE_LIVE_RUNS_DIR),
                 effective_user,
+                &pids.acl_write_access,
                 &mut refusals,
             );
         }
@@ -455,14 +480,10 @@ impl RootScan {
         if self.continuity == RootContinuity::Changed {
             refusals.push(CleanupRefusal::Changed(self.path.clone()));
         }
-        if let Err((path, error)) = self.revalidate_paths() {
-            let refusal = CleanupRefusal::Access(PathFailure {
-                path,
-                failure: error.into(),
-            });
-            if !refusals.contains(&refusal) {
-                refusals.push(refusal);
-            }
+        if let Err(refusal) = self.revalidate_paths()
+            && !refusals.contains(&refusal)
+        {
+            refusals.push(refusal);
         }
         refusals
     }
@@ -479,33 +500,71 @@ impl RootScan {
         }
     }
 
-    /// Fresh traversal catches renamed or replaced directories at the account
-    /// pathname; fstat also catches permission changes on the held handles.
-    fn revalidate(&self) -> io::Result<()> { self.revalidate_paths().map_err(|(_, error)| error) }
-
     /// A fresh failure names the changed directory rather than only the root.
-    fn revalidate_paths(&self) -> Result<(), (PathBuf, Error)> {
+    fn revalidate_paths(&self) -> Result<(), CleanupRefusal> {
+        let access_failure = |(path, error): (PathBuf, Error)| {
+            CleanupRefusal::Access(PathFailure {
+                path,
+                failure: error.into(),
+            })
+        };
         let current_root = InspectedDirectory::open_root(&self.path)
-            .map_err(|error| (self.path.clone(), error))?;
-        let (current_state, current_pids) = open_registration_paths(&current_root, &self.path)?;
+            .map_err(|error| access_failure((self.path.clone(), error)))?;
+        let (current_state, current_pids) =
+            open_registration_paths(&current_root, &self.path).map_err(access_failure)?;
         let RegistrationAccess::Open { state, pids } = &self.registration_access else {
-            return Err((
+            return Err(access_failure((
                 self.registration_path(),
                 io::Error::other(CAPTURE_DIRECTORY_CHANGED),
-            ));
+            )));
         };
         for (held, current, path) in [
             (&self.root, &current_root, self.path.clone()),
             (state, &current_state, self.path.join(CAPTURE_STATE_DIR)),
             (pids, &current_pids, self.path.join(CAPTURE_LIVE_RUNS_DIR)),
         ] {
-            let metadata = fstat(&held.handle).map_err(|error| (path.clone(), error.into()))?;
+            let metadata = fstat(&held.handle)
+                .map_err(|error| access_failure((path.clone(), error.into())))?;
             if held.identity != current.identity
                 || InspectedDirectoryMetadata::from(&metadata) != held.identity
             {
-                return Err((path, io::Error::other(CAPTURE_DIRECTORY_CHANGED)));
+                return Err(access_failure((
+                    path,
+                    io::Error::other(CAPTURE_DIRECTORY_CHANGED),
+                )));
+            }
+            // The fresh ACL query uses the reopened descriptor whose identity
+            // matches the retained handle; it runs once per directory per check.
+            let mut refusals = Vec::new();
+            current.acl_write_access.refusals(&path, &mut refusals);
+            if let Some(refusal) = refusals.into_iter().next() {
+                return Err(refusal);
             }
         }
+        Ok(())
+    }
+
+    /// Replace one sampled ACL outcome while retaining the real descriptor and owner.
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn fail_acl_inspection_for_test(
+        &mut self,
+        path: &Path,
+        error: Error,
+    ) -> io::Result<()> {
+        let directory = if path == self.path {
+            &mut self.root
+        } else if let RegistrationAccess::Open { state, pids } = &mut self.registration_access {
+            if path == self.path.join(CAPTURE_STATE_DIR) {
+                state
+            } else if path == self.path.join(CAPTURE_LIVE_RUNS_DIR) {
+                pids
+            } else {
+                return Err(ErrorKind::NotFound.into());
+            }
+        } else {
+            return Err(ErrorKind::NotFound.into());
+        };
+        directory.acl_write_access = AclWriteAccess::InspectionFailed(error.into());
         Ok(())
     }
 }
@@ -631,15 +690,15 @@ impl From<&Stat> for InspectedDirectoryMetadata {
 
 impl InspectedDirectoryMetadata {
     /// A foreign owner is expected; an owned directory writable by others is fixable.
-    /// Linux POSIX ACL write masks appear in group mode bits. On macOS, an ACL
-    /// can grant another account write access without changing those bits; this
-    /// mode-based check does not detect that residual exposure.
+    /// ACL evidence supplements mode bits without changing the observed owner.
     fn refusals(
         self,
         path: &Path,
         effective_user: EffectiveUser,
+        acl_write_access: &AclWriteAccess,
         refusals: &mut Vec<CleanupRefusal>,
     ) {
+        acl_write_access.refusals(path, refusals);
         let EffectiveUser::Known(effective_uid) = effective_user else {
             return;
         };
@@ -654,9 +713,11 @@ impl InspectedDirectoryMetadata {
 /// fstat is performed after opening; metadata never chooses a different handle.
 struct InspectedDirectory {
     /// All later operations stay relative to this directory.
-    handle:   OwnedFd,
+    handle:           OwnedFd,
     /// The ownership and identity inspected on this exact descriptor.
-    identity: InspectedDirectoryMetadata,
+    identity:         InspectedDirectoryMetadata,
+    /// ACL read failures retain ownership and readable captures but forbid cleanup.
+    acl_write_access: AclWriteAccess,
 }
 
 impl InspectedDirectory {
@@ -678,7 +739,147 @@ impl InspectedDirectory {
     /// Successful fstat is required before the descriptor can authorize access.
     fn inspect(handle: OwnedFd) -> io::Result<Self> {
         let identity = InspectedDirectoryMetadata::from(&fstat(&handle)?);
-        Ok(Self { handle, identity })
+        let acl_write_access = AclWriteAccess::inspect(&handle, identity.owner);
+        Ok(Self {
+            handle,
+            identity,
+            acl_write_access,
+        })
+    }
+}
+
+/// ACL evidence establishes only whether a non-owner write grant is present.
+enum AclWriteAccess {
+    /// Read-only non-owner entries, an absent ACL, and an empty ACL all qualify.
+    NoNonOwnerWriteGrant,
+    /// An allow entry grants a write-class permission to a different principal.
+    #[cfg(target_os = "macos")]
+    NonOwnerWriteGrant,
+    /// Incomplete inspection cannot establish absence of non-owner write grants.
+    #[cfg(target_os = "macos")]
+    InspectionFailed(CaptureFailure),
+}
+
+impl AclWriteAccess {
+    /// Linux POSIX ACL write masks are already represented by group mode bits.
+    #[cfg(not(target_os = "macos"))]
+    const fn inspect(_: &OwnedFd, _: u32) -> Self { Self::NoNonOwnerWriteGrant }
+
+    /// The native error becomes evidence without discarding fstat ownership.
+    #[cfg(target_os = "macos")]
+    fn inspect(handle: &OwnedFd, owner: u32) -> Self {
+        inspect_directory_acl(handle, owner)
+            .unwrap_or_else(|error| Self::InspectionFailed(error.into()))
+    }
+
+    /// ACL and ownership refusals are accumulated independently for each directory.
+    fn refusals(&self, path: &Path, refusals: &mut Vec<CleanupRefusal>) {
+        refusals.extend(match (self, path) {
+            (Self::NoNonOwnerWriteGrant, _) => Vec::new(),
+            #[cfg(target_os = "macos")]
+            (Self::NonOwnerWriteGrant, path) => {
+                vec![CleanupRefusal::AclWritableByOthers(path.to_owned())]
+            },
+            #[cfg(target_os = "macos")]
+            (Self::InspectionFailed(failure), path) => vec![CleanupRefusal::Access(PathFailure {
+                path:    path.to_owned(),
+                failure: failure.clone(),
+            })],
+        });
+    }
+}
+
+/// Darwin ACL handles and qualifiers are allocated by libc and freed before return.
+#[cfg(target_os = "macos")]
+#[allow(
+    unsafe_code,
+    reason = "Darwin descriptor ACL and membership APIs require native calls"
+)]
+fn inspect_directory_acl(handle: &OwnedFd, owner: u32) -> io::Result<AclWriteAccess> {
+    // SAFETY: These declarations match Darwin's sys/acl.h and membership.h.
+    unsafe extern "C" {
+        fn acl_get_fd(fd: libc::c_int) -> *mut c_void;
+        fn acl_free(object: *mut c_void) -> libc::c_int;
+        fn acl_get_entry(
+            acl: *mut c_void,
+            index: libc::c_int,
+            entry: *mut *mut c_void,
+        ) -> libc::c_int;
+        fn acl_get_tag_type(entry: *mut c_void, tag: *mut libc::c_uint) -> libc::c_int;
+        fn acl_get_permset(entry: *mut c_void, permissions: *mut *mut c_void) -> libc::c_int;
+        fn acl_get_perm_np(permissions: *mut c_void, permission: libc::c_uint) -> libc::c_int;
+        fn acl_get_qualifier(entry: *mut c_void) -> *mut c_void;
+        fn mbr_uuid_to_id(
+            uuid: *const u8,
+            id: *mut libc::id_t,
+            kind: *mut libc::c_int,
+        ) -> libc::c_int;
+    }
+
+    // SAFETY: handle remains open throughout the query. Successful entry and
+    // permission pointers borrow the live ACL allocation. Every qualifier is
+    // a native UUID allocation, used only until acl_free. Output pointers name
+    // initialized locals of the C ABI types; no native allocation escapes.
+    unsafe {
+        let acl = acl_get_fd(handle.as_raw_fd());
+        if acl.is_null() {
+            let error = Error::last_os_error();
+            // filesec_get_property reports ENOENT when no ACL is attached.
+            return if error.raw_os_error() == Some(libc::ENOENT) {
+                Ok(AclWriteAccess::NoNonOwnerWriteGrant)
+            } else {
+                Err(error)
+            };
+        }
+        let result = (|| {
+            let mut index = CAPTURE_ACL_FIRST_ENTRY;
+            loop {
+                let mut entry = ptr::null_mut();
+                if acl_get_entry(acl, index, &raw mut entry) != 0 {
+                    let error = Error::last_os_error();
+                    // Darwin returns zero for an entry, -1/EINVAL at exhaustion,
+                    // including the first call for an empty ACL.
+                    return if error.raw_os_error() == Some(libc::EINVAL) {
+                        Ok(AclWriteAccess::NoNonOwnerWriteGrant)
+                    } else {
+                        Err(error)
+                    };
+                }
+                index = CAPTURE_ACL_NEXT_ENTRY;
+                let mut tag = 0;
+                if acl_get_tag_type(entry, &raw mut tag) != 0 {
+                    return Err(Error::last_os_error());
+                }
+                if tag != CAPTURE_ACL_ALLOW {
+                    continue;
+                }
+                let mut permissions = ptr::null_mut();
+                if acl_get_permset(entry, &raw mut permissions) != 0 {
+                    return Err(Error::last_os_error());
+                }
+                match acl_get_perm_np(permissions, CAPTURE_ACL_WRITE_PERMISSIONS) {
+                    0 => continue,
+                    -1 => return Err(Error::last_os_error()),
+                    _ => {},
+                }
+                let qualifier = acl_get_qualifier(entry);
+                if qualifier.is_null() {
+                    return Err(Error::last_os_error());
+                }
+                let mut principal = 0;
+                let mut kind = 0;
+                let error = mbr_uuid_to_id(qualifier.cast(), &raw mut principal, &raw mut kind);
+                acl_free(qualifier);
+                if error != 0 {
+                    return Err(Error::from_raw_os_error(error));
+                }
+                if kind != CAPTURE_ACL_USER_ID || principal != owner {
+                    return Ok(AclWriteAccess::NonOwnerWriteGrant);
+                }
+            }
+        })();
+        acl_free(acl);
+        result
     }
 }
 
@@ -932,7 +1133,7 @@ impl OwnedRoot<'_> {
             let SweepDisposition::Remove(log) = registrations(entry) else {
                 continue;
             };
-            if self.scan.revalidate().is_err()
+            if self.scan.revalidate_paths().is_err()
                 || named_entry(&self.scan.root, &log).is_err()
                 || !budget.charge_pair()
             {
@@ -946,7 +1147,7 @@ impl OwnedRoot<'_> {
             // Publication never reuses a generation. Re-reading also protects
             // older records replaced before this final confirmation.
             if registrations(entry) == SweepDisposition::Remove(log)
-                && self.scan.revalidate().is_ok()
+                && self.scan.revalidate_paths().is_ok()
             {
                 let _ = unlinkat(&self.pids.handle, entry.name(), AtFlags::empty());
             }
@@ -1574,12 +1775,14 @@ mod tests {
         identity.refusals(
             root.path(),
             EffectiveUser::Known(identity.owner),
+            &directory.acl_write_access,
             &mut refusals,
         );
         assert!(refusals.is_empty());
         identity.refusals(
             root.path(),
             EffectiveUser::Known(identity.owner.wrapping_add(1)),
+            &directory.acl_write_access,
             &mut refusals,
         );
         assert_eq!(
@@ -1593,6 +1796,7 @@ mod tests {
             writable.refusals(
                 root.path(),
                 EffectiveUser::Known(identity.owner),
+                &directory.acl_write_access,
                 &mut refusals,
             );
             assert_eq!(

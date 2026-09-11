@@ -662,6 +662,45 @@ pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
 /// Shown in place of the table when no cargo is running.
 pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
 
+// capture root acl
+/// Darwin's ACL_EXTENDED_ALLOW tag is the only entry kind granting permissions.
+#[cfg(target_os = "macos")]
+pub(crate) const CAPTURE_ACL_ALLOW: libc::c_uint = 1;
+/// Start Darwin's native ACL iterator, including an empty ACL.
+#[cfg(target_os = "macos")]
+pub(crate) const CAPTURE_ACL_FIRST_ENTRY: libc::c_int = 0;
+/// Darwin advances its internal ACL cursor with ACL_NEXT_ENTRY, not an ordinal.
+#[cfg(target_os = "macos")]
+pub(crate) const CAPTURE_ACL_NEXT_ENTRY: libc::c_int = -1;
+/// Exercise the account root and both registration ancestors independently.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) const CAPTURE_ACL_TEST_DIRECTORIES: [&str; 3] =
+    ["", CAPTURE_STATE_DIR, CAPTURE_LIVE_RUNS_DIR];
+/// Native chmod spellings independently exercise every write-class permission;
+/// deriving this list from the production bit mask would hide missing mask bits.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) const CAPTURE_ACL_TEST_WRITE_PERMISSIONS: [&str; 8] = [
+    "add_file",
+    "add_subdirectory",
+    "delete",
+    "delete_child",
+    "writeattr",
+    "writeextattr",
+    "writesecurity",
+    "chown",
+];
+/// membership.h distinguishes user ids from group ids even when their numbers match.
+#[cfg(target_os = "macos")]
+pub(crate) const CAPTURE_ACL_USER_ID: libc::c_int = 0;
+/// All Darwin sys/acl.h write-class permissions: WRITE_DATA/ADD_FILE (2),
+/// DELETE (4), APPEND_DATA/ADD_SUBDIRECTORY (5), DELETE_CHILD (6),
+/// WRITE_ATTRIBUTES (8), WRITE_EXTATTRIBUTES (10), WRITE_SECURITY (12), and
+/// CHANGE_OWNER (13). Any non-owner allow grant can invalidate safe cleanup;
+/// read-only grants remain permitted even when mode bits do not describe the ACL.
+#[cfg(target_os = "macos")]
+pub(crate) const CAPTURE_ACL_WRITE_PERMISSIONS: libc::c_uint =
+    (1 << 2) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 8) | (1 << 10) | (1 << 12) | (1 << 13);
+
 // capture root status
 /// Each process association names the root that supplied all capture fields.
 pub(crate) const CAPTURE_ASSOCIATION: &str = "capture association";
@@ -677,6 +716,10 @@ pub(crate) const CAPTURE_ASSOCIATION_SUPPRESSED: &str = "another root's proof we
 /// An annotation-only selection must not borrow fields from another root's proof.
 pub(crate) const CAPTURE_ASSOCIATION_UNCONFIRMED: &str =
     "unconfirmed selection — annotation only; no registration fields";
+/// ACL grants can permit other writers without changing group/other mode bits.
+#[cfg(target_os = "macos")]
+pub(crate) const CAPTURE_CLEANUP_ACL_WRITABLE: &str =
+    "ACL grants non-owner write access — cleanup disabled";
 /// Directory replacement prevents removal until another stable scan observes it.
 pub(crate) const CAPTURE_CLEANUP_CHANGED: &str = "directory changed — cleanup disabled this scan";
 /// A read failure cannot authorize cleanup from an empty inventory.
