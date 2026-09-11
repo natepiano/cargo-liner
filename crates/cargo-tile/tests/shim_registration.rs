@@ -138,6 +138,7 @@ import subprocess
 import sys
 import termios
 import time
+from unittest.mock import patch
 
 root = Path(sys.argv[1]).resolve()
 binary, source, scenario = sys.argv[2:]
@@ -222,7 +223,7 @@ locales = subprocess.run(['locale', '-a'], check=True, capture_output=True, text
 writer_locale = next((name for name in locales if name not in ('C', 'POSIX')
                       and not name.lower().startswith('c.')), 'POSIX')
 for key in ('CARGOTILE_NESTED', 'CARGO_TILE_FRAME_LOG', 'CARGO_TERM_PROGRESS_WHEN',
-            'CARGO_TERM_PROGRESS_WIDTH', 'CARGO_TILE_ROOT', 'ITERM_SESSION_ID', 'NESTED_WORK', 'NESTED_MARKER'):
+            'CARGO_TERM_PROGRESS_WIDTH', 'ITERM_SESSION_ID', 'NESTED_WORK', 'NESTED_MARKER'):
     environment.pop(key, None)
 environment.update(HOME=str(home), XDG_CONFIG_HOME=str(root / 'config'),
                    XDG_CACHE_HOME=str(root / 'cache'), XDG_DATA_HOME=str(root / 'data'),
@@ -235,13 +236,14 @@ reader = None
 terminal = None
 transcript = bytearray()
 
-def wait_for(predicate, description):
+def wait_for(predicate, description, diagnostics=None):
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.02)
-    raise AssertionError(description + ('\n' + screen() if transcript else ''))
+    details = diagnostics() if diagnostics is not None else ('\n' + screen() if transcript else '')
+    raise AssertionError(description + details)
 
 def start_writer(name, writer_home, command='build', nested_directory=None,
                  capture_root=capture, directory=work, arguments=()):
@@ -494,11 +496,27 @@ def command_panes(rendered):
             commands.append(line)
         yield commands
 
+def fixture_panes(rendered, markers):
+    return [commands for commands in command_panes(rendered)
+            if all(any(marker in line for line in commands) for marker in markers)]
+
 def fixture_pane(rendered, markers):
-    matches = [commands for commands in command_panes(rendered)
-               if all(any(marker in line for line in commands) for marker in markers)]
+    matches = fixture_panes(rendered, markers)
     assert len(matches) == 1, 'fixture must occupy one command pane\n' + rendered
     return matches[0]
+
+def wait_for_fixture_pane(markers):
+    rendered = ''
+    matches = []
+    def pane_is_ready():
+        nonlocal rendered, matches
+        read_terminal(0.1)
+        rendered = screen()
+        matches = fixture_panes(rendered, markers)
+        return len(matches) == 1
+    wait_for(pane_is_ready, 'fixture must occupy one command pane',
+             lambda: f'; observed {len(matches)} matching panes\n' + rendered)
+    return rendered
 
 def summary_pane(rendered):
     lines = rendered.splitlines()
@@ -641,6 +659,65 @@ def settings_screen():
         return 'Capture' not in screen()
     wait_for(settings_are_closed, 'settings do not close')
     return rendered
+
+def assert_fixture_pane_readiness():
+    markers = ('probe-parent', 'probe-nested-check', 'probe-nested-test')
+    header, border = '│ pid parent command\n', '└────\n'
+    rows = [f'│ cargo {command} {marker}\n'
+            for command, marker in zip(('build', 'check', 'test'), markers)]
+    complete = header + ''.join(rows) + border
+    summary = '┌ summary\n' + ''.join(rows) + border
+    incomplete = summary + header + rows[0] + border
+    split = header + rows[0] + border + header + ''.join(rows[1:]) + border
+    duplicate = complete + complete
+    ready = header + '│ unrelated-earlier-pane\n' + border + complete
+    cases = ([(incomplete, split, duplicate, ready)] if scenario == 'pane-readiness-delayed'
+             else [(incomplete, split), (incomplete, duplicate)])
+    for frames in cases:
+        elapsed = 0
+        reads = 0
+        snapshots = 0
+        transcript.clear()
+        def advance(duration):
+            nonlocal elapsed
+            elapsed += duration
+        def receive_frame(duration):
+            nonlocal reads
+            assert duration == 0.1, 'readiness must keep the PTY read cadence'
+            frame = frames[min(reads, len(frames) - 1)]
+            label = 'earlier-readiness-screen' if reads == 0 else 'final-readiness-screen'
+            transcript.extend(('\x1b[2J\x1b[H' + frame + label).replace('\n', '\r\n').encode())
+            reads += 1
+            advance(duration)
+        snapshot = terminal_snapshot
+        def observe_snapshot():
+            nonlocal snapshots
+            snapshots += 1
+            return snapshot()
+        with patch.object(time, 'monotonic', lambda: elapsed), patch.object(time, 'sleep', advance), \
+                patch.dict(globals(), read_terminal=receive_frame, terminal_snapshot=observe_snapshot):
+            if scenario == 'pane-readiness-delayed':
+                rendered = wait_for_fixture_pane(markers)
+                assert reads == len(frames), 'readiness accepts markers before one pane contains them'
+                assert fixture_pane(rendered, markers) == [row.rstrip() for row in rows], rendered
+            else:
+                try:
+                    wait_for_fixture_pane(markers)
+                except AssertionError as error:
+                    expected_count = 0 if frames[-1] == split else 2
+                    message = str(error)
+                    assert f'observed {expected_count} matching panes\n' in message, message
+                    assert 'final-readiness-screen' in message, message
+                    assert 'earlier-readiness-screen' not in message, message
+                    assert frames[-1].rstrip() in message, message
+                    assert elapsed >= 10, 'pane readiness fails before the existing deadline'
+                else:
+                    raise AssertionError('pane readiness accepts a screen without exactly one fixture pane')
+            assert snapshots == reads, 'each readiness poll must reconstruct exactly one snapshot'
+
+if scenario in ('pane-readiness-delayed', 'pane-readiness-never'):
+    assert_fixture_pane_readiness()
+    sys.exit(0)
 
 try:
     first = start_writer('probe-first', home)
@@ -1004,11 +1081,7 @@ try:
         assert sum(work.name in line for line in commands) == 1, rendered
     if scenario in ('nested', 'excluded', 'exec-nested', 'exec-excluded'):
         markers = ['probe-nested-' + root.name + '-' + command for command in ('check', 'test')]
-        def nested_rows_are_visible():
-            read_terminal(0.1)
-            return all(marker in screen() for marker in markers)
-        wait_for(nested_rows_are_visible, 'nested commands merge or disappear from the reader')
-        rendered = screen()
+        rendered = wait_for_fixture_pane((first[1].name, *markers))
         commands = fixture_pane(rendered, (first[1].name, *markers))
         assert any(nested_directory.name in line for line in commands), rendered
         for marker, command in zip(markers, ('check', 'test')):
@@ -1222,7 +1295,6 @@ exec sh "$0" "$@""#,
                 .current_dir(self.path("home/work tree\twith\nlines"))
                 .env("HOME", self.path("home"))
                 .env("SHIM_TEST_ACCOUNT_DIRECTORY", self.path("capture"))
-                .env_remove("CARGO_TILE_ROOT")
                 .env("SHIM_TEST_OBSERVATIONS", self.path("observations"))
                 .env(
                     "SHIM_TEST_REAL_LN",
@@ -1588,6 +1660,18 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
     #[test]
     fn reader_grouping_finds_fixture_markers_after_an_unrelated_pane() {
         reader_regression("grouping-earlier-pane");
+    }
+
+    /// Markers outside a pane or split across panes remain pending until one pane contains all.
+    #[test]
+    fn reader_pane_readiness_waits_for_all_fixture_markers_in_one_pane() {
+        reader_regression("pane-readiness-delayed");
+    }
+
+    /// Missing and duplicate fixture panes expire with their final count and terminal screen.
+    #[test]
+    fn reader_pane_readiness_reports_the_final_screen_on_timeout() {
+        reader_regression("pane-readiness-never");
     }
 
     /// A verified live registration supplies fields absent from the process census.

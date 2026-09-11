@@ -144,7 +144,6 @@ exit "$SHIM_TEST_EXIT_STATUS"
                 .env("PATH", search_path)
                 .env("POSIXLY_CORRECT", "1")
                 .env("SHELL", "/bin/sh")
-                .env_remove("CARGO_TILE_ROOT")
                 .env_remove("CARGOTILE_NESTED")
                 .env_remove("CARGO_TERM_PROGRESS_WHEN")
                 .env_remove("CARGO_TERM_PROGRESS_WIDTH")
