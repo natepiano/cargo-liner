@@ -14,7 +14,9 @@ use crate::config::Config;
 use crate::constants::SHIM_MARKER;
 use crate::hook::AccountInstallOutcome;
 use crate::hook::InstallAccount;
+use crate::hook::account_groups;
 use crate::hook::install_accounts;
+use crate::hook::stage_installer;
 use crate::processes::AccountName;
 use crate::processes::RootReadStatus;
 use crate::progress::Capture;
@@ -91,6 +93,116 @@ fn injected_accounts_install_each_toolchain_through_the_built_binary() {
     for report in install_accounts(&accounts[..2], installer()) {
         assert_eq!(report.outcome, AccountInstallOutcome::AlreadyInstalled);
     }
+}
+
+/// The shared executable preserves installation reports and exists only while its guard lives.
+#[test]
+fn staged_installer_copies_executable_installs_toolchains_and_cleans_up() {
+    let directory = tempfile::tempdir().expect("staged installer fixture");
+    let original = account_at(&directory.path().join("original"), "runner");
+    let account = account_at(&directory.path().join("staged"), "runner");
+    for fixture in [&original, &account] {
+        for toolchain in ["stable", "nightly"] {
+            original_cargo(fixture, toolchain);
+        }
+    }
+    let staged = stage_installer(directory.path(), installer()).expect("stage the built installer");
+    let copy = staged.path().to_owned();
+    let parent = copy.parent().expect("staged directory").to_owned();
+    assert_eq!(parent.parent(), Some(directory.path()));
+    assert_eq!(copy.file_name(), Some(std::ffi::OsStr::new("cargo-tile")));
+    assert!(parent.is_dir());
+    assert!(copy.is_file());
+    for path in [&parent, &copy] {
+        assert_eq!(
+            fs::metadata(path).expect("staged permissions").mode() & 0o7777,
+            0o755,
+            "{} must be readable and executable by every account",
+            path.display()
+        );
+    }
+    assert_eq!(
+        fs::read(&copy).expect("staged bytes"),
+        fs::read(installer()).expect("original installer bytes")
+    );
+    let reports = install_accounts(std::slice::from_ref(&account), staged.path());
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].outcome, AccountInstallOutcome::Installed);
+    assert_eq!(
+        reports,
+        install_accounts(std::slice::from_ref(&original), installer())
+    );
+    for toolchain in ["stable", "nightly"] {
+        let bin = account
+            .home
+            .join(format!(".rustup/toolchains/{toolchain}/bin"));
+        assert_eq!(
+            fs::read(bin.join("cargo")).expect("staged installer writes shim"),
+            include_bytes!("../../src/cargo-capture-shim.sh")
+        );
+        assert_eq!(
+            fs::read(bin.join("cargo-tile-real")).expect("staged installer preserves cargo"),
+            b"#!/bin/sh\nexit 37\n"
+        );
+    }
+    let reports = install_accounts(std::slice::from_ref(&account), staged.path());
+    assert_eq!(reports[0].outcome, AccountInstallOutcome::AlreadyInstalled);
+    assert_eq!(
+        reports,
+        install_accounts(std::slice::from_ref(&original), installer())
+    );
+    drop(staged);
+    assert!(!copy.exists(), "dropping the guard removes the executable");
+    assert!(!parent.exists(), "dropping the guard removes its directory");
+    assert!(directory.path().is_dir(), "the supplied parent survives");
+}
+
+/// A failed exec names the affected account and does not stop subsequent account reports.
+#[test]
+fn unstartable_installer_reports_each_account_separately() {
+    let directory = tempfile::tempdir().expect("failed installer fixture");
+    let accounts: Vec<_> = ["developer", "runner"]
+        .into_iter()
+        .map(|name| account_at(&directory.path().join(name), name))
+        .collect();
+    for account in &accounts {
+        original_cargo(account, "stable");
+    }
+    let reports = install_accounts(&accounts, directory.path());
+    assert_eq!(reports.len(), accounts.len());
+    for (account, report) in accounts.iter().zip(&reports) {
+        assert_eq!(report.account, account.name);
+        let prefix = format!("could not start the installer as {}:", account.name);
+        assert!(
+            matches!(&report.outcome, AccountInstallOutcome::Skipped(reason)
+                if reason.starts_with(&prefix) && !reason[prefix.len()..].trim().is_empty()),
+            "each failed start retains the account and OS error: {report:?}"
+        );
+        let bin = account.home.join(".rustup/toolchains/stable/bin");
+        assert_eq!(
+            fs::read(bin.join("cargo")).expect("original cargo survives failed exec"),
+            b"#!/bin/sh\nexit 37\n"
+        );
+        assert!(!bin.join("cargo-tile-real").exists());
+    }
+}
+
+/// Database groups include the primary gid even when session memberships differ.
+#[test]
+fn resolved_account_groups_include_the_callers_primary_gid() {
+    let uid = rustix::process::geteuid().as_raw();
+    let users = sysinfo::Users::new_with_refreshed_list();
+    let user = users
+        .iter()
+        .find(|user| **user.id() == uid)
+        .expect("caller has an account database entry");
+    let gid = *user.group_id();
+    let groups = account_groups(user.name(), gid).expect("resolve the caller's groups");
+    assert!(
+        groups.contains(&gid),
+        "{} must retain primary gid {gid} in {groups:?}",
+        user.name()
+    );
 }
 
 /// Account-owned files may belong to any permitted group, including a setgid parent's.

@@ -188,7 +188,11 @@ fn install_all_accounts() -> io::Result<()> {
     }
     let accounts = hook::system_accounts()?;
     capture_root::prepare_shared_directory(Path::new(CAPTURE_ROOT))?;
-    let reports = hook::install_accounts(&accounts, &env::current_exe()?);
+    let parent = Path::new(CAPTURE_ROOT)
+        .parent()
+        .ok_or_else(|| io::Error::other(format!("{CAPTURE_ROOT} has no parent directory")))?;
+    let staged = hook::stage_installer(parent, &env::current_exe()?)?;
+    let reports = hook::install_accounts(&accounts, staged.path());
     let mut installed = 0;
     let mut already_installed = 0;
     let mut skipped = 0;
