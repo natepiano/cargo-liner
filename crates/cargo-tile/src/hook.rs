@@ -24,6 +24,7 @@
 
 use std::env;
 use std::ffi::CStr;
+use std::ffi::CString;
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::OpenOptions;
@@ -41,7 +42,11 @@ use std::process::Command;
 use std::process::Output;
 use std::thread;
 
+use crate::constants::ACCOUNT_GROUPS_INITIAL_CAPACITY;
 use crate::constants::ACCOUNT_INSTALL_REPORT_FLAG;
+use crate::constants::ACCOUNT_INSTALLER_MODE;
+use crate::constants::ACCOUNT_INSTALLER_PREFIX;
+use crate::constants::BINARY_NAME;
 use crate::constants::CARGO_NAME;
 use crate::constants::REAL_CARGO_NAME;
 use crate::constants::RUSTUP_DIRNAME;
@@ -370,6 +375,46 @@ impl Drop for HookInstallationLock {
     fn drop(&mut self) { drop(fs::remove_file(&self.path)); }
 }
 
+/// An installer copy that stays accessible to account children until reporting ends.
+pub(crate) struct StagedInstaller {
+    /// The fresh directory is removed with all its contents when the guard drops.
+    directory:  PathBuf,
+    /// The executable path passed to each account child.
+    executable: PathBuf,
+}
+
+impl StagedInstaller {
+    /// Keep children independent of permissions on the administrator's home.
+    pub(crate) fn path(&self) -> &Path { &self.executable }
+}
+
+impl Drop for StagedInstaller {
+    fn drop(&mut self) { drop(fs::remove_dir_all(&self.directory)); }
+}
+
+/// Stage beneath a trusted parent so other accounts cannot replace the executable.
+/// The admin command supplies the root-owned sticky system temporary directory.
+pub(crate) fn stage_installer(parent: &Path, source: &Path) -> io::Result<StagedInstaller> {
+    let directory = tempfile::Builder::new()
+        .prefix(ACCOUNT_INSTALLER_PREFIX)
+        .permissions(fs::Permissions::from_mode(ACCOUNT_INSTALLER_MODE))
+        .tempdir_in(parent)?;
+    fs::set_permissions(
+        directory.path(),
+        fs::Permissions::from_mode(ACCOUNT_INSTALLER_MODE),
+    )?;
+    let executable = directory.path().join(BINARY_NAME);
+    fs::copy(source, &executable)?;
+    fs::set_permissions(
+        &executable,
+        fs::Permissions::from_mode(ACCOUNT_INSTALLER_MODE),
+    )?;
+    Ok(StagedInstaller {
+        directory: directory.keep(),
+        executable,
+    })
+}
+
 /// Read the system account database before the CLI starts any worker threads.
 /// `getpwent` includes Directory Services accounts on macOS and NSS on Linux.
 #[allow(
@@ -418,6 +463,70 @@ pub(crate) fn system_accounts() -> io::Result<Vec<InstallAccount>> {
     Ok(accounts)
 }
 
+/// Resolve the account database memberships, including its primary group, before spawning.
+#[allow(
+    unsafe_code,
+    reason = "libc getgrouplist is required to resolve complete account memberships on Linux and macOS"
+)]
+pub(crate) fn account_groups(name: &str, primary_gid: u32) -> io::Result<Vec<u32>> {
+    let name =
+        CString::new(name).map_err(|error| io::Error::new(ErrorKind::InvalidInput, error))?;
+    #[cfg(target_os = "macos")]
+    let primary_gid = libc::c_int::try_from(primary_gid)
+        .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error))?;
+    #[cfg(target_os = "linux")]
+    let primary_gid: libc::gid_t = primary_gid;
+    let mut groups = vec![primary_gid; ACCOUNT_GROUPS_INITIAL_CAPACITY];
+    let mut count = libc::c_int::try_from(groups.len()).map_err(io::Error::other)?;
+    let resolve = |groups: &mut [_], count: &mut libc::c_int| {
+        // SAFETY: name is NUL-terminated and lives through both calls. The group
+        // element type matches this platform's libc declaration, and count is
+        // the allocated slice length on entry to each call.
+        unsafe { libc::getgrouplist(name.as_ptr(), primary_gid, groups.as_mut_ptr(), count) }
+    };
+    if resolve(&mut groups, &mut count) == -1 {
+        let needed = usize::try_from(count)
+            .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+        if needed <= groups.len() {
+            return Err(io::Error::other(format!(
+                "getgrouplist failed with a buffer of {} entries",
+                groups.len()
+            )));
+        }
+        groups.resize(needed, primary_gid);
+        if resolve(&mut groups, &mut count) == -1 {
+            return Err(io::Error::other(format!(
+                "getgrouplist failed after growing the buffer to {needed} entries"
+            )));
+        }
+    }
+    let count =
+        usize::try_from(count).map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+    if count > groups.len() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "getgrouplist returned {count} groups for a buffer of {} entries",
+                groups.len()
+            ),
+        ));
+    }
+    groups.truncate(count);
+    #[cfg(target_os = "macos")]
+    {
+        groups
+            .into_iter()
+            .map(|group| {
+                u32::try_from(group).map_err(|error| io::Error::new(ErrorKind::InvalidData, error))
+            })
+            .collect()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Ok(groups)
+    }
+}
+
 /// Install from explicit account records so fixtures need neither root nor a
 /// replacement system account database. Accounts without rustup are omitted.
 pub(crate) fn install_accounts(
@@ -440,18 +549,65 @@ pub(crate) fn install_accounts(
 
 /// Drop privileges before any toolchain discovery, lock, or installation.
 fn install_account(account: &InstallAccount, installer: &Path) -> AccountInstallOutcome {
-    Command::new(installer)
-        .uid(account.uid)
-        .gid(account.gid)
+    let mut command = Command::new(installer);
+    if rustix::process::geteuid().is_root() {
+        if let Err(error) = account_credentials(&mut command, account) {
+            return AccountInstallOutcome::Skipped(format!(
+                "could not resolve {}'s groups: {error}",
+                account.name
+            ));
+        }
+    } else {
+        command.uid(account.uid).gid(account.gid);
+    }
+    command
         .env("HOME", &account.home)
         .env(RUSTUP_HOME_ENV, account.home.join(RUSTUP_DIRNAME))
         .arg("install")
         .arg(format!("--{ACCOUNT_INSTALL_REPORT_FLAG}"))
         .output()
         .map_or_else(
-            |error| AccountInstallOutcome::Skipped(error.to_string()),
+            |error| {
+                AccountInstallOutcome::Skipped(format!(
+                    "could not start the installer as {}: {error}",
+                    account.name
+                ))
+            },
             AccountInstallOutcome::from,
         )
+}
+
+/// Apply root's resolved credentials together, before exec, without std clearing groups.
+/// `CommandExt::groups` is unstable, so the callback also owns the uid/gid transition.
+#[allow(
+    unsafe_code,
+    reason = "stable Command lacks explicit groups; the child must setgroups before setgid and setuid using only libc credential syscalls"
+)]
+fn account_credentials(command: &mut Command, account: &InstallAccount) -> io::Result<()> {
+    let groups = account_groups(&account.name, account.gid)?;
+    #[cfg(target_os = "macos")]
+    let count = libc::c_int::try_from(groups.len())
+        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+    #[cfg(target_os = "linux")]
+    let count = groups.len();
+    let uid = account.uid;
+    let gid = account.gid;
+    // SAFETY: the parent resolves and allocates groups before fork. The callback
+    // uses only credential syscalls and last_os_error, with no allocation or
+    // locks; groups owns count gid_t entries for the callback's entire lifetime.
+    // No std uid/gid setters precede it, and any failed syscall prevents exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setgroups(count, groups.as_ptr()) == -1
+                || libc::setgid(gid) == -1
+                || libc::setuid(uid) == -1
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
 }
 
 impl From<Output> for AccountInstallOutcome {

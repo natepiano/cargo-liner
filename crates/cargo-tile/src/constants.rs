@@ -747,8 +747,14 @@ pub(crate) const CAPTURE_UNUSED_SELECTED_UNCONFIRMED: &str =
     "selected root is unconfirmed; another root cannot supply its fields";
 
 // capture shim
+/// Most accounts fit in one lookup; getgrouplist supplies a larger count if needed.
+pub(crate) const ACCOUNT_GROUPS_INITIAL_CAPACITY: usize = 32;
 /// Hidden child-install protocol shared by the admin command and account process.
 pub(crate) const ACCOUNT_INSTALL_REPORT_FLAG: &str = "account-install-report";
+/// Every account can traverse and execute the staged installer; only its owner can write.
+pub(crate) const ACCOUNT_INSTALLER_MODE: u32 = 0o755;
+/// A random suffix keeps concurrent admin installations in separate directories.
+pub(crate) const ACCOUNT_INSTALLER_PREFIX: &str = "cargo-tile-installer-";
 /// Name of the real cargo once the shim takes its place beside it. The
 /// shim resolves it as a sibling, so a hardcoded-path invocation of a
 /// toolchain's cargo is captured the same as one found through `PATH`.

@@ -23,6 +23,7 @@ ratatui       = { workspace = true }
 rustix        = { workspace = true, features = ["fs", "process"] }
 serde         = { workspace = true, features = ["derive"] }
 sysinfo       = { workspace = true }
+tempfile      = { workspace = true }
 toml          = { workspace = true }
 unicode-width = { workspace = true }
 uuid          = { workspace = true }
@@ -33,6 +34,3 @@ tui_pane = { workspace = true, features = ["backdrop"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
