@@ -465,12 +465,14 @@ pub(crate) struct CargoProcess {
     pub(crate) started:            RunStart,
     /// Elapsed run time, `mm:ss` until an hour and `hh:mm:ss` past it.
     pub(crate) duration:           String,
-    /// Share of a core this invocation and everything running under it
-    /// are using, as a whole-number percent. `top`'s scale rather than a
-    /// share of the machine, so a build across eight cores reads past
-    /// 100% instead of flattening to a tenth of one. An unavailable
-    /// contributor makes the invocation's whole measurement unavailable.
+    /// Whole-number core percentage for the command table. A group lead
+    /// carries the group's total; managed rows carry only their own invocation
+    /// bucket, including non-cargo descendants attributed to that invocation.
     pub(crate) cpu:                Measurement<String>,
+    /// This invocation's CPU bucket plus every assembled cargo descendant,
+    /// prepared on the worker for promotion into the summary. Any unavailable
+    /// contributor prevents publishing a partial total.
+    pub(crate) subtree_cpu:        Measurement<String>,
     /// Compiler processes this invocation currently owns, when observed. On the
     /// invocation leading a group this is the whole group's tally, so
     /// the summary reports the build rather than the driver process.
@@ -1278,23 +1280,28 @@ struct Census {
     compilers:                Vec<(Pid, &'static str)>,
     /// Every process contributes a reading or an absence reason to its owner.
     cpu:                      HashMap<Pid, Measurement<f32>>,
+    /// Fixture rows enter group assembly without a process-row measurement.
+    #[cfg(test)]
+    registration_rows:        Vec<CargoProcess>,
 }
 
 impl Census {
     /// Classify every process the last refresh saw.
     fn take(system: &System, previous: &HashMap<Pid, CpuBaseline>) -> Self {
         let mut census = Self {
-            identities:               HashMap::new(),
-            capture_boundaries:       HashSet::new(),
-            capture_wrappers:         HashSet::new(),
-            capture_mismatches:       HashSet::new(),
-            lifetimes:                HashMap::new(),
-            eligibility:              HashMap::new(),
-            registration_eligibility: HashMap::new(),
-            parents:                  HashMap::new(),
-            cargo:                    Vec::new(),
-            compilers:                Vec::new(),
-            cpu:                      HashMap::new(),
+            identities:                     HashMap::new(),
+            capture_boundaries:             HashSet::new(),
+            capture_wrappers:               HashSet::new(),
+            capture_mismatches:             HashSet::new(),
+            lifetimes:                      HashMap::new(),
+            eligibility:                    HashMap::new(),
+            registration_eligibility:       HashMap::new(),
+            parents:                        HashMap::new(),
+            cargo:                          Vec::new(),
+            compilers:                      Vec::new(),
+            cpu:                            HashMap::new(),
+            #[cfg(test)]
+            registration_rows:              Vec::new(),
         };
         for (&pid, process) in system.processes() {
             if let Some(parent) = process.parent().or_else(|| kernel_parent(pid)) {
@@ -2014,17 +2021,24 @@ impl Census {
         }
         let process_rows: HashSet<_> = rows.iter().map(|row| row.invocation_id.clone()).collect();
         self.add_registration_rows(&mut rows, capture, home, SystemTime::now());
+        #[cfg(test)]
+        rows.extend_from_slice(&self.registration_rows);
         let mut groups = self.assemble_groups(system, home, rows);
         for group in &mut groups {
+            let members: Vec<_> = std::iter::once(&group.lead).chain(&group.rest).collect();
+            let totals = subtree_cpu(&attributed.cpu, &members, &process_rows);
             if process_rows.contains(&group.lead.invocation_id) {
-                let members: Vec<_> = std::iter::once(&group.lead)
-                    .chain(&group.rest)
-                    .map(|row| Pid::from_u32(row.pid))
-                    .collect();
-                group.lead.cpu =
-                    aggregate_cpu(&attributed.cpu, members.iter().copied()).map(cpu_label);
-                group.lead.compiler =
-                    aggregate_compilers(&attributed.compilers, members.into_iter());
+                let pids = members.iter().map(|row| Pid::from_u32(row.pid));
+                let cpu = aggregate_cpu(&attributed.cpu, pids.clone()).map(cpu_label);
+                let compiler = aggregate_compilers(&attributed.compilers, pids);
+                group.lead.cpu = cpu;
+                group.lead.compiler = compiler;
+            }
+            for (row, total) in std::iter::once(&mut group.lead)
+                .chain(&mut group.rest)
+                .zip(totals)
+            {
+                row.subtree_cpu = total.map(cpu_label);
             }
             for row in &mut group.rest {
                 if process_rows.contains(&row.invocation_id) {
@@ -2411,6 +2425,61 @@ pub(crate) fn aggregate_cpu(
     })
 }
 
+/// Sum each invocation bucket once per subtree with linear parent-link passes.
+/// The membership order also indexes the returned totals, independently of row age.
+fn subtree_cpu(
+    shares: &HashMap<Pid, Measurement<f32>>,
+    members: &[&CargoProcess],
+    process_rows: &HashSet<InvocationId>,
+) -> Vec<Measurement<f32>> {
+    let indices: HashMap<_, _> = members
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (&row.invocation_id, index))
+        .collect();
+    let mut totals: Vec<_> = members
+        .iter()
+        .map(|row| {
+            if process_rows.contains(&row.invocation_id) {
+                aggregate_cpu(shares, std::iter::once(Pid::from_u32(row.pid)))
+            } else {
+                Measurement::Unavailable(MeasurementAbsence::Unproven)
+            }
+        })
+        .collect();
+    let mut remaining_children = vec![0_usize; members.len()];
+    for row in members {
+        if let VisibleParent::Invocation { id, .. } = &row.parent
+            && let Some(&parent) = indices.get(id)
+        {
+            remaining_children[parent] += 1;
+        }
+    }
+    let mut ready: Vec<_> = remaining_children
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &children)| (children == 0).then_some(index))
+        .collect();
+    while let Some(index) = ready.pop() {
+        if let VisibleParent::Invocation { id, .. } = &members[index].parent
+            && let Some(&parent) = indices.get(id)
+        {
+            totals[parent] = totals[parent] + totals[index];
+            remaining_children[parent] -= 1;
+            if remaining_children[parent] == 0 {
+                ready.push(parent);
+            }
+        }
+    }
+    // A cyclic parent chain cannot establish a complete subtree measurement.
+    for (total, children) in totals.iter_mut().zip(remaining_children) {
+        if children > 0 {
+            *total = Measurement::Unavailable(MeasurementAbsence::Unproven);
+        }
+    }
+    totals
+}
+
 /// Format one cargo process into its table row.
 fn row(
     process: &Process,
@@ -2443,6 +2512,7 @@ fn row(
         started,
         duration,
         cpu: cpu.map(cpu_label),
+        subtree_cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
         compiler,
         state: CaptureLookup::Unregistered,
         managed,
@@ -2558,6 +2628,7 @@ fn registration_row(
         started,
         duration,
         cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
+        subtree_cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
         compiler: CompilerObservation::Unknown,
         state: capture.read(&direct.key),
         managed: Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -2844,6 +2915,52 @@ fn base_name(argument: &OsString) -> String {
         .unwrap_or(argument.as_os_str())
         .to_string_lossy()
         .into_owned()
+}
+
+/// Assemble real process rows with deterministic parents and invocation CPU buckets.
+#[cfg(test)]
+pub(crate) fn groups_with_cpu_for_test(
+    system: &System,
+    parents: &[(u32, u32)],
+    shares: &[(u32, Measurement<f32>)],
+) -> Vec<CargoGroup> {
+    groups_with_registration_rows_for_test(system, parents, shares, &[], &[])
+}
+
+/// Assemble supplied registration rows outside the process-row measurement set.
+#[cfg(test)]
+pub(crate) fn groups_with_registration_rows_for_test(
+    system: &System,
+    parents: &[(u32, u32)],
+    shares: &[(u32, Measurement<f32>)],
+    registration_rows: &[CargoProcess],
+    omitted_process_pids: &[u32],
+) -> Vec<CargoGroup> {
+    let mut census = Census::take(system, &HashMap::new());
+    census.parents = parents
+        .iter()
+        .map(|&(child, parent)| (Pid::from_u32(child), Pid::from_u32(parent)))
+        .collect();
+    census.cargo = system
+        .processes()
+        .iter()
+        .filter(|(pid, process)| {
+            names_cargo(process.cmd()) && !omitted_process_pids.contains(&pid.as_u32())
+        })
+        .map(|(&pid, _)| pid)
+        .collect();
+    census.registration_rows = registration_rows.to_vec();
+    census.identities = ProcessIdentities::default().observe(&census.lifetimes);
+    let capture = Capture::default();
+    census.select_rows(system, &capture, &[]);
+    let attributed = Attributed {
+        cpu:       shares
+            .iter()
+            .map(|&(pid, cpu)| (Pid::from_u32(pid), cpu))
+            .collect(),
+        compilers: HashMap::new(),
+    };
+    census.groups(system, &attributed, ScannerHome::Unavailable, &capture)
 }
 
 #[cfg(test)]
@@ -3574,6 +3691,15 @@ mod tests {
         let fixture = cargo_process("build");
         let pid = Pid::from_u32(fixture.child.id());
         let system = process_details(&[pid]);
+        // An unavailable CPU bucket does not remove an otherwise displayable group.
+        let groups = groups_with_cpu_for_test(&system, &[], &[]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, pid.as_u32());
+        assert_eq!(
+            groups[0].lead.cpu,
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(groups[0].lead.subtree_cpu, groups[0].lead.cpu);
         let mut census = census_of(&[]);
         let children = HashMap::new();
         let capture = Capture::default();
@@ -4270,6 +4396,7 @@ mod tests {
             cargo:                    Vec::new(),
             compilers:                Vec::new(),
             cpu:                      HashMap::new(),
+            registration_rows:        Vec::new(),
         }
     }
 
@@ -4316,6 +4443,7 @@ mod tests {
             started:            RunStart::Known(0),
             duration:           "00:01".to_owned(),
             cpu:                Measurement::Reading("0%".to_owned()),
+            subtree_cpu:        Measurement::Reading("0%".to_owned()),
             compiler:           CompilerObservation::None,
             state:              CaptureLookup::Unregistered,
             managed:            Measurement::Reading(0),

@@ -790,6 +790,7 @@ fraying = "leading"
             started: RunStart::Known(0),
             duration: "00:01".to_owned(),
             cpu: Measurement::Reading("0%".to_owned()),
+            subtree_cpu: Measurement::Reading("0%".to_owned()),
             compiler: CompilerObservation::None,
             state,
             managed: Measurement::Reading(0),

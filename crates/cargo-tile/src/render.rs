@@ -1,6 +1,7 @@
 //! Frame rendering: the app's panes, the framework status line along the
 //! bottom, and whichever framework overlay is open above them.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::time::Instant;
 
@@ -404,9 +405,10 @@ fn tile_demands(
             .find(|(content, _)| *content == wanted)
             .map_or(narrowest, |&(_, width)| width)
     };
+    let summary = summary_rows(roster, hidden_when_idle);
     TileDemands {
         summary: table_height(
-            &summary_rows(roster, hidden_when_idle),
+            &summary.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
             TableKind::Summary,
             width_of(TileContent::Summary),
             PinnedGroup::Unpinned,
@@ -645,10 +647,11 @@ fn draw_summary(
     hidden_when_idle: &[String],
     tree: ProcessTree,
 ) {
+    let rows = summary_rows(roster, hidden_when_idle);
     draw_process_table(
         buffer,
         inner,
-        &summary_rows(roster, hidden_when_idle),
+        &rows.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
         TableKind::Summary,
         ground,
         PinnedGroup::Unpinned,
@@ -675,17 +678,30 @@ fn draw_summary(
 ///
 /// Read by [`draw_summary`] and by [`tile_demands`] both, so the cell is
 /// measured over exactly the rows it goes on to lay out.
-fn summary_rows<'a>(roster: &'a Roster, hidden_when_idle: &[String]) -> Vec<&'a TrackedRow> {
-    let mut rows: Vec<&TrackedRow> = Vec::new();
+///
+/// Promoted copies read the worker's subtree total while the roster retains
+/// the command table's individual invocation measurements and row display state.
+fn summary_rows<'a>(roster: &'a Roster, hidden_when_idle: &[String]) -> Vec<Cow<'a, TrackedRow>> {
+    let mut rows = Vec::new();
     for group in roster.groups() {
         if group.leads_as_ancestor(hidden_when_idle) {
             let before = rows.len();
-            rows.extend(group.rows().skip(1).filter(|row| !row.process.nested));
+            rows.extend(
+                group
+                    .rows()
+                    .skip(1)
+                    .filter(|row| !row.process.nested)
+                    .map(|row| {
+                        let mut promoted = row.clone();
+                        promoted.process.cpu.clone_from(&row.process.subtree_cpu);
+                        Cow::Owned(promoted)
+                    }),
+            );
             if rows.len() == before {
-                rows.push(&group.lead);
+                rows.push(Cow::Borrowed(&group.lead));
             }
         } else {
-            rows.push(&group.lead);
+            rows.push(Cow::Borrowed(&group.lead));
         }
     }
     rows
@@ -2171,6 +2187,18 @@ fn draw_settings(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(rendered.lines), popup.inner);
 }
 
+/// Read the CPU values selected by the production summary without exposing its rows.
+#[cfg(test)]
+pub(crate) fn summary_cpu_for_test(
+    roster: &Roster,
+    hidden_when_idle: &[String],
+) -> Vec<(u32, Measurement<String>)> {
+    summary_rows(roster, hidden_when_idle)
+        .into_iter()
+        .map(|row| (row.process.pid, row.process.cpu.clone()))
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -2518,6 +2546,7 @@ mod tests {
             started:            RunStart::Known(started),
             duration:           "00:18".to_string(),
             cpu:                Measurement::Reading("12%".to_string()),
+            subtree_cpu:        Measurement::Reading("12%".to_string()),
             compiler:           CompilerObservation::None,
             state:              state.map_or(CaptureLookup::Unregistered, |state| {
                 CaptureLookup::Registered(CaptureRead::Progress(state))
@@ -2844,6 +2873,7 @@ mod tests {
             started: RunStart::Known(0),
             duration: "00:18".to_string(),
             cpu: Measurement::Reading("12%".to_string()),
+            subtree_cpu: Measurement::Reading("12%".to_string()),
             compiler: CompilerObservation::None,
             state: CaptureLookup::Unregistered,
             managed: Measurement::Reading(0),
@@ -2868,9 +2898,9 @@ mod tests {
     fn an_idle_driver_keeps_one_summary_row() {
         let roster = roster_of(invocation(4100, &[SIBLING_SUBCOMMAND_NAME]), Vec::new());
 
-        let pids = summary_rows(&roster, &hidden_when_idle())
+        let pids = summary_cpu_for_test(&roster, &hidden_when_idle())
             .into_iter()
-            .map(|row| row.process.pid)
+            .map(|(pid, _)| pid)
             .collect::<Vec<_>>();
 
         assert_eq!(pids, vec![4100]);
@@ -2885,9 +2915,9 @@ mod tests {
             vec![invocation(4200, &["build"]), nested],
         );
 
-        let pids = summary_rows(&roster, &hidden_when_idle())
+        let pids = summary_cpu_for_test(&roster, &hidden_when_idle())
             .into_iter()
-            .map(|row| row.process.pid)
+            .map(|(pid, _)| pid)
             .collect::<Vec<_>>();
 
         assert_eq!(pids, vec![4200]);

@@ -27,6 +27,7 @@
       birth_stamp/{mod.rs, linux.rs, macos.rs}
     tests/
       shim_registration.rs                     #[path] modules over src/ + PTY + Python
+      summary_totals.rs                        #[path] modules over src/ (Phase 5)
       shim_modes.rs  cli_lifecycle.rs
       support/shared_capture.rs                #[path] module of shim_registration only
   crates/cargo-berth/
@@ -53,9 +54,13 @@
   - `crates/cargo-tile/src/cargo-capture-shim.sh` — POSIX `sh` capture shim. `capture_parent=/tmp/cargo-tile` `:53` (the fixed shared location), `case $first in` `:80` (subcommand classification; `install` takes the capture path), publication framing `printf '%s\000' cargo-tile-v2 …` `:298`.
   - `crates/cargo-tile/src/capture_root.rs` — root access layer, 1023 non-test lines, anchor type `RootScan`. `CleanupRefusal` `:195`, `RootScan::cleanup_refusals` `:422`, private `RootScan::access` `:471`, `RootScan::revalidate_paths` `:487`, `InspectedDirectoryMetadata::refusals` `:637`, `InspectedDirectory::inspect` `:679`, `OwnedRoot::sweep` `:923`. One `allow(unsafe_code)` at `:1395`.
   - `crates/cargo-tile/src/settings.rs` — settings-pane rendering, no filesystem access. `push_value` `:385`, `capture_root_status` `:451`, `capture_diagnostic` `:623`, `cleanup_refusal` `:666`.
-  - `crates/cargo-tile/src/render.rs` — grid and popup drawing. `summary_rows` `:678`, `heading_gauge` `:1894`, `draw_settings` `:2128`. Also holds `GroupingIdentity`.
-  - `crates/cargo-tile/src/processes.rs` — 2848 non-test lines, 44 top-level types. `Measurement<T>` `:221`, `CaptureDiagnostic` `:806`, `Census::attribute_cpu` `:1459`, `Census::groups` `:1996` with the per-row CPU overwrite at `:2032`, `Census::group` `:2182`, `aggregate_cpu` `:2401`.
-  - `crates/cargo-tile/src/progress.rs` — 1217 non-test lines, 23 top-level types. `registered_runs` `:939`, `parse_state` `:1086`, `last_counter` `:1120`. Also holds `CaptureRoots::from_parent`.
+  - `crates/cargo-tile/src/render.rs` — grid and popup drawing. `summary_rows` `:684`, `heading_gauge` `:1910`, `draw_settings` `:2144`. Also holds `GroupingIdentity`.
+  - `crates/cargo-tile/src/processes.rs` — 44 top-level types; 2848 non-test lines before Phase 5, which added the subtree total and two test-only adapters, so re-count before splitting. `Measurement<T>` `:221`, `MeasurementAbsence` `:230`, `CommandText::subcommand` `:556` (`Option<&str>`), `CaptureDiagnostic` `:808`, `Attributed` `:1123`, `Census::attribute_cpu` `:1466`, `Census::owning_cargo` `:1618` (`Option<Pid>`), `Census::groups` `:2003` — builds the `process_rows` invocation-identity set at `:2022`, seeds the subtree total at `:2029`, and overwrites the per-row CPU at `:2044`, both gated on that set — `Census::group` `:2196`, `aggregate_cpu` `:2415`, `subtree_cpu` `:2430` (private, one call site, takes `&HashSet<InvocationId>`), `subcommand` `:2850` and `external_subcommand` `:2888` and `cargo_argv_start` `:2903` (all `Option`), and the `cfg(test)` adapters `groups_with_cpu_for_test` `:2922` and `groups_with_registration_rows_for_test` `:2932`.
+  - `crates/cargo-tile/src/progress.rs` — 1217 non-test lines, 23 top-level types. `registered_runs` `:939`, `log_pid` `:1057`, `parse_state` `:1086`, `last_counter` `:1120`, `counter_at` `:1190`, `leading_number` `:1211`. Also holds `CaptureRoots::from_parent`.
+  - `crates/cargo-tile/src/app.rs` — application state. `App.capture_note` `:170` is an `Option<String>` initialized to `None` at `:219`; `settings::rows` (`settings.rs:153`) consumes it. This is the domain-owned boundary a startup notice arrives at.
+  - `crates/cargo-tile/src/navigation.rs` — `settings_overlay` `:48`: keyboard navigation mutates the settings row viewport directly.
+  - `crates/cargo-tile/src/interaction.rs` — `handle_click` `:45`, `overlay_row` `:54`: a click sets the settings row the same way.
+  - `crates/cargo-tile/tests/summary_totals.rs` — Phase 5's integration binary. Carries its own copy of the `#[path]` block (29 declarations from `:3`, naming `capture_root.rs` `:11`, `processes.rs` `:37`, `progress.rs` `:39`), and drives private assembly through the two `cfg(test)` adapters rather than through the PTY.
   - `crates/cargo-tile/src/registration.rs` — `cargo-tile-v2` NUL framing. `Registration::parse` `:31`, `ParseError` `:229`.
   - `crates/cargo-tile/src/birth_stamp/mod.rs` — `BirthStamp::compare` `:87`, `ProcessLifetime` `:106`, `ProcessLifetime::macos` `:116`, `LifetimeEvidence` `:134`, `IdentityEvidence` `:166`, `KernelObservation` `:197`, `Verification` `:222`, `observe` `:232`, `observe_process` `:279`.
   - `crates/cargo-tile/src/birth_stamp/macos.rs` — Darwin `observe` `:48`, reaching methods private to the parent module; `allow(unsafe_code)` sysctl at `:118`. Does not compile on Linux.
@@ -116,7 +121,8 @@
   - **Settings pane.** Does no filesystem access; everything it shows was observed on the scanner worker.
   - **Platform.** `birth_stamp/macos.rs` and the Darwin directory enumeration do not compile on Linux; Linux CI compiles but cannot exercise the macOS ACL or sysctl paths. `unsafe_code` is denied workspace-wide with per-item `allow(reason)` plus a `// SAFETY:` comment at `capture_root.rs:1395`, `hook.rs:780/827/1006`, and `birth_stamp/macos.rs:118`. The crate does compile and test natively on macOS, and the workflow carries a `macos-latest` job (`.github/workflows/ci.yml:348`), so a macOS-only target has a native route as well as CI. **The native `cargo-tile` package suite is not green on macOS today:** three `shim_registration` cases — `fifo_removal_failure_preserves_original_cargo_and_unowned_directory`, `publication_links_a_complete_tmp_file_into_place`, and `stale_invocation_fifo_still_publishes_registration_and_captures_stderr` — fail on the current tree and equally on a `git archive` of the Phase 2 checkpoint (1449 passed / 3 failed on each). They predate Phase 3, no phase owns them, and they are recorded as a next item; any phase whose gate names a green native suite depends on that item first.
   - **Constants.** Every constant lives in `crates/cargo-tile/src/constants.rs` with a rationale. No magic values inline.
-  - **Test layout.** `cargo-tile` is binary-only: crate-item tests are inline `#[cfg(test)]` modules, and `tests/` reaches sources through `#[path]` modules and drives the built binary. Two uids are never required by a test. Any file move must carry the `#[path]` declarations at the top of `shim_registration.rs` with it.
+  - **Test layout.** `cargo-tile` is binary-only: crate-item tests are inline `#[cfg(test)]` modules, and `tests/` reaches sources through `#[path]` modules and drives the built binary. Two uids are never required by a test. Any file move must carry the `#[path]` declarations at the top of **every** harness that has them — `shim_registration.rs:3`, `summary_totals.rs:3`, and `capture_root_acl.rs` once Phase 7 creates it — not just the first. Each is a full copy of the block, so a rename missed in one of them breaks that binary alone.
+  - **Scratch checkouts get their own target directory.** A scratch tree built beside the live one (a `git archive` of an earlier commit, a control build, an older executable for a compatibility check) must be given its own `CARGO_TARGET_DIR`. Sharing one makes a focused build reuse a stale binary from the other tree, so a result is attributed to the wrong source. Observed in Phase 5, where a focused check reused a stale test binary and failed against unchanged source.
   - **Verification gates are per package.** Use the `verify.sh` lines above, never raw cargo, never workspace-wide breadth in a phase gate. Tests run under `cargo nextest`; formatting is `cargo +nightly fmt` only.
   - **Style rules that bind these phases.** One type cluster per file and submodules named for their anchor type (`~/rust/nate_style/rust/split-by-type-ownership.md`, `name-submodules-after-anchor-types.md`); a flat file splits when two or more of the criteria in `when-to-split-a-module.md` hold, with ~500 non-test lines as the line-count criterion; a `mod.rs` is a table of contents (`module-roots-as-table-of-contents.md`); the split replaces the flat file rather than leaving a `#[path]` shell. Forbidden words at `~/rust/nate_style/rust/forbidden-words.md` apply to code, comments, identifiers, and commits.
   - **Type design.** No `Option<T>` in domain-owned types or APIs where a semantic type states what presence and absence mean; convert at the foreign-API boundary (`~/.claude/docs/type_design.md`). A three-state outcome (established / refused / inspection failed) is a named enum, not a `Result<bool, _>`.
@@ -211,33 +217,30 @@
 - Collecting every toolchain report before printing — a terminated child then reports nothing for work it had finished.
 - Rewording the refusal's `could not resolve {name}'s groups: {error}` wrapper — the sentence after the colon already carries the account name, both counts, the limit, and the recovery.
 
-### Phase 5 — A promoted summary row reports its whole subtree  · status: todo
+### Phase 5 — A promoted summary row reports its whole subtree  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** A summary row drawn in place of its hidden driver reports the CPU of every cargo invocation beneath it exactly once, and an unavailable nested contribution makes the total unavailable rather than a number.
+`Census::groups` (`crates/cargo-tile/src/processes.rs:2003`) prepares, after group assembly, each promoted row's subtree CPU total — its own invocation bucket plus every nested cargo attribution beneath it exactly once, excluding the hidden driver and any sibling subtree. `summary_rows` (`crates/cargo-tile/src/render.rs:684`) draws that prepared total in place of the row's own share; command-view per-row measurements are unchanged.
 
-**Spec:**
-`summary_rows` (`crates/cargo-tile/src/render.rs:678`) promotes a managed row in place of its hidden driver. `Census::attribute_cpu` (`crates/cargo-tile/src/processes.rs:1459`) charges non-cargo descendants (compilers, build scripts) to their nearest cargo invocation, so a promoted row's own bucket already holds them. What it omits is every separately attributed nested cargo invocation hidden beneath it. `Census::groups` (`:1996`) overwrites each managed row's CPU with its own attributed share after assembly (about `:2032`), so a repair in `Census::group` (`:2182`) alone is undone. `aggregate_cpu` (`:2401`) and `Measurement<T>` (`:221`) already propagate `Measurement::Unavailable`.
+`subtree_cpu` (`processes.rs:2430`) is a private free function with one call site, taking `&HashSet<InvocationId>`. It seeds a member from its pid bucket only when that member's invocation identity is in the set, and `Measurement::Unavailable(MeasurementAbsence::Unproven)` otherwise. `groups` builds that `process_rows` set at `:2022`; both the subtree seed (`:2029`) and the per-row CPU overwrite (`:2044`) gate on it, so an unestablished contribution anywhere in a subtree makes the whole total unavailable rather than a number. Aggregation keys on invocation identity, never pid.
 
-Compute, on the worker after group assembly, each promoted row's subtree total: its own invocation bucket plus each nested cargo attribution in its subtree exactly once, excluding the hidden driver and any sibling subtree, with `Measurement::Unavailable` propagating so an unavailable nested contribution makes the total unavailable. Added work and storage are linear in the assembled invocations and their parent links; reuse the membership traversal `groups` already performs. The command view's per-row measurements are unchanged; `summary_rows` reads the prepared total instead of the row's own share.
+Private assembly is reachable from an integration binary through two test-only adapters: `groups_with_registration_rows_for_test(system, parents, shares, registration_rows, omitted_process_pids)` (`:2932`) and `groups_with_cpu_for_test` (`:2922`), now a wrapper over it. `Census` carries a `#[cfg(test)] registration_rows: Vec<CargoProcess>` field whose rows `groups` appends *after* the `process_rows` snapshot — that ordering is what makes an injected row unproven. No production visibility widens.
 
 **Files:**
-- `crates/cargo-tile/src/processes.rs` — subtree totals after assembly in `Census::groups`; the total carried on the managed row
-- `crates/cargo-tile/src/render.rs` — `summary_rows` (`:678`) reads the prepared total
-- `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/terminal.rs` — their `CargoProcess` literals carry the new subtree total
-- `crates/cargo-tile/tests/summary_totals.rs` — new: a `#[path]`-included harness (copy the include block from `tests/shim_registration.rs:3`) driving a hidden driver with two promoted children and a deeper nested cargo, one unavailable, through `Census::groups` and `summary_rows`
+- `crates/cargo-tile/src/processes.rs` — subtree totals in `Census::groups`, `subtree_cpu`, the `cfg(test)` field and both adapters
+- `crates/cargo-tile/src/render.rs` — `summary_rows` reads the prepared total
+- `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/terminal.rs` — `CargoProcess` construction sites carrying the subtree total
+- `crates/cargo-tile/tests/summary_totals.rs` — integration binary: three regressions covering descendants counted once, a sibling subtree excluded, and an unavailable descendant
 
-**Test access:** `Census`, `Census::groups` (`:1996`), and `summary_rows` are private, so copying the include block does not by itself let the tester call them or inject a deterministic unavailable attribution. Drive the assertions through interfaces the harness can already reach, or through narrowly scoped `cfg(test)` adapters the production writer owns and lands before the tester needs them; visibility does not widen for production callers.
+**Binds later work:** `subtree_cpu` stays beside its single call site, the invocation-identity gate stays on both call sites, registration injection stays after the `process_rows` snapshot, and the `cfg(test)` field and both adapters travel with the `Census` cluster — the `processes.rs` split inherits all of it, with the three regressions still passing. `tests/summary_totals.rs` carries its own full copy of the `#[path]` block (29 declarations from `:3`), so a file rename or split must update every harness's block, not only `shim_registration.rs`'s; any gate naming the `cargo-tile` package now builds this target too. Observing the total as a number in the running grid falls to the rollout phase, where "observed" and "blocked on CPU availability" are distinct results.
 
-**Seats:** 1 writer + 1 tester + reserve — `render.rs` only reads what `processes.rs` computes, and the other `CargoProcess` constructor sites move with the field.
-- `impl` — `crates/cargo-tile/src/processes.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/terminal.rs`, and the `cfg(test)` adapters the gate needs; hub: `crates/cargo-tile/src/processes.rs`
-- `test` — `crates/cargo-tile/tests/summary_totals.rs`: the tree above, asserting each promoted total includes its descendants once, excludes the sibling subtree, and is unavailable for an unavailable descendant, and that the command view's per-row measurements are unchanged
-- `review` — reserve
+**Gotchas:**
+- Two invocation identities can share one pid when a registration fallback and a real process invocation differ only by command; anything keyed on pid charges that bucket twice.
+- A scratch checkout beside the live tree needs its own `CARGO_TARGET_DIR`; sharing one makes a focused run reuse a stale test binary and fail against unchanged source.
+- Per-process CPU reads unavailable for every cargo invocation on this Linux host, on this tree and the pre-phase tree alike; the blank column is not a regression from this work.
 
-**Constraints from prior phases:** none that bind; Phases 2–4 touched `cli.rs`, `hook.rs`, `constants.rs`, and the support tests only.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile summary_totals` green.
+**Ruled out:** Repairing the command row group lead's pid-summed double count here — command rows stay unchanged and that double count pre-dates this work.
 
 ### Phase 6 — Every Settings account line is reachable  · status: todo
 
@@ -246,7 +249,7 @@ Compute, on the worker after group assembly, each promoted row's subtree total: 
 **Goal:** In the Settings popup every account line, every wrapped diagnostic line, and every settings row below them can be scrolled to and selected, on any terminal height.
 
 **Spec:**
-`draw_settings` (`crates/cargo-tile/src/render.rs:2128`) draws the capture section — the shared directory and one line per account directory — as a paragraph that does not follow the settings viewport, so rows past the bottom edge cannot be reached. `capture_root_status` (`crates/cargo-tile/src/settings.rs:451`) and `push_value` (`:385`) build one selectable row per account holding its diagnostics and associations, so one row wraps to as many lines as its diagnostics need and can itself be taller than the popup. `SettingsPane::row_at` (`crates/tui_pane/src/overlays/settings.rs:238`) and `line_for_selection` (`:249`) map selectable rows to rendered lines for mouse selection.
+`draw_settings` (`crates/cargo-tile/src/render.rs:2144`) draws the capture section — the shared directory and one line per account directory — as a paragraph that does not follow the settings viewport, so rows past the bottom edge cannot be reached. `capture_root_status` (`crates/cargo-tile/src/settings.rs:451`) and `push_value` (`:385`) build one selectable row per account holding its diagnostics and associations, so one row wraps to as many lines as its diagnostics need and can itself be taller than the popup. `SettingsPane::row_at` (`crates/tui_pane/src/overlays/settings.rs:238`) and `line_for_selection` (`:249`) map selectable rows to rendered lines for mouse selection.
 
 With enough account directories to overflow a small terminal, navigation reveals every account line and the settings rows below them, keeps the selected row visible after resizing or status updates, and leaves the capture lines inert (not editable). With one account whose wrapped status is taller than the popup, scrolling exposes every continuation line, and clicking a visible continuation line selects that account. Positioning reuses the rendered lines and the line-target map already built, bounded to one linear pass over rendered lines per frame, with no extra filesystem read or formatting pass. The viewport offset lives with the pane's selection state, not recomputed from scratch per key.
 
@@ -256,23 +259,28 @@ The line-target map this phase reworks is the plan's `Option<T>` invariant in th
 
 Changing `row_at` reaches the framework's hit testing (`crates/tui_pane/src/framework/mod.rs:406`), which maps its `Option` into `FrameworkHit::ModalMissed`; that caller and any other consumer of the three outcomes belong to the pane writer, not to the cargo-tile writer.
 
+The navigation path itself is in `cargo-tile`, not in the pane crate: `settings_overlay` (`crates/cargo-tile/src/navigation.rs:48`) mutates the settings row viewport directly on a key, and `handle_click`/`overlay_row` (`crates/cargo-tile/src/interaction.rs:45`, `:54`) set the row the same way on a click. Scrolling that reveals a continuation line has to pass through both, so both are this phase's files. Acceptance reaches beyond the pane crate for the same reason: a `tui_pane` test can prove the overlay computes an offset, but only the `cargo-tile` PTY harness can prove `draw_settings` applies it and the account text becomes visible.
+
 **Files:**
-- `crates/cargo-tile/src/render.rs` — `draw_settings` (`:2128`): viewport-to-rendered-line positioning
+- `crates/cargo-tile/src/render.rs` — `draw_settings` (`:2144`): viewport-to-rendered-line positioning
 - `crates/cargo-tile/src/settings.rs` — `capture_root_status` (`:451`), `push_value` (`:385`)
 - `crates/tui_pane/src/overlays/settings.rs` — `line_target` (`:226`), `row_at` (`:238`), `line_for_selection` (`:249`): scroll offset; the named outcomes replacing the three `Option` answers, and the `line_targets` element type (`:107`, filled at `:220`)
 - `crates/tui_pane/src/settings_store/row.rs` — `SettingsRow.payload` (`:13`): explicit row identity in place of the `Option`
 - `crates/tui_pane/src/framework/mod.rs` — the settings hit test (`:406`) consuming the new `row_at` outcome
 - `crates/tui_pane/src/lib.rs`, `crates/tui_pane/src/overlays/mod.rs`, `crates/tui_pane/src/settings_store/mod.rs` — exports the new outcomes need
+- `crates/cargo-tile/src/navigation.rs` — `settings_overlay` (`:48`): the keyboard path into the settings viewport
+- `crates/cargo-tile/src/interaction.rs` — `handle_click` (`:45`), `overlay_row` (`:54`): the click path into the same viewport
 - `crates/tui_pane/tests/settings_scroll.rs` — new: pane-level scrolling and selection tests
+- `crates/cargo-tile/tests/shim_registration.rs` — the PTY scenario proving the drawn popup scrolls
 
 **Seats:** 2 writers + 1 tester — the pane logic and the cargo-tile rendering are separate crates.
-- `impl` — `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/settings.rs`; hub: `crates/cargo-tile/src/render.rs`
+- `impl` — `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/settings.rs`, `crates/cargo-tile/src/navigation.rs`, `crates/cargo-tile/src/interaction.rs`; hub: `crates/cargo-tile/src/render.rs`
 - `review` — opens as impl: the `tui_pane` settings overlay, `settings_store/row.rs`, the affected framework callers and exports; hub: `crates/tui_pane/src/overlays/settings.rs`
-- `test` — `crates/tui_pane/tests/settings_scroll.rs`: many short rows overflowing the height, one row taller than the height, selection kept visible across a resize, and a click on a continuation line selecting its row through the framework hit test
+- `test` — `crates/tui_pane/tests/settings_scroll.rs` and `crates/cargo-tile/tests/shim_registration.rs`: many short rows overflowing the height, one row taller than the height, selection kept visible across a resize, a click on a continuation line selecting its row through the framework hit test, and — through the PTY — keyboard navigation bringing an off-screen account line into view with its text actually drawn
 
 **Constraints from prior phases:** none that bind; Phase 5 changed `summary_rows` in `render.rs`, not `draw_settings`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh check tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` green; `bash ~/.claude/scripts/delegate/verify.sh test tui_pane settings_scroll` green.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh check tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` green; `bash ~/.claude/scripts/delegate/verify.sh test tui_pane settings_scroll` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile shim_registration` green with the settings-scrolling scenario, which is the only check that the drawn popup follows the offset.
 
 ### Phase 7 — The ownership check closes the macOS ACL hole  · status: todo
 
@@ -309,115 +317,88 @@ Read the ACL through the held directory descriptor on macOS (the `acl_get_fd` / 
 **Spec:**
 The shim's macOS boot field changed from a `kern.boottime` timeval to the boot-session UUID without a format version bump; the framing string is `cargo-tile-v2` (`crates/cargo-tile/src/cargo-capture-shim.sh:298`; `Registration::parse`, `crates/cargo-tile/src/registration.rs:31`). A reader built before `BirthStamp::compare` (`crates/cargo-tile/src/birth_stamp/mod.rs:87`) learned to answer `Unknown` for that mismatch treats every live capture as ended; identify that reader revision from `git log -S kern.boottime -- crates/cargo-tile/src` and record it in the diagnostic text's documentation. Today `parse` checks the payload field count before the magic, so a newer layout surfaces as an ordinary framing error, and an unknown magic becomes `ParseError::Magic` (`:229`), which `registered_runs` (`crates/cargo-tile/src/progress.rs:939`) reports as the generic `RegistrationInvalid` `CaptureDiagnostic` (`crates/cargo-tile/src/processes.rs:806`).
 
-Bump the framing to `cargo-tile-v3` for the changed boot-field semantics; the reader keeps decoding `v2`. `parse` inspects the bounded version header first: a `cargo-tile-v<N>` magic with `N` above the supported version returns a distinct unsupported-version `ParseError` carrying the encountered version, before any version-specific field is read. `registered_runs` turns it into a new path-qualified `CaptureDiagnostic` variant naming the encountered and supported versions, rendered by `capture_diagnostic` (`crates/cargo-tile/src/settings.rs:623`) with the instruction to upgrade and restart the reader. Such a record never becomes a `RegistrationCandidate` or a sweep candidate, and its registration and log are preserved whether or not the writer pid is alive. `Hook::install` (`crates/cargo-tile/src/hook.rs:630`) compares shim contents: add a version line to the shim header and make install refuse to replace a shim whose version is newer than its own, reporting it as a distinct `HookOperationOutcome` variant. Rollout order (Phase 17): readers deployed and restarted before the new shim is installed.
+Bump the framing to `cargo-tile-v3` for the changed boot-field semantics; the reader keeps decoding `v2`. `parse` inspects the bounded version header first: a `cargo-tile-v<N>` magic with `N` above the supported version returns a distinct unsupported-version `ParseError` carrying the encountered version, before any version-specific field is read. `registered_runs` turns it into a new path-qualified `CaptureDiagnostic` variant naming the encountered and supported versions, rendered by `capture_diagnostic` (`crates/cargo-tile/src/settings.rs:623`) with the instruction to upgrade and restart the reader. Such a record never becomes a `RegistrationCandidate` or a sweep candidate, and its registration and log are preserved whether or not the writer pid is alive. `Hook::install` (`crates/cargo-tile/src/hook.rs:630`) compares shim contents: add a version line to the shim header and make install refuse to replace a shim whose version is newer than its own, reporting it as a distinct `HookOperationOutcome` variant. Rollout order (Phase 14): readers deployed and restarted before the new shim is installed.
 
 The refusal has a second consumer, and it is the one a user meets first. Starting the grid calls `capture::stand_up` (`crates/cargo-tile/src/terminal.rs:149`), and `capture.auto_install` defaults to true (`constants.rs:838`), so an older reader started on a machine that already carries the newer shim performs the same install and meets the same refusal. Routing it through the existing failure collection (`crates/cargo-tile/src/capture.rs:81`) would make the startup toast say `not installed`, which is untrue — the newer shim is installed and capture works; discarding it would hide the refusal entirely. Give it its own startup handling: a toast and a Settings line saying the newer shim was kept and this reader is the older one, with upgrading the reader as the recovery. The refused shim's bytes are unchanged by startup.
+
+That note arrives at a domain-owned boundary the plan's `Option<T>` invariant covers, and this phase is what puts a second kind of message through it: `App.capture_note: Option<String>` (`crates/cargo-tile/src/app.rs:170`, initialized `None` at `:219`), consumed by `settings::rows` (`crates/cargo-tile/src/settings.rs:153`). A bare `Option<String>` cannot distinguish no outstanding notice from a notice awaiting display, and once the kept-newer-shim note joins the existing startup failures it cannot say which kind it is either. Replace it with a named capture-startup notice state whose cases state what each means, and carry the conversion to its producer in `capture::stand_up` and to the Settings consumer. Both belong to the writer that owns the downgrade outcome.
 
 **Files:**
 - `crates/cargo-tile/src/registration.rs` — version header parse, the unsupported-version error
 - `crates/cargo-tile/src/progress.rs` — `registered_runs` (`:939`) maps it to the diagnostic; never a candidate
-- `crates/cargo-tile/src/processes.rs` — `CaptureDiagnostic` (`:806`) variant
+- `crates/cargo-tile/src/processes.rs` — `CaptureDiagnostic` (`:808`) variant
 - `crates/cargo-tile/src/settings.rs` — `capture_diagnostic` (`:623`)
 - `crates/cargo-tile/src/cargo-capture-shim.sh` — framing `v3`, version line in the header
 - `crates/cargo-tile/src/hook.rs` — `Hook::install` (`:411`) version comparison and outcome
 - `crates/cargo-tile/src/cli.rs` — child protocol encoding and ordinary install result rendering
 - `crates/cargo-tile/src/capture.rs` — `stand_up` (`:81`) handles the downgrade refusal as its own startup note, not as a failure
+- `crates/cargo-tile/src/app.rs` — `capture_note` (`:170`, initialized `:219`): the named startup-notice state replacing the `Option<String>`
 - `crates/cargo-tile/src/constants.rs` — the supported framing version and the shim version-line constants
 - `crates/cargo-tile/tests/shim_registration.rs` — scenarios
 - `crates/cargo-tile/tests/support/shared_capture.rs` — downgrade refusal through the account child, decoder, and administrative report
 
 **Seats:** 2 writers + 1 tester — reader and installer changes have disjoint owners.
 - `impl` — `crates/cargo-tile/src/registration.rs`, `crates/cargo-tile/src/progress.rs`, `crates/cargo-tile/src/processes.rs`, `crates/cargo-tile/src/settings.rs`, `crates/cargo-tile/src/constants.rs`; hub: `crates/cargo-tile/src/registration.rs` (the error type both sides name)
-- `review` — opens as impl: `crates/cargo-tile/src/cargo-capture-shim.sh`, `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/cli.rs`, `crates/cargo-tile/src/capture.rs`; owns the downgrade outcome through child encoding, decoding, account reduction, startup handling, and rendering
-- `test` — `crates/cargo-tile/tests/shim_registration.rs`, `crates/cargo-tile/tests/support/shared_capture.rs`: a newer header with a different payload layout, an absent writer pid, retention across scans, a legacy `v2` record still read, a malformed supported record as a separate case, mixed `v2`/`v3` publications during live captures, install refusing to downgrade a newer shim, a downgrade refusal beside a successful installation through the account protocol and administrative report, and an older reader starting with `capture.auto_install` on against a newer installed shim — the shim's bytes unchanged and the startup note saying it was kept rather than `not installed`
+- `review` — opens as impl: `crates/cargo-tile/src/cargo-capture-shim.sh`, `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/cli.rs`, `crates/cargo-tile/src/capture.rs`, `crates/cargo-tile/src/app.rs`; owns the downgrade outcome through child encoding, decoding, account reduction, startup handling, and rendering, and owns the startup-notice state and its production; hub: `crates/cargo-tile/src/hook.rs`
+- `test` — `crates/cargo-tile/tests/shim_registration.rs`, `crates/cargo-tile/tests/support/shared_capture.rs`: a newer header with a different payload layout, an absent writer pid, retention across scans, a legacy `v2` record still read, a malformed supported record as a separate case, mixed `v2`/`v3` publications during live captures, install refusing to downgrade a newer shim, a downgrade refusal beside a successful installation through the account protocol and administrative report, and an older reader starting with `capture.auto_install` on against a newer installed shim — the shim's bytes unchanged and the startup note saying it was kept rather than `not installed`, that note persisting into the Settings pane alongside an ordinary startup failure so the two are distinguishable
 
 **Constraints from prior phases:** Phase 4 shipped the operation-neutral hook protocol these changes extend, and these are the names that now exist — no rename remains to anticipate. `HookAccount` (`hook.rs:74`) is the account, `HookOperation` (`:87`) the verb, `ToolchainHookReport` (`:188`) one toolchain's row, `AccountHookReport` (`:273`) one account's reduction, and `HookOperationOutcome` (`:466`) the per-toolchain result the new downgrade variant joins. `Hook::reports` (`:500`) returns an iterator and **must stay one**: `cli.rs` consumes it through `.inspect(print_local_report)` and `account_hook_report` (`cli.rs:190`) writes and flushes each protocol row before the next toolchain starts, so a terminated child still reports the work it finished. Collecting before printing reintroduces the defect Phase 4's review opened as a blocker. `Hook::state` (`:588`) is the unlocked status read; `Hook::install` (`:630`) and `Hook::remove` (`:683`) each take `HookInstallationLock` and inspect state **under** it, so bind the shim version comparison to the same lock. `run_account_hooks` (`:905`) drives the account children behind the hidden `--account-hook-report` flag (`constants.rs:762`, `ACCOUNT_HOOK_REPORT_FLAG`). `Hook::remove` answers `Ok(HookOperationOutcome::Orphaned)` for a shim whose real cargo is gone: keep its rendered row and its incomplete-removal classification, and do not reduce it to an error. Phase 4 also deleted `AccountGroupNote` and `CredentialGroups` and made the credential callback `impl FnMut(&mut Command, &HookAccount) -> io::Result<()>`; those are implementation-only and need no surface here. Carry downgrade refusal through the operation result, child encoder, toolchain decoder, account failure reduction, startup handling, and human renderers. A refused downgrade retains its named toolchain row and prevents an unqualified installed account summary even beside successful installations. Phase 5 changed `processes.rs` group assembly, not `CaptureDiagnostic`. Phase 1 replaced the harness's nested readiness wait: a scenario that waits for a nested fixture calls `wait_for_fixture_pane(markers)` (`shim_registration.rs:508`), which polls until exactly one command pane holds every marker and returns that screen, and asserts rows on the screen it returns; `fixture_pane` (`:503`) is for a screen already known ready; no test scrubs `CARGO_TILE_ROOT`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile shim_registration` green with the scenarios above, including a downgrade refusal beside a successful installation in both report orders, asserting unchanged newer-shim bytes, the distinct named refusal in the administrative output, an account summary that does not claim successful installation, and an older reader's startup against a newer installed shim leaving those bytes unchanged and reporting the refusal as a kept-newer-shim note rather than `not installed`. Smoke (orchestrator, macOS, Phase 17): a native capture from the `v3` shim is read live.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile shim_registration` green with the scenarios above, including a downgrade refusal beside a successful installation in both report orders, asserting unchanged newer-shim bytes, the distinct named refusal in the administrative output, an account summary that does not claim successful installation, and an older reader's startup against a newer installed shim leaving those bytes unchanged and reporting the refusal as a kept-newer-shim note rather than `not installed`. Smoke (orchestrator, macOS, Phase 14): a native capture from the `v3` shim is read live.
 
-### Phase 9 — cargo-berth: a fixture ledger with a merge-extent record and content-checked hook responses  · status: todo
+### Phase 9 — cargo-berth readiness: reader compatibility, reservation extents, and an accurate evidence decision  · status: todo
 
 #### Work Order
 
-**Goal:** A repeatable check proves that a given `cargo-berth` executable reads a ledger carrying a `merge_extent_observed` record and that both hooks return their expected response contents against it.
+**Goal:** `cargo-berth` carries a repeatable reader-compatibility check, reports a reservation's extents on request including for waiting and deferred reservations, and writes an edit-blocking decision into each evidence record that equals the live answer at that moment.
 
 **Spec:**
+Three pieces of `cargo-berth` work that share no file. They land in one phase so three writers work at once against one gate; each lane is self-contained and needs nothing from another lane's files.
+
+**Lane A — the fixture ledger and the reader-compatibility check.**
 Reconciliation appends `JournalOperation::MergeExtentObserved` (`crates/cargo-berth/src/ledger/journal.rs:362`) on the first `board`, `check`, or `drift` against a ledger; an older binary then refuses the whole ledger (`journal record N is corrupt: unknown variant merge_extent_observed`). The SessionStart and PostToolUse hooks exit zero on a ledger failure, so an exit code proves nothing; an empty ledger does not exercise the incompatibility. Hooks resolve their executable through `CARGO_BERTH_EXECUTABLE` (`crates/cargo-berth/src/gate/install.rs:32`), `PATH`, and the cargo-home fallback.
 
-Add a fixture ledger under `crates/cargo-berth/tests/fixtures/` that contains a real `merge_extent_observed` record (generate it by driving reconciliation in a temporary repository with the current binary; commit the resulting ledger bytes). Add a test target that, for an executable path taken from `CARGO_BERTH_EXECUTABLE` when set and the freshly built binary otherwise, runs `board`, `check`, and `drift` against the fixture and asserts the response payloads, then drives SessionStart and PostToolUse and compares their response contents with the expected fixtures in the style of `crates/cargo-berth/tests/hooks.rs`, failing on any ledger error in the output. This is the tool Phase 17's rollout inventory runs against every installed reader.
+Add a fixture ledger under `crates/cargo-berth/tests/fixtures/` that contains a real `merge_extent_observed` record (generate it by driving reconciliation in a temporary repository with the current binary; commit the resulting ledger bytes). Add a test target that, for an executable path taken from `CARGO_BERTH_EXECUTABLE` when set and the freshly built binary otherwise, runs `board`, `check`, and `drift` against the fixture and asserts the response payloads, then drives SessionStart and PostToolUse and compares their response contents with the expected fixtures in the style of `crates/cargo-berth/tests/hooks.rs`, failing on any ledger error in the output. This is the tool Phase 14's rollout inventory runs against every installed reader.
 
 `hooks.rs` is a separate integration binary and its response helpers (around `crates/cargo-berth/tests/hooks.rs:2458`, `hook_feedback` and its neighbours) are private to it, so the new target cannot call them directly however the two are arranged. Extract the expected-response construction into a small shared module under `crates/cargo-berth/tests/support/`, included by both binaries through `#[path]`, and keep the extraction behavior-preserving: `hooks.rs` keeps its current assertions and simply calls the extracted helpers. The helper that invokes a reader takes the executable path explicitly rather than resolving one of its own, since choosing the executable is the whole point of the new target.
 
-**Files:**
-- `crates/cargo-berth/tests/fixtures/` — the fixture ledger
-- `crates/cargo-berth/tests/reader_compat.rs` — new: the executable-parameterized reader and hook checks
-- `crates/cargo-berth/tests/support/reader_compat_hooks.rs` — new: the extracted expected-response helpers, with explicit executable selection, `#[path]`-included by both binaries
-- `crates/cargo-berth/tests/hooks.rs` — calls the extracted helpers; assertions unchanged
-
-**Seats:** 2 writers + reserve — the fixture and the CLI checks split from the helper extraction and the hook-content assertions.
-- `impl` — `crates/cargo-berth/tests/fixtures/`, `crates/cargo-berth/tests/reader_compat.rs`, including the calls into the shared helpers; hub: `crates/cargo-berth/tests/reader_compat.rs`
-- `test` — opens as impl: `crates/cargo-berth/tests/hooks.rs` and the new `crates/cargo-berth/tests/support/reader_compat_hooks.rs`; owns the extraction and the hook-content assertions
-- `review` — reserve
-
-**Constraints from prior phases:** none; first cargo-berth phase.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth reader_compat` green; with `CARGO_BERTH_EXECUTABLE` pointing at a binary built from `hana` main `a95922f9` (a pre-record reader), the target fails naming the corrupt-record error.
-
-### Phase 10 — A waiting or deferred reservation exposes its extents on request  · status: todo
-
-#### Work Order
-
-**Goal:** `board --reservation <id> --json` reports a reservation's `race_extent` and `merge_extent` beside its lifecycle, for waiting successors and unresolved-overlap endpoints too.
-
-**Spec:**
+**Lane B — extents on a reservation report.**
 Board placement (`crates/cargo-berth/src/board/rows.rs`) keeps waiting successors and unresolved-overlap endpoints out of every reservation-snapshot section, and `board --reservation <id> --json` reports lifecycle only, so an operator holding one of those reservations cannot see its protected paths or retained evidence.
 
-`board --reservation <id> --json` carries `race_extent` and `merge_extent`, each in the same shape the snapshot sections use, including `unavailable` with retained evidence and `not_derived` with declared protection. `crates/cargo-berth/src/output.rs` gains the fields and `docs/cargo-berth/generated/output-contract.json` is regenerated by setting `CARGO_BERTH_REGENERATE_OUTPUT_CONTRACT` and running the inline test in `crates/cargo-berth/src/output_contract.rs` (`:189`–`:205`), which `crates/cargo-berth/tests/output_contract.rs:12` then asserts against. Develop and test against isolated ledgers only (the shared ledger waits on the Phase 17 rollout).
+`board --reservation <id> --json` carries `race_extent` and `merge_extent`, each in the same shape the snapshot sections use, including `unavailable` with retained evidence and `not_derived` with declared protection. `crates/cargo-berth/src/output.rs` gains the fields and `docs/cargo-berth/generated/output-contract.json` is regenerated by setting `CARGO_BERTH_REGENERATE_OUTPUT_CONTRACT` and running the inline test in `crates/cargo-berth/src/output_contract.rs` (`:189`–`:205`), which `crates/cargo-berth/tests/output_contract.rs:12` then asserts against. Develop and test against isolated ledgers only (the shared ledger waits on the Phase 14 rollout).
 
-**Files:**
-- `crates/cargo-berth/src/board/report.rs` — the per-reservation report gains extents
-- `crates/cargo-berth/src/verb/board.rs` — `--reservation` path fills them
-- `crates/cargo-berth/src/output.rs` — output types
-- `docs/cargo-berth/generated/output-contract.json` — regenerated
-- `crates/cargo-berth/tests/board.rs` — coverage
-
-**Seats:** 1 writer + 1 tester.
-- `impl` — `crates/cargo-berth/src/board/report.rs`, `crates/cargo-berth/src/verb/board.rs`, `crates/cargo-berth/src/output.rs`, `docs/cargo-berth/generated/output-contract.json`; hub: `crates/cargo-berth/src/output.rs`
-- `test` — `crates/cargo-berth/tests/board.rs`: waiting successors and both unresolved-overlap endpoints expose protected, empty, and unavailable extents alongside their lifecycle
-- `review` — reserve
-
-**Constraints from prior phases:** Phase 9 added `tests/reader_compat.rs` and a fixture ledger; a new journal operation must not be introduced here (readers are upgraded in Phase 17).
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth board` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth output_contract` green.
-
-### Phase 11 — The durable evidence record carries the effective edit-blocking decision  · status: todo
-
-#### Work Order
-
-**Goal:** The `evidence_revalidated` journal record's edit-blocking field always equals the live blocking answer at the moment the record is written.
-
-**Spec:**
+**Lane C — the evidence record's edit-blocking decision.**
 `JournalOperation::EvidenceRevalidated` (`crates/cargo-berth/src/ledger/journal.rs:422`) already carries `status: IntegrationEvidenceStatus` and `edit_blocking_status: EditBlockingStatus`. The second is derived by `IntegrationEvidenceStatus::edit_blocking_status` (`crates/cargo-berth/src/reservation/lifecycle.rs:167`), which answers `Clear` from checkpoint integration alone, so with an integrated checkpoint followed by later unmerged work the persisted field reads `clear` while the reservation correctly keeps blocking through its merge extent. `Reservation::edit_blocking_status` (`crates/cargo-berth/src/reservation/record.rs:355`) is the decision live checks use, but `prepare_reconciliation_transaction` (`crates/cargo-berth/src/reconcile.rs:969`) constructs the evidence operation (`append_evidence_and_retention`, `:1899`) before `derive_merge_extents` (`:1039`) runs, so calling it there would read the previous extent.
 
 Build each new evidence record from the checkpoint evidence and the reservation state after the transaction's planned lifecycle and merge-extent updates, through `Reservation::edit_blocking_status`, with no additional Git queries; checkpoint evidence alone never supplies the effective decision. The release path (`outstanding_operation`, `crates/cargo-berth/src/verb/release.rs:451`) does the same. Historical records remain readable and unchanged. Isolated ledgers only.
 
 **Files:**
-- `crates/cargo-berth/src/reconcile.rs` — evidence record built after extent derivation
-- `crates/cargo-berth/src/reservation/lifecycle.rs` — `edit_blocking_status` no longer the source of the persisted field
-- `crates/cargo-berth/src/reservation/record.rs` — the decision function, if its inputs need the planned state
-- `crates/cargo-berth/src/verb/release.rs` — `outstanding_operation`
-- `crates/cargo-berth/tests/lifecycle.rs` — coverage
+- `crates/cargo-berth/tests/fixtures/` — Lane A: the fixture ledger
+- `crates/cargo-berth/tests/reader_compat.rs` — Lane A: new: the executable-parameterized reader and hook checks
+- `crates/cargo-berth/tests/support/reader_compat_hooks.rs` — Lane A: new: the extracted expected-response helpers, with explicit executable selection, `#[path]`-included by both binaries
+- `crates/cargo-berth/tests/hooks.rs` — Lane A: calls the extracted helpers; assertions unchanged
+- `crates/cargo-berth/src/board/report.rs` — Lane B: the per-reservation report gains extents
+- `crates/cargo-berth/src/verb/board.rs` — Lane B: `--reservation` path fills them
+- `crates/cargo-berth/src/output.rs` — Lane B: output types
+- `docs/cargo-berth/generated/output-contract.json` — Lane B: regenerated
+- `crates/cargo-berth/tests/board.rs` — Lane B: coverage
+- `crates/cargo-berth/src/reconcile.rs` — Lane C: evidence record built after extent derivation
+- `crates/cargo-berth/src/reservation/lifecycle.rs` — Lane C: `edit_blocking_status` no longer the source of the persisted field
+- `crates/cargo-berth/src/reservation/record.rs` — Lane C: the decision function, if its inputs need the planned state
+- `crates/cargo-berth/src/verb/release.rs` — Lane C: `outstanding_operation`
+- `crates/cargo-berth/tests/lifecycle.rs` — Lane C: coverage
+**Seats:** 3 writers — the three lanes are disjoint by file, so every seat writes and each owns its own tests. No file is shared, so no lane holds a hub another lane needs.
+- `impl` — Lane B: `crates/cargo-berth/src/board/report.rs`, `crates/cargo-berth/src/verb/board.rs`, `crates/cargo-berth/src/output.rs`, `docs/cargo-berth/generated/output-contract.json`, `crates/cargo-berth/tests/board.rs`; hub: `crates/cargo-berth/src/output.rs`
+- `review` — opens as impl: Lane C: `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/src/reservation/lifecycle.rs`, `crates/cargo-berth/src/reservation/record.rs`, `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/tests/lifecycle.rs`; hub: `crates/cargo-berth/src/reconcile.rs`
+- `test` — opens as impl: Lane A: `crates/cargo-berth/tests/fixtures/`, `crates/cargo-berth/tests/reader_compat.rs`, `crates/cargo-berth/tests/support/reader_compat_hooks.rs`, `crates/cargo-berth/tests/hooks.rs`; hub: `crates/cargo-berth/tests/reader_compat.rs`
 
-**Seats:** 1 writer + 1 tester.
-- `impl` — `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/src/reservation/lifecycle.rs`, `crates/cargo-berth/src/reservation/record.rs`, `crates/cargo-berth/src/verb/release.rs`; hub: `crates/cargo-berth/src/reconcile.rs`
-- `test` — `crates/cargo-berth/tests/lifecycle.rs`: reconciliation and release separately — clear to protected, protected to clear, the existing later-work regression, an extent change within the transaction, unavailable extents with retained evidence — each asserting the persisted decision equals the live answer at that record
-- `review` — reserve
+**Constraints from prior phases:** none bind — this is the first `cargo-berth` phase.
 
-**Constraints from prior phases:** Phase 10 added extent fields to the board output; the journal record shape is unchanged by it and by this phase.
+Binding on every lane in this phase: no lane introduces a new journal operation (readers are upgraded in Phase 14), and every lane develops and tests against isolated ledgers only — the shared ledger waits for the Phase 14 rollout. Lane A generates its fixture ledger with the current binary and then asserts `board`, `check`, and `drift` response payloads; Lane B adds fields to the `--reservation` path of that same verb. If a payload Lane A asserts gains a Lane B field, the two seats settle the expected text on the board rather than each deciding alone. Lane A also builds an older executable for its negative control: per the Delegation Context constraint, that scratch checkout gets its own `CARGO_TARGET_DIR`, or a focused check will reuse a binary from the live tree and attribute the result to the wrong source.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth lifecycle` green.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth reader_compat`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth board`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth output_contract`, and `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth lifecycle` green; with `CARGO_BERTH_EXECUTABLE` pointing at a binary built from `hana` main `a95922f9` (a pre-record reader), `reader_compat` fails naming the corrupt-record error.
 
-### Phase 12 — A `cargo install` shows its build progress like a `cargo build`  · status: todo
+### Phase 10 — A `cargo install` shows its build progress like a `cargo build`  · status: todo
 
 **Blocked by:** G1 — the orchestrator records the Mac reproduction (toolchain, terminal mode, progress settings in effect, the registration, the captured output) into this Spec before dispatch; it needs ssh to the Mac, which needs 1Password unlocked.
 
@@ -426,7 +407,7 @@ Build each new evidence record from the checkpoint evidence and the reservation 
 **Goal:** A `cargo install` row in cargo tile carries the same compiling counter a `cargo build` row does.
 
 **Spec:**
-The failing stage is not yet localized. Candidate stages, in the order to check: shim command classification in `crates/cargo-tile/src/cargo-capture-shim.sh` (`case $first` at `:80`, where `install` already takes the capture path), registration and identity verification of the captured process, the captured log itself, counter parsing in `crates/cargo-tile/src/progress.rs` (`parse_state` `:1086`, `last_counter` `:1120`, which do not filter by subcommand), and the heading gauge in `crates/cargo-tile/src/render.rs` (`heading_gauge` `:1894`, omitted when the column is too narrow). The shim removes the registration and log on exit, so evidence is captured while the install is live.
+The failing stage is not yet localized. Candidate stages, in the order to check: shim command classification in `crates/cargo-tile/src/cargo-capture-shim.sh` (`case $first` at `:80`, where `install` already takes the capture path), registration and identity verification of the captured process, the captured log itself, counter parsing in `crates/cargo-tile/src/progress.rs` (`parse_state` `:1086`, `last_counter` `:1120`, which do not filter by subcommand), and the heading gauge in `crates/cargo-tile/src/render.rs` (`heading_gauge` `:1910`, omitted when the column is too narrow). The shim removes the registration and log on exit, so evidence is captured while the install is live.
 
 Mac reproduction (G1): <recorded by the orchestrator before dispatch>.
 
@@ -448,61 +429,46 @@ Change the first stage the reproduction shows failing. Add an integration test t
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile shim_registration` green with the install scenario. Smoke (orchestrator, macOS): the recorded Mac case shows a counter.
 
-### Phase 13 — `birth_stamp/mod.rs` keeps only the module-name type  · status: todo
+### Phase 11 — `birth_stamp` and the capture root are anchored and split  · status: todo
 
 #### Work Order
 
-**Goal:** The `birth_stamp` module root is a table of contents plus `BirthStamp`; every other type lives in a cohesive leaf module with its behavior and tests.
+**Goal:** The `birth_stamp` module root is a table of contents plus `BirthStamp`, the capture-root module is a directory named for its anchor type `RootScan` with one anchor-named submodule per cluster, and every type in both lives beside its behavior and its tests.
 
 **Spec:**
+Two module reorganizations that share no file. `birth_stamp/` is self-contained — nothing outside that directory names it except one `#[path]` include — while the capture-root rename reaches every consumer of `capture_root`. Two writers, one gate.
+
+**Lane A — `birth_stamp/mod.rs` keeps only the module-name type.**
 `crates/cargo-tile/src/birth_stamp/mod.rs` declares `linux` and `macos` and then defines `ProcessLifetime` (`:106`, with `ProcessLifetime::macos` `:116`), `LifetimeEvidence` (`:134`), `IdentityEvidence` (`:166`), `Observation`, `KernelObservation` (`:197`), `Verification` (`:222`), `observe` (`:232`), and `observe_process` (`:279`) beside `BirthStamp` (`:29`). `LifetimeEvidence::Available` holds a `ProcessLifetime`, `KernelObservation` holds an `Observation`, and `observe` fills `KernelObservation`'s private fields; `crates/cargo-tile/src/birth_stamp/macos.rs` (`observe` `:48`) reaches methods private to the parent.
 
 The root keeps the `mod` block, re-exports, and `BirthStamp` with its implementation. The remaining code moves as cohesive clusters into leaf modules named for their anchor types — one keeps `ProcessLifetime` with `LifetimeEvidence`; one keeps `KernelObservation` with its `Observation` payload and the production acquisition functions — taking the free helpers and inline tests with the behavior they exercise. Not one file per type (style rule `split-by-type-ownership`). `KernelObservation`'s fields stay private, production construction stays pid-bound, and arbitrary observation injection exists only under `cfg(test)`. Check Linux and macOS visibility, including `ProcessLifetime::macos` and what `macos.rs` and `linux.rs` reach, before choosing boundaries. `tests/shim_registration.rs:7` includes `../src/birth_stamp/mod.rs` and stays valid.
 
-**Files:**
-- `crates/cargo-tile/src/birth_stamp/mod.rs` — reduced to the table of contents and `BirthStamp`
-- `crates/cargo-tile/src/birth_stamp/` — new leaf modules
-- `crates/cargo-tile/src/birth_stamp/macos.rs`, `crates/cargo-tile/src/birth_stamp/linux.rs` — imports and visibility
-
-**Seats:** 1 writer; nothing splits — a module move is one writer's edit.
-- `impl` — everything under `crates/cargo-tile/src/birth_stamp/`; hub: `crates/cargo-tile/src/birth_stamp/mod.rs`
-- `test` — opens as test: no new behavior; confirms every inline test travelled with its type and that the macOS-only paths still compile by reading `macos.rs` against the new boundaries
-- `review` — reserve
-
-**Constraints from prior phases:** Phase 8 changed `registration.rs` and `progress.rs`, not `birth_stamp`.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green with the package tests unchanged. Smoke (orchestrator, macOS): `verify.sh check cargo-tile` and `verify.sh test cargo-tile` green on the Mac. **Prerequisite:** that native suite is not green today — the three pre-existing `shim_registration` failures recorded in Delegation Context must be resolved first (they are a recorded next item), or this gate cannot be met by anything this phase does.
-
-### Phase 14 — `capture_root.rs` is anchored and split  · status: todo
-
-#### Work Order
-
-**Goal:** The capture-root module is a directory named for its anchor type `RootScan`, with one anchor-named submodule per type cluster, and every test still passes.
-
-**Spec:**
+**Lane B — `capture_root.rs` is anchored and split.**
 `crates/cargo-tile/src/capture_root.rs` (1023 non-test lines, 25 top-level types) holds three clusters — directory inspection (`InspectedDirectory`, `Inventory`, `ScanEntry`), root identity (`RootHistory`, `TreeIdentity`, `RootIncarnation`), and sweep policy (`SweepBudget`, `SweepDisposition`, `OwnedRoot`) — under a module name that no type carries. The anchor type is `RootScan`, not `CaptureRoot`.
 
 Move the file to a module directory named for `RootScan` (`crates/cargo-tile/src/root_scan/mod.rs` holding `RootScan`, the `mod` block, and re-exports), with each cluster an anchor-named submodule taking its inline tests. Keep the public surface: the paths `progress.rs`, `settings.rs`, `app.rs`, and `tests/shim_registration.rs:11` (`#[path = "../src/capture_root.rs"]`) use are updated to the new module, and nothing widens visibility. Test behavior and assertions are unchanged.
 
 **Files:**
-- `crates/cargo-tile/src/capture_root.rs` — becomes `crates/cargo-tile/src/root_scan/` (mod.rs plus cluster submodules)
-- `crates/cargo-tile/src/main.rs` — the `mod` declaration
-- `crates/cargo-tile/src/progress.rs`, `crates/cargo-tile/src/settings.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/cli.rs`, `crates/cargo-tile/src/processes.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/terminal.rs` — import paths; these are every file naming `capture_root`, confirmed against the tree, and the last four were absent from this list
-- `crates/cargo-tile/tests/shim_registration.rs` — the `#[path]` include at `:11`
-- `crates/cargo-tile/tests/support/shared_capture.rs` — its own `capture_root` reference at `:11`
-- `crates/cargo-tile/tests/capture_root_acl.rs` — its `#[path]` include (Phase 7 copied the whole include block from `shim_registration.rs:3`)
-- `crates/cargo-tile/tests/summary_totals.rs` — its `#[path]` include (Phase 5 copied the same block, so it names `capture_root.rs` too)
+- `crates/cargo-tile/src/birth_stamp/mod.rs` — Lane A: reduced to the table of contents and `BirthStamp`
+- `crates/cargo-tile/src/birth_stamp/` — Lane A: new leaf modules
+- `crates/cargo-tile/src/birth_stamp/macos.rs`, `crates/cargo-tile/src/birth_stamp/linux.rs` — Lane A: imports and visibility
+- `crates/cargo-tile/src/capture_root.rs` — Lane B: becomes `crates/cargo-tile/src/root_scan/` (mod.rs plus cluster submodules)
+- `crates/cargo-tile/src/main.rs` — Lane B: the `mod` declaration
+- `crates/cargo-tile/src/progress.rs`, `crates/cargo-tile/src/settings.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/cli.rs`, `crates/cargo-tile/src/processes.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/terminal.rs` — Lane B: import paths; these are every file naming `capture_root`, confirmed against the tree, and the last four were absent from this list
+- `crates/cargo-tile/tests/shim_registration.rs` — Lane B: the `#[path]` include at `:11`
+- `crates/cargo-tile/tests/support/shared_capture.rs` — Lane B: its own `capture_root` reference at `:11`
+- `crates/cargo-tile/tests/capture_root_acl.rs` — Lane B: its `#[path]` include (Phase 7 copied the whole include block from `shim_registration.rs:3`)
+- `crates/cargo-tile/tests/summary_totals.rs` — Lane B: its `#[path]` include (Phase 5 copied the same block, so it names `capture_root.rs` too)
+**Seats:** 2 writers + 1 tester — the two module moves touch no file in common; `birth_stamp/` has no consumer outside itself beyond one `#[path]` include, while the capture-root rename owns `main.rs` and every import site.
+- `impl` — Lane B: everything under `crates/cargo-tile/src/capture_root.rs` becoming `crates/cargo-tile/src/root_scan/`, `crates/cargo-tile/src/main.rs`, every consumer import, and all three harness include blocks; hub: `crates/cargo-tile/src/root_scan/mod.rs`
+- `review` — opens as impl: Lane A: everything under `crates/cargo-tile/src/birth_stamp/`; hub: `crates/cargo-tile/src/birth_stamp/mod.rs`
+- `test` — opens as test: no new behavior in either lane; confirms the package compiles against the new paths, that every inline test travelled with its type, and — by reading `macos.rs` and `linux.rs` against the new boundaries — that the platform-only paths still compile; no file edits
 
-**Seats:** 1 writer + 1 tester + reserve; nothing splits — a module move is one writer's edit.
-- `impl` — everything above, every consumer and all three copied harness include blocks included; hub: `crates/cargo-tile/src/root_scan/mod.rs`
-- `test` — opens as test: no new behavior; confirms the package compiles against the new paths and that every inline test travelled with its type; no file edits
-- `review` — reserve
+**Constraints from prior phases:** Phase 8 changed `registration.rs` and `progress.rs`, not `birth_stamp`. Phase 7 added the ACL state type and a `CleanupRefusal` variant to `capture_root.rs`, and `tests/capture_root_acl.rs` includes it by path; both move with it. Before dispatch the Lane B writer confirms the consumer list against the tree — `grep -rln capture_root` over `crates/cargo-tile/src` and `crates/cargo-tile/tests` — because Phases 5, 7, and 8 each add files to it. Every harness carrying a `#[path]` block carries a full copy of it: `shim_registration.rs:3`, `summary_totals.rs:3`, and `capture_root_acl.rs`. All three name `capture_root.rs` and all three must be updated, or that binary alone fails to build.
 
-**Constraints from prior phases:** Phase 7 added the ACL state type and a `CleanupRefusal` variant to this file, and `tests/capture_root_acl.rs` includes it by path; both move with it. Before dispatch the writer confirms the consumer list against the tree — `grep -rln capture_root` over `crates/cargo-tile/src` and `crates/cargo-tile/tests` — because Phases 5, 7, and 8 each add files to it.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green with the package tests unchanged; every file under `crates/cargo-tile/src/root_scan/` and under `crates/cargo-tile/src/birth_stamp/` is under the style guide's line threshold or holds one cluster. Deferred to the run's administrative smoke batch, not a gate a delegate can pass: `verify.sh check cargo-tile` and `verify.sh test cargo-tile` green on the Mac, which needs the three pre-existing `shim_registration` failures recorded in Delegation Context resolved first — they are a recorded next item that no phase owns.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green with the package tests unchanged; every file under `crates/cargo-tile/src/root_scan/` is under the style guide's line threshold or holds one cluster.
-
-### Phase 15 — Types relocated by ownership, and `progress.rs` split  · status: todo
+### Phase 12 — Types relocated by ownership, and `progress.rs` split  · status: todo
 
 #### Work Order
 
@@ -511,7 +477,7 @@ Move the file to a module directory named for `RootScan` (`crates/cargo-tile/src
 **Spec:**
 `crates/cargo-tile/src/processes.rs` (2848 non-test lines, 44 top-level types) holds process identity (`InvocationId`, `RunId`, `ProcessIdentity`), capture attribution (`CaptureAssociation`, `DirectCapture`, `NearestRegistration`), CPU measurement (`CpuBaseline`, `CpuPublication`, `CpuSmoothing`), and the `Census` scan; `crates/cargo-tile/src/progress.rs` (1217 non-test lines, 23 top-level types) holds capture-root lookup (`CaptureRoots`, `CaptureRoot`, `RegisteredRuns`) beside the `Progress` counter state.
 
-First relocate by ownership: each type whose sole constructor or single consumer lives in another module moves there (the capture-root lookup types belong with the root scan module from Phase 14 if that is where they are constructed; check the constructor before moving). Then split what remains of `progress.rs` into `crates/cargo-tile/src/progress/mod.rs` (`Progress` and the `mod` block) plus anchor-named submodules, each under the line threshold or holding one cluster, inline tests travelling with their types. `tests/shim_registration.rs:39` (`#[path = "../src/progress.rs"]`) and `render.rs` / `settings.rs` / `app.rs` imports follow. `processes.rs` is only a source of moved-out types here; its split is Phase 16.
+First relocate by ownership: each type whose sole constructor or single consumer lives in another module moves there (the capture-root lookup types belong with the root scan module from Phase 11 if that is where they are constructed; check the constructor before moving). Then split what remains of `progress.rs` into `crates/cargo-tile/src/progress/mod.rs` (`Progress` and the `mod` block) plus anchor-named submodules, each under the line threshold or holding one cluster, inline tests travelling with their types. `tests/shim_registration.rs:39` (`#[path = "../src/progress.rs"]`) and `render.rs` / `settings.rs` / `app.rs` imports follow. `processes.rs` is only a source of moved-out types here; its split is Phase 13.
 
 The type work belongs here too, because this phase owns `progress.rs` and the plan's `Option<T>` invariant has no other owner for it. `parse_state` (`:1086`) answers `Option<RunState>`, and its `None` is **two** outcomes, not one: a recognized `Finished` marker has retired a recognized counter, or the captured tail carried no activity this reader recognizes. Define the outcome around current progress evidence — the same distinction `CaptureRead::NoCurrentProgress` (`:188`) already draws — and keep both cases named and distinct; the earlier reading of this line, that absence means only an unrecognized state line, would give the replacement type a guarantee it does not hold.
 
@@ -529,20 +495,22 @@ The same treatment applies to the rest of this module's domain-owned answers, wh
 - `test` — opens as test: no new behavior; confirms every inline test travelled with its type
 - `review` — reserve
 
-**Constraints from prior phases:** Phase 14 renamed `capture_root` to `root_scan`; Phase 5 added subtree totals to `Census::groups`; Phase 8 added the unsupported-version diagnostic path in `registered_runs`; Phase 12 may have changed `parse_state`. All of it moves as-is.
+**Constraints from prior phases:** Phase 11 renamed `capture_root` to `root_scan`; Phase 5 added subtree totals to `Census::groups`; Phase 8 added the unsupported-version diagnostic path in `registered_runs`; Phase 10 may have changed `parse_state`. All of it moves as-is. Every harness carrying a `#[path]` block carries a full copy of it — `shim_registration.rs:3`, `summary_totals.rs:3`, and `capture_root_acl.rs` — and all three name `progress.rs` and `processes.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green with the package tests otherwise unchanged; every file under `crates/cargo-tile/src/progress/` is under the line threshold or holds one cluster; each named outcome replacing an `Option` carries a case per distinct absence it now states, a retired-counter tail and an unrecognized tail among them.
 
-### Phase 16 — `processes.rs` split  · status: todo
+### Phase 13 — `processes.rs` split  · status: todo
 
 #### Work Order
 
 **Goal:** `processes.rs` is split into anchor-named submodules — process identity, capture attribution, CPU measurement, and the `Census` scan — each under the line threshold or holding one cluster.
 
 **Spec:**
-After Phase 15's relocation, split `crates/cargo-tile/src/processes.rs` into `crates/cargo-tile/src/census/mod.rs` (the `mod` block and re-exports) plus one submodule per cluster. The directory is `census/` and the hub is `crates/cargo-tile/src/census/mod.rs`: `Census` is the scan the rest of the module is constructed around, so it is the anchor the directory takes its name from, the same rule Phase 14 applied to `RootScan`. The clusters are: process identity (`InvocationId`, `RunId`, `ProcessIdentity`), capture attribution (`CaptureAssociation`, `DirectCapture`, `NearestRegistration`), CPU measurement (`CpuBaseline`, `CpuPublication`, `CpuSmoothing`, `Measurement`), and the `Census` scan with `attribute_cpu`, `groups`, `group`, and `aggregate_cpu`. Inline tests travel with their types; visibility does not widen; `tests/shim_registration.rs:37` and `tests/summary_totals.rs` includes and every import follow.
+After Phase 12's relocation, split `crates/cargo-tile/src/processes.rs` into `crates/cargo-tile/src/census/mod.rs` (the `mod` block and re-exports) plus one submodule per cluster. The directory is `census/` and the hub is `crates/cargo-tile/src/census/mod.rs`: `Census` is the scan the rest of the module is constructed around, so it is the anchor the directory takes its name from, the same rule Phase 11 applied to `RootScan`. The clusters are: process identity (`InvocationId`, `RunId`, `ProcessIdentity`), capture attribution (`CaptureAssociation`, `DirectCapture`, `NearestRegistration`), CPU measurement (`CpuBaseline`, `CpuPublication`, `CpuSmoothing`, `Measurement`), and the `Census` scan with `attribute_cpu`, `groups`, `group`, and `aggregate_cpu`. Inline tests travel with their types; visibility does not widen; `tests/shim_registration.rs:37` and `tests/summary_totals.rs` includes and every import follow.
 
-The type work belongs here too, for the same reason it did in Phase 15. `Census::owning_cargo` (`:1611`) answers `Option<Pid>`, where the absence means no cargo ancestor was found for that process — a real attribution outcome, not a missing value. So do this module's other domain-owned answers: `CommandText::subcommand` (`:554`) — whether the command text names a subcommand at all; the argv classifiers `subcommand` (`:2779`) and `external_subcommand` (`:2817`) — whether the argument list identifies one, and whether it identifies an external one. None is a foreign API that requires `Option`. Name each outcome for what its absence states and convert at the caller. Everything else in this phase stays a split: these are small enums over code the writer is already moving in place, so they cost one pass rather than a second one over the same files, and the phase does not split.
+The type work belongs here too, for the same reason it did in Phase 12. `Census::owning_cargo` (`:1611`) answers `Option<Pid>`, where the absence means no cargo ancestor was found for that process — a real attribution outcome, not a missing value. So do this module's other domain-owned answers: `CommandText::subcommand` (`:554`) — whether the command text names a subcommand at all; the argv classifiers `subcommand` (`:2779`) and `external_subcommand` (`:2817`) — whether the argument list identifies one, and whether it identifies an external one. None is a foreign API that requires `Option`. Name each outcome for what its absence states and convert at the caller. Everything else in this phase stays a split: these are small enums over code the writer is already moving in place, so they cost one pass rather than a second one over the same files, and the phase does not split.
+
+`Attributed` (`processes.rs:1123`) names a processing step rather than the thing it holds, and that now matters: its per-invocation buckets are disjoint, and the subtree total reads them as separate contributions. Give it a name stating what it is — `InvocationMeasurements` or equivalent — and say in its documentation that a nested cargo's bucket is its own, not folded into its parent's. `cargo_argv_start` (`:2903`) answers `Option<usize>` for whether the argument list contains a cargo binary at all; either name that outcome or move the standard-library position lookup inside the semantic argument parser that already exists, so the bare `Option` does not survive as an API.
 
 **Files:**
 - `crates/cargo-tile/src/processes.rs` — becomes `crates/cargo-tile/src/census/`
@@ -556,11 +524,13 @@ The type work belongs here too, for the same reason it did in Phase 15. `Census:
 - `test` — opens as test: no new behavior; confirms the package compiles against the new paths and that every inline test travelled with its type; no file edits
 - `review` — reserve
 
-**Constraints from prior phases:** Phase 15 moved types out of `processes.rs` by ownership and split `progress.rs`; Phase 5's subtree totals live in `Census::groups`; Phase 8's `CaptureDiagnostic` variant is in the attribution cluster. Before dispatch the writer confirms the consumer list against the tree — `grep -rln 'processes::' crates/cargo-tile/src crates/cargo-tile/tests`, plus the `mod` declaration in `main.rs` — because Phases 5 and 8 each add files to it.
+**Constraints from prior phases:** Phase 12 moved types out of `processes.rs` by ownership and split `progress.rs`; Phase 5's subtree totals live in `Census::groups`; Phase 8's `CaptureDiagnostic` variant is in the attribution cluster. Before dispatch the writer confirms the consumer list against the tree — `grep -rln 'processes::' crates/cargo-tile/src crates/cargo-tile/tests`, plus the `mod` declaration in `main.rs` — because Phases 5 and 8 each add files to it.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green with the package tests unchanged; every file under the new directory is under the line threshold or holds one cluster.
+Phase 5's subtree work is more than "totals live in `Census::groups`", and the split must carry all of it together. `Census::groups` (`:2003`) builds a `process_rows` set of **invocation identities** at `:2022`; both the subtree seed at `:2029` and the per-row CPU overwrite at `:2044` are gated on that set, because two distinct invocation identities can share one pid and charging a pid bucket per member would count it twice. `subtree_cpu` (`:2430`) is a private free function taking `&HashSet<InvocationId>`, with exactly one call site, and aggregates raw buckets before any formatting — it stays beside that call site. Registration rows are injected **after** the `process_rows` snapshot, which is what makes an injected row unproven. The `cfg(test)` field `Census.registration_rows` and the two adapters `groups_with_cpu_for_test` (`:2922`) and `groups_with_registration_rows_for_test` (`:2932`) travel with the `Census` cluster; they are implementation-only, giving a test binary access to private assembly without widening any production visibility. The three regressions in `tests/summary_totals.rs` — a shared pid, a registration-only member, and an unproven group lead — must still pass under the package gate after the split. `summary_rows` in `render.rs` remains the only consumer of the subtree total, drawing a number when every contribution is established and the unavailable marker when one is not.
 
-### Phase 17 — Rollout on both machines: readers, shims, runner services  · status: todo
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green with the package tests unchanged; every file under the new directory is under the line threshold or holds one cluster. Each named outcome replacing an `Option` carries a case per distinct absence it now states.
+
+### Phase 14 — Rollout on both machines: readers, shims, runner services  · status: todo
 
 **Blocked by:** G2 — root on both machines: the linux-host session owns the NixOS runner units; the Mac's launchd plist and stale-tree deletion are the user's sudo; ssh to the Mac needs 1Password unlocked.
 
@@ -579,6 +549,8 @@ Inventory first: each machine, service label, authoritative configuration path (
 - `test` — the native package preflight on the Mac, `reader_compat` against every inventoried reader, verification that each account's installed shim bytes are unchanged from the moment suppression is set until the deliberate `v3` install, and the post-deployment shim-version inspection, `status --all-accounts`, and CI-row observations; no file edits
 - `review` — reserve
 
-**Constraints from prior phases:** Phase 4 provides `uninstall --all-accounts` and `status --all-accounts`; Phase 8 provides the `v3` framing and the downgrade refusal; Phase 9 provides `reader_compat`; Phases 10 and 11 must not have touched the shared ledger before this phase. Phase 3 left one deferred check that belongs to this rollout, and Phase 4 settled what it must show. An account whose resolved membership exceeds Darwin's runtime `setgroups` limit is **refused by name before its child starts** (`bounded_account_groups`, `crates/cargo-tile/src/hook.rs:983`): the list is never shortened, because a shortened supplementary-group list is the account's whole membership as far as the kernel is concerned and would silently cost it every access it holds through a dropped group. The refusal names the account, the resolved count, its primary gid, and the limit, and later accounts are still processed. Reducing the account's membership is the recovery, and it is documented in the crate README. Refusal and continuation already have unit and integration coverage; what has never been observed is the refusal against a real over-limit account, which needs an administrator to create one. That observation belongs to this run's deferred administrative smoke batch, not to a gate a delegate can pass.
+**Constraints from prior phases:** Phase 4 provides `uninstall --all-accounts` and `status --all-accounts`; Phase 8 provides the `v3` framing and the downgrade refusal; Phase 9 provides `reader_compat`, and none of its three lanes may have touched the shared ledger before this phase. Phase 3 left one deferred check that belongs to this rollout, and Phase 4 settled what it must show. An account whose resolved membership exceeds Darwin's runtime `setgroups` limit is **refused by name before its child starts** (`bounded_account_groups`, `crates/cargo-tile/src/hook.rs:983`): the list is never shortened, because a shortened supplementary-group list is the account's whole membership as far as the kernel is concerned and would silently cost it every access it holds through a dropped group. The refusal names the account, the resolved count, its primary gid, and the limit, and later accounts are still processed. Reducing the account's membership is the recovery, and it is documented in the crate README. Refusal and continuation already have unit and integration coverage; what has never been observed is the refusal against a real over-limit account, which needs an administrator to create one. That observation belongs to this run's deferred administrative smoke batch, not to a gate a delegate can pass.
+
+**Deferred observations this rollout carries.** Two checks reach this phase from earlier work because no delegate can pass them. First, Phase 5's promoted summary row has never been seen reporting a number: per-process CPU reads unavailable on the Linux host, on this tree and on the pre-phase tree alike, so the subtree total was proved by test and not by observation. On a machine where CPU readings populate, start a cargo build that spawns nested cargo invocations and confirm the promoted row's percentage covers them. Record it as observed, or as blocked on the separate CPU-availability investigation — those are different results and the rollout record says which. Second, the macOS over-limit account refusal has unit and integration coverage but has never met a real over-limit account, which an administrator must create.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth reader_compat` green against every inventoried reader; the native `cargo-tile` package suite green on the Mac before any rollout mutation (see the Delegation Context note on the three pre-existing `shim_registration` failures — they must be resolved first); `status --all-accounts` clean on both machines, **and** each inventoried shim inspected for its version line — `status` reports `Installed` from the shim marker and the real cargo's presence (`Hook::state`, `crates/cargo-tile/src/hook.rs:588`) without reading the framing version or comparing bytes, and `install` deliberately exits zero despite a per-account failure, so a partly failed refresh can leave a `v2` shim that passes `status` and still produces a CI row; the gate is each shim's version line matching the embedded shim, plus every installation report complete. Every macOS account within the runtime group limit installed with its full membership, and an account above it refused by name with its counts and its primary gid, the later accounts still processed — the over-limit case observed in the deferred administrative smoke batch, since creating such an account needs an administrator. Three CI rows observed in cargo tile; the as-built rollout record present, including the automatic-installation suppression window and its restoration per account.

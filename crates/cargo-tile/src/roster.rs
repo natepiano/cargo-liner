@@ -53,6 +53,7 @@ pub(crate) enum ParentFamily {
 
 /// One table row, once it has stopped when that happened, and how far
 /// its text has since been carried toward the ground it is drawn on.
+#[derive(Clone)]
 pub(crate) struct TrackedRow {
     /// The invocation as the last scan that carried it described it.
     pub(crate) process: CargoProcess,
@@ -867,6 +868,7 @@ mod tests {
             started: RunStart::Known(0),
             duration: "00:01".to_string(),
             cpu: Measurement::Reading("0%".to_string()),
+            subtree_cpu: Measurement::Reading("0%".to_string()),
             compiler: CompilerObservation::None,
             state: CaptureLookup::Unregistered,
             managed: Measurement::Reading(0),
