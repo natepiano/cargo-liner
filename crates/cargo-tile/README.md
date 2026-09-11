@@ -477,6 +477,57 @@ started by a runner account shows up under that account's name with nothing to
 configure. `cargo-tile install --all-accounts`, run as root, puts the shim in
 front of every account's toolchains in one go.
 
+#### administering every account
+
+The three commands also accept `--all-accounts`. They require root and look for
+toolchains under `.rustup` in each account's home from the system account
+database. Each account's toolchains are inspected or changed as that account.
+Without the flag, the commands apply to the account running them.
+
+```bash
+sudo cargo-tile install --all-accounts     # install or refresh the capture shim
+sudo cargo-tile status --all-accounts      # report each account and toolchain's shim state
+sudo cargo-tile uninstall --all-accounts   # restore cargo wherever recovery is possible
+```
+
+Accounts without `.rustup` in their recorded home are omitted. An empty
+`.rustup/toolchains` directory reports no toolchains; a missing `toolchains`
+directory under an existing `.rustup` is a discovery failure.
+
+`status --all-accounts` reports each toolchain on a line naming its account and
+its state: installed, absent, repairable, or orphaned. An unreadable toolchain
+is reported with the error that prevented inspection. Status leaves the
+toolchains unchanged and creates no capture directories. A completed inspection
+exits zero, including when it observes repairable or orphaned toolchains. An
+unreadable toolchain, failed discovery, or account credential failure makes
+status exit nonzero.
+
+`uninstall --all-accounts` restores each recoverable toolchain's saved cargo.
+It names any orphaned toolchain — a shim with no saved `cargo-tile-real` to
+restore — and any failed removal, then continues through the remaining
+toolchains and accounts. It exits nonzero if removal is incomplete, including
+when an account cannot be inspected or entered with its credentials.
+
+Installation reports per-account failures and continues with a successful exit,
+so those failures do not fail runner job-start hooks. Missing root privileges
+or failures setting up the administrative operation still produce a nonzero exit.
+
+All three commands retain the toolchain results already collected when an
+account's child process fails or returns an invalid report. The account summary
+includes the failure reason, and later accounts are still processed. A failure
+to establish an account's credentials is reported against that account as
+incomplete, even though no toolchains could be inspected.
+
+On macOS, an account whose resolved group membership exceeds the kernel's
+runtime supplementary-group limit is refused by name before its child starts,
+and reported against that account as incomplete with the resolved count, its
+primary group, and the limit. Later accounts are still processed. The list is
+never shortened to fit: once a process applies a supplementary-group list, the
+kernel treats that list as the whole membership rather than a cache, so a
+shortened list would silently cost the account every access it holds through a
+dropped group. Bring the account's membership under the limit to let it be
+managed here.
+
 ### keys
 
 `keymap.toml` overrides bindings by action name — for example, moving settings

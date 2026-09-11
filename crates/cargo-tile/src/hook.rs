@@ -43,12 +43,12 @@ use std::process::Command;
 use std::process::Output;
 use std::thread;
 
+use crate::constants::ACCOUNT_EXECUTABLE_MODE;
+use crate::constants::ACCOUNT_EXECUTABLE_PREFIX;
 use crate::constants::ACCOUNT_GROUPS_GROWTH_FACTOR;
 use crate::constants::ACCOUNT_GROUPS_INITIAL_CAPACITY;
 use crate::constants::ACCOUNT_GROUPS_MAX_CAPACITY;
-use crate::constants::ACCOUNT_INSTALL_REPORT_FLAG;
-use crate::constants::ACCOUNT_INSTALLER_MODE;
-use crate::constants::ACCOUNT_INSTALLER_PREFIX;
+use crate::constants::ACCOUNT_HOOK_REPORT_FLAG;
 use crate::constants::BINARY_NAME;
 use crate::constants::CARGO_NAME;
 use crate::constants::REAL_CARGO_NAME;
@@ -71,123 +71,235 @@ const SHIM_SOURCE: &str = include_str!("cargo-capture-shim.sh");
 
 /// The account database identity whose default rustup home is inspected.
 #[derive(Debug)]
-pub(crate) struct InstallAccount {
+pub(crate) struct HookAccount {
     /// The system database's display name.
     pub(crate) name: String,
-    /// User identity under which the installer child runs.
+    /// User identity under which the account child runs.
     pub(crate) uid:  u32,
-    /// Primary group under which the installer child runs.
+    /// Primary group under which the account child runs.
     pub(crate) gid:  u32,
     /// The home recorded in the account database, independent of HOME.
     pub(crate) home: PathBuf,
 }
 
-/// The result of handling all discovered toolchains for one account.
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) enum AccountInstallOutcome {
-    /// At least one shim was installed or refreshed, with no orphan or failure.
-    Installed,
-    /// Every shim already had this binary's contents.
-    AlreadyInstalled,
-    /// The account could not be fully handled, with an actionable reason.
-    Skipped(String),
+/// The operation performed by each account child.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HookOperation {
+    /// Install or refresh capture shims.
+    Install,
+    /// Restore the saved cargo binaries.
+    Uninstall,
+    /// Inspect hook state without changing toolchains or capture storage.
+    Status,
 }
 
-/// The install result reported by the child for one toolchain.
+impl HookOperation {
+    /// The CLI subcommand passed to the account child.
+    pub(crate) const fn subcommand(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Uninstall => "uninstall",
+            Self::Status => "status",
+        }
+    }
+
+    /// Whether every requested removal or inspection completed.
+    /// Installation failures remain diagnostics for runner job-start hooks.
+    pub(crate) fn completion(self, reports: &[AccountHookReport]) -> io::Result<()> {
+        let incomplete = reports
+            .iter()
+            .filter(|report| matches!(report.outcome, AccountHookOutcome::Incomplete(_)))
+            .count();
+        if self != Self::Install && incomplete > 0 {
+            return Err(io::Error::other(format!(
+                "{} incomplete for {incomplete} account(s)",
+                self.subcommand()
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Whether handling an account's toolchains completed.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum ToolchainInstallOutcome {
-    /// The child installed a shim in front of cargo.
-    Installed,
-    /// The child updated an existing shim.
-    Refreshed,
-    /// The existing shim already matched the installer.
-    AlreadyInstalled,
-    /// The shim has no saved real cargo and could not be repaired.
-    Orphaned,
-    /// The child could not install this toolchain, with its reported reason.
+pub(crate) enum AccountHookOutcome {
+    /// Discovery completed and found no cargo binaries.
+    NoToolchains,
+    /// Every discovered toolchain was handled for the requested operation.
+    Completed,
+    /// Discovery, credentials, child execution, or a toolchain operation failed.
+    Incomplete(String),
+}
+
+/// The operation's result for one toolchain, including retained inspection errors.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ToolchainHookOutcome {
+    /// Installation's effect on the shim.
+    Install(HookOperationOutcome),
+    /// Removal's effect on the shim.
+    Uninstall(HookOperationOutcome),
+    /// The observed hook state.
+    Status(HookState),
+    /// Inspection failed before a hook state could be established.
+    Unreadable(String),
+    /// The requested operation failed with this reason.
     Failed(String),
 }
 
-/// One named toolchain's install result, retained independently of its account summary.
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) struct ToolchainInstallReport {
-    /// The toolchain name from the child's report.
-    pub(crate) toolchain: String,
-    /// The child's reported change or failure for this toolchain.
-    pub(crate) outcome:   ToolchainInstallOutcome,
+impl ToolchainHookOutcome {
+    /// Encode the child protocol without allowing names or errors to create extra rows.
+    fn protocol(&self) -> String {
+        match self {
+            Self::Install(outcome) | Self::Uninstall(outcome) => match outcome {
+                HookOperationOutcome::Installed => "installed",
+                HookOperationOutcome::Refreshed => "refreshed",
+                HookOperationOutcome::AlreadyCurrent => "already installed",
+                HookOperationOutcome::Removed => "removed",
+                HookOperationOutcome::AlreadyAbsent => "absent",
+                HookOperationOutcome::Orphaned => "orphaned",
+            }
+            .to_owned(),
+            Self::Status(state) => match state {
+                HookState::Installed => "installed",
+                HookState::Absent => "absent",
+                HookState::Repairable => "repairable",
+                HookState::Orphaned => "orphaned",
+            }
+            .to_owned(),
+            Self::Unreadable(reason) => format!("unreadable\t{}", protocol_field(reason)),
+            Self::Failed(reason) => format!("error\t{}", protocol_field(reason)),
+        }
+    }
+
+    /// Failed inspection and unrepaired mutation outcomes leave handling incomplete.
+    pub(crate) const fn is_incomplete(&self) -> bool {
+        matches!(
+            self,
+            Self::Unreadable(_)
+                | Self::Failed(_)
+                | Self::Install(HookOperationOutcome::Orphaned)
+                | Self::Uninstall(HookOperationOutcome::Orphaned)
+        )
+    }
 }
 
-impl TryFrom<&str> for ToolchainInstallReport {
-    type Error = String;
+/// One named toolchain's result, retained independently of its account summary.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct ToolchainHookReport {
+    /// The toolchain name from the child's report.
+    pub(crate) toolchain: String,
+    /// The child's reported operation outcome or inspection failure.
+    pub(crate) outcome:   ToolchainHookOutcome,
+}
 
-    fn try_from(line: &str) -> Result<Self, Self::Error> {
+impl ToolchainHookReport {
+    /// Decode one line using the operation requested from this child.
+    fn parse(operation: HookOperation, line: &str) -> Result<Self, String> {
         let (toolchain, result) = line
             .split_once('\t')
             .filter(|(toolchain, _)| !toolchain.is_empty())
-            .ok_or_else(|| format!("invalid installer report: {line}"))?;
-        let outcome = match result {
-            "installed" => ToolchainInstallOutcome::Installed,
-            "refreshed" => ToolchainInstallOutcome::Refreshed,
-            "already installed" => ToolchainInstallOutcome::AlreadyInstalled,
-            "orphaned" => ToolchainInstallOutcome::Orphaned,
-            result => ToolchainInstallOutcome::Failed(result.strip_prefix("error\t").map_or_else(
-                || format!("invalid installer report: {line}"),
-                str::to_owned,
-            )),
+            .ok_or_else(|| format!("invalid hook report: {line}"))?;
+        let outcome = match (operation, result) {
+            (HookOperation::Install, "installed") => {
+                ToolchainHookOutcome::Install(HookOperationOutcome::Installed)
+            },
+            (HookOperation::Install, "refreshed") => {
+                ToolchainHookOutcome::Install(HookOperationOutcome::Refreshed)
+            },
+            (HookOperation::Install, "already installed") => {
+                ToolchainHookOutcome::Install(HookOperationOutcome::AlreadyCurrent)
+            },
+            (HookOperation::Install, "orphaned") => {
+                ToolchainHookOutcome::Install(HookOperationOutcome::Orphaned)
+            },
+            (HookOperation::Uninstall, "removed") => {
+                ToolchainHookOutcome::Uninstall(HookOperationOutcome::Removed)
+            },
+            (HookOperation::Uninstall, "absent") => {
+                ToolchainHookOutcome::Uninstall(HookOperationOutcome::AlreadyAbsent)
+            },
+            (HookOperation::Uninstall, "orphaned") => {
+                ToolchainHookOutcome::Uninstall(HookOperationOutcome::Orphaned)
+            },
+            (HookOperation::Status, "installed") => {
+                ToolchainHookOutcome::Status(HookState::Installed)
+            },
+            (HookOperation::Status, "absent") => ToolchainHookOutcome::Status(HookState::Absent),
+            (HookOperation::Status, "repairable") => {
+                ToolchainHookOutcome::Status(HookState::Repairable)
+            },
+            (HookOperation::Status, "orphaned") => {
+                ToolchainHookOutcome::Status(HookState::Orphaned)
+            },
+            (_, result) => match result.split_once('\t') {
+                Some(("unreadable", reason)) => ToolchainHookOutcome::Unreadable(reason.to_owned()),
+                Some(("error", reason)) => ToolchainHookOutcome::Failed(reason.to_owned()),
+                _ => ToolchainHookOutcome::Failed(format!("invalid hook report: {line}")),
+            },
         };
         Ok(Self {
             toolchain: toolchain.to_owned(),
             outcome,
         })
     }
+
+    /// One line in the protocol shared by all account children.
+    pub(crate) fn protocol(&self) -> String {
+        format!(
+            "{}\t{}",
+            protocol_field(&self.toolchain),
+            self.outcome.protocol()
+        )
+    }
 }
 
-impl fmt::Display for ToolchainInstallReport {
+impl fmt::Display for ToolchainHookReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}: ", self.toolchain)?;
         match &self.outcome {
-            ToolchainInstallOutcome::Installed => formatter.write_str("installed"),
-            ToolchainInstallOutcome::Refreshed => formatter.write_str("refreshed"),
-            ToolchainInstallOutcome::AlreadyInstalled => formatter.write_str("already installed"),
-            ToolchainInstallOutcome::Orphaned => formatter
+            ToolchainHookOutcome::Install(HookOperationOutcome::Orphaned)
+            | ToolchainHookOutcome::Uninstall(HookOperationOutcome::Orphaned)
+            | ToolchainHookOutcome::Status(HookState::Orphaned) => formatter
                 .write_str("orphaned -- the shim is installed but the real cargo is missing"),
-            ToolchainInstallOutcome::Failed(reason) => write!(formatter, "error: {reason}"),
+            ToolchainHookOutcome::Unreadable(reason) => write!(formatter, "unreadable: {reason}"),
+            ToolchainHookOutcome::Failed(reason) => write!(formatter, "error: {reason}"),
+            outcome => formatter.write_str(&outcome.protocol()),
         }
     }
 }
 
-/// One account's complete toolchain reports and their installation or skip summary.
+/// One account's toolchain reports and completion state.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct AccountInstallReport {
+pub(crate) struct AccountHookReport {
     /// The account name used for this report.
     pub(crate) account:    String,
-    /// The aggregate result across this account's toolchains.
-    pub(crate) outcome:    AccountInstallOutcome,
+    /// The operation requested from the account child.
+    pub(crate) operation:  HookOperation,
+    /// Completion across this account's toolchains and child process.
+    pub(crate) outcome:    AccountHookOutcome,
     /// Every named toolchain result, in the order reported by the child.
-    pub(crate) toolchains: Vec<ToolchainInstallReport>,
+    pub(crate) toolchains: Vec<ToolchainHookReport>,
 }
 
-impl AccountInstallReport {
+impl AccountHookReport {
     /// Record a failure that prevented the child from reporting any toolchains.
-    fn skipped(account: &InstallAccount, reason: String) -> Self {
+    fn incomplete(account: &HookAccount, operation: HookOperation, reason: String) -> Self {
         Self {
-            account:    account.name.clone(),
-            outcome:    AccountInstallOutcome::Skipped(reason),
+            account: account.name.clone(),
+            operation,
+            outcome: AccountHookOutcome::Incomplete(reason),
             toolchains: Vec::new(),
         }
     }
 
-    /// Retain every toolchain before summarizing failures or successful changes.
-    fn from_output(account: &InstallAccount, output: &Output) -> Self {
+    /// Retain every valid toolchain report despite malformed output or a failed exit.
+    fn from_output(account: &HookAccount, operation: HookOperation, output: &Output) -> Self {
         let mut toolchains = Vec::new();
         let mut failures = Vec::new();
         for line in String::from_utf8_lossy(&output.stdout).lines() {
-            match ToolchainInstallReport::try_from(line) {
+            match ToolchainHookReport::parse(operation, line) {
                 Ok(report) => {
-                    if matches!(
-                        report.outcome,
-                        ToolchainInstallOutcome::Orphaned | ToolchainInstallOutcome::Failed(_)
-                    ) {
+                    if report.outcome.is_incomplete() {
                         failures.push(report.to_string());
                     }
                     toolchains.push(report);
@@ -196,52 +308,52 @@ impl AccountInstallReport {
             }
         }
         if !output.status.success() {
-            failures.push(
-                String::from_utf8_lossy(&output.stderr)
-                    .lines()
-                    .next()
-                    .map_or_else(
-                        || format!("installer exited with {}", output.status),
-                        str::to_owned,
-                    ),
-            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let reason = stderr.trim();
+            failures.push(if reason.is_empty() {
+                format!("account child exited with {}", output.status)
+            } else {
+                reason.to_owned()
+            });
         }
         let outcome = if !failures.is_empty() {
-            AccountInstallOutcome::Skipped(failures.join("; "))
+            AccountHookOutcome::Incomplete(failures.join("; "))
         } else if toolchains.is_empty() {
-            AccountInstallOutcome::Skipped("no toolchains".to_owned())
-        } else if toolchains.iter().any(|report| {
-            matches!(
-                report.outcome,
-                ToolchainInstallOutcome::Installed | ToolchainInstallOutcome::Refreshed
-            )
-        }) {
-            AccountInstallOutcome::Installed
+            AccountHookOutcome::NoToolchains
         } else {
-            AccountInstallOutcome::AlreadyInstalled
+            AccountHookOutcome::Completed
         };
         Self {
             account: account.name.clone(),
+            operation,
             outcome,
             toolchains,
         }
     }
 }
 
-impl fmt::Display for AccountInstallReport {
+impl fmt::Display for AccountHookReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: ", self.account)?;
+        write!(
+            formatter,
+            "{}: {}: ",
+            self.account,
+            self.operation.subcommand()
+        )?;
         match &self.outcome {
-            AccountInstallOutcome::Installed => formatter.write_str("installed")?,
-            AccountInstallOutcome::AlreadyInstalled => formatter.write_str("already installed")?,
-            AccountInstallOutcome::Skipped(reason) => write!(formatter, "skipped: {reason}")?,
+            AccountHookOutcome::NoToolchains => formatter.write_str("no toolchains")?,
+            AccountHookOutcome::Completed => formatter.write_str("completed")?,
+            AccountHookOutcome::Incomplete(reason) => write!(formatter, "incomplete: {reason}")?,
         }
         for report in &self.toolchains {
-            write!(formatter, "\n  {report}")?;
+            write!(formatter, "\n{}: {report}", self.account)?;
         }
         Ok(())
     }
 }
+
+/// Keep child-protocol fields on a single tab-separated line.
+fn protocol_field(value: &str) -> String { value.replace(['\t', '\r', '\n'], " ") }
 
 /// One toolchain's cargo, and whatever stands in front of it.
 pub(crate) struct Hook {
@@ -295,7 +407,22 @@ impl Startup {
 /// reported rather than repaired. A toolchain that fails does not stop
 /// the others: each is its own file system operation, and one refusing
 /// says nothing about the next.
-pub(crate) fn at_startup() -> io::Result<Startup> { Ok(stand_up(&Hook::all()?)) }
+pub(crate) fn at_startup() -> io::Result<Startup> {
+    let mut hooks = Vec::new();
+    let mut failed = Vec::new();
+    for discovery in Hook::all()? {
+        match discovery {
+            HookDiscovery::Discovered(hook) => hooks.push(hook),
+            HookDiscovery::AbsentCargo => {},
+            HookDiscovery::InspectionFailed { path, error } => {
+                failed.push((path.display().to_string(), error.to_string()));
+            },
+        }
+    }
+    let mut startup = stand_up(&hooks);
+    startup.failed.extend(failed);
+    Ok(startup)
+}
 
 /// [`at_startup`] over a known set of hooks, which is what the tests
 /// hand in.
@@ -303,10 +430,14 @@ fn stand_up(hooks: &[Hook]) -> Startup {
     let mut startup = Startup::default();
     for hook in hooks {
         match hook.ensure() {
-            Ok(Change::Installed) => startup.installed.push(hook.name.clone()),
-            Ok(Change::Refreshed) => startup.refreshed.push(hook.name.clone()),
-            Ok(Change::Orphaned) => startup.orphaned.push(hook.name.clone()),
-            Ok(Change::Removed | Change::AlreadyAbsent | Change::AlreadyCurrent) => {},
+            Ok(HookOperationOutcome::Installed) => startup.installed.push(hook.name.clone()),
+            Ok(HookOperationOutcome::Refreshed) => startup.refreshed.push(hook.name.clone()),
+            Ok(HookOperationOutcome::Orphaned) => startup.orphaned.push(hook.name.clone()),
+            Ok(
+                HookOperationOutcome::Removed
+                | HookOperationOutcome::AlreadyAbsent
+                | HookOperationOutcome::AlreadyCurrent,
+            ) => {},
             Err(error) => startup.failed.push((hook.name.clone(), error.to_string())),
         }
     }
@@ -332,7 +463,7 @@ pub(crate) enum HookState {
 
 /// What installing or removing did to one toolchain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Change {
+pub(crate) enum HookOperationOutcome {
     /// The shim now stands where a real cargo did.
     Installed,
     /// The installed shim differed from this binary's copy and was
@@ -349,55 +480,143 @@ pub(crate) enum Change {
     Orphaned,
 }
 
+/// Discovery distinguishes a missing cargo from a path that could not be inspected.
+pub(crate) enum HookDiscovery {
+    /// A toolchain has a cargo or a saved original to operate on.
+    Discovered(Hook),
+    /// Neither cargo nor the saved original exists in this directory.
+    AbsentCargo,
+    /// The path could not be inspected, with the original filesystem error.
+    InspectionFailed {
+        /// Toolchain directory, or its parent when reading an entry failed.
+        path:  PathBuf,
+        /// Filesystem error retained for the account report.
+        error: io::Error,
+    },
+}
+
 impl Hook {
+    /// Yield each completed operation before starting the next toolchain.
+    pub(crate) fn reports(
+        operation: HookOperation,
+    ) -> io::Result<impl Iterator<Item = ToolchainHookReport>> {
+        Ok(Self::all()?
+            .into_iter()
+            .filter_map(move |discovery| match discovery {
+                HookDiscovery::Discovered(hook) => Some(ToolchainHookReport {
+                    toolchain: hook.name().to_owned(),
+                    outcome:   hook.perform(operation),
+                }),
+                HookDiscovery::AbsentCargo => None,
+                HookDiscovery::InspectionFailed { path, error } => Some(ToolchainHookReport {
+                    toolchain: path
+                        .file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                        .into_owned(),
+                    outcome:   ToolchainHookOutcome::Unreadable(format!(
+                        "{}: {error}",
+                        path.display()
+                    )),
+                }),
+            }))
+    }
+
     /// Every toolchain rustup has installed with a cargo under either
     /// its own name or the saved real binary's name.
     ///
     /// Sorted by name so a report reads the same twice running.
-    pub(crate) fn all() -> io::Result<Vec<Self>> { Self::in_rustup_home(&rustup_home()?) }
+    pub(crate) fn all() -> io::Result<Vec<HookDiscovery>> { Self::in_rustup_home(&rustup_home()?) }
 
-    /// Discover toolchains without consulting the installer's environment.
-    fn in_rustup_home(home: &Path) -> io::Result<Vec<Self>> {
-        let mut hooks: Vec<Self> = fs::read_dir(home.join(TOOLCHAINS_DIR))?
-            .flatten()
-            .filter_map(|entry| Self::at(&entry.path()))
+    /// Retain directory-entry and cargo inspection failures beside discovered toolchains.
+    fn in_rustup_home(home: &Path) -> io::Result<Vec<HookDiscovery>> {
+        let directory = home.join(TOOLCHAINS_DIR);
+        let mut entries = Vec::new();
+        let mut failures = Vec::new();
+        for entry in fs::read_dir(&directory).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", directory.display()))
+        })? {
+            match entry {
+                Ok(entry) => entries.push(entry.path()),
+                Err(error) => failures.push(HookDiscovery::InspectionFailed {
+                    path: directory.clone(),
+                    error,
+                }),
+            }
+        }
+        entries.sort();
+        let mut discoveries: Vec<_> = entries
+            .iter()
+            .map(|entry| Self::at(entry))
+            .filter(|discovery| !matches!(discovery, HookDiscovery::AbsentCargo))
             .collect();
-        hooks.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(hooks)
+        discoveries.extend(failures);
+        Ok(discoveries)
     }
 
-    /// The hook for one toolchain directory, or `None` where there is no
-    /// cargo under either its own name or the saved real binary's name.
-    fn at(toolchain: &Path) -> Option<Self> {
+    /// Inspect both cargo paths without folding filesystem failures into absence.
+    fn at(toolchain: &Path) -> HookDiscovery {
         let binaries = toolchain.join(TOOLCHAIN_BIN_DIR);
         let cargo = binaries.join(CARGO_NAME);
         let real = binaries.join(REAL_CARGO_NAME);
-        if !cargo.exists() && !real.exists() {
-            return None;
+        match cargo.try_exists().and_then(|cargo_exists| {
+            real.try_exists()
+                .map(|real_exists| cargo_exists || real_exists)
+        }) {
+            Ok(false) => HookDiscovery::AbsentCargo,
+            Ok(true) => HookDiscovery::Discovered(Self {
+                name: toolchain
+                    .file_name()
+                    .unwrap_or(toolchain.as_os_str())
+                    .to_string_lossy()
+                    .into_owned(),
+                cargo,
+                real,
+                staging: binaries.join(SHIM_STAGING_NAME),
+            }),
+            Err(error) => HookDiscovery::InspectionFailed {
+                path: toolchain.to_owned(),
+                error,
+            },
         }
-        Some(Self {
-            name: toolchain.file_name()?.to_str()?.to_owned(),
-            cargo,
-            real,
-            staging: binaries.join(SHIM_STAGING_NAME),
-        })
     }
 
     /// The toolchain this hook belongs to.
     pub(crate) fn name(&self) -> &str { &self.name }
 
-    /// What is standing in front of this toolchain's cargo.
-    pub(crate) fn state(&self) -> HookState {
-        if !self.cargo.exists() && self.real.exists() {
-            return HookState::Repairable;
+    /// What is standing in front of cargo, retaining metadata and read failures.
+    pub(crate) fn state(&self) -> io::Result<HookState> {
+        let cargo_exists = self.cargo.try_exists().map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", self.cargo.display()))
+        })?;
+        let real_exists = self.real.try_exists().map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", self.real.display()))
+        })?;
+        if !cargo_exists && real_exists {
+            return Ok(HookState::Repairable);
         }
-        if !is_shim(&self.cargo) {
-            return HookState::Absent;
+        match inspect_shim(&self.cargo)? {
+            CargoContents::Original => Ok(HookState::Absent),
+            CargoContents::Shim if real_exists => Ok(HookState::Installed),
+            CargoContents::Shim => Ok(HookState::Orphaned),
         }
-        if self.real.exists() {
-            HookState::Installed
-        } else {
-            HookState::Orphaned
+    }
+
+    /// Inspect status directly; mutations inspect state under their toolchain lock.
+    fn perform(&self, operation: HookOperation) -> ToolchainHookOutcome {
+        match operation {
+            HookOperation::Install => self.ensure().map_or_else(
+                |error| ToolchainHookOutcome::Failed(error.to_string()),
+                ToolchainHookOutcome::Install,
+            ),
+            HookOperation::Uninstall => self.remove().map_or_else(
+                |error| ToolchainHookOutcome::Failed(error.to_string()),
+                ToolchainHookOutcome::Uninstall,
+            ),
+            HookOperation::Status => self.state().map_or_else(
+                |error| ToolchainHookOutcome::Unreadable(error.to_string()),
+                ToolchainHookOutcome::Status,
+            ),
         }
     }
 
@@ -408,21 +627,21 @@ impl Hook {
     /// can leave `cargo` missing. Retrying writes the shim directly and
     /// leaves the saved real binary in place. The per-toolchain lock
     /// covers state inspection and every write, including repair.
-    fn install(&self) -> io::Result<Change> {
+    fn install(&self) -> io::Result<HookOperationOutcome> {
         let _installation_lock =
             HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
-        match self.state() {
+        match self.state()? {
             HookState::Installed => {
                 if fs::read(&self.cargo)? == SHIM_SOURCE.as_bytes() {
-                    return Ok(Change::AlreadyCurrent);
+                    return Ok(HookOperationOutcome::AlreadyCurrent);
                 }
                 self.write_shim()?;
-                return Ok(Change::Refreshed);
+                return Ok(HookOperationOutcome::Refreshed);
             },
-            HookState::Orphaned => return Ok(Change::Orphaned),
+            HookState::Orphaned => return Ok(HookOperationOutcome::Orphaned),
             HookState::Repairable => {
                 self.write_shim()?;
-                return Ok(Change::Installed);
+                return Ok(HookOperationOutcome::Installed);
             },
             HookState::Absent => {},
         }
@@ -430,15 +649,15 @@ impl Hook {
         // `rustup update` put back over the shim.
         fs::rename(&self.cargo, &self.real)?;
         self.write_shim()?;
-        Ok(Change::Installed)
+        Ok(HookOperationOutcome::Installed)
     }
 
     /// Keep startup and the install subcommand on the same repair and
     /// content-comparison path as [`install`](Self::install).
     ///
-    /// [`Change::AlreadyCurrent`] requires reading the shim, but no
+    /// [`HookOperationOutcome::AlreadyCurrent`] requires reading the shim, but no
     /// shim writes: repeated launches and CI job hooks leave it untouched.
-    pub(crate) fn ensure(&self) -> io::Result<Change> { self.install() }
+    pub(crate) fn ensure(&self) -> io::Result<HookOperationOutcome> { self.install() }
 
     /// Write the shim as `cargo`, executable, without ever writing the
     /// file already there in place.
@@ -461,18 +680,15 @@ impl Hook {
     }
 
     /// Give the real cargo its name back.
-    pub(crate) fn remove(&self) -> io::Result<Change> {
+    pub(crate) fn remove(&self) -> io::Result<HookOperationOutcome> {
         let _installation_lock =
             HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
-        match self.state() {
-            HookState::Absent => Ok(Change::AlreadyAbsent),
-            HookState::Orphaned => Err(io::Error::other(format!(
-                "the shim is installed but the real cargo is missing from {}",
-                self.real.display()
-            ))),
+        match self.state()? {
+            HookState::Absent => Ok(HookOperationOutcome::AlreadyAbsent),
+            HookState::Orphaned => Ok(HookOperationOutcome::Orphaned),
             HookState::Installed | HookState::Repairable => {
                 fs::rename(&self.real, &self.cargo)?;
-                Ok(Change::Removed)
+                Ok(HookOperationOutcome::Removed)
             },
         }
     }
@@ -518,41 +734,41 @@ impl Drop for HookInstallationLock {
     fn drop(&mut self) { drop(fs::remove_file(&self.path)); }
 }
 
-/// An installer copy that stays accessible to account children until reporting ends.
-pub(crate) struct StagedInstaller {
+/// An executable copy accessible to account children until reporting ends.
+pub(crate) struct StagedExecutable {
     /// The fresh directory is removed with all its contents when the guard drops.
     directory:  PathBuf,
     /// The executable path passed to each account child.
     executable: PathBuf,
 }
 
-impl StagedInstaller {
+impl StagedExecutable {
     /// Keep children independent of permissions on the administrator's home.
     pub(crate) fn path(&self) -> &Path { &self.executable }
 }
 
-impl Drop for StagedInstaller {
+impl Drop for StagedExecutable {
     fn drop(&mut self) { drop(fs::remove_dir_all(&self.directory)); }
 }
 
 /// Stage beneath a trusted parent so other accounts cannot replace the executable.
 /// The admin command supplies the root-owned sticky system temporary directory.
-pub(crate) fn stage_installer(parent: &Path, source: &Path) -> io::Result<StagedInstaller> {
+pub(crate) fn stage_executable(parent: &Path, source: &Path) -> io::Result<StagedExecutable> {
     let directory = tempfile::Builder::new()
-        .prefix(ACCOUNT_INSTALLER_PREFIX)
-        .permissions(fs::Permissions::from_mode(ACCOUNT_INSTALLER_MODE))
+        .prefix(ACCOUNT_EXECUTABLE_PREFIX)
+        .permissions(fs::Permissions::from_mode(ACCOUNT_EXECUTABLE_MODE))
         .tempdir_in(parent)?;
     fs::set_permissions(
         directory.path(),
-        fs::Permissions::from_mode(ACCOUNT_INSTALLER_MODE),
+        fs::Permissions::from_mode(ACCOUNT_EXECUTABLE_MODE),
     )?;
     let executable = directory.path().join(BINARY_NAME);
     fs::copy(source, &executable)?;
     fs::set_permissions(
         &executable,
-        fs::Permissions::from_mode(ACCOUNT_INSTALLER_MODE),
+        fs::Permissions::from_mode(ACCOUNT_EXECUTABLE_MODE),
     )?;
-    Ok(StagedInstaller {
+    Ok(StagedExecutable {
         directory: directory.keep(),
         executable,
     })
@@ -564,7 +780,7 @@ pub(crate) fn stage_installer(parent: &Path, source: &Path) -> io::Result<Staged
     unsafe_code,
     reason = "system account enumeration and home directories require libc getpwent; called only by the single-threaded admin command"
 )]
-pub(crate) fn system_accounts() -> io::Result<Vec<InstallAccount>> {
+pub(crate) fn system_accounts() -> io::Result<Vec<HookAccount>> {
     let mut accounts = Vec::new();
     // SAFETY: the admin CLI calls this before starting threads or other account
     // lookups. Every passwd string is copied before the next getpwent call, and
@@ -592,7 +808,7 @@ pub(crate) fn system_accounts() -> io::Result<Vec<InstallAccount>> {
                     "account database returned an incomplete account",
                 ));
             }
-            accounts.push(InstallAccount {
+            accounts.push(HookAccount {
                 name: CStr::from_ptr(entry.pw_name).to_string_lossy().into_owned(),
                 uid:  entry.pw_uid,
                 gid:  entry.pw_gid,
@@ -684,51 +900,104 @@ fn account_groups_with<Group: Copy>(
     Ok(groups)
 }
 
-/// Install from explicit account records so fixtures need neither root nor a
-/// replacement system account database. Accounts without rustup are omitted.
-pub(crate) fn install_accounts(
-    accounts: &[InstallAccount],
-    installer: &Path,
-) -> Vec<AccountInstallReport> {
+/// Handle explicit account records through the same staged executable for every operation.
+/// Accounts without a default rustup home are omitted.
+pub(crate) fn run_account_hooks(
+    accounts: &[HookAccount],
+    executable: &Path,
+    operation: HookOperation,
+) -> Vec<AccountHookReport> {
+    run_account_hooks_with(accounts, executable, operation, |command, account| {
+        if rustix::process::geteuid().is_root() {
+            account_credentials(command, account)
+        } else {
+            command.uid(account.uid).gid(account.gid);
+            Ok(())
+        }
+    })
+}
+
+/// Inject only credential preparation so resolver failures can be verified without root.
+pub(crate) fn run_account_hooks_with(
+    accounts: &[HookAccount],
+    executable: &Path,
+    operation: HookOperation,
+    mut credentials: impl FnMut(&mut Command, &HookAccount) -> io::Result<()>,
+) -> Vec<AccountHookReport> {
     let mut reports = Vec::new();
     for account in accounts {
         let home = account.home.join(RUSTUP_DIRNAME);
         if fs::metadata(&home).is_err_and(|error| error.kind() == ErrorKind::NotFound) {
             continue;
         }
-        reports.push(install_account(account, installer));
+        reports.push(run_account_hook(
+            account,
+            executable,
+            operation,
+            &mut credentials,
+        ));
     }
     reports
 }
 
-/// Drop privileges before any toolchain discovery, lock, or installation.
-fn install_account(account: &InstallAccount, installer: &Path) -> AccountInstallReport {
-    let mut command = Command::new(installer);
-    if rustix::process::geteuid().is_root() {
-        if let Err(error) = account_credentials(&mut command, account) {
-            return AccountInstallReport::skipped(
-                account,
-                format!("could not resolve {}'s groups: {error}", account.name),
-            );
-        }
-    } else {
-        command.uid(account.uid).gid(account.gid);
+/// Drop privileges before any toolchain discovery, lock, or operation.
+fn run_account_hook(
+    account: &HookAccount,
+    executable: &Path,
+    operation: HookOperation,
+    credentials: &mut impl FnMut(&mut Command, &HookAccount) -> io::Result<()>,
+) -> AccountHookReport {
+    let mut command = Command::new(executable);
+    if let Err(error) = credentials(&mut command, account) {
+        return AccountHookReport::incomplete(
+            account,
+            operation,
+            format!("could not resolve {}'s groups: {error}", account.name),
+        );
     }
     command
         .env("HOME", &account.home)
         .env(RUSTUP_HOME_ENV, account.home.join(RUSTUP_DIRNAME))
-        .arg("install")
-        .arg(format!("--{ACCOUNT_INSTALL_REPORT_FLAG}"))
+        .arg(operation.subcommand())
+        .arg(format!("--{ACCOUNT_HOOK_REPORT_FLAG}"))
         .output()
         .map_or_else(
             |error| {
-                AccountInstallReport::skipped(
+                AccountHookReport::incomplete(
                     account,
-                    format!("could not start the installer as {}: {error}", account.name),
+                    operation,
+                    format!(
+                        "could not start the account child as {}: {error}",
+                        account.name
+                    ),
                 )
             },
-            |output| AccountInstallReport::from_output(account, &output),
+            |output| AccountHookReport::from_output(account, operation, &output),
         )
+}
+
+/// Refuse membership lists exceeding Darwin's runtime setgroups limit.
+/// Accepted lists retain every resolved group, including the primary gid.
+/// A failed or non-positive sysconf result leaves the resolved membership intact.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn bounded_account_groups(
+    primary_gid: u32,
+    groups: Vec<u32>,
+    limit: libc::c_long,
+) -> io::Result<Vec<u32>> {
+    let Ok(limit) = usize::try_from(limit) else {
+        return Ok(groups);
+    };
+    if limit == 0 || groups.len() <= limit {
+        return Ok(groups);
+    }
+    Err(io::Error::new(
+        ErrorKind::InvalidInput,
+        format!(
+            "{} resolved groups including primary gid {primary_gid} exceed Darwin's runtime setgroups limit of {limit}; refusing to truncate account memberships and lose group access",
+            groups.len()
+        ),
+    ))
 }
 
 /// Apply root's resolved credentials together, before exec, without std clearing groups.
@@ -737,8 +1006,14 @@ fn install_account(account: &InstallAccount, installer: &Path) -> AccountInstall
     unsafe_code,
     reason = "stable Command lacks explicit groups; the child must setgroups before setgid and setuid using only libc credential syscalls"
 )]
-fn account_credentials(command: &mut Command, account: &InstallAccount) -> io::Result<()> {
+fn account_credentials(command: &mut Command, account: &HookAccount) -> io::Result<()> {
     let groups = account_groups(&account.name, account.gid)?;
+    #[cfg(target_os = "macos")]
+    let groups = {
+        // SAFETY: sysconf takes the platform selector and has no pointer arguments.
+        let limit = unsafe { libc::sysconf(libc::_SC_NGROUPS_MAX) };
+        bounded_account_groups(account.gid, groups, limit)?
+    };
     #[cfg(target_os = "macos")]
     let count = libc::c_int::try_from(groups.len())
         .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
@@ -774,25 +1049,33 @@ fn rustup_home() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("no home directory to find rustup under"))
 }
 
-/// Whether the file at `path` is a shim this installer wrote.
-///
-/// Reads only the opening of the file: the marker is in the shim's first
-/// comment, and the alternative is a thirty-megabyte binary.
-fn is_shim(path: &Path) -> bool {
-    let Ok(mut file) = fs::File::open(path) else {
-        return false;
-    };
-    let mut opening = vec![0; SHIM_MARKER_SEARCH_BYTES];
-    let Ok(read) = file.read(&mut opening) else {
-        return false;
-    };
-    opening.truncate(read);
-    String::from_utf8_lossy(&opening).contains(SHIM_MARKER)
+/// What a successful read establishes about the cargo file.
+enum CargoContents {
+    /// The opening contains the capture shim marker.
+    Shim,
+    /// The opening belongs to an unmarked cargo binary.
+    Original,
+}
+
+/// Read the bounded opening completely, retaining open and read errors.
+fn inspect_shim(path: &Path) -> io::Result<CargoContents> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?
+        .take(SHIM_MARKER_SEARCH_BYTES as u64);
+    let mut opening = Vec::new();
+    file.read_to_end(&mut opening)
+        .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
+    Ok(if String::from_utf8_lossy(&opening).contains(SHIM_MARKER) {
+        CargoContents::Shim
+    } else {
+        CargoContents::Original
+    })
 }
 
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
+    clippy::panic,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
@@ -811,6 +1094,189 @@ mod tests {
     use crate::constants::LOCK_WAIT_MARKER;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::SUBCOMMAND_NAME;
+
+    #[test]
+    fn credential_groups_at_or_below_the_limit_are_unchanged() {
+        let groups = vec![7, 11, 19];
+        for limit in [groups.len(), groups.len() + 1] {
+            let bounded =
+                bounded_account_groups(19, groups.clone(), libc::c_long::try_from(limit).unwrap())
+                    .unwrap();
+            assert_eq!(bounded, groups);
+            assert!(bounded.contains(&19));
+        }
+    }
+
+    #[test]
+    fn over_limit_credential_groups_are_refused_with_both_counts() {
+        let groups = vec![7, 11, 19];
+        for primary_gid in &groups {
+            for limit in 1..groups.len() {
+                let error = bounded_account_groups(
+                    *primary_gid,
+                    groups.clone(),
+                    libc::c_long::try_from(limit).unwrap(),
+                )
+                .unwrap_err();
+                assert_eq!(error.kind(), ErrorKind::InvalidInput);
+                let reason = error.to_string();
+                assert_eq!(
+                    reason,
+                    format!(
+                        "{} resolved groups including primary gid {primary_gid} exceed Darwin's runtime setgroups limit of {limit}; refusing to truncate account memberships and lose group access",
+                        groups.len()
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failed_or_non_positive_group_limits_leave_membership_intact() {
+        let groups = vec![7, 11, 19];
+        for limit in [libc::c_long::MIN, -1, 0] {
+            let bounded = bounded_account_groups(19, groups.clone(), limit).unwrap();
+            assert_eq!(bounded, groups);
+        }
+    }
+
+    #[test]
+    fn credential_failure_is_incomplete_and_later_accounts_still_run() {
+        let fixture = tempdir().unwrap();
+        let executable = fixture.path().join(BINARY_NAME);
+        fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' started > \"$HOME/child-started\"\ncase $1 in\ninstall|status) printf 'stable\\tinstalled\\n';;\nuninstall) printf 'stable\\tremoved\\n';;\nesac\n").unwrap();
+        fs::set_permissions(
+            &executable,
+            fs::Permissions::from_mode(ACCOUNT_EXECUTABLE_MODE),
+        )
+        .unwrap();
+        let accounts = ["blocked", "later"].map(|name| {
+            let home = fixture.path().join(name);
+            fs::create_dir_all(home.join(RUSTUP_DIRNAME)).unwrap();
+            HookAccount {
+                name: name.to_owned(),
+                uid: rustix::process::getuid().as_raw(),
+                gid: rustix::process::getgid().as_raw(),
+                home,
+            }
+        });
+        for operation in [
+            HookOperation::Install,
+            HookOperation::Uninstall,
+            HookOperation::Status,
+        ] {
+            let mut attempted = Vec::new();
+            let reports =
+                run_account_hooks_with(&accounts, &executable, operation, |_, account| {
+                    attempted.push(account.name.clone());
+                    if account.name == "blocked" {
+                        Err(io::Error::other("membership resolver unavailable"))
+                    } else {
+                        Ok(())
+                    }
+                });
+            assert_eq!(attempted, ["blocked", "later"]);
+            assert_eq!(reports.len(), accounts.len());
+            assert_eq!(
+                reports[0].outcome,
+                AccountHookOutcome::Incomplete(
+                    "could not resolve blocked's groups: membership resolver unavailable"
+                        .to_owned()
+                )
+            );
+            assert!(reports[0].toolchains.is_empty());
+            assert!(!accounts[0].home.join("child-started").exists());
+            assert_eq!(reports[1].outcome, AccountHookOutcome::Completed);
+            assert_eq!(reports[1].toolchains.len(), 1);
+            assert_eq!(
+                fs::read(accounts[1].home.join("child-started")).unwrap(),
+                b"started\n"
+            );
+            let rendered = reports[0].to_string();
+            assert!(rendered.contains("blocked: "), "{rendered}");
+            assert!(rendered.contains("incomplete: could not resolve blocked's groups: membership resolver unavailable"), "{rendered}");
+            assert_eq!(
+                operation.completion(&reports).is_ok(),
+                operation == HookOperation::Install
+            );
+        }
+    }
+
+    #[test]
+    fn discovery_retains_an_uninspectable_toolchain_beside_a_working_one() {
+        let (home, _) = toolchain(CARGO_NAME);
+        let unreadable = home.path().join(TOOLCHAINS_DIR).join("unreadable");
+        std::os::unix::fs::symlink(&unreadable, &unreadable).unwrap();
+        let discoveries = Hook::in_rustup_home(home.path()).unwrap();
+        assert_eq!(discoveries.len(), 2);
+        assert!(
+            matches!(&discoveries[0], HookDiscovery::Discovered(hook) if hook.name() == "stable-test")
+        );
+        assert!(
+            matches!(&discoveries[1], HookDiscovery::InspectionFailed { path, error } if path == &unreadable && error.raw_os_error() == Some(libc::ELOOP))
+        );
+    }
+
+    #[test]
+    fn an_unreadable_cargo_retains_its_error_without_changing_the_toolchain() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        fs::remove_file(&hook.cargo).unwrap();
+        fs::create_dir(&hook.cargo).unwrap();
+        let error = hook.state().unwrap_err().to_string();
+        assert_eq!(
+            hook.perform(HookOperation::Status),
+            ToolchainHookOutcome::Unreadable(error)
+        );
+        assert!(hook.cargo.is_dir());
+        assert!(!hook.real.exists());
+        assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
+    }
+
+    #[test]
+    fn mutations_acquire_the_lock_before_classifying_an_orphaned_shim() {
+        let (_home, hook) = toolchain(SHIM_SOURCE);
+        let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
+        let _installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
+
+        assert_eq!(
+            hook.perform(HookOperation::Status),
+            ToolchainHookOutcome::Status(HookState::Orphaned)
+        );
+        for operation in [HookOperation::Install, HookOperation::Uninstall] {
+            let outcome = hook.perform(operation);
+            assert!(
+                matches!(&outcome, ToolchainHookOutcome::Failed(reason) if reason.contains(&lock_path.display().to_string())),
+                "{outcome:?}"
+            );
+        }
+        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+        assert!(!hook.real.exists());
+        assert!(lock_path.exists());
+    }
+
+    #[test]
+    fn mutations_acquire_the_lock_before_inspecting_unreadable_cargo() {
+        let (_home, hook) = toolchain(CARGO_NAME);
+        fs::remove_file(&hook.cargo).unwrap();
+        fs::create_dir(&hook.cargo).unwrap();
+        let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
+        let _installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
+
+        assert!(matches!(
+            hook.perform(HookOperation::Status),
+            ToolchainHookOutcome::Unreadable(_)
+        ));
+        for operation in [HookOperation::Install, HookOperation::Uninstall] {
+            let outcome = hook.perform(operation);
+            assert!(
+                matches!(&outcome, ToolchainHookOutcome::Failed(reason) if reason.contains(&lock_path.display().to_string())),
+                "{outcome:?}"
+            );
+        }
+        assert!(hook.cargo.is_dir());
+        assert!(!hook.real.exists());
+        assert!(lock_path.exists());
+    }
 
     #[test]
     fn account_groups_resizes_and_returns_every_reported_group() {
@@ -1021,6 +1487,17 @@ mod tests {
         );
     }
 
+    /// Require a discovered hook while preserving the failure detail in test output.
+    fn discovered_hook(toolchain: &Path) -> Hook {
+        match Hook::at(toolchain) {
+            HookDiscovery::Discovered(hook) => hook,
+            HookDiscovery::AbsentCargo => panic!("{} has no cargo", toolchain.display()),
+            HookDiscovery::InspectionFailed { path, error } => {
+                panic!("{}: {error}", path.display())
+            },
+        }
+    }
+
     /// A rustup home holding one toolchain whose cargo is `contents`.
     fn toolchain(contents: &str) -> (TempDir, Hook) {
         let home = tempdir().unwrap();
@@ -1031,7 +1508,7 @@ mod tests {
             .join(TOOLCHAIN_BIN_DIR);
         fs::create_dir_all(&binaries).unwrap();
         fs::write(binaries.join(CARGO_NAME), contents).unwrap();
-        let hook = Hook::at(&home.path().join(TOOLCHAINS_DIR).join("stable-test")).unwrap();
+        let hook = discovered_hook(&home.path().join(TOOLCHAINS_DIR).join("stable-test"));
         (home, hook)
     }
 
@@ -1186,7 +1663,7 @@ mod tests {
     fn a_real_cargo_reads_as_no_shim_installed() {
         let (_home, hook) = toolchain("\u{7f}ELF not a script at all");
 
-        assert_eq!(hook.state(), HookState::Absent);
+        assert_eq!(hook.state().unwrap(), HookState::Absent);
     }
 
     #[test]
@@ -1194,8 +1671,8 @@ mod tests {
         let real = "\u{7f}ELF the one and only real cargo";
         let (_home, hook) = toolchain(real);
 
-        assert_eq!(hook.install().unwrap(), Change::Installed);
-        assert_eq!(hook.state(), HookState::Installed);
+        assert_eq!(hook.install().unwrap(), HookOperationOutcome::Installed);
+        assert_eq!(hook.state().unwrap(), HookState::Installed);
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), real);
         assert!(
             fs::read_to_string(&hook.cargo)
@@ -1219,7 +1696,7 @@ mod tests {
         assert!(lock_path.exists());
 
         drop(installation_lock);
-        assert_eq!(hook.install().unwrap(), Change::Installed);
+        assert_eq!(hook.install().unwrap(), HookOperationOutcome::Installed);
         assert!(!lock_path.exists());
     }
 
@@ -1247,7 +1724,7 @@ mod tests {
     fn concurrent_installs_preserve_the_original_real_cargo() {
         let (_home, hook) = toolchain(CARGO_NAME);
         let toolchain = hook.cargo.parent().unwrap().parent().unwrap();
-        let competing_hook = Hook::at(toolchain).unwrap();
+        let competing_hook = discovered_hook(toolchain);
         let installers = [&hook, &competing_hook];
         let start = Barrier::new(installers.len());
 
@@ -1264,13 +1741,21 @@ mod tests {
 
         assert!(matches!(
             changes,
-            [Change::Installed, Change::AlreadyCurrent]
-                | [Change::AlreadyCurrent, Change::Installed]
+            [
+                HookOperationOutcome::Installed,
+                HookOperationOutcome::AlreadyCurrent
+            ] | [
+                HookOperationOutcome::AlreadyCurrent,
+                HookOperationOutcome::Installed
+            ]
         ));
-        assert_eq!(hook.state(), HookState::Installed);
+        assert_eq!(hook.state().unwrap(), HookState::Installed);
         assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
-        assert!(!is_shim(&hook.real));
+        assert!(matches!(
+            inspect_shim(&hook.real).unwrap(),
+            CargoContents::Original
+        ));
         assert!(!hook.staging.exists());
         assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
     }
@@ -1304,7 +1789,10 @@ mod tests {
         hook.install().unwrap();
         let written = mark_old_mtime(&hook.cargo);
 
-        assert_eq!(hook.install().unwrap(), Change::AlreadyCurrent);
+        assert_eq!(
+            hook.install().unwrap(),
+            HookOperationOutcome::AlreadyCurrent
+        );
         assert_eq!(
             fs::metadata(&hook.cargo).unwrap().modified().unwrap(),
             written
@@ -1327,8 +1815,8 @@ mod tests {
         assert_eq!(mark_old_mtime(&hook.cargo), written);
         assert_eq!(fs::metadata(&hook.cargo).unwrap().len(), length);
 
-        assert_eq!(hook.state(), HookState::Installed);
-        assert_eq!(hook.ensure().unwrap(), Change::Refreshed);
+        assert_eq!(hook.state().unwrap(), HookState::Installed);
+        assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::Refreshed);
         assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
     }
@@ -1340,14 +1828,14 @@ mod tests {
         fs::set_permissions(&hook.cargo, fs::Permissions::from_mode(SHIM_MODE)).unwrap();
         fs::rename(&hook.cargo, &hook.real).unwrap();
         let toolchain = hook.cargo.parent().unwrap().parent().unwrap();
-        let hook = Hook::at(toolchain).unwrap();
+        let hook = discovered_hook(toolchain);
         (home, hook)
     }
 
     /// A repaired install must execute the saved cargo through the shim
     /// and retain the saved binary's contents.
     fn assert_working_install(hook: &Hook) {
-        assert_eq!(hook.state(), HookState::Installed);
+        assert_eq!(hook.state().unwrap(), HookState::Installed);
         assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
         assert_eq!(
             fs::read_to_string(&hook.real).unwrap(),
@@ -1371,11 +1859,14 @@ mod tests {
     fn installing_repairs_a_toolchain_with_only_the_saved_cargo() {
         let (_home, hook) = interrupted_toolchain();
 
-        assert_eq!(hook.state(), HookState::Repairable);
-        assert_eq!(hook.install().unwrap(), Change::Installed);
+        assert_eq!(hook.state().unwrap(), HookState::Repairable);
+        assert_eq!(hook.install().unwrap(), HookOperationOutcome::Installed);
         assert_working_install(&hook);
         let written = mark_old_mtime(&hook.cargo);
-        assert_eq!(hook.install().unwrap(), Change::AlreadyCurrent);
+        assert_eq!(
+            hook.install().unwrap(),
+            HookOperationOutcome::AlreadyCurrent
+        );
         assert_eq!(
             fs::metadata(&hook.cargo).unwrap().modified().unwrap(),
             written
@@ -1388,11 +1879,11 @@ mod tests {
     fn ensuring_repairs_a_toolchain_with_only_the_saved_cargo() {
         let (_home, hook) = interrupted_toolchain();
 
-        assert_eq!(hook.state(), HookState::Repairable);
-        assert_eq!(hook.ensure().unwrap(), Change::Installed);
+        assert_eq!(hook.state().unwrap(), HookState::Repairable);
+        assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::Installed);
         assert_working_install(&hook);
         let written = mark_old_mtime(&hook.cargo);
-        assert_eq!(hook.ensure().unwrap(), Change::AlreadyCurrent);
+        assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::AlreadyCurrent);
         assert_eq!(
             fs::metadata(&hook.cargo).unwrap().modified().unwrap(),
             written
@@ -1411,12 +1902,12 @@ mod tests {
         assert!(!hook.cargo.exists());
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
         let toolchain = hook.cargo.parent().unwrap().parent().unwrap();
-        let hook = Hook::at(toolchain).unwrap();
-        assert_eq!(hook.state(), HookState::Repairable);
+        let hook = discovered_hook(toolchain);
+        assert_eq!(hook.state().unwrap(), HookState::Repairable);
 
         fs::remove_dir(&hook.staging).unwrap();
-        assert_eq!(hook.ensure().unwrap(), Change::Installed);
-        assert_eq!(hook.state(), HookState::Installed);
+        assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::Installed);
+        assert_eq!(hook.state().unwrap(), HookState::Installed);
         assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
         assert_eq!(fs::read_to_string(&hook.real).unwrap(), CARGO_NAME);
     }
@@ -1437,7 +1928,7 @@ mod tests {
         assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
 
         fs::remove_dir(&hook.staging).unwrap();
-        assert_eq!(hook.ensure().unwrap(), Change::Installed);
+        assert_eq!(hook.ensure().unwrap(), HookOperationOutcome::Installed);
         assert_working_install(&hook);
     }
 
@@ -1454,7 +1945,7 @@ mod tests {
             let installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
 
             assert_eq!(hook.remove().unwrap_err().kind(), ErrorKind::AlreadyExists);
-            assert_eq!(hook.state(), state);
+            assert_eq!(hook.state().unwrap(), state);
             assert_eq!(
                 fs::read_to_string(&hook.real).unwrap(),
                 HOOK_TEST_REAL_CARGO
@@ -1468,7 +1959,7 @@ mod tests {
             assert!(lock_path.exists());
 
             drop(installation_lock);
-            assert_eq!(hook.remove().unwrap(), Change::Removed);
+            assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Removed);
             assert_eq!(
                 fs::read_to_string(&hook.cargo).unwrap(),
                 HOOK_TEST_REAL_CARGO
@@ -1503,9 +1994,15 @@ mod tests {
             attempts.map(|attempt| attempt.join().unwrap().unwrap())
         });
 
-        assert_eq!(changes, [Change::Installed, Change::Removed]);
+        assert_eq!(
+            changes,
+            [
+                HookOperationOutcome::Installed,
+                HookOperationOutcome::Removed
+            ]
+        );
         assert!(matches!(
-            hook.state(),
+            hook.state().unwrap(),
             HookState::Installed | HookState::Absent
         ));
         if hook.real.exists() {
@@ -1535,11 +2032,11 @@ mod tests {
         let (_home, hook) = toolchain(CARGO_NAME);
         fs::rename(&hook.cargo, &hook.real).unwrap();
 
-        assert_eq!(hook.remove().unwrap(), Change::Removed);
-        assert_eq!(hook.state(), HookState::Absent);
+        assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Removed);
+        assert_eq!(hook.state().unwrap(), HookState::Absent);
         assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), CARGO_NAME);
         assert!(!hook.real.exists());
-        assert_eq!(hook.remove().unwrap(), Change::AlreadyAbsent);
+        assert_eq!(hook.remove().unwrap(), HookOperationOutcome::AlreadyAbsent);
     }
 
     /// What `rustup update` leaves behind: a fresh real cargo back on the
@@ -1550,8 +2047,8 @@ mod tests {
         hook.install().unwrap();
         fs::write(&hook.cargo, "\u{7f}ELF cargo as rustup just reinstalled it").unwrap();
 
-        assert_eq!(hook.state(), HookState::Absent);
-        assert_eq!(hook.install().unwrap(), Change::Installed);
+        assert_eq!(hook.state().unwrap(), HookState::Absent);
+        assert_eq!(hook.install().unwrap(), HookOperationOutcome::Installed);
         assert_eq!(
             fs::read_to_string(&hook.real).unwrap(),
             "\u{7f}ELF cargo as rustup just reinstalled it"
@@ -1564,8 +2061,8 @@ mod tests {
         let (_home, hook) = toolchain(real);
         hook.install().unwrap();
 
-        assert_eq!(hook.remove().unwrap(), Change::Removed);
-        assert_eq!(hook.state(), HookState::Absent);
+        assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Removed);
+        assert_eq!(hook.state().unwrap(), HookState::Absent);
         assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), real);
         assert!(!hook.real.exists());
     }
@@ -1574,7 +2071,7 @@ mod tests {
     fn removing_what_was_never_installed_changes_nothing() {
         let (_home, hook) = toolchain("\u{7f}ELF real cargo");
 
-        assert_eq!(hook.remove().unwrap(), Change::AlreadyAbsent);
+        assert_eq!(hook.remove().unwrap(), HookOperationOutcome::AlreadyAbsent);
         assert_eq!(
             fs::read_to_string(&hook.cargo).unwrap(),
             "\u{7f}ELF real cargo"
@@ -1587,11 +2084,11 @@ mod tests {
         hook.install().unwrap();
         fs::remove_file(&hook.real).unwrap();
 
-        assert_eq!(hook.state(), HookState::Orphaned);
-        assert_eq!(hook.install().unwrap(), Change::Orphaned);
+        assert_eq!(hook.state().unwrap(), HookState::Orphaned);
+        assert_eq!(hook.install().unwrap(), HookOperationOutcome::Orphaned);
         assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
         assert!(!hook.real.exists());
-        assert!(hook.remove().is_err());
+        assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Orphaned);
     }
 
     /// The shim is renamed into place, never written there, so a `sh`
@@ -1621,7 +2118,7 @@ mod tests {
         }
         let mut hooks: Vec<Hook> = entries
             .iter()
-            .map(|(name, _)| Hook::at(&home.path().join(TOOLCHAINS_DIR).join(name)).unwrap())
+            .map(|(name, _)| discovered_hook(&home.path().join(TOOLCHAINS_DIR).join(name)))
             .collect();
         hooks.sort_by(|left, right| left.name.cmp(&right.name));
         (home, hooks)
@@ -1646,7 +2143,7 @@ mod tests {
         assert!(
             hooks
                 .iter()
-                .all(|hook| hook.state() == HookState::Installed)
+                .all(|hook| hook.state().unwrap() == HookState::Installed)
         );
     }
 
@@ -1718,7 +2215,7 @@ mod tests {
         let startup = stand_up(&hooks);
 
         assert_eq!(startup.orphaned, vec!["stable-test".to_owned()]);
-        assert_eq!(hooks[0].state(), HookState::Orphaned);
+        assert_eq!(hooks[0].state().unwrap(), HookState::Orphaned);
         assert!(!hooks[0].real.exists());
     }
 
@@ -1739,7 +2236,7 @@ mod tests {
         assert_eq!(startup.installed, vec!["stable-test".to_owned()]);
         assert_eq!(startup.failed.len(), 1);
         assert_eq!(startup.failed[0].0, "nightly-test");
-        assert_eq!(hooks[0].state(), HookState::Absent);
+        assert_eq!(hooks[0].state().unwrap(), HookState::Absent);
         assert_eq!(
             fs::read_to_string(&hooks[0].cargo).unwrap(),
             "\u{7f}ELF nightly"
@@ -1752,6 +2249,6 @@ mod tests {
         let toolchain = home.path().join(TOOLCHAINS_DIR).join("stable-test");
         fs::create_dir_all(toolchain.join(TOOLCHAIN_BIN_DIR)).unwrap();
 
-        assert!(Hook::at(&toolchain).is_none());
+        assert!(matches!(Hook::at(&toolchain), HookDiscovery::AbsentCargo));
     }
 }

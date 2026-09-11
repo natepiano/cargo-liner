@@ -9,13 +9,20 @@
 mod tests {
     use std::env;
     use std::fs;
+    use std::io::BufRead;
+    use std::io::BufReader;
+    use std::io::Read;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::ExitStatusExt;
     use std::path::Path;
     use std::path::PathBuf;
     use std::process::Command;
     use std::process::Output;
     use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use tempfile::TempDir;
 
@@ -35,6 +42,9 @@ exit 37
 
     /// This name sorts independently of whatever toolchains the host has installed.
     const TOOLCHAIN: &str = "fixture-stable";
+
+    /// Bound subprocess waits even if a regression leaves a FIFO reader blocked.
+    const CHILD_OUTPUT_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Keep all subprocess resources alive until synchronous commands and assertions finish.
     struct ToolchainLifecycle {
@@ -286,24 +296,162 @@ exit 37
         fixture.assert_fallback_untouched();
     }
 
-    /// The machine-wide option belongs to install alone.
     #[test]
-    fn all_accounts_is_rejected_by_status_and_uninstall() {
+    fn install_prints_a_completed_toolchain_before_a_later_lock_finishes() {
+        assert_local_report_before_completion("install", "capture shim installed");
+    }
+
+    #[test]
+    fn uninstall_prints_a_completed_toolchain_before_a_later_lock_finishes() {
+        assert_local_report_before_completion("uninstall", "capture shim removed");
+    }
+
+    #[test]
+    fn status_prints_a_completed_toolchain_before_a_later_inspection_finishes() {
+        assert_local_report_before_completion("status", "not installed");
+    }
+
+    /// The stdout pipe must receive a row while the process still has unfinished work.
+    fn assert_local_report_before_completion(operation: &str, description: &str) {
         let fixture = ToolchainLifecycle::new();
-        for command in ["status", "uninstall"] {
-            let output = fixture
-                .command(Path::new(env!("CARGO_BIN_EXE_cargo-tile")))
-                .args([command, "--all-accounts"])
-                .output()
-                .expect("reject misplaced flag");
-            assert!(!output.status.success(), "{output:?}");
-            assert!(String::from_utf8_lossy(&output.stderr).contains("--all-accounts"));
+        let original = fs::metadata(&fixture.cargo).expect("original cargo identity");
+        if operation == "uninstall" {
+            fixture.cli(&["install"]);
         }
+        let waiting = fixture.path("rustup/toolchains/z-waiting/bin");
+        fs::create_dir_all(&waiting).expect("later toolchain directory");
+        if operation == "status" {
+            let output = Command::new("mkfifo")
+                .arg(waiting.join("cargo"))
+                .output()
+                .expect("create blocked status inspection");
+            assert!(output.status.success(), "{output:?}");
+        } else {
+            write_executable(&waiting.join("cargo"));
+            fs::write(waiting.join("cargo-tile-shim.lock"), b"another writer")
+                .expect("hold the later toolchain lock");
+        }
+        let mut command = fixture.command(Path::new(env!("CARGO_BIN_EXE_cargo-tile")));
+        command.arg(operation);
+        let output = terminate_after_first_row(&mut command);
+        assert_eq!(output.status.signal(), Some(9), "{output:?}");
+        assert_eq!(
+            output.stdout,
+            format!("{TOOLCHAIN}: {description}\n").as_bytes(),
+            "emit only the completed toolchain before termination: {output:?}"
+        );
+        assert!(output.stderr.is_empty(), "{output:?}");
+        if operation == "install" {
+            assert_original_cargo(&fixture.cargo.with_file_name("cargo-tile-real"), &original);
+            assert_eq!(
+                fs::read(&fixture.cargo).expect("completed installation"),
+                include_bytes!("../src/cargo-capture-shim.sh")
+            );
+        } else {
+            assert_original_cargo(&fixture.cargo, &original);
+            assert!(!fixture.cargo.with_file_name("cargo-tile-real").exists());
+        }
+        assert!(!waiting.join("cargo-tile-real").exists());
+        if operation != "status" {
+            assert_eq!(
+                fs::read(waiting.join("cargo")).expect("locked cargo remains untouched"),
+                FIXTURE_CARGO.as_bytes()
+            );
+            assert_eq!(
+                fs::read(waiting.join("cargo-tile-shim.lock")).expect("other writer's lock"),
+                b"another writer"
+            );
+        }
+        fixture.assert_fallback_untouched();
+    }
+
+    /// Kill and reap on both success and timeout, then join the owner of the stdout pipe.
+    fn terminate_after_first_row(command: &mut Command) -> Output {
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start CLI with unfinished later work");
+        let stdout = child.stdout.take().expect("child stdout pipe");
+        let (sender, receiver) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut bytes = Vec::new();
+            let first = reader.read_until(b'\n', &mut bytes);
+            sender.send(first).expect("report first-row readiness");
+            reader.read_to_end(&mut bytes).expect("drain child stdout");
+            bytes
+        });
+        let first = receiver.recv_timeout(CHILD_OUTPUT_TIMEOUT);
+        child
+            .kill()
+            .expect("terminate CLI before later operation completes");
+        let mut output = child.wait_with_output().expect("reap terminated CLI");
+        output.stdout = reader.join().expect("join stdout reader");
+        assert!(
+            matches!(first, Ok(Ok(length)) if length > 0),
+            "completed row never arrived: {first:?}; {output:?}"
+        );
+        output
+    }
+
+    /// A transient orphan owned by another writer must reach lock acquisition first.
+    #[test]
+    fn uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it() {
+        let fixture = ToolchainLifecycle::new();
+        let original = fs::metadata(&fixture.cargo).expect("original cargo identity");
+        fixture.cli(&["install"]);
+        let saved = fixture.cargo.with_file_name("cargo-tile-real");
+        let pending = fixture.cargo.with_file_name("pending-real-cargo");
+        let lock = fixture.cargo.with_file_name("cargo-tile-shim.lock");
+        fs::write(&lock, b"concurrent installer").expect("other installer holds lock");
+        fs::rename(&saved, &pending).expect("other installer temporarily moves saved cargo");
+        let output = fixture
+            .command(Path::new(env!("CARGO_BIN_EXE_cargo-tile")))
+            .arg("uninstall")
+            .output()
+            .expect("uninstall during concurrent installation");
+        assert!(!output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("cargo-tile-shim.lock"),
+            "wait for the writer before inspecting its temporary state: {output:?}"
+        );
+        assert!(!stderr.contains("real cargo is missing"), "{output:?}");
+        assert_original_cargo(&pending, &original);
+        assert_eq!(
+            fs::read(&lock).expect("other installer's lock survives"),
+            b"concurrent installer"
+        );
+        fs::rename(&pending, &saved).expect("other installer restores saved cargo");
+        fs::remove_file(&lock).expect("other installer releases lock");
+        assert_eq!(
+            fixture.cli(&["uninstall"]),
+            format!("{TOOLCHAIN}: capture shim removed\n")
+        );
+        assert_original_cargo(&fixture.cargo, &original);
+        assert!(!saved.exists());
+    }
+
+    /// Every administrative verb accepts the option and reaches its privilege check.
+    #[test]
+    fn all_accounts_install_refuses_non_root_with_sudo_instruction() {
+        assert_admin_permission_refusal("install");
+    }
+
+    #[test]
+    fn all_accounts_uninstall_refuses_non_root_with_sudo_instruction() {
+        assert_admin_permission_refusal("uninstall");
+    }
+
+    #[test]
+    fn all_accounts_status_refuses_non_root_with_sudo_instruction() {
+        assert_admin_permission_refusal("status");
     }
 
     /// An unprivileged caller receives one actionable line before account enumeration.
-    #[test]
-    fn all_accounts_refuses_non_root_with_sudo_instruction() {
+    fn assert_admin_permission_refusal(operation: &str) {
         let fixture = ToolchainLifecycle::new();
         assert_ne!(
             fs::metadata(fixture.directory.path())
@@ -315,9 +463,9 @@ exit 37
         let original = fs::read(&fixture.cargo).expect("original cargo");
         let output = fixture
             .command(Path::new(env!("CARGO_BIN_EXE_cargo-tile")))
-            .args(["install", "--all-accounts"])
+            .args([operation, "--all-accounts"])
             .output()
-            .expect("refuse non-root install");
+            .expect("refuse non-root administrative command");
         assert!(!output.status.success(), "{output:?}");
         let message = format!(
             "{}{}",
@@ -326,10 +474,23 @@ exit 37
         );
         assert_eq!(message.lines().count(), 1, "{message}");
         assert!(message.contains("sudo"), "{message}");
+        assert!(
+            message.contains(&format!("{operation} --all-accounts")),
+            "permission refusal names the requested operation: {message}"
+        );
+        assert!(!message.contains("unexpected argument"), "{message}");
         assert_eq!(
             fs::read(&fixture.cargo).expect("cargo after refusal"),
             original
         );
         assert!(!fixture.cargo.with_file_name("cargo-tile-real").exists());
+        assert_eq!(
+            fs::read_dir(fixture.cargo.parent().expect("toolchain bin"))
+                .expect("inspect refused toolchain")
+                .count(),
+            1,
+            "permission refusal creates no lock or staging file"
+        );
+        fixture.assert_fallback_untouched();
     }
 }

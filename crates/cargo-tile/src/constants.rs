@@ -747,19 +747,19 @@ pub(crate) const CAPTURE_UNUSED_SELECTED_UNCONFIRMED: &str =
     "selected root is unconfirmed; another root cannot supply its fields";
 
 // capture shim
-/// Most accounts fit in one lookup without allocating a large membership buffer.
-pub(crate) const ACCOUNT_GROUPS_INITIAL_CAPACITY: usize = 32;
+/// Every account can traverse and execute the staged executable; only its owner can write.
+pub(crate) const ACCOUNT_EXECUTABLE_MODE: u32 = 0o755;
+/// A random suffix keeps concurrent administrative commands in separate directories.
+pub(crate) const ACCOUNT_EXECUTABLE_PREFIX: &str = "cargo-tile-account-";
 /// Doubling bounds retry calls when getgrouplist cannot report the required size.
 pub(crate) const ACCOUNT_GROUPS_GROWTH_FACTOR: usize = 2;
+/// Most accounts fit in one lookup without allocating a large membership buffer.
+pub(crate) const ACCOUNT_GROUPS_INITIAL_CAPACITY: usize = 32;
 /// 65,536 entries accommodate large account directories while capping each libc
 /// group buffer at 256 KiB and terminating repeated failures without size information.
 pub(crate) const ACCOUNT_GROUPS_MAX_CAPACITY: usize = 65_536;
-/// Hidden child-install protocol shared by the admin command and account process.
-pub(crate) const ACCOUNT_INSTALL_REPORT_FLAG: &str = "account-install-report";
-/// Every account can traverse and execute the staged installer; only its owner can write.
-pub(crate) const ACCOUNT_INSTALLER_MODE: u32 = 0o755;
-/// A random suffix keeps concurrent admin installations in separate directories.
-pub(crate) const ACCOUNT_INSTALLER_PREFIX: &str = "cargo-tile-installer-";
+/// Hidden per-account hook protocol shared by the admin command and account process.
+pub(crate) const ACCOUNT_HOOK_REPORT_FLAG: &str = "account-hook-report";
 /// Name of the real cargo once the shim takes its place beside it. The
 /// shim resolves it as a sibling, so a hardcoded-path invocation of a
 /// toolchain's cargo is captured the same as one found through `PATH`.

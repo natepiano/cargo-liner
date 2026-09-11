@@ -17,23 +17,28 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io;
 use std::io::ErrorKind;
+use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
+use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
 use rustix::process::geteuid;
 
 use crate::capture_root;
-use crate::constants::ACCOUNT_INSTALL_REPORT_FLAG;
+use crate::constants::ACCOUNT_HOOK_REPORT_FLAG;
 use crate::constants::BINARY_NAME;
 use crate::constants::CAPTURE_ROOT;
 use crate::constants::SUBCOMMAND_NAME;
 use crate::hook;
-use crate::hook::AccountInstallOutcome;
-use crate::hook::Change;
+use crate::hook::AccountHookOutcome;
 use crate::hook::Hook;
+use crate::hook::HookOperation;
+use crate::hook::HookOperationOutcome;
 use crate::hook::HookState;
+use crate::hook::ToolchainHookOutcome;
+use crate::hook::ToolchainHookReport;
 use crate::terminal;
 
 /// `cargo-tile`, as the command line sees it.
@@ -53,19 +58,60 @@ enum Command {
     /// Each toolchain's real cargo is moved aside and the shim takes its
     /// name. Safe to repeat. The grid does the same as it opens unless
     /// `capture.auto_install` is off in `config.toml`.
-    Install {
-        /// Install in every account's default rustup home (requires sudo).
-        #[arg(long)]
-        all_accounts:           bool,
-        /// Report each toolchain to the administrative parent process.
-        #[arg(long = ACCOUNT_INSTALL_REPORT_FLAG, hide = true, conflicts_with = "all_accounts")]
-        account_install_report: bool,
-    },
+    Install(HookArguments),
     /// Take the capture shim back out and give cargo its name back.
-    Uninstall,
+    Uninstall(HookArguments),
     /// Report whether the capture shim is installed, toolchain by
     /// toolchain.
-    Status,
+    Status(HookArguments),
+}
+
+/// Clap's flags selecting whose toolchains to handle and how to report them.
+#[derive(Args, Debug, Eq, PartialEq)]
+struct HookArguments {
+    /// Handle every account's default rustup home (requires sudo).
+    #[arg(long)]
+    all_accounts:        bool,
+    /// Report each toolchain to the administrative parent process.
+    #[arg(long = ACCOUNT_HOOK_REPORT_FLAG, hide = true, conflicts_with = "all_accounts")]
+    account_hook_report: bool,
+}
+
+/// The requested action after converting Clap's optional subcommand and flags.
+#[derive(Debug, Eq, PartialEq)]
+enum RequestedAction {
+    /// Open the live cargo grid.
+    Grid,
+    /// Handle the caller's toolchains with ordinary CLI output.
+    Local(HookOperation),
+    /// Handle database accounts through credential-switched children.
+    AllAccounts(HookOperation),
+    /// Emit the per-toolchain protocol for an administrative parent.
+    AccountReport(HookOperation),
+}
+
+impl From<Cli> for RequestedAction {
+    fn from(cli: Cli) -> Self {
+        let (operation, arguments) = match cli.command {
+            None => return Self::Grid,
+            Some(Command::Install(arguments)) => (HookOperation::Install, arguments),
+            Some(Command::Uninstall(arguments)) => (HookOperation::Uninstall, arguments),
+            Some(Command::Status(arguments)) => (HookOperation::Status, arguments),
+        };
+        match arguments {
+            HookArguments {
+                all_accounts: true, ..
+            } => Self::AllAccounts(operation),
+            HookArguments {
+                account_hook_report: true,
+                ..
+            } => Self::AccountReport(operation),
+            HookArguments {
+                all_accounts: false,
+                account_hook_report: false,
+            } => Self::Local(operation),
+        }
+    }
 }
 
 impl Cli {
@@ -76,19 +122,11 @@ impl Cli {
 
     /// Do what the command line asked for.
     pub(crate) fn run(self) -> ExitCode {
-        match self.command {
-            None => terminal::run(),
-            Some(Command::Install {
-                account_install_report: true,
-                ..
-            }) => report(install_account_report()),
-            Some(Command::Install {
-                all_accounts: true, ..
-            }) => report(install_all_accounts()),
-            Some(Command::Install {
-                all_accounts: false,
-                account_install_report: false,
-            }) => {
+        match RequestedAction::from(self) {
+            RequestedAction::Grid => terminal::run(),
+            RequestedAction::AccountReport(operation) => report(account_hook_report(operation)),
+            RequestedAction::AllAccounts(operation) => report(all_accounts(operation)),
+            RequestedAction::Local(HookOperation::Install) => {
                 if let Err(error) = install() {
                     eprintln!("{BINARY_NAME}: {error}");
                 }
@@ -96,8 +134,8 @@ impl Cli {
                 // setup fails; the diagnostic is the install failure report.
                 ExitCode::SUCCESS
             },
-            Some(Command::Uninstall) => report(uninstall()),
-            Some(Command::Status) => report(status()),
+            RequestedAction::Local(HookOperation::Uninstall) => report(uninstall()),
+            RequestedAction::Local(HookOperation::Status) => report(status()),
         }
     }
 }
@@ -134,14 +172,10 @@ fn install() -> io::Result<()> {
     if let Err(error) = capture_root::prepare_shared_directory(Path::new(CAPTURE_ROOT)) {
         eprintln!("{BINARY_NAME}: {CAPTURE_ROOT}: {error}");
     }
-    let hooks = Hook::all()?;
-    for hook in &hooks {
-        match hook.ensure() {
-            Ok(change) => println!("{}: {}", hook.name(), describe(change)),
-            Err(error) => eprintln!("{BINARY_NAME}: {}: {error}", hook.name()),
-        }
-    }
-    if hooks.is_empty() {
+    let toolchains = Hook::reports(HookOperation::Install)?
+        .inspect(print_local_report)
+        .count();
+    if toolchains == 0 {
         println!("no rustup toolchains found, so there is no cargo to stand in front of");
     } else {
         println!("\nToolchains with a working shim report progress for new runs. Existing runs");
@@ -151,78 +185,64 @@ fn install() -> io::Result<()> {
     Ok(())
 }
 
-/// Report ordinary account-owned installs without shared-directory setup or prose.
-/// Only failure to discover toolchains fails the child process.
-fn install_account_report() -> io::Result<()> {
-    for hook in Hook::all()? {
-        let name = hook.name().replace(['\t', '\r', '\n'], " ");
-        match hook.ensure() {
-            Ok(change) => println!("{name}\t{}", describe_account_install(change)),
-            Err(error) => {
-                let message = error.to_string().replace(['\t', '\r', '\n'], " ");
-                println!("{name}\terror\t{message}");
-            },
-        }
+/// Report account-owned operations without shared-directory setup or ordinary CLI prose.
+/// Discovery or output failure fails the child; each row carries its operation result.
+fn account_hook_report(operation: HookOperation) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    for report in Hook::reports(operation)? {
+        writeln!(stdout, "{}", report.protocol())?;
+        stdout.flush()?;
     }
     Ok(())
 }
 
-/// The child install protocol's labels for a toolchain change.
-const fn describe_account_install(change: Change) -> &'static str {
-    match change {
-        Change::Installed => "installed",
-        Change::Refreshed => "refreshed",
-        Change::AlreadyCurrent => "already installed",
-        Change::Orphaned => "orphaned",
-        Change::Removed | Change::AlreadyAbsent => "error\tunexpected uninstall result",
-    }
-}
-
-/// Install for database accounts after checking administrative privileges.
-fn install_all_accounts() -> io::Result<()> {
+/// Run one operation for database accounts after checking administrative privileges.
+fn all_accounts(operation: HookOperation) -> io::Result<()> {
     if !geteuid().is_root() {
         return Err(io::Error::new(
             ErrorKind::PermissionDenied,
-            "run sudo cargo tile install --all-accounts",
+            format!(
+                "run sudo cargo tile {} --all-accounts",
+                operation.subcommand()
+            ),
         ));
     }
     let accounts = hook::system_accounts()?;
-    capture_root::prepare_shared_directory(Path::new(CAPTURE_ROOT))?;
+    if operation == HookOperation::Install {
+        capture_root::prepare_shared_directory(Path::new(CAPTURE_ROOT))?;
+    }
     let parent = Path::new(CAPTURE_ROOT)
         .parent()
         .ok_or_else(|| io::Error::other(format!("{CAPTURE_ROOT} has no parent directory")))?;
-    let staged = hook::stage_installer(parent, &env::current_exe()?)?;
-    let reports = hook::install_accounts(&accounts, staged.path());
-    let mut installed = 0;
-    let mut already_installed = 0;
-    let mut skipped = 0;
+    let staged = hook::stage_executable(parent, &env::current_exe()?)?;
+    let reports = hook::run_account_hooks(&accounts, staged.path(), operation);
+    let mut completed = 0;
+    let mut no_toolchains = 0;
+    let mut incomplete = 0;
     for report in &reports {
         println!("{report}");
         match &report.outcome {
-            AccountInstallOutcome::Installed => installed += 1,
-            AccountInstallOutcome::AlreadyInstalled => already_installed += 1,
-            AccountInstallOutcome::Skipped(_) => skipped += 1,
+            AccountHookOutcome::Completed => completed += 1,
+            AccountHookOutcome::NoToolchains => no_toolchains += 1,
+            AccountHookOutcome::Incomplete(_) => incomplete += 1,
         }
     }
     println!(
-        "{} accounts: {installed} installed, {already_installed} already installed, {skipped} skipped",
+        "{} accounts: {completed} completed, {no_toolchains} with no toolchains, {incomplete} incomplete",
         reports.len()
     );
-    Ok(())
+    operation.completion(&reports)
 }
 
 /// Attempt every removal and fail the command if any toolchain could not be restored.
 fn uninstall() -> io::Result<()> {
-    let mut failed = 0;
-    for hook in &Hook::all()? {
-        match hook.remove() {
-            Ok(change) => println!("{}: {}", hook.name(), describe(change)),
-            Err(error) => {
-                failed += 1;
-                eprintln!("{BINARY_NAME}: {}: {error}", hook.name());
-            },
-        }
-    }
+    let reports: Vec<_> = Hook::reports(HookOperation::Uninstall)?
+        .inspect(print_local_report)
+        .collect();
+    let failed = reports
+        .iter()
+        .filter(|report| report.outcome.is_incomplete())
+        .count();
     if failed > 0 {
         return Err(io::Error::other(format!(
             "capture shim removal failed for {failed} toolchain(s)"
@@ -231,31 +251,59 @@ fn uninstall() -> io::Result<()> {
     Ok(())
 }
 
-/// Report what stands in front of each toolchain's cargo.
+/// Report every state without locks, writes, or capture-directory preparation.
 fn status() -> io::Result<()> {
-    for hook in &Hook::all()? {
-        let state = match hook.state() {
+    let reports: Vec<_> = Hook::reports(HookOperation::Status)?
+        .inspect(print_local_report)
+        .collect();
+    if reports.iter().any(|report| report.outcome.is_incomplete()) {
+        return Err(io::Error::other("capture shim status is incomplete"));
+    }
+    if reports.is_empty() {
+        println!("no rustup toolchains found");
+    }
+    Ok(())
+}
+
+/// Keep ordinary CLI descriptions while account children use the shared protocol.
+fn print_local_report(report: &ToolchainHookReport) {
+    let name = &report.toolchain;
+    let description = match &report.outcome {
+        ToolchainHookOutcome::Install(outcome) | ToolchainHookOutcome::Uninstall(outcome) => {
+            describe(*outcome)
+        },
+        ToolchainHookOutcome::Status(state) => match state {
             HookState::Installed => "capturing",
             HookState::Absent => "not installed",
             HookState::Repairable => {
                 "interrupted install -- run cargo-tile install to restore cargo"
             },
             HookState::Orphaned => "broken -- shim installed but the real cargo is missing",
-        };
-        println!("{}: {state}", hook.name());
+        },
+        ToolchainHookOutcome::Unreadable(_) | ToolchainHookOutcome::Failed(_) => {
+            eprintln!("{BINARY_NAME}: {report}");
+            return;
+        },
+    };
+    if matches!(
+        report.outcome,
+        ToolchainHookOutcome::Uninstall(HookOperationOutcome::Orphaned)
+    ) {
+        eprintln!("{BINARY_NAME}: {name}: {description}");
+    } else {
+        println!("{name}: {description}");
     }
-    Ok(())
 }
 
-/// What one toolchain's outcome reads as.
-const fn describe(change: Change) -> &'static str {
-    match change {
-        Change::Installed => "capture shim installed",
-        Change::Refreshed => "capture shim updated",
-        Change::AlreadyCurrent => "capture shim already current, unchanged",
-        Change::Removed => "capture shim removed",
-        Change::AlreadyAbsent => "no capture shim to remove",
-        Change::Orphaned => "broken -- shim installed but the real cargo is missing",
+/// What one toolchain's mutation outcome reads as.
+const fn describe(outcome: HookOperationOutcome) -> &'static str {
+    match outcome {
+        HookOperationOutcome::Installed => "capture shim installed",
+        HookOperationOutcome::Refreshed => "capture shim updated",
+        HookOperationOutcome::AlreadyCurrent => "capture shim already current, unchanged",
+        HookOperationOutcome::Removed => "capture shim removed",
+        HookOperationOutcome::AlreadyAbsent => "no capture shim to remove",
+        HookOperationOutcome::Orphaned => "broken -- shim installed but the real cargo is missing",
     }
 }
 
@@ -279,25 +327,29 @@ mod tests {
     use crate::constants::SHIM_STAGING_NAME;
     use crate::constants::TOOLCHAIN_BIN_DIR;
     use crate::constants::TOOLCHAINS_DIR;
+    use crate::hook::AccountHookReport;
 
     /// The command line as cargo would hand it over, or as a shell would.
-    fn parse(arguments: &[&str]) -> Option<Command> {
+    fn parse(arguments: &[&str]) -> RequestedAction {
         Cli::parse_from(without_subcommand_name(
             arguments.iter().map(OsString::from).collect(),
         ))
-        .command
+        .into()
     }
 
     #[test]
     fn the_binary_on_its_own_opens_the_grid() {
-        assert!(parse(&[BINARY_NAME]).is_none());
+        assert_eq!(parse(&[BINARY_NAME]), RequestedAction::Grid);
     }
 
     /// Cargo runs `cargo tile` by handing this binary its own subcommand
     /// name ahead of everything else, so the grid has to open either way.
     #[test]
     fn reached_as_a_cargo_subcommand_the_grid_still_opens() {
-        assert!(parse(&[BINARY_NAME, SUBCOMMAND_NAME]).is_none());
+        assert_eq!(
+            parse(&[BINARY_NAME, SUBCOMMAND_NAME]),
+            RequestedAction::Grid
+        );
     }
 
     #[test]
@@ -305,6 +357,49 @@ mod tests {
         assert_eq!(
             parse(&[BINARY_NAME, "install"]),
             parse(&[BINARY_NAME, SUBCOMMAND_NAME, "install"])
+        );
+    }
+
+    #[test]
+    fn every_operation_has_explicit_local_admin_and_child_actions() {
+        for operation in [
+            HookOperation::Install,
+            HookOperation::Uninstall,
+            HookOperation::Status,
+        ] {
+            assert_eq!(
+                parse(&[BINARY_NAME, operation.subcommand()]),
+                RequestedAction::Local(operation)
+            );
+            assert_eq!(
+                parse(&[BINARY_NAME, operation.subcommand(), "--all-accounts"]),
+                RequestedAction::AllAccounts(operation)
+            );
+            let flag = format!("--{ACCOUNT_HOOK_REPORT_FLAG}");
+            assert_eq!(
+                parse(&[BINARY_NAME, operation.subcommand(), &flag]),
+                RequestedAction::AccountReport(operation)
+            );
+            assert!(
+                Cli::try_parse_from([BINARY_NAME, operation.subcommand(), "--all-accounts", &flag])
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn an_account_credential_failure_makes_uninstall_exit_unsuccessfully() {
+        let reports = [AccountHookReport {
+            account:    "runner".to_owned(),
+            operation:  HookOperation::Uninstall,
+            outcome:    AccountHookOutcome::Incomplete(
+                "could not resolve runner's groups: membership resolver unavailable".to_owned(),
+            ),
+            toolchains: Vec::new(),
+        }];
+        assert_eq!(
+            report(HookOperation::Uninstall.completion(&reports)),
+            ExitCode::FAILURE
         );
     }
 
