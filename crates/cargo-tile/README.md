@@ -317,7 +317,7 @@ partway through that — read off the layout as it was, their borders fall throu
 the middle of the cells that have already widened past them.
 
 That slide is for a column that stays. A column that is closing is being pushed
-off the right edge as the ones behind it widen, so a cell riding it goes with it
+off the right edge as the ones behind it widen, so a cell sitting on it goes with it
 and travels nowhere up or down — one box in that column, and no line in it moving
 while it disappears. The piece arriving at the foot of the next column still
 rises into the space the cells above it vacate, which is the snake the rest of
