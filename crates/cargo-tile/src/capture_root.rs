@@ -5,16 +5,14 @@
 //! `state` and `pids` are opened separately without following symlinks. Every
 //! entry is a sampled or validated basename opened relative to its directory handle.
 //!
-//! Cleanup requires the effective user to own every inspected directory, with
-//! no group or other write mode bits, on both Linux and macOS. On macOS,
-//! descriptor ACLs must also contain no non-owner write grants before each unlink.
+//! Cleanup proves each regular file through its descriptor: effective ownership,
+//! no group or other write bits, and one link. Directory write grants do not
+//! authorize or prevent removal; retained directory handles constrain each unlink.
 
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
-#[cfg(target_os = "macos")]
-use std::ffi::c_void;
 use std::fs;
 use std::fs::File;
 use std::fs::Metadata;
@@ -26,15 +24,11 @@ use std::io::Seek;
 use std::io::SeekFrom;
 #[cfg(target_os = "linux")]
 use std::mem::MaybeUninit;
-#[cfg(target_os = "macos")]
-use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(target_os = "macos")]
-use std::ptr;
 use std::sync::OnceLock;
 
 use rustix::fd::OwnedFd;
@@ -52,20 +46,11 @@ use rustix::fs::Stat;
 use rustix::fs::fchmod;
 use rustix::fs::fstat;
 use rustix::fs::openat;
+use rustix::fs::statat;
 use rustix::fs::unlinkat;
 use rustix::process::geteuid;
 use uuid::Uuid;
 
-#[cfg(target_os = "macos")]
-use crate::constants::CAPTURE_ACL_ALLOW;
-#[cfg(target_os = "macos")]
-use crate::constants::CAPTURE_ACL_FIRST_ENTRY;
-#[cfg(target_os = "macos")]
-use crate::constants::CAPTURE_ACL_NEXT_ENTRY;
-#[cfg(target_os = "macos")]
-use crate::constants::CAPTURE_ACL_USER_ID;
-#[cfg(target_os = "macos")]
-use crate::constants::CAPTURE_ACL_WRITE_PERMISSIONS;
 #[cfg(target_os = "linux")]
 use crate::constants::CAPTURE_DIRECTORY_BUFFER_BYTES;
 use crate::constants::CAPTURE_DIRECTORY_CHANGED;
@@ -214,21 +199,12 @@ pub(crate) enum RootOwner {
 pub(crate) enum CleanupRefusal {
     /// This directory belongs to a different account and is correctly read-only.
     Foreign(PathBuf),
-    /// The operator owns this directory but its mode permits other writers.
-    WritableByOthers(PathBuf),
-    /// A directory ACL allows a principal other than its owner to write.
-    #[cfg(target_os = "macos")]
-    AclWritableByOthers(PathBuf),
     /// The effective uid read failed once; restarting is the only retry.
     EffectiveUserUnavailable,
     /// Directory access or revalidation failed at the named path.
     Access(PathFailure),
     /// A bounded directory enumeration could not establish a complete live set.
     EnumerationIncomplete(PathBuf),
-    /// Directory enumeration completed, but at least one registration did not read.
-    RegistrationIncomplete(PathBuf),
-    /// Replacement or recovered access requires a subsequent stable scan.
-    Changed(PathBuf),
 }
 
 /// An empty complete inventory is evidence; a truncated or failed one is not.
@@ -243,7 +219,7 @@ pub(crate) enum Enumeration {
 }
 
 impl Enumeration {
-    /// Preserve the cause when a complete inventory is required for cleanup.
+    /// Preserve the cause of an unenumerated portion of the capture tree.
     fn require_complete(&self) -> io::Result<()> {
         match self {
             Self::Complete => Ok(()),
@@ -278,6 +254,9 @@ enum RegistrationAccess {
 /// One bounded registration sample and a lazy legacy-log sample with their handles.
 /// No handle or deletion capability is borrowed from a previous scan.
 pub(crate) struct RootScan {
+    /// Test-only ownership refusal leaves all filesystem observations real.
+    #[cfg(test)]
+    foreign_files:       Vec<PathBuf>,
     /// Count descriptor log reads, including failures, in scan-deduplication tests.
     #[cfg(test)]
     log_reads:           Cell<usize>,
@@ -334,7 +313,7 @@ impl RootScan {
             .insert(path.clone(), PreviousRoot::Open(identity))
         {
             None => RootContinuity::Established,
-            Some(PreviousRoot::Open(previous)) if previous == identity => {
+            Some(PreviousRoot::Open(previous)) if previous.same_tree(identity) => {
                 RootContinuity::Established
             },
             Some(PreviousRoot::Open(_) | PreviousRoot::Unavailable) => RootContinuity::Changed,
@@ -342,6 +321,8 @@ impl RootScan {
         Ok(Self {
             #[cfg(test)]
             log_reads: std::cell::Cell::new(0),
+            #[cfg(test)]
+            foreign_files: Vec::new(),
             incarnation,
             path,
             root,
@@ -350,6 +331,17 @@ impl RootScan {
             registrations,
             continuity,
         })
+    }
+
+    /// Exercise foreign-file refusal with one real uid and real descriptor checks.
+    #[cfg(test)]
+    pub(crate) fn mark_file_foreign_for_test(&mut self, path: &Path) -> io::Result<()> {
+        let parent = path.parent().ok_or(ErrorKind::InvalidInput)?;
+        if parent != self.path && parent != self.registration_path() {
+            return Err(ErrorKind::InvalidInput.into());
+        }
+        self.foreign_files.push(path.to_owned());
+        Ok(())
     }
 
     /// The root object alone identifies an incarnation; access metadata is separate.
@@ -366,8 +358,9 @@ impl RootScan {
             .entries
             .iter()
             .map(|entry| ScanEntry {
-                directory: &self.root,
-                name:      entry.name(),
+                directory:         &self.root,
+                name:              entry.name(),
+                registration_read: RegistrationRead::Named,
             })
     }
 
@@ -383,10 +376,11 @@ impl RootScan {
             .map(move |entry| ScanEntry {
                 directory,
                 name: entry.name(),
+                registration_read: RegistrationRead::Named,
             })
     }
 
-    /// A bounded root sample must be complete before cleanup is possible.
+    /// Tests observe the independently bounded legacy-log sample.
     #[cfg(test)]
     fn log_outcome(&self) -> &Enumeration {
         &self
@@ -414,11 +408,14 @@ impl RootScan {
         &self,
         budget: &mut SweepBudget,
         registrations: impl FnMut(ScanEntry<'_>) -> SweepDisposition,
-    ) {
-        match self.access() {
-            RootAccess::Owned(owned) => owned.sweep(budget, registrations),
-            RootAccess::ReadOnly => {},
-        }
+    ) -> SweepCounts {
+        self.access(effective_user()).map_or(
+            SweepCounts {
+                removed: 0,
+                skipped: 1,
+            },
+            |owned| owned.sweep(budget, registrations),
+        )
     }
 
     /// The displayed owner comes from the same descriptor that supplies captures.
@@ -440,66 +437,41 @@ impl RootScan {
         self.logs.get().map(|logs| &logs.outcome).into_iter()
     }
 
-    /// Ownership and scan completeness independently explain why data was retained.
-    pub(crate) fn cleanup_refusals(&self) -> Vec<CleanupRefusal> {
-        self.cleanup_for(effective_user())
-    }
-
-    /// Inject only effective identity in unit tests; all descriptor checks remain real.
-    fn cleanup_for(&self, effective_user: EffectiveUser) -> Vec<CleanupRefusal> {
-        let mut refusals = Vec::new();
-        self.root.identity.refusals(
-            &self.path,
-            effective_user,
-            &self.root.acl_write_access,
-            &mut refusals,
-        );
-        if let RegistrationAccess::Open { state, pids } = &self.registration_access {
-            state.identity.refusals(
-                &self.path.join(CAPTURE_STATE_DIR),
-                effective_user,
-                &state.acl_write_access,
-                &mut refusals,
-            );
-            pids.identity.refusals(
-                &self.path.join(CAPTURE_LIVE_RUNS_DIR),
-                effective_user,
-                &pids.acl_write_access,
-                &mut refusals,
-            );
+    /// Refusals stay inside the sweep; partial inventories retain usable entries.
+    fn access(&self, effective_user: EffectiveUser) -> Result<OwnedRoot<'_>, CleanupRefusal> {
+        let uid = self.root.identity.owner;
+        if effective_user != EffectiveUser::Known(uid) {
+            return Err(if effective_user == EffectiveUser::Unavailable {
+                CleanupRefusal::EffectiveUserUnavailable
+            } else {
+                CleanupRefusal::Foreign(self.path.clone())
+            });
         }
-        if effective_user == EffectiveUser::Unavailable {
-            refusals.push(CleanupRefusal::EffectiveUserUnavailable);
-        }
-        enumeration_refusal(
-            self.registration_outcome(),
-            self.registration_path(),
-            &mut refusals,
-        );
-        for outcome in self.sampled_log_outcome() {
-            enumeration_refusal(outcome, self.path.clone(), &mut refusals);
+        self.revalidate_paths()?;
+        let RegistrationAccess::Open { state, pids } = &self.registration_access else {
+            return Err(Self::changed(self.registration_path()));
+        };
+        for (directory, path) in [
+            (&self.root, self.path.clone()),
+            (state, self.path.join(CAPTURE_STATE_DIR)),
+            (pids, self.registration_path()),
+        ] {
+            if directory.identity.owner != uid {
+                return Err(CleanupRefusal::Foreign(path));
+            }
         }
         if self.continuity == RootContinuity::Changed {
-            refusals.push(CleanupRefusal::Changed(self.path.clone()));
+            return Err(Self::changed(self.path.clone()));
         }
-        if let Err(refusal) = self.revalidate_paths()
-            && !refusals.contains(&refusal)
-        {
-            refusals.push(refusal);
-        }
-        refusals
+        Ok(OwnedRoot { scan: self, uid })
     }
 
-    /// Only complete, stable, exclusively owned observations yield removal authority.
-    fn access(&self) -> RootAccess<'_> {
-        let RegistrationAccess::Open { pids, .. } = &self.registration_access else {
-            return RootAccess::ReadOnly;
-        };
-        if self.cleanup_refusals().is_empty() {
-            RootAccess::Owned(OwnedRoot { scan: self, pids })
-        } else {
-            RootAccess::ReadOnly
-        }
+    /// Directory replacement remains a silent access refusal.
+    fn changed(path: PathBuf) -> CleanupRefusal {
+        CleanupRefusal::Access(PathFailure {
+            path,
+            failure: io::Error::other(CAPTURE_DIRECTORY_CHANGED).into(),
+        })
     }
 
     /// A fresh failure names the changed directory rather than only the root.
@@ -527,46 +499,15 @@ impl RootScan {
         ] {
             let metadata = fstat(&held.handle)
                 .map_err(|error| access_failure((path.clone(), error.into())))?;
-            if held.identity != current.identity
-                || InspectedDirectoryMetadata::from(&metadata) != held.identity
+            if !held.identity.same_directory(current.identity)
+                || !InspectedDirectoryMetadata::from(&metadata).same_directory(held.identity)
             {
                 return Err(access_failure((
                     path,
                     io::Error::other(CAPTURE_DIRECTORY_CHANGED),
                 )));
             }
-            // The fresh ACL query uses the reopened descriptor whose identity
-            // matches the retained handle; it runs once per directory per check.
-            let mut refusals = Vec::new();
-            current.acl_write_access.refusals(&path, &mut refusals);
-            if let Some(refusal) = refusals.into_iter().next() {
-                return Err(refusal);
-            }
         }
-        Ok(())
-    }
-
-    /// Replace one sampled ACL outcome while retaining the real descriptor and owner.
-    #[cfg(all(test, target_os = "macos"))]
-    pub(crate) fn fail_acl_inspection_for_test(
-        &mut self,
-        path: &Path,
-        error: Error,
-    ) -> io::Result<()> {
-        let directory = if path == self.path {
-            &mut self.root
-        } else if let RegistrationAccess::Open { state, pids } = &mut self.registration_access {
-            if path == self.path.join(CAPTURE_STATE_DIR) {
-                state
-            } else if path == self.path.join(CAPTURE_LIVE_RUNS_DIR) {
-                pids
-            } else {
-                return Err(ErrorKind::NotFound.into());
-            }
-        } else {
-            return Err(ErrorKind::NotFound.into());
-        };
-        directory.acl_write_access = AclWriteAccess::InspectionFailed(error.into());
         Ok(())
     }
 }
@@ -629,6 +570,22 @@ struct TreeIdentity {
 }
 
 impl TreeIdentity {
+    /// Directory permissions do not change the captured tree's object identities.
+    const fn same_tree(self, other: Self) -> bool {
+        self.root.same_directory(other.root)
+            && match (self.registrations, other.registrations) {
+                (
+                    RegistrationIdentity::Open { state, pids },
+                    RegistrationIdentity::Open {
+                        state: other_state,
+                        pids: other_pids,
+                    },
+                ) => state.same_directory(other_state) && pids.same_directory(other_pids),
+                (RegistrationIdentity::Unavailable, RegistrationIdentity::Unavailable) => true,
+                _ => false,
+            }
+    }
+
     /// Preserve unavailable traversal as a distinct identity state.
     const fn new(root: InspectedDirectoryMetadata, access: &RegistrationAccess) -> Self {
         let registrations = match access {
@@ -672,9 +629,7 @@ struct InspectedDirectoryMetadata {
     inode:  u64,
     /// Only the effective owner can receive a deletion capability.
     owner:  u32,
-    /// A different group or permission mask also invalidates a prior observation.
-    group:  u32,
-    /// No non-owner may have directory write permission.
+    /// Shared-parent repair compares the inspected directory mode.
     mode:   Mode,
 }
 
@@ -684,42 +639,24 @@ impl From<&Stat> for InspectedDirectoryMetadata {
             device: stat.st_dev,
             inode:  stat.st_ino,
             owner:  stat.st_uid,
-            group:  stat.st_gid,
             mode:   Mode::from_raw_mode(stat.st_mode),
         }
     }
 }
 
 impl InspectedDirectoryMetadata {
-    /// A foreign owner is expected; an owned directory writable by others is fixable.
-    /// ACL evidence supplements mode bits without changing the observed owner.
-    fn refusals(
-        self,
-        path: &Path,
-        effective_user: EffectiveUser,
-        acl_write_access: &AclWriteAccess,
-        refusals: &mut Vec<CleanupRefusal>,
-    ) {
-        acl_write_access.refusals(path, refusals);
-        let EffectiveUser::Known(effective_uid) = effective_user else {
-            return;
-        };
-        if self.owner != effective_uid {
-            refusals.push(CleanupRefusal::Foreign(path.to_owned()));
-        } else if self.mode.intersects(Mode::WGRP | Mode::WOTH) {
-            refusals.push(CleanupRefusal::WritableByOthers(path.to_owned()));
-        }
+    /// Permission changes do not replace a directory or grant file ownership.
+    const fn same_directory(self, other: Self) -> bool {
+        self.device == other.device && self.inode == other.inode && self.owner == other.owner
     }
 }
 
 /// fstat is performed after opening; metadata never chooses a different handle.
 struct InspectedDirectory {
     /// All later operations stay relative to this directory.
-    handle:           OwnedFd,
+    handle:   OwnedFd,
     /// The ownership and identity inspected on this exact descriptor.
-    identity:         InspectedDirectoryMetadata,
-    /// ACL read failures retain ownership and readable captures but forbid cleanup.
-    acl_write_access: AclWriteAccess,
+    identity: InspectedDirectoryMetadata,
 }
 
 impl InspectedDirectory {
@@ -741,151 +678,11 @@ impl InspectedDirectory {
     /// Successful fstat is required before the descriptor can authorize access.
     fn inspect(handle: OwnedFd) -> io::Result<Self> {
         let identity = InspectedDirectoryMetadata::from(&fstat(&handle)?);
-        let acl_write_access = AclWriteAccess::inspect(&handle, identity.owner);
-        Ok(Self {
-            handle,
-            identity,
-            acl_write_access,
-        })
+        Ok(Self { handle, identity })
     }
 }
 
-/// ACL evidence establishes only whether a non-owner write grant is present.
-enum AclWriteAccess {
-    /// Read-only non-owner entries, an absent ACL, and an empty ACL all qualify.
-    NoNonOwnerWriteGrant,
-    /// An allow entry grants a write-class permission to a different principal.
-    #[cfg(target_os = "macos")]
-    NonOwnerWriteGrant,
-    /// Incomplete inspection cannot establish absence of non-owner write grants.
-    #[cfg(target_os = "macos")]
-    InspectionFailed(CaptureFailure),
-}
-
-impl AclWriteAccess {
-    /// Linux POSIX ACL write masks are already represented by group mode bits.
-    #[cfg(not(target_os = "macos"))]
-    const fn inspect(_: &OwnedFd, _: u32) -> Self { Self::NoNonOwnerWriteGrant }
-
-    /// The native error becomes evidence without discarding fstat ownership.
-    #[cfg(target_os = "macos")]
-    fn inspect(handle: &OwnedFd, owner: u32) -> Self {
-        inspect_directory_acl(handle, owner)
-            .unwrap_or_else(|error| Self::InspectionFailed(error.into()))
-    }
-
-    /// ACL and ownership refusals are accumulated independently for each directory.
-    fn refusals(&self, path: &Path, refusals: &mut Vec<CleanupRefusal>) {
-        refusals.extend(match (self, path) {
-            (Self::NoNonOwnerWriteGrant, _) => Vec::new(),
-            #[cfg(target_os = "macos")]
-            (Self::NonOwnerWriteGrant, path) => {
-                vec![CleanupRefusal::AclWritableByOthers(path.to_owned())]
-            },
-            #[cfg(target_os = "macos")]
-            (Self::InspectionFailed(failure), path) => vec![CleanupRefusal::Access(PathFailure {
-                path:    path.to_owned(),
-                failure: failure.clone(),
-            })],
-        });
-    }
-}
-
-/// Darwin ACL handles and qualifiers are allocated by libc and freed before return.
-#[cfg(target_os = "macos")]
-#[allow(
-    unsafe_code,
-    reason = "Darwin descriptor ACL and membership APIs require native calls"
-)]
-fn inspect_directory_acl(handle: &OwnedFd, owner: u32) -> io::Result<AclWriteAccess> {
-    // SAFETY: These declarations match Darwin's sys/acl.h and membership.h.
-    unsafe extern "C" {
-        fn acl_get_fd(fd: libc::c_int) -> *mut c_void;
-        fn acl_free(object: *mut c_void) -> libc::c_int;
-        fn acl_get_entry(
-            acl: *mut c_void,
-            index: libc::c_int,
-            entry: *mut *mut c_void,
-        ) -> libc::c_int;
-        fn acl_get_tag_type(entry: *mut c_void, tag: *mut libc::c_uint) -> libc::c_int;
-        fn acl_get_permset(entry: *mut c_void, permissions: *mut *mut c_void) -> libc::c_int;
-        fn acl_get_perm_np(permissions: *mut c_void, permission: libc::c_uint) -> libc::c_int;
-        fn acl_get_qualifier(entry: *mut c_void) -> *mut c_void;
-        fn mbr_uuid_to_id(
-            uuid: *const u8,
-            id: *mut libc::id_t,
-            kind: *mut libc::c_int,
-        ) -> libc::c_int;
-    }
-
-    // SAFETY: handle remains open throughout the query. Successful entry and
-    // permission pointers borrow the live ACL allocation. Every qualifier is
-    // a native UUID allocation, used only until acl_free. Output pointers name
-    // initialized locals of the C ABI types; no native allocation escapes.
-    unsafe {
-        let acl = acl_get_fd(handle.as_raw_fd());
-        if acl.is_null() {
-            let error = Error::last_os_error();
-            // filesec_get_property reports ENOENT when no ACL is attached.
-            return if error.raw_os_error() == Some(libc::ENOENT) {
-                Ok(AclWriteAccess::NoNonOwnerWriteGrant)
-            } else {
-                Err(error)
-            };
-        }
-        let result = (|| {
-            let mut index = CAPTURE_ACL_FIRST_ENTRY;
-            loop {
-                let mut entry = ptr::null_mut();
-                if acl_get_entry(acl, index, &raw mut entry) != 0 {
-                    let error = Error::last_os_error();
-                    // Darwin returns zero for an entry, -1/EINVAL at exhaustion,
-                    // including the first call for an empty ACL.
-                    return if error.raw_os_error() == Some(libc::EINVAL) {
-                        Ok(AclWriteAccess::NoNonOwnerWriteGrant)
-                    } else {
-                        Err(error)
-                    };
-                }
-                index = CAPTURE_ACL_NEXT_ENTRY;
-                let mut tag = 0;
-                if acl_get_tag_type(entry, &raw mut tag) != 0 {
-                    return Err(Error::last_os_error());
-                }
-                if tag != CAPTURE_ACL_ALLOW {
-                    continue;
-                }
-                let mut permissions = ptr::null_mut();
-                if acl_get_permset(entry, &raw mut permissions) != 0 {
-                    return Err(Error::last_os_error());
-                }
-                match acl_get_perm_np(permissions, CAPTURE_ACL_WRITE_PERMISSIONS) {
-                    0 => continue,
-                    -1 => return Err(Error::last_os_error()),
-                    _ => {},
-                }
-                let qualifier = acl_get_qualifier(entry);
-                if qualifier.is_null() {
-                    return Err(Error::last_os_error());
-                }
-                let mut principal = 0;
-                let mut kind = 0;
-                let error = mbr_uuid_to_id(qualifier.cast(), &raw mut principal, &raw mut kind);
-                acl_free(qualifier);
-                if error != 0 {
-                    return Err(Error::from_raw_os_error(error));
-                }
-                if kind != CAPTURE_ACL_USER_ID || principal != owner {
-                    return Ok(AclWriteAccess::NonOwnerWriteGrant);
-                }
-            }
-        })();
-        acl_free(acl);
-        result
-    }
-}
-
-/// Keep partial inventories observable while forbidding their use for cleanup.
+/// Keep partial inventories observable while preserving their established entries.
 struct Inventory {
     /// Names are stored inline; allocation grows only as entries are sampled.
     entries: Vec<InventoryEntry>,
@@ -985,9 +782,20 @@ impl InventoryEntry {
 #[derive(Clone, Copy)]
 pub(crate) struct ScanEntry<'scan> {
     /// A replaced pathname cannot redirect the entry's open to another directory.
-    directory: &'scan InspectedDirectory,
+    directory:         &'scan InspectedDirectory,
     /// A sampled or explicitly validated basename carries no pathname prefix.
-    name:      &'scan Path,
+    name:              &'scan Path,
+    /// Sweep callbacks read the file whose ownership was proved.
+    registration_read: RegistrationRead<'scan>,
+}
+
+/// Ordinary scans resolve a basename; deletion callbacks borrow the pinned file.
+#[derive(Clone, Copy)]
+enum RegistrationRead<'scan> {
+    /// No per-file removal proof exists for this ordinary read.
+    Named,
+    /// Both record bytes and ownership evidence come from this descriptor.
+    Proved(&'scan OwnedFd),
 }
 
 impl<'scan> ScanEntry<'scan> {
@@ -1021,7 +829,11 @@ impl<'scan> ScanEntry<'scan> {
     /// Read one byte past the record cap to reject oversize supported records.
     /// Newer headers retain their bounded bytes for the version diagnostic.
     pub(crate) fn read_registration(&self) -> io::Result<RegistrationObservation> {
-        read_registration_file(self.open_regular()?)
+        let file = match self.registration_read {
+            RegistrationRead::Named => self.open_regular()?,
+            RegistrationRead::Proved(handle) => File::from(handle.try_clone()?),
+        };
+        read_registration_file(file)
     }
 }
 
@@ -1035,7 +847,9 @@ pub(crate) struct RegistrationObservation {
 }
 
 /// Read one already opened registration without consulting its pathname again.
-fn read_registration_file(file: File) -> io::Result<RegistrationObservation> {
+fn read_registration_file(mut file: File) -> io::Result<RegistrationObservation> {
+    // Duplicated proof descriptors share an offset; every callback reads from zero.
+    file.seek(SeekFrom::Start(0))?;
     let metadata = file.metadata()?;
     let mut bytes = Vec::new();
     file.take(CAPTURE_REGISTRATION_BYTES + 1)
@@ -1071,6 +885,7 @@ fn named_entry<'scan>(
     Ok(ScanEntry {
         directory,
         name: basename,
+        registration_read: RegistrationRead::Named,
     })
 }
 
@@ -1111,55 +926,202 @@ pub(crate) enum SweepDisposition {
     Remove(PathBuf),
 }
 
-/// One internal dispatch distinguishes cleanup authority from read-only access.
-enum RootAccess<'scan> {
-    /// This scan proved both ownership and complete directory enumeration.
-    Owned(OwnedRoot<'scan>),
-    /// Refusals never change the independently reported filesystem owner.
-    ReadOnly,
+/// Sweep totals are worker-local observations, never Settings diagnostics.
+#[derive(Default, Debug, Eq, PartialEq)]
+pub(crate) struct SweepCounts {
+    /// Successful file unlinks, excluding names already absent.
+    pub(crate) removed: usize,
+    /// Retained candidate pairs and unavailable or incomplete scan portions.
+    pub(crate) skipped: usize,
 }
 
-/// Private and non-clonable: no caller can retain authority beyond this scan.
+/// Descriptor inspection separates refusal from an unsuccessful filesystem query.
+enum FileProof {
+    /// The open regular file satisfies every ownership prerequisite.
+    Established(OwnedCaptureFile),
+    /// Metadata or a symlink contradicts the removal prerequisites.
+    Refused,
+    /// No descriptor metadata could establish removal authority.
+    InspectionFailed(Error),
+}
+
+/// An open descriptor pins the inode until its basename is checked for removal.
+struct OwnedCaptureFile {
+    /// Prevent inode reuse between establishment and unlink.
+    handle: OwnedFd,
+    /// Ownership is checked again on both the held and current entry metadata.
+    uid:    u32,
+}
+
+impl FileProof {
+    /// NOFOLLOW rejects links and NONBLOCK keeps special files from waiting.
+    fn inspect(entry: ScanEntry<'_>, uid: u32) -> Self {
+        let handle = match openat(
+            &entry.directory.handle,
+            entry.name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(handle) => handle,
+            Err(rustix::io::Errno::LOOP) => return Self::Refused,
+            Err(error) => return Self::InspectionFailed(error.into()),
+        };
+        match fstat(&handle) {
+            Ok(metadata) if file_is_owned(&metadata, uid) => {
+                Self::Established(OwnedCaptureFile { handle, uid })
+            },
+            Ok(_) => Self::Refused,
+            Err(error) => Self::InspectionFailed(error.into()),
+        }
+    }
+}
+
+/// Each predicate describes descriptor metadata supplied by the filesystem API.
+fn file_is_owned(metadata: &Stat, uid: u32) -> bool {
+    FileType::from_raw_mode(metadata.st_mode) == FileType::RegularFile
+        && metadata.st_uid == uid
+        && !Mode::from_raw_mode(metadata.st_mode).intersects(Mode::WGRP | Mode::WOTH)
+        && metadata.st_nlink == 1
+}
+
+impl OwnedCaptureFile {
+    /// Compare the pinned inode to the basename immediately before unlinkat.
+    fn revalidate(&self, entry: ScanEntry<'_>) -> io::Result<()> {
+        let held = fstat(&self.handle)?;
+        let current = statat(
+            &entry.directory.handle,
+            entry.name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        )?;
+        if !file_is_owned(&held, self.uid)
+            || !file_is_owned(&current, self.uid)
+            || held.st_dev != current.st_dev
+            || held.st_ino != current.st_ino
+        {
+            return Err(ErrorKind::PermissionDenied.into());
+        }
+        Ok(())
+    }
+
+    /// The same retained directory supplies inspection and removal authority.
+    fn unlink(&self, entry: ScanEntry<'_>, counts: &mut SweepCounts) -> io::Result<()> {
+        self.revalidate(entry)?;
+        unlinkat(&entry.directory.handle, entry.name, AtFlags::empty())?;
+        counts.removed += 1;
+        Ok(())
+    }
+}
+
+/// Directory ownership restricts the account; each file needs independent proof.
 struct OwnedRoot<'scan> {
-    /// Owns the handles and complete inventories that justify deletion.
+    /// Owns the directory handles and the bounded registration sample.
     scan: &'scan RootScan,
-    /// Available only after both registration ancestors passed inspection.
-    pids: &'scan InspectedDirectory,
+    /// Effective uid established before considering any file.
+    uid:  u32,
 }
 
 impl OwnedRoot<'_> {
-    /// Retained entries never consume allowance; each attempted pair reserves two.
+    /// The test adapter changes only the uid compared with descriptor ownership.
+    fn prove_file(&self, entry: ScanEntry<'_>) -> FileProof {
+        #[cfg(test)]
+        {
+            let directory = if entry
+                .directory
+                .identity
+                .same_directory(self.scan.root.identity)
+            {
+                self.scan.path.clone()
+            } else {
+                self.scan.registration_path()
+            };
+            if self
+                .scan
+                .foreign_files
+                .contains(&directory.join(entry.name))
+            {
+                return FileProof::inspect(entry, self.uid.wrapping_add(1));
+            }
+        }
+        FileProof::inspect(entry, self.uid)
+    }
+
+    /// Partial inventories sweep their established pairs and count the remainder.
     fn sweep(
         self,
         budget: &mut SweepBudget,
         mut registrations: impl FnMut(ScanEntry<'_>) -> SweepDisposition,
-    ) {
+    ) -> SweepCounts {
+        let mut refusals = Vec::new();
+        enumeration_refusal(
+            self.scan.registration_outcome(),
+            self.scan.registration_path(),
+            &mut refusals,
+        );
+        for outcome in self.scan.sampled_log_outcome() {
+            enumeration_refusal(outcome, self.scan.path.clone(), &mut refusals);
+        }
+        let mut counts = SweepCounts {
+            removed: 0,
+            skipped: refusals.len(),
+        };
         for entry in self.scan.registration_entries() {
             if budget.remaining() < 2 {
-                return;
+                break;
             }
-            let SweepDisposition::Remove(log) = registrations(entry) else {
-                continue;
-            };
-            if self.scan.revalidate_paths().is_err()
-                || named_entry(&self.scan.root, &log).is_err()
-                || !budget.charge_pair()
+            if self
+                .sweep_pair(entry, budget, &mut registrations, &mut counts)
+                .is_err()
             {
-                continue;
-            }
-            // A failed log removal must leave its only deletion evidence intact.
-            match unlinkat(&self.scan.root.handle, &log, AtFlags::empty()) {
-                Ok(()) | Err(rustix::io::Errno::NOENT) => {},
-                Err(_) => continue,
-            }
-            // Publication never reuses a generation. Re-reading also protects
-            // older records replaced before this final confirmation.
-            if registrations(entry) == SweepDisposition::Remove(log)
-                && self.scan.revalidate_paths().is_ok()
-            {
-                let _ = unlinkat(&self.pids.handle, entry.name(), AtFlags::empty());
+                counts.skipped += 1;
             }
         }
+        counts
+    }
+
+    /// Prove both files before deleting either; retain the record if its log fails.
+    fn sweep_pair(
+        &self,
+        entry: ScanEntry<'_>,
+        budget: &mut SweepBudget,
+        registrations: &mut impl FnMut(ScanEntry<'_>) -> SweepDisposition,
+        counts: &mut SweepCounts,
+    ) -> io::Result<()> {
+        let FileProof::Established(registration) = self.prove_file(entry) else {
+            return Err(ErrorKind::PermissionDenied.into());
+        };
+        let entry = ScanEntry {
+            directory:         entry.directory,
+            name:              entry.name,
+            registration_read: RegistrationRead::Proved(&registration.handle),
+        };
+        let SweepDisposition::Remove(log) = registrations(entry) else {
+            return Err(ErrorKind::PermissionDenied.into());
+        };
+        let log_entry = named_entry(&self.scan.root, &log)?;
+        let log_proof = self.prove_file(log_entry);
+        match &log_proof {
+            FileProof::Established(_) => {},
+            FileProof::InspectionFailed(error) if error.kind() == ErrorKind::NotFound => {},
+            FileProof::Refused | FileProof::InspectionFailed(_) => {
+                return Err(ErrorKind::PermissionDenied.into());
+            },
+        }
+        if registrations(entry) != SweepDisposition::Remove(log.clone())
+            || self.scan.revalidate_paths().is_err()
+            || !budget.charge_pair()
+        {
+            return Err(ErrorKind::PermissionDenied.into());
+        }
+        registration.revalidate(entry)?;
+        if let FileProof::Established(file) = log_proof {
+            file.unlink(log_entry, counts)?;
+        }
+        if registrations(entry) != SweepDisposition::Remove(log)
+            || self.scan.revalidate_paths().is_err()
+        {
+            return Err(ErrorKind::PermissionDenied.into());
+        }
+        registration.unlink(entry, counts)
     }
 }
 
@@ -1252,7 +1214,6 @@ mod tests {
     use std::path::Path;
     use std::sync::OnceLock;
 
-    use rustix::fs::Mode;
     use tempfile::TempDir;
     use tempfile::tempdir;
 
@@ -1260,7 +1221,6 @@ mod tests {
     use super::Enumeration;
     use super::InspectedDirectory;
     use super::Inventory;
-    use super::RootAccess;
     use super::RootContinuity;
     use super::RootHistory;
     use super::RootScan;
@@ -1286,29 +1246,20 @@ mod tests {
     use crate::registration::Registration;
 
     #[test]
-    fn root_owner_survives_fixable_mode_and_session_identity_refusals() {
+    fn directory_write_bits_do_not_change_owner_or_sweep_admission() {
         let root = capture_root();
-        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o720))
-            .expect("shared write mode");
-        let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("readable root");
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o720)).expect("shared mode");
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("read root");
         let owner = scan.root.identity.owner;
         assert_eq!(scan.owner(), super::RootOwner::Uid(owner));
-        let fixable = scan.cleanup_for(EffectiveUser::Known(owner));
-        assert!(fixable.contains(&super::CleanupRefusal::WritableByOthers(
-            root.path().to_owned()
-        )));
-        let foreign = scan.cleanup_for(EffectiveUser::Known(owner.wrapping_add(1)));
-        assert!(foreign.contains(&super::CleanupRefusal::Foreign(root.path().to_owned())));
+        assert!(scan.access(EffectiveUser::Known(owner)).is_ok());
         assert!(
-            !foreign
-                .iter()
-                .any(|reason| matches!(reason, super::CleanupRefusal::WritableByOthers(_)))
+            matches!(scan.access(EffectiveUser::Known(owner.wrapping_add(1))), Err(super::CleanupRefusal::Foreign(path)) if path == root.path())
         );
-        assert_eq!(
-            scan.cleanup_for(EffectiveUser::Unavailable),
-            vec![super::CleanupRefusal::EffectiveUserUnavailable]
-        );
-        assert_eq!(scan.owner(), super::RootOwner::Uid(owner));
+        assert!(matches!(
+            scan.access(EffectiveUser::Unavailable),
+            Err(super::CleanupRefusal::EffectiveUserUnavailable)
+        ));
     }
 
     #[test]
@@ -1320,7 +1271,9 @@ mod tests {
         let scan = RootScan::open(root.path(), &mut RootHistory::default())
             .expect("root remains readable");
         assert_eq!(scan.registration_path(), pids);
-        assert!(scan.cleanup_refusals().iter().any(|reason| matches!(reason, super::CleanupRefusal::Access(failure) if failure.path == pids && failure.failure.kind == io::ErrorKind::NotADirectory)));
+        assert!(
+            matches!(scan.access(effective_user()), Err(super::CleanupRefusal::Access(failure)) if failure.path == pids && failure.failure.kind == io::ErrorKind::NotADirectory)
+        );
         fs::remove_file(&pids).expect("remove pids replacement");
         let state = root.path().join(CAPTURE_STATE_DIR);
         fs::remove_dir(&state).expect("remove empty state");
@@ -1330,20 +1283,28 @@ mod tests {
     }
 
     #[test]
-    fn enumeration_refusals_preserve_short_and_denied_outcomes() {
-        let root = capture_root();
-        let path = root.path().join(CAPTURE_LIVE_RUNS_DIR);
-        let mut scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("open root");
-        scan.registrations.outcome = Enumeration::Incomplete;
-        assert!(
-            scan.cleanup_refusals()
-                .contains(&super::CleanupRefusal::EnumerationIncomplete(path.clone()))
-        );
-        scan.registrations.outcome =
-            Enumeration::Failed(io::Error::from(ErrorKind::PermissionDenied));
-        assert!(scan.cleanup_refusals().iter().any(|reason| matches!(reason, super::CleanupRefusal::Access(failure) if failure.path == path && failure.failure.kind == io::ErrorKind::PermissionDenied)));
-        scan.registrations.outcome = Enumeration::Complete;
-        assert!(scan.cleanup_refusals().is_empty());
+    fn partial_enumeration_sweeps_established_pairs_and_counts_the_remainder() {
+        for outcome in [
+            Enumeration::Incomplete,
+            Enumeration::Failed(io::Error::from(ErrorKind::PermissionDenied)),
+        ] {
+            let root = capture_root();
+            write_pair(root.path());
+            let mut scan =
+                RootScan::open(root.path(), &mut RootHistory::default()).expect("open root");
+            scan.registrations.outcome = outcome;
+            let counts = scan.sweep(&mut SweepBudget::default(), |_| {
+                SweepDisposition::Remove("log".into())
+            });
+            assert_eq!(
+                counts,
+                super::SweepCounts {
+                    removed: 2,
+                    skipped: 1,
+                }
+            );
+            assert!(!root.path().join("log").exists());
+        }
     }
 
     #[test]
@@ -1559,7 +1520,7 @@ mod tests {
         let log = actual.join("capture/log");
         fs::write(&log, "cleanup through a trusted ancestor").expect("root log");
         let scan = RootScan::open(&alias.join("capture"), &mut history).expect("ancestor alias");
-        assert!(matches!(scan.access(), RootAccess::Owned(_)));
+        assert!(scan.access(effective_user()).is_ok());
         assert_eq!(sweep_everything(&scan), 0);
         assert!(log.exists());
         let root_link = parent.path().join("capture-link");
@@ -1812,64 +1773,20 @@ mod tests {
         assert_eq!(scan.registrations.entries.capacity(), 0);
     }
 
-    /// Every unrelated entry counts toward the memory bound and disables sweep.
+    /// Log enumeration bounds do not block directly named registration pairs.
     #[test]
-    fn large_unrelated_inventory_is_explicitly_incomplete_and_cannot_sweep() {
+    fn incomplete_log_inventory_still_sweeps_directly_named_pairs() {
         let root = capture_root();
         for number in 0..CAPTURE_INVENTORY_LIMIT {
             fs::write(root.path().join(format!("unrelated-{number}")), "")
                 .expect("unrelated entry");
         }
-        fs::write(root.path().join("log"), "keep").expect("log beside unrelated entries");
+        write_pair(root.path());
         let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("bounded scan");
         assert!(matches!(scan.log_outcome(), Enumeration::Incomplete));
         assert_eq!(scan.log_entries().count(), CAPTURE_INVENTORY_LIMIT);
-        assert_eq!(sweep_everything(&scan), 0);
-        assert!(root.path().join("log").exists());
-    }
-
-    /// Ownership of all ancestors matters, independent of the test user's uid.
-    #[test]
-    fn ownership_requires_the_effective_uid_and_no_nonowner_write_bits() {
-        let root = capture_root();
-        let directory = InspectedDirectory::open_root(root.path()).expect("inspected root");
-        let identity = directory.identity;
-        let mut refusals = Vec::new();
-        identity.refusals(
-            root.path(),
-            EffectiveUser::Known(identity.owner),
-            &directory.acl_write_access,
-            &mut refusals,
-        );
-        assert!(refusals.is_empty());
-        identity.refusals(
-            root.path(),
-            EffectiveUser::Known(identity.owner.wrapping_add(1)),
-            &directory.acl_write_access,
-            &mut refusals,
-        );
-        assert_eq!(
-            refusals,
-            vec![super::CleanupRefusal::Foreign(root.path().to_owned())]
-        );
-        for mode in [Mode::WGRP, Mode::WOTH] {
-            let mut writable = identity;
-            writable.mode |= mode;
-            refusals.clear();
-            writable.refusals(
-                root.path(),
-                EffectiveUser::Known(identity.owner),
-                &directory.acl_write_access,
-                &mut refusals,
-            );
-            assert_eq!(
-                refusals,
-                vec![super::CleanupRefusal::WritableByOthers(
-                    root.path().to_owned()
-                )]
-            );
-        }
-        assert!(matches!(effective_user(), EffectiveUser::Known(uid) if uid == identity.owner));
+        assert_eq!(sweep_everything(&scan), 2);
+        assert!(!root.path().join("log").exists());
     }
 
     /// Later roots and scans reuse the successful first identity observation.
@@ -1910,21 +1827,254 @@ mod tests {
         assert_eq!(reads.get(), 1);
     }
 
-    /// The root owner cannot sweep an ancestor another account can write.
+    /// Each file supplies its own ownership proof regardless of directory writers.
     #[test]
-    fn every_group_or_other_writable_ancestor_disables_cleanup() {
+    fn directories_permitting_other_writers_are_swept_of_owned_leftovers() {
         for ancestor in ["", CAPTURE_STATE_DIR, CAPTURE_LIVE_RUNS_DIR] {
             for mode in [0o720, 0o702] {
                 let root = capture_root();
-                fs::write(root.path().join("log"), "keep").expect("root log");
+                write_pair(root.path());
                 fs::set_permissions(root.path().join(ancestor), fs::Permissions::from_mode(mode))
-                    .expect("nonowner write permission");
+                    .expect("shared directory");
                 let scan =
                     RootScan::open(root.path(), &mut RootHistory::default()).expect("read root");
-                assert!(matches!(scan.access(), RootAccess::ReadOnly));
-                assert_eq!(sweep_everything(&scan), 0);
-                assert!(root.path().join("log").exists());
+                assert_eq!(sweep_everything(&scan), 2);
+                assert!(!root.path().join("log").exists());
+                assert!(
+                    !root
+                        .path()
+                        .join(CAPTURE_LIVE_RUNS_DIR)
+                        .join("record")
+                        .exists()
+                );
             }
+        }
+    }
+
+    /// Fixtures own regular files independently of the test runner's umask.
+    fn write_pair(root: &Path) {
+        for path in [
+            root.join("log"),
+            root.join(CAPTURE_LIVE_RUNS_DIR).join("record"),
+        ] {
+            fs::write(&path, "ended capture").expect("capture file");
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("owned file");
+        }
+    }
+
+    #[test]
+    fn symlink_candidates_are_retained_and_counted() {
+        for name in ["log", "state/pids/record"] {
+            let root = capture_root();
+            write_pair(root.path());
+            let candidate = root.path().join(name);
+            fs::rename(&candidate, root.path().join("target")).expect("move target");
+            symlink(root.path().join("target"), &candidate).expect("symlink candidate");
+            assert_retained_pair(&root);
+            assert!(candidate.is_symlink());
+            assert!(root.path().join("target").exists());
+        }
+    }
+
+    #[test]
+    fn group_or_other_writable_candidates_are_retained_and_counted() {
+        for name in ["log", "state/pids/record"] {
+            for mode in [0o620, 0o602] {
+                let root = capture_root();
+                write_pair(root.path());
+                fs::set_permissions(root.path().join(name), fs::Permissions::from_mode(mode))
+                    .expect("writable candidate");
+                assert_retained_pair(&root);
+            }
+        }
+    }
+
+    #[test]
+    fn candidates_with_a_second_hard_link_are_retained_and_counted() {
+        for name in ["log", "state/pids/record"] {
+            let root = capture_root();
+            write_pair(root.path());
+            fs::hard_link(root.path().join(name), root.path().join("alias")).expect("second link");
+            assert_retained_pair(&root);
+            assert!(root.path().join("alias").exists());
+        }
+    }
+
+    #[test]
+    fn foreign_file_ownership_is_refused_with_one_fixture_account() {
+        for name in ["log", "state/pids/record"] {
+            let root = capture_root();
+            write_pair(root.path());
+            let mut scan =
+                RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
+            scan.mark_file_foreign_for_test(&root.path().join(name))
+                .expect("foreign comparison");
+            let counts = scan.sweep(&mut SweepBudget::default(), |_| {
+                SweepDisposition::Remove("log".into())
+            });
+            assert_eq!(
+                counts,
+                super::SweepCounts {
+                    removed: 0,
+                    skipped: 1,
+                }
+            );
+            assert!(root.path().join(name).exists());
+        }
+    }
+
+    fn assert_retained_pair(root: &TempDir) {
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
+        let counts = scan.sweep(&mut SweepBudget::default(), |_| {
+            SweepDisposition::Remove("log".into())
+        });
+        assert_eq!(
+            counts,
+            super::SweepCounts {
+                removed: 0,
+                skipped: 1,
+            }
+        );
+        assert!(root.path().join("log").symlink_metadata().is_ok());
+        assert!(
+            root.path()
+                .join(CAPTURE_LIVE_RUNS_DIR)
+                .join("record")
+                .symlink_metadata()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn nonregular_candidates_are_retained_and_counted() {
+        for name in ["log", "state/pids/record"] {
+            let root = capture_root();
+            write_pair(root.path());
+            let candidate = root.path().join(name);
+            fs::remove_file(&candidate).expect("remove regular file");
+            fs::create_dir(&candidate).expect("directory candidate");
+            assert_retained_pair(&root);
+            fs::remove_dir(&candidate).expect("remove directory candidate");
+            make_fifo(&candidate);
+            assert_retained_pair(&root);
+        }
+    }
+
+    #[test]
+    fn file_permissions_changed_after_proof_are_rechecked_before_unlink() {
+        for name in ["log", "state/pids/record"] {
+            let root = capture_root();
+            write_pair(root.path());
+            let candidate = root.path().join(name);
+            let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
+            let mut calls = 0;
+            let counts = scan.sweep(&mut SweepBudget::default(), |_| {
+                calls += 1;
+                if calls == 2 {
+                    fs::set_permissions(&candidate, fs::Permissions::from_mode(0o620))
+                        .expect("revoke file proof");
+                }
+                SweepDisposition::Remove("log".into())
+            });
+            assert_eq!(
+                counts,
+                super::SweepCounts {
+                    removed: 0,
+                    skipped: 1,
+                }
+            );
+            assert!(candidate.exists());
+        }
+    }
+
+    #[test]
+    fn sweep_callbacks_read_the_proved_registration_after_basename_replacement() {
+        let root = capture_root();
+        write_pair(root.path());
+        let registration = root.path().join(CAPTURE_LIVE_RUNS_DIR).join("record");
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
+        let mut calls = 0;
+        let counts = scan.sweep(&mut SweepBudget::default(), |entry| {
+            calls += 1;
+            if calls == 1 {
+                fs::rename(&registration, root.path().join("original"))
+                    .expect("move proved record");
+                fs::write(&registration, "replacement").expect("replace basename");
+            }
+            let observed = entry.read_registration().expect("read proved descriptor");
+            assert_eq!(observed.bytes, b"ended capture");
+            SweepDisposition::Remove("log".into())
+        });
+        assert_eq!(calls, 2);
+        assert_eq!(
+            counts,
+            super::SweepCounts {
+                removed: 0,
+                skipped: 1,
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(registration).expect("replacement survives"),
+            "replacement"
+        );
+        assert!(root.path().join("log").exists());
+    }
+
+    #[test]
+    fn registration_swapped_after_log_unlink_survives_the_final_identity_check() {
+        let root = capture_root();
+        write_pair(root.path());
+        let registration = root.path().join(CAPTURE_LIVE_RUNS_DIR).join("record");
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
+        let counts = scan.sweep(&mut SweepBudget::default(), |_| {
+            if !root.path().join("log").exists() {
+                fs::rename(&registration, root.path().join("original"))
+                    .expect("move original record");
+                fs::write(&registration, "replacement").expect("replace record");
+            }
+            SweepDisposition::Remove("log".into())
+        });
+        assert_eq!(
+            counts,
+            super::SweepCounts {
+                removed: 1,
+                skipped: 1,
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(registration).expect("replacement survives"),
+            "replacement"
+        );
+    }
+
+    #[test]
+    fn identity_recheck_before_unlink_refuses_a_swapped_entry() {
+        for name in ["log", "state/pids/record"] {
+            let root = capture_root();
+            write_pair(root.path());
+            let candidate = root.path().join(name);
+            let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
+            let mut calls = 0;
+            let counts = scan.sweep(&mut SweepBudget::default(), |_| {
+                calls += 1;
+                if calls == 2 {
+                    fs::rename(&candidate, root.path().join("original")).expect("move proved file");
+                    fs::write(&candidate, "replacement").expect("swap entry");
+                }
+                SweepDisposition::Remove("log".into())
+            });
+            assert_eq!(
+                counts,
+                super::SweepCounts {
+                    removed: 0,
+                    skipped: 1,
+                }
+            );
+            assert_eq!(
+                fs::read_to_string(candidate).expect("replacement survives"),
+                "replacement"
+            );
+            assert!(root.path().join("original").exists());
         }
     }
 
@@ -1954,6 +2104,7 @@ mod tests {
         let parent = tempdir().expect("parent");
         let root = parent.path().join("capture");
         create_directories(&root);
+        write_pair(&root);
         fs::write(root.join("log"), "old").expect("old log");
         let scan = RootScan::open(&root, &mut RootHistory::default()).expect("sample old root");
         let moved = parent.path().join("moved");
@@ -1979,6 +2130,7 @@ mod tests {
     fn replacing_registration_ancestors_after_sampling_disables_cleanup() {
         for ancestor in [CAPTURE_STATE_DIR, CAPTURE_LIVE_RUNS_DIR] {
             let root = capture_root();
+            write_pair(root.path());
             fs::write(root.path().join("log"), "keep").expect("log");
             let scan =
                 RootScan::open(root.path(), &mut RootHistory::default()).expect("initial scan");
@@ -1993,19 +2145,22 @@ mod tests {
         }
     }
 
-    /// Permission changes between sample and sweep revoke the capability.
+    /// A new directory writer cannot revoke the descriptor proof of an owned file.
     #[test]
-    fn changing_permissions_after_sampling_disables_cleanup() {
+    fn changing_directory_permissions_after_sampling_allows_owned_cleanup() {
         let root = capture_root();
-        fs::write(root.path().join("log"), "keep").expect("log");
-        let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("initial scan");
+        write_pair(root.path());
+        let mut history = RootHistory::default();
+        let scan = RootScan::open(root.path(), &mut history).expect("initial scan");
         fs::set_permissions(
             root.path().join(CAPTURE_LIVE_RUNS_DIR),
             fs::Permissions::from_mode(0o720),
         )
-        .expect("make registration directory group-writable");
-        assert_eq!(sweep_everything(&scan), 0);
-        assert!(root.path().join("log").exists());
+        .expect("shared directory");
+        assert_eq!(sweep_everything(&scan), 2);
+        write_pair(root.path());
+        let next = RootScan::open(root.path(), &mut history).expect("next scan");
+        assert_eq!(sweep_everything(&next), 2);
     }
 
     /// A replaced or newly accessible pathname must first establish a new history.
@@ -2016,6 +2171,7 @@ mod tests {
         let mut history = RootHistory::default();
         assert!(RootScan::open(&root, &mut history).is_err());
         create_directories(&root);
+        write_pair(&root);
         fs::write(root.join("log"), "first").expect("first log");
         let recovered = RootScan::open(&root, &mut history).expect("recovered root");
         assert_eq!(recovered.continuity, RootContinuity::Changed);
@@ -2024,6 +2180,7 @@ mod tests {
         assert_eq!(established.continuity, RootContinuity::Established);
         fs::rename(&root, parent.path().join("old")).expect("replace root");
         create_directories(&root);
+        write_pair(&root);
         fs::write(root.join("log"), "new").expect("new log");
         let replaced = RootScan::open(&root, &mut history).expect("replacement root");
         assert_eq!(replaced.continuity, RootContinuity::Changed);

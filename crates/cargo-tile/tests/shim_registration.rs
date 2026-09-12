@@ -997,7 +997,8 @@ def popup_lines(rendered, title):
 
 def assert_settings_scroll():
     global terminal_rows, terminal_columns
-    terminal_rows = 14
+    # Keep every account below the initial viewport without cleanup rows.
+    terminal_rows = 10
     transcript_start = len(transcript)
     input_attributes = termios.tcgetattr(terminal)
     if scenario == 'settings-scroll-burst':
@@ -1664,8 +1665,9 @@ try:
             assert str(capture_parent) in settings and '1777' in settings, settings
             account_lines = [line for line in settings.splitlines() if 'active captures' in line]
             assert any(account in line and 'yours' in line and 'readable' in line
-                       and '1 active captures' in line and 'cleanup: here' in line
+                       and '1 active captures' in line
                        for line in account_lines), settings
+            assert 'cleanup' not in settings.lower(), settings
             ignored = str(other_capture) + ': owned by ' + account + ', not by ' + str(other_uid) + ' — ignored'
             assert ignored in settings, settings
             assert 'configured' not in settings.lower(), settings

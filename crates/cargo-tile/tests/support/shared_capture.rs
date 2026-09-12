@@ -1962,10 +1962,10 @@ fn reader_reports_foreign_owned_uid_directories_as_ignored() {
     assert!(
         own_line.contains("yours")
             && own_line.contains("readable")
-            && own_line.contains("0 active captures")
-            && own_line.contains("cleanup: here"),
+            && own_line.contains("0 active captures"),
         "{own_line}"
     );
+    assert!(!own_line.to_lowercase().contains("cleanup"), "{own_line}");
     assert_eq!(other_status.owner, RootOwner::Uid(uid));
     assert_eq!(
         other_status.state,
@@ -1978,6 +1978,10 @@ fn reader_reports_foreign_owned_uid_directories_as_ignored() {
         AccountName::Unavailable => uid.to_string(),
     };
     let other_line = capture_root_status(other_status);
+    assert!(
+        !other_line.to_lowercase().contains("cleanup"),
+        "{other_line}"
+    );
     assert_eq!(
         other_line,
         format!(
@@ -2128,7 +2132,6 @@ sys.stdout.buffer.write(b'\0'.join(os.fsencode(field) for field in fields))
         assert_eq!(status.root.path, own);
         assert_eq!(status.root.cleanup, CaptureCleanup::Here);
         assert_eq!(status.state, RootReadStatus::Readable);
-        assert!(status.cleanup.is_empty(), "{:?}", status.cleanup);
         assert_eq!(status.confirmed, 1, "{:?}", status.diagnostics);
         assert_eq!(capture.confirmed().len(), 1);
         assert_eq!(capture.confirmed()[0].key.pid, pid);

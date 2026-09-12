@@ -1,4 +1,4 @@
-//! Native macOS ACLs must preserve the capture cleanup ownership boundary.
+//! Directory ACL grants leave descriptor-based file ownership as the cleanup boundary.
 
 #![cfg(target_os = "macos")]
 
@@ -68,30 +68,30 @@ mod wrap;
 )]
 mod tests {
     use std::fs;
-    use std::io;
-    use std::io::ErrorKind;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::symlink;
     use std::path::Path;
     use std::path::PathBuf;
     use std::process::Command;
 
+    use rustix::fs::Mode;
     use tempfile::TempDir;
     use tempfile::tempdir;
 
-    use crate::capture_root::CleanupRefusal;
     use crate::capture_root::RootHistory;
     use crate::capture_root::RootOwner;
     use crate::capture_root::RootScan;
     use crate::capture_root::SweepBudget;
     use crate::capture_root::SweepDisposition;
     use crate::constants::CAPTURE_ACL_TEST_DIRECTORIES;
+    use crate::constants::CAPTURE_ACL_TEST_DIRECTORY_MODE;
+    use crate::constants::CAPTURE_ACL_TEST_FILE_MODE;
     use crate::constants::CAPTURE_ACL_TEST_WRITE_PERMISSIONS;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_STATE_DIR;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
     use crate::constants::PERMISSION_BITS;
-    use crate::settings::cleanup_refusal_for_test;
 
     /// One owner, one removable pair, and three directories with known permissions.
     struct CaptureRoot {
@@ -107,11 +107,18 @@ mod tests {
             for relative in CAPTURE_ACL_TEST_DIRECTORIES {
                 let path = root.path(relative);
                 chmod(&path, &["-N"]);
-                fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                    .expect("owner-only mode bits");
+                fs::set_permissions(
+                    path,
+                    fs::Permissions::from_mode(CAPTURE_ACL_TEST_DIRECTORY_MODE),
+                )
+                .expect("owner-only mode bits");
             }
             fs::write(root.log(), "retained log").expect("fixture log");
             fs::write(root.registration(), "sampled registration").expect("fixture registration");
+            for path in [root.log(), root.registration()] {
+                fs::set_permissions(path, fs::Permissions::from_mode(CAPTURE_ACL_TEST_FILE_MODE))
+                    .expect("owner-only file mode bits");
+            }
             root
         }
 
@@ -148,17 +155,18 @@ mod tests {
         }
 
         fn assert_sweeps(&self, scan: &RootScan) {
-            assert!(
-                scan.cleanup_refusals().is_empty(),
-                "{:?}",
-                scan.cleanup_refusals()
-            );
             self.assert_owner(scan);
             let mut budget = SweepBudget::default();
-            scan.sweep(&mut budget, |_| {
+            let counts = scan.sweep(&mut budget, |_| {
                 SweepDisposition::Remove(PathBuf::from("log"))
             });
+            assert_eq!(counts.removed, 2);
+            assert_eq!(counts.skipped, 0);
             assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT - 2);
+            self.assert_removed();
+        }
+
+        fn assert_removed(&self) {
             assert!(!self.log().try_exists().expect("log existence"));
             assert!(
                 !self
@@ -168,70 +176,57 @@ mod tests {
             );
         }
 
-        fn assert_refuses(&self, scan: &RootScan, path: &Path) {
-            let refusals = scan.cleanup_refusals();
-            assert!(
-                refusals.contains(&CleanupRefusal::AclWritableByOthers(path.to_owned())),
-                "missing ACL refusal for {}: {refusals:?}",
-                path.display()
-            );
-            assert!(
-                !refusals.iter().any(|refusal| matches!(
-                    refusal,
-                    CleanupRefusal::Foreign(_) | CleanupRefusal::WritableByOthers(_)
-                )),
-                "ACL state must not replace ownership or mode observations: {refusals:?}"
-            );
+        fn assert_skips(&self, scan: &RootScan) {
             self.assert_owner(scan);
             let mut budget = SweepBudget::default();
-            scan.sweep(&mut budget, |_| {
+            let counts = scan.sweep(&mut budget, |_| {
                 SweepDisposition::Remove(PathBuf::from("log"))
             });
-            assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
+            assert_eq!(counts.removed, 0);
+            assert!(counts.skipped > 0, "unproved candidates are counted");
             self.assert_retained();
         }
     }
 
     #[test]
-    fn every_non_owner_write_permission_on_root_refuses_cleanup() {
-        assert_write_permissions_refused("");
+    fn every_non_owner_write_permission_on_root_allows_owned_file_cleanup() {
+        assert_write_permissions_sweep("");
     }
 
     #[test]
-    fn every_non_owner_write_permission_on_state_refuses_cleanup() {
-        assert_write_permissions_refused(CAPTURE_STATE_DIR);
+    fn every_non_owner_write_permission_on_state_allows_owned_file_cleanup() {
+        assert_write_permissions_sweep(CAPTURE_STATE_DIR);
     }
 
     #[test]
-    fn every_non_owner_write_permission_on_pids_refuses_cleanup() {
-        assert_write_permissions_refused(CAPTURE_LIVE_RUNS_DIR);
+    fn every_non_owner_write_permission_on_pids_allows_owned_file_cleanup() {
+        assert_write_permissions_sweep(CAPTURE_LIVE_RUNS_DIR);
     }
 
     #[test]
-    fn non_owner_write_entry_after_read_only_entry_still_refuses_cleanup() {
+    fn non_owner_write_entry_after_read_only_entry_allows_owned_file_cleanup() {
         for relative in CAPTURE_ACL_TEST_DIRECTORIES {
             let root = CaptureRoot::new();
             let path = root.path(relative);
             chmod(&path, &["+a#", "0", "group:everyone allow list"]);
             chmod(&path, &["+a#", "1", "group:everyone allow add_file"]);
-            root.assert_refuses(&root.scan(), &path);
+            root.assert_sweeps(&root.scan());
         }
     }
 
     #[test]
-    fn non_owner_write_added_after_open_refuses_cleanup_on_each_directory() {
+    fn non_owner_write_added_after_open_allows_owned_file_cleanup() {
         for relative in CAPTURE_ACL_TEST_DIRECTORIES {
             let root = CaptureRoot::new();
             let scan = root.scan();
-            assert!(scan.cleanup_refusals().is_empty());
             let path = root.path(relative);
             grant_write(&path, "add_file");
-            root.assert_refuses(&scan, &path);
+            root.assert_sweeps(&scan);
         }
     }
 
     #[test]
-    fn non_owner_write_added_by_first_sweep_callback_prevents_both_unlinks() {
+    fn non_owner_write_added_by_first_sweep_callback_allows_both_unlinks() {
         for relative in CAPTURE_ACL_TEST_DIRECTORIES {
             let root = CaptureRoot::new();
             let scan = root.scan();
@@ -240,47 +235,42 @@ mod tests {
             let mut budget = SweepBudget::default();
             scan.sweep(&mut budget, |_| {
                 callbacks += 1;
-                grant_write(&path, "add_file");
-                SweepDisposition::Remove(PathBuf::from("log"))
-            });
-            assert_eq!(
-                callbacks, 1,
-                "the original cleanup gate must admit the scan"
-            );
-            assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
-            root.assert_retained();
-            root.assert_refuses(&scan, &path);
-        }
-    }
-
-    #[test]
-    fn non_owner_write_added_before_registration_unlink_preserves_registration() {
-        for relative in CAPTURE_ACL_TEST_DIRECTORIES {
-            let root = CaptureRoot::new();
-            let scan = root.scan();
-            let path = root.path(relative);
-            let mut callbacks = 0;
-            let mut budget = SweepBudget::default();
-            scan.sweep(&mut budget, |_| {
-                callbacks += 1;
-                if callbacks == 2 {
+                if callbacks == 1 {
                     grant_write(&path, "add_file");
                 }
                 SweepDisposition::Remove(PathBuf::from("log"))
             });
-            assert_eq!(callbacks, 2);
+            assert!(callbacks >= 2, "identity is rechecked before each unlink");
             assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT - 2);
-            assert!(!root.log().try_exists().expect("log existence"));
-            assert_eq!(
-                fs::read(root.registration()).expect("registration survives new ACL"),
-                b"sampled registration"
-            );
-            let refusals = scan.cleanup_refusals();
-            assert!(
-                refusals.contains(&CleanupRefusal::AclWritableByOthers(path.clone())),
-                "missing ACL refusal before registration unlink at {}: {refusals:?}",
-                path.display()
-            );
+            root.assert_removed();
+        }
+    }
+
+    #[test]
+    fn non_owner_write_added_before_registration_unlink_allows_both_unlinks() {
+        for relative in CAPTURE_ACL_TEST_DIRECTORIES {
+            let root = CaptureRoot::new();
+            let scan = root.scan();
+            let path = root.path(relative);
+            let mut callbacks = 0;
+            let mut grants_after_log_removal = 0;
+            let mut budget = SweepBudget::default();
+            scan.sweep(&mut budget, |_| {
+                callbacks += 1;
+                if !root
+                    .log()
+                    .try_exists()
+                    .expect("log existence during callback")
+                {
+                    grants_after_log_removal += 1;
+                    grant_write(&path, "add_file");
+                }
+                SweepDisposition::Remove(PathBuf::from("log"))
+            });
+            assert!(callbacks >= 2);
+            assert!(grants_after_log_removal > 0);
+            assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT - 2);
+            root.assert_removed();
             root.assert_owner(&scan);
         }
     }
@@ -364,73 +354,154 @@ mod tests {
     }
 
     #[test]
-    fn acl_inspection_failure_names_each_directory_and_preserves_owner_and_files() {
+    fn foreign_registration_in_acl_writable_directory_preserves_pair() {
         for relative in CAPTURE_ACL_TEST_DIRECTORIES {
             let root = CaptureRoot::new();
+            grant_write(&root.path(relative), "add_file");
             let mut scan = root.scan();
-            let path = root.path(relative);
-            scan.fail_acl_inspection_for_test(
-                &path,
-                io::Error::new(ErrorKind::PermissionDenied, "fixture ACL query failed"),
-            )
-            .expect("selected directory belongs to the scan");
-            let refusals = scan.cleanup_refusals();
-            let refusal = refusals
-                .iter()
-                .find(|refusal| {
-                    matches!(
-                        refusal,
-                        CleanupRefusal::Access(failure)
-                            if failure.path == path
-                                && failure.failure.kind == ErrorKind::PermissionDenied
-                                && failure.failure.message.contains("fixture ACL query failed")
-                    )
-                })
-                .expect("ACL query failure retains its path and cause");
-            let rendered = cleanup_refusal_for_test(refusal);
-            assert!(
-                rendered.contains(path.to_str().expect("fixture path is UTF-8")),
-                "{rendered}"
-            );
-            assert!(rendered.contains("fixture ACL query failed"), "{rendered}");
-            root.assert_owner(&scan);
-            let mut budget = SweepBudget::default();
-            scan.sweep(&mut budget, |_| {
-                SweepDisposition::Remove(PathBuf::from("log"))
-            });
-            assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
-            root.assert_retained();
+            // Change only the uid comparison; file metadata and directory ownership stay real.
+            scan.mark_file_foreign_for_test(&root.registration())
+                .expect("inject foreign registration owner");
+            root.assert_skips(&scan);
         }
     }
 
     #[test]
-    fn acl_refusal_rendering_names_each_directory_and_write_reason() {
+    fn foreign_log_in_acl_writable_directory_preserves_pair() {
         for relative in CAPTURE_ACL_TEST_DIRECTORIES {
             let root = CaptureRoot::new();
-            let path = root.path(relative);
-            grant_write(&path, "add_file");
-            let scan = root.scan();
-            let refusals = scan.cleanup_refusals();
-            let refusal = refusals
-                .iter()
-                .find(|refusal| **refusal == CleanupRefusal::AclWritableByOthers(path.clone()))
-                .expect("path-qualified ACL refusal");
-            let rendered = cleanup_refusal_for_test(refusal);
-            assert!(
-                rendered.contains(path.to_str().expect("fixture path is UTF-8")),
-                "{rendered}"
-            );
-            assert!(rendered.contains("ACL"), "{rendered}");
-            assert!(rendered.contains("write"), "{rendered}");
+            grant_write(&root.path(relative), "add_file");
+            let mut scan = root.scan();
+            // Change only the uid comparison; file metadata and directory ownership stay real.
+            scan.mark_file_foreign_for_test(&root.log())
+                .expect("inject foreign log owner");
+            root.assert_skips(&scan);
         }
     }
 
-    fn assert_write_permissions_refused(relative: &str) {
+    #[test]
+    fn writable_directory_mode_bits_allow_owned_file_cleanup() {
+        for relative in CAPTURE_ACL_TEST_DIRECTORIES {
+            for write in [Mode::WGRP, Mode::WOTH] {
+                let root = CaptureRoot::new();
+                fs::set_permissions(
+                    root.path(relative),
+                    fs::Permissions::from_mode(
+                        CAPTURE_ACL_TEST_DIRECTORY_MODE | u32::from(write.bits()),
+                    ),
+                )
+                .expect("directory permits non-owner writes");
+                root.assert_sweeps(&root.scan());
+            }
+        }
+    }
+
+    #[test]
+    fn writable_file_mode_bits_preserve_pair_in_acl_writable_directory() {
+        for write in [Mode::WGRP, Mode::WOTH] {
+            for candidate in [CaptureRoot::log, CaptureRoot::registration] {
+                let root = CaptureRoot::new();
+                grant_write(&root.path(""), "add_file");
+                fs::set_permissions(
+                    candidate(&root),
+                    fs::Permissions::from_mode(
+                        CAPTURE_ACL_TEST_FILE_MODE | u32::from(write.bits()),
+                    ),
+                )
+                .expect("candidate permits non-owner writes");
+                root.assert_skips(&root.scan());
+            }
+        }
+    }
+
+    #[test]
+    fn multiply_linked_file_preserves_pair_in_acl_writable_directory() {
+        for candidate in [CaptureRoot::log, CaptureRoot::registration] {
+            let root = CaptureRoot::new();
+            grant_write(&root.path(""), "add_file");
+            let alias = root.path("alias");
+            fs::hard_link(candidate(&root), &alias).expect("second link to candidate");
+            let contents = fs::read(&alias).expect("linked contents before sweep");
+            root.assert_skips(&root.scan());
+            assert_eq!(
+                fs::read(alias).expect("linked contents after sweep"),
+                contents
+            );
+        }
+    }
+
+    #[test]
+    fn symlinked_file_preserves_target_in_acl_writable_directory() {
+        for candidate in [CaptureRoot::log, CaptureRoot::registration] {
+            let root = CaptureRoot::new();
+            grant_write(&root.path(""), "add_file");
+            let path = candidate(&root);
+            let target = root.path("target");
+            fs::rename(&path, &target).expect("move candidate to symlink target");
+            symlink(&target, &path).expect("candidate symlink");
+            let contents = fs::read(&target).expect("target contents before sweep");
+            root.assert_skips(&root.scan());
+            assert!(
+                fs::symlink_metadata(path)
+                    .expect("retained symlink")
+                    .is_symlink()
+            );
+            assert_eq!(
+                fs::read(target).expect("target contents after sweep"),
+                contents
+            );
+        }
+    }
+
+    #[test]
+    fn registration_replaced_before_its_unlink_survives_in_acl_writable_directory() {
+        let root = CaptureRoot::new();
+        grant_write(&root.path(CAPTURE_LIVE_RUNS_DIR), "add_file");
+        let scan = root.scan();
+        let mut callbacks = 0;
+        let mut budget = SweepBudget::default();
+        scan.sweep(&mut budget, |_| {
+            callbacks += 1;
+            if !root
+                .log()
+                .try_exists()
+                .expect("log existence during callback")
+            {
+                fs::rename(root.registration(), root.path("held-record"))
+                    .expect("retain sampled inode separately");
+                fs::write(root.registration(), "replacement registration")
+                    .expect("replace registration before unlink");
+                fs::set_permissions(
+                    root.registration(),
+                    fs::Permissions::from_mode(CAPTURE_ACL_TEST_FILE_MODE),
+                )
+                .expect("replacement independently satisfies file mode rule");
+            }
+            SweepDisposition::Remove(PathBuf::from("log"))
+        });
+        assert!(callbacks >= 2);
+        assert!(
+            !root
+                .log()
+                .try_exists()
+                .expect("log removed before replacement")
+        );
+        assert_eq!(
+            fs::read(root.registration()).expect("replacement registration survives"),
+            b"replacement registration"
+        );
+        assert_eq!(
+            fs::read(root.path("held-record")).expect("sampled inode survives"),
+            b"sampled registration"
+        );
+    }
+
+    fn assert_write_permissions_sweep(relative: &str) {
         for permission in CAPTURE_ACL_TEST_WRITE_PERMISSIONS {
             let root = CaptureRoot::new();
             let path = root.path(relative);
             grant_write(&path, permission);
-            root.assert_refuses(&root.scan(), &path);
+            root.assert_sweeps(&root.scan());
         }
     }
 
@@ -438,7 +509,7 @@ mod tests {
         chmod(path, &["+a", &format!("group:everyone allow {permission}")]);
         assert_eq!(
             fs::metadata(path).expect("ACL directory metadata").mode() & PERMISSION_BITS,
-            0o700,
+            CAPTURE_ACL_TEST_DIRECTORY_MODE,
             "the ACL fixture must not rely on group or other write mode bits: {} ({permission})",
             path.display()
         );

@@ -58,7 +58,6 @@ use crate::birth_stamp;
 use crate::birth_stamp::IdentityEvidence;
 use crate::birth_stamp::KernelObservation;
 use crate::capture_root;
-use crate::capture_root::CleanupRefusal;
 use crate::capture_root::EffectiveUser;
 use crate::capture_root::Enumeration;
 use crate::capture_root::RootHistory;
@@ -451,12 +450,10 @@ impl CaptureRoots {
     }
 }
 
-/// Keep every readable generation separately from evidence completeness.
+/// Keep every readable generation and each independent read diagnostic.
 struct RegisteredRuns {
     /// A pid can retain several ended, unknown, or confirmed generations.
     generations: BTreeMap<u32, Vec<RegisteredRun>>,
-    /// A disappearing or unreadable sibling disables cleanup for this scan.
-    evidence:    RegistrationEvidence,
     /// Failed reads and records without proof remain visible independently of rows.
     diagnostics: Vec<CaptureDiagnostic>,
 }
@@ -471,15 +468,6 @@ struct RegisteredRun {
     verification: RegistrationVerification,
     /// Taken from the descriptor that supplied the record bytes.
     modified:     Result<SystemTime, CaptureFailure>,
-}
-
-/// Whether this scan read every published registration successfully.
-#[derive(Debug, Eq, PartialEq)]
-enum RegistrationEvidence {
-    /// The bounded inventory and all record reads completed.
-    Complete,
-    /// Missing or unreadable entries retain sibling readings and prohibit cleanup.
-    Incomplete,
 }
 
 /// A confirmed registration retains its descriptor-bound display timestamp.
@@ -592,7 +580,6 @@ impl Capture {
                         path:    path.clone(),
                         failure: error.into(),
                     };
-                    status.cleanup.push(CleanupRefusal::Access(failure.clone()));
                     status.state = RootReadStatus::Unavailable(failure);
                 },
                 Ok(scan) => {
@@ -638,7 +625,6 @@ impl Capture {
     ) {
         let RegisteredRuns {
             generations,
-            evidence,
             diagnostics,
         } = registered_runs(scan, observe);
         status.diagnostics = diagnostics;
@@ -705,15 +691,6 @@ impl Capture {
         }
         for outcome in scan.sampled_log_outcome() {
             enumeration_diagnostic(outcome, scan.path().to_owned(), &mut status.diagnostics);
-        }
-        status.cleanup = scan.cleanup_refusals();
-        if evidence == RegistrationEvidence::Incomplete {
-            if matches!(scan.registration_outcome(), Enumeration::Complete) {
-                status.cleanup.push(CleanupRefusal::RegistrationIncomplete(
-                    scan.registration_path(),
-                ));
-            }
-            return;
         }
         if status.root.cleanup == CaptureCleanup::Here {
             sweep_ended(scan, &generations, observe, budget);
@@ -939,10 +916,6 @@ fn enumeration_diagnostic(
 
 /// Parse each registration independently and retain every generation's identity result.
 fn registered_runs(scan: &RootScan, observe: &impl Fn(u32) -> KernelObservation) -> RegisteredRuns {
-    let mut evidence = match scan.registration_outcome() {
-        Enumeration::Complete => RegistrationEvidence::Complete,
-        Enumeration::Incomplete | Enumeration::Failed(_) => RegistrationEvidence::Incomplete,
-    };
     let mut diagnostics = Vec::new();
     enumeration_diagnostic(
         scan.registration_outcome(),
@@ -965,12 +938,6 @@ fn registered_runs(scan: &RootScan, observe: &impl Fn(u32) -> KernelObservation)
         let observation = match entry.read_registration() {
             Ok(observation) => observation,
             Err(error) => {
-                if !matches!(
-                    registration_name(entry.name()),
-                    RegistrationName::Staging { .. }
-                ) {
-                    evidence = RegistrationEvidence::Incomplete;
-                }
                 diagnostics.push(CaptureDiagnostic::RegistrationUnreadable(PathFailure {
                     path,
                     failure: error.into(),
@@ -1032,7 +999,6 @@ fn registered_runs(scan: &RootScan, observe: &impl Fn(u32) -> KernelObservation)
     }
     RegisteredRuns {
         generations,
-        evidence,
         diagnostics,
     }
 }
@@ -1665,10 +1631,10 @@ mod tests {
                 &|pid| KernelObservation::for_test(pid, observe(pid)),
                 budget,
                 &mut AccountCaptureDirectory {
-                    root:         CaptureRoot::for_test(scan.path()),
-                    owner:        scan.owner(),
-                    account:      AccountName::Unavailable,
-                    cleanup:      Vec::new(),
+                    root:    CaptureRoot::for_test(scan.path()),
+                    owner:   scan.owner(),
+                    account: AccountName::Unavailable,
+
                     state:        RootReadStatus::Readable,
                     confirmed:    0,
                     diagnostics:  Vec::new(),
@@ -1779,20 +1745,13 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_registration_reads_disable_cleanup_after_complete_enumeration() {
+    fn incomplete_registration_reads_remain_read_diagnostics_only() {
         let root = capture_root();
         let path = root.path().canonicalize().unwrap();
         let registration = path.join(CAPTURE_LIVE_RUNS_DIR).join("10.invalid");
         symlink("missing", &registration).unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| Observation::Unknown);
         let status = &capture.root_status[0];
-        assert!(
-            status
-                .cleanup
-                .contains(&CleanupRefusal::RegistrationIncomplete(
-                    path.join(CAPTURE_LIVE_RUNS_DIR)
-                ))
-        );
         assert!(status.diagnostics.iter().any(|diagnostic| matches!(diagnostic, CaptureDiagnostic::RegistrationUnreadable(failure) if failure.path == registration)));
         assert!(!status.diagnostics.iter().any(|diagnostic| matches!(
             diagnostic,
@@ -1811,7 +1770,6 @@ mod tests {
         assert!(staging.is_symlink());
         assert!(!registration.exists());
         assert!(!log.exists());
-        assert!(capture.root_status[0].cleanup.is_empty());
         assert!(
             capture.root_status[0]
                 .diagnostics
@@ -1860,8 +1818,6 @@ mod tests {
         for _ in 0..2 {
             let mut capture =
                 Capture::take_with_observations(root.path(), |_| Observation::Unknown);
-            let cleanup = capture.root_status[0].cleanup.clone();
-            assert!(!cleanup.is_empty());
             let reading = capture.lookup(0, 10);
             capture.record_boot_verification(Err(boot_failure.clone()));
 
@@ -1888,7 +1844,6 @@ mod tests {
                     matches!(diagnostic, CaptureDiagnostic::IdentityUnknown(_))
                 })
             );
-            assert_eq!(status.cleanup, cleanup);
             assert_eq!(capture.lookup(0, 10), reading);
             assert_eq!(status.confirmed, 0);
             assert!(capture.confirmed().is_empty());
@@ -2255,7 +2210,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disappearing_registration_preserves_sibling_readings_and_disables_cleanup() {
+    fn a_disappearing_registration_preserves_sibling_readings_and_sweeps_proven_pairs() {
         let root = capture_root();
         for pid in 10..13 {
             publish(root.path(), pid, "one", "100", CAPTURED_REDRAW);
@@ -2273,9 +2228,9 @@ mod tests {
             );
         }
         assert_eq!(capture.lookup(0, 11), CaptureLookup::Unregistered);
-        assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
-        assert!(stale.0.exists());
-        assert!(stale.1.exists());
+        assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT - 2);
+        assert!(!stale.0.exists());
+        assert!(!stale.1.exists());
     }
 
     #[test]
@@ -2479,7 +2434,7 @@ mod tests {
                 calls.set(calls.get() + 1);
                 observation.clone()
             });
-            assert_eq!(calls.get(), 3);
+            assert_eq!(calls.get(), 4);
             assert_eq!(capture.lookup(0, 10), CaptureLookup::Unregistered);
             assert!(capture.confirmed().is_empty());
             assert!(!staging.exists());
@@ -2532,7 +2487,7 @@ mod tests {
     #[test]
     fn staging_cleanup_requires_fresh_ended_evidence_before_each_unlink() {
         for fresh in [present("100"), Observation::Unknown] {
-            for changes_after in [1, 2] {
+            for changes_after in [1, 2, 3] {
                 let root = capture_root();
                 let (staging, log) = stage(root.path(), 10, "one", "100");
                 let calls = std::cell::Cell::new(0);
@@ -2546,7 +2501,7 @@ mod tests {
                     }
                 });
                 assert!(staging.exists());
-                assert_eq!(log.exists(), changes_after == 1);
+                assert_eq!(log.exists(), changes_after < 3);
                 assert_eq!(calls.get(), changes_after + 1);
             }
         }
@@ -2645,7 +2600,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_registration_inventory_preserves_all_artifacts() {
+    fn incomplete_registration_inventory_sweeps_any_sampled_proven_pair() {
         let root = capture_root();
         let pair = publish(root.path(), 10, "one", "100", "");
         for index in 0..CAPTURE_INVENTORY_LIMIT {
@@ -2662,15 +2617,21 @@ mod tests {
             scan.registration_outcome(),
             Enumeration::Incomplete
         ));
+        let sampled = scan
+            .registration_entries()
+            .any(|entry| entry.name() == Path::new("10.one"));
         let mut budget = SweepBudget::default();
         Capture::default().scan_with_observations(&scan, &|_| Observation::Ended, &mut budget);
-        assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
-        assert!(pair.0.exists());
-        assert!(pair.1.exists());
+        assert_eq!(
+            budget.remaining(),
+            CAPTURE_SWEEP_LIMIT - usize::from(sampled) * 2
+        );
+        assert_eq!(pair.0.exists(), !sampled);
+        assert_eq!(pair.1.exists(), !sampled);
     }
 
     #[test]
-    fn an_unreadable_registration_disables_cleanup_but_not_sibling_progress() {
+    fn an_unreadable_registration_preserves_sibling_progress_and_sweeps_proven_pairs() {
         let root = capture_root();
         publish(root.path(), 10, "one", "100", CAPTURED_REDRAW);
         let stale = publish(root.path(), 11, "stale", "99", "");
@@ -2686,8 +2647,8 @@ mod tests {
             capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
-        assert!(stale.0.exists());
-        assert!(stale.1.exists());
+        assert!(!stale.0.exists());
+        assert!(!stale.1.exists());
     }
 
     #[test]

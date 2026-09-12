@@ -64,7 +64,6 @@ use crate::birth_stamp::LifetimeEvidence;
 use crate::birth_stamp::ProcessLifetime;
 #[cfg(target_os = "linux")]
 use crate::birth_stamp::Verification;
-use crate::capture_root::CleanupRefusal;
 use crate::capture_root::RootIncarnation;
 use crate::capture_root::RootOwner;
 use crate::capture_root::SharedCaptureDirectory;
@@ -770,8 +769,6 @@ pub(crate) struct AccountCaptureDirectory {
     pub(crate) owner:        RootOwner,
     /// Resolved on the scan worker; rendering performs no account lookup.
     pub(crate) account:      AccountName,
-    /// Access refusals supplement `state`; only accepted roots permit cleanup.
-    pub(crate) cleanup:      Vec<CleanupRefusal>,
     /// Each scan reopens the directory and reports current access.
     pub(crate) state:        RootReadStatus,
     /// Published, verified registrations whose logs were readable in this scan.
@@ -800,7 +797,6 @@ impl AccountCaptureDirectory {
             account: AccountName::resolve(RootOwner::Uid(root.uid), users),
             root,
             owner: RootOwner::Unavailable,
-            cleanup: Vec::new(),
             state: RootReadStatus::Readable,
             confirmed: 0,
             diagnostics: Vec::new(),
@@ -827,7 +823,6 @@ impl AccountCaptureDirectory {
                     path:    status.root.path.clone(),
                     failure: error.into(),
                 };
-                status.cleanup.push(CleanupRefusal::Access(failure.clone()));
                 status.state = RootReadStatus::Unavailable(failure);
             },
         }
@@ -838,7 +833,7 @@ impl AccountCaptureDirectory {
 /// Path-qualified observations supplement the count of verified, readable captures.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CaptureDiagnostic {
-    /// A short directory inventory can omit runs and prohibits cleanup this scan.
+    /// A short directory inventory can omit runs from this scan.
     EnumerationIncomplete(PathBuf),
     /// An inaccessible directory must never read as an empty inventory.
     EnumerationFailed(PathFailure),
@@ -1241,7 +1236,7 @@ struct CpuAccumulator {
 
 impl CpuAccumulator {
     /// Account for the current tree once, including work retained after a process exits.
-    fn update(&mut self, current: HashMap<ProcessIdentity, Duration>) -> Duration {
+    fn update(&mut self, current: &HashMap<ProcessIdentity, Duration>) -> Duration {
         #[cfg(target_os = "linux")]
         {
             self.total = self.total.max(current.values().sum());
@@ -1249,8 +1244,8 @@ impl CpuAccumulator {
         #[cfg(not(target_os = "linux"))]
         {
             for (identity, elapsed) in current {
-                let retained = self.present.entry(identity).or_default();
-                *retained = (*retained).max(elapsed);
+                let retained = self.present.entry(identity.clone()).or_default();
+                *retained = (*retained).max(*elapsed);
             }
             self.total = self.present.values().sum::<Duration>();
         }
@@ -1296,9 +1291,9 @@ impl InvocationCpu {
         now: Instant,
     ) -> Measurement<f32> {
         for (identity, current) in work.detached {
-            self.detached.entry(identity).or_default().update(current);
+            self.detached.entry(identity).or_default().update(&current);
         }
-        let tree = self.tree.update(work.tree);
+        let tree = self.tree.update(&work.tree);
         #[cfg(target_os = "linux")]
         let tree = {
             for (identity, elapsed) in work.nested {
@@ -1338,7 +1333,8 @@ impl InvocationCpu {
                     return Measurement::Unavailable(MeasurementAbsence::Unproven);
                 }
                 Measurement::Reading(
-                    (accumulated - previous).as_secs_f32() / elapsed.as_secs_f32() * 100.0,
+                    accumulated.saturating_sub(previous).as_secs_f32() / elapsed.as_secs_f32()
+                        * 100.0,
                 )
             },
         }
@@ -4928,7 +4924,7 @@ mod tests {
             .detached
             .entry(compiler.clone())
             .or_default()
-            .update(cpu_work(&[(30, 400)]).tree);
+            .update(&cpu_work(&[(30, 400)]).tree);
         census.identities.insert(pid, identities[1].clone());
         let replaced = census.attribute_cpu_with(
             &System::new(),
@@ -6828,7 +6824,7 @@ mod tests {
         assert_eq!(
             linux_cpu_ticks(&stat),
             Ok(LinuxCpuSample {
-                start_ticks:       123456789,
+                start_ticks:       123_456_789,
                 accumulated_ticks: 60,
             })
         );

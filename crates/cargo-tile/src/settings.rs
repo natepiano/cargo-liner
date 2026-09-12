@@ -16,7 +16,6 @@ use tui_pane::SettingsRow;
 
 use crate::app::App;
 use crate::app::CaptureStartupNotice;
-use crate::capture_root::CleanupRefusal;
 use crate::capture_root::RootOwner;
 use crate::capture_root::SharedCaptureDirectory;
 use crate::capture_root::SharedDirectoryState;
@@ -28,15 +27,6 @@ use crate::constants::CAPTURE_ASSOCIATION_COMPETING;
 use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
 use crate::constants::CAPTURE_ASSOCIATION_SUPPRESSED;
 use crate::constants::CAPTURE_ASSOCIATION_UNCONFIRMED;
-#[cfg(target_os = "macos")]
-use crate::constants::CAPTURE_CLEANUP_ACL_WRITABLE;
-use crate::constants::CAPTURE_CLEANUP_CHANGED;
-use crate::constants::CAPTURE_CLEANUP_DISABLED;
-use crate::constants::CAPTURE_CLEANUP_EFFECTIVE_USER;
-use crate::constants::CAPTURE_CLEANUP_ENUMERATION;
-use crate::constants::CAPTURE_CLEANUP_FOREIGN;
-use crate::constants::CAPTURE_CLEANUP_REGISTRATION;
-use crate::constants::CAPTURE_CLEANUP_WRITABLE;
 use crate::constants::CAPTURE_FAILURE_PERMISSION;
 use crate::constants::CAPTURE_OWNER_UID;
 use crate::constants::CAPTURE_OWNER_UNAVAILABLE;
@@ -473,9 +463,9 @@ pub(crate) fn capture_root_status(status: &AccountCaptureDirectory) -> String {
         AccountName::Resolved(name) => name.clone(),
         AccountName::Unavailable => status.root.uid.to_string(),
     };
-    let (ownership, cleanup) = match status.root.cleanup {
-        CaptureCleanup::Here => ("; yours", "here"),
-        CaptureCleanup::AccountNextRun => ("", "by that account's next cargo run"),
+    let ownership = match status.root.cleanup {
+        CaptureCleanup::Here => "; yours",
+        CaptureCleanup::AccountNextRun => "",
     };
     let readable = match status.state {
         RootReadStatus::Readable => "readable",
@@ -483,12 +473,9 @@ pub(crate) fn capture_root_status(status: &AccountCaptureDirectory) -> String {
         RootReadStatus::ForeignOwned { .. } => return capture_read_status(status),
     };
     let mut parts = vec![format!(
-        "{account}{ownership}; {readable}; {} active captures; cleanup: {cleanup}",
+        "{account}{ownership}; {readable}; {} active captures",
         status.confirmed
     )];
-    if status.root.cleanup == CaptureCleanup::Here {
-        parts.extend(status.cleanup.iter().map(cleanup_refusal));
-    }
     parts.push(capture_read_status(status));
     parts.extend(status.diagnostics.iter().map(capture_diagnostic));
     {
@@ -693,41 +680,6 @@ fn capture_owner(owner: RootOwner) -> String {
     }
 }
 
-/// Cleanup reasons retain their failing directory even when the root is readable.
-fn cleanup_refusal(refusal: &CleanupRefusal) -> String {
-    match refusal {
-        CleanupRefusal::Foreign(path) => {
-            format!("{CAPTURE_CLEANUP_FOREIGN}: {}", path.display())
-        },
-        CleanupRefusal::WritableByOthers(path) => {
-            format!("{CAPTURE_CLEANUP_WRITABLE}: {}", path.display())
-        },
-        #[cfg(target_os = "macos")]
-        CleanupRefusal::AclWritableByOthers(path) => {
-            format!("{CAPTURE_CLEANUP_ACL_WRITABLE}: {}", path.display())
-        },
-        CleanupRefusal::EffectiveUserUnavailable => CAPTURE_CLEANUP_EFFECTIVE_USER.to_string(),
-        CleanupRefusal::Access(failure) => {
-            format!("{CAPTURE_CLEANUP_DISABLED} — {}", path_failure(failure))
-        },
-        CleanupRefusal::EnumerationIncomplete(path) => {
-            format!("{CAPTURE_CLEANUP_ENUMERATION}: {}", path.display())
-        },
-        CleanupRefusal::RegistrationIncomplete(path) => {
-            format!("{CAPTURE_CLEANUP_REGISTRATION}: {}", path.display())
-        },
-        CleanupRefusal::Changed(path) => {
-            format!("{CAPTURE_CLEANUP_CHANGED}: {}", path.display())
-        },
-    }
-}
-
-/// Exercise the production refusal wording from the macOS integration target.
-#[cfg(all(test, target_os = "macos"))]
-pub(crate) fn cleanup_refusal_for_test(refusal: &CleanupRefusal) -> String {
-    cleanup_refusal(refusal)
-}
-
 /// Both the failed artifact and the original diagnostic survive rendering.
 fn path_failure(failure: &PathFailure) -> String {
     match failure.failure.kind {
@@ -747,7 +699,6 @@ fn path_failure(failure: &PathFailure) -> String {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use std::collections::HashSet;
     use std::io::ErrorKind;
 
     use tui_pane::SettingsRow;
@@ -758,7 +709,6 @@ mod tests {
     use crate::app::App;
     use crate::app::CaptureStartupNotice;
     use crate::birth_stamp::IdentityEvidence;
-    use crate::capture_root::CleanupRefusal;
     use crate::capture_root::RootOwner;
     use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
     use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
@@ -786,14 +736,14 @@ mod tests {
     /// Construct retained evidence without resolving or accessing a fixture path.
     fn observed_root() -> AccountCaptureDirectory {
         AccountCaptureDirectory {
-            root:         CaptureRoot {
+            root:    CaptureRoot {
                 path:    "/retained/captures".into(),
                 uid:     1000,
                 cleanup: CaptureCleanup::Here,
             },
-            owner:        RootOwner::Uid(1000),
-            account:      AccountName::Unavailable,
-            cleanup:      Vec::new(),
+            owner:   RootOwner::Uid(1000),
+            account: AccountName::Unavailable,
+
             state:        RootReadStatus::Readable,
             confirmed:    0,
             diagnostics:  Vec::new(),
@@ -849,10 +799,10 @@ mod tests {
     }
 
     #[test]
-    fn readable_empty_root_displays_owner_cleanup_and_absolute_path() {
+    fn readable_empty_root_displays_owner_and_path_without_cleanup() {
         assert_eq!(
             root_row(observed_root()).value,
-            "1000; yours; readable; 0 active captures; cleanup: here; readable — no active captures; /retained/captures",
+            "1000; yours; readable; 0 active captures; readable — no active captures; /retained/captures",
         );
     }
 
@@ -866,73 +816,15 @@ mod tests {
     }
 
     #[test]
-    fn all_cleanup_refusals_are_distinct_from_each_other_and_an_empty_root() {
-        let path = "/retained/captures/state/pids";
-        let cases = [
-            (
-                CleanupRefusal::EnumerationIncomplete(path.into()),
-                "partial enumeration — cleanup disabled",
-            ),
-            (
-                CleanupRefusal::RegistrationIncomplete(path.into()),
-                "incomplete registration inventory — cleanup disabled",
-            ),
-            (CleanupRefusal::Foreign(path.into()), "read-only"),
-            (
-                CleanupRefusal::WritableByOthers(path.into()),
-                "group/other writable — cleanup disabled",
-            ),
-            (
-                CleanupRefusal::EffectiveUserUnavailable,
-                "ownership unavailable — cleanup disabled for this session; restart to retry effective-user lookup",
-            ),
-            (
-                CleanupRefusal::Access(failure(path, ErrorKind::PermissionDenied)),
-                "cleanup disabled — permission denied: /retained/captures/state/pids",
-            ),
-            (
-                CleanupRefusal::Changed(path.into()),
-                "directory changed — cleanup disabled this scan",
-            ),
-        ];
-        let mut rendered = HashSet::from([root_row(observed_root()).value]);
-        for (refusal, wording) in cases {
-            let mut status = observed_root();
-            status.cleanup.push(refusal);
-            let row = root_row(status);
-            assert!(row.value.contains(wording), "{}", row.value);
-            assert!(!row.value.contains("cleanup allowed"));
-            assert!(rendered.insert(row.value));
-        }
-    }
-
-    #[test]
     fn foreign_owner_is_read_only_without_a_permission_repair_instruction() {
         let mut status = observed_root();
         status.owner = RootOwner::Uid(2000);
         status.root.uid = 2000;
         status.root.cleanup = CaptureCleanup::AccountNextRun;
-        status
-            .cleanup
-            .push(CleanupRefusal::Foreign("/retained/captures".into()));
         let value = root_row(status).value;
-        assert!(value.contains(
-            "2000; readable; 0 active captures; cleanup: by that account's next cargo run"
-        ));
+        assert!(value.contains("2000; readable; 0 active captures"));
         assert!(!value.contains("restart"));
         assert!(!value.contains("writable"));
-    }
-
-    #[test]
-    fn effective_user_failure_names_the_session_and_restart_retry() {
-        let mut status = observed_root();
-        status
-            .cleanup
-            .push(CleanupRefusal::EffectiveUserUnavailable);
-        let value = root_row(status).value;
-        assert!(value.contains("ownership unavailable — cleanup disabled for this session"));
-        assert!(value.contains("restart to retry effective-user lookup"));
-        assert!(!value.contains("read-only"));
     }
 
     #[test]
@@ -943,7 +835,7 @@ mod tests {
             RootReadStatus::Unavailable(failure("/retained/captures", ErrorKind::NotFound));
         let value = root_row(status).value;
         assert!(value.contains(
-            "1000; yours; unreadable; 0 active captures; cleanup: here; missing directory: /retained/captures"
+            "1000; yours; unreadable; 0 active captures; missing directory: /retained/captures"
         ));
         assert!(!value.contains("no active captures"));
         assert!(!value.contains("restart"));
@@ -1149,9 +1041,6 @@ mod tests {
     #[test]
     fn boot_blocked_identity_keeps_retention_without_promising_a_next_scan_retry() {
         let mut status = observed_root();
-        status.cleanup.push(CleanupRefusal::RegistrationIncomplete(
-            "/retained/captures/state/pids".into(),
-        ));
         status.diagnostics = vec![
             CaptureDiagnostic::IdentityBlockedByBoot(
                 "/retained/captures/state/pids/42-uuid".into(),
@@ -1166,9 +1055,7 @@ mod tests {
         assert!(value.contains(&format!(
             "unconfirmed registration: /retained/captures/state/pids/42-uuid ({CAPTURE_STATUS_IDENTITY_BOOT})",
         )));
-        assert!(value.contains(
-            "incomplete registration inventory — cleanup disabled: /retained/captures/state/pids"
-        ));
+        assert!(!value.contains("cleanup"));
         assert!(value.contains("boot identity unavailable — verification disabled for this session; restart to retry boot read: permission denied: /kernel/boot-id"));
         assert!(!value.contains("next scan"));
         assert!(!value.contains("active —"));
@@ -1182,9 +1069,7 @@ mod tests {
         ));
         let value = root_row(status).value;
         assert!(value.contains("partial — 1 unverifiable artifact"));
-        assert!(value.contains(
-            "retained — identity cannot be established; cleanup cannot remove this artifact"
-        ));
+        assert!(value.contains("retained — identity cannot be established"));
         assert!(!value.contains("next scan"));
         assert!(!value.contains("eventual"));
         assert!(!value.contains("will remove"));

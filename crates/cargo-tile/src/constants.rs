@@ -491,7 +491,7 @@ pub(crate) const CARGO_TARGET_DIR_ENV: &str = "CARGO_TARGET_DIR";
 /// Linux publishes its clock frequency in the scanner's auxiliary vector.
 #[cfg(target_os = "linux")]
 pub(crate) const CPU_AUXV_PATH: &str = "/proc/self/auxv";
-/// The ELF auxiliary-vector tag AT_CLKTCK supplies stat ticks per second.
+/// The ELF auxiliary-vector tag `AT_CLKTCK` supplies stat ticks per second.
 #[cfg(target_os = "linux")]
 pub(crate) const CPU_AUXV_CLOCK_TICKS: usize = 17;
 /// Each auxiliary-vector entry has a native-word tag followed by its value.
@@ -686,19 +686,16 @@ pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
 pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
 
 // capture root acl
-/// Darwin's ACL_EXTENDED_ALLOW tag is the only entry kind granting permissions.
-#[cfg(target_os = "macos")]
-pub(crate) const CAPTURE_ACL_ALLOW: libc::c_uint = 1;
-/// Start Darwin's native ACL iterator, including an empty ACL.
-#[cfg(target_os = "macos")]
-pub(crate) const CAPTURE_ACL_FIRST_ENTRY: libc::c_int = 0;
-/// Darwin advances its internal ACL cursor with ACL_NEXT_ENTRY, not an ordinal.
-#[cfg(target_os = "macos")]
-pub(crate) const CAPTURE_ACL_NEXT_ENTRY: libc::c_int = -1;
 /// Exercise the account root and both registration ancestors independently.
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) const CAPTURE_ACL_TEST_DIRECTORIES: [&str; 3] =
     ["", CAPTURE_STATE_DIR, CAPTURE_LIVE_RUNS_DIR];
+/// Establish directory ownership independently of the invoking account's umask.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) const CAPTURE_ACL_TEST_DIRECTORY_MODE: u32 = 0o700;
+/// Candidate file fixtures must satisfy the per-file mode prerequisite initially.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) const CAPTURE_ACL_TEST_FILE_MODE: u32 = 0o600;
 /// Native chmod spellings independently exercise every write-class permission;
 /// deriving this list from the production bit mask would hide missing mask bits.
 #[cfg(all(test, target_os = "macos"))]
@@ -712,18 +709,6 @@ pub(crate) const CAPTURE_ACL_TEST_WRITE_PERMISSIONS: [&str; 8] = [
     "writesecurity",
     "chown",
 ];
-/// membership.h distinguishes user ids from group ids even when their numbers match.
-#[cfg(target_os = "macos")]
-pub(crate) const CAPTURE_ACL_USER_ID: libc::c_int = 0;
-/// All Darwin sys/acl.h write-class permissions: WRITE_DATA/ADD_FILE (2),
-/// DELETE (4), APPEND_DATA/ADD_SUBDIRECTORY (5), DELETE_CHILD (6),
-/// WRITE_ATTRIBUTES (8), WRITE_EXTATTRIBUTES (10), WRITE_SECURITY (12), and
-/// CHANGE_OWNER (13). Any non-owner allow grant can invalidate safe cleanup;
-/// read-only grants remain permitted even when mode bits do not describe the ACL.
-#[cfg(target_os = "macos")]
-pub(crate) const CAPTURE_ACL_WRITE_PERMISSIONS: libc::c_uint =
-    (1 << 2) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 8) | (1 << 10) | (1 << 12) | (1 << 13);
-
 // capture root status
 /// Each process association names the root that supplied all capture fields.
 pub(crate) const CAPTURE_ASSOCIATION: &str = "capture association";
@@ -739,25 +724,6 @@ pub(crate) const CAPTURE_ASSOCIATION_SUPPRESSED: &str = "another root's proof we
 /// An annotation-only selection must not borrow fields from another root's proof.
 pub(crate) const CAPTURE_ASSOCIATION_UNCONFIRMED: &str =
     "unconfirmed selection — annotation only; no registration fields";
-/// ACL grants can permit other writers without changing group/other mode bits.
-#[cfg(target_os = "macos")]
-pub(crate) const CAPTURE_CLEANUP_ACL_WRITABLE: &str =
-    "ACL grants non-owner write access — cleanup disabled";
-/// Directory replacement prevents removal until another stable scan observes it.
-pub(crate) const CAPTURE_CLEANUP_CHANGED: &str = "directory changed — cleanup disabled this scan";
-/// A read failure cannot authorize cleanup from an empty inventory.
-pub(crate) const CAPTURE_CLEANUP_DISABLED: &str = "cleanup disabled";
-/// The effective-user failure is cached, so another scan cannot retry it.
-pub(crate) const CAPTURE_CLEANUP_EFFECTIVE_USER: &str = "ownership unavailable — cleanup disabled for this session; restart to retry effective-user lookup";
-/// Short enumeration hides runs, unlike a complete list with an unreadable record.
-pub(crate) const CAPTURE_CLEANUP_ENUMERATION: &str = "partial enumeration — cleanup disabled";
-/// A readable root owned by another account requires no permission repair.
-pub(crate) const CAPTURE_CLEANUP_FOREIGN: &str = "read-only";
-/// Missing record contents prevent cleanup despite a complete directory listing.
-pub(crate) const CAPTURE_CLEANUP_REGISTRATION: &str =
-    "incomplete registration inventory — cleanup disabled";
-/// Unlike a foreign root, this owner can repair the directory's write permissions.
-pub(crate) const CAPTURE_CLEANUP_WRITABLE: &str = "group/other writable — cleanup disabled";
 /// Preserve denial as an access failure instead of describing an empty root.
 pub(crate) const CAPTURE_FAILURE_PERMISSION: &str = "permission denied";
 /// A uid names the observed account without performing a render-time lookup.
@@ -796,8 +762,7 @@ pub(crate) const CAPTURE_STATUS_MISSING: &str = "missing directory";
 /// Retained contents include failures or artifacts outside the confirmed count.
 pub(crate) const CAPTURE_STATUS_PARTIAL: &str = "partial";
 /// Unknown identity never becomes permission to delete through age alone.
-pub(crate) const CAPTURE_STATUS_RETAINED: &str =
-    "retained — identity cannot be established; cleanup cannot remove this artifact";
+pub(crate) const CAPTURE_STATUS_RETAINED: &str = "retained — identity cannot be established";
 /// A staging artifact has not published a capture registration.
 pub(crate) const CAPTURE_STATUS_STAGING: &str = "staging file";
 /// Retain log access failures independently of process-table visibility.
