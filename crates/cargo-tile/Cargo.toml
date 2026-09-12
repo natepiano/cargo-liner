@@ -17,7 +17,8 @@ workspace = true
 [dependencies]
 chrono        = { workspace = true }
 clap          = { workspace = true }
-crossterm     = { workspace = true }
+# Level-triggered polling preserves keyboard readiness beside SIGWINCH.
+crossterm     = { workspace = true, features = ["use-dev-tty"] }
 dirs          = { workspace = true }
 ratatui       = { workspace = true }
 rustix        = { workspace = true, features = ["fs", "process"] }

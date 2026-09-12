@@ -479,7 +479,30 @@ pub(crate) const SELF_PROCESS_NAME: &str = BINARY_NAME;
 /// Compiler driver names counted under each cargo invocation, in
 /// reporting priority order: with a wrapper in use every `rustc` is a
 /// child of one, so `sccache` wins to avoid counting a compile twice.
-pub(crate) const COMPILER_PROCESS_NAMES: [&str; 2] = [SCCACHE_BINARY, "rustc"];
+pub(crate) const COMPILER_PROCESS_NAMES: [&str; 2] = [SCCACHE_BINARY, RUSTC_BINARY];
+/// Rust compiler processes can execute outside the requesting cargo's ancestry.
+pub(crate) const RUSTC_BINARY: &str = "rustc";
+/// Both rustc and its cache client carry the destination of a compilation.
+pub(crate) const RUSTC_OUT_DIR_FLAG: &str = "--out-dir";
+/// Cargo's explicit target directory takes precedence over its environment.
+pub(crate) const CARGO_TARGET_DIR_FLAG: &str = "--target-dir";
+/// Cargo exports the target directory to compiler wrappers when configured here.
+pub(crate) const CARGO_TARGET_DIR_ENV: &str = "CARGO_TARGET_DIR";
+/// Linux publishes its clock frequency in the scanner's auxiliary vector.
+#[cfg(target_os = "linux")]
+pub(crate) const CPU_AUXV_PATH: &str = "/proc/self/auxv";
+/// The ELF auxiliary-vector tag AT_CLKTCK supplies stat ticks per second.
+#[cfg(target_os = "linux")]
+pub(crate) const CPU_AUXV_CLOCK_TICKS: usize = 17;
+/// Each auxiliary-vector entry has a native-word tag followed by its value.
+#[cfg(target_os = "linux")]
+pub(crate) const CPU_AUXV_ENTRY_WORDS: usize = 2;
+/// utime begins at field 14, index 11 after removing pid and comm.
+#[cfg(target_os = "linux")]
+pub(crate) const CPU_STAT_TIME_INDEX: usize = 11;
+/// utime, stime, cutime and cstime account for both live and reaped work.
+#[cfg(target_os = "linux")]
+pub(crate) const CPU_STAT_TIME_FIELDS: usize = 4;
 /// The process every tree on this machine roots at -- `launchd` on
 /// macOS, `init` on Linux. An ancestry walk stops short of it: a row
 /// naming the one process everything descends from tells one command

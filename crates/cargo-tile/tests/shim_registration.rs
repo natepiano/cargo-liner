@@ -67,6 +67,10 @@ mod wrap;
 )]
 mod shared_capture;
 
+#[cfg(test)]
+#[path = "support/rows_readout.rs"]
+mod rows_readout;
+
 /// The child receives a parent path through this constructor, never application configuration.
 #[test]
 fn reader_child() -> std::io::Result<()> {
@@ -110,6 +114,7 @@ fn cli_rejects_unknown_process_arguments() -> std::io::Result<()> {
 )]
 mod tests {
     use std::fs;
+    use std::io::Write;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
@@ -118,10 +123,15 @@ mod tests {
     use std::process::Output;
     use std::process::Stdio;
     use std::rc::Rc;
+    use std::time::Duration;
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
+    use sysinfo::Pid;
+    use sysinfo::ProcessRefreshKind;
+    use sysinfo::ProcessesToUpdate;
+    use sysinfo::System;
     use tempfile::TempDir;
     use tui_pane::GlobalAction;
     use tui_pane::NavAction;
@@ -131,17 +141,26 @@ mod tests {
     use tui_pane::SettingsRowPayload;
 
     use super::app::App;
+    use super::config::Config;
     use super::constants::CAPTURE_REGISTRATION_BYTES;
     use super::constants::POPUP_CHROME_HEIGHT;
+    use super::constants::PROCESS_POLL_MILLIS;
     use super::constants::REGISTRATION_MAGIC;
     use super::constants::SHIM_MARKER_SEARCH_BYTES;
     use super::constants::SUPPORTED_REGISTRATION_VERSION;
     use super::interaction;
     use super::navigation::AppNavigation;
+    use super::processes::InvocationId;
+    use super::processes::Measurement;
+    use super::processes::spawn_with_resolver;
+    use super::progress::CaptureRoots;
     use super::registration::ParseError;
     use super::registration::Registration;
     use super::render;
     use super::settings;
+
+    /// Span several reporting windows while retaining every completed observation.
+    const CPU_OBSERVATION_SCANS: usize = 16;
 
     /// Exercise the built binary using actual shim publications and a reconstructed PTY screen.
     const READER_SCENARIO_SCRIPT: &str = r#"from datetime import datetime, timezone
@@ -164,9 +183,13 @@ import time
 from unittest.mock import patch
 
 root = Path(sys.argv[1]).resolve()
-binary, source, scenario, registration_limit, shim_header_limit = sys.argv[2:]
+binary, source, scenario, registration_limit, shim_header_limit, poll_millis, cpu_scans = sys.argv[2:]
 registration_limit = int(registration_limit)
 shim_header_limit = int(shim_header_limit)
+poll_seconds = int(poll_millis) / 1000
+cpu_scans = int(cpu_scans)
+# Ratatui completes every cursorless draw with Crossterm's Hide command.
+frame_end = b'\x1b[?25l'
 # Parallel reader tests share the host census; leave room for every fixture's rows.
 terminal_rows = 300
 terminal_columns = 300
@@ -181,7 +204,7 @@ bin_directory = root / 'bin'
 for directory in (work, pids, bin_directory, root / 'config/cargo-tile',
                   home / 'Library/Application Support/cargo-tile', root / 'rustup/toolchains'):
     directory.mkdir(parents=True)
-if scenario == 'settings-scroll':
+if scenario.startswith('settings-scroll'):
     account_directories = [capture_parent / str(other_uid - index) for index in range(24)]
     for directory in account_directories:
         directory.mkdir()
@@ -197,6 +220,8 @@ if scenario in ('excluded', 'fallback-excluded'):
     configuration += '[commands]\nexcluded = ["clippy"]\n'
 elif scenario == 'exec-excluded':
     configuration += '[commands]\nexcluded = ["run"]\n'
+elif scenario == 'cpu-cache-excluded':
+    configuration += '[commands]\nexcluded = ["check"]\n'
 elif scenario in ('summary-root-headings', 'fallback-summary', 'child-source-switch'):
     # These rows must lead their own groups to appear in the summary. Exclude
     # the outer test driver, using the operator's ordinary configuration surface.
@@ -249,6 +274,14 @@ printf '%s' "${CARGOTILE_NESTED-}" > "$OBSERVED/enclosing-pid"
 printf '%s\\0' "$@" > "$OBSERVED/arguments"
 printf 'process' > "$OBSERVED/source"
 printf 'Blocking waiting for file lock on build directory\\n' >&2
+if [ -n "${CPU_WORKLOAD-}" ]; then
+    # Establish the invocation's own nonzero counter before its first scan.
+    remaining=20000
+    while [ "$remaining" -gt 0 ]; do remaining=$((remaining - 1)); done
+    printf 'ready' > "$OBSERVED/cpu-ready"
+    sh "$CPU_WORKLOAD"
+    exit 37
+fi
 if [ -n "${NESTED_WORK-}" ]; then
     for command in check test; do
         (
@@ -297,6 +330,8 @@ environment.update(HOME=str(home), XDG_CONFIG_HOME=str(root / 'config'),
                    TZ='EST5EDT,M3.2.0,M11.1.0', TERM='xterm-256color')
 writers = []
 parent_owned_children = []
+cache_server = None
+scan_reader = None
 reader = None
 terminal = None
 transcript = bytearray()
@@ -474,6 +509,218 @@ def end_writer(writer):
     (observations / 'release').touch()
     assert child.wait(timeout=5) == 37, (observations / 'output').read_text()
 
+def prepare_cpu_workload():
+    global cache_server
+    workload = root / 'cpu-workload.sh'
+    environment['CPU_WORKLOAD'] = str(workload)
+    environment['CPU_PYTHON'] = sys.executable
+    if scenario == 'cpu-turnover':
+        children = root / 'turnover.py'
+        children.write_text('''import os
+from pathlib import Path
+import time
+
+observations = Path(os.environ['OBSERVED'])
+child_seconds = float(os.environ['CPU_CHILD_SECONDS'])
+scans = Path(os.environ['CPU_SCANS'])
+
+def completed_scans():
+    try:
+        return scans.read_text().count('\\n')
+    except FileNotFoundError:
+        return 0
+
+def compile_child():
+    started = time.process_time()
+    while time.process_time() - started < child_seconds:
+        pass
+    first_scan = completed_scans()
+    # One scan may already be in progress. Keeping the positive counter alive
+    # through two further receipts lets the next complete scan observe it.
+    while completed_scans() < first_scan + 2 and not (observations / 'release').exists():
+        for step in range(10000):
+            pass
+    last_scan = completed_scans()
+    if last_scan >= first_scan + 2:
+        with (observations / 'busy-children').open('a') as history:
+            history.write(f'{os.getpid()} {first_scan} {last_scan} {time.process_time() - started}\\n')
+    os._exit(0)
+
+busy = 0
+with (observations / 'children').open('w', buffering=1) as history:
+    while not (observations / 'release').exists():
+        if busy == 0:
+            busy = os.fork()
+            if busy == 0:
+                compile_child()
+        started = time.monotonic()
+        child = os.fork()
+        if child == 0:
+            # These new, idle descendants must never blank the invocation CPU.
+            time.sleep(child_seconds)
+            os._exit(0)
+        waited, status = os.waitpid(child, 0)
+        assert waited == child and status == 0
+        history.write(f'{child} {time.monotonic() - started}\\n')
+        waited, status = os.waitpid(busy, os.WNOHANG)
+        if waited == busy:
+            assert status == 0
+            busy = 0
+if busy:
+    waited, status = os.waitpid(busy, 0)
+    assert waited == busy and status == 0
+''')
+        environment['CPU_CHILD_SECONDS'] = str(poll_seconds / 5)
+        environment['CPU_SCANS'] = str(root / 'cpu-scans')
+        workload.write_text('exec "$CPU_PYTHON" ' + shlex.quote(str(children)) + '\n')
+        return
+
+    server = root / 'cpu-server'
+    server.mkdir()
+    environment['CPU_SERVER'] = str(server)
+    environment['CPU_TARGET'] = str(work / 'target')
+    (work / 'target/debug/deps').mkdir(parents=True)
+    for name in ('sccache', 'rustc'):
+        shutil.copyfile(shutil.which('sh'), bin_directory / name)
+        (bin_directory / name).chmod(0o755)
+    environment['RUSTC_WRAPPER'] = str(bin_directory / 'sccache')
+    compiler = server / 'compile.sh'
+    compiler.write_text('''printf '%s' "$$" > "$CPU_SERVER/compiler-pid"
+while [ ! -f "$CPU_SERVER/release" ]; do :; done
+''')
+    service = server / 'serve.sh'
+    service.write_text('''printf '%s' "$$" > "$CPU_SERVER/server-pid"
+while [ ! -f "$CPU_SERVER/request" ]; do sleep 0.02; done
+"$CPU_RUSTC" "$CPU_COMPILE" --crate-name cache_fixture --out-dir "$CPU_TARGET/debug/deps" &
+wait
+''')
+    client = server / 'client.sh'
+    client.write_text('''printf '%s' "$$" > "$OBSERVED/client-pid"
+printf 'compile' > "$CPU_SERVER/request"
+while [ ! -f "$OBSERVED/release" ]; do sleep 0.2; done
+''')
+    workload.write_text('exec "$RUSTC_WRAPPER" ' + shlex.quote(str(client)) + '\n')
+    server_environment = dict(environment, CPU_RUSTC=str(bin_directory / 'rustc'),
+                              CPU_COMPILE=str(compiler))
+    # Reparent the server before cargo starts. A process supervisor can adopt
+    # orphans instead of init, so ancestry is checked against the invocation below.
+    launcher = subprocess.Popen([sys.executable, '-c', '''import os, sys
+if os.fork():
+    os._exit(0)
+os.setsid()
+os.execve(sys.argv[1], sys.argv[1:], dict(os.environ))
+''', str(bin_directory / 'sccache'), str(service)], env=server_environment,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    assert launcher.wait(timeout=5) == 0
+    wait_for(lambda: (server / 'server-pid').exists()
+             and (server / 'server-pid').read_text(), 'cache server does not start')
+    cache_server = int((server / 'server-pid').read_text())
+    wait_for(lambda: process_parent(cache_server) != launcher.pid, 'cache server is not reparented')
+
+def process_parent(pid):
+    return int(subprocess.run(['ps', '-p', str(pid), '-o', 'ppid='], check=True,
+                              capture_output=True, text=True).stdout.strip())
+
+def process_ancestry(pid):
+    ancestry = []
+    while pid > 1:
+        assert pid not in ancestry, ancestry
+        ancestry.append(pid)
+        pid = process_parent(pid)
+    return ancestry
+
+def rendered_cpu(rendered, writer, markers):
+    commands = fixture_pane(rendered, markers)
+    pid = (writer[1] / 'cargo-pid').read_text()
+    rows = [line for line in commands if writer[1].name in line
+            and re.match(r'^\s*│\s*' + pid + r'\s', line)]
+    assert len(rows) == 1, 'CPU fixture loses or duplicates its command row\n' + rendered
+    # Header and row redraws can be observed separately; read CPU from this row.
+    prefix, command, _ = rows[0].partition('cargo ')
+    assert command, 'CPU fixture row has no cargo command\n' + rows[0]
+    cells = prefix.replace('│', ' ').split()
+    assert cells[0] == pid, rows[0]
+    percentages = [cell for cell in cells if re.fullmatch(r'\d+%', cell)]
+    assert len(percentages) == 1, 'CPU must be one numeric reading after the first scan\n' + rows[0]
+    return int(percentages[0][:-1])
+
+def assert_cpu_workload(writer, unrelated=None):
+    visible_other = unrelated is not None and scenario != 'cpu-cache-excluded'
+    markers = (writer[1].name, unrelated[1].name) if visible_other else (writer[1].name,)
+    rendered = wait_for_fixture_pane(markers)
+    readings = []
+    other_readings = []
+    # Inspect throughout several reporting windows, including child replacements.
+    started = time.monotonic()
+    deadline = started + 4
+    while time.monotonic() < deadline:
+        readings.append((time.monotonic() - started, rendered_cpu(rendered, writer, markers)))
+        if visible_other:
+            other_readings.append(rendered_cpu(rendered, unrelated, markers))
+        if scenario == 'cpu-cache-excluded':
+            assert unrelated[1].name not in rendered, 'excluded owner still displays a row\n' + rendered
+        rendered = wait_for_fixture_pane(markers)
+    if scenario in ('cpu-cache-ambiguous', 'cpu-cache-excluded'):
+        assert max(cpu for elapsed, cpu in readings) < 10, ('first candidate borrows server CPU', readings)
+        if visible_other:
+            assert max(other_readings) < 10, ('second candidate borrows server CPU', other_readings)
+        else:
+            assert unrelated[2].exists() and unrelated[4].exists(), 'excluded owner loses capture artifacts'
+        compiler_pid = (root / 'cpu-server/compiler-pid').read_text()
+        compiler_cpu = float(subprocess.run(['ps', '-p', compiler_pid, '-o', '%cpu='], check=True,
+                                            capture_output=True, text=True).stdout.strip())
+        assert compiler_cpu >= 20, ('external compiler must remain busy during refusal', compiler_cpu)
+    else:
+        sustained = [cpu for elapsed, cpu in readings if elapsed >= 2]
+        assert len(sustained) >= 3 and min(sustained) >= 10, (
+            'compile CPU must remain charged across reporting windows', readings)
+        if unrelated is not None:
+            assert max(other_readings) < min(sustained) / 2, (readings, other_readings)
+    if scenario == 'cpu-turnover':
+        completed = [line.split() for line in (writer[1] / 'children').read_text().splitlines()]
+        assert len({pid for pid, elapsed in completed if float(elapsed) < poll_seconds}) >= 10, completed
+        compiled = [line.split() for line in (writer[1] / 'busy-children').read_text().splitlines()]
+        assert len({pid for pid, first_scan, last_scan, cpu in compiled}) >= 3, compiled
+        assert all(int(last_scan) >= int(first_scan) + 2 and float(cpu) >= poll_seconds / 5
+                   for pid, first_scan, last_scan, cpu in compiled), compiled
+    observations = finish_cpu_scans()
+    if scenario == 'cpu-cache-excluded':
+        assert all(int(cpu[:-1]) < 10 for index, cpu in observations[2:]), (
+            'a completed scan charges the excluded requester to the visible build', observations)
+    return rendered
+
+def finish_cpu_scans():
+    assert scan_reader.wait(timeout=10) == 0, (root / 'cpu-scanner-output').read_text()
+    observations = [line.split('\t') for line in (root / 'cpu-scans').read_text().splitlines()]
+    assert [int(index) for index, cpu in observations] == list(range(cpu_scans)), observations
+    assert all(re.fullmatch(r'\d+%', cpu) for index, cpu in observations[1:]), (
+        'each completed scan after the first must publish a measurement', observations)
+    return observations
+
+def assert_cpu_identity_recovery(writer):
+    compiler_pid = int((root / 'cpu-server/compiler-pid').read_text())
+    scans = root / 'cpu-scans'
+    wait_for(lambda: scans.exists() and len(scans.read_text().splitlines()) >= cpu_scans // 2,
+             'process identity never receives its initial CPU samples')
+    restored = Path(str(writer[2]) + '.tmp')
+    restored.write_bytes(b'\0'.join(writer[3]))
+    restored.replace(writer[2])
+    observations = finish_cpu_scans()
+    identities = (root / 'cpu-identities').read_text().splitlines()
+    assert len(identities) == cpu_scans, identities
+    assert identities[0] == 'process' and identities[-1] == 'captured', identities
+    changed = identities.index('captured')
+    assert identities == ['process'] * changed + ['captured'] * (cpu_scans - changed), identities
+    before = [int(cpu[:-1]) for index, cpu in observations[2:changed]]
+    after = [int(cpu[:-1]) for index, cpu in observations[changed:]]
+    assert len(before) >= 3 and len(after) >= 3, ('identity transition lacks samples', observations)
+    assert min(before + after) >= 10, ('identity recovery strands live compiler time', observations)
+    # Only one CPU-consuming compiler runs, so replaying its accumulated history
+    # would exceed the processor time available in an ordinary reporting interval.
+    assert max(after) <= 150, ('identity recovery charges prior compiler history again', observations)
+    assert int((root / 'cpu-server/compiler-pid').read_text()) == compiler_pid
+    assert process_parent(compiler_pid) == cache_server, 'fixture replaces or ends the credited compiler'
+
 def read_terminal(duration):
     deadline = time.monotonic() + duration
     while time.monotonic() < deadline:
@@ -491,12 +738,16 @@ def read_terminal(duration):
 def terminal_snapshot():
     # Ratatui positions each changed run with CSI row;column H. Reconstruct cells
     # so repeated refreshes cannot manufacture extra headings or stale progress.
+    # A PTY read can stop halfway through moving rows. Hide follows the entire
+    # cursorless draw, so retain the preceding frame until that command arrives.
+    completed = transcript.rfind(frame_end)
+    published = transcript[:completed + len(frame_end)] if completed >= 0 else b''
     cells = [[' '] * terminal_columns for _ in range(terminal_rows)]
     colors = [[None] * terminal_columns for _ in range(terminal_rows)]
     foreground = None
     row = column = 0
     tokens = re.split(r'(\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))',
-                      transcript.decode('utf-8', 'replace'))
+                      published.decode('utf-8', 'replace'))
     for token in tokens:
         if token.startswith('\x1b['):
             command = token[-1]
@@ -650,7 +901,9 @@ def carrier_source_is_rendered(writer, source):
     return unavailable == expected if source == 'registration' else unavailable < expected
 
 def assert_child_family(parent, child):
-    rendered, colors = terminal_snapshot()
+    rendered = wait_for_fixture_pane((parent[1].name, child[1].name))
+    # No PTY read separates the ready screen from its matching color snapshot.
+    colors = terminal_snapshot()[1]
     commands = fixture_pane(rendered, (parent[1].name, child[1].name))
     rows = {}
     for writer in (parent, child):
@@ -745,15 +998,50 @@ def popup_lines(rendered, title):
 def assert_settings_scroll():
     global terminal_rows, terminal_columns
     terminal_rows = 14
-    fcntl.ioctl(terminal, termios.TIOCSWINSZ,
-                struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
-    os.write(terminal, b's')
+    transcript_start = len(transcript)
+    input_attributes = termios.tcgetattr(terminal)
+    if scenario == 'settings-scroll-burst':
+        # Queue both events while the already-rendering reader is descheduled.
+        os.kill(reader, signal.SIGSTOP)
+        stopped, status = os.waitpid(reader, os.WUNTRACED)
+        assert stopped == reader and os.WIFSTOPPED(status), (stopped, status)
+    try:
+        fcntl.ioctl(terminal, termios.TIOCSWINSZ,
+                    struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
+        written = os.write(terminal, b's')
+    finally:
+        if scenario == 'settings-scroll-burst':
+            os.kill(reader, signal.SIGCONT)
+    def popup_diagnostics():
+        received = bytes(transcript[transcript_start:])
+        # Inspect queued input only after timeout; successful runs never read it.
+        try:
+            slave = os.open((root / 'reader-terminal').read_text(),
+                            os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+            try:
+                pending = struct.unpack('I', fcntl.ioctl(slave, termios.FIONREAD,
+                                                       struct.pack('I', 0)))[0]
+                unread = os.read(slave, pending) if pending else b''
+            finally:
+                os.close(slave)
+        except OSError as error:
+            unread = repr(error)
+        return ('\nsettings input: ' + repr({
+            'written': written,
+            'canonical': bool(input_attributes[3] & termios.ICANON),
+            'echo': bool(input_attributes[3] & termios.ECHO),
+            'unread_input': unread,
+            'received_bytes': len(received),
+            'settings_in_raw_output': b'Settings' in received,
+            'completed_frames': received.count(frame_end),
+            'raw_tail': received[-2048:],
+        }) + '\n' + screen())
     def settings_are_visible():
         read_terminal(0.1)
         rendered = screen()
         return 'Settings' in rendered and any('▶' in line and 'mode' in line
                                              for line in rendered.splitlines())
-    wait_for(settings_are_visible, 'small settings popup does not open')
+    wait_for(settings_are_visible, 'small settings popup does not open', popup_diagnostics)
     initial = screen()
     assert all(str(directory) not in initial for directory in account_directories), initial
     pending = {str(directory) for directory in account_directories}
@@ -823,7 +1111,7 @@ def assert_fixture_pane_readiness():
             assert duration == 0.1, 'readiness must keep the PTY read cadence'
             frame = frames[min(reads, len(frames) - 1)]
             label = 'earlier-readiness-screen' if reads == 0 else 'final-readiness-screen'
-            transcript.extend(('\x1b[2J\x1b[H' + frame + label).replace('\n', '\r\n').encode())
+            transcript.extend(('\x1b[2J\x1b[H' + frame + label).replace('\n', '\r\n').encode() + frame_end)
             reads += 1
             advance(duration)
         snapshot = terminal_snapshot
@@ -852,14 +1140,74 @@ def assert_fixture_pane_readiness():
                     raise AssertionError('pane readiness accepts a screen without exactly one fixture pane')
             assert snapshots == reads, 'each readiness poll must reconstruct exactly one snapshot'
 
+def assert_completed_terminal_frames():
+    # Moving rows upward repeats their previous positions until the rest of the
+    # same draw clears those cells. Split every byte, including UTF-8 and CSI.
+    first = ('\x1b[2J\x1b[H│ pid parent command\r\n'
+             '│ earlier row\r\n│ cargo check probe-nested\r\n'
+             '│ cargo test probe-child\r\n└────').encode() + frame_end
+    transcript.extend(first)
+    initial = terminal_snapshot()
+    redraw = ('\x1b[2;1H\x1b[32m│ cargo check probe-nested\x1b[0m'
+              '\x1b[3;1H│ cargo test probe-child\x1b[K'
+              '\x1b[4;1H└────\x1b[K\x1b[5;1H\x1b[K').encode() + frame_end
+    for byte in redraw[:-1]:
+        transcript.append(byte)
+        assert terminal_snapshot() == initial, 'snapshot exposes an unfinished redraw'
+    transcript.append(redraw[-1])
+    rendered, colors = terminal_snapshot()
+    assert rendered.count('probe-nested') == rendered.count('probe-child') == 1, rendered
+    assert colors[1][0] == (32,), 'completed redraw loses foreground colors'
+    assert colors[2][0] is None, 'foreground reset does not survive frame completion'
+    # A completed duplicate must remain visible to the row-count assertions.
+    transcript.extend(b'\x1b[4;1Hcargo check probe-nested' + frame_end)
+    assert screen().count('probe-nested') == 2, 'snapshot removes a real duplicate'
+
+if scenario == 'terminal-frame-completion':
+    assert_completed_terminal_frames()
+    sys.exit(0)
+
 if scenario in ('pane-readiness-delayed', 'pane-readiness-never'):
     assert_fixture_pane_readiness()
     sys.exit(0)
 
 try:
-    first = start_writer('probe-first', home)
+    if scenario.startswith('cpu-'):
+        prepare_cpu_workload()
+    first_arguments = ('--target-dir', str(work / 'target')) if scenario.startswith('cpu-cache-') else ()
+    first = start_writer('probe-first', home, arguments=first_arguments)
     retained = []
     removed = []
+    if scenario.startswith('cpu-'):
+        wait_for(lambda: (first[1] / 'cpu-ready').exists(), 'invocation baseline is not established')
+    if scenario.startswith('cpu-cache-'):
+        assert int((first[1] / 'cargo-pid').read_text()) not in process_ancestry(cache_server)
+        wait_for(lambda: (root / 'cpu-server/compiler-pid').exists()
+                 and (root / 'cpu-server/compiler-pid').read_text(), 'server does not start rustc')
+        compiler_pid = int((root / 'cpu-server/compiler-pid').read_text())
+        assert process_parent(compiler_pid) == cache_server
+        client_pid = int((first[1] / 'client-pid').read_text())
+        assert process_parent(client_pid) == int((first[1] / 'cargo-pid').read_text())
+        if scenario in ('cpu-cache-server', 'cpu-cache-identity-recovery'):
+            idle = root / 'idle-workload.sh'
+            idle.write_text('while [ ! -f "$OBSERVED/release" ]; do sleep 0.2; done\n')
+            environment['CPU_WORKLOAD'] = str(idle)
+        unrelated_directory = home / ('unrelated-cpu-' + root.name)
+        unrelated_directory.mkdir()
+        shutil.copyfile(work / 'build', unrelated_directory / 'build')
+        shutil.copyfile(work / 'build', unrelated_directory / 'check')
+        other_target = (work / 'target' if scenario in ('cpu-cache-ambiguous', 'cpu-cache-excluded')
+                        else unrelated_directory / 'target')
+        unrelated = start_writer('probe-unrelated', home, directory=unrelated_directory,
+                                 command='check' if scenario == 'cpu-cache-excluded' else 'build',
+                                 arguments=('--target-dir', str(other_target)))
+        wait_for(lambda: (unrelated[1] / 'cpu-ready').exists(), 'second invocation baseline is not established')
+        if scenario in ('cpu-cache-ambiguous', 'cpu-cache-excluded'):
+            wait_for(lambda: (unrelated[1] / 'client-pid').exists()
+                     and (unrelated[1] / 'client-pid').read_text(), 'second wrapper client does not start')
+            assert process_parent(int((unrelated[1] / 'client-pid').read_text())) == int(
+                (unrelated[1] / 'cargo-pid').read_text())
+            assert int((unrelated[1] / 'cargo-pid').read_text()) not in process_ancestry(cache_server)
     if scenario.startswith('version-'):
         assert first[3][0] == b'cargo-tile-v3', first[3]
         carrier = start_registration_carrier(first)
@@ -1066,6 +1414,21 @@ try:
         competing_log.write_bytes(b'PASS [0.010s] (7/13) competing-test\n')
         retained.extend((first[2], first[4], competing_name, competing_log))
 
+    if scenario.startswith('cpu-'):
+        if scenario == 'cpu-cache-identity-recovery':
+            unproven = list(first[3])
+            unproven[3] = b''
+            first[2].write_bytes(b'\0'.join(unproven))
+        scan_environment = dict(environment, CARGO_TILE_TEST_CPU_PID=(first[1] / 'cargo-pid').read_text())
+        if scenario == 'cpu-cache-excluded':
+            scan_environment['CARGO_TILE_TEST_CPU_EXCLUDED'] = 'check'
+        with (root / 'cpu-scanner-output').open('wb') as output:
+            scan_reader = subprocess.Popen([binary, '--exact', 'tests::cpu_scan_child', '--nocapture'],
+                                           cwd=root, env=scan_environment, stdin=subprocess.DEVNULL,
+                                           stdout=output, stderr=output)
+        if scenario == 'cpu-cache-identity-recovery':
+            assert_cpu_identity_recovery(first)
+            sys.exit(0)
     reader_environment = dict(environment, LC_ALL='C', LANG='POSIX', TZ='UTC-11')
     # Family assertions observe ANSI foregrounds even when the outer test runner is uncolored.
     reader_environment.pop('NO_COLOR', None)
@@ -1073,6 +1436,8 @@ try:
     if reader == 0:
         fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
         os.chdir(root)
+        if scenario.startswith('settings-scroll'):
+            (root / 'reader-terminal').write_text(os.ttyname(0))
         reader_environment['CARGO_TILE_TEST_READER'] = '1'
         os.execve(binary, [binary, '--exact', 'reader_child', '--nocapture'], reader_environment)
     def reader_has_scanned():
@@ -1084,6 +1449,8 @@ try:
     read_terminal(1)
     rendered = screen()
     assert 'summary' in rendered, rendered
+    if scenario.startswith('cpu-'):
+        rendered = assert_cpu_workload(first, unrelated if scenario.startswith('cpu-cache-') else None)
     if scenario == 'startup-truncated':
         refusal = 'a-newer: not installed: incomplete shim version line'
         def incomplete_notice_is_visible():
@@ -1189,7 +1556,7 @@ try:
                 assert f'v{newer_version}' in settings and f'v{supported_version}' in settings, settings
                 assert 'upgrade' in settings.lower() and 'restart' in settings.lower(), settings
                 assert 'invalid registration' not in settings.lower(), settings
-    if scenario == 'settings-scroll':
+    if scenario.startswith('settings-scroll'):
         assert_settings_scroll()
     if scenario.startswith('quiet-json'):
         cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
@@ -1443,6 +1810,16 @@ finally:
                     os.waitpid(reader, 0)
             os.close(terminal)
     finally:
+        if cache_server is not None:
+            (root / 'cpu-server/release').touch()
+            try:
+                os.killpg(cache_server, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        if scan_reader is not None:
+            if scan_reader.poll() is None:
+                scan_reader.terminate()
+            scan_reader.wait(timeout=5)
         for observations in parent_owned_children:
             (observations / 'release').touch()
         for child, observations in writers:
@@ -1899,6 +2276,108 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
         assert_eq!(output.stderr, b"registration log marker\n");
     }
 
+    /// Reaped children remain measurable while fresh descendants appear between scans.
+    #[test]
+    fn reader_reports_cpu_on_every_scan_while_descendants_turn_over() {
+        reader_regression("cpu-turnover");
+    }
+
+    /// PTY read boundaries cannot expose a partly redrawn invocation twice.
+    #[test]
+    fn reader_snapshots_publish_only_completed_terminal_frames() {
+        reader_regression("terminal-frame-completion");
+    }
+
+    /// A compiler outside cargo's ancestry charges only its requesting target directory.
+    #[test]
+    fn reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation() {
+        reader_regression("cpu-cache-server");
+    }
+
+    /// Two live wrapper clients sharing a target cannot establish one external compile owner.
+    #[test]
+    fn reader_refuses_compiler_cache_cpu_when_invocations_share_the_target_directory() {
+        reader_regression("cpu-cache-ambiguous");
+    }
+
+    /// A hidden requester still prevents another command from claiming its compiler.
+    #[test]
+    fn reader_refuses_compiler_cache_cpu_when_an_excluded_invocation_shares_the_target() {
+        reader_regression("cpu-cache-excluded");
+    }
+
+    /// Recovered registration proof preserves the live compiler's rate and prior credit.
+    #[test]
+    fn reader_keeps_compiler_cache_cpu_when_registration_identity_recovers() {
+        reader_regression("cpu-cache-identity-recovery");
+    }
+
+    /// Consume every production scan so PTY polling cannot miss a brief unavailable row.
+    #[test]
+    fn cpu_scan_child() -> std::io::Result<()> {
+        let Ok(pid) = std::env::var("CARGO_TILE_TEST_CPU_PID") else {
+            return Ok(());
+        };
+        let pid: u32 = pid.parse().expect("fixture cargo pid");
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+            false,
+            ProcessRefreshKind::nothing().without_tasks().with_cpu(),
+        );
+        let invocation = system
+            .process(Pid::from_u32(pid))
+            .ok_or_else(|| std::io::Error::other("fixture invocation is not alive"))?;
+        if invocation.accumulated_cpu_time() == 0 {
+            return Err(std::io::Error::other(
+                "fixture invocation must accumulate its own CPU time before scanning descendants",
+            ));
+        }
+        let parent = std::env::current_dir()?.join("capture");
+        let mut output = fs::File::create("cpu-scans")?;
+        let mut identities = fs::File::create("cpu-identities")?;
+        let mut config = Config::default();
+        if let Ok(excluded) = std::env::var("CARGO_TILE_TEST_CPU_EXCLUDED") {
+            config.commands.excluded.push(excluded);
+        }
+        let (receiver, worker) =
+            spawn_with_resolver(&config, move || CaptureRoots::from_parent(&parent));
+        let result = (|| {
+            for index in 0..CPU_OBSERVATION_SCANS {
+                let scan = receiver
+                    .recv_timeout(Duration::from_secs(10))
+                    .map_err(std::io::Error::other)?;
+                let rows: Vec<_> = scan
+                    .groups
+                    .iter()
+                    .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
+                    .filter(|row| row.pid == pid)
+                    .collect();
+                if rows.len() != 1 {
+                    return Err(std::io::Error::other(format!(
+                        "scan {index} has {} rows for fixture pid {pid}",
+                        rows.len()
+                    )));
+                }
+                let identity = match &rows[0].invocation_id {
+                    InvocationId::Captured(_) => "captured",
+                    InvocationId::Process(_) => "process",
+                };
+                writeln!(identities, "{identity}")?;
+                identities.flush()?;
+                match &rows[0].cpu {
+                    Measurement::Reading(cpu) => writeln!(output, "{index}\t{cpu}")?,
+                    Measurement::Unavailable(reason) => writeln!(output, "{index}\t{reason:?}")?,
+                }
+                output.flush()?;
+            }
+            Ok(())
+        })();
+        drop(receiver);
+        worker.join().expect("CPU scanner shuts down");
+        result
+    }
+
     /// Drive the production terminal loop through a PTY; Python owns every child and terminal fd.
     /// The reader receives the shim's actual records, with no copied Rust implementation.
     fn reader_regression(scenario: &str) {
@@ -1914,6 +2393,8 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
             .arg(scenario)
             .arg(CAPTURE_REGISTRATION_BYTES.to_string())
             .arg(SHIM_MARKER_SEARCH_BYTES.to_string())
+            .arg(PROCESS_POLL_MILLIS.to_string())
+            .arg(CPU_OBSERVATION_SCANS.to_string())
             .output()
             .expect("run isolated production reader regression");
         assert!(
@@ -1948,6 +2429,12 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
     #[test]
     fn reader_scrolls_settings_accounts_into_view_with_keyboard_navigation() {
         reader_regression("settings-scroll");
+    }
+
+    /// One key queued beside a resize must open settings after the reader resumes.
+    #[test]
+    fn reader_opens_settings_when_resize_and_key_are_pending_together() {
+        reader_regression("settings-scroll-burst");
     }
 
     #[test]

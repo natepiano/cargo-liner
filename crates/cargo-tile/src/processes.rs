@@ -5,9 +5,8 @@
 //! the render loop never pays for it. Each scan is two-phase: a cheap
 //! full-system pass reading only pid, name, parent and start time, then a
 //! targeted pass reading working directory and argv for the handful of
-//! processes that turned out to be cargo. The expensive per-process reads
-//! are therefore never spent on the `rustc` and `sccache` processes a
-//! build churns through by the hundred.
+//! processes that turned out to be cargo or compiler drivers. Compiler arguments
+//! identify work executed by a cache server outside a cargo process tree.
 //!
 //! What comes out is not a flat list. One command a developer typed can
 //! be a whole tree of cargo processes -- `cargo mend` driving a
@@ -31,6 +30,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::thread;
@@ -42,6 +43,9 @@ use std::time::UNIX_EPOCH;
 
 use chrono::DateTime;
 use chrono::Local;
+use rustix::io::Errno;
+use rustix::process::Pid as KernelPid;
+use rustix::process::test_kill_process;
 use sysinfo::Pid;
 use sysinfo::Process;
 use sysinfo::ProcessRefreshKind;
@@ -54,14 +58,28 @@ use uuid::Uuid;
 
 use crate::birth_stamp;
 use crate::birth_stamp::BirthStamp;
+#[cfg(target_os = "linux")]
+use crate::birth_stamp::KernelObservation;
 use crate::birth_stamp::LifetimeEvidence;
 use crate::birth_stamp::ProcessLifetime;
+#[cfg(target_os = "linux")]
+use crate::birth_stamp::Verification;
 use crate::capture_root::CleanupRefusal;
 use crate::capture_root::RootIncarnation;
 use crate::capture_root::RootOwner;
 use crate::capture_root::SharedCaptureDirectory;
 use crate::config::Config;
 use crate::constants::ARGUMENT_SEPARATOR;
+#[cfg(target_os = "linux")]
+use crate::constants::BIRTH_BOOT_ID_PATH;
+#[cfg(target_os = "linux")]
+use crate::constants::BIRTH_PROC_DIRECTORY;
+#[cfg(target_os = "linux")]
+use crate::constants::BIRTH_STAT_COMM_END;
+#[cfg(target_os = "linux")]
+use crate::constants::BIRTH_STAT_FILENAME;
+#[cfg(target_os = "linux")]
+use crate::constants::BIRTH_STAT_START_INDEX;
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::CARGO_JSON_FORMAT_PREFIX;
 use crate::constants::CARGO_MESSAGE_FORMAT_FLAG;
@@ -69,15 +87,29 @@ use crate::constants::CARGO_MESSAGE_FORMAT_JSON_PREFIX;
 use crate::constants::CARGO_PROCESS_NAMES;
 use crate::constants::CARGO_QUIET_FLAGS;
 use crate::constants::CARGO_SUBCOMMAND_PREFIX;
+use crate::constants::CARGO_TARGET_DIR_ENV;
+use crate::constants::CARGO_TARGET_DIR_FLAG;
 use crate::constants::CARGO_TOOLCHAIN_SELECTOR;
 use crate::constants::COMPILER_PROCESS_NAMES;
+#[cfg(target_os = "linux")]
+use crate::constants::CPU_AUXV_CLOCK_TICKS;
+#[cfg(target_os = "linux")]
+use crate::constants::CPU_AUXV_ENTRY_WORDS;
+#[cfg(target_os = "linux")]
+use crate::constants::CPU_AUXV_PATH;
 use crate::constants::CPU_REPORT_MILLIS;
 use crate::constants::CPU_SMOOTHING_SECONDS;
+#[cfg(target_os = "linux")]
+use crate::constants::CPU_STAT_TIME_FIELDS;
+#[cfg(target_os = "linux")]
+use crate::constants::CPU_STAT_TIME_INDEX;
 use crate::constants::FLAG_MARK;
 use crate::constants::HOME_ALIAS;
 use crate::constants::PARENT_WALK_LIMIT;
 use crate::constants::PROCESS_POLL_MILLIS;
 use crate::constants::ROOT_PROCESS_PID;
+use crate::constants::RUSTC_BINARY;
+use crate::constants::RUSTC_OUT_DIR_FLAG;
 use crate::constants::SCCACHE_BINARY;
 use crate::constants::SECONDS_PER_HOUR;
 use crate::constants::SECONDS_PER_MINUTE;
@@ -1049,12 +1081,9 @@ fn scan(
     // Phase one: pid, name, parent and start time for everything. None of
     // the fields this asks for require a per-process read of the argument
     // area, which is what makes it cheap enough to poll continuously.
-    // `with_cpu` on the cheap pass rather than the targeted one: the
-    // work a cargo command is doing runs in the `rustc` and `sccache`
-    // processes under it, and phase two never looks at those. sysinfo
-    // reads a share as the delta between two refreshes of the same
-    // process. Census keeps a first observation unavailable because it
-    // has no preceding sample from which to establish a rate.
+    // Read CPU counters on the full-system pass so short-lived descendants
+    // can contribute without requiring detailed command metadata. The invocation's
+    // own sysinfo rate still validates its counter before accumulated work is published.
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
@@ -1064,11 +1093,8 @@ fn scan(
     let mut census = Census::take(system, &previous);
     census.identities = smoothing.identities.observe(&census.lifetimes);
 
-    // Phase two: the costly fields, for the cargo processes and for the
-    // handful standing above each of them. The ancestors are read for
-    // the same reason the invocations are -- a cell says what launched
-    // the command -- and a chain is a few processes long, against the
-    // hundreds this pass still skips.
+    // Phase two reads cargo, its ancestors, and compiler drivers. Ancestors name
+    // the launcher; compiler arguments associate cache-server work with its requester.
     // Verification precedes row filtering, and registration pids must receive fresh
     // argv even when the cheap snapshot retains a pre-exec process name.
     let mut capture = Capture::take(roots);
@@ -1086,7 +1112,7 @@ fn scan(
     census.collapse_shims(&details);
     census.identify_captures(&capture);
     census.select_rows(&details, &capture, excluded);
-    let attributed = census.attribute(smoothing, now);
+    let attributed = census.attribute(&details, smoothing, now);
     let groups = census.groups(&details, &attributed, home, &capture);
     census.associate_status(&mut capture, &groups);
     Scan {
@@ -1105,13 +1131,15 @@ fn process_discovery_refresh_kind() -> ProcessRefreshKind {
     ProcessRefreshKind::nothing().without_tasks().with_cpu()
 }
 
-/// Fields read for cargo processes and their ancestors.
+/// Fields read for cargo, its ancestors, and compiler ownership evidence.
 fn process_detail_refresh_kind() -> ProcessRefreshKind {
     ProcessRefreshKind::nothing()
         .without_tasks()
         .with_cwd(UpdateKind::OnlyIfNotSet)
         .with_cmd(UpdateKind::OnlyIfNotSet)
         .with_exe(UpdateKind::OnlyIfNotSet)
+        .with_environ(UpdateKind::OnlyIfNotSet)
+        .with_user(UpdateKind::OnlyIfNotSet)
 }
 
 /// sysinfo retains populated metadata even when a requested reread fails.
@@ -1132,8 +1160,7 @@ fn process_details(pids: &[Pid]) -> System {
 struct Attributed {
     /// Every invocation has an observation, including one compiling nothing.
     compilers: HashMap<Pid, CompilerObservation>,
-    /// The settled CPU share each invocation and everything under it
-    /// add up to, including unavailable contributors.
+    /// Settled invocation work, unavailable only when its own sample is unestablished.
     cpu:       HashMap<Pid, Measurement<f32>>,
 }
 
@@ -1179,21 +1206,432 @@ enum CpuPublication {
 /// second is still a figure nobody can read.
 #[derive(Default)]
 struct CpuSmoothing {
+    /// Native lifetimes preserve the first confirmed generation through registration gaps.
+    owners:       HashMap<ProcessIdentity, InvocationId>,
+    /// Accumulated invocation work survives descendant exits between scans.
+    invocations:  HashMap<InvocationId, InvocationCpu>,
+    /// Observed client destinations remain usable while their invocation lives.
+    targets:      HashMap<InvocationId, HashSet<PathBuf>>,
+    /// A compiler lifetime can never donate its accumulated history to another invocation.
+    cache_owners: HashMap<ProcessIdentity, InvocationId>,
     /// Unavailable lifetime reads retain rows only during continuous pid presence.
-    identities:  ProcessIdentities,
+    identities:   ProcessIdentities,
     /// Bind the pre-refresh counters to the lifetime observed with their last sample.
-    observed:    HashMap<Pid, LifetimeEvidence>,
+    observed:     HashMap<Pid, LifetimeEvidence>,
     /// Where each invocation's reading has settled, moved on every scan.
     /// Keyed by invocation identity, so a replaced pid cannot inherit old readings.
-    settled:     HashMap<InvocationId, Measurement<f32>>,
+    settled:      HashMap<InvocationId, Measurement<f32>>,
     /// What the table is carrying, taken from
     /// [`settled`](Self::settled) when a reading falls due.
-    reported:    HashMap<InvocationId, Measurement<f32>>,
+    reported:     HashMap<InvocationId, Measurement<f32>>,
     /// A never-published smoother has no previous snapshot to hold.
-    publication: CpuPublication,
+    publication:  CpuPublication,
+}
+
+/// A cumulative subtree counter, retaining completed work on platforms without wait totals.
+#[derive(Default)]
+struct CpuAccumulator {
+    /// Linux transfers exited children into their reaper's counter; scans can overlap that
+    /// transfer.
+    total:   Duration,
+    /// Darwin cannot read another task's reaped-child time, so retain observed contributions.
+    #[cfg(not(target_os = "linux"))]
+    present: HashMap<ProcessIdentity, Duration>,
+}
+
+impl CpuAccumulator {
+    /// Account for the current tree once, including work retained after a process exits.
+    fn update(&mut self, current: HashMap<ProcessIdentity, Duration>) -> Duration {
+        #[cfg(target_os = "linux")]
+        {
+            self.total = self.total.max(current.values().sum());
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            for (identity, elapsed) in current {
+                let retained = self.present.entry(identity).or_default();
+                *retained = (*retained).max(elapsed);
+            }
+            self.total = self.present.values().sum::<Duration>();
+        }
+        self.total
+    }
+}
+
+/// A previous invocation-wide counter has a sampling time independent of publication.
+#[derive(Default)]
+enum InvocationCpuSample {
+    /// A rate needs two observations of this invocation.
+    #[default]
+    First,
+    /// Accumulated processor time and the instant that counter was sampled.
+    Taken {
+        accumulated: Duration,
+        at:          Instant,
+    },
+}
+
+/// Work owned by one invocation, including compiler trees outside its ancestry.
+#[derive(Default)]
+struct InvocationCpu {
+    /// Incomplete tree reads cannot move the invocation's cumulative counter backward.
+    accumulated: Duration,
+    /// Direct descendants transfer their time into the invocation on Linux.
+    tree:        CpuAccumulator,
+    /// Each independently executing compiler keeps its own cumulative tree.
+    detached:    HashMap<ProcessIdentity, CpuAccumulator>,
+    /// Nested cargo time stays excluded after Linux transfers it into the manager's wait totals.
+    #[cfg(target_os = "linux")]
+    nested:      HashMap<InvocationId, Duration>,
+    /// Consecutive whole-invocation samples establish the reported rate.
+    sample:      InvocationCpuSample,
+}
+
+impl InvocationCpu {
+    /// New and idle descendants contribute counters, without contributing absence reasons.
+    fn measure(
+        &mut self,
+        work: InvocationWork,
+        evidence: Measurement<f32>,
+        now: Instant,
+    ) -> Measurement<f32> {
+        for (identity, current) in work.detached {
+            self.detached.entry(identity).or_default().update(current);
+        }
+        let tree = self.tree.update(work.tree);
+        #[cfg(target_os = "linux")]
+        let tree = {
+            for (identity, elapsed) in work.nested {
+                let retained = self.nested.entry(identity).or_default();
+                *retained = (*retained).max(elapsed);
+            }
+            tree.saturating_sub(self.nested.values().sum())
+        };
+        self.accumulated = self.accumulated.max(
+            tree + self
+                .detached
+                .values()
+                .map(|counter| counter.total)
+                .sum::<Duration>(),
+        );
+        let accumulated = self.accumulated;
+        if let Measurement::Unavailable(reason) = evidence {
+            return Measurement::Unavailable(reason);
+        }
+        let previous = std::mem::replace(
+            &mut self.sample,
+            InvocationCpuSample::Taken {
+                accumulated,
+                at: now,
+            },
+        );
+        match previous {
+            InvocationCpuSample::First => {
+                Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+            },
+            InvocationCpuSample::Taken {
+                accumulated: previous,
+                at,
+            } => {
+                let elapsed = now.saturating_duration_since(at);
+                if elapsed.is_zero() || accumulated < previous {
+                    return Measurement::Unavailable(MeasurementAbsence::Unproven);
+                }
+                Measurement::Reading(
+                    (accumulated - previous).as_secs_f32() / elapsed.as_secs_f32() * 100.0,
+                )
+            },
+        }
+    }
+}
+
+/// Current contributions are separated at cache-server boundaries before accumulating.
+#[derive(Default)]
+struct InvocationWork {
+    /// Processes owned through cargo ancestry.
+    tree:     HashMap<ProcessIdentity, Duration>,
+    /// Compiler roots and their descendants owned through output-directory evidence.
+    detached: HashMap<ProcessIdentity, HashMap<ProcessIdentity, Duration>>,
+    /// Full nested-cargo counters are excluded even after their process disappears.
+    #[cfg(target_os = "linux")]
+    nested:   HashMap<InvocationId, Duration>,
+}
+
+/// Output evidence either singles out a cargo invocation or authorizes no charge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompileOwner {
+    /// Exactly one invocation has a matching target directory.
+    Unique(Pid),
+    /// No invocation has a proven matching destination.
+    Unknown,
+    /// Several invocation targets contain this destination.
+    Ambiguous,
+}
+
+/// Ancestry wins over output evidence when assigning one process's time.
+#[derive(Clone, Copy)]
+enum CpuAssignment {
+    /// The nearest cargo receives the ordinary descendant contribution.
+    Direct(Pid),
+    /// A cache compiler and its children contribute through the compiler's lifetime.
+    Detached { owner: Pid, compiler: Pid },
+    /// No observed invocation can be charged for this process.
+    Unassigned,
+}
+
+/// A compiler's first owner is forgotten only when its lifetime cannot return.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompilerCreditRetention {
+    /// A live process or an inconclusive observation preserves exclusive ownership.
+    Keep,
+    /// Native replacement or kernel-confirmed absence ends that lifetime's credit.
+    Retire,
+}
+
+/// Command metadata must name a resolvable directory before it can establish ownership.
+#[derive(Clone, Copy, Debug)]
+enum CompilePathAbsence {
+    /// The command has no value for the requested path argument.
+    Unspecified,
+    /// Missing metadata or a failed path resolution prevents comparison.
+    Unavailable,
+}
+
+/// Repeated evidence for one pid is still one owner; competing pids authorize none.
+fn compile_owner(owners: impl Iterator<Item = Pid>) -> CompileOwner {
+    owners.fold(CompileOwner::Unknown, |owner, pid| match owner {
+        CompileOwner::Unknown => CompileOwner::Unique(pid),
+        CompileOwner::Unique(previous) if previous == pid => owner,
+        CompileOwner::Unique(_) | CompileOwner::Ambiguous => CompileOwner::Ambiguous,
+    })
+}
+
+/// Recognize split and equals forms without converting path bytes through UTF-8.
+fn argument_path(argv: &[OsString], flag: &str) -> Result<PathBuf, CompilePathAbsence> {
+    let mut arguments = argv.iter();
+    let mut path = Err(CompilePathAbsence::Unspecified);
+    while let Some(argument) = arguments.next() {
+        if argument == ARGUMENT_SEPARATOR {
+            break;
+        }
+        if argument == flag {
+            path = arguments
+                .next()
+                .map(PathBuf::from)
+                .ok_or(CompilePathAbsence::Unavailable);
+        } else if let Some(value) = argument
+            .as_bytes()
+            .strip_prefix(flag.as_bytes())
+            .and_then(|suffix| suffix.strip_prefix(b"="))
+        {
+            path = Ok(PathBuf::from(OsStr::from_bytes(value)));
+        }
+    }
+    path
+}
+
+/// Canonical paths compare directory components and resolve relative paths in the owner.
+fn process_path(process: &Process, path: &Path) -> Result<PathBuf, CompilePathAbsence> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        process
+            .cwd()
+            .ok_or(CompilePathAbsence::Unavailable)?
+            .join(path)
+    };
+    path.canonicalize()
+        .map_err(|_| CompilePathAbsence::Unavailable)
+}
+
+/// Compiler clients and rustc use the same output flag spelling.
+fn process_argument_path(process: &Process, flag: &str) -> Result<PathBuf, CompilePathAbsence> {
+    process_path(process, &argument_path(process.cmd(), flag)?)
+}
+
+/// Explicit target paths win over the environment. Defaults and Cargo configuration
+/// are learned from observed compiler clients, whose output paths reflect both.
+fn cargo_target_directory(process: &Process) -> Result<PathBuf, CompilePathAbsence> {
+    let arguments = cargo_split(process.cmd()).map_err(|_| CompilePathAbsence::Unavailable)?;
+    let argv = &process.cmd()[arguments.start..];
+    match argument_path(argv, CARGO_TARGET_DIR_FLAG) {
+        Ok(path) => return process_path(process, &path),
+        Err(CompilePathAbsence::Unavailable) => return Err(CompilePathAbsence::Unavailable),
+        Err(CompilePathAbsence::Unspecified) => {},
+    }
+    for variable in process.environ() {
+        if let Some(path) = variable
+            .as_bytes()
+            .strip_prefix(CARGO_TARGET_DIR_ENV.as_bytes())
+            .and_then(|suffix| suffix.strip_prefix(b"="))
+        {
+            return process_path(process, Path::new(OsStr::from_bytes(path)));
+        }
+    }
+    Err(CompilePathAbsence::Unspecified)
+}
+
+/// The kernel supplies the stat clock frequency without a subprocess or unsafe call.
+#[cfg(target_os = "linux")]
+fn linux_clock_ticks() -> Result<u32, MeasurementAbsence> {
+    static TICKS: OnceLock<Result<u32, MeasurementAbsence>> = OnceLock::new();
+    *TICKS.get_or_init(|| {
+        let bytes = fs::read(CPU_AUXV_PATH).map_err(|_| MeasurementAbsence::ReadFailed)?;
+        let word = std::mem::size_of::<usize>();
+        for entry in bytes.chunks_exact(word * CPU_AUXV_ENTRY_WORDS) {
+            let tag = usize::from_ne_bytes(
+                entry[..word]
+                    .try_into()
+                    .map_err(|_| MeasurementAbsence::ReadFailed)?,
+            );
+            if tag == CPU_AUXV_CLOCK_TICKS {
+                let ticks = usize::from_ne_bytes(
+                    entry[word..]
+                        .try_into()
+                        .map_err(|_| MeasurementAbsence::ReadFailed)?,
+                );
+                return u32::try_from(ticks)
+                    .ok()
+                    .filter(|&ticks| ticks > 0)
+                    .ok_or(MeasurementAbsence::ReadFailed);
+            }
+        }
+        Err(MeasurementAbsence::ReadFailed)
+    })
+}
+
+/// CPU counters and their native birth counter come from the same stat buffer.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Eq, PartialEq)]
+struct LinuxCpuSample {
+    /// Field 22 binds the accumulated ticks to this process lifetime.
+    start_ticks:       u64,
+    /// Fields 14 through 17 include both own and reaped-child processor time.
+    accumulated_ticks: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxCpuSample {
+    /// The normal kernel comparison rejects a replaced pid or an unverified sample.
+    fn verify(
+        &self,
+        pid: u32,
+        boot: &str,
+        observation: &KernelObservation,
+    ) -> Result<(), MeasurementAbsence> {
+        let identity = BirthStamp::from_fields(boot, &self.start_ticks.to_string());
+        match observation.compare(pid, &identity) {
+            Verification::Confirmed => Ok(()),
+            Verification::Ended | Verification::Unknown => Err(MeasurementAbsence::Unproven),
+        }
+    }
+}
+
+/// Parse the four CPU counters and start ticks after the final comm delimiter.
+#[cfg(target_os = "linux")]
+fn linux_cpu_ticks(stat: &[u8]) -> Result<LinuxCpuSample, MeasurementAbsence> {
+    let end = stat
+        .iter()
+        .rposition(|byte| *byte == BIRTH_STAT_COMM_END)
+        .ok_or(MeasurementAbsence::ReadFailed)?;
+    let mut fields = stat[end + 1..]
+        .split(u8::is_ascii_whitespace)
+        .filter(|field| !field.is_empty())
+        .skip(CPU_STAT_TIME_INDEX);
+    let mut ticks = 0_u64;
+    for _ in 0..CPU_STAT_TIME_FIELDS {
+        let field = fields.next().ok_or(MeasurementAbsence::ReadFailed)?;
+        let value = std::str::from_utf8(field)
+            .map_err(|_| MeasurementAbsence::ReadFailed)?
+            .parse::<u64>()
+            .map_err(|_| MeasurementAbsence::ReadFailed)?;
+        ticks = ticks
+            .checked_add(value)
+            .ok_or(MeasurementAbsence::ReadFailed)?;
+    }
+    let field = fields
+        .nth(BIRTH_STAT_START_INDEX - CPU_STAT_TIME_INDEX - CPU_STAT_TIME_FIELDS)
+        .ok_or(MeasurementAbsence::ReadFailed)?;
+    let start_ticks = std::str::from_utf8(field)
+        .map_err(|_| MeasurementAbsence::ReadFailed)?
+        .parse::<u64>()
+        .map_err(|_| MeasurementAbsence::ReadFailed)?;
+    Ok(LinuxCpuSample {
+        start_ticks,
+        accumulated_ticks: ticks,
+    })
+}
+
+/// Read live task time plus the time transferred by wait into its child counters.
+#[cfg(target_os = "linux")]
+fn linux_cpu_time(pid: Pid) -> Result<Duration, MeasurementAbsence> {
+    static BOOT: OnceLock<Result<String, MeasurementAbsence>> = OnceLock::new();
+    let path = Path::new(BIRTH_PROC_DIRECTORY)
+        .join(pid.to_string())
+        .join(BIRTH_STAT_FILENAME);
+    let stat = fs::read(path).map_err(|_| MeasurementAbsence::ReadFailed)?;
+    let sample = linux_cpu_ticks(&stat)?;
+    let boot = BOOT
+        .get_or_init(|| {
+            fs::read_to_string(BIRTH_BOOT_ID_PATH).map_err(|_| MeasurementAbsence::ReadFailed)
+        })
+        .as_ref()
+        .map_err(|reason| *reason)?;
+    sample.verify(pid.as_u32(), boot, &birth_stamp::observe(pid.as_u32()))?;
+    Ok(Duration::from_secs(sample.accumulated_ticks) / linux_clock_ticks()?)
 }
 
 impl CpuSmoothing {
+    /// Only recovery for a proven process lifetime may rename accumulated CPU ownership.
+    /// A different confirmed generation starts fresh even when pid and birth still match.
+    fn identify_owners(&mut self, census: &Census) {
+        let mut present = HashSet::new();
+        for pid in census.live_cargo() {
+            let (Ok(process), Some(identity)) =
+                (census.cpu_identity(pid), census.identities.get(&pid))
+            else {
+                continue;
+            };
+            present.insert(process.clone());
+            let owner = self
+                .owners
+                .entry(process)
+                .or_insert_with(|| identity.clone());
+            if let InvocationId::Captured(_) = identity {
+                let previous = std::mem::replace(owner, identity.clone());
+                if matches!(previous, InvocationId::Process(_)) {
+                    self.reidentify_owner(&previous, identity);
+                }
+            }
+        }
+        self.owners.retain(|process, _| present.contains(process));
+    }
+
+    /// Move the original baseline and compiler credits together without adding prior time.
+    fn reidentify_owner(&mut self, previous: &InvocationId, recovered: &InvocationId) {
+        if let Some(cpu) = self.invocations.remove(previous) {
+            self.invocations.entry(recovered.clone()).or_insert(cpu);
+        }
+        if let Some(targets) = self.targets.remove(previous) {
+            self.targets
+                .entry(recovered.clone())
+                .or_default()
+                .extend(targets);
+        }
+        for owner in self.cache_owners.values_mut() {
+            if owner == previous {
+                owner.clone_from(recovered);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        for cpu in self.invocations.values_mut() {
+            if let Some(elapsed) = cpu.nested.remove(previous) {
+                let retained = cpu.nested.entry(recovered.clone()).or_default();
+                *retained = (*retained).max(elapsed);
+            }
+        }
+    }
+
     /// Carry every invocation's reading toward what this scan sampled,
     /// and hand back what the table should show at `now`.
     ///
@@ -1283,12 +1721,16 @@ struct Census {
     eligibility:              HashMap<Pid, Result<(), RowAbsence>>,
     /// Every process's parent, for walking a compiler up to its cargo.
     parents:                  HashMap<Pid, Pid>,
-    /// Processes whose own name is `cargo`.
+    /// Cargo invocations retained for row construction after selection.
     cargo:                    Vec<Pid>,
+    /// Hidden invocations still establish CPU ownership and competing target evidence.
+    rowless_cargo:            Vec<Pid>,
     /// Compiler processes paired with which driver they are.
     compilers:                Vec<(Pid, &'static str)>,
-    /// Every process contributes a reading or an absence reason to its owner.
+    /// Per-process validation is consulted only for an invocation's own counter.
     cpu:                      HashMap<Pid, Measurement<f32>>,
+    /// Own accumulated task time is the available counter on Darwin.
+    accumulated:              HashMap<Pid, Duration>,
     /// Fixture rows enter group assembly without a process-row measurement.
     #[cfg(test)]
     registration_rows:        Vec<CargoProcess>,
@@ -1307,8 +1749,10 @@ impl Census {
             registration_eligibility:       HashMap::new(),
             parents:                        HashMap::new(),
             cargo:                          Vec::new(),
+            rowless_cargo:                  Vec::new(),
             compilers:                      Vec::new(),
             cpu:                            HashMap::new(),
+            accumulated:                    HashMap::new(),
             #[cfg(test)]
             registration_rows:              Vec::new(),
         };
@@ -1318,6 +1762,9 @@ impl Census {
             }
             let baseline = CpuBaseline::from(process);
             census.lifetimes.insert(pid, baseline.lifetime.clone());
+            census
+                .accumulated
+                .insert(pid, Duration::from_millis(baseline.accumulated));
             census.cpu.insert(
                 pid,
                 Self::measure_cpu(pid, process.cpu_usage(), &baseline, previous),
@@ -1426,10 +1873,10 @@ impl Census {
     ///
     /// The two walks are one call because they run over the same parent
     /// chains and are both spent by the same pass over the groups.
-    fn attribute(&self, smoothing: &mut CpuSmoothing, now: Instant) -> Attributed {
+    fn attribute(&self, system: &System, smoothing: &mut CpuSmoothing, now: Instant) -> Attributed {
         smoothing.observed.clone_from(&self.lifetimes);
         let sampled: HashMap<_, _> = self
-            .attribute_cpu()
+            .attribute_cpu(system, smoothing, now)
             .into_iter()
             .filter_map(|(pid, cpu)| {
                 self.identities
@@ -1458,43 +1905,381 @@ impl Census {
         }
     }
 
-    /// Sum what each cargo invocation is using with what everything
-    /// under it is using.
-    ///
-    /// A cargo process spends next to nothing on its own account: the
-    /// work is in the `rustc`, `sccache`, build-script and linker
-    /// processes it starts, and a row reporting only the cargo's own
-    /// share would read as idle right through a build saturating the
-    /// machine. Nesting is settled the way [`attribute_compilers`] settles
-    /// it -- a process counts against the nearest cargo above it -- so a
-    /// managed command's share lands on that command rather than on its
-    /// manager, and [`Self::group`] adds the descendants back in for the
-    /// lead.
-    ///
-    /// [`attribute_compilers`]: Self::attribute_compilers
-    fn attribute_cpu(&self) -> HashMap<Pid, Measurement<f32>> {
-        let mut tallies: HashMap<Pid, Measurement<f32>> = self
-            .cargo
-            .iter()
-            .map(|&pid| {
-                (
-                    pid,
-                    self.cpu
-                        .get(&pid)
-                        .copied()
-                        .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven)),
-                )
+    /// Measure accumulated invocation work between scans, validating only its own counter.
+    /// Direct descendants take precedence over output-based cache attribution.
+    fn attribute_cpu(
+        &self,
+        system: &System,
+        smoothing: &mut CpuSmoothing,
+        now: Instant,
+    ) -> HashMap<Pid, Measurement<f32>> {
+        self.attribute_cpu_with(system, smoothing, now, |pid| self.process_cpu_time(pid))
+    }
+
+    /// Counter reads share the same ordered accounting pass for kernel and fixture samples.
+    fn attribute_cpu_with(
+        &self,
+        system: &System,
+        smoothing: &mut CpuSmoothing,
+        now: Instant,
+        read: impl FnMut(Pid) -> Measurement<Duration>,
+    ) -> HashMap<Pid, Measurement<f32>> {
+        smoothing.identify_owners(self);
+        let identities: HashSet<_> = smoothing.owners.values().cloned().collect();
+        smoothing
+            .invocations
+            .retain(|identity, _| identities.contains(identity));
+        smoothing
+            .targets
+            .retain(|identity, _| identities.contains(identity));
+        let targets = self.observe_targets(system, &smoothing.owners, &mut smoothing.targets);
+        smoothing.cache_owners.retain(|identity, _| {
+            self.compiler_credit_retention(identity) == CompilerCreditRetention::Keep
+        });
+        let detached = self
+            .detached_compilers(system, &targets)
+            .into_iter()
+            .filter(|&(compiler, owner)| {
+                let (Ok(compiler), Ok(process)) =
+                    (self.cpu_identity(compiler), self.cpu_identity(owner))
+                else {
+                    return false;
+                };
+                let Some(owner) = smoothing.owners.get(&process) else {
+                    return false;
+                };
+                smoothing
+                    .cache_owners
+                    .entry(compiler)
+                    .or_insert_with(|| owner.clone())
+                    == owner
             })
+            .collect::<HashMap<_, _>>();
+        let mut work: HashMap<Pid, InvocationWork> = self
+            .live_cargo()
+            .map(|pid| (pid, InvocationWork::default()))
             .collect();
-        for (&pid, &cpu) in &self.cpu {
-            if !self.cargo.contains(&pid)
-                && let Some(owner) = self.owning_cargo(pid)
-                && let Some(total) = tallies.get_mut(&owner)
+        let mut evidence = self.cpu.clone();
+        self.collect_cpu_work(&detached, &mut work, &mut evidence, read);
+        #[cfg(target_os = "linux")]
+        self.exclude_nested_cpu(&mut work, smoothing);
+        work.into_iter()
+            .filter_map(|(pid, work)| {
+                let process = self.cpu_identity(pid).ok()?;
+                let identity = smoothing.owners.get(&process)?;
+                let evidence = evidence
+                    .get(&pid)
+                    .copied()
+                    .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven));
+                let sample = smoothing
+                    .invocations
+                    .entry(identity.clone())
+                    .or_default()
+                    .measure(work, evidence, now);
+                Some((pid, sample))
+            })
+            .collect()
+    }
+
+    /// Row eligibility never removes a live invocation from CPU ownership.
+    fn live_cargo(&self) -> impl Iterator<Item = Pid> + '_ {
+        self.cargo.iter().chain(&self.rowless_cargo).copied()
+    }
+
+    /// CPU accounting includes the root process and orders ancestors nearest first.
+    fn cpu_ancestry(&self, pid: Pid) -> Vec<Pid> {
+        let mut chain = vec![pid];
+        let mut current = pid;
+        for _ in 0..PARENT_WALK_LIMIT {
+            if current.as_u32() <= ROOT_PROCESS_PID {
+                break;
+            }
+            let Some(&parent) = self.parents.get(&current) else {
+                break;
+            };
+            if chain.contains(&parent) {
+                break;
+            }
+            chain.push(parent);
+            if parent.as_u32() <= ROOT_PROCESS_PID {
+                break;
+            }
+            current = parent;
+        }
+        chain
+    }
+
+    /// Each live cargo in the process chain can own work, even without a displayed row.
+    fn cpu_owners(&self, pid: Pid) -> impl Iterator<Item = Pid> + '_ {
+        self.cpu_ancestry(pid)
+            .into_iter()
+            .filter(|ancestor| self.live_cargo().any(|cargo| cargo == *ancestor))
+    }
+
+    /// Ancestry and detached compiler roots establish one assignment per process.
+    fn cpu_assignment(&self, pid: Pid, detached: &HashMap<Pid, Pid>) -> CpuAssignment {
+        if let Some(owner) = self.cpu_owners(pid).next() {
+            return CpuAssignment::Direct(owner);
+        }
+        self.cpu_ancestry(pid)
+            .into_iter()
+            .find_map(|compiler| {
+                detached
+                    .get(&compiler)
+                    .map(|&owner| CpuAssignment::Detached { owner, compiler })
+            })
+            .unwrap_or(CpuAssignment::Unassigned)
+    }
+
+    /// Read parents before children so a concurrent wait cannot repeat a live counter.
+    fn collect_cpu_work(
+        &self,
+        detached: &HashMap<Pid, Pid>,
+        work: &mut HashMap<Pid, InvocationWork>,
+        evidence: &mut HashMap<Pid, Measurement<f32>>,
+        mut read: impl FnMut(Pid) -> Measurement<Duration>,
+    ) {
+        // Parents are read before children: a wait completed during this pass may
+        // defer time until the next sample, but cannot charge both child and reaper.
+        let mut pids: Vec<_> = self.accumulated.keys().copied().collect();
+        pids.sort_by_key(|pid| self.cpu_ancestry(*pid).len());
+        for pid in pids {
+            let assignment = self.cpu_assignment(pid, detached);
+            let owner = match assignment {
+                CpuAssignment::Direct(owner) | CpuAssignment::Detached { owner, .. } => owner,
+                CpuAssignment::Unassigned => continue,
+            };
+            let Ok(identity) = self.cpu_identity(pid) else {
+                continue;
+            };
+            let elapsed = match read(pid) {
+                Measurement::Reading(elapsed) => elapsed,
+                Measurement::Unavailable(reason) => {
+                    if pid == owner {
+                        evidence.insert(owner, Measurement::Unavailable(reason));
+                    }
+                    continue;
+                },
+            };
+            if pid == owner
+                && evidence.get(&owner)
+                    == Some(&Measurement::Unavailable(
+                        MeasurementAbsence::FirstObservation,
+                    ))
+                && (cfg!(target_os = "linux") || !elapsed.is_zero())
             {
-                *total = *total + cpu;
+                // A validated own counter can begin the cumulative baseline before
+                // sysinfo has a rate. Darwin's zero may be a failed task-info read.
+                // InvocationCpu still reports FirstObservation for the first sample.
+                evidence.insert(owner, Measurement::Reading(0.0));
+            }
+            match assignment {
+                CpuAssignment::Detached { compiler, .. } => {
+                    if let Ok(root) = self.cpu_identity(compiler)
+                        && let Some(work) = work.get_mut(&owner)
+                    {
+                        work.detached
+                            .entry(root)
+                            .or_default()
+                            .insert(identity, elapsed);
+                    }
+                },
+                CpuAssignment::Direct(_) => {
+                    #[cfg(target_os = "linux")]
+                    for ancestor in self.cpu_owners(owner) {
+                        if let Some(work) = work.get_mut(&ancestor) {
+                            work.tree.insert(identity.clone(), elapsed);
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    if let Some(work) = work.get_mut(&owner) {
+                        work.tree.insert(identity, elapsed);
+                    }
+                },
+                CpuAssignment::Unassigned => {},
             }
         }
-        tallies
+    }
+
+    /// Keep the manager's full tree and the nested invocations' prior credits separate.
+    #[cfg(target_os = "linux")]
+    fn exclude_nested_cpu(
+        &self,
+        work: &mut HashMap<Pid, InvocationWork>,
+        smoothing: &CpuSmoothing,
+    ) {
+        let totals: HashMap<_, _> = work
+            .iter()
+            .map(|(&pid, work)| {
+                let retained = self
+                    .cpu_identity(pid)
+                    .ok()
+                    .and_then(|process| smoothing.owners.get(&process))
+                    .and_then(|identity| smoothing.invocations.get(identity))
+                    .map_or(Duration::ZERO, |cpu| cpu.tree.total);
+                (pid, retained.max(work.tree.values().sum()))
+            })
+            .collect();
+        for (&pid, &total) in &totals {
+            if let Some(parent) = self.cpu_owners(pid).nth(1)
+                && let Some(work) = work.get_mut(&parent)
+                && let Ok(process) = self.cpu_identity(pid)
+                && let Some(identity) = smoothing.owners.get(&process)
+            {
+                work.nested.insert(identity.clone(), total);
+            }
+        }
+    }
+
+    /// Missing census metadata cannot release a still-live compiler's original owner.
+    fn compiler_credit_retention(&self, identity: &ProcessIdentity) -> CompilerCreditRetention {
+        let pid = match identity {
+            ProcessIdentity::Known { pid, lifetime } => {
+                if let Some(LifetimeEvidence::Available(current)) =
+                    self.lifetimes.get(&Pid::from_u32(*pid))
+                {
+                    return if current == lifetime {
+                        CompilerCreditRetention::Keep
+                    } else {
+                        CompilerCreditRetention::Retire
+                    };
+                }
+                *pid
+            },
+            ProcessIdentity::Unavailable { pid, .. } => *pid,
+        };
+        let Some(pid) = i32::try_from(pid).ok().and_then(KernelPid::from_raw) else {
+            return CompilerCreditRetention::Keep;
+        };
+        // Signal zero checks existence without delivering a signal. Permission and
+        // inspection failures preserve the credit; only ESRCH proves process absence.
+        if test_kill_process(pid) == Err(Errno::SRCH) {
+            CompilerCreditRetention::Retire
+        } else {
+            CompilerCreditRetention::Keep
+        }
+    }
+
+    /// Lifetime-qualified keys cannot transfer CPU time across pid reuse.
+    fn cpu_identity(&self, pid: Pid) -> Result<ProcessIdentity, MeasurementAbsence> {
+        match self.lifetimes.get(&pid) {
+            Some(LifetimeEvidence::Available(lifetime)) => Ok(ProcessIdentity::Known {
+                pid:      pid.as_u32(),
+                lifetime: lifetime.clone(),
+            }),
+            _ => Err(MeasurementAbsence::Unproven),
+        }
+    }
+
+    /// Linux includes completed children; other platforms supply observed task time.
+    fn process_cpu_time(&self, pid: Pid) -> Measurement<Duration> {
+        #[cfg(target_os = "linux")]
+        {
+            let result = linux_cpu_time(pid).and_then(|elapsed| {
+                if self.lifetimes.get(&pid) == Some(&birth_stamp::lifetime(pid.as_u32())) {
+                    Ok(elapsed)
+                } else {
+                    Err(MeasurementAbsence::Unproven)
+                }
+            });
+            match result {
+                Ok(elapsed) => Measurement::Reading(elapsed),
+                Err(reason) => Measurement::Unavailable(reason),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.accumulated.get(&pid).copied().map_or(
+                Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                Measurement::Reading,
+            )
+        }
+    }
+
+    /// Current targets can establish competition without authorizing a counter read.
+    /// Only proven process lifetimes retain destinations across scans.
+    fn observe_targets(
+        &self,
+        system: &System,
+        owners: &HashMap<ProcessIdentity, InvocationId>,
+        retained: &mut HashMap<InvocationId, HashSet<PathBuf>>,
+    ) -> HashMap<Pid, HashSet<PathBuf>> {
+        let mut targets: HashMap<_, _> = self
+            .live_cargo()
+            .map(|pid| {
+                let directories = self
+                    .cpu_identity(pid)
+                    .ok()
+                    .and_then(|process| owners.get(&process))
+                    .and_then(|identity| retained.get(identity))
+                    .cloned()
+                    .unwrap_or_default();
+                (pid, directories)
+            })
+            .collect();
+        for pid in self.live_cargo() {
+            if let Some(process) = system.process(pid)
+                && let Ok(directory) = cargo_target_directory(process)
+            {
+                targets.entry(pid).or_default().insert(directory);
+            }
+        }
+        for &(pid, _) in &self.compilers {
+            if let Some(owner) = self.cpu_owners(pid).next()
+                && let Some(process) = system.process(pid)
+                && let Ok(directory) = process_argument_path(process, RUSTC_OUT_DIR_FLAG)
+            {
+                targets.entry(owner).or_default().insert(directory);
+            }
+        }
+        for (&pid, directories) in &targets {
+            if let Ok(process) = self.cpu_identity(pid)
+                && let Some(identity) = owners.get(&process)
+            {
+                retained.insert(identity.clone(), directories.clone());
+            }
+        }
+        targets
+    }
+
+    /// Only a detached rustc beneath sccache may use output-directory ownership.
+    fn detached_compilers(
+        &self,
+        system: &System,
+        targets: &HashMap<Pid, HashSet<PathBuf>>,
+    ) -> HashMap<Pid, Pid> {
+        self.compilers
+            .iter()
+            .filter_map(|&(pid, driver)| {
+                if driver != RUSTC_BINARY
+                    || self.cpu_owners(pid).next().is_some()
+                    || !self
+                        .cpu_ancestry(pid)
+                        .iter()
+                        .any(|ancestor| self.compilers.contains(&(*ancestor, SCCACHE_BINARY)))
+                {
+                    return None;
+                }
+                let process = system.process(pid)?;
+                let directory = process_argument_path(process, RUSTC_OUT_DIR_FLAG).ok()?;
+                let owners = self.live_cargo().filter(|owner| {
+                    let Some(cargo) = system.process(*owner) else {
+                        return false;
+                    };
+                    // A shared filesystem path alone never links work from different users.
+                    if process.user_id().is_none() || process.user_id() != cargo.user_id() {
+                        return false;
+                    }
+                    targets.get(owner).is_some_and(|targets| {
+                        targets.iter().any(|target| directory.starts_with(target))
+                    })
+                });
+                match compile_owner(owners) {
+                    CompileOwner::Unique(owner) => Some((pid, owner)),
+                    CompileOwner::Unknown | CompileOwner::Ambiguous => None,
+                }
+            })
+            .collect()
     }
 
     /// Drop every cargo that is only a shim in front of another cargo.
@@ -1636,8 +2421,7 @@ impl Census {
         None
     }
 
-    /// Every process a scan reads the costly fields for: the cargo
-    /// invocations, and everything standing above one of them.
+    /// Read detailed metadata for cargo, its ancestors, and compiler drivers.
     ///
     /// A superset of what any cell ends up listing. Which ancestors are
     /// the invocation's own plumbing is settled on argv, which is what
@@ -1646,6 +2430,7 @@ impl Census {
     /// processes.
     fn detailed(&self) -> Vec<Pid> {
         let mut pids = self.cargo.clone();
+        pids.extend(self.compilers.iter().map(|&(pid, _)| pid));
         for &pid in &self.cargo {
             for ancestor in self.ancestor_pids(pid) {
                 if !pids.contains(&ancestor) {
@@ -1956,6 +2741,17 @@ impl Census {
             };
             self.eligibility.insert(pid, eligibility);
         }
+        self.rowless_cargo = self
+            .cargo
+            .iter()
+            .copied()
+            .filter(|pid| !matches!(self.eligibility.get(pid), Some(Ok(()))))
+            .filter(|pid| {
+                system
+                    .process(*pid)
+                    .is_none_or(|process| process.cmd().is_empty() || names_cargo(process.cmd()))
+            })
+            .collect();
         self.cargo
             .retain(|pid| matches!(self.eligibility.get(pid), Some(Ok(()))));
     }
@@ -2038,7 +2834,16 @@ impl Census {
             let totals = subtree_cpu(&attributed.cpu, &members, &process_rows);
             if process_rows.contains(&group.lead.invocation_id) {
                 let pids = members.iter().map(|row| Pid::from_u32(row.pid));
-                let cpu = aggregate_cpu(&attributed.cpu, pids.clone()).map(cpu_label);
+                let proven: HashSet<_> = members
+                    .iter()
+                    .filter(|row| process_rows.contains(&row.invocation_id))
+                    .map(|row| row.pid)
+                    .collect();
+                let cpu = if members.iter().all(|row| proven.contains(&row.pid)) {
+                    aggregate_cpu(&attributed.cpu, pids.clone()).map(cpu_label)
+                } else {
+                    Measurement::Unavailable(MeasurementAbsence::Unproven)
+                };
                 let compiler = aggregate_compilers(&attributed.compilers, pids);
                 group.lead.cpu = cpu;
                 group.lead.compiler = compiler;
@@ -2425,16 +3230,19 @@ pub(crate) fn aggregate_cpu(
     shares: &HashMap<Pid, Measurement<f32>>,
     members: impl Iterator<Item = Pid>,
 ) -> Measurement<f32> {
-    members.fold(Measurement::Reading(0.0), |total, pid| {
-        total
-            + shares
-                .get(&pid)
-                .copied()
-                .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven))
-    })
+    let mut seen = HashSet::new();
+    members
+        .filter(|pid| seen.insert(*pid))
+        .fold(Measurement::Reading(0.0), |total, pid| {
+            total
+                + shares
+                    .get(&pid)
+                    .copied()
+                    .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven))
+        })
 }
 
-/// Sum each invocation bucket once per subtree with linear parent-link passes.
+/// Sum each pid bucket once per subtree while retaining unavailable identities.
 /// The membership order also indexes the returned totals, independently of row age.
 fn subtree_cpu(
     shares: &HashMap<Pid, Measurement<f32>>,
@@ -2457,6 +3265,16 @@ fn subtree_cpu(
         })
         .collect();
     let mut remaining_children = vec![0_usize; members.len()];
+    let mut contributors: Vec<HashSet<Pid>> = members
+        .iter()
+        .map(|row| {
+            if process_rows.contains(&row.invocation_id) {
+                HashSet::from([Pid::from_u32(row.pid)])
+            } else {
+                HashSet::new()
+            }
+        })
+        .collect();
     for row in members {
         if let VisibleParent::Invocation { id, .. } = &row.parent
             && let Some(&parent) = indices.get(id)
@@ -2473,7 +3291,16 @@ fn subtree_cpu(
         if let VisibleParent::Invocation { id, .. } = &members[index].parent
             && let Some(&parent) = indices.get(id)
         {
-            totals[parent] = totals[parent] + totals[index];
+            let additional: Vec<_> = contributors[index]
+                .difference(&contributors[parent])
+                .copied()
+                .collect();
+            totals[parent] = totals[parent]
+                + match totals[index] {
+                    Measurement::Unavailable(reason) => Measurement::Unavailable(reason),
+                    Measurement::Reading(_) => aggregate_cpu(shares, additional.iter().copied()),
+                };
+            contributors[parent].extend(additional);
             remaining_children[parent] -= 1;
             if remaining_children[parent] == 0 {
                 ready.push(parent);
@@ -2986,6 +3813,7 @@ mod tests {
     use std::io::Write;
     use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::symlink;
+    use std::os::unix::process::CommandExt;
     use std::process::Child;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
@@ -3029,14 +3857,30 @@ mod tests {
 
     /// Keep a cargo-shaped argv alive until the owning fixture is dropped.
     fn cargo_process(command: &str) -> MetadataProcess {
-        MetadataProcess {
-            child: std::process::Command::new("sh")
-                .args(["-c", "read -r release", "cargo", command])
+        metadata_process(Path::new("sh"), &[OsStr::new("cargo"), OsStr::new(command)])
+    }
+
+    /// A named executable and independent argv let metadata disagreements be exercised.
+    fn metadata_process(executable: &Path, arguments: &[&OsStr]) -> MetadataProcess {
+        let mut fixture = MetadataProcess {
+            child: std::process::Command::new(executable)
+                .arg0("sh")
+                .args(["-c", "printf 'ready\\n'; read -r release"])
+                .args(arguments)
                 .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
                 .spawn()
                 .expect("cargo command fixture"),
-        }
+        };
+        let mut ready = String::new();
+        BufReader::new(fixture.child.stdout.take().expect("fixture readiness pipe"))
+            .read_line(&mut ready)
+            .expect("fixture readiness receipt");
+        assert_eq!(
+            ready, "ready\n",
+            "shell initializes argv before metadata sampling"
+        );
+        fixture
     }
 
     /// Measurements are supplied explicitly by tests that need process evidence.
@@ -3268,6 +4112,24 @@ mod tests {
         let fixture = cargo_process("build");
         let pid = Pid::from_u32(fixture.child.id());
         let system = process_details(&[pid]);
+        let process = system.process(pid).unwrap_or_else(|| {
+            panic!("ready fixture pid {pid} is absent from the detailed process snapshot");
+        });
+        assert_eq!(
+            subcommand(process.cmd()).as_deref(),
+            Some("build"),
+            "fixture pid {pid}: argv={:?}, cwd={:?}",
+            process.cmd(),
+            process.cwd(),
+        );
+        let directory = std::env::current_dir().expect("fixture inherits the test directory");
+        assert_eq!(
+            process.cwd(),
+            Some(directory.as_path()),
+            "fixture pid {pid}: argv={:?}, cwd={:?}",
+            process.cmd(),
+            process.cwd(),
+        );
         let root = tempdir().expect("root");
         write_versioned_capture(
             root.path(),
@@ -4033,6 +4895,58 @@ mod tests {
         );
         assert!(!smoothing.settled.contains_key(&identities[0]));
         assert!(!smoothing.reported.contains_key(&identities[0]));
+
+        let pid = Pid::from_u32(10);
+        let compiler = cpu_process_identity(30);
+        let mut census = census_of(&[]);
+        census.cargo.push(pid);
+        census.lifetimes.insert(
+            pid,
+            LifetimeEvidence::Available(ProcessLifetime::for_test(10)),
+        );
+        census.lifetimes.insert(
+            Pid::from_u32(30),
+            LifetimeEvidence::Available(ProcessLifetime::for_test(30)),
+        );
+        census.accumulated.insert(pid, Duration::ZERO);
+        census.cpu.insert(pid, Measurement::Reading(0.0));
+        census.identities.insert(pid, identities[0].clone());
+        let first = census.attribute_cpu_with(&System::new(), &mut smoothing, now, |_| {
+            Measurement::Reading(Duration::from_millis(100))
+        });
+        assert_eq!(
+            first[&pid],
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        );
+        smoothing
+            .cache_owners
+            .insert(compiler.clone(), identities[0].clone());
+        smoothing
+            .invocations
+            .get_mut(&identities[0])
+            .expect("first generation counter")
+            .detached
+            .entry(compiler.clone())
+            .or_default()
+            .update(cpu_work(&[(30, 400)]).tree);
+        census.identities.insert(pid, identities[1].clone());
+        let replaced = census.attribute_cpu_with(
+            &System::new(),
+            &mut smoothing,
+            now + Duration::from_secs(1),
+            |_| Measurement::Reading(Duration::from_millis(200)),
+        );
+        assert_eq!(
+            replaced[&pid],
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        );
+        assert!(!smoothing.invocations.contains_key(&identities[0]));
+        assert_eq!(
+            smoothing.invocations[&identities[1]].accumulated,
+            Duration::from_millis(200)
+        );
+        assert!(smoothing.invocations[&identities[1]].detached.is_empty());
+        assert_eq!(smoothing.cache_owners[&compiler], identities[0]);
     }
 
     #[test]
@@ -4403,8 +5317,10 @@ mod tests {
                 .map(|&(child, parent)| (Pid::from_u32(child), Pid::from_u32(parent)))
                 .collect(),
             cargo:                    Vec::new(),
+            rowless_cargo:            Vec::new(),
             compilers:                Vec::new(),
             cpu:                      HashMap::new(),
+            accumulated:              HashMap::new(),
             registration_rows:        Vec::new(),
         }
     }
@@ -5469,21 +6385,496 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_descendant_invalidates_its_owning_cargos_cpu() {
-        let owner = Pid::from(1);
-        let descendant = Pid::from(2);
-        let mut census = census_of(&[(2, 1)]);
-        census.cargo.push(owner);
-        census.cpu = HashMap::from([
-            (owner, Measurement::Reading(10.0)),
-            (
-                descendant,
-                Measurement::Unavailable(MeasurementAbsence::Unproven),
-            ),
-        ]);
+    fn new_and_idle_descendants_keep_the_invocations_cpu_measurable() {
+        let mut cpu = InvocationCpu::default();
+        let now = Instant::now();
+        cpu.measure(cpu_work(&[(1, 10)]), Measurement::Reading(0.0), now);
         assert_eq!(
-            census.attribute_cpu()[&owner],
-            Measurement::Unavailable(MeasurementAbsence::Unproven)
+            cpu.measure(
+                cpu_work(&[(1, 10), (2, 100), (3, 0)]),
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(1)
+            ),
+            Measurement::Reading(10.0),
+        );
+        assert_eq!(
+            cpu.measure(
+                cpu_work(&[(1, 10), (2, 100), (4, 0)]),
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(2)
+            ),
+            Measurement::Reading(0.0),
+        );
+    }
+
+    fn cpu_work(counters: &[(u32, u64)]) -> InvocationWork {
+        InvocationWork {
+            tree: counters
+                .iter()
+                .map(|&(pid, elapsed)| (cpu_process_identity(pid), Duration::from_millis(elapsed)))
+                .collect(),
+            ..InvocationWork::default()
+        }
+    }
+
+    fn cpu_process_identity(pid: u32) -> ProcessIdentity {
+        ProcessIdentity::Known {
+            pid,
+            lifetime: ProcessLifetime::for_test(u64::from(pid)),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reaped_descendants_transfer_time_without_repeating_it() {
+        let mut cpu = InvocationCpu::default();
+        let now = Instant::now();
+        cpu.measure(
+            cpu_work(&[(1, 10), (2, 100)]),
+            Measurement::Reading(0.0),
+            now,
+        );
+        assert_eq!(
+            cpu.measure(
+                cpu_work(&[(1, 110)]),
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(1)
+            ),
+            Measurement::Reading(0.0)
+        );
+        assert_eq!(
+            cpu.measure(
+                cpu_work(&[(1, 210)]),
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(2)
+            ),
+            Measurement::Reading(10.0)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reaped_nested_cargo_keeps_its_prior_cpu_credit() {
+        let mut cpu = InvocationCpu::default();
+        let now = Instant::now();
+        let mut first = cpu_work(&[(1, 10), (2, 100)]);
+        first
+            .nested
+            .insert(InvocationId::for_test(2), Duration::from_millis(100));
+        cpu.measure(first, Measurement::Reading(0.0), now);
+        assert_eq!(
+            cpu.measure(
+                cpu_work(&[(1, 110)]),
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(1)
+            ),
+            Measurement::Reading(0.0)
+        );
+    }
+
+    #[test]
+    fn detached_compiler_observation_gaps_do_not_repeat_its_counter() {
+        let mut cpu = InvocationCpu::default();
+        let now = Instant::now();
+        let compiler = ProcessIdentity::Known {
+            pid:      2,
+            lifetime: ProcessLifetime::for_test(2),
+        };
+        let mut first = cpu_work(&[(1, 10)]);
+        first
+            .detached
+            .insert(compiler.clone(), cpu_work(&[(2, 100)]).tree);
+        cpu.measure(first, Measurement::Reading(0.0), now);
+        assert_eq!(
+            cpu.measure(
+                cpu_work(&[(1, 10)]),
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(1)
+            ),
+            Measurement::Reading(0.0)
+        );
+        let mut recovered = cpu_work(&[(1, 10)]);
+        recovered
+            .detached
+            .insert(compiler, cpu_work(&[(2, 200)]).tree);
+        assert_eq!(
+            cpu.measure(
+                recovered,
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(2)
+            ),
+            Measurement::Reading(10.0)
+        );
+    }
+
+    #[test]
+    fn a_live_compiler_keeps_its_first_owner_after_owner_and_census_disappear() {
+        let pid = std::process::id();
+        let LifetimeEvidence::Available(lifetime) = birth_stamp::lifetime(pid) else {
+            panic!("current process must have a native lifetime");
+        };
+        let compiler = ProcessIdentity::Known { pid, lifetime };
+        let owner = InvocationId::for_test(1);
+        let mut smoothing = CpuSmoothing::default();
+        smoothing
+            .cache_owners
+            .insert(compiler.clone(), owner.clone());
+        let mut census = census_of(&[]);
+        census.attribute_cpu(&System::new(), &mut smoothing, Instant::now());
+        assert_eq!(smoothing.cache_owners.get(&compiler), Some(&owner));
+        census
+            .lifetimes
+            .insert(Pid::from_u32(pid), LifetimeEvidence::Unavailable);
+        census.attribute_cpu(&System::new(), &mut smoothing, Instant::now());
+        assert_eq!(smoothing.cache_owners.get(&compiler), Some(&owner));
+    }
+
+    #[test]
+    fn native_replacement_retires_the_prior_compilers_owner() {
+        let mut census = census_of(&[]);
+        let compiler = ProcessIdentity::Known {
+            pid:      123,
+            lifetime: ProcessLifetime::for_test(1),
+        };
+        let mut smoothing = CpuSmoothing::default();
+        smoothing
+            .cache_owners
+            .insert(compiler.clone(), InvocationId::for_test(1));
+        census.lifetimes.insert(
+            Pid::from_u32(123),
+            LifetimeEvidence::Available(ProcessLifetime::for_test(2)),
+        );
+        census.attribute_cpu(&System::new(), &mut smoothing, Instant::now());
+        assert!(!smoothing.cache_owners.contains_key(&compiler));
+    }
+
+    #[test]
+    fn compiler_time_cannot_replace_the_invocations_own_counter_evidence() {
+        for reason in [
+            MeasurementAbsence::FirstObservation,
+            MeasurementAbsence::ReadFailed,
+            MeasurementAbsence::Unproven,
+        ] {
+            let mut cpu = InvocationCpu::default();
+            let now = Instant::now();
+            cpu.measure(cpu_work(&[(1, 10)]), Measurement::Reading(0.0), now);
+            assert_eq!(
+                cpu.measure(
+                    cpu_work(&[(1, 10), (2, 100)]),
+                    Measurement::Unavailable(reason),
+                    now + Duration::from_secs(1)
+                ),
+                Measurement::Unavailable(reason)
+            );
+        }
+    }
+
+    #[test]
+    fn failed_own_counter_preserves_the_full_elapsed_recovery_interval() {
+        let mut cpu = InvocationCpu::default();
+        let now = Instant::now();
+        cpu.measure(cpu_work(&[(1, 100)]), Measurement::Reading(0.0), now);
+        assert_eq!(
+            cpu.measure(
+                InvocationWork::default(),
+                Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                now + Duration::from_secs(1)
+            ),
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+        );
+        assert_eq!(
+            cpu.measure(
+                cpu_work(&[(1, 300)]),
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(2)
+            ),
+            Measurement::Reading(10.0),
+        );
+    }
+
+    #[test]
+    fn root_cargo_is_read_before_the_compiler_it_can_reap() {
+        let root = Pid::from_u32(ROOT_PROCESS_PID);
+        let child = Pid::from_u32(ROOT_PROCESS_PID + 1);
+        let mut census = census_of(&[(child.as_u32(), root.as_u32()), (root.as_u32(), 0)]);
+        census.cargo.push(root);
+        for pid in [root, child] {
+            census.lifetimes.insert(
+                pid,
+                LifetimeEvidence::Available(ProcessLifetime::for_test(u64::from(pid.as_u32()))),
+            );
+            census.accumulated.insert(pid, Duration::ZERO);
+        }
+        let mut order = Vec::new();
+        let mut work = HashMap::from([(root, InvocationWork::default())]);
+        census.collect_cpu_work(&HashMap::new(), &mut work, &mut HashMap::new(), |pid| {
+            // Reading the child first lets a subsequent wait repeat its time in root.
+            let elapsed = if pid == child || order.contains(&child) {
+                100
+            } else {
+                0
+            };
+            order.push(pid);
+            Measurement::Reading(Duration::from_millis(elapsed))
+        });
+        assert_eq!(order, [root, child]);
+        assert_eq!(
+            work[&root].tree.values().sum::<Duration>(),
+            Duration::from_millis(100)
+        );
+    }
+
+    #[test]
+    fn proven_registration_identity_changes_preserve_the_same_process_cpu_baseline() {
+        let root = tempdir().expect("root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let pid = Pid::from_u32(20);
+        let mut census = census_of(&[(pid.as_u32(), 10)]);
+        census.cargo.push(pid);
+        census.lifetimes.insert(
+            pid,
+            LifetimeEvidence::Available(ProcessLifetime::for_test(20)),
+        );
+        census.accumulated.insert(pid, Duration::ZERO);
+        census.cpu.insert(
+            pid,
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation),
+        );
+        let mut smoothing = CpuSmoothing::default();
+        let now = Instant::now();
+        let first = census.attribute_cpu_with(&System::new(), &mut smoothing, now, |_| {
+            Measurement::Reading(Duration::from_millis(100))
+        });
+        assert_eq!(
+            first[&pid],
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        );
+        census.cpu.insert(pid, Measurement::Reading(0.0));
+        census.identify_captures(&capture);
+        assert!(matches!(census.identities[&pid], InvocationId::Captured(_)));
+        let recovered = census.attribute_cpu_with(
+            &System::new(),
+            &mut smoothing,
+            now + Duration::from_secs(1),
+            |_| Measurement::Reading(Duration::from_millis(200)),
+        );
+        assert_eq!(recovered[&pid], Measurement::Reading(10.0));
+        census
+            .identities
+            .insert(pid, InvocationId::for_test(pid.as_u32()));
+        let unconfirmed = census.attribute_cpu_with(
+            &System::new(),
+            &mut smoothing,
+            now + Duration::from_secs(2),
+            |_| Measurement::Reading(Duration::from_millis(300)),
+        );
+        assert_eq!(unconfirmed[&pid], Measurement::Reading(10.0));
+        assert_eq!(smoothing.invocations.len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn partial_tree_reads_do_not_restart_the_invocation_counter() {
+        let mut cpu = InvocationCpu::default();
+        let now = Instant::now();
+        let nested = InvocationId::for_test(2);
+        let mut first = cpu_work(&[(1, 10), (2, 100)]);
+        first
+            .nested
+            .insert(nested.clone(), Duration::from_millis(100));
+        cpu.measure(first, Measurement::Reading(0.0), now);
+        let mut incomplete = cpu_work(&[(2, 200)]);
+        incomplete
+            .nested
+            .insert(nested.clone(), Duration::from_millis(200));
+        assert_eq!(
+            cpu.measure(
+                incomplete,
+                Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                now + Duration::from_secs(1)
+            ),
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed)
+        );
+        let mut recovered = cpu_work(&[(1, 10), (2, 200)]);
+        recovered.nested.insert(nested, Duration::from_millis(200));
+        assert_eq!(
+            cpu.measure(
+                recovered,
+                Measurement::Reading(0.0),
+                now + Duration::from_secs(2)
+            ),
+            Measurement::Reading(0.0)
+        );
+    }
+
+    #[test]
+    fn competing_compile_owners_authorize_no_charge() {
+        assert_eq!(
+            compile_owner([Pid::from_u32(1), Pid::from_u32(1)].into_iter()),
+            CompileOwner::Unique(Pid::from_u32(1))
+        );
+        assert_eq!(
+            compile_owner([Pid::from_u32(1), Pid::from_u32(2)].into_iter()),
+            CompileOwner::Ambiguous
+        );
+        assert_eq!(compile_owner(std::iter::empty()), CompileOwner::Unknown);
+    }
+
+    #[test]
+    fn non_cargo_argv_does_not_hide_a_detached_compiler_beneath_a_cargo_name() {
+        let root = tempdir().expect("compiler metadata fixture");
+        for name in [CARGO_DISPLAY_NAME, SCCACHE_BINARY, RUSTC_BINARY] {
+            fs::copy("/bin/sh", root.path().join(name)).expect("copy named metadata executable");
+        }
+        let cargo = root.path().join(CARGO_DISPLAY_NAME);
+        let requester = metadata_process(
+            &cargo,
+            &[
+                OsStr::new(CARGO_DISPLAY_NAME),
+                OsStr::new("build"),
+                OsStr::new(CARGO_TARGET_DIR_FLAG),
+                root.path().as_os_str(),
+            ],
+        );
+        let server = metadata_process(
+            &root.path().join(SCCACHE_BINARY),
+            &[OsStr::new(SCCACHE_BINARY)],
+        );
+        let worker = metadata_process(&cargo, &[OsStr::new("cache-worker")]);
+        let compiler = metadata_process(
+            &root.path().join(RUSTC_BINARY),
+            &[
+                OsStr::new(RUSTC_BINARY),
+                OsStr::new(RUSTC_OUT_DIR_FLAG),
+                root.path().as_os_str(),
+            ],
+        );
+        let [requester, server, worker, compiler] = [&requester, &server, &worker, &compiler]
+            .map(|fixture| Pid::from_u32(fixture.child.id()));
+        let system = process_details(&[requester, server, worker, compiler]);
+        let mut census = Census::take(&system, &HashMap::new());
+        // Controlled ancestry puts the misleading name between sccache and rustc;
+        // the detector must accept a server beyond the immediate parent.
+        census.parents = HashMap::from([
+            (requester, Pid::from_u32(ROOT_PROCESS_PID)),
+            (server, Pid::from_u32(ROOT_PROCESS_PID)),
+            (worker, server),
+            (compiler, worker),
+        ]);
+        assert!(
+            census.cargo.contains(&worker),
+            "native cargo name must enter discovery"
+        );
+        let process = system.process(worker).expect("worker metadata");
+        assert_eq!(select_cargo(process.cmd(), &[]), Err(RowAbsence::Excluded));
+        census.identities = ProcessIdentities::default().observe(&census.lifetimes);
+        census.select_rows(&system, &Capture::default(), &[]);
+        assert_eq!(census.live_cargo().collect::<Vec<_>>(), [requester]);
+        let targets = census.observe_targets(&system, &HashMap::new(), &mut HashMap::new());
+        assert_eq!(
+            census.detached_compilers(&system, &targets),
+            HashMap::from([(compiler, requester)])
+        );
+
+        census.cpu.insert(requester, Measurement::Reading(0.0));
+        let mut smoothing = CpuSmoothing::default();
+        let now = Instant::now();
+        for (offset, milliseconds, expected) in [
+            (
+                0,
+                100,
+                Measurement::Unavailable(MeasurementAbsence::FirstObservation),
+            ),
+            (1, 200, Measurement::Reading(10.0)),
+        ] {
+            let measured = census.attribute_cpu_with(
+                &system,
+                &mut smoothing,
+                now + Duration::from_secs(offset),
+                |pid| {
+                    Measurement::Reading(if pid == compiler {
+                        Duration::from_millis(milliseconds)
+                    } else {
+                        Duration::ZERO
+                    })
+                },
+            );
+            assert_eq!(measured[&requester], expected);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_cpu_stat_includes_reaped_time_and_ignores_comm_delimiters() {
+        let mut stat = b"123 (space ) (\n\xff)".to_vec();
+        for _ in 0..CPU_STAT_TIME_INDEX {
+            stat.extend_from_slice(b" 0");
+        }
+        stat.extend_from_slice(b" 11 13 17 19");
+        for _ in CPU_STAT_TIME_INDEX + CPU_STAT_TIME_FIELDS..BIRTH_STAT_START_INDEX {
+            stat.extend_from_slice(b" 0");
+        }
+        assert_eq!(linux_cpu_ticks(&stat), Err(MeasurementAbsence::ReadFailed));
+        stat.extend_from_slice(b" 123456789");
+        assert_eq!(
+            linux_cpu_ticks(&stat),
+            Ok(LinuxCpuSample {
+                start_ticks:       123456789,
+                accumulated_ticks: 60,
+            })
+        );
+        assert_eq!(
+            linux_cpu_ticks(b"1 (short) S"),
+            Err(MeasurementAbsence::ReadFailed)
+        );
+        assert!(linux_clock_ticks().is_ok());
+        assert!(linux_cpu_time(Pid::from_u32(std::process::id())).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cpu_stat_birth_rejects_pid_reuse_and_unbound_observations() {
+        let sample = LinuxCpuSample {
+            start_ticks:       11,
+            accumulated_ticks: 60,
+        };
+        let IdentityEvidence::Available(birth) = BirthStamp::from_fields("boot", "11") else {
+            panic!("fixture birth must parse");
+        };
+        let matching = KernelObservation::for_test(123, Observation::Present(birth));
+        assert_eq!(sample.verify(123, "boot", &matching), Ok(()));
+        assert_eq!(
+            sample.verify(124, "boot", &matching),
+            Err(MeasurementAbsence::Unproven)
+        );
+        let IdentityEvidence::Available(replacement) = BirthStamp::from_fields("boot", "12") else {
+            panic!("replacement birth must parse");
+        };
+        let replaced = KernelObservation::for_test(123, Observation::Present(replacement));
+        assert_eq!(
+            sample.verify(123, "boot", &replaced),
+            Err(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(
+            sample.verify(123, "other-boot", &matching),
+            Err(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(
+            sample.verify(
+                123,
+                "boot",
+                &KernelObservation::for_test(123, Observation::Unknown)
+            ),
+            Err(MeasurementAbsence::Unproven)
         );
     }
 

@@ -1,4 +1,4 @@
-//! Promoted summary rows total their invocation subtree without changing command rows.
+//! Command and summary rows charge each contributing process once.
 
 #[path = "../src/app.rs"]
 mod app;
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn a_missing_nested_attribution_is_unavailable_instead_of_zero() {
         let tree = SummaryTree::new();
-        let [_, _, _, deep, _, _] = tree.pids();
+        let [driver, _, _, deep, _, _] = tree.pids();
         let shares: Vec<_> = tree
             .readings()
             .into_iter()
@@ -439,6 +439,19 @@ mod tests {
             .collect();
         let roster = tree.roster(&shares);
 
+        let lead = &roster.groups()[0].lead.process;
+        assert_eq!(
+            lead.cpu,
+            Measurement::Unavailable(MeasurementAbsence::Unproven),
+            "the command lead cannot replace a missing member contribution with zero"
+        );
+        assert_cpu_rows(
+            summary_cpu_for_test(&roster, &[]),
+            &[(
+                driver,
+                Measurement::Unavailable(MeasurementAbsence::Unproven),
+            )],
+        );
         tree.assert_summary(
             &roster,
             Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -447,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_process_contribution_with_a_cpu_bucket_makes_its_promoted_total_unavailable() {
+    fn a_non_process_contribution_with_a_cpu_bucket_keeps_leads_unavailable() {
         let tree = SummaryTree::new();
         let baseline = tree.roster(&tree.readings());
         let [driver, first, nested, deep, second, sibling_nested] = tree.pids();
@@ -470,13 +483,23 @@ mod tests {
         assert_cpu_rows(
             command_cpu(&roster),
             &[
-                (driver, Measurement::Reading("183%")),
+                (
+                    driver,
+                    Measurement::Unavailable(MeasurementAbsence::Unproven),
+                ),
                 (first, Measurement::Reading("1%")),
                 (nested, Measurement::Reading("2%")),
                 (deep, Measurement::Unavailable(MeasurementAbsence::Unproven)),
                 (second, Measurement::Reading("16%")),
                 (sibling_nested, Measurement::Reading("32%")),
             ],
+        );
+        assert_cpu_rows(
+            summary_cpu_for_test(&roster, &[]),
+            &[(
+                driver,
+                Measurement::Unavailable(MeasurementAbsence::Unproven),
+            )],
         );
         tree.assert_summary(
             &roster,
@@ -522,17 +545,21 @@ mod tests {
             .filter(|row| row.process.invocation_id != registration.invocation_id)
             .map(|row| (row.process.pid, row.process.cpu.clone()))
             .collect();
-        // The command lead's existing pid sum is outside the promoted-total repair.
+        // The second invocation identity must not charge the same process twice.
         assert_cpu_rows(
             process_rows,
             &[
-                (driver, Measurement::Reading("187%")),
+                (driver, Measurement::Reading("183%")),
                 (first, Measurement::Reading("1%")),
                 (nested, Measurement::Reading("2%")),
                 (deep, Measurement::Reading("4%")),
                 (second, Measurement::Reading("16%")),
                 (sibling_nested, Measurement::Reading("32%")),
             ],
+        );
+        assert_cpu_rows(
+            summary_cpu_for_test(&roster, &[]),
+            &[(driver, Measurement::Reading("183%"))],
         );
         tree.assert_summary(
             &roster,
